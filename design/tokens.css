@@ -1,0 +1,50 @@
+/*
+ * The spacing and sizing this product is built from.
+ *
+ * Before this there were eleven different pixel values doing the work of five: 4, 5, 6, 8, 10,
+ * 12, 16, 20 and 30 for gaps alone, chosen a component at a time. None of them was wrong on its
+ * own, which is exactly why it happened, and the result is two panes that are almost aligned and
+ * a dialog whose columns are almost in step.
+ *
+ * Plain CSS rather than SCSS, and imported from tokens.ts rather than `@use`d from a component.
+ * The shell prepends its own SCSS to every component stylesheet through `additionalData`, so a
+ * `@use` written in one is never the first rule in the sheet and sass refuses it. Importing the
+ * file from the module the layout components already import puts it in the bundle exactly once,
+ * with nothing to get in the wrong order.
+ *
+ * Arithmetic on these is `calc(var(--dev-space-4) * 2)`, which is why they do not also exist as
+ * SCSS variables: two definitions of one scale is the problem this file was written to end.
+ *
+ * The middle of the scale is 10px, which is Rancher's own `$space-s`. That is deliberate: this
+ * product renders inside Rancher's chrome, and a rhythm of its own would read as a mistake next
+ * to the header and the nav it sits between.
+ */
+:root {
+  /* 1  hairline    a dot and its label, a badge's own padding */
+  --dev-space-1: 2px;
+  /* 2  tight       inside a control */
+  --dev-space-2: 4px;
+  /* 3  snug        between controls that belong together */
+  --dev-space-3: 6px;
+  /* 4  default     between controls, list rows, table cells - most things */
+  --dev-space-4: 10px;
+  /* 5  section     between the sections of a page or a dialog */
+  --dev-space-5: 20px;
+  /* 6  block       between major blocks, and a page's own outer padding */
+  --dev-space-6: 30px;
+
+  /*
+   * Control heights: a row in a list, a compact control, and a control on a toolbar. The shell's
+   * own buttons are 24px (small) and 30px (default), and neither is a size these rows want,
+   * which is why they are written down rather than inherited.
+   */
+  --dev-control-row: 22px;
+  --dev-control-sm:  28px;
+  --dev-control:     32px;
+
+  /* Dialog widths, and the one fixed column this product has. */
+  --dev-modal-sm: 560px;
+  --dev-modal:    720px;
+  --dev-modal-lg: 900px;
+  --dev-side-col: 300px;
+}
