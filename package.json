@@ -1,26 +1,24 @@
 {
   "name": "dev-extension",
-  "description": "dev-extension plugin",
   "version": "0.1.0",
   "private": false,
-  "rancher": {
-    "annotations": {
-      "catalog.cattle.io/rancher-version": ">= 2.10.0",
-      "catalog.cattle.io/ui-extensions-version": ">= 3.0.0 < 4.0.0"
-    }
-  },
-  "scripts": {},
   "engines": {
     "node": ">=24"
   },
-  "devDependencies": {
-    "@vue/cli-plugin-babel": "5.0.9",
-    "@vue/cli-service": "5.0.8",
-    "@vue/cli-plugin-typescript": "5.0.9"
+  "dependencies": {
+    "@rancher/shell": "^3.0.11"
   },
-  "browserslist": [
-    "> 1%",
-    "last 2 versions",
-    "not dead"
-  ]
+  "resolutions": {
+    "@types/node": "~25.3.0",
+    "@types/lodash": "4.17.5"
+  },
+  "scripts": {
+    "dev": "NODE_ENV=dev ./node_modules/.bin/vue-cli-service serve",
+    "build": "./node_modules/.bin/vue-cli-service build",
+    "clean": "./node_modules/@rancher/shell/scripts/clean",
+    "build-pkg": "./node_modules/@rancher/shell/scripts/build-pkg.sh",
+    "serve-pkgs": "./node_modules/@rancher/shell/scripts/serve-pkgs",
+    "publish-pkgs": "./node_modules/@rancher/shell/scripts/extension/publish",
+    "parse-tag-name": "./node_modules/@rancher/shell/scripts/extension/parse-tag-name"
+  }
 }
