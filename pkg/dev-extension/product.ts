@@ -29,6 +29,14 @@ export function init($plugin: IPlugin, store: any) {
 
   product(productOpts);
 
+  // `weight` orders the nav and is honoured at runtime, but ConfigureVirtualTypeOptions does
+  // not declare it - so it is spread rather than written into the literal, for the reason the
+  // comment below `navOnly` gives: an excess property is an error where a spread of one is not,
+  // and only the production build is strict enough to say so. A dev server transpiles without
+  // type checking, which is why this compiled in a pod for months and failed the first time
+  // anything built it for real.
+  const weight = (value: number) => ({ weight: value } as Record<string, unknown>);
+
   virtualType({
     name:  CUSTOM_PAGE_NAME,
     label: 'Live Reload Demo',
@@ -36,7 +44,7 @@ export function init($plugin: IPlugin, store: any) {
       name:   HOME_ROUTE,
       params: { product: PRODUCT_NAME, cluster: BLANK_CLUSTER }
     },
-    weight: 100
+    ...weight(100)
   });
 
   basicType([CUSTOM_PAGE_NAME]);
@@ -60,8 +68,8 @@ export function init($plugin: IPlugin, store: any) {
     name:       FLOOF_PAGE,
     label:      'Floof',
     namespaced: false,
-    weight:     99,
     route:      { name: FLOOF_ROUTE },
+    ...weight(99),
     ...navOnly
   });
 

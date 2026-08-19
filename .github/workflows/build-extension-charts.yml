@@ -66,12 +66,12 @@ jobs:
           git fetch --depth=1 origin gh-pages 2>/dev/null || true
           if git show origin/gh-pages:index.yaml > /tmp/index.yaml 2>/dev/null; then
             if grep -qE "^[[:space:]]+version: ${version}$" /tmp/index.yaml; then
-              echo "barn ${version} is already on gh-pages - nothing to publish"
+              echo "dev-extension ${version} is already on gh-pages - nothing to publish"
               echo "publish=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           fi
-          echo "barn ${version} is not published yet"
+          echo "dev-extension ${version} is not published yet"
           echo "publish=true" >> "$GITHUB_OUTPUT"
 
   build-extension-charts:
@@ -87,3 +87,31 @@ jobs:
       target_branch: gh-pages
       # Empty on a manual run, which builds whatever version package.json currently names.
       tagged_release: ${{ github.event_name == 'release' && github.ref_name || '' }}
+
+  # Did anything actually get built?
+  #
+  # The publish script does not fail when the build under it does. It ran, webpack reported five
+  # errors, and it published a plugin directory containing package.json and no JavaScript - and
+  # the workflow went green. Rancher then installs that happily: the chart is well formed, the
+  # UIPlugin reaches `cached` and `Ready`, and the extension does nothing at all, because there
+  # is nothing to load.
+  #
+  # So this asks the only question that matters afterwards, of the branch rather than of the
+  # build: is there a bundle on gh-pages for this version.
+  verify-published:
+    needs: build-extension-charts
+    if: always() && needs.build-extension-charts.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: A bundle exists for this version
+        run: |
+          version=$(node -p "require('./pkg/dev-extension/package.json').version")
+          git fetch --depth=1 origin gh-pages
+          files=$(git ls-tree -r --name-only origin/gh-pages "extensions/dev-extension/${version}/plugin" || true)
+          echo "$files"
+          if ! echo "$files" | grep -qE '\.js$'; then
+            echo "::error::published ${version} has no JavaScript - the build failed and the publish swallowed it"
+            exit 1
+          fi
+          echo "ok: $(echo "$files" | grep -cE '\.js$') javascript files published"
