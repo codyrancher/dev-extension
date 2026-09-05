@@ -13,21 +13,20 @@ watching it.
 
 - `pkg/dev-extension/` is this extension: `product.ts` (nav entries), `routing/index.ts`,
   `pages/`, `models/` (overrides of the shell's models, which win over the shell's own).
-- It registers two products. `devextension` is the live-reload demo. `dev` is the Claude
-  Harness rebuilt on Kubernetes: a workspace is a namespace with a Deployment and a Service,
+- It registers one product, `dev`: the Claude Harness rebuilt on Kubernetes: a workspace is a namespace with a Deployment and a Service,
   started and stopped by scaling, with a terminal on the pod's exec subresource. Its
   Kubernetes calls are in `api.ts`, what each workspace runs is the Apps Plus app it was
   made from (see `apps.ts`), and the terminal is `components/DevTerminal.vue`, which will point at any pod given a
   namespace, labels, a container and an argv.
-- The `dev` product's nav is Workspaces, Terminal, My Work, Insights, Settings. There is no
+- The `dev` product's nav is Workspaces, My Work, Insights, Settings. There is no terminal of
+  its own: Extension Studio's drawer (Ctrl+Shift+`) is the global terminal, and a workspace's
+  conversations run in that same agent pod. There is no
   Templates page: a template is an Apps Plus app, and a workspace is an Installation of one
   (`apps.ts` says how, and why it goes through Apps Plus's own store models). The App a fresh
   Rancher gets, `rancher-workspace`, is created there if missing. A workspace
   opens as tabs (Overview, Conversations, Browser, Ports) at
   `/dev/c/_/workspaces/<name>#<tab>`; the tab is the hash rather than a path segment, and
-  `pages/WorkspaceDetail.vue` says at the top why that is not cosmetic. Terminal is the same
-  DevTerminal pointed at this pod, running `/seed/shell.sh <session> /app/.sessions/<session>`,
-  so it is a tmux session that survives the browser and a conversation of its own. My Work and
+  `pages/WorkspaceDetail.vue` says at the top why that is not cosmetic. My Work and
   Settings are deliberately empty pages describing what they are waiting on, which is a GitHub
   token in a Secret and shared claude credentials.
 - Editing anything in `pod/` needs three steps, and the third is the one that gets forgotten:

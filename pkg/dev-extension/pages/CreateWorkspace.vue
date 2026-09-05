@@ -14,6 +14,7 @@ import {
   createWorkspace, workspaceNameError, workspaceNamespace, listClusters, readableBytes
 } from '../api';
 import { listApps, appsPlusAvailable } from '../apps';
+import { readPrefs, shownApps } from '../prefs';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, WORKSPACE_ROUTE, DEFAULT_APP, APP
 } from '../config/constants';
@@ -26,17 +27,21 @@ export default {
   },
 
   async fetch() {
-    const [clusters, apps] = await Promise.all([
+    const [clusters, apps, prefs] = await Promise.all([
       listClusters().catch(() => []),
       listApps(this.$store).catch((e) => {
         this.appsError = e.message || String(e);
 
         return [];
       }),
+      readPrefs().catch(() => ({ hiddenApps: [] })),
     ]);
 
     this.clusters = clusters;
-    this.apps = apps;
+    // The ones this person kept (Settings), plus whichever a link asked for by name.
+    const asked = this.$route.query.app || this.$route.query.template;
+
+    this.apps = shownApps(apps, prefs).concat(apps.filter((app) => app.id === asked && prefs.hiddenApps.includes(app.id)));
 
     const askedCluster = this.$route.query.cluster;
     const known = (id) => this.clusters.some((entry) => entry.id === id) && id;

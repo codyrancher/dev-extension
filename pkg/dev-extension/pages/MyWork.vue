@@ -14,10 +14,11 @@ import { RcButton } from '@components/RcButton';
 import AsyncButton from '@shell/components/AsyncButton';
 import { myWork, rerunFailed, dependabotAlerts } from '../github';
 import {
-  listAllWorkspaces, createWorkspace, listPrompts
+  listAllWorkspaces, createWorkspace
 } from '../api';
 import { listApps } from '../apps';
-import { fillPrompt } from '../prompts';
+import { fillPrompt, DEFAULT_PROMPTS } from '../prompts';
+import { readPrefs, shownApps } from '../prefs';
 import { startConversation, queuePrompt } from '../conversations';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, SETTINGS_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_APP
@@ -278,14 +279,15 @@ export default {
       this.error = '';
 
       try {
-        const [work, workspaces, prompts, apps] = await Promise.all([
+        const [work, workspaces, prompts, apps, prefs] = await Promise.all([
           myWork(),
           listAllWorkspaces().catch(() => []),
-          listPrompts().catch(() => []),
+          Promise.resolve(DEFAULT_PROMPTS),
           listApps(this.$store).catch(() => []),
+          readPrefs().catch(() => ({ hiddenApps: [] })),
         ]);
 
-        this.apps = apps;
+        this.apps = shownApps(apps, prefs);
 
         this.work = work;
         this.workspaces = workspaces.map((workspace) => workspace.name);

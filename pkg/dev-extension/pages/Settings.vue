@@ -29,10 +29,11 @@ import { RcButton } from '@components/RcButton';
 import { LabeledInput } from '@components/Form/LabeledInput';
 import BrandImage from '@shell/components/BrandImage';
 import {
-  setSecretKeys, saveSecrets, secretValue, migrateGithubToken,
-  listPrompts, savePrompts as writePrompts
+  setSecretKeys, saveSecrets, secretValue, migrateGithubToken
 } from '../api';
 import { GLOBAL_SECRETS } from '../secrets';
+import { listApps } from '../apps';
+import { readPrefs, savePrefs } from '../prefs';
 
 export default {
   name: 'DevSettings',
@@ -51,16 +52,15 @@ export default {
   data() {
     return {
       keys:     [],
-      // The prompts a queued conversation opens on, and the edits made to them. Separate from
-      // the secret edits because these are read back after they are saved, and a secret is not.
-      prompts:      [],
-      promptEdits:  {},
+      // Every App, and which of them this person has hidden. See prefs.ts.
+      apps:         [],
+      hiddenApps:   [],
+      hiddenSaved:  [],
       // The sections whose fields are showing. A card opens on its summary line, because what a
       // person comes here to know first is whether a template is configured at all.
       open:         {},
       // Written here rather than in the template: a moustache cannot contain the braces it is
       // made of, and escaping them in the markup is less readable than one string.
-      placeholders: '{{repo}} {{pr}} {{issue}} {{title}} {{url}}',
       // Key to the string typed into its field. A key that is not in here was not touched, and
       // is not written on Save. An empty field is never in here: clearing is what Clear is for.
       edits:    {},
@@ -105,30 +105,27 @@ export default {
       this.open = { ...this.open, [section.id]: !this.open[section.id] };
     },
 
-    /** What is in a prompt's box: the edit if there is one, and what is stored otherwise. */
-    promptText(prompt) {
-      return this.promptEdits[prompt.id] ?? prompt.text;
+    /** One declaration, joined to whether the cluster has it. */
+    appShown(app) {
+      return !this.hiddenApps.includes(app.id);
     },
 
-    /** Whether anything has actually been typed, which is what Save is enabled by. */
-    promptsChanged() {
-      return this.prompts.some((prompt) => this.promptText(prompt) !== prompt.text);
+    setAppShown(app, shown) {
+      this.hiddenApps = shown
+        ? this.hiddenApps.filter((id) => id !== app.id)
+        : [...new Set([...this.hiddenApps, app.id])];
     },
 
-    /**
-     * Save the prompts that changed, and nothing else.
-     *
-     * The same rule the secrets above follow: a field nobody touched is not written, so two
-     * people saving different things do not overwrite each other's untouched ones.
-     */
-    async savePrompts(done) {
-      const changed = Object.fromEntries(this.prompts
-        .filter((prompt) => this.promptText(prompt) !== prompt.text)
-        .map((prompt) => [prompt.id, this.promptText(prompt)]));
+    appsChanged() {
+      return [...this.hiddenApps].sort().join(',') !== [...this.hiddenSaved].sort().join(',');
+    },
+
+    async saveApps(done) {
+      this.error = '';
 
       try {
-        await writePrompts(changed);
-        await this.refresh();
+        await savePrefs({ hiddenApps: this.hiddenApps });
+        this.hiddenSaved = [...this.hiddenApps];
         done(true);
       } catch (e) {
         this.error = e.message || String(e);
@@ -136,7 +133,6 @@ export default {
       }
     },
 
-    /** One declaration, joined to whether the cluster has it. */
     field(secret, key) {
       return {
         ...secret,
@@ -146,15 +142,16 @@ export default {
     },
 
     async refresh() {
-      const [keys, prompts] = await Promise.all([
+      const [keys, apps, prefs] = await Promise.all([
         setSecretKeys().catch(() => []),
-        listPrompts().catch(() => []),
+        listApps(this.$store).catch(() => []),
+        readPrefs().catch(() => ({ hiddenApps: [] })),
       ]);
 
-      this.prompts = prompts;
-      this.promptEdits = {};
-
       this.keys = keys;
+      this.apps = apps;
+      this.hiddenApps = [...prefs.hiddenApps];
+      this.hiddenSaved = [...prefs.hiddenApps];
     },
 
     placeholder(secret) {
@@ -417,55 +414,50 @@ export default {
     </section>
 
     <!--
-      The prompts a queued conversation opens on. They are per person and they are text, so they
-      are edited here rather than declared: see prompts.ts, which holds the defaults and what a
-      placeholder in one can stand for.
+      Which Apps Plus apps to offer as templates. Every App in the cluster is one, and a cluster
+      has Apps that are not for making workspaces from; the person says which, and the sidebar
+      and the Create page show only those. A new App is shown until it is hidden.
     -->
     <section class="dev-settings__card">
       <div class="dev-settings__card-head">
-        <i class="dev-settings__card-icon icon icon-comment" />
+        <i class="dev-settings__card-icon icon icon-apps" />
         <div class="dev-settings__card-title">
-          <h3>Conversation prompts</h3>
-          <p>What a conversation queued from My Work opens on.</p>
+          <h3>Apps</h3>
+          <p>Which Apps Plus apps to offer as workspace templates.</p>
           <p class="dev-settings__card-meta">
-            {{ prompts.length }} prompts &middot; yours alone
+            {{ apps.length - hiddenApps.length }} of {{ apps.length }} shown &middot; yours alone
           </p>
         </div>
       </div>
-
-      <div
-        v-for="prompt in prompts"
-        :key="prompt.id"
-        class="dev-settings__field"
+      <p
+        v-if="!apps.length"
+        class="dev-settings__help"
       >
-        <label class="dev-settings__prompt-label">{{ prompt.label }}</label>
-        <p class="dev-settings__help">
-          {{ prompt.help }}
-        </p>
-        <textarea
-          class="dev-settings__prompt"
-          rows="6"
-          spellcheck="false"
-          :value="promptText(prompt)"
-          @input="(event) => promptEdits = { ...promptEdits, [prompt.id]: event.target.value }"
-        />
-      </div>
-
-      <p class="dev-settings__help">
-        <code>{{ placeholders }}</code> are filled in from the row the action was pressed on.
-        Anything else is left as it is written.
+        There are no Apps Plus apps in this Rancher yet.
       </p>
-
+      <label
+        v-for="app in apps"
+        :key="app.id"
+        class="dev-settings__app"
+      >
+        <input
+          type="checkbox"
+          :checked="appShown(app)"
+          @change="(event) => setAppShown(app, event.target.checked)"
+        >
+        <span class="dev-settings__app-name">{{ app.label }}</span>
+        <span class="dev-settings__app-desc">{{ app.description }}</span>
+        <span class="dev-settings__card-meta">{{ app.installations }} workspace{{ app.installations === 1 ? '' : 's' }}</span>
+      </label>
       <div class="dev-settings__actions">
         <AsyncButton
           mode="apply"
-          action-label="Save prompts"
-          :disabled="!promptsChanged()"
-          @click="savePrompts"
+          action-label="Save apps"
+          :disabled="!appsChanged()"
+          @click="saveApps"
         />
       </div>
     </section>
-
   </div>
 </template>
 
@@ -600,23 +592,23 @@ export default {
       }
     }
 
-    &__prompt-label {
-      display:     block;
-      margin-top:  var(--dev-space-4);
-      font-weight: 600;
+
+    &__app {
+      display:               grid;
+      grid-template-columns: auto max-content 1fr max-content;
+      align-items:           center;
+      gap:                   var(--dev-space-3);
+      padding:               var(--dev-space-2) 0;
+      cursor:                pointer;
     }
 
-    &__prompt {
-      display:       block;
-      width:         100%;
-      padding:       var(--dev-space-3) var(--dev-space-4);
-      border:        1px solid var(--border);
-      border-radius: var(--border-radius);
-      background:    var(--body-bg);
-      color:         var(--body-text);
-      font-family:   monospace;
-      font-size:     12px;
-      resize:        vertical;
+    &__app-name { font-weight: 600; }
+
+    &__app-desc {
+      color:         var(--muted);
+      overflow:      hidden;
+      white-space:   nowrap;
+      text-overflow: ellipsis;
     }
 
     &__actions {
