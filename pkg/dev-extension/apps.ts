@@ -476,17 +476,23 @@ const PREVIEW_BUILD = [
   // App's values are text substitution, and a shell can branch where YAML cannot. The dashboard
   // is built under /dashboard/ - ROUTER_BASE is where it routes, RESOURCE_BASE where it fetches
   // its assets - with everything else proxied to the Rancher; Storybook is a plain static site.
-  'if [ "${kind}" = storybook ]; then yarn build-storybook && rm -rf /site/dist && cp -r storybook/storybook-static /site/dist',
-  '  && printf "%s\\n" "server {" "  listen ${port};" "  root /site/dist;" "  location / { try_files \\$uri \\$uri/ /index.html; }" "}" > /site/nginx/default.conf;',
-  'else ROUTER_BASE=/dashboard/ RESOURCE_BASE=/dashboard/ OUTPUT_DIR=/site/dist yarn build',
-  '  && printf "%s\\n" "server {" "  listen ${port};" "  client_max_body_size 50m;" "  location = / { return 302 /dashboard/; }"',
-  '     "  location /dashboard/ { alias /site/dist/; try_files \\$uri \\$uri/ /dashboard/index.html; }"',
-  '     "  location ~ ^/(js|css|img|fonts|favicon\\\\.png|manifest\\\\.json|robots\\\\.txt)(/|\\$) { root /site/dist; }"',
-  '     "  location / { proxy_pass ${rancherUrl}; proxy_ssl_verify off; proxy_ssl_server_name on; proxy_http_version 1.1;"',
-  '     "    proxy_set_header Upgrade \\$http_upgrade; proxy_set_header Connection \\"upgrade\\"; proxy_set_header Host \\$proxy_host;"',
-  '     "    proxy_set_header X-Forwarded-Proto https; proxy_read_timeout 3600s; proxy_cookie_domain ~.* \\$host; proxy_cookie_flags ~ nosecure; }"',
-  '     "}" > /site/nginx/default.conf;',
-  'fi',
+  // One element per branch: the list is joined with && and a branch that began with one broke
+  // the shell.
+  [
+    'if [ "${kind}" = storybook ]; then',
+    '  yarn build-storybook && rm -rf /site/dist && cp -r storybook/storybook-static /site/dist &&',
+    '  printf "%s\\n" "server {" "  listen ${port};" "  root /site/dist;" "  location / { try_files \\$uri \\$uri/ /index.html; }" "}" > /site/nginx/default.conf;',
+    'else',
+    '  ROUTER_BASE=/dashboard/ RESOURCE_BASE=/dashboard/ OUTPUT_DIR=/site/dist yarn build &&',
+    '  printf "%s\\n" "server {" "  listen ${port};" "  client_max_body_size 50m;" "  location = / { return 302 /dashboard/; }"',
+    '    "  location /dashboard/ { alias /site/dist/; try_files \\$uri \\$uri/ /dashboard/index.html; }"',
+    '    "  location ~ ^/(js|css|img|fonts|favicon\\\\.png|manifest\\\\.json|robots\\\\.txt)(/|\\$) { root /site/dist; }"',
+    '    "  location / { proxy_pass ${rancherUrl}; proxy_ssl_verify off; proxy_ssl_server_name on; proxy_http_version 1.1;"',
+    '    "    proxy_set_header Upgrade \\$http_upgrade; proxy_set_header Connection \\"upgrade\\"; proxy_set_header Host \\$proxy_host;"',
+    '    "    proxy_set_header X-Forwarded-Proto https; proxy_read_timeout 3600s; proxy_cookie_domain ~.* \\$host; proxy_cookie_flags ~ nosecure; }"',
+    '    "}" > /site/nginx/default.conf;',
+    'fi',
+  ].join(' '),
   'echo built',
 ].join(' && ');
 
