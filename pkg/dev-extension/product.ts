@@ -1,5 +1,6 @@
 import { IPlugin } from '@shell/core/types';
 import { ensureDevRbac, ensureWorkspaceApi } from './api';
+import { ensureDefaultApp } from './apps';
 import {
   PRODUCT_NAME, CUSTOM_PAGE_NAME, BLANK_CLUSTER, HOME_ROUTE,
   EXPLORER_PRODUCT, FLOOF_PAGE, FLOOF_ROUTE,
@@ -123,4 +124,9 @@ function devProduct($plugin: IPlugin, store: any) {
   // Rancher session can still ask for a workspace. Same rule as above - create if missing, quiet
   // if the person looking cannot create any of it. See ensureWorkspaceApi.
   ensureWorkspaceApi().catch(() => {});
+
+  // The App a fresh Rancher gets, so there is a template on day one. Templates are Apps Plus
+  // apps (see apps.ts); this one is what the built-in rancher template used to be. Create if
+  // missing and never overwrite, so an edit made in Apps Plus is kept.
+  ensureDefaultApp(store).catch(() => {});
 }

@@ -16,10 +16,13 @@ watching it.
 - It registers two products. `devextension` is the live-reload demo. `dev` is the Claude
   Harness rebuilt on Kubernetes: a workspace is a namespace with a Deployment and a Service,
   started and stopped by scaling, with a terminal on the pod's exec subresource. Its
-  Kubernetes calls are in `api.ts`, the container each workspace runs is in `templates.ts`,
-  and the terminal is `components/DevTerminal.vue`, which will point at any pod given a
+  Kubernetes calls are in `api.ts`, what each workspace runs is the Apps Plus app it was
+  made from (see `apps.ts`), and the terminal is `components/DevTerminal.vue`, which will point at any pod given a
   namespace, labels, a container and an argv.
-- The `dev` product's nav is Workspaces, Terminal, My Work, Templates, Settings. A workspace
+- The `dev` product's nav is Workspaces, Terminal, My Work, Insights, Settings. There is no
+  Templates page: a template is an Apps Plus app, and a workspace is an Installation of one
+  (`apps.ts` says how, and why it goes through Apps Plus's own store models). The App a fresh
+  Rancher gets, `rancher-workspace`, is created there if missing. A workspace
   opens as tabs (Overview, Conversations, Browser, Ports) at
   `/dev/c/_/workspaces/<name>#<tab>`; the tab is the hash rather than a path segment, and
   `pages/WorkspaceDetail.vue` says at the top why that is not cosmetic. Terminal is the same

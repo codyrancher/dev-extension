@@ -17,8 +17,7 @@
 //   - a template without one frames the workspace through the apiserver's service proxy, on
 //     Rancher's origin. A dashboard framed that way sends its API calls to Rancher rather than
 //     to the dev server it came from, which is why the rancher template does not do this.
-import { workspaceProxyUrl, sidecarProxyUrl } from '../api';
-import { templateById, templateBrowser } from '../templates';
+import { workspaceProxyUrl } from '../api';
 
 export default {
   name: 'WorkspaceBrowser',
@@ -31,21 +30,10 @@ export default {
   },
 
   computed: {
-    template() {
-      return templateById(this.workspace.template);
-    },
-
-    /** The browser this frames, when the template has one. */
-    browser() {
-      return templateBrowser(this.template);
-    },
-
+    // What the workspace itself serves, through the apiserver's service proxy. The port and the
+    // scheme are the workspace's own, written on its namespace by the App that made it.
     src() {
-      if (this.browser) {
-        return sidecarProxyUrl(this.workspace.name, this.browser);
-      }
-
-      return this.template ? workspaceProxyUrl(this.workspace.name, this.template.port, this.template.scheme) : '';
+      return workspaceProxyUrl(this.workspace.name, this.workspace.port, this.workspace.scheme);
     },
   },
 };

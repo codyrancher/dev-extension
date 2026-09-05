@@ -418,3 +418,153 @@ export async function myWork(): Promise<GithubWork> {
     issues: (body.data?.issues?.nodes || []).map(issueFrom),
   };
 }
+
+
+// ── One pull request ────────────────────────────────────────────────────────────────────────
+
+/** What a workspace's PR tab shows about the PR it is for. */
+export interface GithubPrDetail {
+  number: number;
+  title: string;
+  url: string;
+  repo: string;
+  /** OPEN, MERGED, CLOSED, or DRAFT for an open draft. */
+  state: string;
+  headRef: string;
+  baseRef: string;
+  changedFiles: number;
+  additions: number;
+  deletions: number;
+  reviewDecision: string;
+  approvedBy: string[];
+  checks: GithubChecks | null;
+  updatedAt: string;
+  body: string;
+}
+
+const PR_QUERY = `
+  query PullRequest($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        number title url state isDraft updatedAt bodyText
+        headRefName baseRefName changedFiles additions deletions reviewDecision
+        latestOpinionatedReviews(first: 20) { nodes { state author { login } } }
+        commits(last: 1) {
+          nodes {
+            commit {
+              statusCheckRollup {
+                state
+                contexts(first: 100) {
+                  totalCount
+                  nodes {
+                    __typename
+                    ... on CheckRun { conclusion checkSuite { workflowRun { databaseId url } } }
+                    ... on StatusContext { state }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const LINKED_PR_QUERY = `
+  query LinkedPullRequest($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {
+        timelineItems(itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT], last: 50) {
+          nodes {
+            ... on CrossReferencedEvent { source { ... on PullRequest { number state } } }
+            ... on ConnectedEvent { subject { ... on PullRequest { number state } } }
+          }
+        }
+      }
+    }
+  }
+`;
+
+async function graphql(query: string, variables: Record<string, unknown>): Promise<Json> {
+  const token = await githubToken();
+
+  if (!token) {
+    throw new Error('No GitHub token is set. Add one in Settings.');
+  }
+
+  const response = await fetch(ENDPOINT, {
+    method:  'POST',
+    headers: { authorization: `Bearer ${ token }`, 'content-type': 'application/json' },
+    body:    JSON.stringify({ query, variables }),
+  });
+
+  if (!response.ok) {
+    throw new Error(response.status === 401
+      ? 'GitHub rejected the token. It may have expired, or it may not have the repo scope.'
+      : `GitHub answered ${ response.status }.`);
+  }
+
+  const body = await response.json();
+
+  if (body.errors?.length) {
+    throw new Error(body.errors.map((error: Json) => error.message).join(' '));
+  }
+
+  return body.data;
+}
+
+function splitRepo(repo: string): { owner: string; name: string } {
+  const [owner, name] = repo.split('/');
+
+  if (!owner || !name) {
+    throw new Error(`"${ repo }" is not an owner/name repository.`);
+  }
+
+  return { owner, name };
+}
+
+/** One PR, by number, in one repository. */
+export async function pullRequest(repo: string, number: number): Promise<GithubPrDetail> {
+  const data = await graphql(PR_QUERY, { ...splitRepo(repo), number });
+  const pr = data.repository?.pullRequest;
+
+  if (!pr) {
+    throw new Error(`There is no pull request #${ number } in ${ repo }.`);
+  }
+
+  const opinions: Json[] = pr.latestOpinionatedReviews?.nodes || [];
+
+  return {
+    number:         pr.number,
+    title:          pr.title,
+    url:            pr.url,
+    repo,
+    state:          pr.isDraft && pr.state === 'OPEN' ? 'DRAFT' : pr.state,
+    headRef:        pr.headRefName,
+    baseRef:        pr.baseRefName,
+    changedFiles:   pr.changedFiles,
+    additions:      pr.additions,
+    deletions:      pr.deletions,
+    reviewDecision: pr.reviewDecision || '',
+    approvedBy:     opinions.filter((r) => r.state === 'APPROVED').map((r) => r.author?.login).filter(Boolean),
+    checks:         checksOf(pr),
+    updatedAt:      pr.updatedAt,
+    body:           (pr.bodyText || '').slice(0, 2000),
+  };
+}
+
+/**
+ * The PR that references an issue, when there is one.
+ *
+ * An open one first, then whichever was linked last: the workspace for an issue is about the
+ * fix in flight, and a merged PR from a year ago is not that.
+ */
+export async function linkedPullRequest(repo: string, issue: number): Promise<number> {
+  const data = await graphql(LINKED_PR_QUERY, { ...splitRepo(repo), number: issue });
+  const nodes: Json[] = data.repository?.issue?.timelineItems?.nodes || [];
+  const prs = nodes.map((node) => node.source || node.subject).filter((pr) => pr?.number);
+  const open = prs.find((pr) => pr.state === 'OPEN');
+
+  return (open || prs[prs.length - 1])?.number || 0;
+}

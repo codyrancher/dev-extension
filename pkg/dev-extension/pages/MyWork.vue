@@ -16,10 +16,10 @@ import { myWork, rerunFailed, dependabotAlerts } from '../github';
 import {
   listAllWorkspaces, createWorkspace, queueConversation, listPrompts, getWorkspace
 } from '../api';
-import { TEMPLATES } from '../templates';
+import { listApps } from '../apps';
 import { fillPrompt } from '../prompts';
 import {
-  DEV_PRODUCT, BLANK_CLUSTER, SETTINGS_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE
+  DEV_PRODUCT, BLANK_CLUSTER, SETTINGS_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_APP
 } from '../config/constants';
 
 /** Columns shared by both tables, since the two differ only at their right-hand end. */
@@ -71,6 +71,7 @@ export default {
 
   data() {
     return {
+      apps:       [],
       work:       null,
       error:      '',
       // The workspaces that exist, so a row can say whether it already has one. Names only:
@@ -147,8 +148,14 @@ export default {
 
   computed: {
     /** The repository this product's workspaces work on, from the template that clones it. */
+    /**
+     * The repository My Work is about: the one the default app clones, or the first app that
+     * declares one. Apps Plus apps carry it as a `repo` value.
+     */
     repo() {
-      return TEMPLATES.find((template) => !!template.repo)?.repo || '';
+      const preferred = this.apps.find((app) => app.id === DEFAULT_APP && app.repo);
+
+      return (preferred || this.apps.find((app) => !!app.repo))?.repo || '';
     },
 
     /**
@@ -210,11 +217,14 @@ export default {
       this.error = '';
 
       try {
-        const [work, workspaces, prompts] = await Promise.all([
+        const [work, workspaces, prompts, apps] = await Promise.all([
           myWork(),
           listAllWorkspaces().catch(() => []),
           listPrompts().catch(() => []),
+          listApps(this.$store).catch(() => []),
         ]);
+
+        this.apps = apps;
 
         this.work = work;
         this.workspaces = workspaces.map((workspace) => workspace.name);
@@ -262,7 +272,7 @@ export default {
       return {
         name:   CREATE_ROUTE,
         params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER },
-        query:  { template: 'rancher', name },
+        query:  { app: DEFAULT_APP, name },
       };
     },
 
@@ -288,7 +298,7 @@ export default {
       return {
         name:   CREATE_ROUTE,
         params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER },
-        query:  { template: 'rancher', name },
+        query:  { app: DEFAULT_APP, name },
       };
     },
 
@@ -394,7 +404,7 @@ export default {
 
       try {
         if (!this.workspaces.includes(name)) {
-          await createWorkspace(name, 'rancher');
+          await createWorkspace(this.$store, name, DEFAULT_APP);
           this.workspaces = [...this.workspaces, name];
         }
 

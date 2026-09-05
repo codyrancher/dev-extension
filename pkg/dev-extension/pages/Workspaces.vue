@@ -84,7 +84,7 @@ export default {
           name: 'name', label: 'Name', value: 'name', sort: ['name']
         },
         {
-          name: 'template', label: 'Template', value: 'templateLabel', sort: ['templateLabel', 'name']
+          name: 'app', label: 'App', value: 'app', sort: ['app', 'name']
         },
         {
           name: 'namespace', label: 'Namespace', value: 'namespace', sort: ['namespace']
@@ -185,8 +185,9 @@ export default {
       <div>
         <h1>Workspaces</h1>
         <p class="subheader">
-          Every workspace is a namespace with a Deployment and a Service in it. Starting and
-          stopping scales that Deployment; deleting removes the namespace.
+          Every workspace is an installation of an Apps Plus app: a namespace with what the app
+          renders into it. Starting and stopping scales its Deployment; deleting removes the
+          installation, and the namespace with it.
         </p>
       </div>
       <RcButton
