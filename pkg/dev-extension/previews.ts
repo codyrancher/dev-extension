@@ -40,9 +40,27 @@ export async function deployPreview(store: Store, workspace: string, values: { r
   const kind: ShareKind = values.kind || 'dashboard';
   const name = previewName(workspace, kind);
 
+  // Not while the last one's namespace is still going. A Fleet bundle that installs into a
+  // namespace it finds terminating does not own it, fails the install, and never retries - so a
+  // Remove followed by a Build sat "waiting for a pod" for good. Waiting here is what the
+  // person would otherwise be told to do.
+  await namespaceGone(workspaceNamespace(name), cluster);
   await createWorkspaceInstance(store, name, PREVIEW_APP, cluster, { ...values, kind });
 
   return name;
+}
+
+async function namespaceGone(namespace: string, cluster: string): Promise<void> {
+  const base = clusterBase(cluster);
+
+  for (let i = 0; i < 40; i++) {
+    const found = await devFetch(`${ base }/v1/namespaces/${ namespace }`).catch(() => null);
+
+    if (!found || !found.metadata?.deletionTimestamp) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
 }
 
 export async function removePreview(store: Store, workspace: string, kind: ShareKind = 'dashboard'): Promise<void> {

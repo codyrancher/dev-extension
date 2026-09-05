@@ -38,7 +38,18 @@ const LOW_DISK = 20 * 1024 ** 3;
 // The sidebar is rebuilt on every navigation, because the router-view above it is keyed on the
 // path. Without this the list blinks empty and fills in again on every click, which is the
 // difference between a sidebar and a page element that happens to be on the left.
-let cached = [];
+// What the sidebar last knew, kept across its own remounts.
+//
+// The shell keys its router-view on the path, so every navigation - one workspace to the next -
+// unmounts this product's page template and this sidebar with it. Fetching everything again
+// on each mount drew an empty column for a second on every click; drawn from here instead, the
+// column comes back exactly as it was and the refresh that follows changes what changed.
+const cache = {
+  workspaces: [],
+  clusters:   [],
+  apps:       [],
+  scroll:     0,
+};
 // Whether this page load has already asked for the default App; see refresh().
 let seeded = false;
 
@@ -50,9 +61,9 @@ export default {
 
   data() {
     return {
-      workspaces:   cached,
-      clusters:     [],
-      apps:         [],
+      workspaces:   cache.workspaces,
+      clusters:     cache.clusters,
+      apps:         cache.apps,
       error:        '',
       refreshTimer: null,
       /**
@@ -131,13 +142,6 @@ export default {
      * would look equally full; against the largest, two clusters side by side compare.
      */
     /** What the meters are drawn against: the fullest cluster is the whole bar. */
-    biggest() {
-      return {
-        memory: Math.max(...this.clusterRows.map((cluster) => cluster.memoryFree || 0), 1),
-        disk:   Math.max(...this.clusterRows.map((cluster) => cluster.diskFree || 0), 1),
-      };
-    },
-
     /** The clusters, with how many workspaces each holds. */
     clusterRows() {
       const clusters = this.clusters.length ? this.clusters : [{ id: 'local', name: 'local', memoryFree: 0, diskFree: 0 }];
@@ -165,10 +169,15 @@ export default {
 
   mounted() {
     this.refreshTimer = setInterval(() => this.refresh(), REFRESH_MS);
+    // Where the column was scrolled to, back where it was.
+    if (cache.scroll && this.$refs.scroll) {
+      this.$refs.scroll.scrollTop = cache.scroll;
+    }
   },
 
   beforeUnmount() {
     clearInterval(this.refreshTimer);
+    cache.scroll = this.$refs.scroll?.scrollTop || 0;
   },
 
   methods: {
@@ -185,7 +194,9 @@ export default {
         this.clusters = clusters;
         // Every App for the seed check below; the sections show the ones this person kept.
         this.apps = shownApps(apps, prefs);
-        cached = workspaces;
+        cache.workspaces = workspaces;
+        cache.clusters = clusters;
+        cache.apps = this.apps;
 
         // A workspace made by the in-cluster API is an Installation nobody has rendered yet.
         // This browser is the one that can; see apps.ts.
@@ -217,9 +228,24 @@ export default {
         (cluster.diskFree && cluster.diskFree < LOW_DISK);
     },
 
-    /** How full a bar is, as a percentage of the largest cluster's own capacity. */
+    /**
+     * How much of a bar is lit: what is free, as a share of what the cluster has in all.
+     *
+     * Each cluster against its own total rather than against the largest cluster's: the tracks
+     * are one width, the fill is that cluster's own headroom, and a bar moves when the number
+     * beside it does.
+     */
     bar(free, total) {
-      return `${ Math.max(2, Math.min(100, Math.round((free / (total || free || 1)) * 100))) }%`;
+      if (!total) {
+        return '0%';
+      }
+
+      return `${ Math.max(1, Math.min(100, Math.round((free / total) * 100))) }%`;
+    },
+
+    /** "43 GiB / 62 GiB", or the free amount alone when the total is not known. */
+    amount(free, total) {
+      return total ? `${ readableBytes(free) } / ${ readableBytes(total) }` : readableBytes(free);
     },
 
     readable(value) {
@@ -288,7 +314,10 @@ export default {
 
 <template>
   <nav class="dev-sidebar">
-    <div class="dev-sidebar__scroll">
+    <div
+      ref="scroll"
+      class="dev-sidebar__scroll"
+    >
       <!--
         One list per app; the + on its heading makes a new workspace of that app. The heading
         links to the list of every workspace, which is where one is stopped or deleted.
@@ -346,9 +375,9 @@ export default {
             <span class="dev-sidebar__meter-label">MEM</span>
             <span class="dev-sidebar__meter-track"><span
               class="dev-sidebar__meter-fill"
-              :style="{ width: bar(cluster.memoryFree, biggest.memory) }"
+              :style="{ width: bar(cluster.memoryFree, cluster.memoryTotal) }"
             /></span>
-            <span class="dev-sidebar__meter-value">{{ readable(cluster.memoryFree) }}</span>
+            <span class="dev-sidebar__meter-value">{{ amount(cluster.memoryFree, cluster.memoryTotal) }}</span>
           </Row>
           <Row
             class="dev-sidebar__meter"
@@ -357,9 +386,9 @@ export default {
             <span class="dev-sidebar__meter-label">DISK</span>
             <span class="dev-sidebar__meter-track"><span
               class="dev-sidebar__meter-fill"
-              :style="{ width: bar(cluster.diskFree, biggest.disk) }"
+              :style="{ width: bar(cluster.diskFree, cluster.diskTotal) }"
             /></span>
-            <span class="dev-sidebar__meter-value">{{ readable(cluster.diskFree) }}</span>
+            <span class="dev-sidebar__meter-value">{{ amount(cluster.diskFree, cluster.diskTotal) }}</span>
           </Row>
         </Stack>
       </div>
@@ -511,11 +540,15 @@ export default {
       display:    block;
       height:     100%;
       background: var(--primary);
+      transition: width 0.6s ease;
     }
 
     &__meter-value {
-      flex:      0 0 auto;
-      font-size: 11px;
+      flex:        0 0 auto;
+      min-width:   88px;
+      text-align:  right;
+      font-size:   11px;
+      font-variant-numeric: tabular-nums;
     }
 
     &__error {

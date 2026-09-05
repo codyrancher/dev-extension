@@ -75,7 +75,10 @@ export interface DevCluster {
   state: string;
   /** Bytes not asked for by anything, or 0 where the cluster does not say. */
   memoryFree: number;
+  /** What the cluster has in all, so what is free can be drawn as a share of it. */
+  memoryTotal: number;
   diskFree: number;
+  diskTotal: number;
 }
 
 /**
@@ -120,7 +123,7 @@ function bytes(quantity: string): number {
  * `allocatable - requested` is what pods have *asked* for, which changes when a pod is scheduled
  * and at no other time - a sidebar drawn from it sat still while a build filled the disk.
  */
-async function nodeLive(cluster: string, node: string): Promise<{ memory: number; disk: number } | null> {
+async function nodeLive(cluster: string, node: string): Promise<{ memory: number; memoryTotal: number; disk: number; diskTotal: number } | null> {
   // Bounded: a kubelet the proxy cannot reach answers in minutes, and a sidebar that waits on
   // it would show nothing for that long. Past a few seconds the requests-based figures stand in.
   const abort = new AbortController();
@@ -128,8 +131,14 @@ async function nodeLive(cluster: string, node: string): Promise<{ memory: number
   const summary = await devFetch(`${ clusterBase(cluster) }/api/v1/nodes/${ node }/proxy/stats/summary`, { signal: abort.signal }).catch(() => null).finally(() => clearTimeout(timer));
   const memory = Number(summary?.node?.memory?.availableBytes);
   const disk = Number(summary?.node?.fs?.availableBytes);
+  // What the node has in all: the kubelet says so for the disk; for memory it is what is in use
+  // plus what is available, which is the same number the node's capacity reports.
+  const memoryTotal = Number(summary?.node?.memory?.workingSetBytes) + memory;
+  const diskTotal = Number(summary?.node?.fs?.capacityBytes);
 
-  return Number.isFinite(memory) && Number.isFinite(disk) ? { memory, disk } : null;
+  return Number.isFinite(memory) && Number.isFinite(disk) ? {
+    memory, disk, memoryTotal: Number.isFinite(memoryTotal) ? memoryTotal : 0, diskTotal: Number.isFinite(diskTotal) ? diskTotal : 0,
+  } : null;
 }
 
 /** The active clusters, with nothing measured: what the workspace list needs, and no wait. */
@@ -154,12 +163,16 @@ export async function listClusters(): Promise<DevCluster[]> {
     const live = await Promise.all((nodes?.data || []).map((node: Json) => nodeLive(cluster.id, node.metadata?.name)));
 
     if (live.length && live.every(Boolean)) {
+      const sum = (key: 'memory' | 'memoryTotal' | 'disk' | 'diskTotal') => live.reduce((total, node) => total + (node as Record<string, number>)[key], 0);
+
       return {
-        id:         cluster.id,
-        name:       cluster.name || cluster.id,
-        state:      cluster.state,
-        memoryFree: live.reduce((total, node) => total + (node as { memory: number }).memory, 0),
-        diskFree:   live.reduce((total, node) => total + (node as { disk: number }).disk, 0),
+        id:          cluster.id,
+        name:        cluster.name || cluster.id,
+        state:       cluster.state,
+        memoryFree:  sum('memory'),
+        memoryTotal: sum('memoryTotal'),
+        diskFree:    sum('disk'),
+        diskTotal:   sum('diskTotal'),
       };
     }
 
@@ -177,11 +190,13 @@ export async function listClusters(): Promise<DevCluster[]> {
       .reduce((total: number, container: Json) => total + bytes(container.resources?.requests?.['ephemeral-storage']), 0);
 
     return {
-      id:    cluster.id,
-      name:  cluster.name || cluster.id,
-      state: cluster.state,
+      id:          cluster.id,
+      name:        cluster.name || cluster.id,
+      state:       cluster.state,
       memoryFree,
-      diskFree: Math.max(0, allocatable - requested),
+      memoryTotal: bytes(cluster.allocatable?.memory),
+      diskFree:    Math.max(0, allocatable - requested),
+      diskTotal:   allocatable,
     };
   }));
 }

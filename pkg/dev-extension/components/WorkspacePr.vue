@@ -1778,6 +1778,7 @@ async function doSubmit() {
     </div>
     <template v-else>
       <header class="prm-header">
+        <div class="prm-header-row">
         <div class="prm-title">
           <PrBadge
             v-if="detail"
@@ -1801,41 +1802,6 @@ async function doSubmit() {
           >
             ✓ approved
           </PrBadge>
-        </div>
-        <div
-          v-if="detail"
-          class="prm-meta"
-        >
-          {{ detail.meta.author }} · {{ detail.meta.baseRef }} ← {{ detail.meta.headRef }} ·
-          <span class="add-count">+{{ detail.meta.additions }}</span>
-          <span class="del-count">−{{ detail.meta.deletions }}</span> ·
-          {{ detail.meta.changedFiles }} files
-          <button
-            type="button"
-            class="conv-toggle"
-            @click="showCommits = !showCommits"
-          >
-            {{ commitLabel }} ({{ (detail.commits || []).length }} commits)
-          </button>
-          <button
-            type="button"
-            class="conv-toggle"
-            @click="showConversation = !showConversation; persistUiState()"
-          >
-            {{ showConversation ? 'Hide' : 'Show' }} conversation ({{ (detail.discussion || []).length }})
-          </button>
-          <button
-            v-if="detail.meta.ci"
-            type="button"
-            class="conv-toggle"
-            :class="{ 'ci-red': detail.meta.ci.failing, 'ci-pending': !detail.meta.ci.failing && detail.meta.ci.pending, 'ci-green': !detail.meta.ci.failing && !detail.meta.ci.pending }"
-            :title="detail.meta.ci.failing ? 'Which checks failed, and why' : ''"
-            @click="showFailures = !showFailures"
-          >
-            <template v-if="detail.meta.ci.failing">{{ detail.meta.ci.failing }} check{{ detail.meta.ci.failing === 1 ? '' : 's' }} failing</template>
-            <template v-else-if="detail.meta.ci.pending">{{ detail.meta.ci.pending }} check{{ detail.meta.ci.pending === 1 ? '' : 's' }} running</template>
-            <template v-else>CI green</template>
-          </button>
         </div>
         <div class="prm-actions">
           <PrButton
@@ -1906,6 +1872,42 @@ async function doSubmit() {
           >
             {{ submitting ? 'Posting…' : `Submit ${ approvedCount } to GitHub` }}
           </PrButton>
+        </div>
+        </div>
+        <div
+          v-if="detail"
+          class="prm-meta"
+        >
+          {{ detail.meta.author }} · {{ detail.meta.baseRef }} ← {{ detail.meta.headRef }} ·
+          <span class="add-count">+{{ detail.meta.additions }}</span>
+          <span class="del-count">−{{ detail.meta.deletions }}</span> ·
+          {{ detail.meta.changedFiles }} files
+          <button
+            type="button"
+            class="conv-toggle"
+            @click="showCommits = !showCommits"
+          >
+            {{ commitLabel }} ({{ (detail.commits || []).length }} commits)
+          </button>
+          <button
+            type="button"
+            class="conv-toggle"
+            @click="showConversation = !showConversation; persistUiState()"
+          >
+            {{ showConversation ? 'Hide' : 'Show' }} conversation ({{ (detail.discussion || []).length }})
+          </button>
+          <button
+            v-if="detail.meta.ci"
+            type="button"
+            class="conv-toggle"
+            :class="{ 'ci-red': detail.meta.ci.failing, 'ci-pending': !detail.meta.ci.failing && detail.meta.ci.pending, 'ci-green': !detail.meta.ci.failing && !detail.meta.ci.pending }"
+            :title="detail.meta.ci.failing ? 'Which checks failed, and why' : ''"
+            @click="showFailures = !showFailures"
+          >
+            <template v-if="detail.meta.ci.failing">{{ detail.meta.ci.failing }} check{{ detail.meta.ci.failing === 1 ? '' : 's' }} failing</template>
+            <template v-else-if="detail.meta.ci.pending">{{ detail.meta.ci.pending }} check{{ detail.meta.ci.pending === 1 ? '' : 's' }} running</template>
+            <template v-else>CI green</template>
+          </button>
         </div>
       </header>
 
@@ -2537,29 +2539,41 @@ async function doSubmit() {
             </div>
           </section>
 
+          <!-- The PR's own conversation: its description, then every comment, whole. -->
           <section
             v-if="showConversation"
             class="prm-conversation"
           >
+            <div class="prlevel-head">
+              <PrBadge tone="neutral">
+                Conversation
+              </PrBadge>
+              <span class="muted">The description and the comments on GitHub, as they are there.</span>
+            </div>
             <div
               v-if="detail.meta.body"
-              class="conv-item"
+              class="comment gh-comment conv-item"
             >
-              <span class="conv-author">{{ detail.meta.author }}</span>
+              <div class="comment-head">
+                <span class="comment-author">{{ detail.meta.author }}</span>
+                <span class="comment-age">opened this pull request</span>
+              </div>
               <div
-                class="conv-body md-body"
+                class="comment-body md-body"
                 v-html="renderMd(detail.meta.body)"
               />
             </div>
             <div
               v-for="(c, i) in (detail.discussion || [])"
               :key="i"
-              class="conv-item"
+              class="comment gh-comment conv-item"
             >
-              <span class="conv-author">{{ c.author }}</span>
-              <span class="conv-age">{{ age(c.createdAt) }} ago</span>
+              <div class="comment-head">
+                <span class="comment-author">{{ c.author }}</span>
+                <span class="comment-age">{{ age(c.createdAt) }} ago</span>
+              </div>
               <div
-                class="conv-body md-body"
+                class="comment-body md-body"
                 v-html="renderMd(c.body)"
               />
             </div>
@@ -3095,9 +3109,9 @@ async function doSubmit() {
  */
 .pr-review {
   --pr-bg:           var(--body-bg);
-  --pr-bg-2:         var(--nav-bg);
+  --pr-bg-2:         var(--sortable-table-header-bg);
   --pr-el:           var(--tabbed-container-bg);
-  --pr-el-hover:     var(--nav-active);
+  --pr-el-hover:     var(--dropdown-bg);
   --pr-border:       var(--border);
   --pr-text:         var(--body-text);
   --pr-muted:        var(--muted);
@@ -3112,6 +3126,17 @@ async function doSubmit() {
   --pr-error:        var(--error);
   --pr-error-fill:   var(--error-banner-bg);
   --pr-mono:         ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Tints for the diff and the tree, faint on purpose: the colour says which kind of line it is,
+     the text stays the text colour, and the syntax colours stay legible over both. */
+  --pr-add-bg:       rgba(60, 180, 100, 0.13);
+  --pr-del-bg:       rgba(232, 88, 88, 0.13);
+  --pr-add-strong:   rgba(60, 180, 100, 0.28);
+  --pr-del-strong:   rgba(232, 88, 88, 0.28);
+  /* Code colours with enough contrast on the light page; the dark theme's are below. */
+  --pr-code-string:  #2f7d4f;
+  --pr-code-number:  #b25e09;
+  --pr-code-comment: #7a7f87;
+  --pr-code-fn:      #3d5a99;
 
   background:     var(--pr-bg);
   flex:           1;
@@ -3122,17 +3147,31 @@ async function doSubmit() {
   overflow:       hidden;
 }
 
+/* The body carries Rancher's theme class; a green that reads on white is mud on charcoal. */
+:global(.theme-dark) .pr-review {
+  --pr-code-string:  #9ad9a2;
+  --pr-code-number:  #f0b96b;
+  --pr-code-comment: #8f96a3;
+  --pr-code-fn:      #9fc0ff;
+}
+
 .prm-banner { margin: var(--dev-space-4); }
 
 .prm-header {
-  display:       flex;
-  align-items:   center;
-  gap:           var(--dev-space-5);
-  padding:       var(--dev-space-4) var(--dev-space-5);
-  background:    var(--pr-bg-2);
-  border-bottom: 1px solid var(--pr-border);
-  flex-shrink:   0;
-  flex-wrap:     wrap;
+  display:        flex;
+  flex-direction: column;
+  gap:            var(--dev-space-2);
+  padding:        var(--dev-space-3) var(--dev-space-5);
+  background:     var(--pr-bg-2);
+  border-bottom:  1px solid var(--pr-border);
+  flex-shrink:    0;
+}
+
+.prm-header-row {
+  display:     flex;
+  align-items: center;
+  gap:         var(--dev-space-4);
+  min-height:  32px;
 }
 
 .prm-title {
@@ -3172,10 +3211,10 @@ async function doSubmit() {
   text-overflow: ellipsis;
   white-space:   nowrap;
 
-  &.complete { background: var(--pr-success-fill); color: var(--pr-success); }
-  &.failed { background: var(--pr-error-fill); color: var(--pr-error); }
-  &.cancelled, &.idle { background: var(--pr-el); color: var(--pr-muted); }
-  &.waiting-for-sidecars, &.starting, &.running { background: var(--pr-warning-fill); color: var(--pr-warning); }
+  &.complete { background: var(--pr-success); color: var(--pr-on-accent); }
+  &.failed { background: var(--pr-error); color: var(--pr-on-accent); }
+  &.cancelled, &.idle { background: var(--pr-el); color: var(--pr-text); }
+  &.waiting-for-sidecars, &.starting, &.running { background: var(--pr-warning); color: var(--pr-on-accent); }
 }
 
 .ship-box {
@@ -3210,13 +3249,20 @@ async function doSubmit() {
 
 .reply-actions { display: flex; justify-content: flex-end; gap: var(--dev-space-2); }
 
-.ship, .merge {
+.ship {
   border-color: var(--pr-success);
-  background:   var(--pr-success-fill);
+  background:   transparent;
   color:        var(--pr-success);
 }
 
-.ship:hover, .merge:hover:not(:disabled) { filter: brightness(1.15); }
+.ship:hover { background: var(--pr-success); color: var(--pr-on-accent); }
+
+.merge {
+  background: var(--pr-success);
+  color:      var(--pr-on-accent);
+}
+
+.merge:hover:not(:disabled) { filter: brightness(1.1); }
 
 .prm-title a { color: var(--pr-accent); text-decoration: none; }
 .prm-title a:hover { text-decoration: underline; }
@@ -3590,23 +3636,12 @@ async function doSubmit() {
   display:        flex;
   flex-direction: column;
   gap:            var(--dev-space-3);
-  padding:        var(--dev-space-4);
-  background:     var(--pr-bg-2);
+  padding:        var(--dev-space-4) var(--dev-space-5);
   border:         1px solid var(--pr-border);
   border-radius:  var(--border-radius);
 }
 
-.conv-item { font-size: 13px; }
-.conv-author { font-weight: 600; color: var(--pr-text); margin-right: var(--dev-space-2); }
-.conv-age { color: var(--pr-muted); font-size: 12px; }
-
-.conv-body {
-  color:      var(--pr-muted);
-  word-break: break-word;
-  margin-top: var(--dev-space-1);
-  max-height: 200px;
-  overflow-y: auto;
-}
+.conv-item { max-width: none; }
 
 .prm-file {
   border:        1px solid var(--pr-border);
@@ -3695,11 +3730,14 @@ async function doSubmit() {
 
 .sign { display: inline-block; width: var(--dev-space-4); opacity: 0.7; user-select: none; }
 
-.diff-row.add { background: var(--diff-ins-bg, rgba(91, 168, 160, 0.1)); }
-.diff-row.add .code { color: var(--pr-success); }
-.diff-row.del { background: var(--diff-del-bg, rgba(232, 88, 88, 0.09)); }
-.diff-row.del .code { color: var(--pr-error); }
-.diff-row.ctx .code { color: var(--pr-muted); }
+.diff-row.add { background: var(--pr-add-bg); }
+.diff-row.add .lineno { background: var(--pr-add-strong); opacity: 0.9; }
+.diff-row.add .sign { color: var(--pr-success); opacity: 1; }
+.diff-row.del { background: var(--pr-del-bg); }
+.diff-row.del .lineno { background: var(--pr-del-strong); opacity: 0.9; }
+.diff-row.del .sign { color: var(--pr-error); opacity: 1; }
+.diff-row .code { color: var(--pr-text); }
+.diff-row.ctx .code { opacity: 0.85; }
 
 .diff-row.hunk .code {
   color:      var(--pr-accent);
@@ -3853,13 +3891,13 @@ async function doSubmit() {
 /* ── Syntax highlighting (highlight.js token classes, theme colours) ── */
 
 .code :deep(.hljs-keyword), .code :deep(.hljs-selector-tag), .code :deep(.hljs-meta) { color: var(--pr-accent); }
-.code :deep(.hljs-string), .code :deep(.hljs-regexp), .code :deep(.hljs-template-string) { color: var(--pr-success); }
-.code :deep(.hljs-comment), .code :deep(.hljs-quote) { color: var(--pr-muted); font-style: italic; }
-.code :deep(.hljs-number), .code :deep(.hljs-literal), .code :deep(.hljs-symbol) { color: var(--pr-warning); }
-.code :deep(.hljs-title), .code :deep(.hljs-title.function_), .code :deep(.hljs-function) { color: var(--info, #90a8c8); }
+.code :deep(.hljs-string), .code :deep(.hljs-regexp), .code :deep(.hljs-template-string) { color: var(--pr-code-string); }
+.code :deep(.hljs-comment), .code :deep(.hljs-quote) { color: var(--pr-code-comment); font-style: italic; }
+.code :deep(.hljs-number), .code :deep(.hljs-literal), .code :deep(.hljs-symbol) { color: var(--pr-code-number); }
+.code :deep(.hljs-title), .code :deep(.hljs-title.function_), .code :deep(.hljs-function) { color: var(--pr-code-fn); }
 .code :deep(.hljs-title.class_), .code :deep(.hljs-type), .code :deep(.hljs-built_in) { color: var(--pr-accent); }
 .code :deep(.hljs-attr), .code :deep(.hljs-attribute), .code :deep(.hljs-property),
-.code :deep(.hljs-selector-attr), .code :deep(.hljs-selector-class), .code :deep(.hljs-selector-id) { color: var(--pr-success); }
+.code :deep(.hljs-selector-attr), .code :deep(.hljs-selector-class), .code :deep(.hljs-selector-id) { color: var(--pr-code-string); }
 .code :deep(.hljs-name), .code :deep(.hljs-tag) { color: var(--pr-accent); }
 .code :deep(.hljs-variable), .code :deep(.hljs-params) { color: var(--pr-text); }
 .code :deep(.hljs-subst) { color: inherit; }

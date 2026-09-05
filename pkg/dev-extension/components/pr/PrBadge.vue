@@ -39,9 +39,9 @@ export default {
     letter-spacing: 0.04em;
     white-space:    nowrap;
 
-    &--success, &--open { background: var(--pr-success-fill); color: var(--pr-success); }
-    &--warning { background: var(--pr-warning-fill); color: var(--pr-warning); }
-    &--error, &--closed { background: var(--pr-error-fill); color: var(--pr-error); }
-    &--accent, &--merged { background: var(--pr-accent-fill); color: var(--pr-text); }
+    &--success, &--open { background: var(--pr-success); color: var(--pr-on-accent); }
+    &--warning { background: var(--pr-warning); color: var(--pr-on-accent); }
+    &--error, &--closed { background: var(--pr-error); color: var(--pr-on-accent); }
+    &--accent, &--merged { background: var(--pr-accent); color: var(--pr-on-accent); }
   }
 </style>
