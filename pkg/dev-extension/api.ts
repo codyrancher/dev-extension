@@ -877,8 +877,8 @@ export function workspaceScheme(workspace: DevWorkspace | null | undefined): str
  *
  * Steve ignores labelSelector (see WORKSPACE_FILTER), so the matching is done here.
  */
-export async function findPod(namespace: string, labels: Record<string, string>, own?: string): Promise<string | null> {
-  const pods = await devFetch(`${ BASE }/v1/pods/${ namespace }`).catch(() => null);
+export async function findPod(namespace: string, labels: Record<string, string>, own?: string, base = BASE): Promise<string | null> {
+  const pods = await devFetch(`${ base }/v1/pods/${ namespace }`).catch(() => null);
 
   const running = (pods?.data || []).find((pod: Json) => (
     Object.entries(labels).every(([key, value]) => pod.metadata?.labels?.[key] === value) &&
@@ -2432,7 +2432,7 @@ async function proxyServing(url: string): Promise<boolean> {
  * The protocol is `base64.channel.k8s.io`: every frame is a channel digit (0 stdin, 1 stdout,
  * 2 stderr, 3 error, 4 resize) followed by base64.
  */
-export function podExecUrl(namespace: string, pod: string, container: string, command: string[], tty = true): string {
+export function podExecUrl(namespace: string, pod: string, container: string, command: string[], tty = true, base = BASE): string {
   const origin = window.location.origin.replace(/^http/, 'ws');
   const params = new URLSearchParams({
     container,
@@ -2447,7 +2447,7 @@ export function podExecUrl(namespace: string, pod: string, container: string, co
     params.append('command', arg);
   }
 
-  return `${ origin }${ BASE }/api/v1/namespaces/${ namespace }/pods/${ pod }/exec?${ params }`;
+  return `${ origin }${ base }/api/v1/namespaces/${ namespace }/pods/${ pod }/exec?${ params }`;
 }
 
 /**
@@ -2461,12 +2461,12 @@ export function podExecUrl(namespace: string, pod: string, container: string, co
  * person has already done, and there is nothing useful to say to them about a pod that has gone
  * away in the meantime — the session went with it.
  */
-export function podExecOnce(namespace: string, pod: string, container: string, command: string[]): Promise<string> {
+export function podExecOnce(namespace: string, pod: string, container: string, command: string[], base = BASE): Promise<string> {
   return new Promise((resolve) => {
     let out = '';
 
     try {
-      const socket = new WebSocket(podExecUrl(namespace, pod, container, command, false), 'base64.channel.k8s.io');
+      const socket = new WebSocket(podExecUrl(namespace, pod, container, command, false, base), 'base64.channel.k8s.io');
 
       // Every frame is a channel digit then base64. 1 is stdout, which is the only one a caller
       // has asked about so far; 2 is stderr and 3 is the apiserver's own status, and a command
