@@ -6,7 +6,9 @@
 // and the Service's NodePort; what they need beyond that is an account on the Rancher the
 // preview was built for.
 
-import { devFetch, clusterBase, nodeAddress, workspaceNamespace } from './api';
+import { devFetch, clusterBase, nodeAddress, workspaceNamespace, deleteWorkspace } from './api';
+
+export { deleteWorkspace };
 import { createWorkspaceInstance, deleteWorkspaceInstance, workspaceInstance } from './apps';
 import { PREVIEW_APP } from './apps';
 

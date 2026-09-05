@@ -29,7 +29,7 @@ import Row from '../design/Row.vue';
 import { RcButton } from '@components/RcButton';
 import WorkspaceConversations from '../components/WorkspaceConversations.vue';
 import WorkspaceBrowser from '../components/WorkspaceBrowser.vue';
-import WorkspacePorts from '../components/WorkspacePorts.vue';
+import WorkspacePreview from '../components/WorkspacePreview.vue';
 import WorkspacePr from '../components/WorkspacePr.vue';
 import {
   getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster
@@ -46,7 +46,7 @@ export default {
 
   components: {
     Loading, Tabbed, Tab, Banner, RcButton, Row,
-    WorkspaceConversations, WorkspaceBrowser, WorkspacePorts, WorkspacePr
+    WorkspaceConversations, WorkspaceBrowser, WorkspacePreview, WorkspacePr
   },
 
   async fetch() {
@@ -86,10 +86,18 @@ export default {
      * only while there is something in it. Everything that reads a tab name out of the address
      * validates against this rather than the full list.
      */
+    /**
+     * A preview is a build to look at: it gets a Preview tab and, when its name says which, a PR
+     * tab, and nothing that assumes a pod you can work in. A workspace gets the rest.
+     */
     tabs() {
+      const preview = !!this.workspace?.preview;
+
       return WORKSPACE_TABS.filter((name) => (
-        (name !== 'browser' || this.framable) &&
-        (name !== 'pr' || this.prNumber || this.issueNumber)
+        (name !== 'browser' || (!preview && this.framable)) &&
+        (name !== 'pr' || this.prNumber || this.issueNumber) &&
+        (name !== 'preview' || preview) &&
+        (name !== 'conversations' || !preview)
       ));
     },
 
@@ -119,7 +127,7 @@ export default {
       // recent.ts. The default is only reached on a browser that remembers nothing.
       const remembered = lastTab();
 
-      return this.tabs.includes(remembered) ? remembered : DEFAULT_WORKSPACE_TAB;
+      return this.tabs.includes(remembered) ? remembered : (this.tabs.includes(DEFAULT_WORKSPACE_TAB) ? DEFAULT_WORKSPACE_TAB : this.tabs[0]);
     },
 
     /** True while there is no pod to frame or talk to, which is what the tabs have to say. */
@@ -312,7 +320,9 @@ export default {
       :default-tab="tab"
       @changed="onTabChanged"
     >
+      <!-- The tabs the Tabbed shows are these; the `tabs` computed above mirrors their v-ifs. -->
       <Tab
+        v-if="!workspace.preview"
         name="conversations"
         label="Conversations"
         :weight="3"
@@ -361,12 +371,13 @@ export default {
       </Tab>
 
       <Tab
-        name="ports"
-        label="Ports"
+        v-if="workspace.preview"
+        name="preview"
+        label="Preview"
         :weight="1"
       >
-        <WorkspacePorts
-          v-if="seen.ports"
+        <WorkspacePreview
+          v-if="seen.preview"
           :workspace="workspace"
         />
       </Tab>

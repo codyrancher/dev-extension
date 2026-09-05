@@ -48,7 +48,7 @@ export const SETTINGS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ SETTINGS_PAGE }`;
  * reason it is not component state. The list is also what the page validates against, so a URL
  * naming a tab that does not exist lands on Overview instead of on an empty pane.
  */
-export const WORKSPACE_TABS = ['conversations', 'pr', 'browser', 'ports'];
+export const WORKSPACE_TABS = ['conversations', 'pr', 'browser', 'preview'];
 export const DEFAULT_WORKSPACE_TAB = 'conversations';
 
 /**
@@ -123,6 +123,8 @@ export const LABEL_CLUSTER = 'dev.rancher.io/cluster';
  * rancher/dashboard dev server is.
  */
 export const WORKSPACE_PORT_ANNOTATION = 'dev.rancher.io/port';
+/** On a namespace made by the dashboard-preview app: a build to look at, not a workspace to work in. */
+export const PREVIEW_ANNOTATION = 'dev.rancher.io/preview';
 export const WORKSPACE_SCHEME_ANNOTATION = 'dev.rancher.io/scheme';
 export const DEFAULT_WORKSPACE_PORT = 8005;
 export const DEFAULT_WORKSPACE_SCHEME = 'http';

@@ -24,7 +24,7 @@ watching it.
   Templates page: a template is an Apps Plus app, and a workspace is an Installation of one
   (`apps.ts` says how, and why it goes through Apps Plus's own store models). The App a fresh
   Rancher gets, `rancher-workspace`, is created there if missing. A workspace
-  opens as tabs (Overview, Conversations, Browser, Ports) at
+  opens as tabs (Conversations, PR, Browser; a preview shows Preview and PR) at
   `/dev/c/_/workspaces/<name>#<tab>`; the tab is the hash rather than a path segment, and
   `pages/WorkspaceDetail.vue` says at the top why that is not cosmetic. My Work and
   Settings are deliberately empty pages describing what they are waiting on, which is a GitHub

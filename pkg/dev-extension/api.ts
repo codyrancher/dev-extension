@@ -15,9 +15,6 @@
  * Steve on `/k8s/clusters/<cluster>/v1`, with the CSRF header the API wants on writes. There
  * is no controller and no credential anywhere in here.
  */
-import {
-  DevShare, shareName, nginxConf, htpasswd, sharePodSpec
-} from './share';
 import { WORKSPACE_VUE_CONFIG, WORKSPACE_CONFIG_MOUNT } from './workspace-config';
 import { INSIGHTS_SERVER } from './insights-server';
 import { WORKSPACE_API_SERVER } from './workspace-api';
@@ -28,7 +25,7 @@ import {
 import {
   DEV_POD_NAMESPACE as POD_NAMESPACE, DEV_POD_SERVICE as POD_SERVICE,
   LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, WORKSPACE_WORKDIR, WORKSPACE_HOME, WORKSPACE_QUEUE,
-  WORKSPACE_PORT_ANNOTATION, WORKSPACE_SCHEME_ANNOTATION, DEFAULT_WORKSPACE_PORT, DEFAULT_WORKSPACE_SCHEME,
+  WORKSPACE_PORT_ANNOTATION, WORKSPACE_SCHEME_ANNOTATION, DEFAULT_WORKSPACE_PORT, DEFAULT_WORKSPACE_SCHEME, PREVIEW_ANNOTATION,
 } from './config/constants';
 
 // The labels live in config/constants now, beside the Apps Plus names that use them; re-exported
@@ -203,6 +200,8 @@ export interface DevWorkspace {
   /** What it serves, and how to speak to it. From the namespace's annotations; see constants. */
   port: number;
   scheme: string;
+  /** A static preview (see apps.ts): a build to look at, with no shell, ports or conversations of its own. */
+  preview: boolean;
   state: WorkspaceState;
   createdAt: string;
   /**
@@ -430,6 +429,7 @@ function workspaceFrom(namespace: Json, deployment: Json | undefined, pod?: Json
     app:           namespace.metadata.labels[LABEL_APP] || '',
     port,
     scheme:        annotations[WORKSPACE_SCHEME_ANNOTATION] === 'https' ? 'https' : DEFAULT_WORKSPACE_SCHEME,
+    preview:       annotations[PREVIEW_ANNOTATION] === 'true',
     state:         stateOf(namespace, deployment, pod),
     createdAt:     namespace.metadata.creationTimestamp,
     image:         deployment?.spec?.template?.spec?.containers?.[0]?.image || '',
@@ -826,22 +826,6 @@ export function nodeAddress(): Promise<string> {
   return nodeAddressPromise;
 }
 
-/**
- * Where a workspace is reachable when its template asked for an origin of its own.
- *
- * The host is passed in rather than awaited here, because the two callers are tables and a table
- * cell cannot await: they resolve nodeAddress() once when they refresh and hand it to every row.
- *
- * https, on the dev server's own self-signed certificate. See workspace-config.ts: over http the
- * session cookie Rancher issues is dropped and the login silently fails.
- */
-export function workspaceOriginUrl(service: DevService | null, host: string): string {
-  if (!service?.nodePort || !host) {
-    return '';
-  }
-
-  return `https://${ host }:${ service.nodePort }/`;
-}
 
 /**
  * Delete the namespace, which takes the Deployment, the Service and the pod with it.
@@ -1970,380 +1954,24 @@ export async function insightsQuery(sql: string): Promise<{ columns: string[]; r
 
 
 
-/** A socket the workspace's own process is listening on, as its pod reports it. */
-export interface DevListening {
-  port: number;
-  /**
-   * Bound to loopback, so publishing it would not help: a Service routes to the pod's address,
-   * and a server listening only on 127.0.0.1 refuses that connection. Worth saying rather than
-   * hiding, because the fix is one flag on whatever is being run.
-   */
-  loopback: boolean;
-}
 
-/** Whether an address in /proc/net/tcp is a loopback one, in either family. */
-function isLoopback(address: string): boolean {
-  // Little-endian hex, so 127.0.0.1 is 0100007F. The v6 form is ::1, which is fifteen zero bytes
-  // and a one, written by the kernel in this order.
-  return address === '0100007F' || address === '00000000000000000000000001000000';
-}
 
-/**
- * What the workspace is actually listening on, rather than what its Service says.
- *
- * From /proc/net/tcp in the pod, which is the one source that needs nothing installed: `ss` and
- * `netstat` are both absent from the image a workspace runs, and a detection that depends on a
- * package the person has to install first is not automatic.
- *
- * `0A` is TCP_LISTEN. Everything else in those files is a connection, including the ones this
- * page's own request makes, so a state filter is what separates a server from its traffic.
- */
-export async function workspaceListening(name: string): Promise<DevListening[]> {
-  const namespace = workspaceNamespace(name);
-  const pod = await workspacePod(name);
 
-  if (!pod) {
-    return [];
-  }
 
-  const out = await podExecOnce(namespace, pod, WORKSPACE_CONTAINER, [
-    '/bin/sh', '-c', 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null || true',
-  ]);
 
-  const found = new Map<number, boolean>();
 
-  for (const line of out.split('\n')) {
-    const fields = line.trim().split(/\s+/);
 
-    if (fields[3] !== '0A' || !fields[1]) {
-      continue;
-    }
 
-    const [address, hexPort] = fields[1].split(':');
-    const port = parseInt(hexPort, 16);
 
-    if (!port) {
-      continue;
-    }
 
-    // A port bound on both a real address and loopback is reachable, so the reachable answer wins.
-    found.set(port, (found.get(port) ?? true) && isLoopback(address));
-  }
 
-  return [...found.entries()]
-    .map(([port, loopback]) => ({ port, loopback }))
-    .sort((a, b) => a.port - b.port);
-}
 
-/**
- * The ports a workspace has shared, read back from the proxy's own config.
- *
- * Kept on the Deployment as an annotation rather than in a store of this product's own: the
- * shares are what the proxy is running, so the proxy is where they are recorded, and a share that
- * exists in a list but not in nginx would be a link that 502s.
- */
-const SHARE_ANNOTATION = 'dev.rancher.io/shares';
 
-export async function listWorkspaceShares(name: string): Promise<DevShare[]> {
-  const namespace = workspaceNamespace(name);
-  const url = `${ BASE }/v1/apps.deployments/${ namespace }/${ shareName(namespace) }`;
-  const deployment = await devFetch(url).catch(() => null);
 
-  try {
-    return JSON.parse(deployment?.metadata?.annotations?.[SHARE_ANNOTATION] || '[]');
-  } catch {
-    return [];
-  }
-}
 
-/**
- * Share a workspace port, or stop sharing it.
- *
- * One function for both because they are the same write: the list of shares is rendered into an
- * nginx config, a password file and a Service, and every one of those is replaced wholesale each
- * time. Sharing the third port and unsharing the second are the same operation on a different
- * list, which is what keeps the four things from drifting apart.
- */
-export async function setWorkspaceShares(name: string, shares: DevShare[]): Promise<void> {
-  const namespace = workspaceNamespace(name);
-  const proxy = shareName(namespace);
-  const labels = { app: proxy, [LABEL_WORKSPACE]: name };
 
-  await ensureWorkspaceRbac(name);
 
-  // Nothing shared: the proxy is scaled away rather than deleted, so unsharing and sharing again
-  // does not have to wait for an image pull, and so its Service keeps the node ports it was given.
-  if (!shares.length) {
-    const url = `${ BASE }/v1/apps.deployments/${ namespace }/${ proxy }`;
-    const existing = await devFetch(url).catch(() => null);
 
-    if (existing) {
-      existing.spec.replicas = 0;
-      existing.metadata.annotations = { ...(existing.metadata.annotations || {}), [SHARE_ANNOTATION]: '[]' };
-      await devFetch(url, { method: 'PUT', body: JSON.stringify(existing) });
-    }
-
-    return;
-  }
-
-  await upsert('configmaps', namespace, proxy, {
-    apiVersion: 'v1',
-    kind:       'ConfigMap',
-    metadata:   { namespace, name: proxy, labels },
-    data:       { 'nginx.conf': nginxConf(namespace, name, shares) },
-  });
-
-  await upsert('secrets', namespace, proxy, {
-    apiVersion: 'v1',
-    kind:       'Secret',
-    metadata:   { namespace, name: proxy, labels },
-    type:       'Opaque',
-    data:       { htpasswd: encodeSecret(htpasswd(shares)) },
-  }, (secret) => {
-    secret.data = { htpasswd: encodeSecret(htpasswd(shares)) };
-  });
-
-  await upsert('services', namespace, proxy, {
-    apiVersion: 'v1',
-    kind:       'Service',
-    metadata:   { namespace, name: proxy, labels },
-    spec:       {
-      type:     'NodePort',
-      selector: { app: proxy },
-      ports:    shares.map((share) => ({
-        name: `p${ share.listen }`, port: share.listen, targetPort: share.listen,
-      })),
-    },
-  }, (service) => {
-    // The existing entries are kept rather than replaced, so a node port the cluster already
-    // assigned to a share is not given up and every link already sent out keeps working.
-    const before = service.spec?.ports || [];
-
-    service.spec.type = 'NodePort';
-    service.spec.ports = shares.map((share) => {
-      const kept = before.find((entry: Json) => entry.port === share.listen);
-
-      return kept || { name: `p${ share.listen }`, port: share.listen, targetPort: share.listen };
-    });
-  });
-
-  await upsert('apps.deployments', namespace, proxy, {
-    apiVersion: 'apps/v1',
-    kind:       'Deployment',
-    metadata:   {
-      namespace, name: proxy, labels, annotations: { [SHARE_ANNOTATION]: JSON.stringify(shares) }
-    },
-    spec: {
-      replicas: 1,
-      selector: { matchLabels: { app: proxy } },
-      strategy: { type: 'Recreate' },
-      template: { metadata: { labels }, spec: sharePodSpec(namespace, WORKSPACE_SERVICE_ACCOUNT) },
-    },
-  }, (deployment) => {
-    deployment.spec.replicas = 1;
-    deployment.spec.template.spec = sharePodSpec(namespace, WORKSPACE_SERVICE_ACCOUNT);
-    deployment.metadata.annotations = {
-      ...(deployment.metadata.annotations || {}), [SHARE_ANNOTATION]: JSON.stringify(shares),
-    };
-
-    // nginx reads its config once, at start, so a config that changed under a running pod is a
-    // proxy still serving the old set of ports. This is Kubernetes' own `rollout restart`.
-    const meta = deployment.spec.template.metadata;
-
-    meta.annotations = { ...(meta.annotations || {}), 'dev.rancher.io/restarted-at': new Date().toISOString() };
-  });
-}
-
-/** Where a share answers, once the cluster has assigned its Service a node port. */
-export async function shareNodePorts(name: string): Promise<Record<number, number>> {
-  const namespace = workspaceNamespace(name);
-  const service = await devFetch(`${ BASE }/v1/services/${ namespace }/${ shareName(namespace) }`).catch(() => null);
-  const out: Record<number, number> = {};
-
-  for (const entry of service?.spec?.ports || []) {
-    if (entry.nodePort) {
-      out[entry.port] = entry.nodePort;
-    }
-  }
-
-  return out;
-}
-
-/**
- * Create it, or bring the one that is there up to date.
- *
- * `ensure` next door deliberately leaves an existing object alone, which is right for the things
- * it makes once and wrong for every object here: a share's config is rewritten every time the set
- * of shares changes. The mutate callback is how a caller keeps the parts of an existing object
- * that Kubernetes assigned rather than this code, which is what stops a node port moving under a
- * link somebody has already been given.
- */
-async function upsert(type: string, namespace: string, name: string, body: Json, mutate?: (existing: Json) => void): Promise<void> {
-  const url = `${ BASE }/v1/${ type }/${ namespace }/${ name }`;
-  const existing = await devFetch(url).catch(() => null);
-
-  if (!existing) {
-    await devFetch(`${ BASE }/v1/${ type }`, { method: 'POST', body: JSON.stringify(body) });
-
-    return;
-  }
-
-  if (mutate) {
-    mutate(existing);
-  } else {
-    existing.data = body.data;
-  }
-
-  await devFetch(url, { method: 'PUT', body: JSON.stringify(existing) });
-}
-
-/**
- * The node ports the cluster has already given out.
- *
- * Asked so that a suggestion is a port that will actually be accepted rather than one the
- * apiserver rejects a moment later. It reads every Service the person can see, which for an
- * admin is all of them and for anyone else is a subset - a suggestion built from a subset is
- * still better than one built from nothing, and the cluster has the final say either way.
- */
-export async function usedNodePorts(): Promise<number[]> {
-  const services = await devFetch(`${ BASE }/v1/services`).catch(() => null);
-
-  return (services?.data || [])
-    .flatMap((service: Json) => service.spec?.ports || [])
-    .map((port: Json) => port.nodePort)
-    .filter((port: number) => !!port);
-}
-
-/** The range Kubernetes assigns node ports from, and refuses anything outside. */
-export const NODE_PORT_RANGE = { first: 30000, last: 32767 };
-
-/**
- * A published port for a local one: free, and the same answer every time it is asked.
- *
- * Derived from the local port rather than taken from the bottom of the range, so a workspace's
- * 8005 lands somewhere memorable and lands there again after it is unforwarded and forwarded.
- * Collisions walk forward from there.
- */
-export function suggestNodePort(port: number, used: number[]): number {
-  const span = NODE_PORT_RANGE.last - NODE_PORT_RANGE.first + 1;
-  const taken = new Set(used);
-
-  for (let i = 0; i < span; i++) {
-    const candidate = NODE_PORT_RANGE.first + ((port + i) % span);
-
-    if (!taken.has(candidate)) {
-      return candidate;
-    }
-  }
-
-  // Every port in the range is spoken for, which is not a thing that happens in a cluster with
-  // room for another workspace. Nothing suggested is better than a number that cannot work.
-  return 0;
-}
-
-/** One entry in a workspace's Service. */
-export interface DevPort {
-  name: string;
-  port: number;
-  /** The published port, or 0 where the Service does not publish this one. */
-  nodePort?: number;
-}
-
-/** Kubernetes' own limit on a Service port name, which is a DNS label of at most 15 characters. */
-const PORT_NAME_PATTERN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
-const MAX_PORT_NAME_LENGTH = 15;
-
-/**
- * Every port a workspace's Service carries.
- *
- * The template's port is the first of these rather than a special case, which is what makes
- * "the port a workspace serves on" a list rather than a fact: a workspace can be running a dev
- * server, an app and a debugger, and the harness's answer to that is a route per port.
- */
-export async function listWorkspacePorts(name: string): Promise<DevPort[]> {
-  const namespace = workspaceNamespace(name);
-  const services = await devFetch(`${ BASE }/v1/services/${ namespace }`).catch(() => null);
-  const service = (services?.data || []).find((svc: Json) => svc.metadata?.name === namespace);
-
-  return (service?.spec?.ports || []).map((port: Json) => ({
-    name:     port.name || '',
-    port:     port.port,
-    // What it is published on, when the Service is a NodePort. This is the public half of the
-    // mapping the Ports tab draws.
-    nodePort: port.nodePort || 0,
-  }));
-}
-
-/** Why a port cannot be added, or '' when it can. */
-export function portError(port: number, existing: DevPort[]): string {
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return 'A port is a number between 1 and 65535';
-  }
-
-  if (existing.some((entry) => entry.port === port)) {
-    return `This workspace already serves port ${ port }`;
-  }
-
-  return '';
-}
-
-/**
- * A name for a port that Kubernetes will accept.
- *
- * Every port in a Service with more than one has to be named, and the name is a DNS label, so
- * `8080` on its own is not one. `p8080` is, and it is derived rather than asked for: a name is
- * something Kubernetes needs and nobody using this has an opinion about.
- */
-function portName(port: number): string {
-  const name = `p${ port }`;
-
-  return PORT_NAME_PATTERN.test(name) && name.length <= MAX_PORT_NAME_LENGTH ? name : `p${ port }`.slice(0, MAX_PORT_NAME_LENGTH);
-}
-
-/**
- * Add or remove a port on a workspace's Service.
- *
- * Read-modify-write through Steve, the same shape as scaling a Deployment, so a second tab
- * editing the same Service loses the resourceVersion check rather than silently winning it.
- *
- * This does not touch the pod. A Service is a set of routing rules in front of whatever the
- * pod already listens on, so adding a port here publishes something that is already there and
- * removing one takes the route away rather than the server. Whether anything answers on it is
- * a separate question, which is why the ports list asks it separately.
- */
-async function editWorkspacePorts(name: string, edit: (ports: Json[]) => Json[]): Promise<void> {
-  const namespace = workspaceNamespace(name);
-  const url = `${ BASE }/v1/services/${ namespace }/${ namespace }`;
-  const service = await devFetch(url);
-
-  service.spec.ports = edit(service.spec.ports || []);
-
-  await devFetch(url, { method: 'PUT', body: JSON.stringify(service) });
-}
-
-/**
- * Add a port, and optionally say which published one it should answer on.
- *
- * The harness maps a public port to a local one, and this is that mapping in Kubernetes: the
- * local port is the one the workspace is listening on, and the public one is the node port. A
- * node port left out is chosen by the cluster from its own range, which is the ordinary case; a
- * node port asked for is one somebody wants to keep stable across rebuilds, and the cluster
- * refuses it if it is outside the range or already taken.
- */
-export function addWorkspacePort(name: string, port: number, nodePort?: number): Promise<void> {
-  return editWorkspacePorts(name, (ports) => [
-    ...ports,
-    // targetPort is the number rather than a named port: a name only exists if the
-    // Deployment's container declared it, and a port added after the fact has not been.
-    {
-      name: portName(port), port, targetPort: port, protocol: 'TCP', ...(nodePort ? { nodePort } : {}),
-    },
-  ]);
-}
-
-export function removeWorkspacePort(name: string, port: number): Promise<void> {
-  return editWorkspacePorts(name, (ports) => ports.filter((entry) => entry.port !== port));
-}
 
 /**
  * Where a workspace's own server is served, on Rancher's origin.

@@ -89,11 +89,13 @@ export default {
           label: conversation.title,
           state: ROW_STATE[this.states[conversation.id]] || 'stopped',
         })),
-        {
+        // The shell needs a pod that has the terminal scripts mounted, which a preview's nginx
+        // does not; a preview does not show this tab at all, but the row is guarded here too.
+        ...(this.workspace.preview ? [] : [{
           key:   SHELL,
           label: 'Workspace shell',
           state: ROW_STATE[this.states[SHELL]] || (this.ready ? 'stopped' : 'starting'),
-        },
+        }]),
       ];
     },
 
