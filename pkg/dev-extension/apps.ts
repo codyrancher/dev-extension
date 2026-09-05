@@ -763,13 +763,41 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
     return;
   }
 
-  const have = new Set(apps.map((app: Json) => app.metadata?.name));
+  const byName = new Map(apps.map((app: Json) => [app.metadata?.name, app]));
 
   for (const body of [rancherWorkspaceApp(), dashboardPreviewApp(), devBrowserApp()]) {
-    if (!have.has(body.metadata.name)) {
+    // The definition's fingerprint rides on the App, so a definition that changed in this bundle
+    // reaches a cluster that already has the App - the templates lesson: an App seeded once and
+    // never touched again strands every workspace made after the definition moved on. Existing
+    // Installations keep what they rendered; new ones get the new templates.
+    const fingerprint = definitionVersion(body.spec);
+    const existing: Json = byName.get(body.metadata.name);
+
+    body.metadata.annotations = { ...(body.metadata.annotations || {}), [DEFINITION_ANNOTATION]: fingerprint };
+
+    if (!existing) {
       const app = await store.dispatch('management/create', { type: APP, ...body });
 
       await app.save().catch(() => {});
+    } else if (existing.metadata?.annotations?.[DEFINITION_ANNOTATION] !== fingerprint) {
+      existing.spec = body.spec;
+      existing.metadata.annotations = { ...(existing.metadata.annotations || {}), [DEFINITION_ANNOTATION]: fingerprint };
+      await existing.save().catch(() => {});
     }
   }
+}
+
+/** Where an App carries the fingerprint of the definition that wrote it. */
+export const DEFINITION_ANNOTATION = 'dev.rancher.io/definition';
+
+function definitionVersion(spec: Json): string {
+  const text = JSON.stringify(spec);
+  let h = 2166136261;
+
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+
+  return (h >>> 0).toString(16);
 }
