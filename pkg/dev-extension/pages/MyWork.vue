@@ -59,6 +59,50 @@ function columns(extra) {
   ];
 }
 
+// ── Board status ──
+// Ranked by how much of your attention a status wants: work in hand, then what is queued, then
+// what needs a decision, then what waits on somebody else, then the parked columns. A status no
+// board here uses ranks after these but ahead of the finished ones: a column anyone can add must
+// not sink below Done. Generic names other boards use sit beside their equivalents.
+const STATUS_ORDER = [
+  'working', 'in progress',
+  'next up', 'todo', 'to do',
+  'to triage', 'triage', 'new',
+  'review', 'in review',
+  'qa working', 'qa review', 'to test',
+  'backlog', 'ice box',
+];
+const STATUS_TERMINAL = ['done', 'closed'];
+
+function statusRank(status) {
+  if (!status) {
+    return STATUS_ORDER.length + 2;
+  }
+
+  const name = status.name.toLowerCase();
+
+  if (STATUS_TERMINAL.includes(name)) {
+    return STATUS_ORDER.length + 1;
+  }
+
+  const i = STATUS_ORDER.indexOf(name);
+
+  return i === -1 ? STATUS_ORDER.length : i;
+}
+
+// The board's own colour for a column, in this dashboard's palette. A board anyone can add a
+// column to would otherwise leave every unfamiliar status looking identical.
+const STATUS_HUE = {
+  GRAY:   'muted',
+  BLUE:   'info',
+  GREEN:  'success',
+  YELLOW: 'warning',
+  ORANGE: 'warning',
+  RED:    'error',
+  PINK:   'accent',
+  PURPLE: 'accent',
+};
+
 export default {
   name: 'DevMyWork',
 
@@ -96,6 +140,11 @@ export default {
         // part of the product something is about.
         {
           name: 'area', label: 'Area', value: 'labels', width: 220
+        },
+        // The board's Status column, sorted by how much of your attention a status wants rather
+        // than alphabetically - the rank is a field on the row, see issueRows.
+        {
+          name: 'status', label: 'Status', value: 'statusRank', sort: ['statusRank', 'createdAt:desc'], width: 130
         },
         {
           name: 'age', label: 'Age', value: 'createdAt', sort: ['createdAt'], width: 90
@@ -148,7 +197,18 @@ export default {
   },
 
   computed: {
-    /** The repository this product's workspaces work on, from the template that clones it. */
+    /** The issues with their board rank on them, zero-padded so the table sorts it as text. */
+    issueRows() {
+      return (this.work?.issues || []).map((issue) => ({
+        ...issue,
+        statusRank: String(statusRank(issue.projectStatus)).padStart(2, '0'),
+      }));
+    },
+
+    projectStatusError() {
+      return this.work?.projectStatusError || '';
+    },
+
     /**
      * The repository My Work is about: the one the default app clones, or the first app that
      * declares one. Apps Plus apps carry it as a `repo` value.
@@ -421,6 +481,10 @@ export default {
     },
 
     /** How severe, in the one word GitHub uses, coloured the way the rest of the page is. */
+    statusHue(status) {
+      return STATUS_HUE[(status?.color || '').toUpperCase()] || 'muted';
+    },
+
     severityTone(severity) {
       return {
         critical: 'error', high: 'error', medium: 'warning', low: 'muted'
@@ -727,11 +791,26 @@ export default {
         </template>
       </SortableTable>
       <h3>Issues assigned to me <span class="dev-my-work__count">{{ work.issues.length }}</span></h3>
+      <!--
+        A blank Status column is almost always a missing scope rather than an untriaged board,
+        and a tooltip on a dash is not where anyone looks for that. Said once, above the table.
+      -->
+      <Banner
+        v-if="projectStatusError"
+        color="warning"
+      >
+        {{ projectStatusError }}
+        <a
+          href="https://github.com/settings/tokens"
+          target="_blank"
+          rel="noopener noreferrer"
+        >Edit the token</a>
+      </Banner>
       <SortableTable
         :headers="issueHeaders"
-        :rows="work.issues"
+        :rows="issueRows"
         key-field="key"
-        default-sort-by="age"
+        default-sort-by="status"
         :table-actions="false"
         :row-actions="false"
         :search="false"
@@ -755,6 +834,28 @@ export default {
             :key="label"
             class="dev-my-work__area"
           >{{ label }}</span>
+        </template>
+        <template #cell:status="{ row }">
+          <a
+            v-if="row.projectStatus && row.projectStatus.url"
+            :href="row.projectStatus.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="dev-my-work__status"
+            :class="`dev-my-work__status--${ statusHue(row.projectStatus) }`"
+            :title="row.projectStatus.project"
+          >{{ row.projectStatus.name }}</a>
+          <span
+            v-else-if="row.projectStatus"
+            class="dev-my-work__status"
+            :class="`dev-my-work__status--${ statusHue(row.projectStatus) }`"
+            :title="row.projectStatus.project"
+          >{{ row.projectStatus.name }}</span>
+          <span
+            v-else
+            class="text-muted"
+            :title="projectStatusError || 'Not on a project board'"
+          >—</span>
         </template>
         <template #cell:age="{ row }">
           {{ ago(row.createdAt) }}
@@ -851,6 +952,24 @@ export default {
 </template>
 
 <style lang="scss" scoped>
+  .dev-my-work__status {
+    display:         inline-block;
+    padding:         1px 8px;
+    border-radius:   12px;
+    font-size:       11px;
+    letter-spacing:  0.04em;
+    text-transform:  uppercase;
+    text-decoration: none;
+    background:      var(--tabbed-container-bg);
+    color:           var(--muted);
+
+    &--info    { background: var(--info-banner-bg);    color: var(--info); }
+    &--success { background: var(--success-banner-bg); color: var(--success); }
+    &--warning { background: var(--warning-banner-bg); color: var(--warning); }
+    &--error   { background: var(--error-banner-bg);   color: var(--error); }
+    &--accent  { background: var(--primary-banner-bg); color: var(--primary); }
+  }
+
   .dev-my-work {
     overflow-y: auto;
     padding:    var(--dev-space-5);

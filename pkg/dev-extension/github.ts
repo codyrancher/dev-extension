@@ -73,6 +73,15 @@ export interface GithubPr {
 }
 
 /** One issue assigned to you, which is the other half of what a person comes to My Work for. */
+/** Where an issue sits on its GitHub project board: the board's "Status" single-select field. */
+export interface GithubBoardStatus {
+  name: string;
+  /** The board's own colour for that column: GRAY, BLUE, GREEN, YELLOW, ORANGE, RED, PINK or PURPLE. */
+  color: string;
+  project: string;
+  url: string;
+}
+
 export interface GithubIssue {
   key: string;
   number: number;
@@ -82,6 +91,8 @@ export interface GithubIssue {
   /** The labels, which is what the harness calls Area. */
   labels: string[];
   createdAt: string;
+  /** Null when the issue is on no board - or when the token cannot read boards; see GithubWork. */
+  projectStatus: GithubBoardStatus | null;
 }
 
 /**
@@ -108,6 +119,12 @@ export interface GithubAlert {
 
 export interface GithubWork {
   login: string;
+  /**
+   * Why every issue came back without a board status, when that is the reason. Reading a
+   * board's fields needs the read:project scope, which a token scoped for repositories alone
+   * does not have - and that is a missing scope, not an empty board.
+   */
+  projectStatusError: string;
   /** Waiting on you: review requested, or reviewed by you and still open. */
   reviewing: GithubPr[];
   mine: GithubPr[];
@@ -269,9 +286,66 @@ function issueFrom(node: Json): GithubIssue {
     url:       node.url,
     title:     node.title,
     repo,
-    labels:    (node.labels?.nodes || []).map((label: Json) => label.name),
-    createdAt: node.createdAt || '',
+    labels:        (node.labels?.nodes || []).map((label: Json) => label.name),
+    createdAt:     node.createdAt || '',
+    projectStatus: null,
   };
+}
+
+/**
+ * The board status of each assigned issue, by issue key.
+ *
+ * A query of its own rather than fields on the main one, because board fields sit behind the
+ * read:project scope and GitHub fails a whole query for a token without it - assigned issues,
+ * review queue and all. Asked separately, a missing scope costs the one column. An issue can be
+ * on more than one board; the first with a status set is the one worth showing.
+ */
+const STATUS_QUERY = `
+  query IssueStatuses($issues: Int!) {
+    issues: search(query: "is:open is:issue assignee:@me archived:false", type: ISSUE, first: $issues) {
+      nodes {
+        ... on Issue {
+          number
+          repository { nameWithOwner }
+          projectItems(first: 5) {
+            nodes {
+              project { title url }
+              fieldValueByName(name: "Status") {
+                ... on ProjectV2ItemFieldSingleSelectValue { name color }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+async function issueStatuses(): Promise<Map<string, GithubBoardStatus>> {
+  const data = await graphql(STATUS_QUERY, { issues: ISSUE_PAGE });
+  const found = new Map<string, GithubBoardStatus>();
+
+  for (const node of data.issues?.nodes || []) {
+    if (!node?.number) {
+      continue;
+    }
+
+    for (const item of node.projectItems?.nodes || []) {
+      const value = item?.fieldValueByName;
+
+      if (value?.name) {
+        found.set(`${ node.repository?.nameWithOwner || '' }#${ node.number }`, {
+          name:    value.name,
+          color:   value.color || 'GRAY',
+          project: item.project?.title || '',
+          url:     item.project?.url || '',
+        });
+        break;
+      }
+    }
+  }
+
+  return found;
 }
 
 /**
@@ -411,11 +485,27 @@ export async function myWork(): Promise<GithubWork> {
     }
   }
 
+  const issues: GithubIssue[] = (body.data?.issues?.nodes || []).map(issueFrom);
+  let projectStatusError = '';
+
+  try {
+    const statuses = await issueStatuses();
+
+    issues.forEach((issue) => {
+      issue.projectStatus = statuses.get(issue.key) || null;
+    });
+  } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    projectStatusError = /read:project/.test(String(e?.message))
+      ? 'The GitHub token needs the read:project scope to show board status.'
+      : `Board status unavailable: ${ String(e?.message || e).slice(0, 200) }`;
+  }
+
   return {
     login,
     reviewing,
-    mine:   (body.data?.mine?.nodes || []).map((node: Json) => prFrom(node, login)),
-    issues: (body.data?.issues?.nodes || []).map(issueFrom),
+    mine: (body.data?.mine?.nodes || []).map((node: Json) => prFrom(node, login)),
+    issues,
+    projectStatusError,
   };
 }
 
