@@ -130,7 +130,7 @@ export async function workspaceInstance(store: Store, name: string): Promise<Jso
  * namespace is also set explicitly, because Fleet's default namespace for a Bundle is what an
  * App's namespaced manifests land in when they name none.
  */
-export async function createWorkspaceInstance(store: Store, name: string, appId: string, cluster: string): Promise<void> {
+export async function createWorkspaceInstance(store: Store, name: string, appId: string, cluster: string, values: Record<string, unknown> = {}): Promise<void> {
   requireAppsPlus(store);
 
   const namespace = `dev-${ name }`;
@@ -147,7 +147,7 @@ export async function createWorkspaceInstance(store: Store, name: string, appId:
       namespace,
       targets:          [{ clusterName: cluster }],
       // Told to the App as a value, for the reason rancherWorkspaceApp gives beside hostCluster.
-      values:           { hostCluster: cluster },
+      values:           { ...values, hostCluster: cluster },
       provisionCluster: { enabled: false },
     },
   });
@@ -275,6 +275,12 @@ export function rancherWorkspaceApp(): Json {
         scheme:      'http',
         image:       'node:24',
         hostCluster: 'local',
+        // The Rancher the checkout's dev server talks to. The default is the Rancher this
+        // cluster belongs to - `$(NODE_IP)` is the node's address, expanded by Kubernetes in
+        // the env, because this cluster is k3s inside the Rancher container. A team's shared
+        // Rancher goes here instead when the infrastructure is kept apart from the tools. Not
+        // an empty string: Apps Plus drops an empty default and its label with it.
+        rancherUrl:  'https://$(NODE_IP)',
       },
       valueLabels: {
         repo:        'GitHub repository to clone',
@@ -282,6 +288,7 @@ export function rancherWorkspaceApp(): Json {
         scheme:      'http or https',
         image:       'Container image',
         hostCluster: 'Cluster the workspace runs on',
+        rancherUrl:  'Rancher the dev server points at',
       },
       templates: [
         {
@@ -383,7 +390,7 @@ export function rancherWorkspaceApp(): Json {
             '                fieldRef:',
             '                  fieldPath: status.hostIP',
             '            - name: API',
-            '              value: https://$(NODE_IP)',
+            '              value: "${rancherUrl}"',
             '          envFrom:',
             '            - secretRef:',
             '                name: dev-secrets',
@@ -448,7 +455,329 @@ export function rancherWorkspaceApp(): Json {
   };
 }
 
-/** Create the built-in App if it is missing. Quiet: this runs for everyone on every load. */
+// ── A static build of the dashboard, pointed at a Rancher, on a link anyone can open ────────
+//
+// The other half of keeping infrastructure apart from tools: a preview is not a dev server
+// with a checkout, it is the dashboard built once at a ref and served by nginx, with every API
+// path proxied to the Rancher it was built for. The result has an address of its own on the
+// node, so a reviewer opens a link and logs in to that Rancher; nothing about the build is
+// theirs to set up. Rebuilding is restarting the pod: the init container clones and builds
+// into a shared directory and nginx serves what it left there.
+
+const PREVIEW_BUILD = [
+  'set -e',
+  'export HOME=/work/.home YARN_CACHE_FOLDER=/work/.yarn-cache NODE_OPTIONS=--max_old_space_size=4096',
+  'mkdir -p /work /site',
+  '[ -d /work/src/.git ] || git clone https://github.com/${repo} /work/src',
+  'cd /work/src',
+  'git fetch --depth 1 origin "${ref}" && git checkout -q FETCH_HEAD',
+  'yarn install --network-timeout 600000',
+  'ROUTER_BASE=/dashboard/ OUTPUT_DIR=/site/dist yarn build',
+  'echo built',
+].join(' && ');
+
+const PREVIEW_NGINX = [
+  'server {',
+  '  listen ${port};',
+  '  client_max_body_size 50m;',
+  '  location = / { return 302 /dashboard/; }',
+  '  location /dashboard/ {',
+  '    alias /site/dist/;',
+  '    try_files $uri $uri/ /dashboard/index.html;',
+  '  }',
+  '  location / {',
+  '    proxy_pass ${rancherUrl};',
+  '    proxy_ssl_verify off;',
+  '    proxy_ssl_server_name on;',
+  '    proxy_http_version 1.1;',
+  '    proxy_set_header Upgrade $http_upgrade;',
+  '    proxy_set_header Connection "upgrade";',
+  '    proxy_set_header Host $proxy_host;',
+  '    proxy_set_header X-Forwarded-Proto https;',
+  '    proxy_read_timeout 3600s;',
+  '    proxy_cookie_domain ~.* $host;',
+  '    proxy_cookie_flags ~ nosecure;',
+  '  }',
+  '}',
+].join('\n');
+
+export const PREVIEW_APP = 'dashboard-preview';
+export const BROWSER_APP = 'dev-browser';
+/** The Apps every Rancher gets; see ensureDefaultApp. */
+export const DEFAULT_APPS = [DEFAULT_APP, PREVIEW_APP, BROWSER_APP];
+
+export function dashboardPreviewApp(): Json {
+  const labels = [
+    `    ${ LABEL_WORKSPACE }: \${install}`,
+    `    ${ LABEL_APP }: \${app}`,
+    `    ${ LABEL_CLUSTER }: \${hostCluster}`,
+  ].join('\n');
+
+  return {
+    apiVersion: 'appsplus.io/v1alpha1',
+    kind:       'App',
+    metadata:   { name: PREVIEW_APP },
+    spec:       {
+      description: 'A static build of rancher/dashboard at a branch, tag or pull request, served by nginx with the API proxied to a Rancher of your choosing. A link a reviewer can open.',
+      values:      {
+        repo:        'rancher/dashboard',
+        ref:         'master',
+        rancherUrl:  'https://rancher.ourhome.dev',
+        port:        8080,
+        hostCluster: 'local',
+      },
+      valueLabels: {
+        repo:        'GitHub repository',
+        ref:         'Branch, tag, or pull/<n>/head',
+        rancherUrl:  'Rancher the preview talks to',
+        port:        'Port nginx listens on',
+        hostCluster: 'Cluster the preview runs on',
+      },
+      templates: [
+        {
+          name:    'namespace.yaml',
+          content: [
+            'apiVersion: v1',
+            'kind: Namespace',
+            'metadata:',
+            '  name: ${namespace}',
+            '  labels:',
+            labels,
+            '  annotations:',
+            `    ${ WORKSPACE_PORT_ANNOTATION }: "\${port}"`,
+            `    ${ WORKSPACE_SCHEME_ANNOTATION }: http`,
+            '    dev.rancher.io/preview: "true"',
+            '',
+          ].join('\n'),
+        },
+        {
+          name:    'nginx.yaml',
+          content: [
+            'apiVersion: v1',
+            'kind: ConfigMap',
+            'metadata:',
+            '  namespace: ${namespace}',
+            '  name: preview-nginx',
+            'data:',
+            '  default.conf: |',
+            yamlBlock(PREVIEW_NGINX, 4),
+            '',
+          ].join('\n'),
+        },
+        {
+          name:    'deployment.yaml',
+          content: [
+            'apiVersion: apps/v1',
+            'kind: Deployment',
+            'metadata:',
+            '  namespace: ${namespace}',
+            '  name: ${namespace}',
+            '  labels:',
+            '    app: ${namespace}',
+            labels,
+            'spec:',
+            '  replicas: 1',
+            '  selector:',
+            '    matchLabels:',
+            '      app: ${namespace}',
+            '  strategy:',
+            '    type: Recreate',
+            '  template:',
+            '    metadata:',
+            '      labels:',
+            '        app: ${namespace}',
+            yamlBlock(labels, 4),
+            '    spec:',
+            '      initContainers:',
+            '        - name: build',
+            '          image: node:24',
+            '          command:',
+            '            - /bin/sh',
+            '            - -c',
+            `            - ${ JSON.stringify(PREVIEW_BUILD) }`,
+            '          volumeMounts:',
+            '            - name: work',
+            '              mountPath: /work',
+            '            - name: site',
+            '              mountPath: /site',
+            '      containers:',
+            '        - name: workspace',
+            '          image: nginx:1.27-alpine',
+            '          ports:',
+            '            - name: http',
+            '              containerPort: ${port}',
+            '          volumeMounts:',
+            '            - name: site',
+            '              mountPath: /site',
+            '              readOnly: true',
+            '            - name: nginx',
+            '              mountPath: /etc/nginx/conf.d',
+            '              readOnly: true',
+            '          readinessProbe:',
+            '            httpGet:',
+            '              path: /dashboard/',
+            '              port: ${port}',
+            '            periodSeconds: 10',
+            '      volumes:',
+            '        - name: work',
+            '          hostPath:',
+            '            path: /var/lib/rancher/dev-previews/${install}',
+            '            type: DirectoryOrCreate',
+            '        - name: site',
+            '          emptyDir: {}',
+            '        - name: nginx',
+            '          configMap:',
+            '            name: preview-nginx',
+            '',
+          ].join('\n'),
+        },
+        {
+          name:    'service.yaml',
+          content: [
+            'apiVersion: v1',
+            'kind: Service',
+            'metadata:',
+            '  namespace: ${namespace}',
+            '  name: ${namespace}',
+            '  labels:',
+            labels,
+            'spec:',
+            '  type: NodePort',
+            '  selector:',
+            '    app: ${namespace}',
+            '  ports:',
+            '    - name: http',
+            '      port: ${port}',
+            '      targetPort: http',
+            '',
+          ].join('\n'),
+        },
+      ],
+    },
+  };
+}
+
+// ── A browser to look at things in, separate from anything it looks at ──────────────────────
+//
+// The same Chromium Extension Studio keeps, as an App: its DevTools port for an agent or a
+// test to drive, its web UI for a person to watch. One per cluster is the usual number, which
+// is why it is an App rather than part of every workspace.
+
+export function devBrowserApp(): Json {
+  return {
+    apiVersion: 'appsplus.io/v1alpha1',
+    kind:       'App',
+    metadata:   { name: BROWSER_APP },
+    spec:       {
+      description: 'A Chromium with its DevTools protocol open, for agents and tests to drive and for people to watch. Shared by every workspace that points at it.',
+      values:      {
+        image:       'lscr.io/linuxserver/chromium:latest',
+        startUrl:    'https://rancher.ourhome.dev',
+        hostCluster: 'local',
+      },
+      valueLabels: {
+        image:       'Chromium image',
+        startUrl:    'Page it opens on',
+        hostCluster: 'Cluster the browser runs on',
+      },
+      templates: [
+        {
+          name:    'namespace.yaml',
+          content: [
+            'apiVersion: v1',
+            'kind: Namespace',
+            'metadata:',
+            '  name: ${namespace}',
+            '  labels:',
+            `    ${ LABEL_WORKSPACE }: \${install}`,
+            `    ${ LABEL_APP }: \${app}`,
+            `    ${ LABEL_CLUSTER }: \${hostCluster}`,
+            '  annotations:',
+            `    ${ WORKSPACE_PORT_ANNOTATION }: "3000"`,
+            `    ${ WORKSPACE_SCHEME_ANNOTATION }: http`,
+            '',
+          ].join('\n'),
+        },
+        {
+          name:    'deployment.yaml',
+          content: [
+            'apiVersion: apps/v1',
+            'kind: Deployment',
+            'metadata:',
+            '  namespace: ${namespace}',
+            '  name: ${namespace}',
+            '  labels:',
+            '    app: ${namespace}',
+            `    ${ LABEL_WORKSPACE }: \${install}`,
+            'spec:',
+            '  replicas: 1',
+            '  selector:',
+            '    matchLabels:',
+            '      app: ${namespace}',
+            '  template:',
+            '    metadata:',
+            '      labels:',
+            '        app: ${namespace}',
+            `        ${ LABEL_WORKSPACE }: \${install}`,
+            '    spec:',
+            '      containers:',
+            '        - name: workspace',
+            '          image: ${image}',
+            '          ports:',
+            '            - name: http',
+            '              containerPort: 3000',
+            '            - name: cdp',
+            '              containerPort: 9222',
+            '          env:',
+            '            - name: PUID',
+            '              value: "1000"',
+            '            - name: PGID',
+            '              value: "1000"',
+            '            - name: CUSTOM_PORT',
+            '              value: "3000"',
+            '            - name: TITLE',
+            '              value: Dev browser',
+            '            - name: CHROME_CLI',
+            '              value: "${startUrl} --no-first-run --start-maximized --disable-infobars --ignore-certificate-errors --remote-debugging-port=9222 --remote-allow-origins=*"',
+            '          volumeMounts:',
+            '            - name: dshm',
+            '              mountPath: /dev/shm',
+            '      volumes:',
+            '        - name: dshm',
+            '          emptyDir:',
+            '            medium: Memory',
+            '            sizeLimit: 1Gi',
+            '',
+          ].join('\n'),
+        },
+        {
+          name:    'service.yaml',
+          content: [
+            'apiVersion: v1',
+            'kind: Service',
+            'metadata:',
+            '  namespace: ${namespace}',
+            '  name: ${namespace}',
+            'spec:',
+            '  type: NodePort',
+            '  selector:',
+            '    app: ${namespace}',
+            '  ports:',
+            '    - name: http',
+            '      port: 3000',
+            '      targetPort: http',
+            '    - name: cdp',
+            '      port: 9222',
+            '      targetPort: cdp',
+            '',
+          ].join('\n'),
+        },
+      ],
+    },
+  };
+}
+
+/** Create the built-in Apps that are missing. Quiet: this runs for everyone on every load. */
 export async function ensureDefaultApp(store: Store): Promise<void> {
   if (!appsPlusAvailable(store)) {
     return;
@@ -456,11 +785,17 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
 
   const apps = await store.dispatch('management/findAll', { type: APP }).catch(() => null);
 
-  if (!apps || apps.some((app: Json) => app.metadata?.name === DEFAULT_APP)) {
+  if (!apps) {
     return;
   }
 
-  const app = await store.dispatch('management/create', { type: APP, ...rancherWorkspaceApp() });
+  const have = new Set(apps.map((app: Json) => app.metadata?.name));
 
-  await app.save().catch(() => {});
+  for (const body of [rancherWorkspaceApp(), dashboardPreviewApp(), devBrowserApp()]) {
+    if (!have.has(body.metadata.name)) {
+      const app = await store.dispatch('management/create', { type: APP, ...body });
+
+      await app.save().catch(() => {});
+    }
+  }
 }

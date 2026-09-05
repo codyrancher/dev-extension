@@ -60,6 +60,7 @@ export default {
       name:      String(this.$route.query.name || ''),
       clusters:  [],
       cluster:   'local',
+      rancherUrl: '',
       apps:      [],
       app:       '',
       appsError: '',
@@ -140,7 +141,7 @@ export default {
       }
 
       try {
-        await createWorkspace(this.$store, this.name, this.app, this.cluster);
+        await createWorkspace(this.$store, this.name, this.app, this.cluster, this.rancherUrl.trim() ? { rancherUrl: this.rancherUrl.trim().replace(/\/$/, '') } : {});
         this.$router.push({
           name:   WORKSPACE_ROUTE,
           params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: this.name },
@@ -212,6 +213,18 @@ export default {
         :reduce="(entry) => entry.value"
         :clearable="false"
         :disabled="!apps.length"
+      />
+
+      <!--
+        The Rancher the workspace's dev server talks to. Empty is the one this cluster belongs
+        to; a team's shared Rancher goes here when the infrastructure is kept apart from the
+        tools, which is the usual arrangement. Only the apps that declare a rancherUrl value use
+        it; the rest ignore it.
+      -->
+      <LabeledInput
+        v-model:value="rancherUrl"
+        label="Rancher URL (optional)"
+        placeholder="https://rancher.example.com - empty means the one this cluster belongs to"
       />
 
       <!--
