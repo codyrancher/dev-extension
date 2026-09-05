@@ -12,7 +12,7 @@
 import {
   listAllWorkspaces, deleteWorkspace, listClusters, readableBytes
 } from '../api';
-import { listApps, reconcileUnrendered, ensureDefaultApp, DEFAULT_APPS } from '../apps';
+import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
 import { readPrefs, shownApps } from '../prefs';
 import DevList from './DevList.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
@@ -194,7 +194,9 @@ export default {
         // The App every Rancher gets. From here rather than only from the product's init,
         // because at init Apps Plus's own types are not in the store yet - its bundle loads
         // beside this one - and the sidebar is on every page of this product.
-        if (!seeded && DEFAULT_APPS.some((id) => !apps.some((app) => app.id === id))) {
+        // Once per page load whether or not one is missing: ensureDefaultApp also brings an App
+        // whose definition moved on in this bundle up to date (see apps.ts).
+        if (!seeded) {
           seeded = true;
           ensureDefaultApp(this.$store).catch(() => {
             seeded = false;

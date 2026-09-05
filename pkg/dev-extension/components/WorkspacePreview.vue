@@ -35,10 +35,22 @@ export default {
     clearInterval(this.timer);
   },
 
+  computed: {
+    /** Which build this is, from the name the Share tab gave it. */
+    kind() {
+      return this.workspace.name.startsWith('storybook-') ? 'storybook' : 'dashboard';
+    },
+
+    /** The workspace it was built for. */
+    origin() {
+      return this.workspace.name.replace(/^(preview|storybook)-/, '');
+    },
+  },
+
   methods: {
     async refresh() {
       try {
-        this.state = await previewState(this.$store, this.workspace.name.replace(/^preview-/, ''), this.workspace.cluster);
+        this.state = await previewState(this.$store, this.origin, this.workspace.cluster, this.kind);
       } catch (e) {
         this.error = e.message || String(e);
       }
@@ -46,7 +58,7 @@ export default {
 
     async rebuild(done) {
       try {
-        await rebuildPreview(this.workspace.name.replace(/^preview-/, ''), this.workspace.cluster);
+        await rebuildPreview(this.origin, this.workspace.cluster, this.kind);
         await this.refresh();
         done(true);
       } catch (e) {
@@ -95,11 +107,13 @@ export default {
       <dl class="workspace-preview__facts">
         <dt>Built at</dt>
         <dd><code>{{ state.ref }}</code></dd>
-        <dt>Talks to</dt>
-        <dd>{{ state.rancherUrl }}</dd>
+        <template v-if="kind === 'dashboard'">
+          <dt>Talks to</dt>
+          <dd>{{ state.rancherUrl }}</dd>
+        </template>
       </dl>
       <p class="text-muted">
-        Share the link. A reviewer opens it and logs in to that Rancher; nothing else is theirs to set up.
+        {{ kind === 'storybook' ? 'Share the link. It is a static site; there is nothing to log in to.' : 'Share the link. A reviewer opens it and logs in to that Rancher; nothing else is theirs to set up.' }}
       </p>
       <div class="workspace-preview__actions">
         <AsyncButton
