@@ -11,6 +11,25 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
     apiVersion: v2
+    appVersion: 0.2.1
+    created: "2026-09-05T06:37:17.069084586Z"
+    description: dev-extension plugin
+    digest: 5ae302cbcea9104502afed9693bba0b88e408e2a4a3f935e203a0f7d7c4799b1
+    name: dev-extension
+    type: application
+    urls:
+    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.2.1/dev-extension-0.2.1.tgz
+    version: 0.2.1
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
+    apiVersion: v2
     appVersion: 0.2.0
     created: "2026-09-05T06:32:41.26295242Z"
     description: dev-extension plugin
@@ -58,4 +77,4 @@ entries:
     urls:
     - assets/dev-extension/dev-extension-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-05T06:32:41.262959981Z"
+generated: "2026-09-05T06:37:17.069099664Z"
