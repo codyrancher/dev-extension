@@ -31,6 +31,7 @@ import WorkspaceConversations from '../components/WorkspaceConversations.vue';
 import WorkspaceBrowser from '../components/WorkspaceBrowser.vue';
 import WorkspacePreview from '../components/WorkspacePreview.vue';
 import WorkspacePr from '../components/WorkspacePr.vue';
+import WorkspaceShare from '../components/WorkspaceShare.vue';
 import {
   getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster
 } from '../api';
@@ -46,7 +47,7 @@ export default {
 
   components: {
     Loading, Tabbed, Tab, Banner, RcButton, Row,
-    WorkspaceConversations, WorkspaceBrowser, WorkspacePreview, WorkspacePr
+    WorkspaceConversations, WorkspaceBrowser, WorkspacePreview, WorkspacePr, WorkspaceShare
   },
 
   async fetch() {
@@ -97,6 +98,7 @@ export default {
         (name !== 'browser' || (!preview && this.framable)) &&
         (name !== 'pr' || this.prNumber || this.issueNumber) &&
         (name !== 'preview' || preview) &&
+        (name !== 'share' || !preview) &&
         (name !== 'conversations' || !preview)
       ));
     },
@@ -367,6 +369,26 @@ export default {
         <WorkspaceBrowser
           v-if="seen.browser"
           :workspace="workspace"
+        />
+      </Tab>
+
+      <!--
+        Where a workspace's work is shown to someone else: a static build of the dashboard, or
+        of its Storybook, on a link. Infrastructure apart from tools - the build talks to
+        whichever Rancher it is told to, and the person it is sent to needs only an account
+        there. A preview's own page has the Preview tab below instead.
+      -->
+      <Tab
+        v-if="!workspace.preview"
+        name="share"
+        label="Share"
+        :weight="1.5"
+      >
+        <WorkspaceShare
+          v-if="seen.share"
+          :workspace="workspace"
+          :pr="prNumber"
+          :issue="issueNumber"
         />
       </Tab>
 

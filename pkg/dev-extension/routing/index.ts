@@ -1,9 +1,9 @@
 import { PluginRouteRecordRaw } from '@shell/core/types';
 import {
   BLANK_CLUSTER,
-  DEV_PRODUCT, WORKSPACES_PAGE, CREATE_PAGE, MY_WORK_PAGE, INSIGHTS_PAGE, SETTINGS_PAGE,
+  DEV_PRODUCT, WORKSPACES_PAGE, CREATE_PAGE, MY_WORK_PAGE, INSIGHTS_PAGE, SETTINGS_PAGE, AGENTS_PAGE,
   DEV_SHELL_ROUTE, WORKSPACES_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE,
-  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE
+  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE
 } from '../config/constants';
 import DevShell from '../pages/DevShell.vue';
 import Workspaces from '../pages/Workspaces.vue';
@@ -12,6 +12,7 @@ import WorkspaceDetail from '../pages/WorkspaceDetail.vue';
 import MyWork from '../pages/MyWork.vue';
 import Insights from '../pages/Insights.vue';
 import Settings from '../pages/Settings.vue';
+import Agents from '../pages/Agents.vue';
 
 const devMeta = { product: DEV_PRODUCT, cluster: BLANK_CLUSTER };
 
@@ -71,6 +72,9 @@ const devRoutes: PluginRouteRecordRaw[] = [
         },
         {
           name: SETTINGS_ROUTE, path: SETTINGS_PAGE, component: Settings, meta: devMeta
+        },
+        {
+          name: AGENTS_ROUTE, path: AGENTS_PAGE, component: Agents, meta: devMeta
         },
       ],
     }

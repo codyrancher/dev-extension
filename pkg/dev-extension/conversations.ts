@@ -56,17 +56,33 @@ export async function listConversations(workspace: string): Promise<ProjectConve
   }
 }
 
-export async function startConversation(workspace: string, title = ''): Promise<ProjectConversation> {
-  try {
-    const body = await devFetch(`${ STUDIO_API }/v1/projects/${ encodeURIComponent(workspace) }/conversations`, {
-      method: 'POST',
-      body:   JSON.stringify(title ? { title } : {}),
-    });
+/**
+ * Start a conversation, optionally with a name and the prompt it opens with.
+ *
+ * The prompt goes in the same request: the Studio queues it where the pane reads it on its
+ * first start (0.5.92). An older Studio ignores the field and answers without `queued`, and
+ * then it is written the way it used to be, by exec into the pod - so the extension works
+ * against either, and says which it needed.
+ */
+export async function startConversation(workspace: string, title = '', prompt = ''): Promise<ProjectConversation> {
+  let body: Json;
 
-    return { id: body.id, title: body.title, attach: body.attach };
+  try {
+    body = await devFetch(`${ STUDIO_API }/v1/projects/${ encodeURIComponent(workspace) }/conversations`, {
+      method: 'POST',
+      body:   JSON.stringify({ ...(title ? { title } : {}), ...(prompt ? { prompt } : {}) }),
+    });
   } catch (e) {
     throw studioError(e, `start a conversation in ${ workspace }`);
   }
+
+  const conversation = { id: body.id, title: body.title, attach: body.attach };
+
+  if (prompt && !body.queued) {
+    await queuePrompt(conversation.attach, prompt);
+  }
+
+  return conversation;
 }
 
 export async function renameConversation(workspace: string, id: string, title: string): Promise<void> {
@@ -113,6 +129,86 @@ export async function queuePrompt(attach: Attachment, prompt: string): Promise<v
   if (!out.includes('queued')) {
     throw new Error('The prompt could not be written into the agent pod.');
   }
+}
+
+// ── The Studio's browser API ──────────────────────────────────────────────────────────────
+//
+// Extension Studio puts its terminal, and the agent pod behind it, on `window.__extensionStudio`
+// (its public-api.ts). Every pane this extension shows onto the agent pod is that component:
+// the conversation list, the review agent docked over a pull request, a discussion under one
+// comment. Borrowed rather than copied, so there is one terminal in this dashboard and one
+// place it is fixed.
+
+/** Where the Studio's browser API is. */
+export const STUDIO_GLOBAL = '__extensionStudio';
+export const STUDIO_READY_EVENT = 'extension-studio:ready';
+
+/** The Studio version that first offered the API, for the message when it is not there. */
+export const STUDIO_API_SINCE = '0.5.92';
+
+export interface StudioBrowserApi {
+  version: string;
+  terminal: { component: unknown };
+  agent: {
+    namespace: string;
+    container: string;
+    pod(): Promise<string | null>;
+    command(id: string, mode?: 'claude' | 'shell'): string[];
+    projectSessions(project: string): Promise<{ id: string; title: string }[]>;
+    startInProject(project: string, title?: string, prompt?: string): Promise<string>;
+    queue(id: string, prompt: string): Promise<void>;
+    rename(id: string, title: string): Promise<void>;
+    end(id: string): Promise<void>;
+    pane(id: string, lines?: number): Promise<{ text: string; running: boolean }>;
+  };
+}
+
+/** The Studio's browser API, if its bundle has loaded. */
+export function studioApi(): StudioBrowserApi | null {
+  const api = (window as unknown as Record<string, unknown>)[STUDIO_GLOBAL] as StudioBrowserApi | undefined;
+
+  return api?.terminal?.component ? api : null;
+}
+
+/**
+ * The Studio's browser API, waiting for it if the Studio's bundle is still loading.
+ *
+ * Extensions load in no particular order, so a page of this one can render before the Studio
+ * has installed its API. It fires an event when it does; failing that, a short poll, because a
+ * Studio that is installed but slow is the common case and one that is absent is the rare one.
+ */
+export function waitForStudio(timeoutMs = 15000): Promise<StudioBrowserApi | null> {
+  const now = studioApi();
+
+  if (now) {
+    return Promise.resolve(now);
+  }
+
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let deadline: ReturnType<typeof setTimeout> | null = null;
+    const done = (api: StudioBrowserApi | null) => {
+      window.removeEventListener(STUDIO_READY_EVENT, onReady);
+      if (timer) {
+        clearInterval(timer);
+      }
+      if (deadline) {
+        clearTimeout(deadline);
+      }
+      resolve(api);
+    };
+    const onReady = () => done(studioApi());
+
+    window.addEventListener(STUDIO_READY_EVENT, onReady);
+    timer = setInterval(() => {
+      const api = studioApi();
+
+      if (api) {
+        done(api);
+      }
+    }, 500);
+    deadline = setTimeout(() => done(studioApi()), timeoutMs);
+  });
 }
 
 /** The DevTerminal props for one conversation's pane. */

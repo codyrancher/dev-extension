@@ -20,7 +20,7 @@
 
 import { devFetch, clusterBase, githubToken, createWorkspace, listAllWorkspaces } from './api';
 import {
-  listConversations, startConversation, queuePrompt, Attachment, ProjectConversation
+  listConversations, startConversation, endConversation, queuePrompt, Attachment, ProjectConversation
 } from './conversations';
 import { ensureAgentReady, conversationPane } from './agent-tools';
 import { rerunFailed } from './github';
@@ -58,6 +58,7 @@ export interface LocalComment {
   created_at: string;
   updated_at: string;
   submitted_at: string | null;
+  attachments: LocalAttachment[];
 }
 
 export interface ReviewRun {
@@ -77,16 +78,16 @@ export async function listComments(num: number): Promise<LocalComment[]> {
   return api(`/my-work/pr/${ num }/comments`);
 }
 
-export async function addComment(num: number, body: string, at?: { path: string; line?: number | null }, author = 'you'): Promise<LocalComment> {
+export async function addComment(num: number, body: string, at?: { path: string; line?: number | null; startLine?: number | null; side?: string }, author = 'you'): Promise<LocalComment> {
   return api(`/my-work/pr/${ num }/comments`, {
     method: 'POST',
     body:   JSON.stringify({
-      body, level: at?.path ? 'line' : 'pr', path: at?.path || '', line: at?.line ?? null, author,
+      body, level: at?.path ? 'line' : 'pr', path: at?.path || '', line: at?.line ?? null, startLine: at?.startLine ?? null, side: at?.side || 'RIGHT', author,
     }),
   });
 }
 
-export async function updateComment(num: number, id: number, changes: Partial<Pick<LocalComment, 'body' | 'status' | 'line' | 'path'>>): Promise<LocalComment> {
+export async function updateComment(num: number, id: number, changes: Partial<Pick<LocalComment, 'body' | 'status' | 'line' | 'path'>> & { attachments?: { path: string; caption?: string }[] }): Promise<LocalComment> {
   return api(`/my-work/pr/${ num }/comments/${ id }`, { method: 'PUT', body: JSON.stringify(changes) });
 }
 
@@ -100,6 +101,30 @@ export async function reviewRun(num: number): Promise<ReviewRun | null> {
 
 export async function setReviewRun(num: number, state: string, note = '', project?: string): Promise<ReviewRun> {
   return (await api(`/my-work/pr/${ num }/review-run`, { method: 'POST', body: JSON.stringify({ state, note, project }) })).run;
+}
+
+/** A file at a ref - the PR head - for expanding the context between a diff's hunks. */
+export async function prFile(num: number, path: string, ref: string, repo = DEFAULT_REPO): Promise<string> {
+  return (await api(`/my-work/pr/${ num }/file?path=${ encodeURIComponent(path) }&ref=${ encodeURIComponent(ref) }&repo=${ encodeURIComponent(repo) }`)).content;
+}
+
+/** The files a subset of the PR's commits changed. */
+export async function commitsDiff(num: number, shas: string[], repo = DEFAULT_REPO): Promise<{ combined: boolean; files: Json[] }> {
+  return api(`/my-work/pr/${ num }/commits-diff?shas=${ shas.join(',') }&repo=${ encodeURIComponent(repo) }`);
+}
+
+/** Where one attached piece of evidence can be looked at: a file in the agent's workspace, through the API. */
+export function artifactUrl(num: number, path: string): string {
+  return `${ DEV_API }/my-work/pr/${ num }/artifact?path=${ encodeURIComponent(path) }`;
+}
+
+/** Comments as the API keeps them, with everything a reader needs about their evidence. */
+export interface LocalAttachment {
+  path: string;
+  caption: string;
+  name: string;
+  kind: 'image' | 'video' | 'file';
+  found: boolean;
 }
 
 export async function ciFailures(num: number, repo = DEFAULT_REPO): Promise<Json> {
@@ -173,8 +198,14 @@ export async function submitReview(num: number, repo = DEFAULT_REPO): Promise<{ 
     throw new Error(`${ pending.length } comment${ pending.length === 1 ? ' is' : 's are' } still pending. Mark them good, or delete them, before submitting.`);
   }
 
-  const inline = comments.filter((c) => c.path);
-  const body = comments.filter((c) => !c.path).map((c) => c.body).join('\n\n');
+  // Evidence goes with the comment it belongs to. A text file - a test, a log - is read from the
+  // agent's workspace and inlined as a code block, which is how a reviewer wants to read it
+  // anyway. An image or a recording cannot be uploaded to GitHub from here (that needs a
+  // github.com session, not an API token), so the comment names it and where it is instead of
+  // silently dropping it.
+  const withEvidence = await Promise.all(comments.map(async(c) => ({ ...c, body: await bodyWithEvidence(num, c) })));
+  const inline = withEvidence.filter((c) => c.path);
+  const body = withEvidence.filter((c) => !c.path).map((c) => c.body).join('\n\n');
   const review = await gh('POST', `/repos/${ repo }/pulls/${ num }/reviews`, {
     event:    'COMMENT',
     ...(body ? { body } : {}),
@@ -193,6 +224,64 @@ export async function submitReview(num: number, repo = DEFAULT_REPO): Promise<{ 
   }
 
   return { url: review?.html_url || null, posted: comments.length };
+}
+
+/** Reply to a comment on GitHub. There is no draft for a reply: it lands in the thread now. */
+export async function replyToComment(num: number, commentId: number, body: string, repo = DEFAULT_REPO): Promise<{ id: number; url: string }> {
+  const reply = await gh('POST', `/repos/${ repo }/pulls/${ num }/comments/${ commentId }/replies`, { body });
+
+  return { id: reply?.id, url: reply?.html_url || '' };
+}
+
+const CODE_LANG: Record<string, string> = {
+  '.ts': 'ts', '.js': 'js', '.mjs': 'js', '.vue': 'vue', '.json': 'json', '.yaml': 'yaml', '.yml': 'yaml', '.sh': 'bash', '.log': 'text', '.txt': 'text', '.md': 'md',
+};
+const ATTACH_MARKER = /\[\[attach:([^\]]+)\]\]/g;
+const MAX_INLINE = 60_000;
+
+async function bodyWithEvidence(num: number, c: LocalComment): Promise<string> {
+  const items = c.attachments || [];
+
+  if (!items.length) {
+    return c.body;
+  }
+
+  let body = c.body;
+  const trailing: string[] = [];
+
+  for (const item of items) {
+    const ext = item.name.slice(item.name.lastIndexOf('.')).toLowerCase();
+    let embed = '';
+
+    if (CODE_LANG[ext] && item.found) {
+      const text = await fetch(artifactUrl(num, item.path), { credentials: 'same-origin' }).then((r) => (r.ok ? r.text() : '')).catch(() => '');
+
+      if (text && text.length <= MAX_INLINE) {
+        embed = `${ item.caption ? `${ item.caption }\n\n` : '' }\`\`\`${ CODE_LANG[ext] }\n${ text.replace(/\`\`\`/g, '\u0060\u0060\u0060') }\n\`\`\``;
+      }
+    }
+
+    if (!embed) {
+      embed = `_${ item.caption ? `${ item.caption } - ` : '' }${ item.kind } \`${ item.name }\`, recorded in the workspace at \`${ item.path }\`_`;
+    }
+
+    let used = false;
+
+    body = body.replace(ATTACH_MARKER, (whole, ref) => {
+      if (ref.trim() !== item.name && ref.trim() !== item.path) {
+        return whole;
+      }
+      used = true;
+
+      return embed;
+    });
+
+    if (!used) {
+      trailing.push(embed);
+    }
+  }
+
+  return trailing.length ? `${ body }\n\n${ trailing.join('\n\n') }` : body;
 }
 
 /** Squash-merge, after checking CI is not red or still running. */
@@ -270,7 +359,7 @@ export async function rerunFailedJobs(pr: { repo: string; runs: Json[] }): Promi
  * in-cluster API the skills read as $CLAUDE_HARNESS_API, and the GitHub token, which
  * ensureAgentReady wrote into the pane's home so it never travels in a prompt.
  */
-function preamble(repo: string): string {
+export function preamble(repo: string): string {
   const dir = `/workspace/repos/${ repo.split('/')[1] }`;
 
   return [
@@ -292,10 +381,9 @@ async function ensureWorkspace(store: Store, name: string): Promise<boolean> {
 
 /** A conversation in the workspace with a prompt queued, the agent pod made ready for it. */
 async function openWith(workspace: string, title: string, prompt: string): Promise<ProjectConversation> {
-  const conversation = await startConversation(workspace, title);
+  const conversation = await startConversation(workspace, title, prompt);
 
   await ensureAgentReady(conversation.attach, await githubToken());
-  await queuePrompt(conversation.attach, prompt);
 
   return conversation;
 }
@@ -311,8 +399,8 @@ export function prWorkspaceName(pr: { number: number; issue?: { number: number }
 }
 
 /** Review a PR: the harness's "Review" button. Reattaches to a review already running. */
-export async function startPrReview(store: Store, pr: { number: number; issue?: { number: number } | null }, repo = DEFAULT_REPO): Promise<Started> {
-  const workspace = prWorkspaceName(pr);
+export async function startPrReview(store: Store, pr: { number: number; issue?: { number: number } | null }, repo = DEFAULT_REPO, inWorkspace = ''): Promise<Started> {
+  const workspace = inWorkspace || prWorkspaceName(pr);
   const created = await ensureWorkspace(store, workspace);
   const title = `Review #${ pr.number }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
@@ -376,8 +464,8 @@ export async function startDependabotReview(store: Store, pr: { number: number }
 }
 
 /** Triage red CI: the first step of the harness's smart rerun, as a conversation. */
-export async function startCiTriage(store: Store, pr: { number: number; issue?: { number: number } | null }, repo = DEFAULT_REPO): Promise<Started> {
-  const workspace = prWorkspaceName(pr);
+export async function startCiTriage(store: Store, pr: { number: number; issue?: { number: number } | null }, repo = DEFAULT_REPO, inWorkspace = ''): Promise<Started> {
+  const workspace = inWorkspace || prWorkspaceName(pr);
   const created = await ensureWorkspace(store, workspace);
   const failures = await ciFailures(pr.number, repo).catch(() => ({ checks: [] }));
   const details = (failures.checks || []).slice(0, 6).map((c: Json) => `- ${ c.name }: ${ c.conclusion }${ c.title ? ` - ${ c.title }` : '' }${ c.summary ? `\n  ${ c.summary.slice(0, 300) }` : '' } (${ c.url })`).join('\n');
@@ -385,6 +473,49 @@ export async function startCiTriage(store: Store, pr: { number: number; issue?: 
     `${ preamble(repo) } /my-ci-triage ${ repo } PR #${ pr.number } is red. The failing checks:\n\n${ details || '(read them from $CLAUDE_HARNESS_API/my-work/pr/' + pr.number + '/ci)' }\n\nDecide whether this PR's own change caused them. If they are ours, fix them with /my-ci-fix, verify, commit and push; if not, re-run the failed jobs with gh. Finish with OURS or FLAKE alone on the last line.`);
 
   return { workspace, conversation, created };
+}
+
+/** The opening prompt of a discussion about one pending comment: the harness's, with this API in it. */
+export function discussPrompt(num: number, comment: LocalComment, message: string, repo = DEFAULT_REPO): string {
+  const oneline = String(comment.body).replace(/\s+/g, ' ').slice(0, 400);
+  const where = comment.path ? `file ${ comment.path }${ comment.line ? `, line ${ comment.line }` : '' }` : 'a PR-level comment';
+  const opener = message
+    ? ` The user's opening message about it: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" - address that directly first.`
+    : ' Anything after this sentence is their question - answer that; if there is nothing there, start with your read of the code in question and whether the comment holds up.';
+  const apiHint = `${ DEV_API_IN_CLUSTER }/my-work/pr`;
+
+  return `${ preamble(repo) } The user wants to discuss pending review comment #${ comment.id } on ${ repo } PR #${ num } - ${ where }: "${ oneline }". Fetch the PR for context with: curl -s ${ apiHint }/${ num } (find the relevant hunk in files[].patch${ comment.path ? ` for ${ comment.path }` : '' }).${ opener } Keep responses conversational and concise - this is a live discussion. When the user settles on improved wording, update the comment: curl -s -X PUT ${ apiHint }/${ num }/comments/${ comment.id } -H 'Content-Type: application/json' -d '{"body":"<new text>"}'. If they decide to drop it: curl -s -X DELETE ${ apiHint }/${ num }/comments/${ comment.id }.`;
+}
+
+/** The opening prompt of a discussion about some lines, with no comment filed. */
+export function linesPrompt(num: number, lines: { path: string; line: number; startLine: number | null; side: string; code?: string }, message: string, repo = DEFAULT_REPO): string {
+  const range = lines.startLine ? `lines ${ lines.startLine }-${ lines.line }` : `line ${ lines.line }`;
+  const apiHint = `${ DEV_API_IN_CLUSTER }/my-work/pr`;
+  const code = (lines.code || '').slice(0, 4000);
+
+  return `${ preamble(repo) } The user is reviewing ${ repo } PR #${ num } and wants to discuss ${ lines.path } ${ range } (${ lines.side } side of the diff). Fetch the PR with: curl -s ${ apiHint }/${ num } and find that file in files[].patch for context.${ code ? ` The selected lines are:\n\n${ code }\n` : '' }${ message ? ` Their opening message: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" - address it directly.` : ' Anything after this sentence is their question - answer that; if there is nothing there, start with your read of that code.' } Keep it conversational. Do NOT file a review comment unless the user asks; if they do, run: curl -s -X POST ${ apiHint }/${ num }/comments -H 'Content-Type: application/json' -d '{"path":"${ lines.path }","line":${ lines.line }${ lines.startLine ? `,"startLine":${ lines.startLine }` : '' },"side":"${ lines.side }","body":"<comment>"}'`;
+}
+
+/** A discussion: a conversation in the workspace, opened with its context, the pod made ready. */
+export async function startDiscussion(workspace: string, title: string, prompt: string): Promise<ProjectConversation> {
+  return openWith(workspace, title, prompt);
+}
+
+/** Say something into a running conversation: queued the same way, read by the pane's runner. */
+export async function sayInConversation(conversation: ProjectConversation, message: string): Promise<void> {
+  await queuePrompt(conversation.attach, message);
+}
+
+/**
+ * End a review: the conversation and every process in it, and the run marked cancelled so the
+ * panel stops waiting. The comments it filed stay.
+ */
+export async function cancelReview(num: number, workspace: string, conversationId: string | null): Promise<ReviewRun> {
+  if (conversationId) {
+    await endConversation(workspace, conversationId).catch(() => {});
+  }
+
+  return setReviewRun(num, 'cancelled', 'Cancelled - the agent and its subagents were stopped', workspace);
 }
 
 // ── Verdicts, read off a pane ───────────────────────────────────────────────────────────────

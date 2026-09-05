@@ -10,15 +10,15 @@
 // The shell is the other thing: a bash in the workspace's container, in its checkout, for when
 // what is wanted is the tree rather than a conversation about it. It is the one row that does
 // wait for the workspace's pod.
-import { RcButton } from '@components/RcButton';
 import { Banner } from '@components/Banner';
 import DevTerminal from './DevTerminal.vue';
+import StudioTerminal from './StudioTerminal.vue';
 import DevList from './DevList.vue';
 import {
   LABEL_WORKSPACE, WORKSPACE_CONTAINER, workspaceTerminalCommand
 } from '../api';
 import {
-  listConversations, startConversation, endConversation, renameConversation, paneFor
+  listConversations, startConversation, endConversation, renameConversation, STUDIO_CLUSTER
 } from '../conversations';
 
 const ROW_STATE = {
@@ -32,7 +32,7 @@ export default {
   name: 'WorkspaceConversations',
 
   components: {
-    RcButton, Banner, DevTerminal, DevList
+    Banner, DevTerminal, StudioTerminal, DevList
   },
 
   props: {
@@ -56,8 +56,6 @@ export default {
       current:       '',
       states:        {},
       error:         '',
-      renaming:      '',
-      draft:         '',
     };
   },
 
@@ -94,6 +92,7 @@ export default {
         ...(this.workspace.preview ? [] : [{
           key:   SHELL,
           label: 'Workspace shell',
+          fixed: true,
           state: ROW_STATE[this.states[SHELL]] || (this.ready ? 'stopped' : 'starting'),
         }]),
       ];
@@ -101,6 +100,27 @@ export default {
 
     showingShell() {
       return this.current === SHELL;
+    },
+
+    /**
+     * Whether the workspace's shell can be reached through the agent pod.
+     *
+     * Every pane here is the Studio's, on the Studio's agent pod, for one reason: one pod means
+     * one exec path and one cookie to authenticate it. The shell into the workspace's own
+     * container goes the same way when it can - the agent pod has kubectl and a cluster-admin
+     * account on its own cluster, so it execs into the workspace's pod from there. A workspace
+     * on another cluster is out of that reach, and its shell opens directly, as it always did.
+     */
+    shellViaAgent() {
+      return (this.workspace.cluster || 'local') === STUDIO_CLUSTER;
+    },
+
+    /** The argv the agent pod runs to land in the workspace's container: kubectl, then the workspace's own shell.sh. */
+    shellViaAgentCommand() {
+      return [
+        'kubectl', 'exec', '-i', '-t', '-n', this.workspace.namespace, `deploy/${ this.workspace.namespace }`, '-c', WORKSPACE_CONTAINER, '--',
+        ...this.shellCommand(),
+      ];
     },
   },
 
@@ -118,10 +138,6 @@ export default {
       if (!this.current || !this.rows.some((row) => row.key === this.current)) {
         this.current = this.conversations[0]?.id || SHELL;
       }
-    },
-
-    paneFor(conversation) {
-      return paneFor(conversation);
     },
 
     shellCommand() {
@@ -168,24 +184,9 @@ export default {
       this.states = states;
     },
 
-    startRename(key) {
-      const conversation = this.conversations.find((entry) => entry.id === key);
-
-      if (!conversation) {
-        return;
-      }
-
-      this.renaming = key;
-      this.draft = conversation.title;
-    },
-
-    async commitRename() {
-      const key = this.renaming;
-      const title = this.draft.trim();
-
-      this.renaming = '';
-
-      if (!key || !title) {
+    /** A row's new name, from the list: the shell row is not a conversation and cannot be renamed. */
+    async rename({ key, title }) {
+      if (key === SHELL || !title) {
         return;
       }
 
@@ -220,34 +221,12 @@ export default {
         create-label="New conversation"
         empty="No conversations"
         deletable
+        renamable
         @select="current = $event"
         @create="newConversation"
         @delete="closeConversation"
+        @rename="rename"
       />
-      <div
-        v-if="current && !showingShell"
-        class="workspace-conversations__rename"
-      >
-        <input
-          v-if="renaming === current"
-          v-model="draft"
-          class="workspace-conversations__rename-input"
-          type="text"
-          aria-label="Conversation name"
-          @keydown.enter.prevent="commitRename"
-          @keydown.esc.prevent="renaming = ''"
-          @blur="commitRename"
-        >
-        <RcButton
-          v-else
-          variant="tertiary"
-          size="small"
-          left-icon="edit"
-          @click="startRename(current)"
-        >
-          Rename
-        </RcButton>
-      </div>
     </div>
     <div class="workspace-conversations__pane">
       <Banner
@@ -280,16 +259,29 @@ export default {
           {{ logTail }}
         </p>
       </Banner>
-      <DevTerminal
+      <!--
+        Every conversation is the Studio's own pane onto its agent pod, placed here. The Studio
+        hands the component over (conversations.ts, studioApi); what this says is which
+        conversation, by its id.
+      -->
+      <StudioTerminal
         v-for="conversation in conversations"
         v-show="conversation.id === current"
         :key="conversation.id"
         class="workspace-conversations__terminal"
-        v-bind="paneFor(conversation)"
+        :session="conversation.id"
         @state="onState(conversation.id, $event)"
       />
+      <StudioTerminal
+        v-if="ready && shellViaAgent"
+        v-show="showingShell"
+        key="shell-via-agent"
+        class="workspace-conversations__terminal"
+        :command="shellViaAgentCommand"
+        @state="onState('shell', $event)"
+      />
       <DevTerminal
-        v-if="ready"
+        v-else-if="ready"
         v-show="showingShell"
         key="shell"
         class="workspace-conversations__terminal"
@@ -319,13 +311,6 @@ export default {
       border-right:   1px solid var(--border);
     }
 
-    &__rename {
-      padding: var(--dev-space-2) var(--dev-space-3);
-    }
-
-    &__rename-input {
-      width: 100%;
-    }
 
     &__pane {
       display:        flex;

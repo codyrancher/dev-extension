@@ -467,46 +467,28 @@ export function rancherWorkspaceApp(): Json {
 const PREVIEW_BUILD = [
   'set -e',
   'export HOME=/work/.home YARN_CACHE_FOLDER=/work/.yarn-cache NODE_OPTIONS=--max_old_space_size=4096',
-  'mkdir -p /work /site',
+  'mkdir -p /work /site/dist /site/nginx',
   '[ -d /work/src/.git ] || git clone https://github.com/${repo} /work/src',
   'cd /work/src',
   'git fetch --depth 1 origin "${ref}" && git checkout -q FETCH_HEAD',
   'yarn install --network-timeout 600000',
-  // ROUTER_BASE is where the app routes; RESOURCE_BASE is where its assets are fetched from.
-  // Both /dashboard/, so everything the build emits lives under the one path nginx serves.
-  'ROUTER_BASE=/dashboard/ RESOURCE_BASE=/dashboard/ OUTPUT_DIR=/site/dist yarn build',
+  // Which build, and the nginx that serves it, decided here rather than in the templates: the
+  // App's values are text substitution, and a shell can branch where YAML cannot. The dashboard
+  // is built under /dashboard/ - ROUTER_BASE is where it routes, RESOURCE_BASE where it fetches
+  // its assets - with everything else proxied to the Rancher; Storybook is a plain static site.
+  'if [ "${kind}" = storybook ]; then yarn build-storybook && rm -rf /site/dist && cp -r storybook/storybook-static /site/dist',
+  '  && printf "%s\\n" "server {" "  listen ${port};" "  root /site/dist;" "  location / { try_files \\$uri \\$uri/ /index.html; }" "}" > /site/nginx/default.conf;',
+  'else ROUTER_BASE=/dashboard/ RESOURCE_BASE=/dashboard/ OUTPUT_DIR=/site/dist yarn build',
+  '  && printf "%s\\n" "server {" "  listen ${port};" "  client_max_body_size 50m;" "  location = / { return 302 /dashboard/; }"',
+  '     "  location /dashboard/ { alias /site/dist/; try_files \\$uri \\$uri/ /dashboard/index.html; }"',
+  '     "  location ~ ^/(js|css|img|fonts|favicon\\\\.png|manifest\\\\.json|robots\\\\.txt)(/|\\$) { root /site/dist; }"',
+  '     "  location / { proxy_pass ${rancherUrl}; proxy_ssl_verify off; proxy_ssl_server_name on; proxy_http_version 1.1;"',
+  '     "    proxy_set_header Upgrade \\$http_upgrade; proxy_set_header Connection \\"upgrade\\"; proxy_set_header Host \\$proxy_host;"',
+  '     "    proxy_set_header X-Forwarded-Proto https; proxy_read_timeout 3600s; proxy_cookie_domain ~.* \\$host; proxy_cookie_flags ~ nosecure; }"',
+  '     "}" > /site/nginx/default.conf;',
+  'fi',
   'echo built',
 ].join(' && ');
-
-const PREVIEW_NGINX = [
-  'server {',
-  '  listen ${port};',
-  '  client_max_body_size 50m;',
-  '  location = / { return 302 /dashboard/; }',
-  '  location /dashboard/ {',
-  '    alias /site/dist/;',
-  '    try_files $uri $uri/ /dashboard/index.html;',
-  '  }',
-  // A build that ignored RESOURCE_BASE emits its assets at the root; serve those from the
-  // build too rather than letting them fall into the proxy.
-  '  location ~ ^/(js|css|img|fonts|favicon\\.png|manifest\\.json|robots\\.txt)(/|$) {',
-  '    root /site/dist;',
-  '  }',
-  '  location / {',
-  '    proxy_pass ${rancherUrl};',
-  '    proxy_ssl_verify off;',
-  '    proxy_ssl_server_name on;',
-  '    proxy_http_version 1.1;',
-  '    proxy_set_header Upgrade $http_upgrade;',
-  '    proxy_set_header Connection "upgrade";',
-  '    proxy_set_header Host $proxy_host;',
-  '    proxy_set_header X-Forwarded-Proto https;',
-  '    proxy_read_timeout 3600s;',
-  '    proxy_cookie_domain ~.* $host;',
-  '    proxy_cookie_flags ~ nosecure;',
-  '  }',
-  '}',
-].join('\n');
 
 export const PREVIEW_APP = 'dashboard-preview';
 export const BROWSER_APP = 'dev-browser';
@@ -525,10 +507,11 @@ export function dashboardPreviewApp(): Json {
     kind:       'App',
     metadata:   { name: PREVIEW_APP },
     spec:       {
-      description: 'A static build of rancher/dashboard at a branch, tag or pull request, served by nginx with the API proxied to a Rancher of your choosing. A link a reviewer can open.',
+      description: 'A static build of the dashboard, or of its Storybook, at a branch, tag or pull request, served by nginx on a link anyone can open. A dashboard build has its API proxied to a Rancher of your choosing.',
       values:      {
         repo:        'rancher/dashboard',
         ref:         'master',
+        kind:        'dashboard',
         rancherUrl:  'https://rancher.ourhome.dev',
         port:        8080,
         hostCluster: 'local',
@@ -536,7 +519,8 @@ export function dashboardPreviewApp(): Json {
       valueLabels: {
         repo:        'GitHub repository',
         ref:         'Branch, tag, or pull/<n>/head',
-        rancherUrl:  'Rancher the preview talks to',
+        kind:        'dashboard or storybook',
+        rancherUrl:  'Rancher a dashboard build talks to',
         port:        'Port nginx listens on',
         hostCluster: 'Cluster the preview runs on',
       },
@@ -554,20 +538,6 @@ export function dashboardPreviewApp(): Json {
             `    ${ WORKSPACE_PORT_ANNOTATION }: "\${port}"`,
             `    ${ WORKSPACE_SCHEME_ANNOTATION }: http`,
             '    dev.rancher.io/preview: "true"',
-            '',
-          ].join('\n'),
-        },
-        {
-          name:    'nginx.yaml',
-          content: [
-            'apiVersion: v1',
-            'kind: ConfigMap',
-            'metadata:',
-            '  namespace: ${namespace}',
-            '  name: preview-nginx',
-            'data:',
-            '  default.conf: |',
-            yamlBlock(PREVIEW_NGINX, 4),
             '',
           ].join('\n'),
         },
@@ -617,12 +587,12 @@ export function dashboardPreviewApp(): Json {
             '            - name: site',
             '              mountPath: /site',
             '              readOnly: true',
-            '            - name: nginx',
+            '            - name: site',
+            '              subPath: nginx',
             '              mountPath: /etc/nginx/conf.d',
             '              readOnly: true',
             '          readinessProbe:',
-            '            httpGet:',
-            '              path: /dashboard/',
+            '            tcpSocket:',
             '              port: ${port}',
             '            periodSeconds: 10',
             '      volumes:',
@@ -632,9 +602,6 @@ export function dashboardPreviewApp(): Json {
             '            type: DirectoryOrCreate',
             '        - name: site',
             '          emptyDir: {}',
-            '        - name: nginx',
-            '          configMap:',
-            '            name: preview-nginx',
             '',
           ].join('\n'),
         },
