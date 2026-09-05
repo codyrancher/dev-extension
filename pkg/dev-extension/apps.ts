@@ -472,7 +472,9 @@ const PREVIEW_BUILD = [
   'cd /work/src',
   'git fetch --depth 1 origin "${ref}" && git checkout -q FETCH_HEAD',
   'yarn install --network-timeout 600000',
-  'ROUTER_BASE=/dashboard/ OUTPUT_DIR=/site/dist yarn build',
+  // ROUTER_BASE is where the app routes; RESOURCE_BASE is where its assets are fetched from.
+  // Both /dashboard/, so everything the build emits lives under the one path nginx serves.
+  'ROUTER_BASE=/dashboard/ RESOURCE_BASE=/dashboard/ OUTPUT_DIR=/site/dist yarn build',
   'echo built',
 ].join(' && ');
 
@@ -484,6 +486,11 @@ const PREVIEW_NGINX = [
   '  location /dashboard/ {',
   '    alias /site/dist/;',
   '    try_files $uri $uri/ /dashboard/index.html;',
+  '  }',
+  // A build that ignored RESOURCE_BASE emits its assets at the root; serve those from the
+  // build too rather than letting them fall into the proxy.
+  '  location ~ ^/(js|css|img|fonts|favicon\\.png|manifest\\.json|robots\\.txt)(/|$) {',
+  '    root /site/dist;',
   '  }',
   '  location / {',
   '    proxy_pass ${rancherUrl};',
