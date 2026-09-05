@@ -606,7 +606,7 @@ async function workspaceNameConflict(name: string): Promise<string> {
  * the workspace as Creating, and deleting it is one click. Tearing down half a workspace on
  * the user's behalf would be a guess about which half they wanted.
  */
-export async function createWorkspace(store: Store, name: string, appId: string, cluster?: string): Promise<void> {
+export async function createWorkspace(store: Store, name: string, appId: string, cluster?: string, values: Record<string, unknown> = {}): Promise<void> {
   if (cluster) {
     setCluster(cluster);
   }
@@ -626,7 +626,7 @@ export async function createWorkspace(store: Store, name: string, appId: string,
   // The Installation is the workspace. Apps Plus renders the App's templates into a Fleet
   // Bundle when it is saved, and Fleet makes the namespace, the Deployment and the Service on
   // the cluster - so from here on this file only reads them back.
-  await createWorkspaceInstance(store, name, appId, activeCluster());
+  await createWorkspaceInstance(store, name, appId, activeCluster(), values);
 
   // What no App can render, because it is not the App's: the terminal scripts copied from this
   // pod's own seed, and the RoleBinding that lets the workspace read the shared claude

@@ -12,14 +12,14 @@
 import {
   listAllWorkspaces, deleteWorkspace, listClusters, readableBytes
 } from '../api';
-import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
+import { listApps, reconcileUnrendered, ensureDefaultApp, DEFAULT_APPS } from '../apps';
 import { readPrefs, shownApps } from '../prefs';
 import DevList from './DevList.vue';
 import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
-  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE, DEFAULT_APP
+  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
@@ -189,7 +189,7 @@ export default {
         // The App every Rancher gets. From here rather than only from the product's init,
         // because at init Apps Plus's own types are not in the store yet - its bundle loads
         // beside this one - and the sidebar is on every page of this product.
-        if (!seeded && !apps.some((app) => app.id === DEFAULT_APP)) {
+        if (!seeded && DEFAULT_APPS.some((id) => !apps.some((app) => app.id === id))) {
           seeded = true;
           ensureDefaultApp(this.$store).catch(() => {
             seeded = false;

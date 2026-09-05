@@ -18,6 +18,7 @@ import {
 } from '../reviews';
 import { linkedPullRequest } from '../github';
 import { listApps } from '../apps';
+import { previewState, deployPreview, removePreview, rebuildPreview } from '../previews';
 import { DEFAULT_APP, DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE } from '../config/constants';
 
 const REFRESH_MS = 8000;
@@ -58,6 +59,8 @@ export default {
       editing:    0,
       editBody:   '',
       timer:      null,
+      preview:    null,
+      previewRancher: window.location.origin,
     };
   },
 
@@ -157,6 +160,7 @@ export default {
         this.detail = detail;
         this.comments = comments;
         this.run = run;
+        this.preview = await previewState(this.$store, this.workspace.name, this.workspace.cluster).catch(() => this.preview);
 
         if (detail?.meta?.ci?.failing && !this.failures) {
           this.failures = await ciFailures(this.number, this.repo).catch(() => null);
@@ -306,6 +310,46 @@ export default {
       }
     },
 
+    // ── the static preview ──
+    async deploy(done) {
+      this.error = '';
+
+      try {
+        await deployPreview(this.$store, this.workspace.name, {
+          repo: this.repo, ref: `pull/${ this.number }/head`, rancherUrl: this.previewRancher.trim().replace(/\/$/, ''),
+        }, this.workspace.cluster);
+        this.notice = 'Preview deploying. The first build takes several minutes; the link appears here when nginx is serving.';
+        await this.refresh();
+        done(true);
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
+    },
+
+    async rebuild(done) {
+      try {
+        await rebuildPreview(this.workspace.name, this.workspace.cluster);
+        this.notice = 'Rebuilding the preview at the PR\'s current head.';
+        await this.refresh();
+        done(true);
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
+    },
+
+    async dropPreview(done) {
+      try {
+        await removePreview(this.$store, this.workspace.name);
+        await this.refresh();
+        done(true);
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
+    },
+
     // ── CI ──
     async openFailure(check) {
       if (this.failureOpen === check.id) {
@@ -425,6 +469,74 @@ export default {
           <span v-if="run.note"> - {{ run.note }}</span>
           <router-link :to="conversationsTo">Open the conversation</router-link>
         </p>
+
+        <!--
+          A link a reviewer can open: the dashboard built at this PR's head, served on the node,
+          pointed at a Rancher. Infrastructure and tools kept apart - the preview talks to the
+          Rancher it is told to, and needs nothing but an account there.
+        -->
+        <div class="workspace-pr__preview">
+          <h4>Static preview</h4>
+          <template v-if="preview && preview.exists">
+            <p>
+              <span
+                class="workspace-pr__status"
+                :class="`workspace-pr__status--${ preview.state === 'serving' ? 'approved' : (preview.state === 'failed' ? 'error' : 'pending') }`"
+              >{{ preview.state }}</span>
+              <span class="text-muted"> {{ preview.detail }}</span>
+            </p>
+            <p v-if="preview.url && preview.state === 'serving'">
+              <a
+                :href="preview.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="workspace-pr__preview-link"
+              >{{ preview.url }}</a>
+              <span class="text-muted"> - built at {{ preview.ref }}, talking to {{ preview.rancherUrl }}. Share it; a reviewer logs in to that Rancher.</span>
+            </p>
+            <div class="workspace-pr__actions">
+              <AsyncButton
+                mode="apply"
+                action-label="Rebuild at current head"
+                waiting-label="Restarting"
+                success-label="Rebuilding"
+                size="sm"
+                @click="rebuild"
+              />
+              <AsyncButton
+                mode="delete"
+                action-label="Remove preview"
+                waiting-label="Removing"
+                success-label="Removed"
+                size="sm"
+                @click="dropPreview"
+              />
+            </div>
+          </template>
+          <template v-else>
+            <div class="workspace-pr__compose-row">
+              <input
+                v-model="previewRancher"
+                class="workspace-pr__rancher"
+                type="text"
+                placeholder="https://rancher.example.com"
+                aria-label="Rancher the preview talks to"
+              >
+              <AsyncButton
+                mode="apply"
+                action-label="Deploy static preview"
+                waiting-label="Deploying"
+                success-label="Deploying"
+                size="sm"
+                :disabled="!previewRancher.trim()"
+                @click="deploy"
+              />
+            </div>
+            <p class="text-muted workspace-pr__hint">
+              Builds the dashboard at this PR's head and serves it on a link of its own, with the API proxied to that Rancher.
+            </p>
+          </template>
+        </div>
 
         <!-- Red CI, spelled out -->
         <div
@@ -805,6 +917,20 @@ export default {
       margin-top: var(--dev-space-4);
       color:      var(--muted);
     }
+
+    &__preview {
+      margin-top: var(--dev-space-4);
+      border-top: 1px solid var(--border);
+      padding-top: var(--dev-space-3);
+
+      h4 { margin: 0 0 var(--dev-space-2) 0; }
+    }
+
+    &__preview-link { font-weight: 600; word-break: break-all; }
+
+    &__rancher { flex: 1 1 auto; min-width: 0; }
+
+    &__hint { margin: var(--dev-space-2) 0 0 0; font-size: 12px; }
 
     &__good    { color: var(--success); }
     &__bad     { color: var(--error); }
