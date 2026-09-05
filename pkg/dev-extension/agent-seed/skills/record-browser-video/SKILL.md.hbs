@@ -1,0 +1,374 @@
+---
+name: record-browser-video
+description: Record a smooth browser video against this project's Rancher instance. Iterate against the live UI to discover the exact action sequence, save it as a Playwright script, then play it back through `browser.mjs record-script` to capture a single uninterrupted recording. Use whenever capturing reproduction videos, fix demonstration videos, or any browser interaction recording.
+---
+
+Record a video of browser interaction against this project's Rancher instance. Videos are VP9 webm with an injected overlay (URL bar, cursor dot, click ripples, keystroke badges, URL change highlights).
+
+## Workflow: iterate → script → reset → record
+
+**Do not record while you're still figuring out the steps.** If you record live during exploration, every "what do I click next" pause becomes a multi-second dead zone in the video. Instead:
+
+1. **Iterate against the live UI** to discover the exact sequence of clicks/inputs/waits that produces the bug or demonstrates the fix. Use `browser.mjs --new-tab goto`, ad-hoc playwright-core scripts, or DOM inspection - whatever is fastest to converge on the correct sequence. **Don't record yet.**
+2. **Capture the sequence as a small Playwright script** at e.g. `/workspace/repro.mjs`. The script must default-export an `async ({page, ctx, startRecording}) => ...` function. Include the navigation that gets you to the start state - the script is responsible for everything from `goto` through the final assertion.
+3. **Verify the script reaches the goal end-to-end** by running it via `record-script` once. If a step fails, edit and re-run. Iterate until a single clean run produces what you want.
+4. **Reset state** if the script created/mutated Rancher resources that would prevent a clean re-run (delete the cluster you made, randomise resource names with `Date.now()`, etc.). Often this is unnecessary for read-only repros.
+5. **Final recording** - re-run with `record-script` against a fresh sidecar state. The video captures only the smooth scripted execution, no agent-thinking pauses.
+
+## The `record-script` command
+
+```bash
+# script default-exports async ({page, ctx, startRecording}) => { ... }
+node /workspace/browser.mjs record-script /workspace/repro.mjs /workspace/videos/before-fix.webm
+```
+
+Recording is **deferred** - frames are not saved until your script calls `startRecording()`. This keeps the initial page load (blank → spinner → content) out of the video. Call `startRecording()` after the page is loaded and ready, right before the first visible user action.
+
+Always uses a fresh tab so the user's open tabs are untouched.
+
+Save scripts and videos under `/workspace/videos/` (and keep the script next to its video - it's the source of truth for "what was recorded" and is easy to replay or tweak).
+
+### Script template
+
+The script function receives helpers in its argument. They fall into four groups:
+
+| Group | Helpers |
+|-------|---------|
+| Input | `click(target, opts?)`, `move(target)`, `type(target, text, opts?)`, `typeText(text, opts?)`, `scrollTo(target)`, `wheel(dy)`, `ownPointer()` |
+| Waiting | `waitFor(target, opts?)`, `settle(opts?)`, `idle(promiseOrFn)` |
+| Pacing | `pause(ms, opts?)`, `read(textOrMs, opts?)`, `readingTime(text, opts?)` |
+| Annotation | `say(text, opts?)`, `point(target, label, opts?)`, `highlight`, `removeHighlight`, `clearHighlights`, `banner`, `removeBanner` |
+
+Plus `page`, `ctx`, `startRecording`, `MOVE_DELAY`, `TYPE_DELAY`. Viewport is pinned to 1280x720 automatically.
+
+The input helpers do not teleport the pointer. Every `move`, `click` and `type` scrolls the target into view a frame at a time, glides the cursor along an eased, slightly curved path, occasionally overshoots the target and pulls back, settles for a beat, and holds the mouse button down for a human interval. Typing has variable inter-key timing: a beat before the first character lands, the first few characters slightly slow, longer gaps at word boundaries and punctuation. `locator.click()` and `page.fill()` give you none of that.
+
+What the helpers cover is the motion and the waiting around it. The press itself is still Playwright's: `click` runs the visibility wait out here with the pointer alive and then holds the pointer still for the mousedown-to-mouseup dwell (55-105ms), and if Playwright's remaining actionability check finds the element covered or moving, that part waits with the pointer parked. In practice it is already resolved, because `move` measured the element's box a moment earlier. If a control animates into place, wait for the thing that means it has arrived before clicking it.
+
+## Idle pointer motion is off by default
+
+Between and before actions the cursor **stays where the last gesture left it**.
+It used to ramble continuously through every hold, so that a still pointer never
+gave the recording away; in a bug reproduction that reads instead as a cursor
+wandering in circles while nothing happens, right where the viewer should be
+looking at the page. Set `RECORD_CURSOR_RAMBLE=1` in the environment to bring it
+back.
+
+Only the motion is switched off. Holds keep their full wall-clock length either
+way — frames are kept flowing by the overlay's 1px rAF keepalive canvas, not by
+the pointer — and `pause`, `read`, `idle` and `settle` behave identically. The
+ramble arithmetic below (duplicate-frame rates, per-pair travel, the 28ms
+emission target) describes the recorder with `RECORD_CURSOR_RAMBLE=1`; with it
+off, a hold is simply still.
+
+Gesture steps are emitted as fast as the CDP round trip allows and paced by wall time. Measured from inside the page under a live screencast, over six full-width glides: a step every 14-17ms, 15-16ms overall - about twice the rate the idle ramble runs at, and near the capture period measured on the same recording. So a gesture is the part of a recording where frames mostly do **not** tie: 8-16% of consecutive captured frames came out byte-identical inside gesture motion, against most of them during the holds either side. The ramble paces to a 28ms target instead of "round trip plus a fixed sleep", so on a fast link it does not spend round trips nobody sees, and on a slow one the round trip is the pace. Measured live over three recordings, the ramble emits every 27.9-28.0ms on average while the capture frames every 15-17ms (median; p10-p90 8-20ms).
+
+The pointer therefore moves **slower than the capture**, and that is arithmetic, not a defect: with a step every 28ms and a frame every 15-17ms, `1 - 15/28` of frames must show a position the previous frame already showed. Measured over the 2.5s opening hold of three live recordings: 49.4%, 41.0% and 49.4% of frame pairs repeated a position, against 47%, 39% and 47% predicted. The repeats are isolated, which is what matters - the longest run with the cursor in one place was 3-4 frame intervals, 0.050-0.060s. A hold still reads as a live hand because a fifth of a second never passes without the cursor moving; it is only successive *frames* that sometimes tie.
+
+Emission is the thing a slow link can take away, and nothing in this process can make CDP answer faster than it does. Measured against the helper layer with a synthetic round trip, resampled at 27.407fps: 0% duplicate-position frames at 8, 17, 29 and 34ms, 22% at 45ms, 41.4% at 60ms - i.e. the duplicate rate is set by the ratio of the two periods and rises as either moves. If a recording comes back looking stepped rather than merely tied, measure the round trip before looking anywhere else.
+
+`say(text)` is the whole banner beat in one call: show the label, hold it for exactly as long as the text takes to read, remove it. `point(target, label)` is the same for highlights: move the cursor onto the thing, draw the labelled box, hold for the label's reading time, drop it. Use these instead of assembling `banner` + sleep + `removeBanner` by hand.
+
+```js
+// /workspace/repro.mjs
+export default async function ({ page, startRecording, click, type, waitFor, settle, say, point, pause }) {
+  // --- Setup (not recorded) ------------------------------------------------
+  await page.goto('https://{{projectName}}-rancher')
+  await waitFor('[data-testid="login-submit"]')
+
+  // --- Start recording ------------------------------------------------------
+  startRecording()
+  await pause(400)               // opening beat; the pointer rambles underneath
+
+  // --- Visible interactions (recorded) --------------------------------------
+  // `type` does move -> click -> keystroke-by-keystroke for you.
+  await type('input[name="username"]', 'admin')
+  await click('button[type="submit"]')
+
+  await page.waitForURL(/\/dashboard/)
+  await waitFor('nav.side-nav')  // wait on the UI, not on the clock
+  await settle()                 // ... then on the network going quiet
+
+  await say('The cluster switcher is what crashes')
+  await point('button.cluster-switch', 'Crashes here')
+
+  // ... rest of the repro
+}
+```
+
+The helpers accept either a string selector (`'button.submit'`) or a Playwright Locator (`page.locator('button.submit')`); use whichever is shorter at the call site. Drop down to raw `page.mouse.*` only when you need coord-based clicks.
+
+Every random choice the input layer makes (path curvature, whether a given reach overshoots, each keystroke gap) comes from a seeded PRNG, so replaying the same script produces the same gestures. Set `RECORD_SEED` in the environment if you want a different but still reproducible variation.
+
+Two things in the recorder are paced by the wall clock rather than by the script: the idle pointer ramble, and the 1-3 attempt loop inside `scrollTo`. How many values those spend depends on CDP latency and on what the page did, so each runs on its **own** stream, seeded with a single draw from the main one. The main stream's consumption is therefore a function of the script alone, and a slower machine no longer shifts every gesture after the first hold. The flip side is the honest one: what runs off a local stream is not bit-identical between runs, only its statistics are. That is the ramble's path, and also the two gestures `scrollTo` spends its local stream on - the bow direction and curvature of the glide it makes on its second attempt, and the trailing settle after each `wheel`. A page that needs a different number of scroll attempts therefore changes the shape of those, not just the ramble. It cannot move anything else.
+
+## Before recording, ensure sidecars are up
+
+```bash
+wait-for-sidecars browser
+```
+
+The browser sidecar takes several seconds to boot, and CDP refuses connections until it is fully up. Skipping this leaves you with empty videos.
+
+## Quick fallback: live recording with fixed duration
+
+When you genuinely need a freeform recording (not from a script), the original mode still works:
+
+```bash
+node /workspace/browser.mjs record https://{{projectName}}-rancher /workspace/videos/freeform.webm 15000
+```
+
+`<url> <out.webm> [durationMs]`. Default duration 10s. Avoid for reproductions - pauses in your driving show up as pauses in the video. With `--new-tab` the recorder pins the tab to 1280x720; a tab you already had open is never resized, and either way the capture is pinned to the CSS viewport rather than coming back at the sidecar's 2x device pixel ratio.
+
+## CRITICAL: never move the pointer yourself
+
+**Use `click`, `type` and `move` for every visible interaction.** They interpolate the pointer: a curved, accelerating-then-decelerating path, an occasional overshoot and correction on longer travel, a short settle on arrival, and a real dwell between mousedown and mouseup. The cursor dot follows every step 1:1, so the viewer sees the pointer travel to the control and press it.
+
+Anything else teleports. `locator.click()` fires mousedown wherever the pointer already was, so the dot jumps or does not appear at all. `.hover()` snaps the pointer to the target in a single event, which reads as a cut rather than a movement. `page.fill()` sets a value with no keystrokes at all.
+
+```js
+// Wrong - pointer teleports, or never moves and the click looks like a ghost
+await page.locator('button.submit').click()
+await page.locator('button.submit').hover()
+await page.fill('input[name="user"]', 'admin')
+await page.locator('button.submit').scrollIntoViewIfNeeded()   // page jumps in one frame
+
+// Right
+await click('button.submit')
+await move('button.submit')
+await type('input[name="user"]', 'admin')
+await scrollTo('button.submit')
+```
+
+### Scrolling
+
+`click`, `move`, `type` and `point` scroll the target into view themselves, so most scripts never scroll explicitly. When you do want the scroll to be the visible action, use `scrollTo(target)` or `wheel(dy)` (positive is down).
+
+Never call `scrollIntoViewIfNeeded()` during a recording. Measured against the dashboard's `main.main-layout` scroller: it moves the page 556px in a single rendered frame, so the document cuts while the cursor glides. `scrollTo` eases the same travel instead, one step per rendered frame: measured live on 332px of travel against that same scroller, 38-45 steps (three runs), one run running 1, 1, 1, 2, 3, 3, 4, 5, 7, 5, 10, 9, 12, 10, 14, 15, 17, 18, 22, 22, 16, 15, 17, 19, 13, 12, 10, 9, 8, 7, 6, 4, 8, 2, 2, 1, 1, 1 px - accelerate, peak, decelerate, arrive. The step count is the tween's duration over the render period, so it moves with the frame rate: the same travel measured at ~25fps came out at 15-16 much larger steps.
+
+The tween clamps to what the scroller can actually give before it starts. Without that, `wheel(-600)` against a container with 330px left above spends its whole deceleration half pressed against the boundary: the measured step series ran -2, -4, -6, -9, -14, -17, -22, -25, -32, -38, -45, -49, -63 and then stopped dead at peak velocity, which reads as a cut. Clamping first means the ease describes travel that exists, so an over-long request still lands softly.
+
+The scroll is tweened inside the page rather than dispatched as a stream of CDP wheel events, because under an active screencast each round-tripped wheel event costs 40-140ms - that is one step every 2-4 captured frames, which is the same jump in fewer pieces. It picks which container moves from a point on screen the way a wheel does - `scrollTo` uses the target's own position, `wheel` uses the pointer's - so it works on the dashboard's inner scroll container as well as on the document.
+
+For coord-based clicks where there's no locator (e.g. clicking inside an iframe by pixel position), interpolate it yourself rather than jumping:
+
+```js
+for (let i = 1; i <= 20; i++) {
+  const t = 1 - Math.pow(1 - i / 20, 3)              // ease out
+  await page.mouse.move(fromX + (x - fromX) * t, fromY + (y - fromY) * t)
+  await page.waitForTimeoutStill(14)                  // your loop owns the pointer here
+}
+await page.waitForTimeoutStill(90)                    // settle
+await page.mouse.click(x, y, { delay: 80 })           // dwell on the press
+```
+
+Raw `page.mouse.move` / `down` / `up` / `click` / `dblclick` are live under `record-script` too. Each one claims the pointer for the call plus a 120ms lease and publishes where it left the cursor, so a ramble running under some outer wait stands aside for your loop instead of interleaving its own moves into it, and the next `click`/`move` glides from where your loop finished rather than from where the last helper was.
+
+That is what makes the pattern this design is built around safe - register a wait, then trigger it:
+
+```js
+const nav = page.waitForURL(/\/dashboard/)          // a ramble starts here
+for (...) { await page.mouse.move(x, y); await page.waitForTimeoutStill(14) }
+await nav                                           // your loop owned the pointer throughout
+```
+
+Still prefer `waitForTimeoutStill` inside a loop like that: it is a dead sleep, so it cannot spend a gap your loop means to be still on a hold of its own. And if you drive the pointer by hand across something longer than a single call - a drag, a canvas gesture, an iframe you are poking at by coordinate - take the lease explicitly rather than leaning on its expiry:
+
+```js
+const done = await ownPointer()
+try { /* raw mouse work, any duration */ } finally { done({ x, y }) }   // where you left it
+```
+
+## CRITICAL: the inputs must never sit and wait while nothing happens
+
+There are two separate reasons a recording pauses, and only one of them is legitimate:
+
+1. **Waiting for the UI.** Wait for the actual condition and continue the instant it holds. Never guess a duration.
+2. **Letting the viewer read.** Hold only as long as the text on screen takes to read, derived from the text itself.
+
+Anything else is dead air. A frozen cursor over a static page is the single most obvious tell that a video was generated rather than recorded.
+
+### Waiting for the UI
+
+`waitForTimeout(N)` always burns its full N milliseconds even if the page was ready 50ms in. Use `waitFor(target, opts?)` for element presence, `settle(opts?)` for "the view has finished loading", and `page.waitForURL` / `page.waitForResponse` for navigation and specific requests.
+
+**The raw Playwright waits are live under `record-script`.** A script that calls `page.waitForTimeout(4000)` used to freeze the pointer, the page and the compositor for four seconds, and the two scripts this repo ships did it seven times each. The recorder now routes them:
+
+| Raw call | What it does under `record-script` |
+|----------|------------------------------------|
+| `page.waitForTimeout(ms)` | a `pause(ms)`: same duration, pointer rambling, and a warning on stderr if the hold is long and untied |
+| `page.waitForSelector` / `waitForURL` / `waitForResponse` / `waitForRequest` / `waitForLoadState` / `waitForFunction` / `waitForEvent` / `waitForNavigation` | wrapped in `idle(...)`: same result, same timeout, pointer alive while they wait |
+| `locator.waitFor(...)` | the same, patched on `Locator.prototype` so it applies to locators you create yourself. That prototype is shared by every page in the process, so the patch resolves the ramble from the locator's own page and calls straight through for a page the recorder does not own |
+| `page.mouse.move` / `down` / `up` / `click` / `dblclick` | claims the pointer for the call plus a 120ms lease and publishes the new position, so a ramble under a pending wait cannot interleave moves into your own gesture |
+| `page.waitForTimeoutStill(ms)` | the original dead sleep, for a genuinely off-camera beat or a frame with its own animation |
+
+This is a floor, not a licence. A routed `waitForTimeout` is still a guessed duration that burns its full length whether or not the UI was ready - it just no longer looks like the recording froze. Write the wait against the condition.
+
+| Don't | Do |
+|-------|-----|
+| `await page.waitForTimeout(2000)` // wait for page | `await waitFor('table.cluster-list')` |
+| `await page.waitForTimeout(12000)` // wait after nav | `await page.waitForURL(/\/cluster\/local/)` then `await settle()` |
+| `await page.waitForTimeout(1000)` // wait for modal | `await waitFor('.modal')` |
+| `await page.waitForTimeout(3000)` // wait for API | `await page.waitForResponse(r => r.url().includes('/v1/clusters'))` |
+| `await page.waitForTimeout(1500)` // wait for spinner | `await waitFor('.loading-indicator', { state: 'hidden' })` |
+
+`settle()` waits for the dashboard's loading indicators to disappear and then for a short window with no page requests in flight, and returns as soon as both hold - a view that is ready in 200ms costs 200ms. It ignores websockets, which is why it works where `waitForLoadState('networkidle')` hangs forever against Rancher. Tune it with `settle({ quiet, timeout })`; it never blocks past `timeout` (default 8s).
+
+If you find yourself reaching for `waitForTimeout(1500)` because "the table needs a moment to load", that's wrong - the table has a selector you can wait on. Inspect the DOM live during the iterate phase and write the wait against whatever appears when the UI settles.
+
+### Letting the viewer read
+
+Reading time is a function of the text, not a number you pick. `readingTime(text)` budgets a fixation cost plus a 250wpm allowance, floored so a one-word label still registers. There is a ceiling but it is a runaway guard, not a pacing knob - it used to be 3000ms, which held a 26-word banner at an implied 520wpm, i.e. unreadably fast, in exactly the case where the hold matters most. Banners wrap rather than clipping to an ellipsis, so long text is legible; `say` warns on anything that needs more than 6.5s. If a beat computes long, cut the text, don't cut the hold. `say` and `point` apply the budget for you:
+
+```js
+// Don't - the same magic number regardless of how much there is to read
+const id = await banner('Endpoints in the masthead')
+await page.waitForTimeout(4500)
+await removeBanner(id)
+
+// Do - held for as long as those four words take to read, then gone
+await say('Endpoints in the masthead')
+```
+
+```js
+// Don't
+const hl = await highlight('ul[role="tablist"]', 'No HTTPRoutes tab here')
+await page.waitForTimeout(4500)
+await removeHighlight(hl)
+
+// Do - cursor moves onto the target, box appears, held for the label, dropped
+await point('ul[role="tablist"]', 'No HTTPRoutes tab here')
+```
+
+Override a specific beat with `say(text, { hold: 2500 })` or `point(target, label, { hold: 2500 })` when you genuinely need longer, and pass `{ wpm, min, max }` if a whole video should read faster or slower.
+
+For a beat that is not tied to any text - the opening frame, a final hold - use `pause(ms)`. By default the pointer simply holds still for it. With `RECORD_CURSOR_RAMBLE=1` it rambles for the whole hold instead: a heading that wanders, a speed that never reaches zero, and a pull back towards where the hand is resting, so the excursion stays inside about 18px and the longest stretch with the cursor in one place is 0.050-0.060s (measured). A whole recording peaks higher than a pure hold does, at the click dwells - see below.
+
+Measured live on the 2.5s opening `pause` of three recordings (a deliberately long hold, to stress the ramble rather than to model a good beat), by tracking the cursor dot's centroid across every captured frame at 58.2-68.3fps: excursion 17-24 x 18px, and a per-pair travel distribution of min 0.00, p25 0.00, median 0.34-0.99, mean 0.79-0.92, p90 2.07-2.14, max 2.50-3.29px. 41.0-49.4% of pairs repeated a position exactly, and the longest run with the cursor in one place was 3-4 frame intervals (0.050-0.060s) - see the duplicate arithmetic near the top of this document, which is where those repeats come from.
+
+Do not read a narrow band into that. Per-frame travel is **not** speed x frame interval, because a captured frame shows the *last dispatched* pointer position: a frame-to-frame delta spans one or two emitter steps depending on where the frame boundary falls. The bound is `v_max x (frame_period + step_period)` - 55px/s x 1.22 over 15 + 28ms, about 2.9px at the median frame period - with a floor of 0, since the walk can double back inside a frame. Evaluated per pair against that pair's own frame interval, 2 of 170 pairs came out above it and both by under 20%, which is the frame timestamps being *arrival* times: delivery jitter moves a frame boundary by more than that. Take the distribution as the description and the formula as the shape of the ceiling, not as a threshold to assert in a test.
+
+A live cursor is what stops a hold *looking* frozen; it is not what makes the hold worth having. A beat with nothing to read and nothing loading is still the video sitting and waiting. So `pause` warns above 1200ms unless you acknowledge it with `pause(ms, { ack: true })` - the same guard from the other end as `say`'s warning above 6.5s of reading. Holds that `read` and `say` derive from on-screen text never warn, because those are tied to something. `pause(ms, { still: true })` really does freeze the pointer; only use it when something else on screen is moving.
+
+Everything else that waits - `settle()`, `waitFor()`, the reading holds inside `say`/`point`, and the raw Playwright waits listed above - runs the same ramble underneath. `idle(...)` is still there for a wait none of them covers (a poll you wrote, a promise from somewhere else): `await idle(myOwnCondition())`.
+
+Two places the pointer legitimately holds still: the mousedown-to-mouseup dwell of a click, and the Playwright actionability check inside `click()` if it has anything left to do. Both are short, and they are what sets the longest still stretch of a whole recording: a couple of tenths of a second, not the 0.05-0.06s of a pure hold. Measured 0.13-0.28s across five earlier recordings of the two scripts in `artifacts/` and four this round, the top of that range being the click that opens a tab, against the 16.9-18.9s freezes the same two scripts produced before the waits went live. If a wait longer than that comes out frozen, look for a `mouse.move` rejection - the ramble prints one line to stderr per hold when a move fails and keeps the hold alive without motion, rather than dying silently. Verified by forcing every move to reject under two consecutive holds: two lines, and both holds ran their full duration.
+
+When you check a recording for freezes, say what you counted and what rate you sampled at, because one recording gives several answers. The definition here: a frame counts as frozen when it is byte-identical to the frame before it, measured on the raw screencast jpgs rather than on the webm, whose lossy re-encode ties at its own rate. On this round's four recordings of the two scripts in `artifacts/`, two of each: 36-38% of frame pairs tied at the rate the frames actually arrived (68-69fps), 22-24% resampled to 45fps, 13-15% at 36fps, 4-8% at 27fps. Same frames, same definition, and the answer swings by five to eight times - at 68fps the sample period is roughly half the ramble's 28ms emission, so consecutive frames tie by construction. That is the same arithmetic as the duplicate-pair rate above, and it lands lower than the 41-49% quoted there because that figure is a pure hold while a whole recording is mostly gestures, page loads and banner animations, where successive frames differ. The rate-independent number is the longest run: 0.26-0.28s in these four, in every one of them the click that opens a tab.
+
+## Type character-by-character, never use fill()
+
+`page.fill()` sets the value instantly - invisible in a recording. The `type` helper clicks into the field, waits a beat the way a person looks at what they clicked, then drives the keystrokes with human cadence: a short lead-in before the first character lands, the first few characters slightly slower before the rhythm settles, variable gaps in between, longer pauses after spaces and punctuation, the occasional short think-pause. Each keystroke appears as a badge in the overlay.
+
+```js
+await type('input[name="user"]', 'admin')
+```
+
+`TYPE_DELAY` (60ms) is the base gap the variation is applied around, not a fixed interval. Override it for a specific field with `await type(loc, 'verylongvalue', { delay: 40 })`. Use `typeText(text, opts?)` when the field is already focused and you only want the keystrokes. Don't reach for `page.fill()` even when nobody's watching the typing happen - silently-set values look like glitches in playback.
+
+## Show the load-bearing steps, not every step
+
+Show the steps a viewer needs to reproduce the bug or believe the fix: navigation, the specific control being acted on, the resulting state. **Cut anything that doesn't carry weight** - don't open the hamburger menu to navigate if the collapsed-sidebar icon is already clickable; don't expand a section if the bug appears in the collapsed view; don't visit an intermediate page just because a human would. Each non-load-bearing step adds seconds of dead air for a reviewer who's seen the dashboard a hundred times.
+
+## Pacing budget
+
+Target **10-25 seconds total** for a single before- or after-video. Most of that should be pointer travel, typing and page transitions, not holds. If you let `say`, `point` and `settle` set the pacing, four or five narrated beats land around 12-15 seconds on their own.
+
+Verify the duration after every recording:
+
+```bash
+ffprobe -v error -show_entries format=duration -of csv=p=0 /workspace/videos/after-fix.webm
+```
+
+The recorder prints `captured N frames over Xs -> encoding at F fps` and encodes at the rate the frames actually arrived at, so **the video's duration equals the wall-clock duration of the recorded section**. If ffprobe disagrees with how long the run felt, something went wrong - and both times it has gone wrong it was a *constant* in the encode rate. An older `browser.mjs` hardcoding 15 fps stretches every recording by a third; a version whose measured rate is clamped at 60 stretches a 61-68fps capture by up to 13%. Compare ffprobe against the `over Xs` in that line, not against your memory of the run: they should agree to a few hundredths.
+
+If a draft runs long, in order: replace timeout waits with `settle`/`waitFor`, replace hand-rolled banner holds with `say`/`point`, then cut non-load-bearing navigation steps. Do not fix a long video by shortening reading holds below what the text needs - that trades one bad video for another.
+
+## Keep credentials out of the recording
+
+Do login (and any other secret entry) in the **un-recorded setup phase**, before `startRecording()`. Keystrokes appear as visible badges in the overlay, and these videos get posted to public PRs, so typing a real password on camera leaks it. Navigate to the authenticated start state during setup, then call `startRecording()` once you're on the page the video should actually show.
+
+## URL change highlights
+
+Full navigation, `pushState`, `replaceState`, and hash changes are auto-highlighted in the URL bar with a pink flash that fades over 3 seconds, which makes route transitions pop in the recording.
+
+## Highlighting elements
+
+To call attention to a specific element - the bug location, the changed control, the affected row - use the `highlight` helper. It draws a red labeled rectangle (2px `#ff3333`, 4px padding, 3px radius) that repositions every frame so it tracks scrolling and layout shifts, sits `pointer-events:none` above the cursor dot, and accepts the same selector/locator inputs as `click`:
+
+```js
+await point('button.cluster-switch', 'Crashes here')
+// = move the cursor onto it, draw the box, hold for the label, remove the box
+```
+
+Use `highlight` / `removeHighlight` directly only when the box has to stay up across other actions (for example while a resource is being created and you want the count cell boxed the whole time). Otherwise `point` is the call.
+
+Color is overridable per call: `await point(loc, 'New', { color: '#22cc66' })`. Drop all open highlights at once with `await clearHighlights()`.
+
+If the target rerenders or moves around mid-recording, fall back to the page-level API so the overlay re-resolves the element on every frame:
+
+```js
+const id = await page.evaluate(
+  ({ selector, label }) => window.__highlight({ selector, label }),
+  { selector: 'tr[data-row="123"] td.status', label: 'Status flips here' },
+)
+```
+
+Use highlights sparingly - one or two per video, held just long enough for the viewer to see them, then cleared before the next interaction. Highlight the SINGLE thing the viewer should look at, not "all three cards on the page".
+
+**Highlight DOM elements only - never the overlay itself.** The URL bar, keystroke badges, and cursor dot are part of the recording overlay, not the page. Highlighting them is meaningless to the viewer.
+
+## Bare modifier keys render as "(hold)" badges
+
+The keystroke-badge handler emits a held-modifier badge (e.g. `Alt (hold)`) whenever `Alt`, `Ctrl`, `Meta`, or `Shift` is pressed on its own. The badge stays on screen for as long as the key is held and drops on keyup. Combos like `Ctrl+K` and `Alt+F4` continue to render as a single combined badge that fades after 1.2s. You shouldn't need to inject anything for repros that hinge on holding a modifier alone - just drive the key the way you would in real use:
+
+```js
+await page.keyboard.down('Alt')
+await click('button.thing')
+await page.keyboard.up('Alt')
+```
+
+## Webpack dev-server runtime overlay
+
+The Rancher dashboard runs under webpack-dev-server, which mounts a runtime-error iframe (`#webpack-dev-server-client-overlay`) at max z-index whenever there's a compile or runtime warning. That iframe intercepts mouse events even though it looks like an overlay, which kills the cursor dot, click ripples, and keystroke badges. The injected overlay continuously removes that iframe via MutationObserver, so you don't need to handle it manually. Don't add your own `dismissOverlay` calls; they're redundant and can race with the navigation re-inject.
+
+## Compositor keepalive (automatic - don't reimplement)
+
+CDP screencast only emits frames when the compositor produces new content. During a quiet pause with no animation the stream would otherwise go silent. Both overlays keep the compositor busy for the whole recording with a rAF loop on an element at `opacity:0.003` - just above the threshold where chromium short-circuits the layer. They do it differently: `browser.mjs` (the `record-script` path) repaints a 1px canvas in the corner, `overlay.mjs` (the `record-template.mjs` path) hue-rotates a 2px strip down the left edge. Either way, don't add your own canvas/rAF loops to scripts; they're redundant.
+
+The cursor dot has no CSS position transition. It is not supposed to: the recorder emits many small mouse-move steps per gesture and the dot must land on each one, or it visibly trails the true pointer. If you are hand-rolling pointer motion, interpolate it (see the coord-based click snippet above) rather than reinstating a transition.
+
+## Troubleshooting: cursor not visible in the recording
+
+If the playback shows clicks happening but no pink cursor dot or ripples:
+1. Confirm `browser.mjs` has the webpack-overlay killer (search for `killWebpackOverlay`). Older copies don't.
+2. Make sure every interaction goes through `click` / `type` / `move`. A bare `page.click()` with no prior pointer move means the cursor never moved, so there's nothing to render.
+3. Check that you called `startRecording()` *after* the page is idle. If you call it before the navigation finishes, the overlay may have been re-injected mid-frame.
+
+## Maintaining this skill (it exists twice)
+
+The same playbook is installed under two names, `my-browser-record-video` and `record-browser-video`, because both names are referenced elsewhere. They are not hand-synced copies and must not be edited directly:
+
+- **Source:** `.claude/skills/my-browser-record-video/SKILL.md.hbs`, plus `overlay.mjs` and `record-template.mjs` in the same directory.
+- **Generated:** `my-browser-record-video/SKILL.md`, `record-browser-video/SKILL.md`, and copies of the two `.mjs` files in `record-browser-video/`. The only differences between the two SKILL.md files are the frontmatter `name:`; the project name is substituted into both from the same placeholder.
+
+```bash
+node .claude/skills/my-browser-record-video/sync-skills.mjs           # regenerate after editing the .hbs
+node .claude/skills/my-browser-record-video/sync-skills.mjs --check   # exit 1 if an output is stale or the overlays drifted
+```
+
+Nothing runs this for you, so run it in the same change that edits the source.
+
+### The overlay exists twice too, and the generator does not own both
+
+There are two overlay implementations, and which one runs depends on how you record:
+
+| Path | Overlay that actually runs | Owned by |
+|------|----------------------------|----------|
+| `browser.mjs record-script` (the recommended path) | the inline `OVERLAY_SCRIPT` in `browser.mjs` (`__hn_`-prefixed element ids) | `browser.mjs` itself. Edit it there. |
+| `record-template.mjs` (standalone fallback) | `overlay.mjs`, imported and `page.evaluate`d | this directory, copied to the other skill by the generator. |
+
+They are not copies of each other: different element ids, different compositor keepalive, different `__highlight` signature (the inline one takes a live element from `locator.evaluate`, `overlay.mjs` takes a selector or a rect). **Editing `overlay.mjs` changes nothing about a `record-script` recording, and vice versa.** The generator copies `overlay.mjs` between skill directories; it does not and cannot generate the inline one.
+
+What `--check` does about that is a **parity check**, not an identity check: it asserts that a list of viewer-visible behaviours (banner text wrapping, the 80vw banner width cap, the compositor keepalive, the cursor press squash, no positional transition on the dot, url-bar tracking of SPA navigation, ripples, key badges, the webpack-overlay killer, the highlight API, the banner API) is present in **both** copies, and names the copy and the behaviour when one goes missing. That is the failure mode that actually happened - a banner-wrap fix hand-applied twice, with nothing to catch it if it had landed once. It does not prove the two overlays are equivalent, and nothing does short of merging them.
+
