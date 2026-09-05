@@ -12,8 +12,8 @@
 import {
   listAllWorkspaces, deleteWorkspace, listClusters, readableBytes
 } from '../api';
-import { showTerminal } from '../terminals';
 import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
+import { readPrefs, shownApps } from '../prefs';
 import DevList from './DevList.vue';
 import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
@@ -69,7 +69,6 @@ export default {
         {
           label: 'My Work', icon: 'icon-list-flat', route: MY_WORK_ROUTE
         },
-        { label: 'Terminal', icon: 'icon-terminal', action: 'terminal' },
         {
           label: 'Insights', icon: 'icon-monitoring', route: INSIGHTS_ROUTE
         },
@@ -91,29 +90,19 @@ export default {
      * Every cluster gets a section even with nothing in it, so the plus that makes one there is
      * somewhere to press.
      */
+    /**
+     * One list per Apps Plus app, holding every workspace made from it wherever it runs.
+     *
+     * Not one list per app per cluster: that drew a "None yet" under every cluster under every
+     * app, and the cluster a workspace is on is one fact about it, not a heading. A workspace on
+     * a cluster other than the local one says so on its row; the clusters themselves are one
+     * section at the bottom, with what is left on each.
+     */
     sections() {
-      const clusters = this.clusters.length ? this.clusters : [{ id: 'local', name: 'local' }];
-      const known = new Set(clusters.map((cluster) => cluster.id));
-      const strays = [...new Set(this.workspaces.map((workspace) => workspace.cluster))]
-        .filter((id) => id && !known.has(id))
-        .map((id) => ({
-          id, name: id, memoryFree: 0, diskFree: 0
-        }));
-      const all = [...clusters, ...strays];
-
-      // One section per Apps Plus app, which is what a template is now. The icon is the one
-      // every app gets: an App has no glyph of its own, and a heading that is the app's name
-      // reads better than one that guesses at a brand from it.
       return this.apps.map((app) => ({
-        id:       app.id,
-        label:    app.label,
-        icon:     'icon-apps',
-        clusters: all.map((cluster) => ({
-          ...cluster,
-          rows: this.rowsFor(this.workspaces.filter((workspace) => (
-            workspace.cluster === cluster.id && workspace.app === app.id
-          ))),
-        })),
+        id:    app.id,
+        label: app.label,
+        rows:  this.rowsFor(this.workspaces.filter((workspace) => workspace.app === app.id)),
       }));
     },
 
@@ -123,21 +112,11 @@ export default {
      * A template removed from the code must not take its workspaces off the page with it: they
      * are still running and somebody still has to be able to delete them.
      */
+    /** Workspaces whose app is hidden in Settings, or gone. Listed, since they exist. */
     orphans() {
       const known = new Set(this.apps.map((app) => app.id));
-      const lost = this.workspaces.filter((workspace) => !known.has(workspace.app));
 
-      if (!lost.length) {
-        return [];
-      }
-
-      return [...new Set(lost.map((workspace) => workspace.cluster))].map((id) => ({
-        id,
-        name:       id,
-        memoryFree: 0,
-        diskFree:   0,
-        rows:       this.rowsFor(lost.filter((workspace) => workspace.cluster === id)),
-      }));
+      return this.rowsFor(this.workspaces.filter((workspace) => !known.has(workspace.app)));
     },
 
     /**
@@ -146,11 +125,28 @@ export default {
      * A bar has to be a proportion of something. Against a cluster's own capacity every cluster
      * would look equally full; against the largest, two clusters side by side compare.
      */
+    /** What the meters are drawn against: the fullest cluster is the whole bar. */
     biggest() {
       return {
-        memory: Math.max(...this.sections.map((section) => section.memoryFree || 0), 1),
-        disk:   Math.max(...this.sections.map((section) => section.diskFree || 0), 1),
+        memory: Math.max(...this.clusterRows.map((cluster) => cluster.memoryFree || 0), 1),
+        disk:   Math.max(...this.clusterRows.map((cluster) => cluster.diskFree || 0), 1),
       };
+    },
+
+    /** The clusters, with how many workspaces each holds. */
+    clusterRows() {
+      const clusters = this.clusters.length ? this.clusters : [{ id: 'local', name: 'local', memoryFree: 0, diskFree: 0 }];
+      const known = new Set(clusters.map((cluster) => cluster.id));
+      const strays = [...new Set(this.workspaces.map((workspace) => workspace.cluster))]
+        .filter((id) => id && !known.has(id))
+        .map((id) => ({
+          id, name: id, memoryFree: 0, diskFree: 0
+        }));
+
+      return [...clusters, ...strays].map((cluster) => ({
+        ...cluster,
+        workspaces: this.workspaces.filter((workspace) => workspace.cluster === cluster.id).length,
+      }));
     },
 
     currentWorkspace() {
@@ -173,15 +169,17 @@ export default {
   methods: {
     async refresh() {
       try {
-        const [workspaces, clusters, apps] = await Promise.all([
+        const [workspaces, clusters, apps, prefs] = await Promise.all([
           listAllWorkspaces(),
           listClusters().catch(() => this.clusters),
           listApps(this.$store).catch(() => this.apps),
+          readPrefs().catch(() => ({ hiddenApps: [] })),
         ]);
 
         this.workspaces = workspaces;
         this.clusters = clusters;
-        this.apps = apps;
+        // Every App for the seed check below; the sections show the ones this person kept.
+        this.apps = shownApps(apps, prefs);
         cached = workspaces;
 
         // A workspace made by the in-cluster API is an Installation nobody has rendered yet.
@@ -231,11 +229,11 @@ export default {
     },
 
     /** The create page, with this cluster already chosen. */
-    createIn(cluster, app) {
+    createIn(app) {
       return {
         name:   CREATE_ROUTE,
         params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER },
-        query:  { cluster: cluster.id, app },
+        query:  { app },
       };
     },
 
@@ -243,19 +241,14 @@ export default {
     rowsFor(workspaces) {
       return workspaces.map((workspace) => ({
         key:   workspace.name,
-        label: workspace.name,
+        // The cluster on the row only when it is not the local one, which is where most are.
+        label: workspace.cluster && workspace.cluster !== 'local' ? `${ workspace.name } · ${ workspace.cluster }` : workspace.name,
         state: workspace.state,
         to:    {
           name:   WORKSPACE_ROUTE,
           params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: workspace.name },
         },
       }));
-    },
-
-
-    /** The drawer, not a page. See showTerminal. */
-    openTerminal() {
-      showTerminal(this.$store);
     },
 
     globalTo(route) {
@@ -290,48 +283,50 @@ export default {
   <nav class="dev-sidebar">
     <div class="dev-sidebar__scroll">
       <!--
-        The template, and under it the clusters its workspaces are on. The heading is not a
-        DevList: a template has no rows of its own, and a list with nothing in it would draw an
-        empty line under every one of them.
+        One list per app; the + on its heading makes a new workspace of that app. The heading
+        links to the list of every workspace, which is where one is stopped or deleted.
       -->
-      <div
-        v-for="template in sections"
-        :key="template.id"
-        class="dev-sidebar__template"
-      >
-        <!--
-          The heading is a link to the list of every workspace, which is where one is stopped or
-          deleted. The landing route redirects into a workspace, so without this the list is a
-          page nothing reaches.
-        -->
-        <router-link
-          class="dev-sidebar__template-head"
-          :to="listTo"
-        >
-          <i
-            class="dev-sidebar__template-icon icon"
-            :class="template.icon"
-          />
-          <span class="dev-sidebar__template-label">{{ template.label }}</span>
-        </router-link>
-
-        <DevList
-          v-for="section in template.clusters"
-          :key="section.id"
-          class="dev-sidebar__cluster"
-          :label="section.name"
-          icon="icon-cluster"
-        :tone="low(section) ? 'warning' : ''"
+      <DevList
+        v-for="section in sections"
+        :key="section.id"
+        class="dev-sidebar__app"
+        :label="section.label"
+        icon="icon-apps"
         :rows="section.rows"
         :current="currentWorkspace"
-        :create-to="createIn(section, template.id)"
-        :create-label="`New ${ template.label } workspace on ${ section.name }`"
+        :create-to="createIn(section.id)"
+        :create-label="`New ${ section.label } workspace`"
         deletable
         @delete="remove"
-      >
-        <!-- What is left on it, as two bars, while the pointer is on the name. -->
-        <template #popover>
-          <Stack gap="2">
+      />
+      <DevList
+        v-if="orphans.length"
+        class="dev-sidebar__app"
+        label="Other apps"
+        icon="icon-apps"
+        :rows="orphans"
+        :current="currentWorkspace"
+        deletable
+        @delete="remove"
+      />
+
+      <!-- The clusters, once, with what is left on each: the question when making a workspace. -->
+      <div class="dev-sidebar__clusters">
+        <div class="dev-sidebar__template-head">
+          <i class="dev-sidebar__template-icon icon icon-cluster" />
+          <span class="dev-sidebar__template-label">Clusters</span>
+        </div>
+        <div
+          v-for="cluster in clusterRows"
+          :key="cluster.id"
+          class="dev-sidebar__cluster-row"
+          :class="{ 'dev-sidebar__cluster-row--low': low(cluster) }"
+        >
+          <div class="dev-sidebar__cluster-name">
+            <span>{{ cluster.name }}</span>
+            <span class="dev-sidebar__cluster-count">{{ cluster.workspaces }}</span>
+          </div>
+          <Stack gap="1">
             <Row
               class="dev-sidebar__meter"
               gap="3"
@@ -339,9 +334,9 @@ export default {
               <span class="dev-sidebar__meter-label">MEM</span>
               <span class="dev-sidebar__meter-track"><span
                 class="dev-sidebar__meter-fill"
-                :style="{ width: bar(section.memoryFree, biggest.memory) }"
+                :style="{ width: bar(cluster.memoryFree, biggest.memory) }"
               /></span>
-              <span class="dev-sidebar__meter-value">{{ readable(section.memoryFree) }}</span>
+              <span class="dev-sidebar__meter-value">{{ readable(cluster.memoryFree) }}</span>
             </Row>
             <Row
               class="dev-sidebar__meter"
@@ -350,38 +345,14 @@ export default {
               <span class="dev-sidebar__meter-label">DISK</span>
               <span class="dev-sidebar__meter-track"><span
                 class="dev-sidebar__meter-fill"
-                :style="{ width: bar(section.diskFree, biggest.disk) }"
+                :style="{ width: bar(cluster.diskFree, biggest.disk) }"
               /></span>
-              <span class="dev-sidebar__meter-value">{{ readable(section.diskFree) }}</span>
+              <span class="dev-sidebar__meter-value">{{ readable(cluster.diskFree) }}</span>
             </Row>
           </Stack>
-        </template>
-        </DevList>
-      </div>
-
-      <!-- A workspace whose template has been removed from the code still has to be reachable. -->
-      <div
-        v-if="orphans.length"
-        class="dev-sidebar__template"
-      >
-        <div class="dev-sidebar__template-head">
-          <i class="dev-sidebar__template-icon icon icon-warning" />
-          <span class="dev-sidebar__template-label">Unknown app</span>
         </div>
-        <DevList
-          v-for="section in orphans"
-          :key="section.id"
-          class="dev-sidebar__cluster"
-          :label="section.name"
-          icon="icon-cluster"
-          :rows="section.rows"
-          :current="currentWorkspace"
-          deletable
-          @delete="remove"
-        />
       </div>
     </div>
-
     <div
       v-if="error"
       class="dev-sidebar__error"
@@ -395,20 +366,7 @@ export default {
         v-for="global in globals"
         :key="global.label"
       >
-        <button
-          v-if="global.action"
-          v-clean-tooltip="global.label"
-          type="button"
-          :aria-label="global.label"
-          @click="openTerminal"
-        >
-          <i
-            class="icon"
-            :class="global.icon"
-          />
-        </button>
         <router-link
-          v-else
           v-clean-tooltip="global.label"
           :to="globalTo(global.route)"
           :aria-label="global.label"
@@ -489,6 +447,33 @@ export default {
     }
 
     // The two bars in a cluster's popover: a label, a track, and the number, on one line each.
+
+    &__clusters {
+      margin-top:  var(--dev-space-4);
+      border-top:  1px solid var(--border);
+      padding-top: var(--dev-space-2);
+    }
+
+    &__cluster-row {
+      padding: var(--dev-space-2) var(--dev-space-4);
+
+      &--low .dev-sidebar__cluster-name { color: var(--warning); }
+    }
+
+    &__cluster-name {
+      display:         flex;
+      justify-content: space-between;
+      font-size:       12px;
+      font-weight:     600;
+      text-transform:  uppercase;
+      letter-spacing:  0.04em;
+      margin-bottom:   var(--dev-space-1);
+    }
+
+    &__cluster-count {
+      color:       var(--muted);
+      font-weight: 400;
+    }
 
     &__meter-label {
       flex:        0 0 34px;

@@ -21,7 +21,6 @@ import {
 import { WORKSPACE_VUE_CONFIG, WORKSPACE_CONFIG_MOUNT } from './workspace-config';
 import { INSIGHTS_SERVER } from './insights-server';
 import { WORKSPACE_API_SERVER } from './workspace-api';
-import { DevPrompt, DEFAULT_PROMPTS } from './prompts';
 import {
   createWorkspaceInstance, deleteWorkspaceInstance, appById
 } from './apps';
@@ -1625,53 +1624,8 @@ export async function migrateGithubToken(): Promise<void> {
 
 
 
-/**
- * The prompts this person's queued conversations open with.
- *
- * Per user and next to the secret store, for the same reason it is: two people using this
- * product have different ideas about what a review should say, and neither should be editing the
- * other's. Defaults are written in the first time they are asked for, so the page has something
- * to show and to edit rather than an empty box.
- */
-async function promptsName(): Promise<string> {
-  return `dev-prompts-${ await currentOwner() }`;
-}
 
-export async function listPrompts(): Promise<DevPrompt[]> {
-  const name = await promptsName();
-  const config = await devFetch(`${ BASE }/v1/configmaps/${ DEV_SYSTEM_NAMESPACE }/${ name }`).catch(() => null);
 
-  // The declaration is what says which prompts exist and what they are for; the ConfigMap only
-  // holds the text. So a prompt added to the code appears for everyone, with its default, and a
-  // prompt removed from the code stops being offered even if someone's copy still has the text.
-  return DEFAULT_PROMPTS.map((prompt) => ({
-    ...prompt,
-    text: config?.data?.[prompt.id] ?? prompt.text,
-  }));
-}
-
-export async function savePrompts(texts: Record<string, string>): Promise<void> {
-  const name = await promptsName();
-  const url = `${ BASE }/v1/configmaps/${ DEV_SYSTEM_NAMESPACE }/${ name }`;
-  const existing = await devFetch(url).catch(() => null);
-  const data = { ...(existing?.data || {}), ...texts };
-
-  if (!existing) {
-    await devFetch(`${ BASE }/v1/configmaps`, {
-      method: 'POST',
-      body:   JSON.stringify({
-        apiVersion: 'v1',
-        kind:       'ConfigMap',
-        metadata:   { namespace: DEV_SYSTEM_NAMESPACE, name },
-        data,
-      }),
-    });
-
-    return;
-  }
-
-  await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data }) });
-}
 
 /**
  * Queue a conversation in a workspace: a prompt the next pane to open will start on.
