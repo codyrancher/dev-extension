@@ -112,16 +112,58 @@ function bytes(quantity: string): number {
  * A cluster that cannot be reached is still offered, with no numbers beside it. It is a cluster
  * somebody may still want, and refusing to list it would be this page deciding that for them.
  */
+/**
+ * What one node has free right now, from its kubelet.
+ *
+ * The stats summary is the one place both numbers are actually measured: memory available to new
+ * work and the bytes left on the node's filesystem, sampled every ten seconds or so. Rancher's own
+ * `allocatable - requested` is what pods have *asked* for, which changes when a pod is scheduled
+ * and at no other time - a sidebar drawn from it sat still while a build filled the disk.
+ */
+async function nodeLive(cluster: string, node: string): Promise<{ memory: number; disk: number } | null> {
+  // Bounded: a kubelet the proxy cannot reach answers in minutes, and a sidebar that waits on
+  // it would show nothing for that long. Past a few seconds the requests-based figures stand in.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 5000);
+  const summary = await devFetch(`${ clusterBase(cluster) }/api/v1/nodes/${ node }/proxy/stats/summary`, { signal: abort.signal }).catch(() => null).finally(() => clearTimeout(timer));
+  const memory = Number(summary?.node?.memory?.availableBytes);
+  const disk = Number(summary?.node?.fs?.availableBytes);
+
+  return Number.isFinite(memory) && Number.isFinite(disk) ? { memory, disk } : null;
+}
+
+/** The active clusters, with nothing measured: what the workspace list needs, and no wait. */
+export async function listClusterIds(): Promise<string[]> {
+  const response = await devFetch('/v3/clusters').catch(() => null);
+
+  return (response?.data || []).filter((cluster: Json) => cluster.state === 'active').map((cluster: Json) => cluster.id);
+}
+
 export async function listClusters(): Promise<DevCluster[]> {
   const response = await devFetch('/v3/clusters').catch(() => null);
   const clusters = (response?.data || []).filter((cluster: Json) => cluster.state === 'active');
 
   return Promise.all(clusters.map(async(cluster: Json) => {
-    const memoryFree = Math.max(0, bytes(cluster.allocatable?.memory) - bytes(cluster.requested?.memory));
     const [nodes, pods] = await Promise.all([
       devFetch(`${ clusterBase(cluster.id) }/v1/nodes`).catch(() => null),
       devFetch(`${ clusterBase(cluster.id) }/v1/pods`).catch(() => null),
     ]);
+
+    // Measured first; the requests-based figures below are the fallback for a cluster whose
+    // kubelets cannot be asked through the proxy.
+    const live = await Promise.all((nodes?.data || []).map((node: Json) => nodeLive(cluster.id, node.metadata?.name)));
+
+    if (live.length && live.every(Boolean)) {
+      return {
+        id:         cluster.id,
+        name:       cluster.name || cluster.id,
+        state:      cluster.state,
+        memoryFree: live.reduce((total, node) => total + (node as { memory: number }).memory, 0),
+        diskFree:   live.reduce((total, node) => total + (node as { disk: number }).disk, 0),
+      };
+    }
+
+    const memoryFree = Math.max(0, bytes(cluster.allocatable?.memory) - bytes(cluster.requested?.memory));
 
     const allocatable = (nodes?.data || [])
       .reduce((total: number, node: Json) => total + bytes(node.status?.allocatable?.['ephemeral-storage']), 0);
@@ -519,9 +561,9 @@ export async function listWorkspaces(cluster?: string): Promise<DevWorkspace[]> 
  * access to one cluster out of several.
  */
 export async function listAllWorkspaces(): Promise<DevWorkspace[]> {
-  const clusters = await listClusters().catch(() => []);
+  const clusters = await listClusterIds().catch(() => [] as string[]);
   const lists = await Promise.all(
-    (clusters.length ? clusters.map((cluster) => cluster.id) : [activeCluster()])
+    (clusters.length ? clusters : [activeCluster()])
       .map((id) => listWorkspaces(id).catch(() => [] as DevWorkspace[])),
   );
 
@@ -1668,6 +1710,14 @@ export function workspaceApiUrl(): string {
  * including ones who cannot create any of it, and a page that threw here would be a page that
  * never rendered for them.
  */
+/**
+ * Where Extension Studio's agent pod keeps its workspace on the node, and where this API mounts
+ * it. The path is the Studio's (agent.ts, AGENT_HOST_PATH); the two have to agree, and the API
+ * serves nothing from it but files a comment names.
+ */
+export const AGENT_WORKSPACE_HOST_PATH = '/var/lib/rancher/extension-studio/agent';
+export const AGENT_WORKSPACE_MOUNT = '/agent-workspace';
+
 export async function ensureWorkspaceApi(): Promise<void> {
   const namespace = DEV_SYSTEM_NAMESPACE;
   const labels = { app: API_NAME };
@@ -1778,11 +1828,16 @@ export async function ensureWorkspaceApi(): Promise<void> {
             ],
             volumeMounts: [
               { name: 'seed', mountPath: '/seed', readOnly: true },
+              // The Studio's agent pod keeps its workspace on this hostPath. Mounted here, read
+              // only, so the evidence a review agent attaches to a comment - a recording, a
+              // screenshot under /workspace/artifacts - can be served to the review panel.
+              { name: 'agent-workspace', mountPath: AGENT_WORKSPACE_MOUNT, readOnly: true },
             ],
             readinessProbe: { httpGet: { path: '/', port: API_PORT }, periodSeconds: 10 },
           }],
           volumes: [
             { name: 'seed', configMap: { name: API_NAME } },
+            { name: 'agent-workspace', hostPath: { path: AGENT_WORKSPACE_HOST_PATH, type: 'DirectoryOrCreate' } },
           ],
         },
       },

@@ -385,18 +385,83 @@ async function saveComments(num, comments) {
   await writeDoc(reviewMap(num), 'comments.json', comments, { 'dev.rancher.io/pr': String(num) });
 }
 
+// Where the agent pod's files are, as this pod sees them. The Studio's agent keeps its
+// workspace on a hostPath; the same directory is mounted here read-only (see api.ts,
+// ensureWorkspaceApi) so a recording an agent made can be looked at before it goes anywhere.
+const AGENT_ROOT = process.env.AGENT_WORKSPACE_ROOT || '/agent-workspace';
+const AGENT_PREFIX = '/workspace/';
+
+const ARTIFACT_TYPES = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.svg': 'image/svg+xml', '.webm': 'video/webm', '.mp4': 'video/mp4', '.mov': 'video/quicktime',
+  '.log': 'text/plain', '.txt': 'text/plain', '.json': 'application/json', '.md': 'text/markdown',
+};
+
+function extOf(name) {
+  const dot = name.lastIndexOf('.');
+
+  return dot === -1 ? '' : name.slice(dot).toLowerCase();
+}
+
+function attachmentKind(name) {
+  const type = ARTIFACT_TYPES[extOf(name)] || '';
+
+  return type.startsWith('image/') ? 'image' : type.startsWith('video/') ? 'video' : 'file';
+}
+
+/** A path an agent wrote (`/workspace/artifacts/x.webm`, or relative to it) as a file here, or null. */
+function artifactFile(given) {
+  const rel = String(given || '').replace(/^\/?workspace\//, '').replace(/^\/+/, '');
+
+  if (!rel || rel.split('/').includes('..')) {
+    return null;
+  }
+
+  const full = `${ AGENT_ROOT }/${ rel }`;
+
+  try {
+    return fs.statSync(full).isFile() ? full : null;
+  } catch {
+    return null;
+  }
+}
+
+function cleanAttachments(list) {
+  if (!Array.isArray(list)) {
+    return [];
+  }
+
+  return list
+    .filter((a) => a && typeof a.path === 'string' && a.path.trim())
+    .map((a) => ({ path: a.path.trim().slice(0, 400), caption: typeof a.caption === 'string' ? a.caption.slice(0, 400) : '' }));
+}
+
 function decorate(c) {
-  return { ...c, level: c.path ? 'line' : 'pr', attachments: c.attachments || [] };
+  return {
+    ...c,
+    level:       c.path ? 'line' : 'pr',
+    attachments: (c.attachments || []).map((a) => ({
+      ...a,
+      name:  a.path.split('/').pop(),
+      kind:  attachmentKind(a.path),
+      found: !!artifactFile(a.path),
+    })),
+  };
 }
 
 async function prDetail(repo, num) {
-  const [meta, files, reviewComments, discussion, reviews] = await Promise.all([
+  const [meta, files, reviewComments, discussion, reviews, commits] = await Promise.all([
     ghRest('GET', `/repos/${ repo }/pulls/${ num }`),
     ghRest('GET', `/repos/${ repo }/pulls/${ num }/files?per_page=100`).catch(() => []),
     ghRest('GET', `/repos/${ repo }/pulls/${ num }/comments?per_page=100`).catch(() => []),
     ghRest('GET', `/repos/${ repo }/issues/${ num }/comments?per_page=100`).catch(() => []),
     ghRest('GET', `/repos/${ repo }/pulls/${ num }/reviews?per_page=100`).catch(() => []),
+    ghRest('GET', `/repos/${ repo }/pulls/${ num }/commits?per_page=100`).catch(() => []),
   ]);
+  // /pulls/:n/comments leaves out the comments of a PENDING (unsubmitted) review. GitHub only
+  // shows the asking user their own pending reviews, so those comments come in flagged.
+  const pendingReviews = (reviews || []).filter((r) => r.state === 'PENDING');
+  const pendingGhComments = (await Promise.all(pendingReviews.map((r) => ghRest('GET', `/repos/${ repo }/pulls/${ num }/reviews/${ r.id }/comments?per_page=100`).catch(() => [])))).flat();
   const latestByUser = new Map();
 
   for (const r of reviews || []) {
@@ -431,15 +496,27 @@ async function prDetail(repo, num) {
       deletions:    meta.deletions,
       changedFiles: meta.changed_files,
       approved,
-      approvedBy:   [...latestByUser.entries()].filter(([, s]) => s === 'APPROVED').map(([u]) => u),
-      mergeable:    meta.mergeable,
-      ci:           ciFromRest(checkRuns, statuses),
+      approvedBy:     [...latestByUser.entries()].filter(([, s]) => s === 'APPROVED').map(([u]) => u),
+      merged:         !!meta.merged,
+      draft:          !!meta.draft,
+      mergeable:      meta.mergeable,
+      mergeableState: meta.mergeable_state || null,
+      ci:             ciFromRest(checkRuns, statuses),
       repo,
     },
+    commits: (commits || []).map((c) => ({
+      sha:     c.sha,
+      message: (c.commit?.message || '').split('\n')[0].slice(0, 120),
+      author:  c.commit?.author?.name || c.author?.login || 'unknown',
+      date:    c.commit?.author?.date || null,
+    })),
     files: (files || []).map((f) => ({
       path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions, patch: f.patch || '',
     })),
-    reviewComments: (reviewComments || []).map((c) => mapGhComment(c, false)),
+    reviewComments: [
+      ...(reviewComments || []).map((c) => mapGhComment(c, false)),
+      ...pendingGhComments.map((c) => mapGhComment(c, true)),
+    ],
     discussion:     (discussion || []).map((c) => ({
       id: c.id, author: c.user?.login, body: c.body, createdAt: c.created_at,
     })),
@@ -760,6 +837,7 @@ const routes = [
       body:         body.body.trim(),
       status:       'pending',
       author:       typeof body.author === 'string' ? body.author.slice(0, 40) : 'agent',
+      attachments:  cleanAttachments(body.attachments),
       created_at:   now,
       updated_at:   now,
       submitted_at: null,
@@ -794,6 +872,10 @@ const routes = [
     if (body.submitted_at !== undefined) {
       existing.submitted_at = body.submitted_at;
     }
+    // A list replaces the evidence; an empty list detaches it all; nothing leaves it alone.
+    if (body.attachments !== undefined) {
+      existing.attachments = cleanAttachments(body.attachments);
+    }
     existing.updated_at = new Date().toISOString();
     await saveComments(num, comments);
 
@@ -805,6 +887,78 @@ const routes = [
     await saveComments(num, (await localComments(num)).filter((c) => c.id !== Number(m[2])));
 
     return { ok: true };
+  }],
+  // A file as it is at a ref - the PR head - for expanding the context between hunks.
+  ['GET', /^\/my-work\/pr\/(\d+)\/file$/, async(m, url) => {
+    const filePath = url.searchParams.get('path') || '';
+    const ref = url.searchParams.get('ref') || '';
+
+    if (!filePath || !ref) {
+      throw failure(400, 'path and ref are required');
+    }
+
+    const token = await githubToken();
+    const response = await fetch(`https://api.github.com/repos/${ repoOf(url) }/contents/${ encodeURI(filePath) }?ref=${ encodeURIComponent(ref) }`, {
+      headers: { authorization: `Bearer ${ token }`, accept: 'application/vnd.github.raw', 'user-agent': 'dev-extension' },
+    });
+
+    if (!response.ok) {
+      throw failure(502, `GitHub contents -> ${ response.status }`);
+    }
+
+    return { content: await response.text() };
+  }],
+  // The files a subset of the PR's commits changed. A contiguous run is one compare; anything
+  // else is each commit's own patch, labelled, since line numbers differ per commit.
+  ['GET', /^\/my-work\/pr\/(\d+)\/commits-diff$/, async(m, url) => {
+    const repo = repoOf(url);
+    const num = Number(m[1]);
+    const shas = (url.searchParams.get('shas') || '').split(',').map((sha) => sha.trim()).filter(Boolean);
+
+    if (!shas.length) {
+      throw failure(400, 'shas is required');
+    }
+
+    const order = ((await ghRest('GET', `/repos/${ repo }/pulls/${ num }/commits?per_page=100`)) || []).map((c) => c.sha);
+    const idxs = shas.map((sha) => order.indexOf(sha)).filter((i) => i >= 0).sort((a, b) => a - b);
+
+    if (!idxs.length) {
+      throw failure(400, 'none of those commits are in this PR');
+    }
+
+    const asFile = (f) => ({
+      path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions, patch: f.patch || '',
+    });
+
+    if (idxs[idxs.length - 1] - idxs[0] === idxs.length - 1) {
+      const meta = await ghRest('GET', `/repos/${ repo }/pulls/${ num }`);
+      const base = idxs[0] === 0 ? meta.base?.sha : order[idxs[0] - 1];
+      const cmp = await ghRest('GET', `/repos/${ repo }/compare/${ base }...${ order[idxs[idxs.length - 1]] }`);
+
+      return { combined: true, files: (cmp.files || []).map(asFile) };
+    }
+
+    const perCommit = await Promise.all(idxs.map((i) => ghRest('GET', `/repos/${ repo }/commits/${ order[i] }`)));
+    const byFile = new Map();
+
+    perCommit.forEach((commit, n) => {
+      const sha = order[idxs[n]].slice(0, 7);
+
+      for (const f of commit.files || []) {
+        const cur = byFile.get(f.filename) || {
+          path: f.filename, status: f.status, additions: 0, deletions: 0, patch: '',
+        };
+
+        cur.additions += f.additions || 0;
+        cur.deletions += f.deletions || 0;
+        if (f.patch) {
+          cur.patch += `${ cur.patch ? '\n' : '' }@@ -0,0 +0,0 @@ -- ${ sha } --\n${ f.patch }`;
+        }
+        byFile.set(f.filename, cur);
+      }
+    });
+
+    return { combined: false, files: [...byFile.values()].sort((a, b) => a.path.localeCompare(b.path)) };
   }],
   ['GET', /^\/my-work\/pr\/(\d+)\/review-run$/, async(m) => ({ run: await readDoc(reviewMap(Number(m[1])), 'run.json') })],
   ['POST', /^\/my-work\/pr\/(\d+)\/review-run$/, async(m, url, body) => {
@@ -858,6 +1012,27 @@ http.createServer(async(req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,POST,PUT,DELETE', 'access-control-allow-headers': 'content-type' });
     res.end();
+
+    return;
+  }
+
+  // One piece of evidence, as bytes rather than JSON: the file an agent attached to a comment,
+  // read off the agent's workspace so it can be looked at before anything uploads it anywhere.
+  const artifact = /^\/my-work\/pr\/\d+\/artifact$/.test(url.pathname) && req.method === 'GET';
+
+  if (artifact) {
+    const file = artifactFile(url.searchParams.get('path'));
+
+    if (!file) {
+      return send(res, 404, { error: 'No such file in the agent workspace.' });
+    }
+
+    const type = ARTIFACT_TYPES[extOf(file)] || 'application/octet-stream';
+
+    res.writeHead(200, {
+      'content-type': type, 'content-length': fs.statSync(file).size, 'access-control-allow-origin': '*', 'cache-control': 'private, max-age=60',
+    });
+    fs.createReadStream(file).pipe(res);
 
     return;
   }

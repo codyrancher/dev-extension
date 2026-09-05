@@ -26,27 +26,32 @@ export interface PreviewState {
   url: string;
   ref: string;
   rancherUrl: string;
+  kind: ShareKind;
 }
 
-export function previewName(workspace: string): string {
-  return `preview-${ workspace }`.slice(0, 40);
+export type ShareKind = 'dashboard' | 'storybook';
+
+/** What a share is called: the dashboard build keeps the older `preview-` name. */
+export function previewName(workspace: string, kind: ShareKind = 'dashboard'): string {
+  return `${ kind === 'storybook' ? 'storybook' : 'preview' }-${ workspace }`.slice(0, 40);
 }
 
-export async function deployPreview(store: Store, workspace: string, values: { repo: string; ref: string; rancherUrl: string }, cluster = 'local'): Promise<string> {
-  const name = previewName(workspace);
+export async function deployPreview(store: Store, workspace: string, values: { repo: string; ref: string; rancherUrl: string; kind?: ShareKind }, cluster = 'local'): Promise<string> {
+  const kind: ShareKind = values.kind || 'dashboard';
+  const name = previewName(workspace, kind);
 
-  await createWorkspaceInstance(store, name, PREVIEW_APP, cluster, values);
+  await createWorkspaceInstance(store, name, PREVIEW_APP, cluster, { ...values, kind });
 
   return name;
 }
 
-export async function removePreview(store: Store, workspace: string): Promise<void> {
-  await deleteWorkspaceInstance(store, previewName(workspace));
+export async function removePreview(store: Store, workspace: string, kind: ShareKind = 'dashboard'): Promise<void> {
+  await deleteWorkspaceInstance(store, previewName(workspace, kind));
 }
 
 /** Restart the preview's pod, which rebuilds it: the init container is the build. */
-export async function rebuildPreview(workspace: string, cluster = 'local'): Promise<void> {
-  const namespace = workspaceNamespace(previewName(workspace));
+export async function rebuildPreview(workspace: string, cluster = 'local', kind: ShareKind = 'dashboard'): Promise<void> {
+  const namespace = workspaceNamespace(previewName(workspace, kind));
   const base = clusterBase(cluster);
   const pods = await devFetch(`${ base }/v1/pods/${ namespace }`).catch(() => null);
 
@@ -55,11 +60,11 @@ export async function rebuildPreview(workspace: string, cluster = 'local'): Prom
   }
 }
 
-export async function previewState(store: Store, workspace: string, cluster = 'local'): Promise<PreviewState> {
-  const name = previewName(workspace);
+export async function previewState(store: Store, workspace: string, cluster = 'local', kind: ShareKind = 'dashboard'): Promise<PreviewState> {
+  const name = previewName(workspace, kind);
   const instance = await workspaceInstance(store, name).catch(() => null);
   const empty: PreviewState = {
-    name, exists: false, state: 'absent', detail: '', url: '', ref: '', rancherUrl: '',
+    name, exists: false, state: 'absent', detail: '', url: '', ref: '', rancherUrl: '', kind,
   };
 
   if (!instance) {
@@ -98,8 +103,9 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
     exists:     true,
     state,
     detail,
-    url:        nodePort ? `http://${ address }:${ nodePort }/dashboard/` : '',
+    url:        nodePort ? `http://${ address }:${ nodePort }${ kind === 'storybook' ? '/' : '/dashboard/' }` : '',
     ref:        String(instance.spec?.values?.ref || ''),
     rancherUrl: String(instance.spec?.values?.rancherUrl || ''),
+    kind,
   };
 }

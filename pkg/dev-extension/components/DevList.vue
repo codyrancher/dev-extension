@@ -25,7 +25,7 @@ export default {
 
   components: { BrandImage },
 
-  emits: ['select', 'create', 'delete'],
+  emits: ['select', 'create', 'delete', 'rename'],
 
   props: {
     /**
@@ -58,7 +58,10 @@ export default {
     },
 
     /**
-     * The rows: `{ key, label, state, to }`.
+     * The rows: `{ key, label, state, to, fixed }`.
+     *
+     * `fixed` marks a row that is not one of the things the list is a list of - the workspace's
+     * own shell among its conversations - which gets neither a rename nor a delete.
      *
      * `state` is a Rancher state name, so the dot is the same colour it would be in a table.
      * `to` makes the row a link; a row without one is a button and selecting it is an event,
@@ -93,6 +96,16 @@ export default {
       default: false,
     },
 
+    /**
+     * Whether rows can be renamed, in place: a pencil on the row, then the name is an input
+     * until Enter or a click away. On the row itself rather than in a control below the list,
+     * because the name being changed is the thing being pointed at.
+     */
+    renamable: {
+      type:    Boolean,
+      default: false,
+    },
+
     empty: {
       type:    String,
       default: 'None yet',
@@ -112,6 +125,8 @@ export default {
 
   data() {
     return {
+      renaming: '',
+      draft:    '',
       // The row a delete has been asked for, so the row can ask before it does it.
       confirming: '',
     };
@@ -132,6 +147,22 @@ export default {
 
     stateLabel(row) {
       return stateDisplay(row.state);
+    },
+
+    startRename(row) {
+      this.renaming = row.key;
+      this.draft = row.label;
+      this.$nextTick(() => this.$refs[`rename-${ row.key }`]?.[0]?.focus?.() || this.$refs[`rename-${ row.key }`]?.focus?.());
+    },
+
+    commitRename(row) {
+      const title = this.draft.trim();
+
+      this.renaming = '';
+
+      if (title && title !== row.label) {
+        this.$emit('rename', { key: row.key, title });
+      }
     },
 
     remove(row) {
@@ -208,6 +239,7 @@ export default {
         -->
         <component
           :is="row.to ? 'router-link' : 'button'"
+          v-if="renaming !== row.key"
           class="dev-list__link"
           :to="row.to"
           :type="row.to ? null : 'button'"
@@ -218,9 +250,35 @@ export default {
             class="dev-list__glyph dev-list__dot"
             :class="dotClass(row)"
           ><i class="icon icon-dot" /></span>
-          <span class="dev-list__name">{{ row.label }}</span>
+          <span
+            v-if="renaming !== row.key"
+            class="dev-list__name"
+            @dblclick.prevent="renamable && !row.fixed && startRename(row)"
+          >{{ row.label }}</span>
         </component>
-        <template v-if="deletable">
+        <input
+          v-if="renaming === row.key"
+          :ref="`rename-${ row.key }`"
+          v-model="draft"
+          class="dev-list__rename"
+          type="text"
+          :aria-label="`Rename ${ row.label }`"
+          @keydown.enter.prevent="commitRename(row)"
+          @keydown.esc.prevent="renaming = ''"
+          @blur="commitRename(row)"
+          @click.stop
+        >
+        <button
+          v-if="renamable && !row.fixed && renaming !== row.key"
+          v-clean-tooltip="`Rename ${ row.label }`"
+          type="button"
+          class="dev-list__control dev-list__reveal dev-list__rename-btn"
+          :aria-label="`Rename ${ row.label }`"
+          @click.stop="startRename(row)"
+        >
+          <i class="icon icon-edit" />
+        </button>
+        <template v-if="deletable && !row.fixed">
           <button
             v-if="confirming !== row.key"
             v-clean-tooltip="`Delete ${ row.label }`"
@@ -470,6 +528,24 @@ export default {
     &__head:hover &__reveal,
     &__row:hover &__reveal {
       opacity: 1;
+    }
+
+    // The name, as an input, in the room the name had.
+    &__rename {
+      flex:       1 1 auto;
+      min-width:  0;
+      height:     24px;
+      margin:     0 $gap 0 0;
+      padding:    0 6px;
+      font-size:  14px;
+    }
+
+    &__rename-btn {
+      &:hover,
+      &:focus-visible {
+        opacity: 1;
+        color:   var(--primary);
+      }
     }
 
     &__delete {

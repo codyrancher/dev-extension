@@ -15,11 +15,12 @@ import {
 import { listApps, reconcileUnrendered, ensureDefaultApp, DEFAULT_APPS } from '../apps';
 import { readPrefs, shownApps } from '../prefs';
 import DevList from './DevList.vue';
+import ClaudeLogo from './ClaudeLogo.vue';
 import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
-  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE
+  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
@@ -44,7 +45,8 @@ let seeded = false;
 export default {
   name: 'DevSidebar',
 
-  components: { DevList, Stack, Row },
+  components: { DevList, Stack, Row, ClaudeLogo
+  },
 
   data() {
     return {
@@ -74,6 +76,9 @@ export default {
         },
         {
           label: 'Settings', icon: 'icon-gear', route: SETTINGS_ROUTE
+        },
+        {
+          label: 'Agents', logo: true, route: AGENTS_ROUTE
         },
       ],
     };
@@ -310,47 +315,51 @@ export default {
         @delete="remove"
       />
 
-      <!-- The clusters, once, with what is left on each: the question when making a workspace. -->
-      <div class="dev-sidebar__clusters">
-        <div class="dev-sidebar__template-head">
-          <i class="dev-sidebar__template-icon icon icon-cluster" />
-          <span class="dev-sidebar__template-label">Clusters</span>
+    </div>
+  <!--
+    The clusters, once, with what is actually free on each right now: the question when making
+    a workspace. Pinned under the lists rather than scrolling with them, so it is where it was
+    the last time you looked however many workspaces there are.
+  -->
+    <div class="dev-sidebar__clusters">
+      <div class="dev-sidebar__template-head">
+        <i class="dev-sidebar__template-icon icon icon-cluster" />
+        <span class="dev-sidebar__template-label">Clusters</span>
+      </div>
+      <div
+        v-for="cluster in clusterRows"
+        :key="cluster.id"
+        class="dev-sidebar__cluster-row"
+        :class="{ 'dev-sidebar__cluster-row--low': low(cluster) }"
+      >
+        <div class="dev-sidebar__cluster-name">
+          <span>{{ cluster.name }}</span>
+          <span class="dev-sidebar__cluster-count">{{ cluster.workspaces }}</span>
         </div>
-        <div
-          v-for="cluster in clusterRows"
-          :key="cluster.id"
-          class="dev-sidebar__cluster-row"
-          :class="{ 'dev-sidebar__cluster-row--low': low(cluster) }"
-        >
-          <div class="dev-sidebar__cluster-name">
-            <span>{{ cluster.name }}</span>
-            <span class="dev-sidebar__cluster-count">{{ cluster.workspaces }}</span>
-          </div>
-          <Stack gap="1">
-            <Row
-              class="dev-sidebar__meter"
-              gap="3"
-            >
-              <span class="dev-sidebar__meter-label">MEM</span>
-              <span class="dev-sidebar__meter-track"><span
-                class="dev-sidebar__meter-fill"
-                :style="{ width: bar(cluster.memoryFree, biggest.memory) }"
-              /></span>
-              <span class="dev-sidebar__meter-value">{{ readable(cluster.memoryFree) }}</span>
-            </Row>
-            <Row
-              class="dev-sidebar__meter"
-              gap="3"
-            >
-              <span class="dev-sidebar__meter-label">DISK</span>
-              <span class="dev-sidebar__meter-track"><span
-                class="dev-sidebar__meter-fill"
-                :style="{ width: bar(cluster.diskFree, biggest.disk) }"
-              /></span>
-              <span class="dev-sidebar__meter-value">{{ readable(cluster.diskFree) }}</span>
-            </Row>
-          </Stack>
-        </div>
+        <Stack gap="1">
+          <Row
+            class="dev-sidebar__meter"
+            gap="3"
+          >
+            <span class="dev-sidebar__meter-label">MEM</span>
+            <span class="dev-sidebar__meter-track"><span
+              class="dev-sidebar__meter-fill"
+              :style="{ width: bar(cluster.memoryFree, biggest.memory) }"
+            /></span>
+            <span class="dev-sidebar__meter-value">{{ readable(cluster.memoryFree) }}</span>
+          </Row>
+          <Row
+            class="dev-sidebar__meter"
+            gap="3"
+          >
+            <span class="dev-sidebar__meter-label">DISK</span>
+            <span class="dev-sidebar__meter-track"><span
+              class="dev-sidebar__meter-fill"
+              :style="{ width: bar(cluster.diskFree, biggest.disk) }"
+            /></span>
+            <span class="dev-sidebar__meter-value">{{ readable(cluster.diskFree) }}</span>
+          </Row>
+        </Stack>
       </div>
     </div>
     <div
@@ -372,7 +381,12 @@ export default {
           :aria-label="global.label"
           :class="{ 'dev-sidebar__globals--current': isGlobalActive(global.route) }"
         >
+          <ClaudeLogo
+            v-if="global.logo"
+            class="icon"
+          />
           <i
+            v-else
             class="icon"
             :class="global.icon"
           />
@@ -449,9 +463,10 @@ export default {
     // The two bars in a cluster's popover: a label, a track, and the number, on one line each.
 
     &__clusters {
-      margin-top:  var(--dev-space-4);
+      flex:        0 0 auto;
       border-top:  1px solid var(--border);
       padding-top: var(--dev-space-2);
+      background:  var(--nav-bg, var(--body-bg));
     }
 
     &__cluster-row {

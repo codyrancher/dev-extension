@@ -38,11 +38,6 @@ function columns(extra) {
     {
       name: 'pr', label: 'PR', value: 'number', sort: ['number'], width: 90
     },
-    // Which repository, because a PR number on its own does not say: these lists span every
-    // repository a person touches, and `#2` and `#18777` are both perfectly ordinary.
-    {
-      name: 'repo', label: 'Repo', value: 'repo', sort: ['repo'], width: 130
-    },
     {
       name: 'issue', label: 'Issue', value: 'issue.number', width: 90
     },
@@ -138,14 +133,6 @@ export default {
           name: 'number', label: 'Issue', value: 'number', width: 90
         },
         { name: 'title', label: 'Title', value: 'title' },
-        {
-          name: 'repo', label: 'Repo', value: 'repo', sort: ['repo'], width: 130
-        },
-        // What the harness calls Area: the issue's own labels, which is how this team says which
-        // part of the product something is about.
-        {
-          name: 'area', label: 'Area', value: 'labels', width: 220
-        },
         // The board's Status column, sorted by how much of your attention a status wants rather
         // than alphabetically - the rank is a field on the row, see issueRows.
         {

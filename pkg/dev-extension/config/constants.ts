@@ -23,6 +23,7 @@ export const CREATE_PAGE = 'create';
 export const MY_WORK_PAGE = 'my-work';
 export const INSIGHTS_PAGE = 'insights';
 export const SETTINGS_PAGE = 'settings';
+export const AGENTS_PAGE = 'agents';
 
 /** The product's own page template, which every page below is a child of. */
 export const DEV_SHELL_ROUTE = `${ DEV_PRODUCT }-c-cluster`;
@@ -33,6 +34,7 @@ export const CREATE_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ CREATE_PAGE }`;
 export const MY_WORK_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ MY_WORK_PAGE }`;
 export const INSIGHTS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ INSIGHTS_PAGE }`;
 export const SETTINGS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ SETTINGS_PAGE }`;
+export const AGENTS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ AGENTS_PAGE }`;
 
 /**
  * The tabs a workspace opens as, and the one a link with no tab in it means.
@@ -48,7 +50,7 @@ export const SETTINGS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ SETTINGS_PAGE }`;
  * reason it is not component state. The list is also what the page validates against, so a URL
  * naming a tab that does not exist lands on Overview instead of on an empty pane.
  */
-export const WORKSPACE_TABS = ['conversations', 'pr', 'browser', 'preview'];
+export const WORKSPACE_TABS = ['conversations', 'pr', 'browser', 'share', 'preview'];
 export const DEFAULT_WORKSPACE_TAB = 'conversations';
 
 /**
