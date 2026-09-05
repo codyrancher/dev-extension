@@ -12,14 +12,16 @@ import SortableTable from '@shell/components/SortableTable';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import AsyncButton from '@shell/components/AsyncButton';
-import { myWork, rerunFailed, dependabotAlerts } from '../github';
+import { myWork } from '../github';
+import {
+  startPrReview, startIssueFix, startAlertFix, startDependabotReview, startCiTriage, mergePr, approveAndMerge,
+  rerunFailedJobs, dependabotData, dependabotReviews, refreshDependabotReview, closeDependabotReview, listConversations
+} from '../reviews';
 import {
   listAllWorkspaces, createWorkspace
 } from '../api';
 import { listApps } from '../apps';
-import { fillPrompt, DEFAULT_PROMPTS } from '../prompts';
 import { readPrefs, shownApps } from '../prefs';
-import { startConversation, queuePrompt } from '../conversations';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, SETTINGS_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_APP
 } from '../config/constants';
@@ -124,11 +126,13 @@ export default {
       // this page is about pull requests and the sidebar is about workspaces.
       workspaces: [],
       // This person's own prompts, which is what a queued conversation opens on.
-      prompts:    [],
       // The repository's open Dependabot advisories, and why they could not be read when they
       // could not be. A token without the security tab is an ordinary thing, not a page error.
       alerts:     [],
+      botPrs:     [],
+      botReviews: {},
       alertError: '',
+      notice:     '',
       issueHeaders: [
         {
           name: 'number', label: 'Issue', value: 'number', width: 90
@@ -156,6 +160,14 @@ export default {
         {
           name: 'actions', label: 'Actions', align: 'right', width: 110
         },
+      ],
+      botHeaders: [
+        { name: 'pr', label: 'PR', value: 'number', width: 90 },
+        { name: 'ci', label: 'CI', value: 'ci', width: 130 },
+        { name: 'package', label: 'Package', value: 'packageName' },
+        { name: 'updated', label: 'Updated', value: 'updatedAt', sort: ['updatedAt:desc'], width: 110 },
+        { name: 'review', label: 'Review', value: 'number', width: 260 },
+        { name: 'actions', label: '', align: 'right', width: 230 },
       ],
       alertHeaders: [
         {
@@ -279,10 +291,9 @@ export default {
       this.error = '';
 
       try {
-        const [work, workspaces, prompts, apps, prefs] = await Promise.all([
+        const [work, workspaces, apps, prefs] = await Promise.all([
           myWork(),
           listAllWorkspaces().catch(() => []),
-          Promise.resolve(DEFAULT_PROMPTS),
           listApps(this.$store).catch(() => []),
           readPrefs().catch(() => ({ hiddenApps: [] })),
         ]);
@@ -291,7 +302,6 @@ export default {
 
         this.work = work;
         this.workspaces = workspaces.map((workspace) => workspace.name);
-        this.prompts = prompts;
 
         // Separately, and allowed to fail on its own: the alerts belong to a repository and need
         // a permission the rest of this page does not, so a token without it should cost that
@@ -299,9 +309,15 @@ export default {
         this.alertError = '';
 
         try {
-          this.alerts = await dependabotAlerts(this.repo);
+          const dependabot = await dependabotData(this.repo);
+
+          this.alerts = (dependabot.groups || []).map((group) => ({ ...group, key: group.slug }));
+          this.botPrs = (dependabot.prs || []).map((pr) => ({ ...pr, key: pr.number, repo: this.repo }));
+          this.botReviews = await dependabotReviews().catch(() => ({}));
+          this.refreshBotReviews().catch(() => {});
         } catch (e) {
           this.alerts = [];
+          this.botPrs = [];
           this.alertError = e.message || String(e);
         }
       } catch (e) {
@@ -377,16 +393,23 @@ export default {
      * It ends on the workspace's Conversations tab, because that is where what it just queued
      * will appear.
      */
+    /** Review a PR: a workspace for it and a conversation running the review skill. */
     async review(pr, done) {
-      const prompt = this.prompts.find((entry) => entry.id === 'review-pr');
+      this.error = '';
 
-      return this.startWork(done, this.workspaceName(pr), prompt, {
-        repo:  pr.repo,
-        pr:    String(pr.number),
-        issue: pr.issue ? String(pr.issue.number) : '',
-        title: pr.title,
-        url:   pr.url,
-      });
+      try {
+        const started = await startPrReview(this.$store, pr, pr.repo || this.repo);
+
+        done(true);
+        this.$router.push({
+          name:   WORKSPACE_ROUTE,
+          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: started.workspace },
+          hash:   '#pr',
+        });
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
     },
 
     /**
@@ -403,11 +426,6 @@ export default {
      * moment the workspace exists rather than minutes later when its own pod has compiled. The
      * conversation opens with the prompt as its first message when its pane is first attached.
      */
-    async queueWhenReady(name, text) {
-      const conversation = await startConversation(name, text.split('\n')[0].slice(0, 80));
-
-      await queuePrompt(conversation.attach, text);
-    },
 
     /**
      * Start fix on an issue: the workspace for it, and a conversation already about it.
@@ -417,15 +435,21 @@ export default {
      * twice lands in the same workspace rather than making a second.
      */
     async startFix(issue, done) {
-      const prompt = this.prompts.find((entry) => entry.id === 'fix-issue');
+      this.error = '';
 
-      return this.startWork(done, `issue-${ issue.number }`, prompt, {
-        repo:  issue.repo,
-        issue: String(issue.number),
-        title: issue.title,
-        url:   issue.url,
-        pr:    '',
-      });
+      try {
+        const started = await startIssueFix(this.$store, issue, issue.repo || this.repo);
+
+        done(true);
+        this.$router.push({
+          name:   WORKSPACE_ROUTE,
+          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: started.workspace },
+          hash:   '#conversations',
+        });
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
     },
 
     /**
@@ -435,19 +459,22 @@ export default {
      * however many packages and files it touches. GHSA ids are lowercase-safe and already look
      * like a name.
      */
-    async startAlertFix(alert, done) {
-      const prompt = this.prompts.find((entry) => entry.id === 'fix-dependabot');
+    async startAlertFix(group, done) {
+      this.error = '';
 
-      return this.startWork(done, alert.ghsa.toLowerCase(), prompt, {
-        repo:    this.repo,
-        ghsa:    alert.ghsa,
-        cve:     alert.cve || 'no CVE',
-        title:   alert.summary,
-        package: alert.packages.join(', '),
-        files:   String(alert.files),
-        fix:     alert.patched || 'not released yet',
-        url:     alert.url,
-      });
+      try {
+        const started = await startAlertFix(this.$store, group, this.repo);
+
+        done(true);
+        this.$router.push({
+          name:   WORKSPACE_ROUTE,
+          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: started.workspace },
+          hash:   '#conversations',
+        });
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
     },
 
     /**
@@ -457,30 +484,6 @@ export default {
      * clearing an advisory is which prompt and what is substituted into it. Everything else -
      * creating the workspace if it is not there, waiting for its pod, going to it - is the same.
      */
-    async startWork(done, name, prompt, values) {
-      this.error = '';
-
-      try {
-        if (!this.workspaces.includes(name)) {
-          await createWorkspace(this.$store, name, DEFAULT_APP);
-          this.workspaces = [...this.workspaces, name];
-        }
-
-        if (prompt) {
-          await this.queueWhenReady(name, fillPrompt(prompt.text, values));
-        }
-
-        done(true);
-        this.$router.push({
-          name:   WORKSPACE_ROUTE,
-          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: name },
-          hash:   '#conversations',
-        });
-      } catch (e) {
-        this.error = e.message || String(e);
-        done(false);
-      }
-    },
 
     /** How severe, in the one word GitHub uses, coloured the way the rest of the page is. */
     statusHue(status) {
@@ -504,8 +507,144 @@ export default {
       this.error = '';
 
       try {
-        await Promise.all(pr.runs.map((run) => rerunFailed(pr.repo, run)));
+        await rerunFailedJobs(pr);
         done(true);
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
+    },
+
+    /** Red CI on my PR: the harness's smart rerun, as a triage conversation. */
+    async fixCi(pr, done) {
+      this.error = '';
+
+      try {
+        const started = await startCiTriage(this.$store, pr, pr.repo || this.repo);
+
+        done(true);
+        this.$router.push({
+          name:   WORKSPACE_ROUTE,
+          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: started.workspace },
+          hash:   '#conversations',
+        });
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
+    },
+
+    async merge(pr, done) {
+      this.error = '';
+
+      if (!window.confirm(`Squash and merge #${ pr.number }?\n\n${ pr.title }`)) {
+        done(false);
+
+        return;
+      }
+
+      try {
+        await mergePr(pr.number, pr.repo || this.repo);
+        done(true);
+        await this.refresh();
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
+    },
+
+    botReview(pr) {
+      return this.botReviews[String(pr.number)] || null;
+    },
+
+    botVerdictLabel(pr) {
+      const review = this.botReview(pr);
+
+      if (!review) {
+        return '';
+      }
+      if (review.verdict) {
+        return review.verdict.toUpperCase();
+      }
+
+      return review.state === 'ended' ? 'no verdict' : 'reviewing';
+    },
+
+    botVerdictTone(pr) {
+      const review = this.botReview(pr);
+
+      if (!review || !review.verdict) {
+        return 'muted';
+      }
+
+      return review.verdict === 'merge' ? 'success' : 'error';
+    },
+
+    async reviewBotPr(pr, done) {
+      this.error = '';
+
+      try {
+        await startDependabotReview(this.$store, pr, this.repo);
+        this.botReviews = await dependabotReviews().catch(() => this.botReviews);
+        done(true);
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
+    },
+
+    /** Read every open bot review's pane and record what it says. */
+    async refreshBotReviews() {
+      for (const review of Object.values(this.botReviews)) {
+        if (review.verdict) {
+          continue;
+        }
+
+        const conversations = await listConversations(review.workspace).catch(() => []);
+        const conversation = conversations.find((c) => c.id === review.conversation);
+
+        if (conversation) {
+          const next = await refreshDependabotReview(review, conversation.attach).catch(() => review);
+
+          this.botReviews = { ...this.botReviews, [String(review.pr)]: next };
+        }
+      }
+    },
+
+    botConversationTo(pr) {
+      const review = this.botReview(pr);
+
+      return review ? {
+        name:   WORKSPACE_ROUTE,
+        params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: review.workspace },
+        hash:   '#conversations',
+      } : null;
+    },
+
+    async closeBotReview(pr) {
+      await closeDependabotReview(pr.number).catch(() => {});
+      const next = { ...this.botReviews };
+
+      delete next[String(pr.number)];
+      this.botReviews = next;
+    },
+
+    async mergeBotPr(pr, done) {
+      this.error = '';
+
+      if (!window.confirm(`Approve and merge #${ pr.number }?\n\n${ pr.title }\n\nApproves, squash-merges, then deletes ${ pr.branch }.`)) {
+        done(false);
+
+        return;
+      }
+
+      try {
+        const r = await approveAndMerge(pr.number, this.repo);
+        const branch = r.steps.find((step) => step.step === 'delete-branch');
+
+        this.notice = `#${ pr.number } approved, merged${ branch?.ok ? ', branch deleted' : '' }.`;
+        done(true);
+        await this.refresh();
       } catch (e) {
         this.error = e.message || String(e);
         done(false);
@@ -591,6 +730,13 @@ export default {
       A token that is missing and a token that is refused are different problems with the same
       shape, so the message says which and the button goes where either is fixed.
     -->
+    <Banner
+      v-if="notice"
+      color="success"
+      :closable="true"
+      :label="notice"
+      @close="notice = ''"
+    />
     <Banner
       v-if="error"
       color="warning"
@@ -785,7 +931,27 @@ export default {
           Nothing to do to your own pull request from here that GitHub does not do better, and the
           harness's own row says the same by leaving it empty.
         -->
-        <template #cell:actions>
+        <template #cell:actions="{ row }">
+          <div class="dev-my-work__actions">
+            <AsyncButton
+              v-if="row.checks && row.checks.failing"
+              mode="apply"
+              action-label="Fix CI"
+              waiting-label="Opening"
+              success-label="Opened"
+              size="sm"
+              @click="(done) => fixCi(row, done)"
+            />
+            <AsyncButton
+              mode="apply"
+              action-label="Merge"
+              waiting-label="Merging"
+              success-label="Merged"
+              size="sm"
+              :disabled="!!(row.draft || (row.checks && (row.checks.failing || row.checks.pending)))"
+              @click="(done) => merge(row, done)"
+            />
+          </div>
           <span class="text-muted">&ndash;</span>
         </template>
         <template #cell:commented="{ row }">
@@ -926,17 +1092,24 @@ export default {
             :href="row.url"
             target="_blank"
             rel="noopener noreferrer"
-          >{{ row.summary }}</a>
-          <span class="dev-my-work__ids">{{ row.ghsa }}<template v-if="row.cve"> &middot; {{ row.cve }}</template></span>
+          >{{ row.title }}</a>
+          <span class="dev-my-work__ids">{{ row.ghsaId }}<template v-if="row.cveId"> &middot; {{ row.cveId }}</template></span>
         </template>
         <template #cell:package="{ row }">
           <span class="dev-my-work__repo">{{ row.packages.join(', ') }}</span>
         </template>
         <template #cell:alerts="{ row }">
-          {{ row.alerts }} in {{ row.files }} file{{ row.files === 1 ? '' : 's' }}
+          {{ row.alerts.length }} in {{ row.manifests.length }} file{{ row.manifests.length === 1 ? '' : 's' }}
+          <template v-if="row.prs.length"> &middot; <a
+            v-for="pr in row.prs"
+            :key="pr.number"
+            :href="pr.url"
+            target="_blank"
+            rel="noopener noreferrer"
+          >#{{ pr.number }}</a></template>
         </template>
         <template #cell:fix="{ row }">
-          <span :class="row.patched ? '' : 'text-muted'">{{ row.patched || 'no patch yet' }}</span>
+          <span :class="row.patchedVersion ? '' : 'text-muted'">{{ row.patchedVersion || 'no patch yet' }}</span>
         </template>
         <template #cell:actions="{ row }">
           <AsyncButton
@@ -949,11 +1122,131 @@ export default {
           />
         </template>
       </SortableTable>
+
+      <h3>
+        Dependabot PRs <span class="dev-my-work__count">{{ botPrs.length }}</span>
+      </h3>
+      <!--
+        The bot's open bumps as a merge queue, as the harness had them. Review runs the merge
+        checklist in a conversation and reads its verdict off the pane; a MERGE verdict is what
+        the Approve & merge button is for, so it lives on that verdict rather than on every row.
+      -->
+      <SortableTable
+        :headers="botHeaders"
+        :rows="botPrs"
+        key-field="key"
+        default-sort-by="updated"
+        :table-actions="false"
+        :row-actions="false"
+        :search="false"
+        :paging="true"
+        :rows-per-page="8"
+      >
+        <template #cell:pr="{ row }">
+          <a
+            :href="row.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            :title="row.title"
+          >#{{ row.number }}</a>
+        </template>
+        <template #cell:ci="{ row }">
+          <span
+            v-for="badge in badges(row.ci)"
+            :key="badge.label"
+            class="dev-my-work__badge"
+            :class="`dev-my-work__badge--${ badge.tone }`"
+          >{{ badge.label }}</span>
+          <span
+            v-if="row.ci && !row.ci.pending && !row.ci.failing"
+            class="dev-my-work__badge dev-my-work__badge--success"
+          >green</span>
+        </template>
+        <template #cell:package="{ row }">
+          <span class="dev-my-work__repo">{{ row.packageName || row.title }}</span>
+          <span
+            v-if="row.fromVersion"
+            class="dev-my-work__ids"
+          >{{ row.fromVersion }} → {{ row.toVersion }}</span>
+        </template>
+        <template #cell:updated="{ row }">
+          {{ ago(row.updatedAt) }}
+        </template>
+        <template #cell:review="{ row }">
+          <template v-if="botReview(row)">
+            <span
+              class="dev-my-work__badge"
+              :class="`dev-my-work__badge--${ botVerdictTone(row) }`"
+            >{{ botVerdictLabel(row) }}</span>
+            <span
+              v-if="botReview(row).reason"
+              class="dev-my-work__reason"
+              :title="botReview(row).reason"
+            >{{ botReview(row).reason }}</span>
+            <router-link
+              v-if="botConversationTo(row)"
+              :to="botConversationTo(row)"
+              class="dev-my-work__ids"
+            >conversation</router-link>
+          </template>
+          <span
+            v-else
+            class="text-muted"
+          >not reviewed</span>
+        </template>
+        <template #cell:actions="{ row }">
+          <div class="dev-my-work__actions">
+            <AsyncButton
+              mode="apply"
+              :action-label="botReview(row) ? 'Review again' : 'Review'"
+              waiting-label="Opening"
+              success-label="Opened"
+              size="sm"
+              @click="(done) => reviewBotPr(row, done)"
+            />
+            <AsyncButton
+              v-if="botReview(row) && botReview(row).verdict === 'merge'"
+              mode="apply"
+              action-label="Approve & merge"
+              waiting-label="Merging"
+              success-label="Merged"
+              size="sm"
+              :disabled="!!(row.ci && (row.ci.failing || row.ci.pending))"
+              @click="(done) => mergeBotPr(row, done)"
+            />
+            <RcButton
+              v-if="botReview(row)"
+              variant="tertiary"
+              size="small"
+              title="Forget this review"
+              @click="closeBotReview(row)"
+            >
+              ×
+            </RcButton>
+          </div>
+        </template>
+      </SortableTable>
     </template>
   </div>
 </template>
 
 <style lang="scss" scoped>
+  .dev-my-work__actions {
+    display:         flex;
+    justify-content: flex-end;
+    gap:             var(--dev-space-2);
+  }
+
+  .dev-my-work__reason {
+    display:       block;
+    max-width:     240px;
+    overflow:      hidden;
+    white-space:   nowrap;
+    text-overflow: ellipsis;
+    color:         var(--muted);
+    font-size:     12px;
+  }
+
   .dev-my-work__status {
     display:         inline-block;
     padding:         1px 8px;

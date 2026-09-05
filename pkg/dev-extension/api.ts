@@ -21,6 +21,7 @@ import {
 import { WORKSPACE_VUE_CONFIG, WORKSPACE_CONFIG_MOUNT } from './workspace-config';
 import { INSIGHTS_SERVER } from './insights-server';
 import { WORKSPACE_API_SERVER } from './workspace-api';
+import { AGENT_SEED } from './agent-seed.generated';
 import {
   createWorkspaceInstance, deleteWorkspaceInstance, appById
 } from './apps';
@@ -1691,7 +1692,9 @@ export async function ensureWorkspaceApi(): Promise<void> {
   // already exists. It carries no templates of its own any more: those are Apps Plus apps, which
   // it reads from the cluster when asked.
   for (const [name, data] of [
-    [API_NAME, { 'server.mjs': WORKSPACE_API_SERVER }],
+    // The agent seed rides along: the skills a review or fix agent needs, which the API serves
+    // to the agent pod as one document (see agent-tools.ts for why not exec).
+    [API_NAME, { 'server.mjs': WORKSPACE_API_SERVER, 'seed.json': JSON.stringify(AGENT_SEED) }],
   ] as [string, Record<string, string>][]) {
     const url = `${ BASE }/v1/configmaps/${ namespace }/${ name }`;
     const existing = await devFetch(url).catch(() => null);
@@ -1728,6 +1731,14 @@ export async function ensureWorkspaceApi(): Promise<void> {
       {
         apiGroups: ['appsplus.io'], resources: ['appinstances'], verbs: ['get', 'list', 'create']
       },
+      // The review store: a ConfigMap per pull request in dev-system, which the API reads and
+      // writes for the agents and the browser both. And the GitHub token, which is in the
+      // per-person secret store beside it: the API acts on GitHub as the one person this
+      // Rancher's harness belongs to.
+      {
+        apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'list', 'create', 'update', 'patch', 'delete']
+      },
+      { apiGroups: [''], resources: ['secrets'], verbs: ['get', 'list'] },
       { apiGroups: [''], resources: ['namespaces'], verbs: ['get', 'list', 'create'] },
       {
         apiGroups: [''], resources: ['serviceaccounts', 'configmaps', 'secrets', 'services'], verbs: ['get', 'create']

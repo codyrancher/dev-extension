@@ -131,3 +131,6 @@ export const DEFAULT_WORKSPACE_SCHEME = 'http';
 export const WORKSPACE_WORKDIR = '/workspace/dashboard';
 export const WORKSPACE_HOME = '/workspace/.home';
 export const WORKSPACE_QUEUE = '/workspace/.queue';
+
+/** The in-cluster API, as pods reach it. The harness's skills read it as $CLAUDE_HARNESS_API. */
+export const DEV_API_IN_CLUSTER = 'http://dev-api.dev-system.svc:8080';
