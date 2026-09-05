@@ -26,7 +26,7 @@ import Socket, {
   EVENT_CONNECT_ERROR,
 } from '@shell/utils/socket';
 import { RcButton } from '@components/RcButton';
-import { findPod, podExecUrl } from '../api';
+import { findPod, podExecUrl, clusterBase, activeCluster } from '../api';
 
 // Channel prefixes, as above.
 const STDIN = '0';
@@ -85,6 +85,15 @@ export default {
       type:     Array,
       required: true,
     },
+    /**
+     * Which cluster the pod is in. The one being looked at, unless told otherwise - and a
+     * workspace's conversations are told otherwise, because they run in the agent pod in the
+     * local cluster whichever cluster the workspace itself is on.
+     */
+    cluster: {
+      type:    String,
+      default: '',
+    },
   },
 
   data() {
@@ -112,6 +121,10 @@ export default {
   },
 
   computed: {
+    base() {
+      return clusterBase(this.cluster || activeCluster());
+    },
+
     statusText() {
       return {
         waiting:    'Waiting for the pod',
@@ -253,7 +266,7 @@ export default {
       this.deciding = false;
 
       while (this.isCurrent(generation)) {
-        const pod = await findPod(this.namespace, this.labels, this.own).catch(() => null);
+        const pod = await findPod(this.namespace, this.labels, this.own, this.base).catch(() => null);
 
         if (!this.isCurrent(generation)) {
           return;
@@ -274,7 +287,7 @@ export default {
     },
 
     connect(pod, generation) {
-      const url = podExecUrl(this.namespace, pod, this.container, this.command);
+      const url = podExecUrl(this.namespace, pod, this.container, this.command, true, this.base);
       const socket = new Socket(url, false, 0, 'base64.channel.k8s.io');
 
       socket.addEventListener(EVENT_CONNECTING, () => {
@@ -361,7 +374,7 @@ export default {
         return;
       }
 
-      const current = await findPod(this.namespace, this.labels, this.own).catch(() => null);
+      const current = await findPod(this.namespace, this.labels, this.own, this.base).catch(() => null);
 
       if (!this.isCurrent(generation)) {
         return;

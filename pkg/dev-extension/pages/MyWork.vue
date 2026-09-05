@@ -14,10 +14,11 @@ import { RcButton } from '@components/RcButton';
 import AsyncButton from '@shell/components/AsyncButton';
 import { myWork, rerunFailed, dependabotAlerts } from '../github';
 import {
-  listAllWorkspaces, createWorkspace, queueConversation, listPrompts, getWorkspace
+  listAllWorkspaces, createWorkspace, listPrompts
 } from '../api';
 import { listApps } from '../apps';
 import { fillPrompt } from '../prompts';
+import { startConversation, queuePrompt } from '../conversations';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, SETTINGS_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_APP
 } from '../config/constants';
@@ -333,22 +334,17 @@ export default {
      * needs one to write a file. This is the only waiting the action does: everything after it
      * happens in the workspace, in its own time.
      */
+    /**
+     * Open a conversation in the workspace with a prompt queued for it.
+     *
+     * In the agent pod, namespaced by the workspace (see conversations.ts), so it is there the
+     * moment the workspace exists rather than minutes later when its own pod has compiled. The
+     * conversation opens with the prompt as its first message when its pane is first attached.
+     */
     async queueWhenReady(name, text) {
-      for (let attempt = 0; attempt < 20; attempt++) {
-        const workspace = await getWorkspace(name).catch(() => null);
+      const conversation = await startConversation(name, text.split('\n')[0].slice(0, 80));
 
-        if (workspace?.replicas) {
-          try {
-            await queueConversation(name, 1, text);
-
-            return;
-          } catch { /* no pod yet, which is what the next attempt is for */ }
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-      }
-
-      throw new Error('The workspace did not start in time, so nothing was queued in it.');
+      await queuePrompt(conversation.attach, text);
     },
 
     /**
