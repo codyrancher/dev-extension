@@ -30,7 +30,7 @@ export default {
   methods: {
     async remove(done) {
       try {
-        await deleteWorkspace(this.workspace.name);
+        await deleteWorkspace(this.$store, this.workspace.name);
         // The button is told before anything closes the modal, because closing it unmounts
         // the button and `done` would then be reporting to something no longer there.
         done(true);
@@ -58,8 +58,8 @@ export default {
       </template>
       <template #body>
         <p>
-          This deletes the namespace <b>{{ workspace.namespace }}</b> and everything in it. It
-          cannot be undone.
+          This removes the Apps Plus installation <b>{{ workspace.name }}</b>, and with it the
+          namespace <b>{{ workspace.namespace }}</b> and everything in it. It cannot be undone.
         </p>
       </template>
       <template #actions>

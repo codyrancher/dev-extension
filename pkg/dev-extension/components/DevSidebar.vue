@@ -13,13 +13,13 @@ import {
   listAllWorkspaces, deleteWorkspace, listClusters, readableBytes
 } from '../api';
 import { showTerminal } from '../terminals';
-import { TEMPLATES } from '../templates';
+import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
 import DevList from './DevList.vue';
 import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
-  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE
+  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE, DEFAULT_APP
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
@@ -38,6 +38,8 @@ const LOW_DISK = 20 * 1024 ** 3;
 // path. Without this the list blinks empty and fills in again on every click, which is the
 // difference between a sidebar and a page element that happens to be on the left.
 let cached = [];
+// Whether this page load has already asked for the default App; see refresh().
+let seeded = false;
 
 export default {
   name: 'DevSidebar',
@@ -48,7 +50,7 @@ export default {
     return {
       workspaces:   cached,
       clusters:     [],
-      templates:    TEMPLATES,
+      apps:         [],
       error:        '',
       refreshTimer: null,
       /**
@@ -99,16 +101,17 @@ export default {
         }));
       const all = [...clusters, ...strays];
 
-      // Template, then cluster, then workspaces. Two levels because they answer two questions
-      // that are both worth asking: a template says what a workspace runs, and a cluster says
-      // where it is. A cluster with nothing of this template in it is still listed, because the
-      // plus on it is how one gets made there.
-      return this.templates.map((template) => ({
-        ...template,
+      // One section per Apps Plus app, which is what a template is now. The icon is the one
+      // every app gets: an App has no glyph of its own, and a heading that is the app's name
+      // reads better than one that guesses at a brand from it.
+      return this.apps.map((app) => ({
+        id:       app.id,
+        label:    app.label,
+        icon:     'icon-apps',
         clusters: all.map((cluster) => ({
           ...cluster,
           rows: this.rowsFor(this.workspaces.filter((workspace) => (
-            workspace.cluster === cluster.id && workspace.template === template.id
+            workspace.cluster === cluster.id && workspace.app === app.id
           ))),
         })),
       }));
@@ -121,8 +124,8 @@ export default {
      * are still running and somebody still has to be able to delete them.
      */
     orphans() {
-      const known = new Set(this.templates.map((template) => template.id));
-      const lost = this.workspaces.filter((workspace) => !known.has(workspace.template));
+      const known = new Set(this.apps.map((app) => app.id));
+      const lost = this.workspaces.filter((workspace) => !known.has(workspace.app));
 
       if (!lost.length) {
         return [];
@@ -170,14 +173,30 @@ export default {
   methods: {
     async refresh() {
       try {
-        const [workspaces, clusters] = await Promise.all([
+        const [workspaces, clusters, apps] = await Promise.all([
           listAllWorkspaces(),
           listClusters().catch(() => this.clusters),
+          listApps(this.$store).catch(() => this.apps),
         ]);
 
         this.workspaces = workspaces;
         this.clusters = clusters;
+        this.apps = apps;
         cached = workspaces;
+
+        // A workspace made by the in-cluster API is an Installation nobody has rendered yet.
+        // This browser is the one that can; see apps.ts.
+        reconcileUnrendered(this.$store).catch(() => {});
+
+        // The App every Rancher gets. From here rather than only from the product's init,
+        // because at init Apps Plus's own types are not in the store yet - its bundle loads
+        // beside this one - and the sidebar is on every page of this product.
+        if (!seeded && !apps.some((app) => app.id === DEFAULT_APP)) {
+          seeded = true;
+          ensureDefaultApp(this.$store).catch(() => {
+            seeded = false;
+          });
+        }
       } catch { /* the next poll will say if it is more than a blip */ }
     },
 
@@ -212,11 +231,11 @@ export default {
     },
 
     /** The create page, with this cluster already chosen. */
-    createIn(cluster, template) {
+    createIn(cluster, app) {
       return {
         name:   CREATE_ROUTE,
         params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER },
-        query:  { cluster: cluster.id, template },
+        query:  { cluster: cluster.id, app },
       };
     },
 
@@ -251,7 +270,7 @@ export default {
       this.error = '';
 
       try {
-        await deleteWorkspace(name);
+        await deleteWorkspace(this.$store, name);
         await this.refresh();
 
         // Standing on a workspace that has just been deleted is standing on a page that is
@@ -347,7 +366,7 @@ export default {
       >
         <div class="dev-sidebar__template-head">
           <i class="dev-sidebar__template-icon icon icon-warning" />
-          <span class="dev-sidebar__template-label">Unknown template</span>
+          <span class="dev-sidebar__template-label">Unknown app</span>
         </div>
         <DevList
           v-for="section in orphans"

@@ -29,10 +29,10 @@ import { RcButton } from '@components/RcButton';
 import { LabeledInput } from '@components/Form/LabeledInput';
 import BrandImage from '@shell/components/BrandImage';
 import {
-  setSecretKeys, saveSecrets, secretValue, migrateGithubToken, templateSecretKey,
+  setSecretKeys, saveSecrets, secretValue, migrateGithubToken,
   listPrompts, savePrompts as writePrompts
 } from '../api';
-import { TEMPLATES, GLOBAL_SECRETS } from '../templates';
+import { GLOBAL_SECRETS } from '../secrets';
 
 export default {
   name: 'DevSettings',
@@ -73,7 +73,7 @@ export default {
 
   computed: {
     /**
-     * The sections, in the order the spec asks for them: global first, then one per template.
+     * The sections. One, now that templates are Apps Plus apps and carry their own values.
      *
      * A template with no declared secrets still gets a section, saying so, for the same reason
      * the sidebar shows a template with no workspaces: the set of templates is the map of what
@@ -84,28 +84,11 @@ export default {
         {
           id:      'global',
           title:   'Global',
-          help:    'Secrets that belong to the product rather than to any one template.',
+          help:    'Secrets that belong to the product. What a workspace needs is in its Apps Plus app\'s values.',
           secrets: GLOBAL_SECRETS.map((secret) => this.field(secret, secret.key)),
         },
-        ...TEMPLATES.map((template) => ({
-          id:      template.id,
-          title:   template.label,
-          // The card's own identity, so a template reads as the thing it is rather than as a
-          // heading over some fields. The harness's settings card does the same: a mark, a name,
-          // a line about what it is, and the identifier under it.
-          icon:    template.icon,
-          logo:    template.logo,
-          // A short line rather than the description's first sentence, which is a paragraph in
-          // its own right: this is the line under a name on a card, and it has one line of room.
-          subtitle: `${ template.label } dev environment`,
-          meta:    template.id,
-          help:    `Stored under the ${ template.id }. prefix, so two templates can each have a key of the same name.`,
-          secrets: (template.secrets || []).map((secret) => this.field(secret, templateSecretKey(template.id, secret.key))),
-        })),
       ];
     },
-
-    /** What Save will write: the fields that were typed into, and the keys Clear was pressed on. */
     writes() {
       return { ...this.edits };
     },

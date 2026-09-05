@@ -30,12 +30,10 @@ import { RcButton } from '@components/RcButton';
 import WorkspaceConversations from '../components/WorkspaceConversations.vue';
 import WorkspaceBrowser from '../components/WorkspaceBrowser.vue';
 import WorkspacePorts from '../components/WorkspacePorts.vue';
-import WorkspaceSidecars from '../components/WorkspaceSidecars.vue';
+import WorkspacePr from '../components/WorkspacePr.vue';
 import {
-  getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail,
-  sidecarReady, workspaceServing, setCluster
+  getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster
 } from '../api';
-import { templateById, templateBrowser } from '../templates';
 import { rememberWorkspace, rememberTab, lastTab } from '../recent';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB
@@ -48,7 +46,7 @@ export default {
 
   components: {
     Loading, Tabbed, Tab, Banner, RcButton, Row,
-    WorkspaceConversations, WorkspaceBrowser, WorkspacePorts, WorkspaceSidecars
+    WorkspaceConversations, WorkspaceBrowser, WorkspacePorts, WorkspacePr
   },
 
   async fetch() {
@@ -89,7 +87,19 @@ export default {
      * validates against this rather than the full list.
      */
     tabs() {
-      return WORKSPACE_TABS.filter((name) => name !== 'browser' || this.framable);
+      return WORKSPACE_TABS.filter((name) => (
+        (name !== 'browser' || this.framable) &&
+        (name !== 'pr' || this.prNumber || this.issueNumber)
+      ));
+    },
+
+    /** `pr-18600`, or `some-title-pr-18600`: the number the name carries. */
+    prNumber() {
+      return Number(/(?:^|-)pr-(\d+)(?:-|$)/.exec(this.name || '')?.[1]) || 0;
+    },
+
+    issueNumber() {
+      return Number(/(?:^|-)issue-(\d+)(?:-|$)/.exec(this.name || '')?.[1]) || 0;
     },
 
     /**
@@ -203,20 +213,13 @@ export default {
      * the browser is worth looking at whatever the workspace is doing, since a workspace that is
      * still compiling is a page in it that says so.
      */
+    /** Whether what the workspace serves answers yet, which is when a Browser tab has something to frame. */
     async canFrame() {
-      const template = templateById(this.workspace?.template);
-
-      if (!template || this.stopped) {
+      if (!this.workspace || this.stopped) {
         return false;
       }
 
-      const browser = templateBrowser(template);
-
-      if (browser) {
-        return sidecarReady(this.name, browser).catch(() => false);
-      }
-
-      return workspaceServing(this.name, template.port, template.scheme).catch(() => false);
+      return workspaceServing(this.name, this.workspace.port, this.workspace.scheme).catch(() => false);
     },
 
     async run(action, done) {
@@ -322,6 +325,25 @@ export default {
       </Tab>
 
       <!--
+        The pull request this workspace is for, when its name says which: `pr-<n>`, or
+        `issue-<n>` for the PR that closes that issue. A workspace named neither has no PR tab,
+        for the reason the Browser tab is absent rather than empty.
+      -->
+      <Tab
+        v-if="prNumber || issueNumber"
+        name="pr"
+        label="PR"
+        :weight="2.5"
+      >
+        <WorkspacePr
+          v-if="seen.pr"
+          :workspace="workspace"
+          :pr="prNumber"
+          :issue="issueNumber"
+        />
+      </Tab>
+
+      <!--
         Only while there is a browser to frame. Absent rather than dim, because a Browser tab
         with nothing in it could only explain itself by talking about a sidecar that is started
         on the Sidecars tab, and a tab whose content is a pointer to another tab is not content.
@@ -349,16 +371,6 @@ export default {
         />
       </Tab>
 
-      <Tab
-        name="sidecars"
-        label="Sidecars"
-        :weight="0"
-      >
-        <WorkspaceSidecars
-          v-if="seen.sidecars"
-          :workspace="workspace"
-        />
-      </Tab>
     </Tabbed>
   </div>
 </template>

@@ -32,23 +32,24 @@ const SA = '/var/run/secrets/kubernetes.io/serviceaccount';
 const TOKEN = fs.readFileSync(\`\${ SA }/token\`, 'utf8').trim();
 
 /** Where the extension leaves the templates, so this does not carry a second copy of them. */
-const TEMPLATES_FILE = process.env.TEMPLATES_FILE || '/templates/templates.json';
+// Templates are Apps Plus apps, read from the cluster when asked; there is no file of them.
+const APPS = '/apis/appsplus.io/v1alpha1/apps';
+const INSTANCES = '/apis/appsplus.io/v1alpha1/appinstances';
+const LABEL_WORKSPACE = 'dev.rancher.io/workspace';
+const LABEL_APP = 'dev.rancher.io/app';
+const LABEL_CLUSTER = 'dev.rancher.io/cluster';
 
-function templates() {
-  try {
-    return JSON.parse(fs.readFileSync(TEMPLATES_FILE, 'utf8'));
-  } catch {
-    return {};
-  }
+async function apps() {
+  const list = await k8s(APPS);
+
+  return (list.items || []).map((app) => ({
+    id:          app.metadata.name,
+    label:       app.metadata.name,
+    description: app.spec?.description || '',
+    values:      app.spec?.values || {},
+  }));
 }
 
-/**
- * One call to the apiserver.
- *
- * The ServiceAccount's CA reaches node through NODE_EXTRA_CA_CERTS on the pod, so there is
- * nothing to configure here and nothing is skipped: an api server this cannot verify is one it
- * refuses to talk to.
- */
 async function k8s(path, init = {}) {
   const response = await fetch(\`\${ ROOT }\${ path }\`, {
     ...init,
@@ -106,114 +107,52 @@ function nameError(name) {
 }
 
 /** Substituted into a template's environment, the same three the extension substitutes. */
-function fill(value, name, namespace, template) {
-  const own = (template.sidecars || []).find((sidecar) => sidecar.providesApi);
+/**
+ * Make a workspace: one Installation of one App.
+ *
+ * Only the Installation. Apps Plus renders an App's templates into a Fleet Bundle in the
+ * browser, when its model is saved, and this service has no browser - so what it makes is the
+ * record, labelled as a workspace, and the Dev extension renders it on its next poll of the
+ * workspace list (see apps.ts, reconcileUnrendered). Until somebody has the dashboard open the
+ * workspace exists and has no pod, which the list says.
+ */
+async function makeWorkspace(name, appId, cluster = 'local') {
+  const known = await apps();
 
-  return String(value)
-    .replace(/{{namespace}}/g, namespace)
-    .replace(/{{workspace}}/g, name)
-    .replace(/{{proxyPath}}/g, template.ownOrigin ? '' : \`/k8s/clusters/local/api/v1/namespaces/\${ namespace }/services/\${ template.scheme || 'http' }:\${ namespace }:\${ template.port }/proxy/\`)
-    .replace(/{{ownRancher}}/g, own ? \`\${ own.scheme || 'http' }://\${ namespace }-\${ own.id }.\${ namespace }.svc\` : '');
-}
-
-async function makeWorkspace(name, templateId) {
-  const all = templates();
-  const template = all[templateId];
-
-  if (!template) {
-    const error = new Error(\`No template called \${ templateId }. There is \${ Object.keys(all).join(', ') || 'none published yet' }.\`);
+  if (!known.some((app) => app.id === appId)) {
+    const error = new Error(\`No Apps Plus app called \${ appId }. There is \${ known.map((app) => app.id).join(', ') || 'none' }.\`);
 
     error.status = 400;
     throw error;
   }
 
   const namespace = \`dev-\${ name }\`;
-  const labels = {
-    'dev.rancher.io/workspace': name,
-    'dev.rancher.io/template':  templateId,
-  };
-
-  await create('/api/v1/namespaces', {
-    apiVersion: 'v1', kind: 'Namespace', metadata: { name: namespace, labels },
+  const created = await create(INSTANCES, {
+    apiVersion: 'appsplus.io/v1alpha1',
+    kind:       'AppInstance',
+    metadata:   {
+      name,
+      labels: { [LABEL_WORKSPACE]: name, [LABEL_APP]: appId, [LABEL_CLUSTER]: cluster },
+    },
+    spec: {
+      app:              appId,
+      namespace,
+      targets:          [{ clusterName: cluster }],
+      values:           {},
+      provisionCluster: { enabled: false },
+    },
   });
 
-  await create(\`/api/v1/namespaces/\${ namespace }/serviceaccounts\`, {
-    apiVersion: 'v1', kind: 'ServiceAccount', metadata: { namespace, name: 'dev-workspace' },
-  });
+  if (!created) {
+    const error = new Error(\`A workspace called \${ name } already exists.\`);
 
-  await create(\`/apis/rbac.authorization.k8s.io/v1/namespaces/\${ namespace }/rolebindings\`, {
-    apiVersion: 'rbac.authorization.k8s.io/v1',
-    kind:       'RoleBinding',
-    metadata:   { namespace, name: 'dev-workspace' },
-    roleRef:    { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: 'edit' },
-    subjects:   [{ kind: 'ServiceAccount', name: 'dev-workspace', namespace }],
-  });
-
-  // The two ConfigMaps a workspace boots from: the dev server's config, and the scripts a
-  // conversation runs. Both arrive as published data rather than being built here.
-  for (const [mapName, data] of Object.entries(template.configMaps || {})) {
-    await create(\`/api/v1/namespaces/\${ namespace }/configmaps\`, {
-      apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace, name: mapName }, data,
-    });
+    error.status = 409;
+    throw error;
   }
 
-  const podLabels = { app: namespace, ...labels };
-
-  await create(\`/apis/apps/v1/namespaces/\${ namespace }/deployments\`, {
-    apiVersion: 'apps/v1',
-    kind:       'Deployment',
-    metadata:   { namespace, name: namespace, labels: podLabels },
-    spec:       {
-      replicas: 1,
-      selector: { matchLabels: { app: namespace } },
-      strategy: { type: 'Recreate' },
-      template: {
-        metadata: { labels: podLabels },
-        spec:     {
-          serviceAccountName: 'dev-workspace',
-          containers:         [{
-            name:    'workspace',
-            image:   template.image,
-            ...(template.command ? { command: template.command } : {}),
-            ports:   [{ name: 'http', containerPort: template.port }],
-            env:     Object.entries(template.env || {}).map(([key, value]) => ({
-              name: key, value: fill(value, name, namespace, template),
-            })),
-            envFrom:      [{ secretRef: { name: 'dev-secrets', optional: true } }],
-            volumeMounts: [
-              ...(template.hostPath ? [{ name: 'work', mountPath: '/workspace' }] : []),
-              { name: 'dev-config', mountPath: '/dev-config', readOnly: true },
-              { name: 'terminal', mountPath: '/seed', readOnly: true },
-            ],
-          }],
-          volumes: [
-            ...(template.hostPath ? [{
-              name: 'work', hostPath: { path: \`\${ template.hostPath }/\${ name }\`, type: 'DirectoryOrCreate' },
-            }] : []),
-            { name: 'dev-config', configMap: { name: 'dev-workspace-config' } },
-            {
-              name: 'terminal', configMap: { name: 'dev-terminal', defaultMode: 365, optional: true },
-            },
-          ],
-        },
-      },
-    },
-  });
-
-  await create(\`/api/v1/namespaces/\${ namespace }/services\`, {
-    apiVersion: 'v1',
-    kind:       'Service',
-    metadata:   { namespace, name: namespace, labels },
-    spec:       {
-      ...(template.ownOrigin ? { type: 'NodePort' } : {}),
-      selector: { app: namespace },
-      ports:    [{
-        name: template.scheme || 'http', port: template.port, targetPort: 'http', protocol: 'TCP',
-      }],
-    },
-  });
-
-  return { name, namespace, template: templateId };
+  return {
+    name, namespace, app: appId, rendered: false,
+  };
 }
 
 function send(res, status, body) {
@@ -254,22 +193,19 @@ http.createServer(async(req, res) => {
 
   try {
     if (req.method === 'GET' && url.pathname === '/templates') {
-      return send(res, 200, {
-        templates: Object.entries(templates()).map(([id, template]) => ({
-          id, label: template.label, image: template.image,
-        })),
-      });
+      return send(res, 200, { templates: await apps() });
     }
 
     if (req.method === 'GET' && url.pathname === '/workspaces') {
-      const list = await k8s('/api/v1/namespaces?labelSelector=dev.rancher.io/workspace');
+      const list = await k8s(\`\${ INSTANCES }?labelSelector=\${ LABEL_WORKSPACE }\`);
 
       return send(res, 200, {
-        workspaces: (list.items || []).map((namespace) => ({
-          name:      namespace.metadata.labels['dev.rancher.io/workspace'],
-          namespace: namespace.metadata.name,
-          template:  namespace.metadata.labels['dev.rancher.io/template'] || '',
-          createdAt: namespace.metadata.creationTimestamp,
+        workspaces: (list.items || []).map((instance) => ({
+          name:      instance.metadata.labels[LABEL_WORKSPACE],
+          namespace: instance.spec?.namespace || \`dev-\${ instance.metadata.labels[LABEL_WORKSPACE] }\`,
+          app:       instance.spec?.app || '',
+          cluster:   instance.metadata.labels[LABEL_CLUSTER] || 'local',
+          createdAt: instance.metadata.creationTimestamp,
         })),
       });
     }
@@ -282,11 +218,11 @@ http.createServer(async(req, res) => {
         return send(res, 400, { error: problem });
       }
 
-      return send(res, 200, await makeWorkspace(body.name, body.template || 'rancher'));
+      return send(res, 200, await makeWorkspace(body.name, body.app || body.template || 'rancher-workspace', body.cluster || 'local'));
     }
 
     if (req.method === 'GET' && url.pathname === '/') {
-      return send(res, 200, { api: 'ok', templates: Object.keys(templates()) });
+      return send(res, 200, { api: 'ok', templates: (await apps()).map((app) => app.id) });
     }
 
     return send(res, 404, { error: 'No such path.' });

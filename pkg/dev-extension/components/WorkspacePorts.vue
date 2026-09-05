@@ -30,7 +30,6 @@ import {
   NODE_PORT_RANGE
 } from '../api';
 import { nextListen, generatedPassword } from '../share';
-import { templateById } from '../templates';
 
 export default {
   name: 'WorkspacePorts',
@@ -160,9 +159,7 @@ export default {
      * anything else is http until there is a reason to ask which.
      */
     scheme(port) {
-      const template = templateById(this.workspace.template);
-
-      return port === template?.port ? workspaceScheme(template) : 'http';
+      return port === this.workspace.port ? workspaceScheme(this.workspace) : 'http';
     },
 
     forwarded(row) {

@@ -16,21 +16,25 @@
  * is no controller and no credential anywhere in here.
  */
 import {
-  templateById, TEMPLATES, DevTemplate, DevSidecar, GLOBAL_SECRETS, WORKSPACE_WORKDIR, WORKSPACE_HOME,
-  WORKSPACE_QUEUE
-} from './templates';
-import { MANAGER_RULES } from './rancher-sidecar';
-import {
   DevShare, shareName, nginxConf, htpasswd, sharePodSpec
 } from './share';
 import { WORKSPACE_VUE_CONFIG, WORKSPACE_CONFIG_MOUNT } from './workspace-config';
 import { INSIGHTS_SERVER } from './insights-server';
 import { WORKSPACE_API_SERVER } from './workspace-api';
 import { DevPrompt, DEFAULT_PROMPTS } from './prompts';
-import { BROWSER_EXTENSION_FILES } from './browser-extension';
-// Which pod this dashboard is being served from. Worked out from the URL rather than written
-// down, because barn runs one of these per named extension - see config/constants.
-import { DEV_POD_NAMESPACE as POD_NAMESPACE, DEV_POD_SERVICE as POD_SERVICE } from './config/constants';
+import {
+  createWorkspaceInstance, deleteWorkspaceInstance, appById
+} from './apps';
+import {
+  DEV_POD_NAMESPACE as POD_NAMESPACE, DEV_POD_SERVICE as POD_SERVICE,
+  LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, WORKSPACE_WORKDIR, WORKSPACE_HOME, WORKSPACE_QUEUE,
+  WORKSPACE_PORT_ANNOTATION, WORKSPACE_SCHEME_ANNOTATION, DEFAULT_WORKSPACE_PORT, DEFAULT_WORKSPACE_SCHEME,
+} from './config/constants';
+
+// The labels live in config/constants now, beside the Apps Plus names that use them; re-exported
+// so the components that always imported them from here keep working.
+export { LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER };
+
 
 // The `local` cluster, like the pod this dev server runs in. The product shows no cluster
 // switcher, so there is nothing that could make this a choice.
@@ -66,8 +70,6 @@ export function activeCluster(): string {
   return currentCluster;
 }
 
-/** The label a workspace's namespace carries, so its cluster survives a page reload. */
-export const LABEL_CLUSTER = 'dev.rancher.io/cluster';
 
 /** One cluster this Rancher manages, with enough of its capacity to choose between them. */
 export interface DevCluster {
@@ -163,16 +165,6 @@ export function readableBytes(value: number): string {
   return `${ scaled >= 10 || unit === 0 ? Math.round(scaled) : scaled.toFixed(1) } ${ units[unit] }`;
 }
 
-/** Everything a workspace owns carries these, and the list is built by filtering on them. */
-export const LABEL_WORKSPACE = 'dev.rancher.io/workspace';
-export const LABEL_TEMPLATE = 'dev.rancher.io/template';
-/**
- * Which sidecar a Deployment, Service or pod is, when it is one.
- *
- * Declared here with the other two rather than beside the sidecar code, because its absence is
- * what identifies the workspace's own objects. See ownedByWorkspace.
- */
-export const LABEL_SIDECAR = 'dev.rancher.io/sidecar';
 
 /**
  * Ask Steve for the labelled things only, rather than for everything.
@@ -206,9 +198,11 @@ export interface DevWorkspace {
   cluster: string;
   name: string;
   namespace: string;
-  /** The template id. Kept even when it names a template that no longer exists. */
-  template: string;
-  templateLabel: string;
+  /** The Apps Plus App it is an installation of. Kept even when that App no longer exists. */
+  app: string;
+  /** What it serves, and how to speak to it. From the namespace's annotations; see constants. */
+  port: number;
+  scheme: string;
   state: WorkspaceState;
   createdAt: string;
   /**
@@ -243,6 +237,9 @@ export interface DevService {
 // be a second description of the same shapes. The accessors below are the narrowing.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
+// The Vuex store, for the calls that go through Apps Plus's models. See apps.ts.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Store = any;
 
 function csrfHeader(): Record<string, string> {
   const match = document.cookie.match(/(?:^|;\s*)CSRF=([^;]*)/);
@@ -421,7 +418,8 @@ function stateOf(namespace: Json, deployment: Json | undefined, pod?: Json): Wor
  */
 function workspaceFrom(namespace: Json, deployment: Json | undefined, pod?: Json, cluster?: string): DevWorkspace {
   const name = namespace.metadata.labels[LABEL_WORKSPACE];
-  const template = namespace.metadata.labels[LABEL_TEMPLATE] || '';
+  const annotations = namespace.metadata.annotations || {};
+  const port = Number(annotations[WORKSPACE_PORT_ANNOTATION]) || DEFAULT_WORKSPACE_PORT;
 
   return {
     name,
@@ -429,8 +427,9 @@ function workspaceFrom(namespace: Json, deployment: Json | undefined, pod?: Json
     // The label where there is one, and the cluster it was read from otherwise: a workspace made
     // before this product could host them anywhere is in the cluster it is being listed from.
     cluster:       namespace.metadata.labels[LABEL_CLUSTER] || cluster || activeCluster(),
-    template,
-    templateLabel: templateById(template)?.label || template || 'Unknown',
+    app:           namespace.metadata.labels[LABEL_APP] || '',
+    port,
+    scheme:        annotations[WORKSPACE_SCHEME_ANNOTATION] === 'https' ? 'https' : DEFAULT_WORKSPACE_SCHEME,
     state:         stateOf(namespace, deployment, pod),
     createdAt:     namespace.metadata.creationTimestamp,
     image:         deployment?.spec?.template?.spec?.containers?.[0]?.image || '',
@@ -457,7 +456,7 @@ function workspaceFrom(namespace: Json, deployment: Json | undefined, pod?: Json
 function ownedByWorkspace(candidate: Json, name: string): boolean {
   const labels = candidate?.metadata?.labels || {};
 
-  return labels[LABEL_WORKSPACE] === name && !labels[LABEL_SIDECAR];
+  return labels[LABEL_WORKSPACE] === name;
 }
 
 /**
@@ -561,108 +560,7 @@ export async function getWorkspace(name: string): Promise<DevWorkspace | null> {
   return workspaceFrom(record, deployment, pod);
 }
 
-/**
- * The two things a template's environment cannot know until it is a workspace.
- *
- * `{{proxyPath}}` is where this dev server is reached, which is empty for a workspace served at
- * its own origin. `{{ownRancher}}` is the in-cluster address of the Rancher this workspace's own
- * sidecar serves, and it is written in from the moment the workspace is created rather than
- * swapped in when the sidecar starts.
- *
- * That ordering is the whole point. A workspace at its own origin publishes a node port, and the
- * dev server behind it proxies /v1 and /v3 to whatever API names. Pointed at the host by default,
- * that is an unauthenticated path from the node's address into the cluster this product runs in,
- * open for as long as nobody has started the workspace's own Rancher. Pointed at its own Rancher
- * from the start, the worst it can do before that Rancher exists is refuse the connection.
- */
-function substituteTemplateEnv(value: string, name: string, template: DevTemplate): string {
-  const owns = (template.sidecars || []).find((sidecar) => sidecar.providesApi);
 
-  return value
-    .replace('{{proxyPath}}', template.ownOrigin ? '' : workspaceProxyUrl(name, template.port, template.scheme))
-    .replace('{{ownRancher}}', owns ? sidecarServiceUrl(name, owns) : '');
-}
-
-function deploymentBody(name: string, template: DevTemplate): Json {
-  const namespace = workspaceNamespace(name);
-  const labels = { app: namespace, [LABEL_WORKSPACE]: name, [LABEL_TEMPLATE]: template.id };
-
-  return {
-    apiVersion: 'apps/v1',
-    kind:       'Deployment',
-    metadata:   { namespace, name: namespace, labels },
-    spec:       {
-      replicas: 1,
-      selector: { matchLabels: { app: namespace } },
-      // Recreate rather than RollingUpdate: the checkout is a hostPath, so two pods would be
-      // installing into the same directory at the same time.
-      strategy: { type: 'Recreate' },
-      template: {
-        metadata: { labels },
-        spec:     {
-          // Not the namespace's default ServiceAccount: a workspace runs whatever a template
-          // or a person put in it, and this is the identity that says what that is allowed to
-          // reach (see ensureDevRbac).
-          serviceAccountName: WORKSPACE_SERVICE_ACCOUNT,
-          containers:         [{
-            name:  WORKSPACE_CONTAINER,
-            image: template.image,
-            ...(template.command ? { command: template.command } : {}),
-            ports: [{ name: 'http', containerPort: template.port }],
-            // `{{proxyPath}}` is the one substitution a template gets: the path this workspace
-            // is reached at, which contains its own name.
-            env:   Object.entries(template.env || {}).map(([envName, value]) => ({
-              name:  envName,
-              value: substituteTemplateEnv(value, name, template),
-            })),
-            // The workspace's own secrets, by reference and as a whole Secret rather than key by
-            // key. A named list would be fixed at create time, so a key added in Settings later
-            // would need the Deployment rewritten; this way the mirror is the list, and it is
-            // rewritten before every start. `optional` so a workspace with nothing set still runs.
-            envFrom: [{ secretRef: { name: MIRROR_SECRET, optional: true } }],
-            volumeMounts: [
-              ...(template.hostPath ? [{ name: 'work', mountPath: '/workspace' }] : []),
-              // Read-only, and copied rather than mounted over the checkout: a workspace is an
-              // ordinary clone someone can edit, and a file mounted into it could not be.
-              { name: 'dev-config', mountPath: WORKSPACE_CONFIG_MOUNT, readOnly: true },
-              // What a terminal tab runs. Mounted rather than copied, and read straight out of
-              // the mount, so a workspace always starts the scripts the extension last wrote
-              // without needing a pod restart to pick them up.
-              { name: 'terminal', mountPath: WORKSPACE_TERMINAL_MOUNT, readOnly: true },
-            ],
-            // A first boot is a clone, an install and a compile, which is minutes. A startup
-            // probe with a long budget is what stops the kubelet killing a pod that is working,
-            // and killing it is not harmless: it throws away a part-finished install.
-            ...(template.hostPath ? {
-              // A TCP probe rather than an HTTP one: what this is waiting for is the dev server
-              // binding its port, and asking it for a page instead means knowing which paths it
-              // serves and on which scheme, which is the template's business and not the
-              // kubelet's.
-              startupProbe: {
-                tcpSocket:        { port: template.port },
-                periodSeconds:    10,
-                failureThreshold: 120,
-              },
-              readinessProbe: { tcpSocket: { port: template.port }, periodSeconds: 10 },
-            } : {}),
-          }],
-          volumes: [
-            ...(template.hostPath ? [{
-              name:     'work',
-              hostPath: { path: `${ template.hostPath }/${ name }`, type: 'DirectoryOrCreate' },
-            }] : []),
-            { name: 'dev-config', configMap: { name: WORKSPACE_CONFIG_MAP } },
-            // Executable: these are scripts run out of the mount, and a ConfigMap's default
-            // mode is 0644, which is a terminal that opens on "permission denied".
-            {
-              name: 'terminal', configMap: { name: WORKSPACE_TERMINAL_MAP, defaultMode: 0o555, optional: true }
-            },
-          ],
-        },
-      },
-    },
-  };
-}
 
 /**
  * Why this name cannot be used right now, or '' when it can.
@@ -708,102 +606,58 @@ async function workspaceNameConflict(name: string): Promise<string> {
  * the workspace as Creating, and deleting it is one click. Tearing down half a workspace on
  * the user's behalf would be a guess about which half they wanted.
  */
-export async function createWorkspace(name: string, templateId: string, cluster?: string): Promise<void> {
-  // Everything below builds a URL from BASE, so the cluster is chosen once here rather than
-  // threaded through a dozen calls. It stays set afterwards, which is what the page wants: it
-  // navigates to the workspace it just made.
+export async function createWorkspace(store: Store, name: string, appId: string, cluster?: string): Promise<void> {
   if (cluster) {
     setCluster(cluster);
   }
 
-  const template = templateById(templateId);
+  const app = await appById(store, appId);
 
-  if (!template) {
-    throw new Error(`Unknown template "${ templateId }"`);
+  if (!app) {
+    throw new Error(`There is no Apps Plus app called "${ appId }". Templates are Apps Plus apps; make one there first.`);
   }
 
-  // A check, not a guarantee: two people creating the same name at once still race, and the
-  // loser gets the apiserver's 409. This is here so the ordinary case, one person picking a
-  // name that is taken, reads as a sentence about workspaces rather than one about namespaces.
   const conflict = await workspaceNameConflict(name);
 
   if (conflict) {
     throw new Error(conflict);
   }
 
-  const namespace = workspaceNamespace(name);
-  const labels = {
-    [LABEL_WORKSPACE]: name, [LABEL_TEMPLATE]: template.id, [LABEL_CLUSTER]: activeCluster(),
-  };
+  // The Installation is the workspace. Apps Plus renders the App's templates into a Fleet
+  // Bundle when it is saved, and Fleet makes the namespace, the Deployment and the Service on
+  // the cluster - so from here on this file only reads them back.
+  await createWorkspaceInstance(store, name, appId, activeCluster());
 
-  await devFetch(`${ BASE }/v1/namespaces`, {
-    method: 'POST',
-    body:   JSON.stringify({
-      apiVersion: 'v1',
-      kind:       'Namespace',
-      metadata:   { name: namespace, labels },
-    }),
-  });
-
-  // Before the Deployment, because a pod cannot start with a ServiceAccount that is not there
-  // yet, and after the namespace, because that is where most of it lives.
-  await ensureWorkspaceRbac(name);
-
-  // The dev server's config, which is the one file a workspace does not get from git. See
-  // workspace-config.ts for what is in it and why a clone's own config will not do.
-  await devFetch(`${ BASE }/v1/configmaps`, {
-    method: 'POST',
-    body:   JSON.stringify({
-      apiVersion: 'v1',
-      kind:       'ConfigMap',
-      metadata:   { namespace, name: WORKSPACE_CONFIG_MAP, labels },
-      data:       { 'vue.config.js': WORKSPACE_VUE_CONFIG },
-    }),
-  });
-
-  // What a terminal tab runs, before the pod that mounts it. See ensureWorkspaceTerminal.
-  await ensureWorkspaceTerminal(name);
-
-  // Before the Deployment, so the pod's first start already has whatever is in the store. It is
-  // rewritten on every start as well, since the store can change after this.
-  const store = await ensureGeneratedSecrets(template);
-
-  await mirrorSecrets(name, template, store);
-
-  await devFetch(`${ BASE }/v1/apps.deployments`, {
-    method: 'POST',
-    body:   JSON.stringify(deploymentBody(name, template)),
-  });
-
-  await devFetch(`${ BASE }/v1/services`, {
-    method: 'POST',
-    body:   JSON.stringify(workspaceServiceBody(name, template)),
-  });
+  // What no App can render, because it is not the App's: the terminal scripts copied from this
+  // pod's own seed, and the RoleBinding that lets the workspace read the shared claude
+  // credentials. Both wait for Fleet to have made the namespace first.
+  await afterWorkspaceCreated(name);
 }
 
 /**
- * The workspace's Service.
+ * The parts of a workspace that belong to this product rather than to its App.
  *
- * NodePort rather than ClusterIP when the template needs an origin of its own, which is the whole
- * of what "its own origin" costs: the port is open on the node to anyone who can reach it, with no
- * Rancher session in front of it. The Browser tab says so where it offers the link, and the
- * workspace's API address is its own Rancher rather than this cluster's precisely because of it.
+ * Retried for as long as Fleet reasonably takes to apply a Bundle: the namespace is the App's
+ * to make, and until it exists there is nowhere to put these. A workspace whose namespace
+ * never comes is a Bundle that failed, which the list says in its own words.
  */
-function workspaceServiceBody(name: string, template: DevTemplate): Json {
+async function afterWorkspaceCreated(name: string): Promise<void> {
   const namespace = workspaceNamespace(name);
-  const labels = { [LABEL_WORKSPACE]: name, [LABEL_TEMPLATE]: template.id };
 
-  return {
-    apiVersion: 'v1',
-    kind:       'Service',
-    metadata:   { namespace, name: namespace, labels },
-    spec:       {
-      ...(template.ownOrigin ? { type: 'NodePort' } : {}),
-      selector: { app: namespace },
-      ports:    [{ name: 'http', port: template.port, targetPort: 'http' }],
-    },
-  };
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const exists = await devFetch(`${ BASE }/v1/namespaces/${ namespace }`).catch(() => null);
+
+    if (exists) {
+      await ensureWorkspaceRbac(name);
+      await ensureWorkspaceTerminal(name);
+
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
 }
+
 
 /**
  * Start or stop a workspace by scaling its Deployment.
@@ -817,25 +671,15 @@ export async function setWorkspaceRunning(name: string, running: boolean): Promi
   const url = `${ BASE }/v1/apps.deployments/${ namespace }/${ namespace }`;
 
   if (running) {
-    // Every start, not only the first. The pod reads its environment once, when it starts, so
-    // this is the only moment a key set since the last start can reach it.
-    const template = templateById((await devFetch(url)).metadata?.labels?.[LABEL_TEMPLATE] || '');
-
-    await mirrorSecrets(name, template);
-    // And the same moment is when a workspace made before this version of the product can be
-    // brought into line, since all of it is read when the pod starts and only then.
-    await bringWorkspaceUpToDate(name, template);
+    // Written on every start rather than only at create: a workspace made by the in-cluster API,
+    // or by hand in Apps Plus, has an App's objects and none of this product's.
+    await ensureWorkspaceRbac(name);
+    await ensureWorkspaceTerminal(name);
   }
 
-  // Read after all of that, never before it. bringWorkspaceUpToDate writes the same Deployment,
-  // so a copy fetched at the top of this function is stale by the time it gets here, and Steve
-  // answers a stale resourceVersion with a 409: the workspace is brought up to date and then
-  // does not start, with nothing on the page to say why. It was invisible for as long as that
-  // function usually found nothing to change.
   const deployment = await devFetch(url);
 
   deployment.spec.replicas = running ? 1 : 0;
-
   await devFetch(url, { method: 'PUT', body: JSON.stringify(deployment) });
 }
 
@@ -943,169 +787,9 @@ async function ensureWorkspaceTerminal(name: string): Promise<void> {
   await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data }) }).catch(() => null);
 }
 
-/**
- * Everything about a workspace that this product has since changed its mind about, applied.
- *
- * Called from both places a workspace's pod is about to start or restart, which is the only
- * moment any of it can take effect: starting the workspace, and starting the Rancher sidecar that
- * restarts it. Having it on only one of those is how starting a sidecar came to give somebody a
- * restarted workspace that was still in proxy mode with its dashboard calling the host.
- *
- * It reads and writes the Deployment itself rather than taking one, because its two callers reach
- * it from different directions, and it only writes when something is actually different, so a
- * workspace that is already right is not restarted for nothing.
- */
-async function bringWorkspaceUpToDate(name: string, template: DevTemplate | undefined): Promise<void> {
-  const namespace = workspaceNamespace(name);
 
-  await ensureWorkspaceConfig(name);
-  await ensureWorkspaceTerminal(name);
-  await ensureWorkspaceService(name, template);
 
-  // The address a conversation in this workspace posts what it learns to. Written on every start
-  // for the same reason the rest of this function exists: the database is per person and outlives
-  // any one workspace, so a workspace made before it existed has to be told about it.
-  const insights = await insightsServiceUrl().catch(() => '');
 
-  const url = `${ BASE }/v1/apps.deployments/${ namespace }/${ namespace }`;
-  const deployment = await devFetch(url).catch(() => null);
-  const container = deployment?.spec?.template?.spec?.containers?.[0];
-
-  if (!container) {
-    return;
-  }
-
-  let changed = false;
-
-  // A workspace created before the mirror existed has no reference to it, so nothing in it ever
-  // sees a secret however many times the mirror is rewritten.
-  if (!container.envFrom) {
-    container.envFrom = [{ secretRef: { name: MIRROR_SECRET, optional: true } }];
-    changed = true;
-  }
-
-  // Not from the template: which database this is depends on who is looking, which a template
-  // cannot know. `INSIGHTS_URL` is the name the harness's own agents already use.
-  if (insights) {
-    const entry = (container.env || []).find((candidate: Json) => candidate.name === 'INSIGHTS_URL');
-
-    if (!entry) {
-      container.env = [...(container.env || []), { name: 'INSIGHTS_URL', value: insights }];
-      changed = true;
-    } else if (entry.value !== insights) {
-      entry.value = insights;
-      changed = true;
-    }
-  }
-
-  // The environment its template describes today, which is where the API address lives.
-  for (const [envName, value] of Object.entries(template?.env || {})) {
-    const wanted = substituteTemplateEnv(value, name, template!);
-    const entry = (container.env || []).find((candidate: Json) => candidate.name === envName);
-
-    if (entry && entry.value !== wanted) {
-      entry.value = wanted;
-      changed = true;
-    }
-  }
-
-  // The image and the command its template describes today, together and never one without the
-  // other. What a workspace runs is the template's, and a workspace made before the template
-  // learned to install claude would otherwise never learn it.
-  //
-  // Together is the part that is not a tidiness: they are one decision. The version that brought
-  // the command up to date and left the image alone put node's setpriv arguments in front of a
-  // busybox that has a different setpriv, and the workspace crash-looped printing that applet's
-  // usage. A container's command only means anything in the image it was written for.
-  if (template?.image && container.image !== template.image) {
-    container.image = template.image;
-    changed = true;
-  }
-
-  if (template?.command && JSON.stringify(container.command) !== JSON.stringify(template.command)) {
-    container.command = template.command;
-    changed = true;
-  }
-
-  // The terminal scripts, for a workspace whose Deployment predates them. Without the volume the
-  // ConfigMap this just wrote is in the namespace and reaches nothing.
-  const pod = deployment.spec.template.spec;
-
-  if (!(pod.volumes || []).some((volume: Json) => volume.name === 'terminal')) {
-    pod.volumes = [...(pod.volumes || []), {
-      name: 'terminal', configMap: { name: WORKSPACE_TERMINAL_MAP, defaultMode: 0o555, optional: true }
-    }];
-    container.volumeMounts = [...(container.volumeMounts || []), {
-      name: 'terminal', mountPath: WORKSPACE_TERMINAL_MOUNT, readOnly: true
-    }];
-    changed = true;
-  }
-
-  if (changed) {
-    await devFetch(url, { method: 'PUT', body: JSON.stringify(deployment) });
-  }
-}
-
-/**
- * The workspace's Service: present, and of the type its template needs.
- *
- * Created here as well as at create time, because a create that failed after the namespace left a
- * workspace permanently without one and nothing ever put it back.
- */
-async function ensureWorkspaceService(name: string, template: DevTemplate | undefined): Promise<void> {
-  if (!template) {
-    return;
-  }
-
-  const namespace = workspaceNamespace(name);
-  const url = `${ BASE }/v1/services/${ namespace }/${ namespace }`;
-  const service = await devFetch(url).catch(() => null);
-
-  if (!service) {
-    await devFetch(`${ BASE }/v1/services`, {
-      method: 'POST',
-      body:   JSON.stringify(workspaceServiceBody(name, template)),
-    }).catch(() => null);
-
-    return;
-  }
-
-  if (template.ownOrigin && service.spec?.type !== 'NodePort') {
-    service.spec.type = 'NodePort';
-    await devFetch(url, { method: 'PUT', body: JSON.stringify(service) });
-  }
-}
-
-/**
- * Where a workspace answers inside the cluster, which is an origin of its own without a node port.
- *
- * The node port exists so that a person's own browser can reach a workspace at an origin that is
- * not Rancher's. A browser that is itself in the cluster does not need one: the Service is already
- * an origin of its own from in there, and it is one nothing outside the cluster can reach. So this
- * is what the browser sidecar is pointed at, and it is why that sidecar makes a workspace usable
- * without publishing anything.
- */
-export function workspaceServiceUrl(name: string, template: DevTemplate): string {
-  const namespace = workspaceNamespace(name);
-
-  return `${ workspaceScheme(template) }://${ namespace }.${ namespace }.svc:${ template.port }/`;
-}
-
-/**
- * What a workspace's own port actually speaks, which is not what the template's `scheme` says.
- *
- * `scheme` is the proxy's half of the arrangement and stays http on purpose: Rancher terminates
- * the TLS and will not talk to the shell's self-signed dev certificate on the way through. At its
- * own origin there is no proxy in the way and the same dev server serves https instead (see
- * workspace-config.ts, which explains why: on http the session cookie Rancher issues is dropped).
- *
- * One function because two callers got this wrong in the same direction. The Ports tab asked the
- * proxy over http whether an own-origin workspace was answering, got the proxy's own failure back,
- * and printed "Nothing yet" beside a workspace that was serving.
- */
-export function workspaceScheme(template: DevTemplate | undefined): string {
-  return template?.ownOrigin ? 'https' : (template?.scheme || 'http');
-}
 
 /**
  * The address a published port answers on, which is the node's own.
@@ -1166,12 +850,20 @@ export function workspaceOriginUrl(service: DevService | null, host: string): st
  * shared credentials, since that lives in the product's own namespace. It is deleted here so a
  * deleted workspace leaves nothing behind that names it.
  */
-export async function deleteWorkspace(name: string): Promise<void> {
+export async function deleteWorkspace(store: Store, name: string): Promise<void> {
   const namespace = workspaceNamespace(name);
   const binding = `creds-${ WORKSPACE_SERVICE_ACCOUNT }-${ namespace }`;
 
-  await devFetch(`${ BASE }/v1/namespaces/${ namespace }`, { method: 'DELETE' });
+  // The Installation takes its Bundle with it, and the Bundle takes the namespace and everything
+  // in it. What is left is this product's own: the credentials binding, which lives in
+  // dev-system rather than in the namespace, and the Installation record itself.
+  await deleteWorkspaceInstance(store, name);
   await devFetch(`${ BASE }/v1/rbac.authorization.k8s.io.rolebindings/${ DEV_SYSTEM_NAMESPACE }/${ binding }`, { method: 'DELETE' }).catch(() => null);
+}
+
+/** How to speak to what a workspace serves. */
+export function workspaceScheme(workspace: DevWorkspace | null | undefined): string {
+  return workspace?.scheme === 'https' ? 'https' : DEFAULT_WORKSPACE_SCHEME;
 }
 
 /**
@@ -1392,26 +1084,7 @@ export const CREDENTIALS_KEY = 'credentials.json';
 /** The hand-made Secret the store replaced. Only the migration that folds it in still names it. */
 export const GITHUB_SECRET = 'github-token';
 
-/**
- * How a template's own secrets are namespaced inside the one store.
- *
- * The key carries its scope, so one flat Secret holds both kinds without a nested format that
- * has to be parsed: `GH_TOKEN` is global, `rancher.FIGMA_API_KEY` belongs to the rancher
- * template. The prefix is the template's own id rather than a constant, or a second template's
- * key of the same name would be the first one's.
- */
-export function templateSecretKey(templateId: string, key: string): string {
-  return `${ templateId }.${ key }`;
-}
 
-/**
- * Where a workspace and its sidecars read the keys they were given, in their own namespace.
- *
- * Named for the workspace rather than for sidecars because both use it now: a secretKeyRef can
- * only name a Secret in the pod's own namespace, so one mirror per workspace serves everything
- * running in it.
- */
-const MIRROR_SECRET = 'dev-secrets';
 
 /** The dev server config a workspace boots with, in the workspace's own namespace. */
 const WORKSPACE_CONFIG_MAP = 'dev-workspace-config';
@@ -1906,124 +1579,9 @@ export async function saveSecrets(changes: Record<string, string>): Promise<void
   }
 }
 
-/**
- * A password nobody has to think of, made once and then kept.
- *
- * The chart does this with `randAlphaNum 15` and a `lookup` that reuses whatever the last install
- * generated, and the reason is the same here: an admin password written into the code as
- * `admin`/`admin` is a literal credential in the repo, and one regenerated on every start is one
- * nobody can write down. Alphanumeric only, because these end up typed into a login form.
- */
-const GENERATED_ALPHABET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
-function generatedValue(length = 15): string {
-  const bytes = new Uint8Array(length);
 
-  window.crypto.getRandomValues(bytes);
 
-  return [...bytes].map((byte) => GENERATED_ALPHABET[byte % GENERATED_ALPHABET.length]).join('');
-}
-
-/**
- * Fill in any declared secret the product generates for itself, once.
- *
- * Only the ones that are missing, so a password that has already been generated is the password
- * it stays, which is the property `lookup` gives the chart: something that has been used to log
- * in once goes on working.
- */
-export async function ensureGeneratedSecrets(template: DevTemplate | undefined): Promise<Record<string, string>> {
-  const declared = [
-    ...GLOBAL_SECRETS.map((secret) => ({ secret, key: secret.key })),
-    ...(template?.secrets || []).map((secret) => ({ secret, key: templateSecretKey(template!.id, secret.key) })),
-  ].filter(({ secret }) => secret.generated);
-
-  const store = await readSecretStore();
-
-  if (!declared.length) {
-    return store;
-  }
-
-  const changes: Record<string, string> = {};
-
-  for (const { key } of declared) {
-    if (!store[key]) {
-      changes[key] = generatedValue();
-    }
-  }
-
-  await saveSecrets(changes);
-
-  // The store as it now is, returned rather than left to be read back.
-  //
-  // Reading it again is a read of something written a moment ago, and the very first write is a
-  // create: Steve can answer that read from before it and hand back a store without the key just
-  // generated. What follows is a mirror written without it, a pod started without it, a Rancher
-  // installed with an empty password that therefore invents one of its own, and a bootstrap that
-  // cannot log in. That is a great deal of consequence for a cache, and none of it happens if the
-  // value is carried forward instead of asked for again.
-  return { ...store, ...changes };
-}
-
-/**
- * Copy the keys this workspace is entitled to into the workspace's own namespace.
- *
- * A secretKeyRef can only name a Secret in the pod's own namespace, and the store is one Secret
- * per user in this product's namespace, so the values have to be mirrored. What a pod spec
- * carries either way is the reference, which is the property that matters: `kubectl get deploy
- * -o yaml` shows a name and a key rather than a token.
- *
- * Rewritten every time anything here is started, not only when the workspace is created. A key
- * set in Settings after the workspace was made would otherwise never reach it, and because the
- * references are `optional` the pod would come up without it and say nothing.
- *
- * The mirror lands in a namespace where the workspace's own ServiceAccount holds `edit`, so
- * anyone with a shell in the workspace can read these values. That is deliberate rather than
- * overlooked: they are that workspace's credentials, and the code they are for is what runs
- * there. A secret that must not be readable by the workspace does not belong in its template.
- */
-async function mirrorSecrets(workspace: string, template: DevTemplate | undefined, known?: Record<string, string>): Promise<void> {
-  const namespace = workspaceNamespace(workspace);
-  // `known` is the store as the caller has just seen it, which is what stops a value generated
-  // moments ago from being lost to a stale read. See ensureGeneratedSecrets.
-  const store = known || await readSecretStore();
-  const mirrored: Record<string, string> = {};
-
-  // Only the template's own keys, never the global ones. A global secret is the person's rather
-  // than the workspace's: section 9 has the browser read those through Steve at the point of use,
-  // and mirroring GH_TOKEN into every workspace namespace put a personal GitHub token inside every
-  // pod a template happened to run, in a namespace where the workspace account holds `edit`.
-  //
-  // The template's keys lose the template prefix on the way in, since inside the workspace there
-  // is only one template and `rancher.FIGMA_API_KEY` is not a name an environment variable can
-  // have.
-  for (const secret of template?.secrets || []) {
-    const value = store[templateSecretKey(template!.id, secret.key)];
-
-    if (value) {
-      mirrored[secret.key] = encodeSecret(value);
-    }
-  }
-
-  const url = `${ BASE }/v1/secrets/${ namespace }/${ MIRROR_SECRET }`;
-  const existing = await devFetch(url).catch(() => null);
-
-  if (existing) {
-    await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data: mirrored }) });
-
-    return;
-  }
-
-  await devFetch(`${ BASE }/v1/secrets`, {
-    method: 'POST',
-    body:   JSON.stringify({
-      apiVersion: 'v1',
-      kind:       'Secret',
-      type:       'Opaque',
-      metadata:   { namespace, name: MIRROR_SECRET, labels: { [LABEL_WORKSPACE]: workspace } },
-      data:       mirrored,
-    }),
-  });
-}
 
 /**
  * Fold the hand-made github-token Secret into the store, once.
@@ -2057,234 +1615,15 @@ export async function migrateGithubToken(): Promise<void> {
   await devFetch(`${ BASE }/v1/secrets/${ DEV_SYSTEM_NAMESPACE }/${ GITHUB_SECRET }`, { method: 'DELETE' }).catch(() => null);
 }
 
-/** A sidecar as it exists in the cluster, joined to what the template declared. */
-export interface DevSidecarState {
-  id: string;
-  state: WorkspaceState;
-  /** Keys the sidecar declared that are not in the secret store. */
-  missing: string[];
-  /**
-   * What the cluster says about it, when there is something to say.
-   *
-   * The card showed Starting for every kind of failure before this existed, including the ones
-   * where no pod is ever created and so nothing has a log to read. This is the pod's own reason
-   * or the controller's, whichever there is.
-   */
-  detail: string;
-  /** The last line it printed, while it is still starting. See listSidecars. */
-  log: string;
-}
 
-function sidecarName(workspace: string, id: string): string {
-  return `${ workspaceNamespace(workspace) }-${ id }`;
-}
 
-/** Every declared sidecar's state in one workspace, whether or not it has ever been started. */
-export async function listSidecars(workspace: string, sidecars: DevSidecar[], template?: DevTemplate): Promise<Record<string, DevSidecarState>> {
-  const namespace = workspaceNamespace(workspace);
-  const [deployments, pods, keys] = await Promise.all([
-    devFetch(`${ BASE }/v1/apps.deployments/${ namespace }`).catch(() => null),
-    devFetch(`${ BASE }/v1/pods/${ namespace }`).catch(() => null),
-    setSecretKeys().catch(() => [] as string[]),
-  ]);
 
-  const out: Record<string, DevSidecarState> = {};
 
-  for (const sidecar of sidecars) {
-    const name = sidecarName(workspace, sidecar.id);
-    const deployment = (deployments?.data || []).find((candidate: Json) => candidate.metadata?.name === name);
-    const pod = (pods?.data || []).find((candidate: Json) => candidate.metadata?.labels?.[LABEL_SIDECAR] === sidecar.id);
 
-    const state = deployment ? stateOf({ metadata: {} }, deployment, pod) : 'stopped';
 
-    out[sidecar.id] = {
-      id: sidecar.id,
-      // A sidecar that has never been started has no Deployment, which is 'stopped' rather than
-      // anything more dramatic: it is declared, and starting it is what creates it.
-      state,
-      missing: missingSecrets(sidecar, template, keys),
-      detail:  podDetail(pod) || (pod ? '' : replicaFailure(deployment)),
-      // Only while it is still coming up, and only for a sidecar that takes long enough for the
-      // question to arise. Ten minutes of "Starting up" says nothing about which minute it is in,
-      // and the manager's own log is a running account of it: which helm install, and how it went.
-      log: state === 'starting' && pod && sidecar.readyPort
-        ? await podLogTail(namespace, pod.metadata.name, 'sidecar')
-        : '',
-    };
-  }
 
-  return out;
-}
 
-/**
- * The keys this sidecar needs that the store does not have.
- *
- * The template is what says how a key is named in the store, so a sidecar declaring
- * `FIGMA_API_KEY` on the rancher template is asking about `rancher.FIGMA_API_KEY`. Without the
- * template there is no way to name the key, and answering "nothing is missing" would be a
- * guess, so the declaration is reported as missing instead.
- */
-function missingSecrets(sidecar: DevSidecar, template: DevTemplate | undefined, keys: string[]): string[] {
-  return (sidecar.secrets || []).filter((key) => {
-    // A generated secret is never missing, whatever the store holds: starting the sidecar is what
-    // creates it. Counting it as missing would disable the only control that could fill it in.
-    if ((template?.secrets || []).find((secret) => secret.key === key)?.generated) {
-      return false;
-    }
 
-    return !template || !keys.includes(templateSecretKey(template.id, key));
-  });
-}
-
-/**
- * The Chromium extension the browser sidecar runs with, built for one workspace.
- *
- * Written on every start, like the terminal scripts and for the same reason: it carries this
- * workspace's own addresses and its own generated passwords, and both can change after the
- * sidecar was created. A Secret rather than a ConfigMap because of what is in it.
- */
-const BROWSER_EXTENSION_SECRET = 'dev-browser-extension';
-export const BROWSER_EXTENSION_MOUNT = '/extension';
-
-async function ensureBrowserExtension(workspace: string, template: DevTemplate, store: Record<string, string>): Promise<void> {
-  const namespace = workspaceNamespace(workspace);
-  const rancher = (template.sidecars || []).find((sidecar) => sidecar.providesApi);
-
-  // The pages the content scripts run on: this workspace's own Rancher, and the dashboard it
-  // serves. Both are in-cluster addresses, so the extension is inert anywhere else, which is the
-  // point - it carries passwords and it should not offer them to a page that merely looks like a
-  // Rancher login.
-  const matches = [
-    rancher ? `${ sidecarServiceUrl(workspace, rancher) }/*` : '',
-    `${ workspaceServiceUrl(workspace, template).replace(/\/$/, '') }/*`,
-  ].filter(Boolean);
-
-  // The accounts the workspace's own Rancher is bootstrapped with. admin is the generated
-  // bootstrap password; user1 to user3 are the auth sidecars' shared one. See AUTH_SCRIPT.
-  const admin = store[templateSecretKey(template.id, 'RANCHER_BOOTSTRAP_PASSWORD')] || '';
-  const user = store[templateSecretKey(template.id, 'AUTH_USER_PASSWORD')] || '';
-  const creds = [
-    { label: 'Admin', username: 'admin', password: admin },
-    ...[1, 2, 3].map((n) => ({ label: `User ${ n }`, username: `user${ n }`, password: user })),
-  ].filter((entry) => !!entry.password);
-
-  const data: Record<string, string> = {};
-
-  for (const [file, body] of Object.entries(BROWSER_EXTENSION_FILES)) {
-    data[file] = encodeSecret(body
-      .replace('{{matches}}', matches.join('",\n        "'))
-      .replace('{{creds}}', JSON.stringify(creds, null, 2)));
-  }
-
-  const url = `${ BASE }/v1/secrets/${ namespace }/${ BROWSER_EXTENSION_SECRET }`;
-  const existing = await devFetch(url).catch(() => null);
-
-  if (!existing) {
-    await devFetch(`${ BASE }/v1/secrets`, {
-      method: 'POST',
-      body:   JSON.stringify({
-        apiVersion: 'v1',
-        kind:       'Secret',
-        metadata:   { namespace, name: BROWSER_EXTENSION_SECRET },
-        type:       'Opaque',
-        data,
-      }),
-    }).catch(() => null);
-
-    return;
-  }
-
-  await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data }) }).catch(() => null);
-}
-
-/**
- * The values a workspace's sidecars have been configured with.
- *
- * One ConfigMap for all of them, keyed `<sidecar>.<param>`, because that is the shape the secret
- * store already uses for the same kind of question and because a ConfigMap per sidecar would be
- * five objects saying one thing each. Values only: what a parameter *is* lives in the template,
- * which is code, and a value with no declaration behind it is ignored.
- */
-const SIDECAR_PARAMS_MAP = 'dev-sidecar-params';
-
-export async function sidecarParams(workspace: string, sidecar: DevSidecar): Promise<Record<string, string>> {
-  const namespace = workspaceNamespace(workspace);
-  const config = await devFetch(`${ BASE }/v1/configmaps/${ namespace }/${ SIDECAR_PARAMS_MAP }`).catch(() => null);
-  const out: Record<string, string> = {};
-
-  for (const param of sidecar.params || []) {
-    out[param.id] = config?.data?.[`${ sidecar.id }.${ param.id }`] ?? (param.default || '');
-  }
-
-  return out;
-}
-
-/**
- * Save what a sidecar is configured with.
- *
- * Applying it is the caller's next step, and that step is a restart: a container reads its
- * environment when it starts and at no other time.
- */
-export async function setSidecarParams(workspace: string, sidecar: DevSidecar, values: Record<string, string>): Promise<void> {
-  const namespace = workspaceNamespace(workspace);
-  const url = `${ BASE }/v1/configmaps/${ namespace }/${ SIDECAR_PARAMS_MAP }`;
-  const existing = await devFetch(url).catch(() => null);
-  const data: Record<string, string> = { ...(existing?.data || {}) };
-
-  for (const [id, value] of Object.entries(values)) {
-    data[`${ sidecar.id }.${ id }`] = value;
-  }
-
-  if (!existing) {
-    await devFetch(`${ BASE }/v1/configmaps`, {
-      method: 'POST',
-      body:   JSON.stringify({
-        apiVersion: 'v1',
-        kind:       'ConfigMap',
-        metadata:   { namespace, name: SIDECAR_PARAMS_MAP },
-        data,
-      }),
-    });
-
-    return;
-  }
-
-  await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data }) });
-}
-
-/**
- * The whole of a sidecar's log, for the card's log window.
- *
- * podLogTail next door answers a different question - what is it doing right now, in one line, on
- * a card - and takes the last line for it. This is what someone opens when that line was not
- * enough, so it is the last few hundred.
- */
-export async function sidecarLog(workspace: string, sidecar: DevSidecar, lines = 500): Promise<string> {
-  const namespace = workspaceNamespace(workspace);
-  const pods = await devFetch(`${ BASE }/v1/pods/${ namespace }`).catch(() => null);
-  const pod = (pods?.data || []).find((candidate: Json) => candidate.metadata?.labels?.[LABEL_SIDECAR] === sidecar.id);
-
-  if (!pod) {
-    return '';
-  }
-
-  // `timestamps` because a log line on its own says what happened and not when, and a sidecar
-  // that takes ten minutes to install two helm charts is one where the gap between two lines is
-  // the interesting part. The apiserver prefixes each line with an RFC3339 time; what to do with
-  // that is the caller's.
-  const url = `${ BASE }/api/v1/namespaces/${ namespace }/pods/${ pod.metadata.name }/log?container=sidecar&tailLines=${ lines }&timestamps=true`;
-
-  // No Accept header, deliberately. The log subresource answers in plain text and negotiates
-  // against a list that does not include it: asking for `text/plain` is a 406 saying "only the
-  // following media types are accepted", and asking for JSON gets a log wrapped in nothing.
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    throw new Error(`The log could not be read: ${ response.status }.`);
-  }
-
-  return response.text();
-}
 
 /**
  * The prompts this person's queued conversations open with.
@@ -2376,46 +1715,12 @@ export async function queueConversation(workspace: string, session: string | num
 const API_NAME = 'dev-api';
 const API_PORT = 8080;
 
-/** Where the extension leaves the templates for it, so what a workspace runs is decided once. */
-const API_TEMPLATES = 'dev-api-templates';
 
 /** Where a pod reaches it, which is what an action inside a workspace is given. */
 export function workspaceApiUrl(): string {
   return `http://${ API_NAME }.${ DEV_SYSTEM_NAMESPACE }.svc:${ API_PORT }`;
 }
 
-/**
- * The templates as data, which is what the service renders from.
- *
- * Published rather than reimplemented: the service makes the same Deployment the page does, from
- * the same declaration, so a template that changes here changes there. Only what it needs -
- * everything about a sidecar except its identity is the page's business.
- */
-function publishedTemplates(): Record<string, Json> {
-  const out: Record<string, Json> = {};
-
-  for (const template of TEMPLATES) {
-    out[template.id] = {
-      label:      template.label,
-      image:      template.image,
-      command:    template.command,
-      port:       template.port,
-      scheme:     template.scheme,
-      ownOrigin:  template.ownOrigin,
-      hostPath:   template.hostPath,
-      env:        template.env,
-      sidecars:   (template.sidecars || []).map((sidecar) => ({
-        id: sidecar.id, scheme: sidecar.scheme, providesApi: sidecar.providesApi,
-      })),
-      // The two ConfigMaps a workspace boots from, by name, so the service writes the same ones.
-      configMaps: {
-        [WORKSPACE_CONFIG_MAP]: { 'vue.config.js': WORKSPACE_VUE_CONFIG },
-      },
-    };
-  }
-
-  return out;
-}
 
 /**
  * Create the service if it is not there, and keep its script and its templates current.
@@ -2428,11 +1733,11 @@ export async function ensureWorkspaceApi(): Promise<void> {
   const namespace = DEV_SYSTEM_NAMESPACE;
   const labels = { app: API_NAME };
 
-  // The script, and the templates it renders from. Both rewritten whenever they differ, so an
-  // edit in this repo reaches a service that already exists.
+  // The script, rewritten whenever it differs, so an edit in this repo reaches a service that
+  // already exists. It carries no templates of its own any more: those are Apps Plus apps, which
+  // it reads from the cluster when asked.
   for (const [name, data] of [
     [API_NAME, { 'server.mjs': WORKSPACE_API_SERVER }],
-    [API_TEMPLATES, { 'templates.json': JSON.stringify(publishedTemplates(), null, 2) }],
   ] as [string, Record<string, string>][]) {
     const url = `${ BASE }/v1/configmaps/${ namespace }/${ name }`;
     const existing = await devFetch(url).catch(() => null);
@@ -2461,6 +1766,14 @@ export async function ensureWorkspaceApi(): Promise<void> {
     kind:       'ClusterRole',
     metadata:   { name: API_NAME },
     rules:      [
+      // Templates are Apps Plus apps and a workspace is an Installation of one, so this is what
+      // the API reads and writes. The objects an App renders are Fleet's to make, not the API's.
+      {
+        apiGroups: ['appsplus.io'], resources: ['apps'], verbs: ['get', 'list']
+      },
+      {
+        apiGroups: ['appsplus.io'], resources: ['appinstances'], verbs: ['get', 'list', 'create']
+      },
       { apiGroups: [''], resources: ['namespaces'], verbs: ['get', 'list', 'create'] },
       {
         apiGroups: [''], resources: ['serviceaccounts', 'configmaps', 'secrets', 'services'], verbs: ['get', 'create']
@@ -2516,13 +1829,11 @@ export async function ensureWorkspaceApi(): Promise<void> {
             ],
             volumeMounts: [
               { name: 'seed', mountPath: '/seed', readOnly: true },
-              { name: 'templates', mountPath: '/templates', readOnly: true },
             ],
             readinessProbe: { httpGet: { path: '/', port: API_PORT }, periodSeconds: 10 },
           }],
           volumes: [
             { name: 'seed', configMap: { name: API_NAME } },
-            { name: 'templates', configMap: { name: API_TEMPLATES } },
           ],
         },
       },
@@ -2679,550 +1990,20 @@ export async function insightsQuery(sql: string): Promise<{ columns: string[]; r
   return body;
 }
 
-/**
- * The account a manager sidecar runs as, in the workspace's own namespace.
- *
- * Not the workspace's account, which is bound to Kubernetes' aggregated `edit`. `edit`
- * deliberately excludes RBAC, and a helm install of vcluster creates a ServiceAccount, a Role and
- * a RoleBinding of its own, so a manager running as the workspace account fails part-way through
- * with a message about roles and leaves half a control plane behind.
- */
-export const MANAGER_SERVICE_ACCOUNT = 'dev-manager';
 
-/**
- * The scripts a sidecar declared, as a ConfigMap beside it.
- *
- * Rewritten rather than created once, so editing a script in this repo reaches a sidecar that
- * already exists. The pod picks it up on its next start, which is what Restart is for.
- */
-async function ensureSidecarScripts(workspace: string, sidecar: DevSidecar): Promise<void> {
-  if (!sidecar.scripts) {
-    return;
-  }
 
-  const namespace = workspaceNamespace(workspace);
-  const name = `${ sidecarName(workspace, sidecar.id) }-scripts`;
-  const data: Record<string, string> = {};
 
-  for (const [file, body] of Object.entries(sidecar.scripts)) {
-    data[file] = body
-      .replace(/{{namespace}}/g, namespace)
-      .replace(/{{workspace}}/g, workspace);
-  }
 
-  const url = `${ BASE }/v1/configmaps/${ namespace }/${ name }`;
-  const existing = await devFetch(url).catch(() => null);
 
-  if (existing) {
-    await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data }) });
 
-    return;
-  }
 
-  await devFetch(`${ BASE }/v1/configmaps`, {
-    method: 'POST',
-    body:   JSON.stringify({
-      apiVersion: 'v1',
-      kind:       'ConfigMap',
-      metadata:   { namespace, name, labels: { [LABEL_WORKSPACE]: workspace, [LABEL_SIDECAR]: sidecar.id } },
-      data,
-    }),
-  });
-}
 
-/**
- * The rights a manager sidecar needs, which are the chart's `rancher-manager` Role verbatim.
- *
- * Namespaced, and wide within the namespace. That is the trade the chart makes and it is the
- * right one: what runs here installs a Kubernetes distribution into a namespace, so it needs
- * everything a helm install of one needs, and the boundary that matters is that it is one
- * workspace's namespace rather than the cluster.
- */
-async function ensureManagerRbac(workspace: string, sidecar: DevSidecar): Promise<void> {
-  if (!sidecar.manager) {
-    return;
-  }
 
-  const namespace = workspaceNamespace(workspace);
 
-  await ensure('serviceaccounts', namespace, MANAGER_SERVICE_ACCOUNT, {
-    apiVersion: 'v1',
-    kind:       'ServiceAccount',
-    metadata:   { namespace, name: MANAGER_SERVICE_ACCOUNT },
-  });
 
-  await ensure('rbac.authorization.k8s.io.roles', namespace, MANAGER_SERVICE_ACCOUNT, {
-    apiVersion: 'rbac.authorization.k8s.io/v1',
-    kind:       'Role',
-    metadata:   { namespace, name: MANAGER_SERVICE_ACCOUNT },
-    rules:      MANAGER_RULES,
-  });
 
-  await ensure('rbac.authorization.k8s.io.rolebindings', namespace, MANAGER_SERVICE_ACCOUNT, {
-    apiVersion: 'rbac.authorization.k8s.io/v1',
-    kind:       'RoleBinding',
-    metadata:   { namespace, name: MANAGER_SERVICE_ACCOUNT },
-    roleRef:    {
-      apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: MANAGER_SERVICE_ACCOUNT
-    },
-    subjects: [{ kind: 'ServiceAccount', name: MANAGER_SERVICE_ACCOUNT, namespace }],
-  });
-}
 
-/**
- * Where a sidecar answers inside the cluster, which is not the same as where a browser reaches it.
- *
- * The proxy URL is for a person with a Rancher session; this is for one pod talking to another,
- * and it is what the workspace's dev server is pointed at.
- */
-export function sidecarServiceUrl(workspace: string, sidecar: DevSidecar): string {
-  const namespace = workspaceNamespace(workspace);
 
-  return `${ sidecar.scheme || 'http' }://${ sidecarName(workspace, sidecar.id) }.${ namespace }.svc`;
-}
-
-/**
- * Start a sidecar, creating it the first time.
- *
- * Three things happen before either path, and all three have to happen on both, which is what
- * the version that only did them on create got wrong:
- *
- *   - the ServiceAccount. A workspace created before this product had one has no `dev-workspace`
- *     in its namespace, and a Deployment naming one that does not exist never produces a pod at
- *     all: the ReplicaSet is refused, and the card reads Starting for ever with nothing to read.
- *   - the generated secrets, so an admin password exists before something asks for it.
- *   - the mirror, because the pod reads its environment when it starts, and a key set in Settings
- *     since the last start reaches it at this moment or not at all.
- *
- * The values arrive by reference either way, so `kubectl get deploy -o yaml` shows a Secret name
- * and a key rather than a token.
- */
-export async function startSidecar(workspace: string, sidecar: DevSidecar, template: DevTemplate): Promise<void> {
-  const namespace = workspaceNamespace(workspace);
-  const name = sidecarName(workspace, sidecar.id);
-  const url = `${ BASE }/v1/apps.deployments/${ namespace }/${ name }`;
-
-  await ensureWorkspaceRbac(workspace);
-
-  // The store as it stands once anything generated has been filled in, carried from here rather
-  // than read again at each step. See ensureGeneratedSecrets.
-  const store = await ensureGeneratedSecrets(template);
-
-  // Refused rather than started without it. The reference is `optional`, so a sidecar started
-  // without a key it declared comes up, answers nothing and looks healthy, which is the failure
-  // this is here to make impossible. The card disables Start for the same reason; this is the
-  // half that a second tab or a stale page cannot get around.
-  const keys = Object.entries(store).filter(([, value]) => !!value).map(([key]) => key);
-  const missing = missingSecrets(sidecar, template, keys)
-    .filter((key) => (template.secrets || []).find((secret) => secret.key === key)?.required !== false);
-
-  if (missing.length) {
-    throw new Error(`${ sidecar.label } needs ${ missing.join(', ') }, which is not set. Set it in Settings first.`);
-  }
-
-  await mirrorSecrets(workspace, template, store);
-
-  // Every key this sidecar declared, present in the store the mirror was just written from.
-  //
-  // The reference is optional, so a key that did not make it arrives as an empty variable and the
-  // container carries on with it. For a generated password that means the thing it protects is
-  // installed with no password at all, and the failure surfaces minutes later as a login that
-  // cannot succeed and a reset that has nothing to reset to. Checked here, where it is still a
-  // sentence rather than a mystery.
-  const blank = (sidecar.secrets || []).filter((key) => !store[templateSecretKey(template.id, key)]);
-
-  if (blank.length) {
-    throw new Error(`${ sidecar.label } cannot be started: ${ blank.join(', ') } has no value in the secret store.`);
-  }
-
-  // Both of these are rewritten on every start, not created once. A script edited in this repo
-  // has to reach a sidecar that already exists, and a manager's rights have to be there before
-  // its ReplicaSet is admitted rather than after.
-  await ensureSidecarScripts(workspace, sidecar);
-  await ensureManagerRbac(workspace, sidecar);
-
-  // What the gear was last saved with, read here rather than in the pod spec so both the create
-  // and the update path get the same answer from one fetch.
-  const params = await sidecarParams(workspace, sidecar);
-
-  // The browser's own extension, built for this workspace. See ensureBrowserExtension.
-  if (sidecar.extension) {
-    await ensureBrowserExtension(workspace, template, store);
-  }
-
-  // The workspace itself, brought up to date. A workspace made before its template asked for an
-  // origin of its own is still in proxy mode, and starting its Rancher is exactly the moment
-  // somebody expects that to have been sorted out: without this they get a restart and a
-  // workspace whose dashboard still calls the Rancher this page is served from.
-  await bringWorkspaceUpToDate(workspace, template);
-
-  const existing = await devFetch(url).catch(() => null);
-
-  if (existing) {
-    // The declaration as it stands today, not as it stood when this Deployment was made. A sidecar
-    // created before its declaration asked for a variable never gains it otherwise, which is not
-    // academic: the auth switch added five secrets and the node's address to a manager that already
-    // existed, and a manager without them starts, says nothing, and cannot configure anything.
-    existing.spec.replicas = 1;
-    existing.spec.template.spec = sidecarPodSpec(workspace, sidecar, template, params);
-    await devFetch(url, { method: 'PUT', body: JSON.stringify(existing) });
-
-    return;
-  }
-
-  const labels = { app: name, [LABEL_WORKSPACE]: workspace, [LABEL_SIDECAR]: sidecar.id };
-
-  await devFetch(`${ BASE }/v1/apps.deployments`, {
-    method: 'POST',
-    body:   JSON.stringify({
-      apiVersion: 'apps/v1',
-      kind:       'Deployment',
-      metadata:   { namespace, name, labels },
-      spec:       {
-        replicas: 1,
-        selector: { matchLabels: { app: name } },
-        // Recreate rather than RollingUpdate, as the chart has it for the same containers. A
-        // sidecar is one instance of one thing, often holding a port or a directory, and during a
-        // rolling update there are two of them: the card would read the older pod's state and
-        // report Running while the new one cannot start at all.
-        strategy: { type: 'Recreate' },
-        template: { metadata: { labels }, spec: sidecarPodSpec(workspace, sidecar, template, params) },
-      },
-    }),
-  });
-
-  await ensureSidecarService(workspace, sidecar);
-}
-
-/**
- * The pod a sidecar's declaration describes.
- *
- * One function rather than an object literal inside the create path, because the update path needs
- * the same answer: what a sidecar's pod should be is a property of the declaration, and a
- * Deployment that already exists is just as entitled to today's version of it as a new one.
- */
-function sidecarPodSpec(workspace: string, sidecar: DevSidecar, template: DevTemplate, params: Record<string, string> = {}): Json {
-  const namespace = workspaceNamespace(workspace);
-  const name = sidecarName(workspace, sidecar.id);
-  const owns = (template.sidecars || []).find((candidate) => candidate.providesApi);
-  const substitute = (value: string) => value
-    .replace(/{{namespace}}/g, namespace)
-    .replace(/{{workspace}}/g, workspace)
-    .replace(/{{workspaceUrl}}/g, workspaceServiceUrl(workspace, template))
-    // The workspace's own Rancher, by the address it will answer on whether or not it is running
-    // yet. Written in from the moment the sidecar that uses it is created, for the reason
-    // substituteTemplateEnv gives: an address that appears only once something is up is an
-    // address nothing can be pointed at in advance.
-    .replace(/{{ownRancher}}/g, owns ? sidecarServiceUrl(workspace, owns) : '');
-
-  return {
-    // A manager runs as an account of its own. See ensureManagerRbac.
-    serviceAccountName: sidecar.manager ? MANAGER_SERVICE_ACCOUNT : WORKSPACE_SERVICE_ACCOUNT,
-    containers:         [{
-      name:  'sidecar',
-      image: sidecar.image,
-      ...(sidecar.command ? { command: sidecar.command } : {}),
-      ...(sidecar.args ? { args: sidecar.args } : {}),
-      ...(sidecar.port ? { ports: [{ name: 'http', containerPort: sidecar.port }] } : {}),
-      env: [
-        ...Object.entries(sidecar.env || {}).map(([envName, value]) => ({
-          name: envName, value: substitute(value)
-        })),
-        // What the card's gear was last saved with. Declared values only, so a key left in the
-        // ConfigMap by a parameter that has since been removed reaches nothing. See sidecarParams.
-        ...(sidecar.params || []).map((param) => ({
-          name: param.env, value: params[param.id] ?? (param.default || ''),
-        })),
-        // By reference, never by value: the token is not in the pod spec, so it is not
-        // in `kubectl get deploy -o yaml` either.
-        ...(sidecar.secrets || []).map((key) => ({
-          name:      key,
-          valueFrom: { secretKeyRef: { name: MIRROR_SECRET, key, optional: true } },
-        })),
-        // The same values under whatever name the image actually reads. See secretEnv.
-        ...Object.entries(sidecar.secretEnv || {}).map(([envName, key]) => ({
-          name:      envName,
-          valueFrom: { secretKeyRef: { name: MIRROR_SECRET, key, optional: true } },
-        })),
-        // Read off the pod rather than out of the declaration, because nothing on this
-        // side of the API knows it. See fieldEnv.
-        ...Object.entries(sidecar.fieldEnv || {}).map(([envName, fieldPath]) => ({
-          name:      envName,
-          valueFrom: { fieldRef: { fieldPath } },
-        })),
-      ],
-      // The chart's own budget: half an hour of ten-second-apart attempts, starting a
-      // minute in. What it is waiting for is two helm installs into a cluster this pod has
-      // to create first, and a probe that gave up sooner would kill the thing it is
-      // measuring part-way through.
-      ...(sidecar.readyPort ? {
-        readinessProbe: {
-          tcpSocket:           { port: sidecar.readyPort },
-          initialDelaySeconds: 60,
-          periodSeconds:       20,
-          failureThreshold:    90,
-        },
-      } : {}),
-      ...(sidecar.preStop ? { lifecycle: { preStop: { exec: { command: sidecar.preStop } } } } : {}),
-      volumeMounts: [
-        ...(sidecar.scripts ? [{ name: 'scripts', mountPath: '/scripts', readOnly: true }] : []),
-        ...(sidecar.shm ? [{ name: 'shm', mountPath: '/dev/shm' }] : []),
-        // One mount per file, with subPath, rather than the whole Secret at one path.
-        //
-        // A Secret volume is a directory of symlinks into a hidden `..data` directory, and
-        // Chromium will not load an unpacked extension whose manifest is one: it reports nothing
-        // and runs without it, which is exactly what it did. A subPath mount is a real file. The
-        // cost is that these no longer update in place, which does not matter here because the
-        // Secret is rewritten and the pod rolled in the same breath. See ensureBrowserExtension.
-        ...(sidecar.extension ? Object.keys(BROWSER_EXTENSION_FILES).map((file) => ({
-          name: 'extension', mountPath: `${ BROWSER_EXTENSION_MOUNT }/${ file }`, subPath: file, readOnly: true,
-        })) : []),
-      ],
-    }],
-    volumes: [
-      ...(sidecar.scripts ? [{ name: 'scripts', configMap: { name: `${ name }-scripts`, defaultMode: 0o555 } }] : []),
-      // A container gets 64MB of shared memory by default, and Chromium's renderers pass their
-      // surfaces through it: the documented symptom of leaving it at 64MB is tabs dying as "Aw,
-      // Snap" on pages of any size. The closet's compose file says the same thing to the same
-      // image as `shm_size: 1gb`. Memory-backed, so it is the pod's own memory rather than the
-      // node's disk.
-      ...(sidecar.shm ? [{ name: 'shm', emptyDir: { medium: 'Memory', sizeLimit: '1Gi' } }] : []),
-      // The extension's files, as a directory Chromium can be pointed at. `optional`, so a
-      // sidecar that starts before the Secret is written comes up without it rather than
-      // staying in ContainerCreating for ever.
-      ...(sidecar.extension ? [{
-        name: 'extension', secret: { secretName: BROWSER_EXTENSION_SECRET, optional: true }
-      }] : []),
-    ],
-  };
-}
-
-/**
- * A sidecar's Service, of the type its declaration asks for.
- *
- * Written on every start rather than only on the first, and upgraded in place, for the same reason
- * the workspace's own Service is: a sidecar started before its declaration wanted a node port
- * already has a ClusterIP Service, and nothing else would ever put that right.
- */
-async function ensureSidecarService(workspace: string, sidecar: DevSidecar): Promise<void> {
-  if (!sidecar.port) {
-    return;
-  }
-
-  const namespace = workspaceNamespace(workspace);
-  const name = sidecarName(workspace, sidecar.id);
-  const labels = { app: name, [LABEL_WORKSPACE]: workspace, [LABEL_SIDECAR]: sidecar.id };
-  const url = `${ BASE }/v1/services/${ namespace }/${ name }`;
-  const service = await devFetch(url).catch(() => null);
-
-  if (!service) {
-    await devFetch(`${ BASE }/v1/services`, {
-      method: 'POST',
-      body:   JSON.stringify({
-        apiVersion: 'v1',
-        kind:       'Service',
-        metadata:   { namespace, name, labels },
-        spec:       {
-          ...(sidecar.nodePort ? { type: 'NodePort' } : {}),
-          selector: { app: name },
-          ports:    [{ name: sidecar.scheme || 'http', port: sidecar.port, targetPort: 'http' }],
-        },
-      }),
-    });
-
-    return;
-  }
-
-  let changed = false;
-
-  if (sidecar.nodePort && service.spec?.type !== 'NodePort') {
-    service.spec.type = 'NodePort';
-    changed = true;
-  }
-
-  // The port the declaration now names. Figma was declared on 3000 and listens on 8000, so its
-  // Service pointed at a port nothing was bound to and every link to it was dead; correcting the
-  // declaration has to correct the Service too, or the fix reaches only new workspaces. The
-  // existing entry is edited rather than replaced, so an assigned nodePort is not given up.
-  const entry = service.spec?.ports?.[0];
-
-  if (entry && entry.port !== sidecar.port) {
-    entry.port = sidecar.port;
-    entry.name = sidecar.scheme || 'http';
-    entry.targetPort = 'http';
-    changed = true;
-  }
-
-  if (changed) {
-    await devFetch(url, { method: 'PUT', body: JSON.stringify(service) });
-  }
-}
-
-/** Where a sidecar with a node port answers, for the browser rather than for a pod. */
-export async function sidecarNodePort(workspace: string, sidecar: DevSidecar): Promise<number> {
-  const namespace = workspaceNamespace(workspace);
-  const url = `${ BASE }/v1/services/${ namespace }/${ sidecarName(workspace, sidecar.id) }`;
-  const service = await devFetch(url).catch(() => null);
-
-  return service?.spec?.ports?.[0]?.nodePort || 0;
-}
-
-/**
- * The auth provider a workspace has asked its own Rancher to use, and what came of it.
- *
- * A ConfigMap rather than a call, because the thing that carries it out is the manager sidecar and
- * it is not always running: a choice made while it is down has to still be there when it comes
- * back, exactly as the closet keeps it in `.env` so its bootstraps re-apply it. See AUTH_SCRIPT.
- */
-export const AUTH_CONFIG_MAP = 'dev-auth';
-
-export interface DevAuthState {
-  /** What was asked for. Empty means local users only. */
-  wanted: string;
-  /** What the manager last got this Rancher to accept, which is empty until it has. */
-  applied: string;
-  /** The manager's own sentence about the last attempt. */
-  message: string;
-  at: string;
-}
-
-export async function workspaceAuth(workspace: string): Promise<DevAuthState> {
-  const namespace = workspaceNamespace(workspace);
-  const config = await devFetch(`${ BASE }/v1/configmaps/${ namespace }/${ AUTH_CONFIG_MAP }`).catch(() => null);
-  const data = config?.data || {};
-
-  return {
-    wanted:  data.provider || '',
-    applied: data.applied || '',
-    message: data.message || '',
-    at:      data.at || '',
-  };
-}
-
-/**
- * Ask for a provider. Only the request is written here.
- *
- * `applied` is deliberately left alone rather than cleared: it is the manager's, and blanking it
- * would make the card claim nothing is configured during the twenty seconds before the manager
- * notices, which is the opposite of what is true.
- */
-export async function setWorkspaceAuth(workspace: string, provider: string): Promise<void> {
-  const namespace = workspaceNamespace(workspace);
-  const url = `${ BASE }/v1/configmaps/${ namespace }/${ AUTH_CONFIG_MAP }`;
-  const existing = await devFetch(url).catch(() => null);
-
-  if (existing) {
-    await devFetch(url, {
-      method: 'PUT',
-      body:   JSON.stringify({ ...existing, data: { ...(existing.data || {}), provider } }),
-    });
-
-    return;
-  }
-
-  await devFetch(`${ BASE }/v1/configmaps`, {
-    method: 'POST',
-    body:   JSON.stringify({
-      apiVersion: 'v1',
-      kind:       'ConfigMap',
-      metadata:   { namespace, name: AUTH_CONFIG_MAP, labels: { [LABEL_WORKSPACE]: workspace } },
-      data:       { provider },
-    }),
-  });
-}
-
-/**
- * Restart a sidecar: roll its pod, without ever stopping it.
- *
- * Not stop-then-start, which is what this was. That is two writes with a gap between them, and
- * everything that can go wrong in the gap does: if the second half fails the sidecar is left
- * stopped with the reason showing only as a banner that the next poll replaces, and for a sidecar
- * that owns the workspace's API the two halves point the workspace at the host Rancher and back
- * again, restarting it twice for a change that ends where it began. Observed: a Restart that
- * reported Running and left the Deployment at zero replicas, because the badge was still reading
- * the terminating pod.
- *
- * An annotation on the pod template is how Kubernetes' own `rollout restart` does it: one write,
- * the Deployment's own strategy carries it out, and a sidecar that was running is running
- * throughout. It also picks up whatever the scripts ConfigMap now says, which is the usual reason
- * to press it.
- */
-export async function restartSidecar(workspace: string, sidecar: DevSidecar, template: DevTemplate): Promise<void> {
-  const namespace = workspaceNamespace(workspace);
-  const url = `${ BASE }/v1/apps.deployments/${ namespace }/${ sidecarName(workspace, sidecar.id) }`;
-  const deployment = await devFetch(url).catch(() => null);
-
-  if (!deployment) {
-    // Never started, so there is nothing to roll and starting it is what was meant.
-    await startSidecar(workspace, sidecar, template);
-
-    return;
-  }
-
-  // The scripts and the secrets are rewritten first, since picking up a change to them is what a
-  // restart is usually for. Generated keys are filled in here as well as on the start path,
-  // because a template that has since declared a new one (the auth switch added two) would
-  // otherwise mirror nothing for it, and the sidecar would come back without a value it needs.
-  await ensureSidecarScripts(workspace, sidecar);
-
-  const store = await ensureGeneratedSecrets(template);
-
-  await mirrorSecrets(workspace, template, store);
-  await ensureSidecarService(workspace, sidecar);
-
-  // The same rewrite the start path does. Restart is what someone presses when the product has
-  // changed its mind about what this pod should be, and the extension is part of that: without
-  // this, a browser that was already running when the extension was added comes back with the
-  // volume declared and nothing in it.
-  if (sidecar.extension) {
-    await ensureBrowserExtension(workspace, template, store);
-  }
-
-  const meta = deployment.spec.template.metadata;
-
-  meta.annotations = { ...(meta.annotations || {}), 'dev.rancher.io/restarted-at': new Date().toISOString() };
-  deployment.spec.replicas = 1;
-  // Today's declaration, for the reason the start path takes it: a restart is what someone presses
-  // when the product has changed its mind about what this pod should be.
-  deployment.spec.template.spec = sidecarPodSpec(workspace, sidecar, template, await sidecarParams(workspace, sidecar));
-
-  await devFetch(url, { method: 'PUT', body: JSON.stringify(deployment) });
-}
-
-/**
- * Stop a sidecar by scaling it to nothing, leaving it declared and restartable.
- *
- * Its Service is left behind on purpose: a stopped sidecar keeps the address it will answer on
- * again, so a link to it is still the right link, and a Service with nothing behind it routes
- * nowhere rather than somewhere wrong. The mirrored Secret is left for a different reason, which
- * is that it is the workspace's rather than this sidecar's; both go when the namespace does.
- */
-export async function stopSidecar(workspace: string, id: string, template?: DevTemplate): Promise<void> {
-  const namespace = workspaceNamespace(workspace);
-  const url = `${ BASE }/v1/apps.deployments/${ namespace }/${ sidecarName(workspace, id) }`;
-  const deployment = await devFetch(url).catch(() => null);
-
-  if (!deployment) {
-    return;
-  }
-
-  deployment.spec.replicas = 0;
-  await devFetch(url, { method: 'PUT', body: JSON.stringify(deployment) });
-
-  // Nothing to put back. The workspace is pointed at this sidecar's address from the day it was
-  // created, so stopping it leaves a dashboard whose API refuses the connection, which is the
-  // truth. The version that swapped the address to the host on stop restarted the workspace twice
-  // per Restart and, in between, pointed a published node port at the host cluster's API.
-  void template;
-}
-
-/** Where a sidecar's own UI is served, on Rancher's origin, the same door a workspace uses. */
-export function sidecarProxyUrl(workspace: string, sidecar: DevSidecar): string {
-  const namespace = workspaceNamespace(workspace);
-  const scheme = sidecar.scheme || 'http';
-
-  return `${ BASE }/api/v1/namespaces/${ namespace }/services/${ scheme }:${ sidecarName(workspace, sidecar.id) }:${ sidecar.port }/proxy/`;
-}
 
 /** A socket the workspace's own process is listening on, as its pod reports it. */
 export interface DevListening {
@@ -3630,36 +2411,7 @@ export function workspaceServing(name: string, port: number, scheme = 'http'): P
   return proxyServing(workspaceProxyUrl(name, port, scheme));
 }
 
-/**
- * The same question about a sidecar, which has the same two answers for the same reasons.
- *
- * A running pod is not a served page: the browser sidecar's Deployment is Available a second or
- * two before its UI answers, and framing it in that window shows an apiserver 503 that nothing
- * afterwards clears, because an iframe on another origin's path cannot be told to reload.
- */
-export function sidecarServing(workspace: string, sidecar: DevSidecar): Promise<boolean> {
-  return proxyServing(sidecarProxyUrl(workspace, sidecar));
-}
 
-/**
- * Whether a sidecar is up and answering: both halves, because neither alone is the answer.
- *
- * The Deployment is asked about first, and it is not redundant. A sidecar that has never been
- * started has no Service either, and the apiserver's proxy answers a missing Service with a 404,
- * which serving deliberately counts as "answering" — a 404 from a running app is the app talking.
- * So without this, a browser nobody has started would read as up.
- */
-export async function sidecarReady(workspace: string, sidecar: DevSidecar): Promise<boolean> {
-  const namespace = workspaceNamespace(workspace);
-  const url = `${ BASE }/v1/apps.deployments/${ namespace }/${ sidecarName(workspace, sidecar.id) }`;
-  const deployment = await devFetch(url).catch(() => null);
-
-  if (!deployment?.status?.readyReplicas) {
-    return false;
-  }
-
-  return sidecarServing(workspace, sidecar);
-}
 
 async function proxyServing(url: string): Promise<boolean> {
   try {

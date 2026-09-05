@@ -66,7 +66,7 @@ export const SETTINGS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ SETTINGS_PAGE }`;
  * reason it is not component state. The list is also what the page validates against, so a URL
  * naming a tab that does not exist lands on Overview instead of on an empty pane.
  */
-export const WORKSPACE_TABS = ['conversations', 'browser', 'ports', 'sidecars'];
+export const WORKSPACE_TABS = ['conversations', 'pr', 'browser', 'ports'];
 export const DEFAULT_WORKSPACE_TAB = 'conversations';
 
 /**
@@ -112,3 +112,40 @@ export const DEV_POD_CONTAINER = 'devserver';
  * conversation, whether it was closed and reopened or reached from a link (see terminals.ts).
  */
 export const TERMINAL_SESSION_PREFIX = 'global';
+
+// ── Apps Plus, where templates live ─────────────────────────────────────────────────────────
+//
+// Steve type ids for Apps Plus's two kinds. A template here is an App and a workspace is an
+// Installation (an AppInstance) of one; see apps.ts for why nothing here renders a template
+// itself any more.
+export const APP = 'appsplus.io.app';
+export const APP_INSTANCE = 'appsplus.io.appinstance';
+
+/** The App a fresh Rancher gets, and the one My Work starts fixes in. */
+export const DEFAULT_APP = 'rancher-workspace';
+
+/**
+ * The labels a workspace's objects carry. On the Installation they are what marks it as a
+ * workspace of this product rather than any other Installation; on the namespace, Deployment
+ * and Service an App renders, they are how the list finds a workspace's parts without knowing
+ * what the App made.
+ */
+export const LABEL_WORKSPACE = 'dev.rancher.io/workspace';
+export const LABEL_APP = 'dev.rancher.io/app';
+export const LABEL_CLUSTER = 'dev.rancher.io/cluster';
+
+/**
+ * How to reach what a workspace serves, on its namespace, because the namespace is the one
+ * object every workspace has and the list already reads. An App writes them from its values;
+ * a workspace made by an App that does not is reached on 8005 over http, which is what a
+ * rancher/dashboard dev server is.
+ */
+export const WORKSPACE_PORT_ANNOTATION = 'dev.rancher.io/port';
+export const WORKSPACE_SCHEME_ANNOTATION = 'dev.rancher.io/scheme';
+export const DEFAULT_WORKSPACE_PORT = 8005;
+export const DEFAULT_WORKSPACE_SCHEME = 'http';
+
+/** Where a workspace's pod keeps its checkout, its home and its queued prompts. */
+export const WORKSPACE_WORKDIR = '/workspace/dashboard';
+export const WORKSPACE_HOME = '/workspace/.home';
+export const WORKSPACE_QUEUE = '/workspace/.queue';
