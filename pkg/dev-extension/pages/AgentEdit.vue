@@ -8,8 +8,9 @@ import { LabeledInput } from '@components/Form/LabeledInput';
 import { Checkbox } from '@components/Form/Checkbox';
 import { RcButton } from '@components/RcButton';
 import {
-  getAgent, saveAgent, validName, cronValid, CRON_PRESETS, triggersOf
+  getAgent, saveAgent, validName, cronValid, CRON_PRESETS, triggersOf, compileFilter, filterError, PROMPT_KEYS
 } from '../agent-defs';
+import { devFetch, clusterBase } from '../api';
 import { AGENT_SEED } from '../agent-seed.generated';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, AGENTS_ROUTE, DEV_API_IN_CLUSTER
@@ -37,7 +38,12 @@ export default {
       // The triggers, as a form: by hand is always there; the rest are ticked on.
       on:       { cron: false, api: false, resource: false },
       cron:     '0 9 * * 1-5',
-      resource: { type: '', namespace: '', event: 'any' },
+      resource: {
+        type: '', namespace: '', event: 'any', filter: '', edge: true,
+      },
+      /** What a Test of the filter found, or null. */
+      tried:    null,
+      PROMPT_KEYS,
       editing:  false,
       error:    '',
       /** The skill whose definition is open, or null. */
@@ -101,8 +107,15 @@ export default {
       if (this.on.resource && !this.resource.type.trim()) {
         out.push('Say which resource type sets it off.');
       }
+      if (this.on.resource && this.filterProblem) {
+        out.push(`The filter does not compile: ${ this.filterProblem }`);
+      }
 
       return out;
+    },
+
+    filterProblem() {
+      return filterError(this.resource.filter);
     },
 
     backTo() {
@@ -178,8 +191,40 @@ export default {
       this.doc = { name, text: text || `There is no skill called /${ name } in this dashboard's seed.` };
     },
 
+    /** A placeholder as it is written, without putting `{{` in a template that reads it as one. */
+    placeholder(key) {
+      return `{${ '{' }${ key }}${ '}' }`;
+    },
+
     preset(cron) {
       this.cron = cron;
+    },
+
+    /**
+     * The filter against what is in the cluster now: how many of that type it accepts, and
+     * which. A filter is a line of code somebody has to be able to check before an agent
+     * starts opening conversations on the strength of it.
+     */
+    async testFilter(done) {
+      this.tried = null;
+      try {
+        const type = this.resource.type.trim();
+        const url = `${ clusterBase('local') }/v1/${ type }${ this.resource.namespace.trim() ? `/${ this.resource.namespace.trim() }` : '' }`;
+        const list = await devFetch(url);
+        const all = Array.isArray(list?.data) ? list.data : [];
+        const match = compileFilter(this.resource.filter);
+        const hits = all.filter((r) => match(r, 'updated'));
+
+        this.tried = {
+          total: all.length,
+          hits:  hits.length,
+          names: hits.slice(0, 6).map((r) => r.id || r.metadata?.name),
+        };
+        done(true);
+      } catch (e) {
+        this.tried = { error: e.message || String(e) };
+        done(false);
+      }
     },
 
     async save(done) {
@@ -200,7 +245,12 @@ export default {
           triggers.push({ type: 'api' });
         }
         if (this.on.resource) {
-          triggers.push({ type: 'resource', resource: { ...this.resource, type: this.resource.type.trim() } });
+          triggers.push({
+            type:     'resource',
+            resource: {
+              ...this.resource, type: this.resource.type.trim(), namespace: this.resource.namespace.trim(), filter: (this.resource.filter || '').trim(),
+            },
+          });
         }
         await saveAgent({
           ...JSON.parse(JSON.stringify(this.def)), name: this.def.name.trim().toLowerCase(), triggers,
@@ -341,27 +391,77 @@ export default {
       <div class="agent-edit__trigger">
         <Checkbox
           v-model:value="on.resource"
-          label="When a resource changes (kept with the agent; the watcher that fires it is the next piece)"
+          label="When a resource changes"
         />
-        <div
-          v-if="on.resource"
-          class="agent-edit__row"
-        >
-          <LabeledInput
-            v-model:value="resource.type"
-            label="Resource type"
-            placeholder="management.cattle.io.cluster"
+        <template v-if="on.resource">
+          <div class="agent-edit__row">
+            <LabeledInput
+              v-model:value="resource.type"
+              label="Resource type"
+              placeholder="management.cattle.io.cluster"
+              data-testid="agent-resource-type"
+            />
+            <LabeledInput
+              v-model:value="resource.namespace"
+              label="Namespace (optional)"
+            />
+            <LabeledSelect
+              v-model:value="resource.event"
+              :options="EVENTS"
+              label="On"
+            />
+          </div>
+          <label class="agent-edit__label">Which of them - a JavaScript expression over <code>resource</code> (or <code>r</code>) and <code>event</code>. Empty means all of them.</label>
+          <textarea
+            v-model="resource.filter"
+            class="agent-edit__filter"
+            :class="{ 'agent-edit__filter--bad': filterProblem }"
+            rows="2"
+            spellcheck="false"
+            placeholder="r.spec.displayName === 'prod'
+r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
+            data-testid="agent-filter"
           />
-          <LabeledInput
-            v-model:value="resource.namespace"
-            label="Namespace (optional)"
+          <p
+            v-if="filterProblem"
+            class="agent-edit__bad"
+            data-testid="agent-filter-error"
+          >
+            {{ filterProblem }}
+          </p>
+          <div class="agent-edit__row agent-edit__try">
+            <AsyncButton
+              mode="apply"
+              action-label="Test it"
+              waiting-label="Listing"
+              success-label="Listed"
+              size="sm"
+              :disabled="!resource.type.trim()"
+              data-testid="agent-filter-test"
+              @click="testFilter"
+            />
+            <span
+              v-if="tried && tried.error"
+              class="agent-edit__bad"
+            >{{ tried.error }}</span>
+            <span
+              v-else-if="tried"
+              class="text-muted agent-edit__hint"
+              data-testid="agent-filter-result"
+            >{{ tried.hits }} of {{ tried.total }} match now<template v-if="tried.names.length">: <code>{{ tried.names.join(', ') }}</code></template></span>
+          </div>
+          <Checkbox
+            v-model:value="resource.edge"
+            label="Only when it starts matching, rather than on every change while it matches"
           />
-          <LabeledSelect
-            v-model:value="resource.event"
-            :options="EVENTS"
-            label="On"
-          />
-        </div>
+          <p class="text-muted agent-edit__hint">
+            Nothing fires the first time an agent looks at a type: that pass records what is already there. The prompt can carry <code
+              v-for="k in PROMPT_KEYS"
+              :key="k"
+              class="agent-edit__key"
+            >{{ placeholder(k) }}</code>, filled with what changed. At most three runs start from one tick.
+          </p>
+        </template>
       </div>
       <Checkbox
         v-model:value="def.enabled"
@@ -514,6 +614,25 @@ export default {
     li { padding: 4px 12px; cursor: pointer; }
     li:hover, &--on { background: var(--accent-btn); color: var(--link); }
   }
+
+  &__filter {
+    width:       100%;
+    min-height:  56px;
+    padding:     8px 10px;
+    font-family: monospace;
+    font-size:   12px;
+    color:       var(--input-text);
+    background:  var(--input-bg);
+    border:      1px solid var(--border);
+    border-radius: var(--border-radius);
+    resize:      vertical;
+
+    &--bad { border-color: var(--error); }
+  }
+
+  &__bad { color: var(--error); font-size: 12px; margin: 0; }
+  &__key { margin-right: 4px; }
+  &__try { align-items: center; > * { flex: 0 0 auto; } }
 
   &__always { display: flex; align-items: center; gap: var(--dev-space-2); margin: 0 0 var(--dev-space-3); font-size: 13px; .icon { color: var(--success); } }
   &__trigger { display: flex; flex-direction: column; gap: var(--dev-space-2); padding: var(--dev-space-2) 0 var(--dev-space-3); border-top: 1px solid var(--border); }
