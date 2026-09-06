@@ -24,6 +24,7 @@ export const MY_WORK_PAGE = 'my-work';
 export const INSIGHTS_PAGE = 'insights';
 export const SETTINGS_PAGE = 'settings';
 export const AGENTS_PAGE = 'agents';
+export const CONVERSATIONS_PAGE = 'conversations';
 
 /** The product's own page template, which every page below is a child of. */
 export const DEV_SHELL_ROUTE = `${ DEV_PRODUCT }-c-cluster`;
@@ -35,6 +36,7 @@ export const MY_WORK_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ MY_WORK_PAGE }`;
 export const INSIGHTS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ INSIGHTS_PAGE }`;
 export const SETTINGS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ SETTINGS_PAGE }`;
 export const AGENTS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ AGENTS_PAGE }`;
+export const CONVERSATIONS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ CONVERSATIONS_PAGE }`;
 export const AGENT_EDIT_PAGE = 'agents/edit';
 export const AGENT_EDIT_ROUTE = `${ DEV_PRODUCT }-c-cluster-agent-edit`;
 

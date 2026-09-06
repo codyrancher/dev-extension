@@ -876,6 +876,22 @@
 
   .edit-textarea { flex: 1; min-height: 40px; height: 40px; padding: 10px var(--dev-space-4); }
   .prb { height: auto; }
+
+  // The expand control grow.ts puts after the textarea would be stretched to the row's height
+  // here, into a block that looks like a button for nothing: keep it the small corner control
+  // it is under every other comment box, sitting at the foot of the row.
+  .edit-grow {
+    flex:        0 0 auto;
+    align-self:  flex-end;
+    width:       auto;
+    height:      20px;
+    min-width:   0;
+    margin:      0 0 4px;
+    padding:     0 4px;
+    background:  transparent !important;
+    border:      0 !important;
+    box-shadow:  none;
+  }
 }
 
 .diff-spacer { width: 100%; }
