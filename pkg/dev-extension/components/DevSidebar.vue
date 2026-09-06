@@ -16,7 +16,7 @@ import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
 import { DEFAULT_APP, LEGACY_WORKSPACE_APPS } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
 import {
-  listRanchers, setDefaultRancher, createRancherInstance, nextRancherName, rancherAddress, RANCHER_STEPS
+  listRanchers, setDefaultRancher, createRancherInstance, deleteRancherInstance, nextRancherName, rancherAddress, RANCHER_STEPS
 } from '../ranchers';
 import { tickAgents } from '../agent-defs';
 import DevList from './DevList.vue';
@@ -30,6 +30,11 @@ import {
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
+
+/** The node's IP out of `<name>.dev-extension.<ip>.sslip.io`, or ''. */
+function nodeIpOf(url) {
+  return (url.match(/\.(\d+\.\d+\.\d+\.\d+)\.sslip\.io/) || [])[1] || '';
+}
 
 /** "4m", "1h 12m": how long a new Rancher has been on its way. */
 function elapsed(ms) {
@@ -83,6 +88,8 @@ export default {
       defaultRancher: cache.defaultRancher,
       askingRancher: false,
       proposedRancher: '',
+      /** The Rancher a delete is being confirmed for, or null. */
+      deletingRancher: null,
       apps:         cache.apps,
       error:        '',
       refreshTimer: null,
@@ -203,6 +210,9 @@ export default {
         host:      rancher.url.replace(/^https?:\/\//, ''),
         isDefault: rancher.kind === 'host' ? !this.defaultRancher : (!!rancher.url && rancher.url === this.defaultRancher),
         elapsed:   rancher.since ? elapsed(now - Date.parse(rancher.since)) : '',
+        // Not the whole address - it is long and the node's IP is the part that says anything;
+        // the address itself is a copy away.
+        where:     rancher.kind === 'host' ? rancher.host : rancher.phase === 'ready' ? `up · ${ nodeIpOf(rancher.url) || rancher.host }` : '',
         stepTitle: `${ rancher.step + 1 } of ${ RANCHER_STEPS.length }: ${ RANCHER_STEPS[rancher.step] || '' }`,
       }));
     },
@@ -340,6 +350,45 @@ export default {
         this.ranchers = this.ranchers.filter((r) => r.id !== placeholder.id);
         cache.ranchers = this.ranchers;
         this.error = e.message || String(e);
+      }
+    },
+
+    async copyRancher(rancher) {
+      try {
+        await navigator.clipboard.writeText(rancher.url);
+        this.$store.dispatch('growl/success', { title: '', message: `Copied ${ rancher.url }`, timeout: 3000 }, { root: true });
+      } catch {
+        this.$store.dispatch('growl/info', { title: rancher.url, message: 'Copy it from here.', timeout: 8000 }, { root: true });
+      }
+    },
+
+    askDeleteRancher(rancher) {
+      this.deletingRancher = rancher;
+    },
+
+    async deleteRancher() {
+      const rancher = this.deletingRancher;
+
+      this.deletingRancher = null;
+      if (!rancher) {
+        return;
+      }
+      // The row says so at once; the poll takes over as the instance's deletion timestamp lands.
+      this.ranchers = this.ranchers.map((r) => (r.id === rancher.id ? {
+        ...r, phase: 'removing', step: 0, url: '', detail: 'Removing, with its cluster and node', since: new Date().toISOString(),
+      } : r));
+      cache.ranchers = this.ranchers;
+      try {
+        await deleteRancherInstance(this.$store, rancher.name);
+        if (this.defaultRancher && this.defaultRancher === rancher.url) {
+          await setDefaultRancher('').catch(() => {});
+          this.defaultRancher = '';
+          cache.defaultRancher = '';
+        }
+        this.$store.dispatch('growl/success', { title: `Removing ${ rancher.name }`, message: 'Its cluster and EC2 node are being deleted with it.', timeout: 5000 }, { root: true });
+      } catch (e) {
+        this.error = e.message || String(e);
+        await this.refresh();
       }
     },
 
@@ -513,8 +562,8 @@ export default {
           <span
             v-if="rancher.kind === 'host' || rancher.phase === 'ready'"
             class="dev-sidebar__rancher-url"
-            :title="rancher.url || rancher.detail"
-          >{{ rancher.host || rancher.detail }}</span>
+            :title="rancher.url"
+          >{{ rancher.where }}</span>
           <template v-else>
             <span
               class="dev-sidebar__rancher-progress"
@@ -537,6 +586,7 @@ export default {
               >{{ rancher.elapsed }}</span>
             </span>
             <span
+              v-if="rancher.phase !== 'removing'"
               class="dev-sidebar__steps"
               :title="rancher.stepTitle"
             >
@@ -553,8 +603,49 @@ export default {
             </span>
           </template>
         </div>
+        <span class="dev-sidebar__rancher-tools">
+          <button
+            v-if="rancher.url"
+            type="button"
+            class="dev-sidebar__tool"
+            title="Copy the address"
+            data-testid="dev-rancher-copy"
+            @click="copyRancher(rancher)"
+          >
+            <i class="icon icon-copy" />
+          </button>
+          <a
+            v-if="rancher.url && rancher.kind !== 'host'"
+            class="dev-sidebar__tool"
+            :href="rancher.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open it"
+          >
+            <i class="icon icon-external-link" />
+          </a>
+          <button
+            v-if="rancher.kind !== 'host' && rancher.phase !== 'removing'"
+            type="button"
+            class="dev-sidebar__tool dev-sidebar__tool--danger"
+            title="Delete this Rancher, with its cluster and node"
+            data-testid="dev-rancher-delete"
+            @click="askDeleteRancher(rancher)"
+          >
+            <i class="icon icon-delete" />
+          </button>
+        </span>
       </div>
     </div>
+    <DevDialog
+      v-if="deletingRancher"
+      :title="`Delete the Rancher ${ deletingRancher.name }?`"
+      :message="`Its cluster and the EC2 node it runs on are deleted with it. Anything on it is gone; workspaces pointed at it lose their Rancher.`"
+      confirm-label="Delete"
+      :danger="true"
+      @confirm="deleteRancher"
+      @cancel="deletingRancher = null"
+    />
     <DevDialog
       v-if="askingRancher"
       :title="`Create the Rancher ${ proposedRancher }?`"
@@ -768,7 +859,41 @@ export default {
     &__rancher-text {
       display:        flex;
       flex-direction: column;
+      flex:           1 1 auto;
       min-width:      0;
+    }
+
+    &__rancher-tools {
+      display:     flex;
+      align-items: center;
+      flex:        0 0 auto;
+      gap:         2px;
+      opacity:     0;
+      transition:  opacity 0.15s;
+    }
+
+    &__rancher-row:hover &__rancher-tools,
+    &__rancher-row:focus-within &__rancher-tools { opacity: 1; }
+
+    &__tool {
+      display:         inline-flex;
+      align-items:     center;
+      justify-content: center;
+      width:           20px;
+      height:          20px;
+      min-height:      0;
+      padding:         0;
+      border:          0;
+      border-radius:   4px;
+      background:      none;
+      color:           var(--muted);
+      font-size:       12px;
+      line-height:     1;
+      cursor:          pointer;
+      text-decoration: none;
+
+      &:hover { color: var(--link); background: var(--accent-btn); }
+      &--danger:hover { color: var(--error); }
     }
 
     &__rancher-name {

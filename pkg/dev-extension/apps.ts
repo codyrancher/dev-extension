@@ -209,7 +209,12 @@ export async function reconcileUnrendered(store: Store): Promise<void> {
   let instances: Json[] = [];
 
   try {
-    instances = await listWorkspaceInstances(store);
+    // Workspaces, and the Ranchers the sidebar makes (ranchers.ts): both are this product's
+    // Installations, and a Rancher whose bundle was removed to re-render it from a changed App
+    // sat unrendered for good while only workspaces were looked at.
+    const all: Json[] = await store.dispatch('management/findAll', { type: APP_INSTANCE, opt: { force: true } });
+
+    instances = (all || []).filter((instance: Json) => !!instance.metadata?.labels?.[LABEL_WORKSPACE] || instance.metadata?.labels?.['dev.rancher.io/kind'] === 'rancher');
     await store.dispatch('management/findAll', { type: 'fleet.cattle.io.bundle' });
   } catch {
     return;

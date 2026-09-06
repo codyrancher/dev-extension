@@ -18,7 +18,7 @@ type Store = any;
 /** The App whose instances are Rancher servers. */
 export const RANCHER_HA_APP = 'rancher-ha';
 
-export type RancherPhase = 'host' | 'created' | 'provisioning' | 'installing' | 'ready' | 'error';
+export type RancherPhase = 'host' | 'created' | 'provisioning' | 'installing' | 'ready' | 'error' | 'removing';
 
 export interface RancherTarget {
   id: string;
@@ -66,6 +66,12 @@ export async function listRanchers(store: Store): Promise<RancherTarget[]> {
     const cluster = clusters.find((c) => c.name === name || c.id === name);
     const bundle = bundles.find((b) => b.metadata?.name === `apps-plus-${ name }`);
 
+    if (instance.metadata?.deletionTimestamp) {
+      out.push({
+        id: `instance:${ name }`, name, url: '', kind: 'instance', phase: 'removing', step: 0, detail: 'Removing, with its cluster and node', since: instance.metadata.deletionTimestamp,
+      });
+      continue;
+    }
     out.push(await instanceTarget(name, instance.metadata?.creationTimestamp || '', cluster, bundle));
   }
 
@@ -201,6 +207,20 @@ export async function createRancherInstance(store: Store, name: string, app = RA
   });
 
   await instance.save();
+}
+
+/**
+ * Delete a Rancher made here. The Installation owns the cluster Apps Plus provisioned for it
+ * (an owner reference with blockOwnerDeletion), so the cluster and its EC2 node go with it.
+ */
+export async function deleteRancherInstance(store: Store, name: string): Promise<void> {
+  const instances: Json[] = await store.dispatch('management/findAll', { type: APP_INSTANCE, opt: { force: true } }).catch(() => []);
+  const instance = instances.find((i) => i.metadata?.name === name && [RANCHER_HA_APP, RANCHER_SINGLE_APP].includes(i.spec?.app));
+
+  if (!instance) {
+    throw new Error(`There is no Rancher called ${ name } here.`);
+  }
+  await instance.remove();
 }
 
 /** The starred Rancher's URL, or '' for this one. */
