@@ -22,6 +22,7 @@ import StudioTerminal from './StudioTerminal.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
 import PrButton from './pr/PrButton.vue';
+import { vGrow } from './pr/grow';
 import PrBadge from './pr/PrBadge.vue';
 import {
   prDetail, listComments, addComment, updateComment, deleteComment, approvePr, submitReview, mergePr,
@@ -1710,6 +1711,7 @@ async function doSubmit() {
       >
         <textarea
           v-model="shipBody"
+          v-grow
           class="edit-textarea"
           placeholder="Optional comment to go with the approval…"
         />
@@ -2125,7 +2127,8 @@ async function doSubmit() {
             >
               <textarea
                 v-model="editDraft"
-                class="edit-textarea"
+                v-grow
+          class="edit-textarea"
               />
               <div class="prm-card-actions">
                 <PrButton
@@ -2271,7 +2274,8 @@ async function doSubmit() {
                 >
                   <textarea
                     v-model="editDraft"
-                    class="edit-textarea"
+                    v-grow
+          class="edit-textarea"
                     @keydown.esc.prevent="cancelEdit"
                   />
                   <div class="edit-btns">
@@ -2317,7 +2321,8 @@ async function doSubmit() {
             >
               <textarea
                 v-model="prLevelDraft"
-                class="edit-textarea"
+                v-grow
+          class="edit-textarea"
                 rows="2"
                 placeholder="Context for the whole PR — testing notes, what the recordings show, anything that isn't a change request."
               />
@@ -2429,7 +2434,8 @@ async function doSubmit() {
               >
                 <textarea
                   v-model="editDraft"
-                  class="edit-textarea"
+                  v-grow
+          class="edit-textarea"
                   @keydown.esc.prevent="cancelEdit"
                 />
                 <div class="edit-btns">
@@ -2518,7 +2524,8 @@ async function doSubmit() {
                 >
                   <textarea
                     v-model="replyDraft"
-                    class="edit-textarea"
+                    v-grow
+          class="edit-textarea"
                     placeholder="Reply — this posts to the thread on GitHub straight away"
                     @keydown.esc.prevent="toggleReply(c.id)"
                   />
@@ -2582,7 +2589,8 @@ async function doSubmit() {
                   >
                     <textarea
                       v-model="editDraft"
-                      class="edit-textarea"
+                      v-grow
+          class="edit-textarea"
                       @keydown.esc.prevent="cancelEdit"
                     />
                     <div class="edit-btns">
@@ -2694,7 +2702,8 @@ async function doSubmit() {
                         </div>
                         <textarea
                           v-model="composerDraft"
-                          class="edit-textarea"
+                          v-grow
+          class="edit-textarea"
                           placeholder="Write a review comment… (Shift+click another line number to make this a range)"
                           @keydown.esc.prevent="cancelComposer"
                         />
@@ -2775,7 +2784,8 @@ async function doSubmit() {
                         >
                           <textarea
                             v-model="replyDraft"
-                            class="edit-textarea"
+                            v-grow
+          class="edit-textarea"
                             placeholder="Reply — this posts to the thread on GitHub straight away"
                             @keydown.esc.prevent="toggleReply(c.id)"
                           />
@@ -2843,7 +2853,8 @@ async function doSubmit() {
                         >
                           <textarea
                             v-model="editDraft"
-                            class="edit-textarea"
+                            v-grow
+          class="edit-textarea"
                             @keydown.esc.prevent="cancelEdit"
                           />
                           <div class="edit-btns">

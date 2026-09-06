@@ -12,6 +12,7 @@ import {
 } from 'vue';
 import { Banner } from '@components/Banner';
 import StudioTerminal from './StudioTerminal.vue';
+import { vGrow } from './pr/grow';
 import PrButton from './pr/PrButton.vue';
 import PrBadge from './pr/PrBadge.vue';
 import {
@@ -478,7 +479,8 @@ defineExpose({ refresh });
           <div class="prlevel-compose">
             <textarea
               v-model="general"
-              class="edit-textarea"
+              v-grow
+          class="edit-textarea"
               rows="2"
               placeholder="Why did you change the validator this way? / Please also cover the IPv6 zone-id case."
             />
@@ -555,7 +557,8 @@ defineExpose({ refresh });
                       </div>
                       <textarea
                         v-model="composerDraft"
-                        class="edit-textarea"
+                        v-grow
+          class="edit-textarea"
                         placeholder="What should change here, or what do you want to know about it?"
                         @keydown.esc.prevent="composer = null"
                         @keydown.enter.ctrl.prevent="addNote"

@@ -36,7 +36,7 @@ export async function listRanchers(store: Store): Promise<RancherTarget[]> {
     id: 'host', name: 'This Rancher', url: window.location.origin, kind: 'host', note: 'the Rancher this dashboard is on',
   }];
   const instances: Json[] = await store.dispatch('management/findAll', { type: APP_INSTANCE }).catch(() => []);
-  const ranchers = instances.filter((instance) => instance.spec?.app === RANCHER_HA_APP);
+  const ranchers = instances.filter((instance) => [RANCHER_HA_APP, RANCHER_SINGLE_APP].includes(instance.spec?.app));
 
   if (!ranchers.length) {
     return out;
@@ -66,6 +66,31 @@ export async function listRanchers(store: Store): Promise<RancherTarget[]> {
   }
 
   return out;
+}
+
+/** The App a new Rancher is made from: one EC2 node, GitHub login, an sslip address. */
+export const RANCHER_SINGLE_APP = 'rancher-single';
+
+/**
+ * A new Rancher of your own: an Installation of the single-node App, which provisions its EC2
+ * node through this Rancher and installs Rancher on it. The values are the App's defaults; the
+ * address is `<name>.<node ip>.sslip.io` once the node is up, and listRanchers shows it.
+ */
+export async function createRancherInstance(store: Store, name: string, app = RANCHER_SINGLE_APP): Promise<void> {
+  const clean = name.trim().toLowerCase();
+
+  if (!/^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(clean)) {
+    throw new Error('A Rancher\'s name is lowercase letters, digits and dashes, up to 32 characters.');
+  }
+  const instance = await store.dispatch('management/create', {
+    type:     APP_INSTANCE,
+    metadata: { name: clean, labels: { 'dev.rancher.io/kind': 'rancher' } },
+    spec:     {
+      app, provisionCluster: { enabled: true }, targets: [], values: {},
+    },
+  });
+
+  await instance.save();
 }
 
 /** The starred Rancher's URL, or '' for this one. */
