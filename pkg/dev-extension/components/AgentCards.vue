@@ -10,7 +10,7 @@ import AsyncButton from '@shell/components/AsyncButton';
 import { RcButton } from '@components/RcButton';
 import DevDialog from './DevDialog.vue';
 import {
-  listAgents, listRuns, runAgent, deleteAgent, skillOf
+  listAgents, listRuns, runAgent, deleteAgent, skillOf, triggersOf
 } from '../agent-defs';
 import { AGENT_SEED } from '../agent-seed.generated';
 import {
@@ -93,19 +93,25 @@ export default {
     },
 
     triggerLabel(def) {
-      const t = def.trigger || {};
+      const words = triggersOf(def).map((t) => {
+        if (t.type === 'cron') {
+          return `on a schedule: ${ t.cron }`;
+        }
+        if (t.type === 'api') {
+          return 'on an API call';
+        }
+        if (t.type === 'resource') {
+          return `when ${ t.resource?.type || 'a resource' } is ${ t.resource?.event === 'any' ? 'changed' : (t.resource?.event || 'changed') }`;
+        }
 
-      if (t.type === 'cron') {
-        return `on a schedule: ${ t.cron }`;
-      }
-      if (t.type === 'api') {
-        return 'on an API call';
-      }
-      if (t.type === 'resource') {
-        return `when ${ t.resource?.type || 'a resource' } is ${ t.resource?.event === 'any' ? 'changed' : (t.resource?.event || 'changed') }`;
-      }
+        return 'by hand';
+      });
 
-      return 'by hand';
+      return [...new Set(['by hand', ...words])].join(' · ');
+    },
+
+    hasApiTrigger(def) {
+      return triggersOf(def).some((t) => t.type === 'api');
     },
 
     editTo(def) {
@@ -197,7 +203,7 @@ export default {
           Agents
         </h2>
         <p class="agent-cards__sub text-muted">
-          Conversations that start themselves: a prompt or a skill, a workspace to run it in, and what sets it off.
+          Conversations that start themselves, in the agents drawer: a prompt or a skill, and what sets it off.
         </p>
       </div>
       <router-link
@@ -268,18 +274,11 @@ export default {
             </dd>
           </div>
           <div class="agent-card__fact">
-            <dt>In</dt>
-            <dd>
-              <template v-if="card.def.workspace.mode === 'new'">a new <code>{{ card.def.workspace.app || 'rancher-dev' }}</code> workspace each run</template>
-              <code v-else>{{ card.def.workspace.name }}</code>
-            </dd>
-          </div>
-          <div class="agent-card__fact">
             <dt>Trigger</dt>
             <dd>
               <span class="agent-card__trigger">{{ card.trigger }}</span>
               <code
-                v-if="card.def.trigger.type === 'api'"
+                v-if="hasApiTrigger(card.def)"
                 class="agent-card__code"
                 :title="apiUrl(card.def)"
               >POST …/agents/{{ card.def.name }}/trigger</code>
@@ -356,7 +355,8 @@ export default {
               <span
                 v-else
                 class="agent-card__run-ws text-muted"
-              >…</span>
+                title="A conversation in the agents drawer"
+              >{{ run.conversation || '…' }}</span>
               <span class="agent-card__run-dur">{{ duration(run) }}</span>
               <router-link
                 v-if="conversationTo(run)"
@@ -379,7 +379,7 @@ export default {
     <DevDialog
       v-if="removing"
       :title="`Delete the agent ${ removing.name }?`"
-      message="Its definition and run history go; the workspaces and conversations it made stay."
+      message="Its definition and run history go; the conversations it made stay in the drawer."
       confirm-label="Delete"
       danger
       @confirm="reallyRemove"

@@ -13,14 +13,14 @@
 // that was due while none was open is not made up later.
 
 import {
-  devFetch, clusterBase, createWorkspace, listAllWorkspaces, DEV_SYSTEM_NAMESPACE
+  devFetch, clusterBase, DEV_SYSTEM_NAMESPACE
+, podExecOnce
 } from './api';
-import { startConversation, startPaneDetached } from './conversations';
+import { waitForStudio } from './conversations';
+import type { StudioBrowserApi } from './conversations';
 import {
-  ensureWorkspaceReady, waitForWorkspacePod, queuePrompt, conversationPane
+  conversationPane
 } from './workspace-tools';
-import { defaultRancherValues } from './ranchers';
-import { DEFAULT_APP } from './config/constants';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -29,24 +29,23 @@ type Store = any;
 
 export type TriggerType = 'manual' | 'cron' | 'api' | 'resource';
 
+export interface Trigger {
+  type: TriggerType;
+  /** Five-field cron, in the browser's local time. */
+  cron?: string;
+  resource?: { type: string; namespace?: string; event: 'any' | 'created' | 'updated' | 'deleted' };
+}
+
 export interface AgentDef {
   name: string;
   description: string;
   /** What the conversation opens with; a skill invocation (`/my-pr-full-review ...`) or prose. */
   prompt: string;
-  workspace: {
-    /** An existing workspace by name, or a new one per run from an App. */
-    mode: 'existing' | 'new';
-    name?: string;
-    app?: string;
-    prefix?: string;
-  };
-  trigger: {
-    type: TriggerType;
-    /** Five-field cron, in the browser's local time. */
-    cron?: string;
-    resource?: { type: string; namespace?: string; event: 'any' | 'created' | 'updated' | 'deleted' };
-  };
+  /** What sets it off: by hand always, and any of a schedule, an API call, a resource change. */
+  triggers: Trigger[];
+  /** Definitions before 0.3.17 had one trigger and a workspace to run in; read, never written. */
+  trigger?: Trigger;
+  workspace?: { mode: 'existing' | 'new'; name?: string; app?: string; prefix?: string };
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -58,7 +57,9 @@ export interface AgentRun {
   trigger: string;
   /** The minute a cron run was for, so one dashboard's tick does not repeat another's. */
   slot?: string;
+  /** Runs before 0.3.17 were conversations in a workspace; now they are the agents drawer's. */
   workspace: string;
+  /** The drawer conversation (`agent-<n>`) the run is. */
   conversation: string;
   state: 'requested' | 'starting' | 'running' | 'done' | 'failed';
   startedAt: string;
@@ -75,6 +76,15 @@ const defName = (name: string) => `dev-agent-${ name }`;
 const runsName = (name: string) => `dev-agent-runs-${ name }`;
 
 /** The skill a prompt invokes, when it starts with one. */
+/** What sets an agent off: its list, or the one trigger a definition from before 0.3.17 had. */
+export function triggersOf(def: Pick<AgentDef, 'triggers' | 'trigger'>): Trigger[] {
+  if (def.triggers?.length) {
+    return def.triggers;
+  }
+
+  return def.trigger ? [def.trigger] : [{ type: 'manual' }];
+}
+
 export function skillOf(prompt: string): string {
   return /^\s*\/([a-z0-9-]+)/i.exec(prompt || '')?.[1] || '';
 }
@@ -89,7 +99,12 @@ function parseDef(cm: Json): AgentDef | null {
   try {
     const def = JSON.parse(cm?.data?.['agent.json'] || '');
 
-    return def?.name ? def : null;
+    if (!def?.name) {
+      return null;
+    }
+    def.triggers = triggersOf(def);
+
+    return def;
   } catch {
     return null;
   }
@@ -243,12 +258,6 @@ export const CRON_PRESETS = [
 
 const inFlight = new Set<string>();
 
-function stamp(): string {
-  const d = new Date();
-  const two = (n: number) => String(n).padStart(2, '0');
-
-  return `${ d.getFullYear() }${ two(d.getMonth() + 1) }${ two(d.getDate()) }-${ two(d.getHours()) }${ two(d.getMinutes()) }`;
-}
 
 function newId(): string {
   return `${ Date.now().toString(36) }${ Math.random().toString(36).slice(2, 6) }`;
@@ -260,11 +269,9 @@ function newId(): string {
  * soon as the run is recorded; the rest carries on and updates the record.
  */
 export async function runAgent(store: Store, def: AgentDef, trigger = 'manual', existing?: AgentRun): Promise<AgentRun> {
-  const workspace = def.workspace.mode === 'new' ? `${ def.workspace.prefix || def.name }-${ stamp() }`.slice(0, 40) : (def.workspace.name || '');
-
-  if (!workspace) {
-    throw new Error(`Agent ${ def.name } has no workspace to run in.`);
-  }
+  // Every run is a conversation in the agents drawer, here on the local cluster: the agents
+  // extension's pod holds it, and the strip at the bottom of the dashboard shows it.
+  const workspace = '';
   const run: AgentRun = existing
     ? {
       ...existing, workspace, state: 'starting', startedAt: new Date().toISOString(),
@@ -291,36 +298,50 @@ export async function runAgent(store: Store, def: AgentDef, trigger = 'manual', 
  * workspace already there is not made again, and the pane start is safe to repeat.
  */
 async function drive(store: Store, def: AgentDef, run: AgentRun): Promise<void> {
-  const workspace = run.workspace;
-
   inFlight.add(run.id);
   try {
-    const have = (await listAllWorkspaces().catch(() => [])).some((w) => w.name === workspace);
+    const api = await waitForStudio();
 
-    if (!have) {
-      await updateRun(def.name, run.id, { note: 'making the workspace' });
-      await createWorkspace(store, workspace, def.workspace.app || DEFAULT_APP, undefined, await defaultRancherValues());
+    if (!api) {
+      throw new Error('The agents extension is not loaded, so nothing can hold the conversation.');
     }
     let conversation = run.conversation;
 
     if (!conversation) {
-      conversation = (await startConversation(workspace, `${ def.name } · ${ new Date().toLocaleString([], {
+      await updateRun(def.name, run.id, { note: 'opening a conversation' });
+      conversation = await api.agent.start();
+      await api.agent.rename(conversation, `${ def.name } · ${ new Date().toLocaleString([], {
         month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-      }) }`)).id;
-      await updateRun(def.name, run.id, { conversation, note: 'waiting for the workspace pod' });
+      }) }`).catch(() => {});
+      await updateRun(def.name, run.id, { conversation });
     }
-    await waitForWorkspacePod(workspace);
-    await updateRun(def.name, run.id, { note: 'preparing the workspace' });
-    await ensureWorkspaceReady(workspace);
     await updateRun(def.name, run.id, { note: 'starting the conversation' });
-    await queuePrompt(workspace, conversation, def.prompt);
-    await startPaneDetached(workspace, conversation);
+    await api.agent.queue(conversation, def.prompt);
+    await startDrawerPane(api, conversation);
     await updateRun(def.name, run.id, { state: 'running', note: '' });
   } catch (e: Json) {
     await updateRun(def.name, run.id, { state: 'failed', note: e?.message || String(e), endedAt: new Date().toISOString() }).catch(() => {});
   } finally {
     inFlight.delete(run.id);
   }
+}
+
+/**
+ * Start a drawer conversation's pane with nobody attached: the same argv a terminal tab would
+ * run, with `start` for the mode, so shell.sh makes the tmux session detached and claude in it
+ * reads what was queued. Run in the agent pod, which is where drawer conversations live.
+ */
+async function startDrawerPane(api: StudioBrowserApi, id: string): Promise<void> {
+  const pod = await api.agent.pod();
+
+  if (!pod) {
+    throw new Error('The agent pod is not running, so there is nothing to start the conversation in.');
+  }
+  const argv = api.agent.command(id, 'claude');
+  const last = argv.length - 1;
+  const detached = ['claude', 'shell'].includes(argv[last]) ? [...argv.slice(0, last), 'start'] : argv;
+
+  await podExecOnce(api.agent.namespace, pod, api.agent.container, detached);
 }
 
 const BUSY = /esc to interrupt|Interrupt ·|tokens · esc|⏳|Thinking…|Working…/i;
@@ -349,8 +370,10 @@ export async function tickAgents(store: Store): Promise<void> {
     for (const def of agents) {
       const runs = await listRuns(def.name);
 
-      // A cron agent whose minute this is, once per minute across every open dashboard.
-      if (def.enabled && def.trigger.type === 'cron' && def.trigger.cron && cronDue(def.trigger.cron, now) && !runs.some((r) => r.slot === slot)) {
+      // A schedule whose minute this is, once per minute across every open dashboard.
+      const due = triggersOf(def).some((t) => t.type === 'cron' && t.cron && cronDue(t.cron, now));
+
+      if (def.enabled && due && !runs.some((r) => r.slot === slot)) {
         await runAgent(store, def, 'cron', {
           id: newId(), agent: def.name, trigger: 'cron', slot, workspace: '', conversation: '', state: 'requested', startedAt: now.toISOString(),
         }).catch(() => {});
@@ -371,7 +394,9 @@ export async function tickAgents(store: Store): Promise<void> {
 
       // Runs that are over: the pane is gone, or claude is back at its prompt.
       for (const r of runs.filter((x) => x.state === 'running' && x.conversation && !inFlight.has(x.id))) {
-        const pane = await conversationPane(r.workspace, r.conversation, 30).catch(() => null);
+        const pane = r.workspace
+          ? await conversationPane(r.workspace, r.conversation, 30).catch(() => null)
+          : await (await waitForStudio())?.agent.pane(r.conversation, 30).catch(() => null);
 
         if (pane && (!pane.running || !BUSY.test(pane.text)) && Date.now() - Date.parse(r.startedAt) > 90_000) {
           await updateRun(def.name, r.id, { state: 'done', endedAt: new Date().toISOString() }).catch(() => {});

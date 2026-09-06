@@ -12,7 +12,7 @@ import AsyncButton from '@shell/components/AsyncButton';
 import {
   previewState, removePreview, shareWorkspace, previewBase, retargetPreview, rebuildPreview, LOCAL_HOST
 } from '../previews';
-import { buildShare, shareStatus, workspaceBranch } from '../workspace-tools';
+import { buildShare, shareStatus, workspaceBranches } from '../workspace-tools';
 import { defaultRancher, listRanchers } from '../ranchers';
 import { listApps } from '../apps';
 import { DEFAULT_APP } from '../config/constants';
@@ -21,18 +21,8 @@ import { DEFAULT_REPO } from '../reviews';
 const REFRESH_MS = 8000;
 
 const KINDS = [
-  {
-    kind:        'dashboard',
-    title:       'Rancher dashboard',
-    blurb:       'This branch as a dashboard on a link, talking to a Rancher of your choosing. On a Rancher of the sidebar\'s it is a public link; here it is behind this Rancher\'s login.',
-    needsRancher: true,
-  },
-  {
-    kind:        'storybook',
-    title:       'Storybook',
-    blurb:       'Every component on its own, with a direct link that needs no login.',
-    needsRancher: false,
-  },
+  { kind: 'dashboard', title: 'Rancher dashboard', needsRancher: true },
+  { kind: 'storybook', title: 'Storybook', needsRancher: false },
 ];
 
 export default {
@@ -58,6 +48,10 @@ export default {
       number:    0,
       ref:       '',
       sha:       '',
+      /** Every local branch of the checkout, with its head; the current one first. */
+      branches:  [],
+      /** Per kind: the branch picked to build, when not the one the checkout is on. */
+      picked:    {},
       states:    {},
       builds:    {},
       rancher:   window.location.origin,
@@ -66,8 +60,10 @@ export default {
       /** Per kind: a picker on "Another Rancher", with the address typed so far. */
       other:     {},
       custom:    '',
-      /** The cluster the next build is hosted on: 'local', or a sidebar Rancher's cluster id. */
+      /** Where builds are hosted: the starred Rancher's cluster when that is a public one, else here. Not asked; decided. */
       hostOn:    'local',
+      /** The link copied a moment ago, for its button to say so. */
+      copiedUrl: '',
       error:     '',
       notice:    '',
       timer:     null,
@@ -103,10 +99,54 @@ export default {
     },
 
     async readBranch() {
-      const { branch, sha } = await workspaceBranch(this.workspace.name).catch(() => ({ branch: '', sha: '' }));
+      const { branch, sha, branches } = await workspaceBranches(this.workspace.name).catch(() => ({ branch: '', sha: '', branches: [] }));
 
       this.ref = branch;
       this.sha = sha;
+      this.branches = branches;
+    },
+
+    // ── Branches ──
+
+    /** The branch a kind builds: the one picked, else the one it was built from, else the checkout's. */
+    branchFor(kind) {
+      return this.picked[kind] || this.buildOf(kind)?.branch || this.stateOf(kind)?.ref || this.ref;
+    },
+
+    /** The picker's rows: the checkout's branches, plus the built one when it is gone. */
+    branchOptions(kind) {
+      const rows = this.branches.map((b) => b.name);
+      const built = this.branchFor(kind);
+
+      if (built && !rows.includes(built)) {
+        rows.unshift(built);
+      }
+
+      return rows;
+    },
+
+    headOf(name) {
+      return (this.branches.find((b) => b.name === name) || {}).sha || '';
+    },
+
+    /** A served build behind its branch: the head moved since it was built. */
+    stale(kind) {
+      const build = this.buildOf(kind);
+
+      if (!build || build.state !== 'ok' || !build.sha) {
+        return null;
+      }
+      const head = this.headOf(build.branch);
+
+      return head && head !== build.sha ? { built: build.sha, head } : null;
+    },
+
+    /** A branch picked: remembered for the next build, and built now when something is served. */
+    async pickBranch(kind, name) {
+      this.picked = { ...this.picked, [kind]: name };
+      if (this.stateOf(kind)?.exists) {
+        await this.rebuild(kind, () => {});
+      }
     },
 
     async refresh() {
@@ -149,8 +189,8 @@ export default {
       this.error = '';
 
       try {
-        await shareWorkspace(this.$store, this.workspace.name, kind, this.rancher.trim().replace(/\/$/, '') || window.location.origin, this.workspace.cluster, this.hostFor(this.hostOn));
-        this.notice = `${ kind === 'storybook' ? 'Storybook' : 'Dashboard' } build started in the workspace, at ${ this.ref || 'its branch' }. It takes a few minutes; the link appears here when it is served.`;
+        await shareWorkspace(this.$store, this.workspace.name, kind, this.rancher.trim().replace(/\/$/, '') || window.location.origin, this.workspace.cluster, this.hostFor(this.hostOn), this.branchFor(kind));
+        this.notice = `Building ${ this.branchFor(kind) || 'the checkout' }; the link appears here when it is served.`;
         await this.refresh();
         done(true);
       } catch (e) {
@@ -164,14 +204,14 @@ export default {
       try {
         const state = this.stateOf(kind);
         const remote = !!state?.host;
-        const result = await buildShare(this.workspace.name, kind, remote ? (kind === 'storybook' ? '/' : '/dashboard/') : previewBase(this.workspace.name, this.workspace.cluster, kind));
+        const result = await buildShare(this.workspace.name, kind, remote ? (kind === 'storybook' ? '/' : '/dashboard/') : previewBase(this.workspace.name, this.workspace.cluster, kind), this.branchFor(kind));
 
         if (remote && result !== 'already-building') {
           // The preview fetches the build when its pod starts; see it through once the build is done.
           this.refetchWhenBuilt(kind, state.hostedOn);
         }
 
-        this.notice = result === 'already-building' ? 'A build is already running; wait for it.' : `Rebuilding from the checkout at ${ this.ref || 'its branch' }.`;
+        this.notice = result === 'already-building' ? 'A build is already running; wait for it.' : `Building ${ this.branchFor(kind) || 'the checkout' }.`;
         await this.refresh();
         done(true);
       } catch (e) {
@@ -226,19 +266,6 @@ export default {
 
     hostLabel(id) {
       return (this.hostOptions().find((h) => h.id === id) || {}).label || (id === 'local' || !id ? 'This cluster' : id);
-    },
-
-    /** A served build moved: built again for its new address and put up there. */
-    async move(kind, id) {
-      this.error = '';
-      this.hostOn = id;
-      try {
-        this.notice = `Rebuilding for ${ this.hostLabel(id).split(' · ')[0] }; the new link appears here when it is served.`;
-        await shareWorkspace(this.$store, this.workspace.name, kind, this.currentRancher(kind) || window.location.origin, this.workspace.cluster, this.hostFor(id));
-        await this.refresh();
-      } catch (e) {
-        this.error = e.message || String(e);
-      }
     },
 
     // ── Which Rancher a dashboard build talks to ──
@@ -310,10 +337,16 @@ export default {
       }
     },
 
+    /** The button says it happened: "Copied" for a moment, where "Copy link" was. */
     async copy(url) {
       try {
         await navigator.clipboard.writeText(url);
-        this.notice = 'Link copied.';
+        this.copiedUrl = url;
+        setTimeout(() => {
+          if (this.copiedUrl === url) {
+            this.copiedUrl = '';
+          }
+        }, 1500);
       } catch {
         this.notice = url;
       }
@@ -337,10 +370,6 @@ export default {
       @close="notice = ''"
     />
 
-    <p class="workspace-share__intro text-muted">
-      <code>{{ repo }}</code><template v-if="ref"> · <code>{{ ref }}</code><template v-if="sha"> at <code>{{ sha }}</code></template></template>, as checked out here, uncommitted changes included. Each build gets a link of its own.
-    </p>
-
     <div class="workspace-share__grid">
       <section
         v-for="k in KINDS"
@@ -356,141 +385,163 @@ export default {
             :class="`workspace-share__state--${ tone(stateOf(k.kind).state) }`"
           >{{ stateOf(k.kind).state }}</span>
         </header>
-        <p class="text-muted workspace-share__blurb">
-          {{ k.blurb }}
-        </p>
 
-        <!-- The build in the workspace: what it is doing, and its tail when that is worth reading. -->
-        <p
-          v-if="buildOf(k.kind) && buildOf(k.kind).state !== 'none'"
-          class="workspace-share__build"
-          :class="`workspace-share__build--${ buildOf(k.kind).state }`"
-        >
-          <i
-            v-if="buildOf(k.kind).state === 'building'"
-            class="icon icon-spinner icon-spin"
-          />
-          <template v-if="buildOf(k.kind).state === 'building'">Building in the workspace</template>
-          <template v-else-if="buildOf(k.kind).state === 'ok'">Built</template>
-          <template v-else>Build failed</template>
-          <template v-if="buildOf(k.kind).branch"> from <code>{{ buildOf(k.kind).branch }}</code> at <code>{{ buildOf(k.kind).sha }}</code></template>
-          <span class="text-muted"> · {{ when(buildOf(k.kind).at) }}</span>
-        </p>
+        <dl class="workspace-share__facts">
+          <dt>Branch</dt>
+          <dd>
+            <div class="workspace-share__pick">
+              <select
+                :value="branchFor(k.kind)"
+                class="workspace-share__select"
+                aria-label="Branch to build"
+                :data-testid="`share-branch-${ k.kind }`"
+                @change="pickBranch(k.kind, $event.target.value)"
+              >
+                <option
+                  v-for="name in branchOptions(k.kind)"
+                  :key="name"
+                  :value="name"
+                >
+                  {{ name }}{{ name === ref ? ' (checked out)' : '' }}
+                </option>
+              </select>
+              <span
+                v-if="branchFor(k.kind) !== ref"
+                class="text-muted workspace-share__hint"
+              >built from a worktree; the checkout stays as it is</span>
+            </div>
+          </dd>
+
+          <template v-if="buildOf(k.kind) && buildOf(k.kind).state !== 'none'">
+            <dt>Build</dt>
+            <dd
+              class="workspace-share__build"
+              :class="`workspace-share__build--${ buildOf(k.kind).state }`"
+            >
+              <i
+                v-if="buildOf(k.kind).state === 'building'"
+                class="icon icon-spinner icon-spin"
+              />
+              <template v-if="buildOf(k.kind).state === 'building'">Building</template>
+              <template v-else-if="buildOf(k.kind).state === 'ok'">Built</template>
+              <template v-else>Failed</template>
+              <template v-if="buildOf(k.kind).sha"> at <code>{{ buildOf(k.kind).sha }}</code></template>
+              <span class="text-muted"> · {{ when(buildOf(k.kind).at) }}</span>
+              <span
+                v-if="stale(k.kind)"
+                class="workspace-share__stale"
+                :title="`Built at ${ stale(k.kind).built }; ${ buildOf(k.kind).branch } is now at ${ stale(k.kind).head }`"
+                :data-testid="`share-stale-${ k.kind }`"
+              >stale · branch is at <code>{{ stale(k.kind).head }}</code></span>
+            </dd>
+          </template>
+
+          <template v-if="stateOf(k.kind) && stateOf(k.kind).exists">
+            <dt>Link</dt>
+            <dd>
+              <p
+                v-if="stateOf(k.kind).state !== 'serving'"
+                class="text-muted workspace-share__detail"
+              >
+                {{ stateOf(k.kind).detail }}
+              </p>
+              <p
+                v-if="stateOf(k.kind).url && stateOf(k.kind).state === 'serving'"
+                class="workspace-share__linkrow"
+              >
+                <a
+                  :href="stateOf(k.kind).url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="workspace-share__link"
+                >{{ stateOf(k.kind).url }}</a>
+                <button
+                  type="button"
+                  class="btn role-tertiary btn-sm"
+                  :class="{ 'workspace-share__copied': copiedUrl === stateOf(k.kind).url }"
+                  @click="copy(stateOf(k.kind).url)"
+                >
+                  <i :class="copiedUrl === stateOf(k.kind).url ? 'icon icon-checkmark' : 'icon icon-copy'" />
+                  {{ copiedUrl === stateOf(k.kind).url ? 'Copied' : 'Copy link' }}
+                </button>
+                <span class="text-muted workspace-share__hint">{{ stateOf(k.kind).host ? 'public' : 'needs a login here' }}</span>
+              </p>
+              <p
+                v-if="stateOf(k.kind).direct && stateOf(k.kind).state === 'serving'"
+                class="workspace-share__linkrow workspace-share__linkrow--direct"
+              >
+                <span class="text-muted">Direct, no login:</span>
+                <a
+                  :href="stateOf(k.kind).direct"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >{{ stateOf(k.kind).direct }}</a>
+                <button
+                  type="button"
+                  class="btn role-tertiary btn-sm"
+                  :class="{ 'workspace-share__copied': copiedUrl === stateOf(k.kind).direct }"
+                  @click="copy(stateOf(k.kind).direct)"
+                >
+                  <i :class="copiedUrl === stateOf(k.kind).direct ? 'icon icon-checkmark' : 'icon icon-copy'" />
+                  {{ copiedUrl === stateOf(k.kind).direct ? 'Copied' : 'Copy link' }}
+                </button>
+              </p>
+            </dd>
+          </template>
+
+          <template v-if="k.needsRancher">
+            <dt>Talks to</dt>
+            <dd>
+              <div class="workspace-share__pick">
+                <select
+                  :value="other[k.kind] ? '__other' : currentRancher(k.kind)"
+                  class="workspace-share__select"
+                  aria-label="Rancher the build talks to"
+                  @change="pick(k.kind, $event.target.value)"
+                >
+                  <option
+                    v-for="r in rancherOptions(k.kind)"
+                    :key="r.url"
+                    :value="r.url"
+                  >
+                    {{ r.label }}
+                  </option>
+                  <option value="__other">
+                    Another Rancher…
+                  </option>
+                </select>
+                <template v-if="other[k.kind]">
+                  <input
+                    v-model="custom"
+                    class="workspace-share__rancher"
+                    type="text"
+                    placeholder="https://rancher.example.com"
+                    aria-label="Address of the Rancher"
+                    @keydown.enter.prevent="useCustom(k.kind)"
+                  >
+                  <button
+                    type="button"
+                    class="btn role-secondary btn-sm"
+                    @click="useCustom(k.kind)"
+                  >
+                    Use
+                  </button>
+                </template>
+              </div>
+            </dd>
+          </template>
+        </dl>
+
         <pre
           v-if="buildOf(k.kind) && buildOf(k.kind).state === 'failed' && buildOf(k.kind).log"
           class="workspace-share__log"
         >{{ buildOf(k.kind).log }}</pre>
 
-        <template v-if="stateOf(k.kind) && stateOf(k.kind).exists">
-          <p
-            v-if="stateOf(k.kind).state !== 'serving'"
-            class="text-muted"
-          >
-            {{ stateOf(k.kind).detail }}
-          </p>
-          <p
-            v-if="stateOf(k.kind).url && stateOf(k.kind).state === 'serving'"
-            class="workspace-share__linkrow"
-          >
-            <a
-              :href="stateOf(k.kind).url"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="workspace-share__link"
-            >{{ stateOf(k.kind).url }}</a>
-            <button
-              type="button"
-              class="btn role-tertiary btn-sm"
-              @click="copy(stateOf(k.kind).url)"
-            >
-              Copy link
-            </button>
-          </p>
-          <p
-            v-if="stateOf(k.kind).direct && stateOf(k.kind).state === 'serving'"
-            class="workspace-share__linkrow workspace-share__linkrow--direct"
-          >
-            <span class="text-muted">Direct, no login:</span>
-            <a
-              :href="stateOf(k.kind).direct"
-              target="_blank"
-              rel="noopener noreferrer"
-            >{{ stateOf(k.kind).direct }}</a>
-            <button
-              type="button"
-              class="btn role-tertiary btn-sm"
-              @click="copy(stateOf(k.kind).direct)"
-            >
-              Copy link
-            </button>
-          </p>
-          <dl class="workspace-share__facts">
-            <dt>Built from</dt>
-            <dd><code>{{ stateOf(k.kind).ref }}</code></dd>
-            <dt>Hosted on</dt>
-            <dd>
-              <select
-                :value="stateOf(k.kind).host ? stateOf(k.kind).hostedOn : 'local'"
-                class="workspace-share__select"
-                aria-label="Cluster the build is hosted on"
-                data-testid="share-host"
-                @change="move(k.kind, $event.target.value)"
-              >
-                <option
-                  v-for="h in hostOptions()"
-                  :key="h.id"
-                  :value="h.id"
-                >
-                  {{ h.label }}
-                </option>
-              </select>
-            </dd>
-            <template v-if="k.needsRancher">
-              <dt>Talks to</dt>
-              <dd>
-                <div class="workspace-share__pick">
-                  <select
-                    :value="other[k.kind] ? '__other' : currentRancher(k.kind)"
-                    class="workspace-share__select"
-                    aria-label="Rancher the build talks to"
-                    @change="pick(k.kind, $event.target.value)"
-                  >
-                    <option
-                      v-for="r in rancherOptions(k.kind)"
-                      :key="r.url"
-                      :value="r.url"
-                    >
-                      {{ r.label }}
-                    </option>
-                    <option value="__other">
-                      Another Rancher…
-                    </option>
-                  </select>
-                  <template v-if="other[k.kind]">
-                    <input
-                      v-model="custom"
-                      class="workspace-share__rancher"
-                      type="text"
-                      placeholder="https://rancher.example.com"
-                      aria-label="Address of the Rancher"
-                      @keydown.enter.prevent="useCustom(k.kind)"
-                    >
-                    <button
-                      type="button"
-                      class="btn role-secondary btn-sm"
-                      @click="useCustom(k.kind)"
-                    >
-                      Use
-                    </button>
-                  </template>
-                </div>
-              </dd>
-            </template>
-          </dl>
-          <div class="workspace-share__actions">
+        <div class="workspace-share__actions">
+          <template v-if="stateOf(k.kind) && stateOf(k.kind).exists">
             <AsyncButton
               mode="apply"
-              action-label="Rebuild from the checkout"
+              :action-label="stale(k.kind) ? 'Rebuild (stale)' : 'Rebuild'"
               waiting-label="Starting"
               success-label="Building"
               size="sm"
@@ -504,81 +555,18 @@ export default {
               size="sm"
               @click="(done) => remove(k.kind, done)"
             />
-          </div>
-        </template>
-
-        <template v-else>
-          <div class="workspace-share__row">
-            <span class="text-muted">Hosted on</span>
-            <select
-              v-model="hostOn"
-              class="workspace-share__select"
-              aria-label="Cluster the build is hosted on"
-              data-testid="share-host-new"
-            >
-              <option
-                v-for="h in hostOptions()"
-                :key="h.id"
-                :value="h.id"
-              >
-                {{ h.label }}
-              </option>
-            </select>
-          </div>
-          <div
-            v-if="k.needsRancher"
-            class="workspace-share__row"
-          >
-            <span class="text-muted">Talks to</span>
-            <div class="workspace-share__pick">
-              <select
-                :value="other[k.kind] ? '__other' : currentRancher(k.kind)"
-                class="workspace-share__select"
-                aria-label="Rancher the build talks to"
-                @change="pick(k.kind, $event.target.value)"
-              >
-                <option
-                  v-for="r in rancherOptions(k.kind)"
-                  :key="r.url"
-                  :value="r.url"
-                >
-                  {{ r.label }}
-                </option>
-                <option value="__other">
-                  Another Rancher…
-                </option>
-              </select>
-              <template v-if="other[k.kind]">
-                <input
-                  v-model="custom"
-                  class="workspace-share__rancher"
-                  type="text"
-                  placeholder="https://rancher.example.com"
-                  aria-label="Address of the Rancher"
-                  @keydown.enter.prevent="useCustom(k.kind)"
-                >
-                <button
-                  type="button"
-                  class="btn role-secondary btn-sm"
-                  @click="useCustom(k.kind)"
-                >
-                  Use
-                </button>
-              </template>
-            </div>
-          </div>
-          <div class="workspace-share__actions">
-            <AsyncButton
-              mode="apply"
-              :action-label="`Build and share ${ k.kind === 'storybook' ? 'Storybook' : 'the dashboard' }`"
-              waiting-label="Deploying"
-              success-label="Deploying"
-              size="sm"
-              :disabled="k.needsRancher && !rancher.trim()"
-              @click="(done) => deploy(k.kind, done)"
-            />
-          </div>
-        </template>
+          </template>
+          <AsyncButton
+            v-else
+            mode="apply"
+            :action-label="`Build and share ${ k.kind === 'storybook' ? 'Storybook' : 'the dashboard' }`"
+            waiting-label="Deploying"
+            success-label="Deploying"
+            size="sm"
+            :disabled="k.needsRancher && !rancher.trim()"
+            @click="(done) => deploy(k.kind, done)"
+          />
+        </div>
       </section>
     </div>
   </div>
@@ -676,6 +664,19 @@ export default {
       margin-bottom: var(--dev-space-3);
     }
     &__rancher { flex: 1 1 200px; min-width: 0; }
+
+    &__stale {
+      margin-left:   var(--dev-space-2);
+      padding:       1px 8px;
+      border-radius: 9px;
+      font-size:     12px;
+      color:         var(--warning);
+      border:        1px solid var(--warning);
+    }
+
+    &__hint { font-size: 12px; }
+    &__copied { color: var(--success) !important; }
+    &__detail { margin: 0; }
 
     &__pick {
       display:     flex;

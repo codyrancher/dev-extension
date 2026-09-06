@@ -470,10 +470,38 @@ export type ShareKind = 'dashboard' | 'storybook';
 
 /** The branch the checkout is on, and its head. */
 export async function workspaceBranch(workspace: string): Promise<{ branch: string; sha: string }> {
-  const out = await readInWorkspace(workspace, `cd ${ WORKSPACE_WORKDIR } 2>/dev/null && echo "$(git rev-parse --abbrev-ref HEAD 2>/dev/null) $(git rev-parse --short HEAD 2>/dev/null)"`).catch(() => '');
-  const [branch = '', sha = ''] = out.trim().split(/\s+/);
+  const { branch, sha } = await workspaceBranches(workspace);
 
   return { branch, sha };
+}
+
+export interface WorkspaceBranches {
+  /** The branch the checkout is on, and its head. */
+  branch: string;
+  sha: string;
+  /** Every local branch, with its head, the current one first. */
+  branches: { name: string; sha: string }[];
+}
+
+/** The checkout's branches, for a Share tab picking one to build. */
+export async function workspaceBranches(workspace: string): Promise<WorkspaceBranches> {
+  const out = await readInWorkspace(workspace, [
+    `cd ${ WORKSPACE_WORKDIR } 2>/dev/null || exit 0`,
+    'echo "@@HEAD $(git rev-parse --abbrev-ref HEAD 2>/dev/null) $(git rev-parse --short HEAD 2>/dev/null)"',
+    "git for-each-ref --sort=-committerdate --format='%(refname:short) %(objectname:short)' refs/heads 2>/dev/null | head -n 60",
+  ].join('\n')).catch(() => '');
+  const lines = out.trim().split('\n');
+  const head = lines.find((l) => l.startsWith('@@HEAD ')) || '@@HEAD';
+  const [branch = '', sha = ''] = head.replace('@@HEAD', '').trim().split(/\s+/);
+  const branches = lines.filter((l) => !l.startsWith('@@HEAD') && l.trim()).map((l) => {
+    const [name, bsha = ''] = l.trim().split(/\s+/);
+
+    return { name, sha: bsha };
+  });
+
+  branches.sort((a, b) => (a.name === branch ? -1 : b.name === branch ? 1 : 0));
+
+  return { branch, sha, branches };
 }
 
 /**
@@ -486,15 +514,38 @@ export async function workspaceBranch(workspace: string): Promise<{ branch: stri
  * `base` is where a dashboard build routes and fetches its assets (previews.ts, previewBase);
  * a Storybook is a plain static site and ignores it.
  */
-export async function buildShare(workspace: string, kind: ShareKind, base: string): Promise<'started' | 'already-building'> {
+/** One shell word, single-quoted; '' for nothing. */
+function shellQuote(value: string): string {
+  return value ? `'${ value.replace(/'/g, `'\\''`) }'` : "''";
+}
+
+export async function buildShare(workspace: string, kind: ShareKind, base: string, ref = ''): Promise<'started' | 'already-building'> {
   const target = await workspaceTarget(workspace);
   const script = [
     '#!/bin/bash',
-    'KIND=$1; BASE=$2',
+    'KIND=$1; BASE=$2; REF=$3',
     `cd ${ WORKSPACE_WORKDIR } || exit 1`,
     'mkdir -p /workspace/.share /workspace/share',
     'S=/workspace/.share/$KIND.status; L=/workspace/.share/$KIND.log',
     'branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); sha=$(git rev-parse --short HEAD 2>/dev/null)',
+    // Never built in the checkout itself. The dev server running there shares
+    // node_modules/.cache with anything else that builds there, and a production build that
+    // reads the dev server's cached script blocks comes out half compiled (a <script setup>
+    // component whose template was never attached: RcButton rendered nothing, so the shared
+    // login page had no buttons). So the source is staged: a worktree of the branch asked for,
+    // or a copy of the working tree as it is, uncommitted changes included; node_modules come
+    // along as hard links (the same files, no second install) minus the cache; the staging
+    // goes when the build is done.
+    'WT=/workspace/.share/src-$KIND',
+    'git worktree remove --force $WT >/dev/null 2>&1; rm -rf $WT; mkdir -p $WT',
+    'if [ -n "$REF" ] && [ "$REF" != "$branch" ]; then',
+    '  rmdir $WT; git worktree add --detach $WT "$REF" >/dev/null 2>&1 || { echo "failed $(date -u +%FT%TZ) $REF unknown" > $S; exit 1; }',
+    '  branch=$REF; sha=$(git -C $WT rev-parse --short HEAD 2>/dev/null)',
+    'else',
+    "  tar --exclude=./node_modules --exclude='./*/node_modules' --exclude='./pkg/*/node_modules' --exclude=./.git -cf - . | tar -C $WT -xf -",
+    'fi',
+    "for d in $(find . -maxdepth 3 -name node_modules -type d -not -path '*/node_modules/*'); do mkdir -p $WT/$(dirname $d); cp -al $d $WT/$d; rm -rf $WT/$d/.cache; done",
+    'cd $WT',
     'echo "building $(date -u +%FT%TZ) $branch $sha" > $S',
     // On half the cores and at the lowest priority: a build is background work, and one that
     // takes the whole node has taken k3s down with it.
@@ -509,7 +560,9 @@ export async function buildShare(workspace: string, kind: ShareKind, base: strin
     '    ROUTER_BASE=$BASE RESOURCE_BASE=$BASE OUTPUT_DIR=/workspace/share/$KIND.next $RUN yarn build && node /workspace/.share/unrewrite.js /workspace/share/$KIND.next/index.html',
     '  fi',
     '} > $L 2>&1',
-    'if [ $? -eq 0 ] && [ -f /workspace/share/$KIND.next/index.html ]; then',
+    'RC=$?',
+    `cd ${ WORKSPACE_WORKDIR } && git worktree remove --force $WT >/dev/null 2>&1; rm -rf $WT`,
+    'if [ $RC -eq 0 ] && [ -f /workspace/share/$KIND.next/index.html ]; then',
     '  rm -rf /workspace/share/$KIND.old',
     '  [ -d /workspace/share/$KIND ] && mv /workspace/share/$KIND /workspace/share/$KIND.old',
     '  mv /workspace/share/$KIND.next /workspace/share/$KIND && rm -rf /workspace/share/$KIND.old',
@@ -523,7 +576,7 @@ export async function buildShare(workspace: string, kind: ShareKind, base: strin
     'mkdir -p /workspace/.share',
     `echo ${ UNREWRITE_B64 } | base64 -d > /workspace/.share/unrewrite.js`,
     `echo ${ b64(script) } | base64 -d > /workspace/.share/build.sh && chmod +x /workspace/.share/build.sh`,
-    `if tmux has-session -t mc-share-${ kind } 2>/dev/null; then echo ALREADY; else tmux new-session -d -s mc-share-${ kind } -c ${ WORKSPACE_WORKDIR } "/workspace/.share/build.sh ${ kind } ${ base }" && echo STARTED; fi`,
+    `if tmux has-session -t mc-share-${ kind } 2>/dev/null; then echo ALREADY; else tmux new-session -d -s mc-share-${ kind } -c ${ WORKSPACE_WORKDIR } "/workspace/.share/build.sh ${ kind } ${ base } ${ shellQuote(ref) }" && echo STARTED; fi`,
   ].join('\n'));
 
   if (out.includes('ALREADY')) {

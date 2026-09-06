@@ -102,6 +102,8 @@ export default {
       clustersOpen: readClustersOpen(),
       /** The Rancher a delete is being confirmed for, or null. */
       deletingRancher: null,
+      /** Rancher id -> true for the moment after its address was copied. */
+      copied:          {},
       apps:         cache.apps,
       error:        '',
       refreshTimer: null,
@@ -221,11 +223,18 @@ export default {
       });
     },
 
-    /** The worst of the clusters, for the collapsed header. */
+    /** The worst of the clusters, for the collapsed header's one dot. */
     clustersHealth() {
       const levels = this.clusterRows.map((c) => c.health);
 
       return levels.includes('error') ? 'error' : levels.includes('warn') ? 'warn' : 'ok';
+    },
+
+    /** What the dot means, cluster by cluster, for its tooltip. */
+    clustersSummary() {
+      const trouble = this.clusterRows.filter((c) => c.health !== 'ok').map((c) => `${ c.name }: ${ c.summary }`);
+
+      return trouble.length ? trouble.join('\n') : 'Every cluster is healthy';
     },
 
     currentWorkspace() {
@@ -397,10 +406,14 @@ export default {
       }
     },
 
+    /** The icon says it happened: a tick for a moment, where the copy icon was. */
     async copyRancher(rancher) {
       try {
         await navigator.clipboard.writeText(rancher.url);
-        this.$store.dispatch('growl/success', { title: '', message: `Copied ${ rancher.url }`, timeout: 3000 }, { root: true });
+        this.copied = { ...this.copied, [rancher.id]: true };
+        setTimeout(() => {
+          this.copied = { ...this.copied, [rancher.id]: false };
+        }, 1500);
       } catch {
         this.$store.dispatch('growl/info', { title: rancher.url, message: 'Copy it from here.', timeout: 8000 }, { root: true });
       }
@@ -652,11 +665,15 @@ export default {
             v-if="rancher.url"
             type="button"
             class="dev-sidebar__tool"
-            title="Copy the address"
+            :class="{ 'dev-sidebar__tool--done': copied[rancher.id] }"
+            :title="copied[rancher.id] ? 'Copied' : 'Copy the address'"
             data-testid="dev-rancher-copy"
             @click="copyRancher(rancher)"
           >
-            <i class="icon icon-copy" />
+            <i
+              class="icon"
+              :class="copied[rancher.id] ? 'icon-checkmark' : 'icon-copy'"
+            />
           </button>
           <a
             v-if="rancher.url && rancher.kind !== 'host'"
@@ -712,18 +729,12 @@ export default {
       >
         <i class="dev-sidebar__template-icon icon icon-cluster" />
         <span class="dev-sidebar__template-label">Clusters</span>
-        <span
-          class="dev-sidebar__cluster-pills"
+        <i
+          class="dev-sidebar__dot dev-sidebar__dot--overall"
+          :class="`dev-sidebar__dot--${ clustersHealth }`"
+          :title="clustersSummary"
           data-testid="dev-clusters-summary"
-        >
-          <span
-            v-for="cluster in clusterRows"
-            :key="cluster.id"
-            class="dev-sidebar__cluster-pill"
-            :class="`dev-sidebar__cluster-pill--${ cluster.health }`"
-            :title="`${ cluster.name }: ${ cluster.summary }`"
-          >{{ cluster.name }}</span>
-        </span>
+        />
         <i
           class="dev-sidebar__chevron icon"
           :class="clustersOpen ? 'icon-chevron-down' : 'icon-chevron-right'"
@@ -975,6 +986,7 @@ export default {
 
       &:hover { color: var(--link); background: var(--accent-btn); }
       &--danger:hover { color: var(--error); }
+      &--done, &--done:hover { color: var(--success); }
     }
 
     &__rancher-name {
@@ -1048,30 +1060,6 @@ export default {
       &:hover { color: var(--body-text); }
     }
 
-    &__cluster-pills {
-      display:     flex;
-      flex:        1 1 auto;
-      min-width:   0;
-      gap:         4px;
-      margin-left: var(--dev-space-2);
-      overflow:    hidden;
-    }
-
-    &__cluster-pill {
-      font-size:      10px;
-      font-weight:    600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      padding:        1px 6px;
-      border-radius:  9px;
-      border:         1px solid var(--border);
-      color:          var(--muted);
-      white-space:    nowrap;
-
-      &--warn { color: var(--warning); border-color: var(--warning); }
-      &--error { color: var(--error); border-color: var(--error); }
-    }
-
     &__chevron {
       flex:      0 0 auto;
       font-size: 12px;
@@ -1089,6 +1077,14 @@ export default {
 
       &--warn { background: var(--warning); }
       &--error { background: var(--error); }
+
+      // The header's one dot: a little larger, on the right, with the reasons in its title.
+      &--overall {
+        width:       9px;
+        height:      9px;
+        margin:      0 var(--dev-space-2) 0 auto;
+        box-shadow:  0 0 0 2px color-mix(in srgb, currentColor 0%, var(--nav-bg, var(--body-bg)));
+      }
     }
 
     &__cluster-issue {
