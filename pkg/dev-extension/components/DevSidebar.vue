@@ -15,9 +15,12 @@ import {
 import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
 import { DEFAULT_APP, LEGACY_WORKSPACE_APPS } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
-import { listRanchers, setDefaultRancher, createRancherInstance } from '../ranchers';
+import {
+  listRanchers, setDefaultRancher, createRancherInstance, nextRancherName, rancherAddress
+} from '../ranchers';
 import { tickAgents } from '../agent-defs';
 import DevList from './DevList.vue';
+import DevDialog from './DevDialog.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
 import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
@@ -61,7 +64,8 @@ let seeded = false;
 export default {
   name: 'DevSidebar',
 
-  components: { DevList, Stack, Row, ClaudeLogo
+  components: {
+    DevList, Stack, Row, ClaudeLogo, DevDialog
   },
 
   data() {
@@ -70,6 +74,8 @@ export default {
       clusters:     cache.clusters,
       ranchers:     cache.ranchers,
       defaultRancher: cache.defaultRancher,
+      askingRancher: false,
+      proposedRancher: '',
       apps:         cache.apps,
       error:        '',
       refreshTimer: null,
@@ -281,13 +287,16 @@ export default {
       return total ? `${ readableBytes(free) } / ${ readableBytes(total) }` : readableBytes(free);
     },
 
-    /** A Rancher of your own, from the single-node App: asks for a name, then provisions. */
+    /** A Rancher of your own, from the single-node App: named here, confirmed, then provisioned. */
     async newRancher() {
-      const name = window.prompt('Name for the new Rancher (one EC2 node, GitHub login, reached at <name>.<node ip>.sslip.io):', '');
+      this.proposedRancher = await nextRancherName(this.$store).catch(() => 'otter');
+      this.askingRancher = true;
+    },
 
-      if (!name) {
-        return;
-      }
+    async makeRancher() {
+      const name = this.proposedRancher;
+
+      this.askingRancher = false;
       try {
         await createRancherInstance(this.$store, name);
         this.error = '';
@@ -295,6 +304,10 @@ export default {
       } catch (e) {
         this.error = e.message || String(e);
       }
+    },
+
+    callbackHint(name) {
+      return `${ rancherAddress(name, '<node ip>') }/verify-auth`;
     },
 
     /** Star one Rancher: new workspaces and shares point at it. This Rancher is the default when none is starred. */
@@ -461,6 +474,14 @@ export default {
         </div>
       </div>
     </div>
+    <DevDialog
+      v-if="askingRancher"
+      :title="`Create the Rancher ${ proposedRancher }?`"
+      :message="`One EC2 node with Rancher on it, GitHub login wired to the same GitHub app as this Rancher, provisioned through this one. Once the node is up it is reached at ${ rancherAddress(proposedRancher, '<node ip>') }; add ${ callbackHint(proposedRancher) } to the GitHub app's callback list (it holds ten) and the login works.`"
+      confirm-label="Create"
+      @confirm="makeRancher"
+      @cancel="askingRancher = false"
+    />
     <div class="dev-sidebar__clusters">
       <div class="dev-sidebar__template-head">
         <i class="dev-sidebar__template-icon icon icon-cluster" />

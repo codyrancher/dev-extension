@@ -59,7 +59,7 @@ export async function listRanchers(store: Store): Promise<RancherTarget[]> {
     out.push({
       id:   `instance:${ name }`,
       name,
-      url:  address ? `https://${ name }.${ address }.sslip.io` : '',
+      url:  address ? rancherAddress(name, address) : '',
       kind: 'instance',
       note: cluster ? (address ? `on cluster ${ cluster.name }` : `cluster ${ cluster.name } has no node yet`) : 'its cluster is not up yet',
     });
@@ -70,6 +70,44 @@ export async function listRanchers(store: Store): Promise<RancherTarget[]> {
 
 /** The App a new Rancher is made from: one EC2 node, GitHub login, an sslip address. */
 export const RANCHER_SINGLE_APP = 'rancher-single';
+
+/**
+ * Where an instance is reached: `<name>.dev-extension.<node ip>.sslip.io`. The shape is the
+ * App's (its 60-github-auth.yaml): sslip.io resolves any name with an IP in it, the ingress
+ * serves every host, and the GitHub app shared with this Rancher takes that exact URL's
+ * /verify-auth as one of its ten callbacks - which is the one thing left to do by hand once
+ * the node is up.
+ */
+export function rancherAddress(name: string, nodeIp: string): string {
+  return `https://${ name }.dev-extension.${ nodeIp }.sslip.io`;
+}
+
+/**
+ * Names for new Ranchers, handed out in order: short, pronounceable, DNS-safe, and easy to
+ * tell apart in a callback list. Nobody types one; the next unused is taken.
+ */
+export const CODE_NAMES = [
+  'otter', 'heron', 'lynx', 'falcon', 'marten', 'osprey', 'puffin', 'raven', 'sable', 'wren',
+  'badger', 'condor', 'egret', 'gannet', 'ibis', 'jackal', 'kestrel', 'lark', 'merlin', 'newt',
+];
+
+/** The first code name no instance has yet. */
+export async function nextRancherName(store: Store): Promise<string> {
+  const instances: Json[] = await store.dispatch('management/findAll', { type: APP_INSTANCE }).catch(() => []);
+  const taken = new Set(instances.map((i) => i.metadata?.name));
+  const free = CODE_NAMES.find((n) => !taken.has(n));
+
+  if (free) {
+    return free;
+  }
+  let n = 2;
+
+  while (taken.has(`${ CODE_NAMES[0] }-${ n }`)) {
+    n++;
+  }
+
+  return `${ CODE_NAMES[0] }-${ n }`;
+}
 
 /**
  * A new Rancher of your own: an Installation of the single-node App, which provisions its EC2
