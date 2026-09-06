@@ -75,9 +75,9 @@ export interface DevCluster {
   id: string;
   name: string;
   state: string;
-  /** The worst state of anything on it: Rancher's own per-resource state, over nodes and pods. */
+  /** Whether it has room for another workspace: memory and disk, nothing else. */
   health: ClusterHealth;
-  /** What is wrong, one line each, worst first; empty when healthy. */
+  /** What is short, worst first; empty when there is room. */
   issues: string[];
   /** Bytes not asked for by anything, or 0 where the cluster does not say. */
   memoryFree: number;
@@ -164,8 +164,6 @@ export async function listClusters(): Promise<DevCluster[]> {
       devFetch(`${ clusterBase(cluster.id) }/v1/pods`).catch(() => null),
     ]);
 
-    const { health, issues } = clusterHealth(cluster, nodes?.data || [], pods?.data || []);
-
     // Measured first; the requests-based figures below are the fallback for a cluster whose
     // kubelets cannot be asked through the proxy.
     const live = await Promise.all((nodes?.data || []).map((node: Json) => nodeLive(cluster.id, node.metadata?.name)));
@@ -173,16 +171,16 @@ export async function listClusters(): Promise<DevCluster[]> {
     if (live.length && live.every(Boolean)) {
       const sum = (key: 'memory' | 'memoryTotal' | 'disk' | 'diskTotal') => live.reduce((total, node) => total + (node as Record<string, number>)[key], 0);
 
+      const room = {
+        memoryFree: sum('memory'), memoryTotal: sum('memoryTotal'), diskFree: sum('disk'), diskTotal: sum('diskTotal'),
+      };
+
       return {
-        id:          cluster.id,
-        name:        cluster.name || cluster.id,
-        state:       cluster.state,
-        health,
-        issues,
-        memoryFree:  sum('memory'),
-        memoryTotal: sum('memoryTotal'),
-        diskFree:    sum('disk'),
-        diskTotal:   sum('diskTotal'),
+        id:    cluster.id,
+        name:  cluster.name || cluster.id,
+        state: cluster.state,
+        ...roomHealth(room),
+        ...room,
       };
     }
 
@@ -199,66 +197,53 @@ export async function listClusters(): Promise<DevCluster[]> {
       .flatMap((pod: Json) => pod.spec?.containers || [])
       .reduce((total: number, container: Json) => total + bytes(container.resources?.requests?.['ephemeral-storage']), 0);
 
+    const room = {
+      memoryFree, memoryTotal: bytes(cluster.allocatable?.memory), diskFree: Math.max(0, allocatable - requested), diskTotal: allocatable,
+    };
+
     return {
-      id:          cluster.id,
-      name:        cluster.name || cluster.id,
-      state:       cluster.state,
-      health,
-      issues,
-      memoryFree,
-      memoryTotal: bytes(cluster.allocatable?.memory),
-      diskFree:    Math.max(0, allocatable - requested),
-      diskTotal:   allocatable,
+      id:    cluster.id,
+      name:  cluster.name || cluster.id,
+      state: cluster.state,
+      ...roomHealth(room),
+      ...room,
     };
   }));
 }
 
 /**
- * The worst of everything on a cluster, in Rancher's own terms: steve puts a `metadata.state`
- * on every resource (error, transitioning, a name and a message), which is what the
- * dashboard's own lists colour rows by. Nodes and pods cover what a person means by "is the
- * cluster all right": a pod in CrashLoopBackOff or stuck initialising is red, one still
- * starting is yellow, a node with pressure is yellow and one that is not Ready is red; a
- * cluster Rancher itself calls transitioning is yellow. Finished pods are finished, not amber.
+ * Whether a cluster has room, which is the only thing this list is asked about.
+ *
+ * Not the health of what is on it: a preview pod that failed to build, or a Job that ended
+ * badly, says nothing about whether a workspace can be started here, and colouring the row for
+ * it made every cluster red for something nobody was going to act on. A workspace clones
+ * rancher/dashboard, installs it and compiles it; these are the numbers under which that is a
+ * thing that fails partway rather than a thing that is slow.
  */
-function clusterHealth(cluster: Json, nodes: Json[], pods: Json[]): { health: ClusterHealth; issues: string[] } {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-  const note = (state: Json) => (state?.message || state?.name || 'not ready').replace(/\s+/g, ' ').slice(0, 120);
+const LOW_MEMORY = 4 * 1024 ** 3;
+const LOW_DISK = 20 * 1024 ** 3;
 
-  if (cluster.transitioning === 'yes' || (cluster.state && cluster.state !== 'active')) {
-    warnings.push(`cluster ${ cluster.state }: ${ cluster.transitioningMessage || '' }`.replace(/: $/, ''));
-  }
-  for (const node of nodes) {
-    const state = node.metadata?.state;
-
-    if (state?.error) {
-      errors.push(`node ${ node.metadata?.name }: ${ note(state) }`);
-    } else if (state?.transitioning) {
-      warnings.push(`node ${ node.metadata?.name }: ${ note(state) }`);
+function roomHealth(cluster: Pick<DevCluster, 'memoryFree' | 'memoryTotal' | 'diskFree' | 'diskTotal'>): { health: ClusterHealth; issues: string[] } {
+  const issues: string[] = [];
+  let health: ClusterHealth = 'ok';
+  const look = (free: number, total: number, low: number, what: string) => {
+    // A cluster that does not say what it has is not a cluster with nothing left.
+    if (!total || !free) {
+      return;
     }
-  }
-  for (const pod of pods) {
-    // A Job's pods are the Job's business, and Rancher's helm-operation pods (made directly,
-    // no Job) pile up by the hundred, finished or failed: a cluster is not amber for a chore
-    // that ended.
-    if ((pod.metadata?.ownerReferences || []).some((owner: Json) => owner.kind === 'Job') || /^helm-operation-/.test(pod.metadata?.name || '')) {
-      continue;
+    if (free < low / 2) {
+      health = 'error';
+      issues.unshift(`${ what }: ${ readableBytes(free) } free`);
+    } else if (free < low) {
+      health = health === 'error' ? health : 'warn';
+      issues.push(`low on ${ what }: ${ readableBytes(free) } free`);
     }
-    const state = pod.metadata?.state;
-    const where = `${ pod.metadata?.namespace }/${ pod.metadata?.name }`;
-
-    if (state?.error) {
-      errors.push(`${ where }: ${ note(state) }`);
-    } else if (state?.transitioning && state.name !== 'completed') {
-      warnings.push(`${ where }: ${ note(state) }`);
-    }
-  }
-
-  return {
-    health: errors.length ? 'error' : warnings.length ? 'warn' : 'ok',
-    issues: [...errors, ...warnings],
   };
+
+  look(cluster.memoryFree, cluster.memoryTotal, LOW_MEMORY, 'memory');
+  look(cluster.diskFree, cluster.diskTotal, LOW_DISK, 'disk');
+
+  return { health, issues };
 }
 
 /** A byte count as a person reads it, which is one number and one unit. */

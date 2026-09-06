@@ -631,7 +631,17 @@ const PREVIEW_BUILD = [
   '    "  location ~ ^/(js|css|img|fonts|favicon\\\\.png|manifest\\\\.json|robots\\\\.txt)(/|\\$) { root $SITE; }" \\',
   '    "  location / { proxy_pass ${rancherUrl}; proxy_ssl_verify off; proxy_ssl_server_name on; proxy_http_version 1.1;" \\',
   '    "    proxy_set_header Upgrade \\$http_upgrade; proxy_set_header Connection \\"upgrade\\"; proxy_set_header Host \\$proxy_host;" \\',
-  '    "    proxy_set_header X-Forwarded-Proto https; proxy_read_timeout 3600s; proxy_cookie_domain ~.* \\$host; proxy_cookie_flags ~ nosecure; }" \\',
+  '    "    proxy_set_header X-Forwarded-Proto https; proxy_read_timeout 3600s; proxy_cookie_domain ~.* \\$host; proxy_cookie_flags ~ nosecure;" \\',
+  // Rancher answers with absolute links - `links.self` on every object, built from the Host
+  // header it was asked on - and the dashboard follows them. Proxied under another name those
+  // links point straight back at the Rancher, so a page served on a public address sends the
+  // reviewer's browser to a host only this network can resolve: Chrome asks to "access other
+  // devices on your local network" and the dashboard fails with a network error. The upstream
+  // is host-routed and answers 404 to any other Host, so the links are rewritten on the way
+  // out instead, onto whatever name this preview was opened on. Accept-Encoding is cleared
+  // because sub_filter cannot rewrite a gzipped body.
+  '    "    proxy_set_header Accept-Encoding \"\"; sub_filter_once off; sub_filter_types application/json application/yaml text/plain;" \\',
+  '    "    sub_filter \"${rancherUrl}\" \"https://\$host\"; }" \\',
   '    "}" > /site/nginx/default.conf',
   'fi',
   'echo built',
@@ -989,7 +999,8 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
       [DEFINITION_ANNOTATION]:    LEGACY_FINGERPRINTS[body.metadata.name] || fingerprint,
       [DEFINITION_ANNOTATION_V2]: LEGACY_FINGERPRINTS_V2[body.metadata.name] || fingerprint,
       [DEFINITION_ANNOTATION_V3]: LEGACY_FINGERPRINTS_V3[body.metadata.name] || fingerprint,
-      [DEFINITION_ANNOTATION_V4]: fingerprint,
+      [DEFINITION_ANNOTATION_V4]: LEGACY_FINGERPRINTS_V4[body.metadata.name] || fingerprint,
+      [DEFINITION_STAMP]:         `${ extensionVersion() }|${ fingerprint }`,
     };
 
     body.metadata.annotations = annotations;
@@ -998,7 +1009,7 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
       const app = await store.dispatch('management/create', { type: APP, ...body });
 
       await app.save().catch(() => {});
-    } else if (existing.metadata?.annotations?.[DEFINITION_ANNOTATION_V4] !== fingerprint) {
+    } else if (shouldRewrite(existing.metadata?.annotations?.[DEFINITION_STAMP], fingerprint)) {
       existing.spec = body.spec;
       existing.metadata.annotations = { ...(existing.metadata.annotations || {}), ...annotations };
       await existing.save().catch(() => {});
@@ -1024,6 +1035,57 @@ export const DEFINITION_ANNOTATION_V4 = 'dev.rancher.io/definition-v4';
 const LEGACY_FINGERPRINTS_V3: Record<string, string> = {
   'rancher-dev': '997b8aae', 'dashboard-preview': 'ee04e302', 'dev-browser': 'fff28dbc',
 };
+/** What a 0.3.19 dashboard computes, kept in -v4 so it leaves the Apps be. The last of these. */
+const LEGACY_FINGERPRINTS_V4: Record<string, string> = {
+  'rancher-dev': '997b8aae', 'dashboard-preview': '15f54d51', 'dev-browser': 'fff28dbc',
+};
+
+/**
+ * Where the fingerprint lives from 0.3.20 on, and the end of the pacifier ladder above.
+ *
+ * Four versions of this extension have each added an annotation of their own, because an older
+ * tab that finds a fingerprint it did not write rewrites the App back to the definition it
+ * knows, and two tabs then take turns replacing every workspace's pods. What stops that for
+ * good is saying *who* wrote it: this annotation carries the extension's version beside the
+ * fingerprint, and a dashboard older than the one that wrote it leaves the App alone. An
+ * older tab is then wrong about the App for as long as it stays open, which is what it should
+ * be - it is the one that is behind.
+ */
+export const DEFINITION_STAMP = 'dev.rancher.io/definition-by';
+
+function extensionVersion(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+    return String(require('./package.json').version || '0.0.0');
+  } catch {
+    return '0.0.0';
+  }
+}
+
+/** `a` is older than `b`, by the numbers in them. */
+function olderThan(a: string, b: string): boolean {
+  const left = a.split('.').map((part) => parseInt(part, 10) || 0);
+  const right = b.split('.').map((part) => parseInt(part, 10) || 0);
+
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    if ((left[i] || 0) !== (right[i] || 0)) {
+      return (left[i] || 0) < (right[i] || 0);
+    }
+  }
+
+  return false;
+}
+
+/** Rewrite when the definition moved on, unless a newer dashboard wrote what is there. */
+function shouldRewrite(stamp: string | undefined, fingerprint: string): boolean {
+  const [wroteVersion = '0.0.0', wroteFingerprint = ''] = String(stamp || '').split('|');
+
+  if (wroteFingerprint === fingerprint) {
+    return false;
+  }
+
+  return !olderThan(extensionVersion(), wroteVersion);
+}
 
 function definitionVersion(spec: Json): string {
   const text = JSON.stringify(spec);
