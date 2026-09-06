@@ -313,6 +313,12 @@ export default {
       return `${ rancherAddress(name, '<node ip>') }/verify-auth`;
     },
 
+    // A method rather than the import in the template: an imported function is not on the
+    // component, and a template that called it threw on every render, taking the sidebar with it.
+    rancherHint(name) {
+      return `One EC2 node running Rancher with GitHub login, provisioned through this Rancher. Once it is up, add ${ this.callbackHint(name) } to the GitHub app's callbacks.`;
+    },
+
     /** Star one Rancher: new workspaces and shares point at it. This Rancher is the default when none is starred. */
     async star(rancher) {
       if (rancher.kind !== 'host' && !rancher.url) {
@@ -480,7 +486,7 @@ export default {
     <DevDialog
       v-if="askingRancher"
       :title="`Create the Rancher ${ proposedRancher }?`"
-      :message="`One EC2 node with Rancher on it, GitHub login wired to the same GitHub app as this Rancher, provisioned through this one. Once the node is up it is reached at ${ rancherAddress(proposedRancher, '<node ip>') }; add ${ callbackHint(proposedRancher) } to the GitHub app's callback list (it holds ten) and the login works.`"
+      :message="rancherHint(proposedRancher)"
       confirm-label="Create"
       @confirm="makeRancher"
       @cancel="askingRancher = false"
