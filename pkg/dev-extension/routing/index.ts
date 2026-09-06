@@ -3,9 +3,11 @@ import {
   BLANK_CLUSTER,
   DEV_PRODUCT, WORKSPACES_PAGE, CREATE_PAGE, MY_WORK_PAGE, INSIGHTS_PAGE, SETTINGS_PAGE, AGENTS_PAGE,
   DEV_SHELL_ROUTE, WORKSPACES_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE,
-  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, AGENT_EDIT_PAGE, AGENT_EDIT_ROUTE
+  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, AGENT_EDIT_PAGE, AGENT_EDIT_ROUTE,
+  CONVERSATIONS_PAGE, CONVERSATIONS_ROUTE
 } from '../config/constants';
 import AgentEdit from '../pages/AgentEdit.vue';
+import Conversations from '../pages/Conversations.vue';
 import DevShell from '../pages/DevShell.vue';
 import Workspaces from '../pages/Workspaces.vue';
 import CreateWorkspace from '../pages/CreateWorkspace.vue';
@@ -76,6 +78,9 @@ const devRoutes: PluginRouteRecordRaw[] = [
         },
         {
           name: AGENTS_ROUTE, path: AGENTS_PAGE, component: Agents, meta: devMeta
+        },
+        {
+          name: CONVERSATIONS_ROUTE, path: CONVERSATIONS_PAGE, component: Conversations, meta: devMeta
         },
         {
           name: AGENT_EDIT_ROUTE, path: `${ AGENT_EDIT_PAGE }/:name?`, component: AgentEdit, meta: devMeta
