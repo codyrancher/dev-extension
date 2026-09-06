@@ -7,9 +7,12 @@
 // inlined into the comment when the review is submitted; an image or a recording is named
 // there, since uploading one needs a github.com session this dashboard does not have.
 import { artifactUrl } from '../../reviews';
+import ArtifactViewer from './ArtifactViewer.vue';
 
 export default {
   name: 'CommentAttachments',
+
+  components: { ArtifactViewer },
 
   emits: ['remove'],
 
@@ -115,28 +118,16 @@ export default {
       </button>
     </div>
 
-    <div
-      v-if="opened"
-      class="cattach__preview"
-    >
-      <video
-        v-if="opened.kind === 'video'"
+    <!-- Opened over the page, in the viewer the agents' terminals use for a clicked path. -->
+    <Teleport to="body">
+      <ArtifactViewer
+        v-if="opened"
         :src="url(opened)"
-        controls
-        preload="metadata"
+        :name="opened.name"
+        :caption="opened.caption || ''"
+        @close="open = null"
       />
-      <img
-        v-else-if="opened.kind === 'image'"
-        :src="url(opened)"
-        :alt="opened.name"
-      >
-      <iframe
-        v-else
-        :src="url(opened)"
-        :title="opened.name"
-        class="cattach__text"
-      />
-    </div>
+    </Teleport>
   </div>
 </template>
 

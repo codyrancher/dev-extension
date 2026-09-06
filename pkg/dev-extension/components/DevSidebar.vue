@@ -15,7 +15,7 @@ import {
 import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
 import { DEFAULT_APP, LEGACY_WORKSPACE_APPS } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
-import { listRanchers, setDefaultRancher } from '../ranchers';
+import { listRanchers, setDefaultRancher, createRancherInstance } from '../ranchers';
 import DevList from './DevList.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
 import Stack from '../design/Stack.vue';
@@ -277,6 +277,22 @@ export default {
       return total ? `${ readableBytes(free) } / ${ readableBytes(total) }` : readableBytes(free);
     },
 
+    /** A Rancher of your own, from the single-node App: asks for a name, then provisions. */
+    async newRancher() {
+      const name = window.prompt('Name for the new Rancher (one EC2 node, GitHub login, reached at <name>.<node ip>.sslip.io):', '');
+
+      if (!name) {
+        return;
+      }
+      try {
+        await createRancherInstance(this.$store, name);
+        this.error = '';
+        await this.refresh();
+      } catch (e) {
+        this.error = e.message || String(e);
+      }
+    },
+
     /** Star one Rancher: new workspaces and shares point at it. This Rancher is the default when none is starred. */
     async star(rancher) {
       if (rancher.kind !== 'host' && !rancher.url) {
@@ -408,6 +424,15 @@ export default {
       <div class="dev-sidebar__template-head">
         <i class="dev-sidebar__template-icon icon icon-globe" />
         <span class="dev-sidebar__template-label">Ranchers</span>
+        <button
+          type="button"
+          class="dev-sidebar__add"
+          title="A new Rancher: one EC2 node, GitHub login, an sslip address"
+          data-testid="dev-new-rancher"
+          @click="newRancher"
+        >
+          +
+        </button>
       </div>
       <div
         v-for="rancher in rancherRows"
@@ -585,6 +610,23 @@ export default {
       border-top:  1px solid var(--border);
       padding-top: var(--dev-space-2);
       background:  var(--nav-bg, var(--body-bg));
+    }
+
+    &__add {
+      margin-left:   auto;
+      min-height:    0;
+      width:         20px;
+      height:        20px;
+      padding:       0;
+      line-height:   18px;
+      border-radius: 4px;
+      border:        1px solid var(--border);
+      background:    transparent;
+      color:         var(--muted);
+      font-size:     14px;
+      cursor:        pointer;
+
+      &:hover { color: var(--dev-accent); border-color: var(--dev-accent); }
     }
 
     &__rancher-row {
