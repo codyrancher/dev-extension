@@ -1,0 +1,20 @@
+{
+  "name": "dev-extension",
+  "description": "Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents",
+  "version": "0.3.9",
+  "private": false,
+  "rancher": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@vue/cli-plugin-babel": "5.0.9",
+    "@vue/cli-service": "5.0.8",
+    "@vue/cli-plugin-typescript": "5.0.9"
+  },
+  "icon": "https://codyrancher.github.io/dev-extension/icon.svg",
+  "files": [
+    "**/*"
+  ],
+  "main": "dev-extension-0.3.9.umd.min.js"
+}
