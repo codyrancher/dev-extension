@@ -617,18 +617,22 @@ export default {
     }
 
     &__add {
-      margin-left:   auto;
-      min-height:    0;
-      width:         20px;
-      height:        20px;
-      padding:       0;
-      line-height:   18px;
-      border-radius: 4px;
-      border:        1px solid var(--border);
-      background:    transparent;
-      color:         var(--muted);
-      font-size:     14px;
-      cursor:        pointer;
+      margin-left:     auto;
+      min-height:      0;
+      width:           20px;
+      height:          20px;
+      padding:         0;
+      display:         inline-flex;
+      align-items:     center;
+      justify-content: center;
+      line-height:     1;
+      border-radius:   4px;
+      border:          1px solid var(--border);
+      background:      transparent;
+      color:           var(--muted);
+      font-size:       15px;
+      font-weight:     400;
+      cursor:          pointer;
 
       &:hover { color: var(--dev-accent); border-color: var(--dev-accent); }
     }
