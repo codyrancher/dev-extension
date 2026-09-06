@@ -3,6 +3,28 @@ entries:
   dev-extension:
   - annotations:
       catalog.cattle.io/certified: rancher
+      catalog.cattle.io/display-name: Dev Extension
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
+    apiVersion: v2
+    appVersion: 0.3.6
+    created: "2026-09-06T06:29:04.398616565Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
+    digest: dfbecdce1b5b35323831ae9f0733da5a6ee114cd5501ac14276984889fe45cc6
+    icon: https://codyrancher.github.io/dev-extension/icon.svg
+    name: dev-extension
+    type: application
+    urls:
+    - assets/dev-extension/dev-extension-0.3.6.tgz
+    version: 0.3.6
+  - annotations:
+      catalog.cattle.io/certified: rancher
       catalog.cattle.io/namespace: cattle-ui-plugin-system
       catalog.cattle.io/os: linux
       catalog.cattle.io/permits-os: linux, windows
@@ -12,14 +34,14 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
     apiVersion: v2
     appVersion: 0.3.5
-    created: "2026-09-06T06:11:17.820388304Z"
+    created: "2026-09-06T06:11:42.154218024Z"
     description: dev-extension plugin
-    digest: fdfd9374f77730c40dc2ec286404ee3d03259ea5212b659be05fa11b9d628e9d
+    digest: dcc66d570b391ff242c85943092e5f1ac9d56b3bed230477939a3134473f4416
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
     type: application
     urls:
-    - assets/dev-extension/dev-extension-0.3.5.tgz
+    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.5/dev-extension-0.3.5.tgz
     version: 0.3.5
   - annotations:
       catalog.cattle.io/certified: rancher
@@ -306,4 +328,4 @@ entries:
     urls:
     - assets/dev-extension/dev-extension-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-06T06:11:17.819854465Z"
+generated: "2026-09-06T06:29:04.398077087Z"
