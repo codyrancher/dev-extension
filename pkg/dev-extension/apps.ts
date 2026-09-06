@@ -315,7 +315,10 @@ export function rancherWorkspaceApp(): Json {
       values:      {
         repo:        'rancher/dashboard',
         port:        8005,
-        scheme:      'http',
+        // The dashboard's dev server serves TLS (its own vue.config.js), which is what the
+        // browser sidecar opens; the service proxy has to be told to speak it too, or every
+        // "is it up yet" from the workspace page is a 503 and the Browser tab never appears.
+        scheme:      'https',
         image:       'node:24',
         hostCluster: 'local',
         // The Rancher the checkout's dev server talks to. The default is the Rancher this
@@ -923,7 +926,8 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
     const annotations = {
       ...(body.metadata.annotations || {}),
       [DEFINITION_ANNOTATION]:    LEGACY_FINGERPRINTS[body.metadata.name] || fingerprint,
-      [DEFINITION_ANNOTATION_V2]: fingerprint,
+      [DEFINITION_ANNOTATION_V2]: LEGACY_FINGERPRINTS_V2[body.metadata.name] || fingerprint,
+      [DEFINITION_ANNOTATION_V3]: fingerprint,
     };
 
     body.metadata.annotations = annotations;
@@ -932,7 +936,7 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
       const app = await store.dispatch('management/create', { type: APP, ...body });
 
       await app.save().catch(() => {});
-    } else if (existing.metadata?.annotations?.[DEFINITION_ANNOTATION_V2] !== fingerprint) {
+    } else if (existing.metadata?.annotations?.[DEFINITION_ANNOTATION_V3] !== fingerprint) {
       existing.spec = body.spec;
       existing.metadata.annotations = { ...(existing.metadata.annotations || {}), ...annotations };
       await existing.save().catch(() => {});
@@ -946,6 +950,12 @@ export const DEFINITION_ANNOTATION_V2 = 'dev.rancher.io/definition-v2';
 export const DEFINITION_ANNOTATION = 'dev.rancher.io/definition';
 /** What a 0.3.2 dashboard computes for the Apps it knows, so it finds them as it left them. */
 const LEGACY_FINGERPRINTS: Record<string, string> = { [DEFAULT_APP]: '50f2859d', [BROWSER_APP]: 'fff28dbc' };
+/** Where this version keeps its fingerprint; 0.3.3 to 0.3.10 read the -v2 one the same way 0.3.2 read the first. */
+export const DEFINITION_ANNOTATION_V3 = 'dev.rancher.io/definition-v3';
+/** What a 0.3.10 dashboard computes for the Apps it knows, kept in -v2 so it leaves them be. */
+const LEGACY_FINGERPRINTS_V2: Record<string, string> = {
+  'rancher-dev': 'aac0f653', 'dashboard-preview': 'ee04e302', 'dev-browser': 'fff28dbc',
+};
 
 function definitionVersion(spec: Json): string {
   const text = JSON.stringify(spec);

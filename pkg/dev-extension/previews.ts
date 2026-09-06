@@ -172,6 +172,20 @@ export async function rebuildPreview(workspace: string, cluster = 'local', kind:
   }
 }
 
+/**
+ * Point a served dashboard at another Rancher. Only the instance's value changes: Apps Plus
+ * re-renders the nginx in front of the build with the new upstream, and the build stays.
+ */
+export async function retargetPreview(store: Store, workspace: string, kind: ShareKind, rancherUrl: string): Promise<void> {
+  const instance = await workspaceInstance(store, previewName(workspace, kind));
+
+  if (!instance) {
+    throw new Error('Nothing is shared yet: build and share it first.');
+  }
+  instance.spec.values = { ...(instance.spec.values || {}), rancherUrl: rancherUrl.replace(/\/$/, '') };
+  await instance.save();
+}
+
 export async function previewState(store: Store, workspace: string, cluster = 'local', kind: ShareKind = 'dashboard'): Promise<PreviewState> {
   const name = previewName(workspace, kind);
   const instance = await workspaceInstance(store, name).catch(() => null);
@@ -201,9 +215,9 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
 
   if (init?.state?.waiting?.reason && /BackOff|Error/.test(init.state.waiting.reason)) {
     state = 'failed';
-    detail = `The build failed (${ init.state.waiting.reason }); see the pod's build container log.`;
+    detail = `Failed to prepare (${ init.state.waiting.reason }); see the pod's build container log.`;
   } else if (init?.state?.running) {
-    detail = 'Building: a clone, a yarn install and a production build, which takes several minutes';
+    detail = 'Preparing the build to serve';
   } else if (main?.ready) {
     state = 'serving';
     detail = 'Serving';
