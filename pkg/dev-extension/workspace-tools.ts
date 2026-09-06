@@ -18,6 +18,7 @@ import {
   podExecOnce, workspacePod, workspaceNamespace, WORKSPACE_CONTAINER, githubToken, devFetch, secretValue
 } from './api';
 import { AGENT_SEED } from './agent-seed.generated';
+import { UNREWRITE_B64 } from './apps';
 import {
   DEV_API_IN_CLUSTER, WORKSPACE_WORKDIR, WORKSPACE_HOME, WORKSPACE_QUEUE
 } from './config/constants';
@@ -461,4 +462,114 @@ export async function endPane(workspace: string, id: string): Promise<void> {
     return;
   }
   await asNode(target, `tmux kill-session -t mc-${ id } 2>/dev/null || true`);
+}
+
+// ── Sharing: the checkout, built, for nginx to serve ────────────────────────────────────────
+
+export type ShareKind = 'dashboard' | 'storybook';
+
+/** The branch the checkout is on, and its head. */
+export async function workspaceBranch(workspace: string): Promise<{ branch: string; sha: string }> {
+  const out = await readInWorkspace(workspace, `cd ${ WORKSPACE_WORKDIR } 2>/dev/null && echo "$(git rev-parse --abbrev-ref HEAD 2>/dev/null) $(git rev-parse --short HEAD 2>/dev/null)"`).catch(() => '');
+  const [branch = '', sha = ''] = out.trim().split(/\s+/);
+
+  return { branch, sha };
+}
+
+/**
+ * Build the checkout as it is - the branch it is on, uncommitted changes included - into
+ * /workspace/share/<kind>, where the dashboard-preview App's nginx serves it from (apps.ts,
+ * sourceDir). In a tmux session of its own in the workspace pod, so it outlives this page and
+ * can be watched; into a `.next` directory that is swapped in when it succeeds, so the link
+ * keeps serving the last good build while the next one compiles.
+ *
+ * `base` is where a dashboard build routes and fetches its assets (previews.ts, previewBase);
+ * a Storybook is a plain static site and ignores it.
+ */
+export async function buildShare(workspace: string, kind: ShareKind, base: string): Promise<'started' | 'already-building'> {
+  const target = await workspaceTarget(workspace);
+  const script = [
+    '#!/bin/bash',
+    'KIND=$1; BASE=$2',
+    `cd ${ WORKSPACE_WORKDIR } || exit 1`,
+    'mkdir -p /workspace/.share /workspace/share',
+    'S=/workspace/.share/$KIND.status; L=/workspace/.share/$KIND.log',
+    'branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); sha=$(git rev-parse --short HEAD 2>/dev/null)',
+    'echo "building $(date -u +%FT%TZ) $branch $sha" > $S',
+    '{',
+    '  export NODE_OPTIONS=--max_old_space_size=4096',
+    '  rm -rf /workspace/share/$KIND.next',
+    '  if [ "$KIND" = storybook ]; then',
+    '    yarn build-storybook && cp -r storybook/storybook-static /workspace/share/$KIND.next',
+    '  else',
+    '    ROUTER_BASE=$BASE RESOURCE_BASE=$BASE OUTPUT_DIR=/workspace/share/$KIND.next yarn build && node /workspace/.share/unrewrite.js /workspace/share/$KIND.next/index.html',
+    '  fi',
+    '} > $L 2>&1',
+    'if [ $? -eq 0 ] && [ -f /workspace/share/$KIND.next/index.html ]; then',
+    '  rm -rf /workspace/share/$KIND.old',
+    '  [ -d /workspace/share/$KIND ] && mv /workspace/share/$KIND /workspace/share/$KIND.old',
+    '  mv /workspace/share/$KIND.next /workspace/share/$KIND && rm -rf /workspace/share/$KIND.old',
+    '  echo "ok $(date -u +%FT%TZ) $branch $sha" > $S',
+    'else',
+    '  echo "failed $(date -u +%FT%TZ) $branch $sha" > $S',
+    'fi',
+    '',
+  ].join('\n');
+  const out = await asNode(target, [
+    'mkdir -p /workspace/.share',
+    `echo ${ UNREWRITE_B64 } | base64 -d > /workspace/.share/unrewrite.js`,
+    `echo ${ b64(script) } | base64 -d > /workspace/.share/build.sh && chmod +x /workspace/.share/build.sh`,
+    `if tmux has-session -t mc-share-${ kind } 2>/dev/null; then echo ALREADY; else tmux new-session -d -s mc-share-${ kind } -c ${ WORKSPACE_WORKDIR } "/workspace/.share/build.sh ${ kind } ${ base }" && echo STARTED; fi`,
+  ].join('\n'));
+
+  if (out.includes('ALREADY')) {
+    return 'already-building';
+  }
+  if (!out.includes('STARTED')) {
+    throw new Error(`The build could not be started in the workspace: ${ out.trim().slice(-300) }`);
+  }
+
+  return 'started';
+}
+
+export interface ShareBuild {
+  state: 'none' | 'building' | 'ok' | 'failed';
+  at: string;
+  branch: string;
+  sha: string;
+  /** The last lines of the build's output, for a failure or a build in progress. */
+  log: string;
+}
+
+/** What each kind's build in the workspace is up to, off its status file and the tail of its log. */
+export async function shareStatus(workspace: string): Promise<Record<ShareKind, ShareBuild>> {
+  const out = await readInWorkspace(workspace, [
+    'for k in dashboard storybook; do',
+    '  echo "@@KIND $k"; cat /workspace/.share/$k.status 2>/dev/null || echo none',
+    '  echo "@@LOG"; tail -n 12 /workspace/.share/$k.log 2>/dev/null | cut -c1-200',
+    'done',
+  ].join('\n')).catch(() => '');
+  const result: Record<ShareKind, ShareBuild> = {
+    dashboard: {
+      state: 'none', at: '', branch: '', sha: '', log: '',
+    },
+    storybook: {
+      state: 'none', at: '', branch: '', sha: '', log: '',
+    },
+  };
+
+  for (const chunk of out.split('@@KIND ').slice(1)) {
+    const [head, log = ''] = chunk.split('@@LOG');
+    const lines = head.trim().split('\n');
+    const kind = lines[0]?.trim() as ShareKind;
+    const [state = 'none', at = '', branch = '', sha = ''] = (lines[1] || 'none').trim().split(/\s+/);
+
+    if (kind in result) {
+      result[kind] = {
+        state: (['building', 'ok', 'failed'].includes(state) ? state : 'none') as ShareBuild['state'], at, branch, sha, log: log.trim(),
+      };
+    }
+  }
+
+  return result;
 }
