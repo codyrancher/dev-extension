@@ -28,7 +28,8 @@ function devProduct($plugin: IPlugin, store: any) {
   // See the note above productOpts: `public` is honoured at runtime but not declared on
   // TypeMapProduct, so the literal is widened for the production build's sake.
   const devOpts: Record<string, unknown> = {
-    icon:                'terminal',
+    // Rancher's icon font has nothing that says "dev"; this is the extension's own mark.
+    svg:                 require('./assets/dev-icon.svg'),
     public:              true,
     inStore:             'management',
     weight:              99,
