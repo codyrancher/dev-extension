@@ -135,69 +135,76 @@ export default {
 <template>
   <div class="dev-agents-page">
     <AgentCards />
-    <div class="dev-agents">
-      <div class="dev-agents__list">
-      <div class="dev-agents__head">
-        <ClaudeLogo class="dev-agents__logo" />
-        <span>Agents</span>
+
+    <!-- Every conversation in every workspace, live, with a pane onto the one picked. -->
+    <section class="dev-live">
+      <header class="dev-live__head">
+        <ClaudeLogo class="dev-live__logo" />
+        <h2 class="dev-live__title">
+          Live conversations
+        </h2>
+        <span class="dev-live__sub text-muted">every conversation in every workspace, as it is now</span>
+      </header>
+      <div class="dev-agents">
+        <div class="dev-agents__list">
+          <p
+            v-if="!groups.length"
+            class="dev-agents__empty text-muted"
+          >
+            No conversations are open. Start one from a workspace's Conversations tab, from My Work, or from an agent above.
+          </p>
+          <template
+            v-for="group in groups"
+            :key="group.workspace"
+          >
+            <router-link
+              class="dev-agents__workspace"
+              :to="workspaceTo(group.workspace)"
+            >
+              {{ group.workspace }}
+            </router-link>
+            <DevList
+              label=""
+              :rows="rows(group)"
+              :current="current"
+              deletable
+              renamable
+              empty=""
+              class="dev-agents__group"
+              @select="select"
+              @delete="end(group, $event)"
+              @rename="rename(group, $event)"
+            />
+          </template>
+        </div>
+        <div class="dev-agents__pane">
+          <Banner
+            v-if="error"
+            color="error"
+            :label="error"
+          />
+          <p
+            v-if="!selected"
+            class="dev-agents__hint text-muted"
+          >
+            Pick a conversation on the left. Every one of them runs in its workspace's pod; this pane reaches it through the agents extension's terminal, chat view included.
+          </p>
+          <template
+            v-for="c in all"
+            :key="c.id"
+          >
+            <StudioTerminal
+              v-if="seen[c.id]"
+              v-show="c.id === current"
+              :session="c.id"
+              :command="paneFor(c)"
+              class="dev-agents__terminal"
+              @state="onState(c.id, $event)"
+            />
+          </template>
+        </div>
       </div>
-  </div>
-      <p
-        v-if="!groups.length"
-        class="dev-agents__empty text-muted"
-      >
-        No conversations are open. Start one from a workspace's Conversations tab, or from My Work.
-      </p>
-      <template
-        v-for="group in groups"
-        :key="group.workspace"
-      >
-        <router-link
-          class="dev-agents__workspace"
-          :to="workspaceTo(group.workspace)"
-        >
-          {{ group.workspace }}
-        </router-link>
-        <DevList
-          label=""
-          :rows="rows(group)"
-          :current="current"
-          deletable
-          renamable
-          empty=""
-          class="dev-agents__group"
-          @select="select"
-          @delete="end(group, $event)"
-          @rename="rename(group, $event)"
-        />
-      </template>
-    </div>
-    <div class="dev-agents__pane">
-      <Banner
-        v-if="error"
-        color="error"
-        :label="error"
-      />
-      <p
-        v-if="!selected"
-        class="dev-agents__hint text-muted"
-      >
-        Pick a conversation. Every one of them runs in its workspace's pod; this pane reaches it through the agents extension's terminal.
-      </p>
-      <template
-        v-for="c in all"
-        :key="c.id"
-      >
-        <StudioTerminal
-          v-if="seen[c.id]"
-          v-show="c.id === current"
-          :session="c.id"
-          :command="paneFor(c)"
-          class="dev-agents__terminal"
-          @state="onState(c.id, $event)"
-        />
-      </template>
-    </div>
+    </section>
   </div>
 </template>
 
@@ -205,16 +212,40 @@ export default {
   .dev-agents-page {
     display:        flex;
     flex-direction: column;
+    gap:            var(--dev-space-4);
     height:         100%;
     min-height:     0;
     overflow:       auto;
+    padding-bottom: var(--dev-space-5);
+  }
+
+  .dev-live {
+    display:        flex;
+    flex-direction: column;
+    margin:         0 var(--dev-space-5);
+    border:         1px solid var(--border);
+    border-radius:  var(--border-radius);
+    background:     var(--body-bg);
+    min-height:     460px;
+    height:         calc(100vh - 420px);
+
+    &__head {
+      display:       flex;
+      align-items:   baseline;
+      gap:           var(--dev-space-3);
+      padding:       var(--dev-space-3) var(--dev-space-4);
+      border-bottom: 1px solid var(--border);
+    }
+
+    &__logo { color: var(--dev-accent); font-size: 16px; align-self: center; }
+    &__title { margin: 0; font-size: 14px; font-weight: 600; }
+    &__sub { font-size: 12px; }
   }
 
   .dev-agents {
     display:    flex;
     flex:       1 1 auto;
     min-height: 0;
-    height:     100%;
 
     &__list {
       display:        flex;
@@ -224,22 +255,7 @@ export default {
       border-right:   1px solid var(--border);
     }
 
-    &__head {
-      display:        flex;
-      align-items:    center;
-      gap:            var(--dev-space-3);
-      height:         33px;
-      padding:        0 var(--dev-space-4);
-      font-size:      12px;
-      font-weight:    600;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      border-bottom:  1px solid var(--border);
-    }
-
-    &__logo { color: var(--dev-accent); font-size: 16px; }
-
-    &__empty, &__hint { padding: var(--dev-space-4); margin: 0; }
+    &__empty, &__hint { padding: var(--dev-space-4); margin: 0; font-size: 13px; }
 
     &__workspace {
       display:     block;
