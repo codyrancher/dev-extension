@@ -18,22 +18,36 @@ type Store = any;
 /** The App whose instances are Rancher servers. */
 export const RANCHER_HA_APP = 'rancher-ha';
 
+export type RancherPhase = 'host' | 'created' | 'provisioning' | 'installing' | 'ready' | 'error';
+
 export interface RancherTarget {
   id: string;
   name: string;
-  /** Where it is reached; empty while an instance's cluster has no node yet. */
+  /** Where it is reached; '' until Rancher answers there. */
   url: string;
   kind: 'host' | 'instance';
-  note: string;
+  /** How far along a new one is; `host` for the Rancher this dashboard is on. */
+  phase: RancherPhase;
+  /** 0 cluster asked for, 1 node provisioning, 2 Rancher installing, 3 up. */
+  step: number;
+  /** What it is doing now, in a few words; '' once it is up. */
+  detail: string;
+  /** When the instance was made (ISO), for an elapsed time beside the progress; '' for the host. */
+  since: string;
 }
 
+/** The four steps a new Rancher goes through, in order, for a tooltip. */
+export const RANCHER_STEPS = ['cluster asked for', 'node provisioning', 'Rancher installing', 'up'];
+
 /**
- * This Rancher first, then every rancher-ha instance, by the address its App promises:
- * `<name>.<node ip>.sslip.io`, on the cluster the instance provisioned for itself.
+ * This Rancher first, then every instance with where it has got to: the cluster Apps Plus
+ * provisions for it (its state and Rancher's own words about it, from /v3/clusters), then the
+ * Rancher chart the bundle installs on that cluster, then the address once Rancher answers
+ * there, `<name>.dev-extension.<node ip>.sslip.io`.
  */
 export async function listRanchers(store: Store): Promise<RancherTarget[]> {
   const out: RancherTarget[] = [{
-    id: 'host', name: 'This Rancher', url: window.location.origin, kind: 'host', note: 'the Rancher this dashboard is on',
+    id: 'host', name: 'This Rancher', url: window.location.origin, kind: 'host', phase: 'host', step: 3, detail: 'the Rancher this dashboard is on', since: '',
   }];
   const instances: Json[] = await store.dispatch('management/findAll', { type: APP_INSTANCE }).catch(() => []);
   const ranchers = instances.filter((instance) => [RANCHER_HA_APP, RANCHER_SINGLE_APP].includes(instance.spec?.app));
@@ -42,30 +56,88 @@ export async function listRanchers(store: Store): Promise<RancherTarget[]> {
     return out;
   }
 
-  const clusters: Json[] = (await devFetch('/v3/clusters').catch(() => null))?.data || [];
+  const [clusters, bundles] = await Promise.all([
+    devFetch('/v3/clusters').then((r: Json) => r?.data || []).catch(() => []) as Promise<Json[]>,
+    store.dispatch('management/findAll', { type: 'fleet.cattle.io.bundle' }).catch(() => []) as Promise<Json[]>,
+  ]);
 
   for (const instance of ranchers) {
     const name = instance.metadata?.name;
     const cluster = clusters.find((c) => c.name === name || c.id === name);
-    let address = '';
+    const bundle = bundles.find((b) => b.metadata?.name === `apps-plus-${ name }`);
 
-    if (cluster) {
-      const nodes = await devFetch(`${ clusterBase(cluster.id) }/v1/nodes`).catch(() => null);
-      const addresses: Json[] = (nodes?.data || []).flatMap((node: Json) => node.status?.addresses || []);
-
-      address = addresses.find((a) => a.type === 'ExternalIP')?.address || addresses.find((a) => a.type === 'InternalIP')?.address || '';
-    }
-
-    out.push({
-      id:   `instance:${ name }`,
-      name,
-      url:  address ? rancherAddress(name, address) : '',
-      kind: 'instance',
-      note: cluster ? (address ? `on cluster ${ cluster.name }` : `cluster ${ cluster.name } has no node yet`) : 'its cluster is not up yet',
-    });
+    out.push(await instanceTarget(name, instance.metadata?.creationTimestamp || '', cluster, bundle));
   }
 
   return out;
+}
+
+async function instanceTarget(name: string, since: string, cluster: Json | undefined, bundle: Json | undefined): Promise<RancherTarget> {
+  const base = {
+    id: `instance:${ name }`, name, url: '', kind: 'instance' as const, since,
+  };
+  const bundleState: string = bundle?.status?.display?.state || '';
+  const bundleMessage: string = bundle?.status?.display?.message || '';
+
+  if (!cluster) {
+    // Apps Plus makes the cluster when a dashboard with it loaded reconciles the instance.
+    return {
+      ...base, phase: 'created', step: 0, detail: 'Creating the cluster',
+    };
+  }
+  const message = shortenTransition(cluster.transitioningMessage || '');
+
+  if (cluster.state === 'error' || cluster.transitioning === 'error') {
+    return {
+      ...base, phase: 'error', step: 1, detail: message || 'Provisioning failed',
+    };
+  }
+  if (cluster.state !== 'active') {
+    return {
+      ...base, phase: 'provisioning', step: 1, detail: message || `Provisioning (${ cluster.state })`,
+    };
+  }
+
+  // The cluster is up: its node's address is where Rancher will answer, once the chart the
+  // bundle installs has a ready pod.
+  const [nodes, deployments] = await Promise.all([
+    devFetch(`${ clusterBase(cluster.id) }/v1/nodes`).catch(() => null),
+    devFetch(`${ clusterBase(cluster.id) }/v1/apps.deployments/cattle-system`).catch(() => null),
+  ]);
+  const addresses: Json[] = (nodes?.data || []).flatMap((node: Json) => node.status?.addresses || []);
+  const address = addresses.find((a) => a.type === 'ExternalIP')?.address || addresses.find((a) => a.type === 'InternalIP')?.address || '';
+  // The chart's release is named for the instance, so its Deployment is `<name>-rancher`
+  // (`ha-rancher`); a Rancher installed by hand is plain `rancher`.
+  const deployment: Json = (deployments?.data || []).find((d: Json) => [`${ name }-rancher`, 'rancher'].includes(d.metadata?.name)) || null;
+  const ready = (deployment?.status?.readyReplicas || 0) > 0;
+
+  if (ready && address) {
+    return {
+      ...base, phase: 'ready', step: 3, detail: '', url: rancherAddress(name, address),
+    };
+  }
+  if (/^Err/.test(bundleState)) {
+    return {
+      ...base, phase: 'error', step: 2, detail: shortenTransition(bundleMessage) || 'Installing Rancher failed',
+    };
+  }
+
+  return {
+    ...base, phase: 'installing', step: 2, detail: deployment ? 'Rancher is starting' : 'Installing Rancher',
+  };
+}
+
+/**
+ * Rancher's transitioning message, cut to the part a person wants: after the last "thing:"
+ * prefix, the first clause. "configuring bootstrap node(s) otter-pool1-x: Waiting for Cluster
+ * control plane to be initialized, waiting for …" becomes "Waiting for Cluster control plane
+ * to be initialized".
+ */
+function shortenTransition(message: string): string {
+  const tail = message.split(': ').pop() || message;
+  const clause = tail.split(/[,;]/)[0].trim();
+
+  return clause.length > 72 ? `${ clause.slice(0, 70) }…` : clause;
 }
 
 /** The App a new Rancher is made from: one EC2 node, GitHub login, an sslip address. */
