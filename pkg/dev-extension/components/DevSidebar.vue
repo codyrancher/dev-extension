@@ -205,16 +205,20 @@ export default {
     rancherRows() {
       const now = Date.now();
 
-      return this.ranchers.map((rancher) => ({
-        ...rancher,
-        host:      rancher.url.replace(/^https?:\/\//, ''),
-        isDefault: rancher.kind === 'host' ? !this.defaultRancher : (!!rancher.url && rancher.url === this.defaultRancher),
-        elapsed:   rancher.since ? elapsed(now - Date.parse(rancher.since)) : '',
-        // Not the whole address - it is long and the node's IP is the part that says anything;
-        // the address itself is a copy away.
-        where:     rancher.kind === 'host' ? rancher.host : rancher.phase === 'ready' ? `up · ${ nodeIpOf(rancher.url) || rancher.host }` : '',
-        stepTitle: `${ rancher.step + 1 } of ${ RANCHER_STEPS.length }: ${ RANCHER_STEPS[rancher.step] || '' }`,
-      }));
+      return this.ranchers.map((rancher) => {
+        const host = rancher.url.replace(/^https?:\/\//, '');
+
+        return {
+          ...rancher,
+          host,
+          isDefault: rancher.kind === 'host' ? !this.defaultRancher : (!!rancher.url && rancher.url === this.defaultRancher),
+          elapsed:   rancher.since ? elapsed(now - Date.parse(rancher.since)) : '',
+          // Not the whole address - it is long and the node's IP is the part that says anything;
+          // the address itself is a copy away.
+          where:     rancher.kind === 'host' ? host : rancher.phase === 'ready' ? `up · ${ nodeIpOf(rancher.url) || host }` : '',
+          stepTitle: `${ rancher.step + 1 } of ${ RANCHER_STEPS.length }: ${ RANCHER_STEPS[rancher.step] || '' }`,
+        };
+      });
     },
   },
 
