@@ -29,6 +29,7 @@ import {
   startPrReview, startCiTriage, DEFAULT_REPO
 } from '../reviews';
 import type { LocalComment, ReviewRun } from '../reviews';
+import { paneCommand } from '../conversations';
 import { linkedPullRequest } from '../github';
 import { listApps } from '../apps';
 import { listConversations } from '../conversations';
@@ -1844,6 +1845,7 @@ async function doSubmit() {
         <StudioTerminal
           :key="reviewSession"
           :session="reviewSession"
+          :command="paneCommand(workspace.name, reviewSession)"
           class="review-term"
           @state="reviewTermState = $event"
         />

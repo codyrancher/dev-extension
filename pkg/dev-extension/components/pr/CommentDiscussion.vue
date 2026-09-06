@@ -13,7 +13,7 @@ import PrButton from './PrButton.vue';
 import {
   startDiscussion, sayInConversation, discussPrompt, linesPrompt, DEFAULT_REPO
 } from '../../reviews';
-import { listConversations } from '../../conversations';
+import { listConversations, paneCommand } from '../../conversations';
 
 export default {
   name: 'CommentDiscussion',
@@ -122,6 +122,11 @@ export default {
       }
     },
 
+    /** The argv of one conversation's pane: claude in the workspace's pod, reached through the agent pod. */
+    paneFor(id) {
+      return paneCommand(this.workspace, id);
+    },
+
     /** Reattached to a conversation somebody typed into before: a new line goes into it. */
     async say() {
       const message = this.draft.trim();
@@ -200,6 +205,7 @@ export default {
     <StudioTerminal
       v-else
       :session="current"
+      :command="paneFor(current)"
       class="cd__term"
       @state="state = $event"
     />

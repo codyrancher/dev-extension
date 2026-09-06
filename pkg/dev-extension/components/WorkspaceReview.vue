@@ -18,14 +18,12 @@ import {
   parseHunks, highlightRows, hl
 } from './pr/diff';
 import type { DiffRow } from './pr/diff';
-import { podExecOnce, clusterBase } from '../api';
-import { listConversations, startConversation, queuePrompt, studioApi, waitForStudio } from '../conversations';
+import { listConversations, startConversation, queuePrompt, paneCommand } from '../conversations';
 import type { ProjectConversation } from '../conversations';
-import { ensureAgentReady } from '../agent-tools';
-import { githubToken } from '../api';
+import { readInWorkspace, ensureWorkspaceReady } from '../workspace-tools';
 import { listApps } from '../apps';
-import { DEFAULT_APP } from '../config/constants';
-import { DEFAULT_REPO, preamble } from '../reviews';
+import { DEFAULT_APP, WORKSPACE_WORKDIR } from '../config/constants';
+import { DEFAULT_REPO } from '../reviews';
 import { useStore } from 'vuex';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -34,8 +32,6 @@ type Json = any;
 const props = defineProps<{ workspace: Json }>();
 const store = useStore();
 
-/** Where the agents work: one clone per repository, in the agent pod. See reviews.ts, preamble. */
-const REPOS = '/workspace/repos';
 const REFRESH_MS = 15000;
 
 interface ChangedFile {
@@ -73,42 +69,37 @@ async function resolveRepo() {
   repo.value = (own || fallback)?.repo || DEFAULT_REPO;
 }
 
-const dir = computed(() => `${ REPOS }/${ repo.value.split('/')[1] || repo.value }`);
+/** Where the agents work: the workspace's own checkout, which is where its dev server runs from too. */
+const dir = computed(() => WORKSPACE_WORKDIR);
 
 /**
  * The changes, read out of the clone: the branch against where it left the default branch,
  * plus whatever is not committed, plus files git does not know about yet.
  */
 async function readChanges() {
-  const api = await waitForStudio();
-
-  if (!api) {
-    missing.value = 'The agents extension is not loaded, and it is what reaches the checkout the agent works in.';
-
-    return;
-  }
-  const pod = await api.agent.pod();
-
-  if (!pod) {
-    missing.value = 'The agent pod is not running yet.';
-
-    return;
-  }
   const script = [
     `cd ${ dir.value } 2>/dev/null || { echo "@@NOREPO"; exit 0; }`,
-    'base=$(git merge-base origin/HEAD HEAD 2>/dev/null || git merge-base origin/master HEAD 2>/dev/null || git rev-parse HEAD)',
+    // upstream is rancher/dashboard once workspace-tools has set the remotes; before that it is
+    // origin, and a checkout with neither is diffed against itself.
+    'base=$(git merge-base upstream/master HEAD 2>/dev/null || git merge-base origin/master HEAD 2>/dev/null || git merge-base origin/HEAD HEAD 2>/dev/null || git rev-parse HEAD)',
     'echo "@@BRANCH $(git rev-parse --abbrev-ref HEAD 2>/dev/null)"',
     'echo "@@BASE $base"',
     'git -c core.quotepath=off diff --no-color --no-ext-diff "$base" 2>/dev/null',
     'for f in $(git ls-files --others --exclude-standard | head -40); do git -c core.quotepath=off diff --no-color --no-index /dev/null "$f" 2>/dev/null; done',
     'echo "@@END"',
   ].join('; ');
-  // As the pane's own user, straight from argv: a second shell around this would expand the
-  // $(...) in it as root, outside the checkout, before su ever ran.
-  const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['su', 'node', '-c', script], clusterBase('local'));
+  let out = '';
+
+  try {
+    out = await readInWorkspace(props.workspace.name, script);
+  } catch (e: Json) {
+    missing.value = e?.message || String(e);
+
+    return;
+  }
 
   if (out.includes('@@NOREPO')) {
-    missing.value = `There is no checkout of ${ repo.value } in the agent pod yet - it is made the first time an agent works here.`;
+    missing.value = `There is no checkout of ${ repo.value } in the workspace yet - it is cloned when the workspace starts.`;
     files.value = [];
 
     return;
@@ -259,7 +250,7 @@ const canSend = computed(() => notes.value.length > 0 || general.value.trim().le
 function prompt(): string {
   const lines: string[] = [];
 
-  lines.push(`${ preamble(repo.value) } Review feedback on your changes on branch ${ branch.value || '(current)' } in ${ dir.value }, from the person reviewing them in the Rancher dashboard. Address each point: make the change if it asks for one, answer it here if it is a question, and say what you did for each. Do not open a pull request unless asked.`);
+  lines.push(`Review feedback on your changes on branch ${ branch.value || '(current)' } in ${ dir.value }, from the person reviewing them in the Rancher dashboard. Address each point: make the change if it asks for one, answer it here if it is a question, and say what you did for each. Do not open a pull request unless asked.`);
   notes.value.forEach((n, i) => {
     lines.push(`\n${ i + 1 }. ${ n.path }:${ n.line }${ n.side === 'LEFT' ? ' (the removed line)' : '' } - on \`${ n.code.trim().slice(0, 160) }\`:\n${ n.body }`);
   });
@@ -280,9 +271,10 @@ async function send() {
     const text = prompt();
 
     if (target.value === 'new') {
+      await ensureWorkspaceReady(props.workspace.name);
+
       const conversation = await startConversation(props.workspace.name, 'Review feedback', text);
 
-      await ensureAgentReady(conversation.attach, await githubToken());
       session.value = conversation.id;
       target.value = conversation.id;
       await loadConversations();
@@ -420,6 +412,7 @@ defineExpose({ refresh });
       <StudioTerminal
         :key="session"
         :session="session"
+        :command="paneCommand(workspace.name, session)"
         class="review-term"
       />
     </div>
