@@ -12,7 +12,7 @@ import StudioTerminal from '../components/StudioTerminal.vue';
 import ClaudeLogo from '../components/ClaudeLogo.vue';
 import { listAllWorkspaces } from '../api';
 import {
-  listConversations, endConversation, renameConversation, paneCommand
+  listConversations, endConversation, renameConversation, paneCommand, waitForStudio
 } from '../conversations';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE } from '../config/constants';
 
@@ -71,7 +71,7 @@ export default {
   methods: {
     /** The argv of one conversation's pane: claude in its workspace's pod, reached through the agent pod. */
     paneFor(c) {
-      return paneCommand(c.workspace, c.id);
+      return c.workspace ? paneCommand(c.workspace, c.id) : c.attach.command;
     },
 
     async refresh() {
@@ -81,6 +81,23 @@ export default {
           workspace:     workspace.name,
           conversations: await listConversations(workspace.name).catch(() => []),
         })));
+
+        // The agents drawer's own conversations first: agent runs are those (agent-defs.ts),
+        // and this is where a run's output is read.
+        const api = await waitForStudio().catch(() => null);
+
+        if (api) {
+          const [sessions, pod] = await Promise.all([api.agent.sessions().catch(() => []), api.agent.pod().catch(() => null)]);
+
+          groups.unshift({
+            workspace:     '',
+            conversations: sessions.map((session) => ({
+              id: session.id, title: session.title, attach: {
+                namespace: api.agent.namespace, pod: pod || '', container: api.agent.container, command: api.agent.command(session.id), workspace: '', id: session.id,
+              },
+            })),
+          });
+        }
 
         this.groups = groups.filter((group) => group.conversations.length);
         this.error = '';
@@ -118,7 +135,11 @@ export default {
 
     async end(group, id) {
       try {
-        await endConversation(group.workspace, id);
+        if (group.workspace) {
+          await endConversation(group.workspace, id);
+        } else {
+          await (await waitForStudio()).agent.end(id);
+        }
         await this.refresh();
       } catch (e) {
         this.error = e.message || String(e);
@@ -127,7 +148,11 @@ export default {
 
     async rename(group, { key, title }) {
       try {
-        await renameConversation(group.workspace, key, title);
+        if (group.workspace) {
+          await renameConversation(group.workspace, key, title);
+        } else {
+          await (await waitForStudio()).agent.rename(key, title);
+        }
         await this.refresh();
       } catch (e) {
         this.error = e.message || String(e);
@@ -146,7 +171,7 @@ export default {
         <h2 class="dev-live__title">
           Live conversations
         </h2>
-        <span class="dev-live__sub text-muted">every conversation in every workspace, as it is now</span>
+        <span class="dev-live__sub text-muted">the agents drawer's and every workspace's, as they are now</span>
       </header>
       <div class="dev-agents">
         <div class="dev-agents__list">
@@ -158,14 +183,20 @@ export default {
           </p>
           <template
             v-for="group in groups"
-            :key="group.workspace"
+            :key="group.workspace || '@drawer'"
           >
             <router-link
+              v-if="group.workspace"
               class="dev-agents__workspace"
               :to="workspaceTo(group.workspace)"
             >
               {{ group.workspace }}
             </router-link>
+            <span
+              v-else
+              class="dev-agents__workspace dev-agents__workspace--drawer"
+              title="The agents drawer's own conversations, the strip at the bottom of every page; agent runs are these"
+            >agents</span>
             <DevList
               label=""
               :rows="rows(group)"
@@ -190,7 +221,7 @@ export default {
             v-if="!selected"
             class="dev-agents__hint text-muted"
           >
-            Pick a conversation on the left. Every one of them runs in its workspace's pod; this pane reaches it through the agents extension's terminal, chat view included.
+            Pick a conversation on the left: the drawer's run in the agents pod, a workspace's in its own; this pane reaches either through the agents extension's terminal, chat view included.
           </p>
           <template
             v-for="c in all"
