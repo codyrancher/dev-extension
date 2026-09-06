@@ -590,12 +590,14 @@ export async function buildShare(workspace: string, kind: ShareKind, base: strin
 }
 
 export interface ShareBuild {
-  state: 'none' | 'building' | 'ok' | 'failed';
+  state: 'none' | 'building' | 'ok' | 'failed' | 'stopped';
   at: string;
   branch: string;
   sha: string;
   /** The last lines of the build's output, for a failure or a build in progress. */
   log: string;
+  /** Whether something is building it right now (a tmux session in the workspace). */
+  running: boolean;
 }
 
 /** What each kind's build in the workspace is up to, off its status file and the tail of its log. */
@@ -603,15 +605,19 @@ export async function shareStatus(workspace: string): Promise<Record<ShareKind, 
   const out = await readInWorkspace(workspace, [
     'for k in dashboard storybook; do',
     '  echo "@@KIND $k"; cat /workspace/.share/$k.status 2>/dev/null || echo none',
+    // Whether it is still going, as against what it last wrote: a build whose pod restarted
+    // leaves "building" behind for ever, and a tab that believes it is watching one is a tab
+    // that never says the thing that happened.
+    '  if tmux has-session -t mc-share-$k 2>/dev/null; then echo "@@ALIVE yes"; else echo "@@ALIVE no"; fi',
     '  echo "@@LOG"; tail -n 12 /workspace/.share/$k.log 2>/dev/null | cut -c1-200',
     'done',
   ].join('\n')).catch(() => '');
   const result: Record<ShareKind, ShareBuild> = {
     dashboard: {
-      state: 'none', at: '', branch: '', sha: '', log: '',
+      state: 'none', at: '', branch: '', sha: '', log: '', running: false,
     },
     storybook: {
-      state: 'none', at: '', branch: '', sha: '', log: '',
+      state: 'none', at: '', branch: '', sha: '', log: '', running: false,
     },
   };
 
@@ -619,11 +625,16 @@ export async function shareStatus(workspace: string): Promise<Record<ShareKind, 
     const [head, log = ''] = chunk.split('@@LOG');
     const lines = head.trim().split('\n');
     const kind = lines[0]?.trim() as ShareKind;
-    const [state = 'none', at = '', branch = '', sha = ''] = (lines[1] || 'none').trim().split(/\s+/);
+    const alive = /@@ALIVE yes/.test(head);
+    const [written = 'none', at = '', branch = '', sha = ''] = (lines[1] || 'none').trim().split(/\s+/);
+    // "building" and nothing building it means the build died with whatever was running it -
+    // the pod restarted, the node ran out of memory, somebody killed the session. Its log is
+    // the last thing it said, which is where the reason is.
+    const state = written === 'building' && !alive ? 'stopped' : written;
 
     if (kind in result) {
       result[kind] = {
-        state: (['building', 'ok', 'failed'].includes(state) ? state : 'none') as ShareBuild['state'], at, branch, sha, log: log.trim(),
+        state: (['building', 'ok', 'failed', 'stopped'].includes(state) ? state : 'none') as ShareBuild['state'], at, branch, sha, log: log.trim(), running: alive,
       };
     }
   }
