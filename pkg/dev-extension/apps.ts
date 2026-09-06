@@ -138,7 +138,7 @@ export async function workspaceInstance(store: Store, name: string): Promise<Jso
  * namespace is also set explicitly, because Fleet's default namespace for a Bundle is what an
  * App's namespaced manifests land in when they name none.
  */
-export async function createWorkspaceInstance(store: Store, name: string, appId: string, cluster: string, values: Record<string, unknown> = {}): Promise<void> {
+export async function createWorkspaceInstance(store: Store, name: string, appId: string, cluster: string, values: Record<string, unknown> = {}, target = cluster): Promise<void> {
   requireAppsPlus(store);
 
   const namespace = `dev-${ name }`;
@@ -153,7 +153,10 @@ export async function createWorkspaceInstance(store: Store, name: string, appId:
     spec: {
       app:              appId,
       namespace,
-      targets:          [{ clusterName: cluster }],
+      // `cluster` is the management id everything here reads the cluster's API by; Fleet
+      // targets by the Fleet cluster's name, which for a Rancher made in the sidebar is the
+      // instance's own name. The same string for the local cluster.
+      targets:          [{ clusterName: target }],
       // Told to the App as a value, for the reason rancherWorkspaceApp gives beside hostCluster.
       values:           { ...values, hostCluster: cluster },
       provisionCluster: { enabled: false },
@@ -589,7 +592,17 @@ const PREVIEW_BUILD = [
   // Two sources. A workspace's own build (the Share tab: workspace-tools.ts, buildShare) is a
   // directory on the node that nginx serves as it is, so a rebuild there shows up here with no
   // pod restart; anything else is cloned and built here, once, on the first start.
-  'if [ "${sourceDir}" != none ]; then',
+  // Three sources. A workspace's build fetched from another cluster (the Share tab, hosted on
+  // a Rancher of the sidebar's: previews.ts); a workspace's build on this node; a build made
+  // here from `ref`.
+  'fetch() { rm -rf /work/site.new; mkdir -p /work/site.new; curl -fsSL -H "Authorization: Bearer ${sourceToken}" "${sourceUrl}" | tar -xzf - -C /work/site.new && [ -f /work/site.new/index.html ] && rm -rf /work/site && mv /work/site.new /work/site; }',
+  'if [ "${sourceUrl}" != none ]; then',
+  '  SITE=/work/site',
+  // Fetched again on every start, so a rebuild in the workspace reaches here with a pod
+  // restart; a fetch that fails keeps what was already there.
+  '  fetch || true',
+  '  until [ -f "$SITE/index.html" ]; do echo "the workspace build is not fetchable yet; retrying"; sleep 15; fetch || true; done',
+  'elif [ "${sourceDir}" != none ]; then',
   '  SITE=/workspaces/${sourceDir}',
   '  until [ -f "$SITE/index.html" ]; do echo "waiting for the workspace to build into $SITE"; sleep 10; done',
   'else',
@@ -653,6 +666,13 @@ export function dashboardPreviewApp(): Json {
         // A build to serve instead of making one: a directory under the node's dev-workspaces
         // (`<workspace>/share/dashboard`, which the Share tab fills). `none` builds from `ref`.
         sourceDir:   'none',
+        // Or the same build fetched as a tarball, for a preview on another cluster: the URL
+        // (this Rancher's proxy to dev-api) and a token of the person's that it accepts.
+        sourceUrl:   'none',
+        sourceToken: 'none',
+        // The name the cluster's ingress serves it on (`<install>.dev-extension.<node ip>.sslip.io`),
+        // or none, which leaves an Ingress nothing answers to.
+        host:        'none',
       },
       valueLabels: {
         repo:        'GitHub repository',
@@ -660,6 +680,9 @@ export function dashboardPreviewApp(): Json {
         kind:        'dashboard or storybook',
         base:        'Where the dashboard build routes and fetches its assets: /dashboard/, or the path Rancher proxies it at',
         sourceDir:   'A workspace build to serve, as <workspace>/share/<kind> under the node\'s dev-workspaces; none means build from ref',
+        sourceUrl:   'A workspace build to fetch as a tarball instead (previews on another cluster); none for neither',
+        sourceToken: 'The Rancher API token the fetch is made with',
+        host:        'Hostname the cluster\'s ingress serves the preview on; none for no public name',
         rancherUrl:  'Rancher a dashboard build talks to',
         port:        'Port nginx listens on',
         hostCluster: 'Cluster the preview runs on',
@@ -737,6 +760,10 @@ export function dashboardPreviewApp(): Json {
             '            - name: workspaces',
             '              mountPath: /workspaces',
             '              readOnly: true',
+            // A fetched build (sourceUrl) is under /work, which nginx has to see as well.
+            '            - name: work',
+            '              mountPath: /work',
+            '              readOnly: true',
             '          readinessProbe:',
             '            tcpSocket:',
             '              port: ${port}',
@@ -774,6 +801,35 @@ export function dashboardPreviewApp(): Json {
             '    - name: http',
             '      port: ${port}',
             '      targetPort: http',
+            '',
+          ].join('\n'),
+        },
+        {
+          name:    'ingress.yaml',
+          content: [
+            '# The public name, where the cluster has an ingress controller (the Ranchers made in',
+            '# the sidebar run one) and a host was given; elsewhere an Ingress nothing serves.',
+            'apiVersion: networking.k8s.io/v1',
+            'kind: Ingress',
+            'metadata:',
+            '  namespace: ${namespace}',
+            '  name: ${namespace}',
+            '  annotations:',
+            '    nginx.ingress.kubernetes.io/proxy-body-size: "0"',
+            '    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"',
+            'spec:',
+            '  ingressClassName: nginx',
+            '  rules:',
+            '    - host: ${host}',
+            '      http:',
+            '        paths:',
+            '          - path: /',
+            '            pathType: Prefix',
+            '            backend:',
+            '              service:',
+            '                name: ${namespace}',
+            '                port:',
+            '                  number: ${port}',
             '',
           ].join('\n'),
         },
@@ -932,7 +988,8 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
       ...(body.metadata.annotations || {}),
       [DEFINITION_ANNOTATION]:    LEGACY_FINGERPRINTS[body.metadata.name] || fingerprint,
       [DEFINITION_ANNOTATION_V2]: LEGACY_FINGERPRINTS_V2[body.metadata.name] || fingerprint,
-      [DEFINITION_ANNOTATION_V3]: fingerprint,
+      [DEFINITION_ANNOTATION_V3]: LEGACY_FINGERPRINTS_V3[body.metadata.name] || fingerprint,
+      [DEFINITION_ANNOTATION_V4]: fingerprint,
     };
 
     body.metadata.annotations = annotations;
@@ -941,7 +998,7 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
       const app = await store.dispatch('management/create', { type: APP, ...body });
 
       await app.save().catch(() => {});
-    } else if (existing.metadata?.annotations?.[DEFINITION_ANNOTATION_V3] !== fingerprint) {
+    } else if (existing.metadata?.annotations?.[DEFINITION_ANNOTATION_V4] !== fingerprint) {
       existing.spec = body.spec;
       existing.metadata.annotations = { ...(existing.metadata.annotations || {}), ...annotations };
       await existing.save().catch(() => {});
@@ -960,6 +1017,12 @@ export const DEFINITION_ANNOTATION_V3 = 'dev.rancher.io/definition-v3';
 /** What a 0.3.10 dashboard computes for the Apps it knows, kept in -v2 so it leaves them be. */
 const LEGACY_FINGERPRINTS_V2: Record<string, string> = {
   'rancher-dev': 'aac0f653', 'dashboard-preview': 'ee04e302', 'dev-browser': 'fff28dbc',
+};
+/** Where this version keeps its fingerprint; 0.3.11 to 0.3.15 read -v3. */
+export const DEFINITION_ANNOTATION_V4 = 'dev.rancher.io/definition-v4';
+/** What a 0.3.15 dashboard computes, kept in -v3 so it leaves the Apps be. */
+const LEGACY_FINGERPRINTS_V3: Record<string, string> = {
+  'rancher-dev': '997b8aae', 'dashboard-preview': 'ee04e302', 'dev-browser': 'fff28dbc',
 };
 
 function definitionVersion(spec: Json): string {

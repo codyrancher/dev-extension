@@ -13,7 +13,9 @@
 // in dev-system - and the review state lives in ConfigMaps beside it, one per pull request.
 import http from 'node:http';
 import fs from 'node:fs';
+import path from 'node:path';
 import zlib from 'node:zlib';
+import { spawn } from 'node:child_process';
 
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = 'https://kubernetes.default.svc';
@@ -1109,6 +1111,27 @@ http.createServer(async(req, res) => {
       'content-type': type, 'content-length': fs.statSync(file).size, 'access-control-allow-origin': '*', 'cache-control': 'private, max-age=60',
     });
     fs.createReadStream(file).pipe(res);
+
+    return;
+  }
+
+  // A workspace's built site, as a tarball: what a preview hosted on another cluster fetches
+  // (previews.ts, shareWorkspace) through this Rancher's proxy with a token of the person's,
+  // because nothing on that cluster can reach this node's disk any other way.
+  const share = /^\/share\/([a-z0-9][a-z0-9-]*)\/(dashboard|storybook)\.tar\.gz$/.exec(url.pathname);
+
+  if (share && req.method === 'GET') {
+    const dir = path.join(WORKSPACES_ROOT, share[1], 'share', share[2]);
+
+    if (!fs.existsSync(path.join(dir, 'index.html'))) {
+      return send(res, 404, { error: 'No build there yet.' });
+    }
+    res.writeHead(200, { 'content-type': 'application/gzip', 'access-control-allow-origin': '*', 'cache-control': 'no-store' });
+    const tar = spawn('tar', ['-czf', '-', '-C', dir, '.']);
+
+    tar.stdout.pipe(res);
+    tar.on('error', () => res.end());
+    req.on('close', () => tar.kill());
 
     return;
   }

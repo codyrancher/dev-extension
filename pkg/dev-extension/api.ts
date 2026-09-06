@@ -1840,6 +1840,13 @@ export async function ensureWorkspaceApi(): Promise<void> {
       }).catch(() => null);
     } else if (JSON.stringify(existing.data) !== JSON.stringify(data)) {
       await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data }) }).catch(() => null);
+      // node read the old script at start: the pod is replaced, and the new one mounts the
+      // ConfigMap as it is now. Quiet like the rest; a user who may not do this changes nothing.
+      const pods = await devFetch(`${ BASE }/v1/pods/${ namespace }?labelSelector=app%3D${ API_NAME }`).catch(() => null);
+
+      for (const pod of pods?.data || []) {
+        await devFetch(`${ BASE }/v1/pods/${ namespace }/${ pod.metadata.name }`, { method: 'DELETE' }).catch(() => null);
+      }
     }
   }
 
