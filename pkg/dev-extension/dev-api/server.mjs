@@ -843,6 +843,22 @@ const routes = [
   // The skills and rules a review or fix agent needs, as the extension bundled them. Served to
   // the agent pod because an exec command is URL arguments and this is half a megabyte.
   ['GET', /^\/agent-seed$/, async() => agentSeed()],
+  // Ask for a run of an agent (the dashboard's Agents page; see agent-defs.ts). The run is
+  // recorded as requested here and started by the next dashboard tick, which has the browser
+  // session the start needs. `note` rides along into the run's record.
+  ['POST', /^\/agents\/([a-z0-9-]+)\/trigger$/, async(m, url, body) => {
+    const name = m[1];
+    const runs = (await readDoc(`dev-agent-runs-${ name }`, 'runs.json')) || [];
+    const run = {
+      id: `${ Date.now().toString(36) }${ Math.random().toString(36).slice(2, 6) }`, agent: name, trigger: 'api', workspace: '', conversation: '', state: 'requested', startedAt: new Date().toISOString(), note: typeof body?.note === 'string' ? body.note.slice(0, 200) : '',
+    };
+
+    runs.push(run);
+    await writeDoc(`dev-agent-runs-${ name }`, 'runs.json', runs.slice(-50), { 'dev.rancher.io/kind': 'agent-runs', 'dev.rancher.io/agent': name });
+
+    return { queued: true, run };
+  }],
+  ['GET', /^\/agents\/([a-z0-9-]+)\/runs$/, async(m) => ({ runs: (await readDoc(`dev-agent-runs-${ m[1] }`, 'runs.json')) || [] })],
   ['GET', /^\/workspaces$/, async() => {
     const list = await k8s(`${ INSTANCES }?labelSelector=${ LABEL_WORKSPACE }`);
 
