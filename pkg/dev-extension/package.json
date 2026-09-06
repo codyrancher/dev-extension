@@ -1,12 +1,13 @@
 {
   "name": "dev-extension",
-  "description": "dev-extension plugin",
-  "version": "0.3.5",
+  "description": "Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents",
+  "version": "0.3.6",
   "private": false,
   "rancher": {
     "annotations": {
       "catalog.cattle.io/rancher-version": ">= 2.10.0",
-      "catalog.cattle.io/ui-extensions-version": ">= 3.0.0 < 4.0.0"
+      "catalog.cattle.io/ui-extensions-version": ">= 3.0.0 < 4.0.0",
+      "catalog.cattle.io/display-name": "Dev Extension"
     }
   },
   "scripts": {},
