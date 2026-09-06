@@ -9,6 +9,7 @@ import { Banner } from '@components/Banner';
 import AsyncButton from '@shell/components/AsyncButton';
 import { RcButton } from '@components/RcButton';
 import DevDialog from './DevDialog.vue';
+import AgentRunRow from './AgentRunRow.vue';
 import {
   listAgents, listRuns, runAgent, deleteAgent, skillOf, triggersOf
 } from '../agent-defs';
@@ -17,13 +18,16 @@ import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, AGENT_EDIT_ROUTE, CONVERSATIONS_ROUTE, DEV_API_IN_CLUSTER
 } from '../config/constants';
 
+/** How many runs a card shows before the rest go behind its History link. */
+const INLINE_RUNS = 3;
+
 const REFRESH_MS = 10000;
 
 export default {
   name: 'AgentCards',
 
   components: {
-    Banner, AsyncButton, RcButton, DevDialog
+    Banner, AsyncButton, RcButton, DevDialog, AgentRunRow
   },
 
   data() {
@@ -34,7 +38,8 @@ export default {
       timer:   null,
       loaded:  false,
       skill:   null,
-      history: {},
+      /** The agent whose full history is open, or null. */
+      history: null,
       removing: null,
     };
   },
@@ -49,7 +54,8 @@ export default {
           def,
           skill:   skillOf(def.prompt),
           running: running.length,
-          recent:  runs.slice(0, this.history[def.name] ? 50 : 5),
+          runs,
+          recent:  runs.slice(0, INLINE_RUNS),
           total:   runs.length,
           trigger: this.triggerLabel(def),
         };
@@ -118,18 +124,8 @@ export default {
       return { name: AGENT_EDIT_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, name: def.name } };
     },
 
-    runTo(run) {
-      return run.workspace ? {
-        name: WORKSPACE_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: run.workspace }, hash: '#conversations',
-      } : null;
-    },
 
     /** The run's own conversation, on the Conversations page: what it said and did, with its artifacts. */
-    conversationTo(run) {
-      return run.conversation ? {
-        name: CONVERSATIONS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER }, query: { c: run.conversation },
-      } : null;
-    },
 
     apiUrl(def) {
       return `${ DEV_API_IN_CLUSTER }/agents/${ def.name }/trigger`;
@@ -182,15 +178,6 @@ export default {
       });
     },
 
-    duration(run) {
-      if (!run.startedAt) {
-        return '';
-      }
-      const end = run.endedAt ? Date.parse(run.endedAt) : Date.now();
-      const s = Math.max(0, Math.round((end - Date.parse(run.startedAt)) / 1000));
-
-      return s < 60 ? `${ s }s` : s < 3600 ? `${ Math.round(s / 60) }m` : `${ (s / 3600).toFixed(1) }h`;
-    },
   },
 };
 </script>
@@ -316,12 +303,13 @@ export default {
             <span>History</span>
             <span class="text-muted">{{ card.total }} run{{ card.total === 1 ? '' : 's' }}</span>
             <button
-              v-if="card.total > 5"
+              v-if="card.total > card.recent.length"
               type="button"
               class="agent-card__link"
-              @click="history = { ...history, [card.def.name]: !history[card.def.name] }"
+              data-testid="agent-history-all"
+              @click="history = card"
             >
-              {{ history[card.def.name] ? 'show fewer' : 'show all' }}
+              all {{ card.total }}
             </button>
           </div>
           <p
@@ -334,43 +322,11 @@ export default {
             v-else
             class="agent-card__runs"
           >
-            <li
+            <AgentRunRow
               v-for="run in card.recent"
               :key="run.id"
-              class="agent-card__run"
-              :class="`agent-card__run--${ run.state }`"
-              :title="run.note || ''"
-            >
-              <span class="agent-card__run-dot" />
-              <span class="agent-card__run-state">{{ run.state }}</span>
-              <span class="agent-card__run-when">{{ when(run.startedAt) }}</span>
-              <span class="agent-card__run-trigger">{{ run.trigger }}</span>
-              <router-link
-                v-if="runTo(run)"
-                :to="runTo(run)"
-                class="agent-card__run-ws"
-              >
-                {{ run.workspace }}
-              </router-link>
-              <span
-                v-else
-                class="agent-card__run-ws text-muted"
-                title="A conversation in the agents drawer"
-              >{{ run.conversation || '…' }}</span>
-              <span class="agent-card__run-dur">{{ duration(run) }}</span>
-              <router-link
-                v-if="conversationTo(run)"
-                :to="conversationTo(run)"
-                class="agent-card__run-open"
-                title="Open this run's conversation: its output, tool calls and artifacts"
-              >
-                output
-              </router-link>
-              <span
-                v-else
-                class="agent-card__run-open text-muted"
-              >&nbsp;</span>
-            </li>
+              :run="run"
+            />
           </ul>
         </div>
       </article>
@@ -385,6 +341,37 @@ export default {
       @confirm="reallyRemove"
       @cancel="removing = null"
     />
+    <Teleport to="body">
+      <div
+        v-if="history"
+        class="agent-skill"
+        @click.self="history = null"
+      >
+        <div class="agent-skill__panel">
+          <header class="agent-skill__head">
+            <span>{{ history.def.name }}</span>
+            <span class="text-muted">{{ history.total }} run{{ history.total === 1 ? '' : 's' }}</span>
+            <button
+              type="button"
+              class="agent-card__link"
+              @click="history = null"
+            >
+              Close
+            </button>
+          </header>
+          <ul
+            class="agent-card__runs agent-card__runs--all"
+            data-testid="agent-history-modal"
+          >
+            <AgentRunRow
+              v-for="run in history.runs"
+              :key="run.id"
+              :run="run"
+            />
+          </ul>
+        </div>
+      </div>
+    </Teleport>
     <Teleport to="body">
       <div
         v-if="skill"
@@ -569,35 +556,8 @@ export default {
   &__none { font-size: 12px; margin: 0; }
 
   &__runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+  &__runs--all { overflow: auto; padding-bottom: var(--dev-space-3); }
 
-  &__run {
-    display:               grid;
-    grid-template-columns: 8px 64px 104px 44px 1fr 36px 44px;
-    gap:                   var(--dev-space-2);
-    align-items:           center;
-    font-size:             11px;
-    padding:               3px 0;
-    border-top:            1px solid color-mix(in srgb, var(--border) 60%, transparent);
-
-    &:first-child { border-top: 0; }
-  }
-
-  &__run-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-  &__run--running &__run-dot, &__run--starting &__run-dot { background: var(--dev-accent); animation: agent-pulse 1.4s infinite ease-in-out; }
-  &__run--done &__run-dot { background: var(--success); }
-  &__run--failed &__run-dot { background: var(--error); }
-  &__run--requested &__run-dot { background: var(--warning); }
-
-  &__run-state { text-transform: uppercase; font-weight: 600; letter-spacing: 0.04em; font-size: 10px; }
-  &__run--running &__run-state, &__run--starting &__run-state { color: var(--dev-accent); }
-  &__run--done &__run-state { color: var(--success); }
-  &__run--failed &__run-state { color: var(--error); }
-  &__run--requested &__run-state { color: var(--warning); }
-
-  &__run-when, &__run-trigger, &__run-dur { color: var(--muted); }
-  &__run-dur { text-align: right; }
-  &__run-ws { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; }
-  &__run-open { text-align: right; color: var(--link); font-size: 11px; }
 }
 
 @keyframes agent-pulse {
