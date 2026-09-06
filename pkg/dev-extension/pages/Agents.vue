@@ -9,6 +9,7 @@
 import { Banner } from '@components/Banner';
 import DevList from '../components/DevList.vue';
 import StudioTerminal from '../components/StudioTerminal.vue';
+import AgentCards from '../components/AgentCards.vue';
 import ClaudeLogo from '../components/ClaudeLogo.vue';
 import { listAllWorkspaces } from '../api';
 import {
@@ -26,7 +27,7 @@ export default {
   name: 'DevAgents',
 
   components: {
-    Banner, DevList, StudioTerminal, ClaudeLogo
+    Banner, DevList, StudioTerminal, ClaudeLogo, AgentCards
   },
 
   async fetch() {
@@ -132,12 +133,15 @@ export default {
 </script>
 
 <template>
-  <div class="dev-agents">
-    <div class="dev-agents__list">
+  <div class="dev-agents-page">
+    <AgentCards />
+    <div class="dev-agents">
+      <div class="dev-agents__list">
       <div class="dev-agents__head">
         <ClaudeLogo class="dev-agents__logo" />
         <span>Agents</span>
       </div>
+  </div>
       <p
         v-if="!groups.length"
         class="dev-agents__empty text-muted"
@@ -198,6 +202,14 @@ export default {
 </template>
 
 <style lang="scss" scoped>
+  .dev-agents-page {
+    display:        flex;
+    flex-direction: column;
+    height:         100%;
+    min-height:     0;
+    overflow:       auto;
+  }
+
   .dev-agents {
     display:    flex;
     flex:       1 1 auto;

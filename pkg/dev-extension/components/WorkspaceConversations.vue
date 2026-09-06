@@ -153,8 +153,12 @@ export default {
           .then(() => ensureDefaultShare(this.$store, this.workspace.name, this.workspace.cluster || 'local').catch(() => {}))
           .catch((e) => {
             this.prepared = false;
-            this.error = `The workspace could not be prepared for the harness's skills: ${ e?.message || e }`;
-            console.error('[dev] preparing the workspace failed', e); // eslint-disable-line no-console
+            // A pod that is not up yet is the ordinary case on a new workspace, and the row
+            // above already says it is starting; only a real failure is worth a banner.
+            if (!/no running pod yet/.test(String(e?.message || e))) {
+              this.error = `The workspace could not be prepared for the harness's skills: ${ e?.message || e }`;
+              console.error('[dev] preparing the workspace failed', e); // eslint-disable-line no-console
+            }
           });
       }
     },

@@ -9,7 +9,9 @@
 // exec path and one cookie serve every pane in this dashboard. Nothing here holds a credential
 // or opens a socket of its own.
 
-import { workspaceNamespace, workspacePod, WORKSPACE_CONTAINER } from './api';
+import {
+  workspaceNamespace, workspacePod, WORKSPACE_CONTAINER, podExecOnce
+} from './api';
 import { WORKSPACE_WORKDIR, WORKSPACE_HOME } from './config/constants';
 import { queuePrompt as queueInWorkspace, endPane } from './workspace-tools';
 
@@ -122,6 +124,28 @@ export async function endConversation(workspace: string, id: string): Promise<vo
 /** Queue a prompt for a conversation to open with, or say something into one that is running. */
 export async function queuePrompt(attach: Attachment, prompt: string): Promise<void> {
   await queueInWorkspace(attach.workspace, attach.id, prompt);
+}
+
+/**
+ * Start a conversation's pane with nobody attached: shell.sh in `start` mode makes the tmux
+ * session detached, and claude in it reads whatever was queued. Run from the agent pod the
+ * way a terminal would, so an agent's run begins the moment it is asked for rather than the
+ * next time somebody opens the tab.
+ */
+export async function startPaneDetached(workspace: string, id: string): Promise<void> {
+  const api = await requireAgents();
+  const pod = await api.agent.pod();
+
+  if (!pod) {
+    throw new Error('The agent pod is not running, so there is nothing to start the pane from.');
+  }
+  const namespace = workspaceNamespace(workspace);
+  const argv = [
+    ...KUBECTL, 'exec', '-n', namespace, `deploy/${ namespace }`, '-c', WORKSPACE_CONTAINER, '--',
+    '/bin/sh', '/seed/shell.sh', id, WORKSPACE_WORKDIR, WORKSPACE_HOME, 'start',
+  ];
+
+  await podExecOnce(api.agent.namespace, pod, api.agent.container, argv);
 }
 
 // ── The agents extension's browser API ──────────────────────────────────────────────────────
