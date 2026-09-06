@@ -1,0 +1,10 @@
+#!/bin/bash
+# The harness's git-fix-commit opens the last commit's message in the VS Code tab you are in,
+# so a person can amend it. There is no VS Code here and no person at the keyboard, so this
+# prints the message instead and leaves it alone: amend it with `git commit --amend` if it
+# needs changing.
+set -e
+if ! git rev-parse --git-dir >/dev/null 2>&1; then echo "git-fix-commit: not a git repository (cwd: $(pwd))" >&2; exit 1; fi
+echo "Last commit (not amended; no editor here - use git commit --amend if it needs a change):"
+echo "-----"
+git log -1 --pretty=%B

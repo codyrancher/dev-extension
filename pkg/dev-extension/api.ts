@@ -1733,6 +1733,27 @@ export function workspaceApiUrl(): string {
 export const AGENT_WORKSPACE_HOST_PATH = '/var/lib/rancher/extension-studio/agent';
 export const AGENT_WORKSPACE_MOUNT = '/agent-workspace';
 
+/**
+ * Where every workspace keeps its /workspace on the node (the rancher-dev App's hostPath, one
+ * directory per workspace), and where the API mounts the lot. A review agent's evidence is
+ * under `<workspace>/artifacts`, and the API serves a comment's attachment from there.
+ */
+export const WORKSPACES_HOST_PATH = '/var/lib/rancher/dev-workspaces';
+export const WORKSPACES_MOUNT = '/dev-workspaces';
+
+/** gzip, then base64, in the browser: what a ConfigMap can carry a megabyte of skills as. */
+async function gzipBase64(text: string): Promise<string> {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  let binary = '';
+
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+
+  return btoa(binary);
+}
+
 export async function ensureWorkspaceApi(): Promise<void> {
   const namespace = DEV_SYSTEM_NAMESPACE;
   const labels = { app: API_NAME };
@@ -1742,8 +1763,10 @@ export async function ensureWorkspaceApi(): Promise<void> {
   // it reads from the cluster when asked.
   for (const [name, data] of [
     // The agent seed rides along: the skills a review or fix agent needs, which the API serves
-    // to the agent pod as one document (see agent-tools.ts for why not exec).
-    [API_NAME, { 'server.mjs': WORKSPACE_API_SERVER, 'seed.json': JSON.stringify(AGENT_SEED) }],
+    // to the agent pod as one document (see workspace-tools.ts for why not exec).
+    // Gzipped: the seed is the harness's whole skill set, which is close to a ConfigMap's
+    // megabyte on its own, and the script rides in the same one.
+    [API_NAME, { 'server.mjs': WORKSPACE_API_SERVER, 'seed.json.gz.b64': await gzipBase64(JSON.stringify(AGENT_SEED)) }],
   ] as [string, Record<string, string>][]) {
     const url = `${ BASE }/v1/configmaps/${ namespace }/${ name }`;
     const existing = await devFetch(url).catch(() => null);
@@ -1847,12 +1870,14 @@ export async function ensureWorkspaceApi(): Promise<void> {
               // only, so the evidence a review agent attaches to a comment - a recording, a
               // screenshot under /workspace/artifacts - can be served to the review panel.
               { name: 'agent-workspace', mountPath: AGENT_WORKSPACE_MOUNT, readOnly: true },
+              { name: 'workspaces', mountPath: WORKSPACES_MOUNT, readOnly: true },
             ],
             readinessProbe: { httpGet: { path: '/', port: API_PORT }, periodSeconds: 10 },
           }],
           volumes: [
             { name: 'seed', configMap: { name: API_NAME } },
             { name: 'agent-workspace', hostPath: { path: AGENT_WORKSPACE_HOST_PATH, type: 'DirectoryOrCreate' } },
+            { name: 'workspaces', hostPath: { path: WORKSPACES_HOST_PATH, type: 'DirectoryOrCreate' } },
           ],
         },
       },

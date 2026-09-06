@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx cypress run:*)",
+      "Bash(npx cypress:*)",
+      "Bash(yarn cypress:*)",
+      "Bash(./node_modules/.bin/cypress:*)",
+      "Bash(./node_modules/.bin/eslint:*)",
+      "Bash(yarn lint:*)",
+      "Bash(yarn test:*)",
+      "Bash(ss:*)",
+      "Bash(lsof:*)",
+      "Bash(apt-get install:*)",
+      "Bash(sudo apt-get install:*)"
+    ],
+    "defaultMode": "bypassPermissions"
+  },
+  "enableAllProjectMcpServers": true,
+  "env": {
+    "HARNESS_PROJECT": "{{projectName}}",
+    "PROJECT_NAME": "{{projectName}}",
+    "RANCHER_HOST_NAME": "{{rancherHost}}",
+    "RANCHER_URL": "{{rancherUrl}}",
+    "API": "{{rancherUrl}}",
+    "HARNESS_API": "http://dev-api.dev-system.svc:8080",
+    "CLAUDE_HARNESS_API": "http://dev-api.dev-system.svc:8080",
+    "CLAUDE_BROWSER_CDP": "http://localhost:9222",
+    "KUBECONFIG": "/workspace/.kube/config"
+  }
+}

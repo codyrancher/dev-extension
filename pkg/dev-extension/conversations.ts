@@ -1,28 +1,29 @@
-// A workspace's conversations, which live in the agent pod the agents extension keeps.
+// A workspace's conversations: registered in the agent pod, running in the workspace's own pod.
 //
-// The harness ran a workspace's conversations in the workspace's own container. Here they run
-// where every other conversation in this Rancher runs - the one agent pod, which can see every
-// extension and every cluster - namespaced by the workspace's name (`p-<workspace>-<n>`) so the
-// agent drawer, which lists only its own, never shows them. The agents extension offers exactly
-// that on `window.__agents`: list, start with a prompt, rename, end, read a pane, and the
-// terminal component that draws one. Nothing here holds a credential or opens a socket of its
-// own.
+// The harness ran a project's conversations in the project's container, because that is where
+// the checkout, the browser and the environment were. So does this: the pane is claude in the
+// workspace's pod, in its checkout, with everything workspace-tools.ts put there. What the
+// agents extension keeps is the registry - which conversations a workspace has, their titles,
+// the ids (`p-<workspace>-<n>`) - and the terminal component every pane is drawn with; the
+// terminal execs into the agent pod, which reaches the workspace's pod with kubectl, so one
+// exec path and one cookie serve every pane in this dashboard. Nothing here holds a credential
+// or opens a socket of its own.
 
+import { workspaceNamespace, workspacePod, WORKSPACE_CONTAINER } from './api';
+import { WORKSPACE_WORKDIR, WORKSPACE_HOME } from './config/constants';
+import { queuePrompt as queueInWorkspace, endPane } from './workspace-tools';
 
-import { clusterBase } from './api';
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Json = any;
-
-/** Where the Studio's API is. The Studio is what made the agent pod, so this is its cluster. */
+/** Where the agents extension's API is. The agents extension made the agent pod, so this is its cluster. */
 export const STUDIO_CLUSTER = 'local';
 
-/** How to open a terminal on one conversation: the apiserver exec subresource's four facts. */
+/** How to open a terminal on one conversation, and what it is: the workspace and the id. */
 export interface Attachment {
   namespace: string;
   pod: string;
   container: string;
   command: string[];
+  workspace: string;
+  id: string;
 }
 
 export interface ProjectConversation {
@@ -31,77 +32,98 @@ export interface ProjectConversation {
   attach: Attachment;
 }
 
-
 /**
- * A conversation's attachment: the four facts a terminal or an exec needs to reach it.
- *
- * Built from the agents extension's own account of its pod rather than reported by an API: the
- * pod's name is asked for at the moment it is wanted, so a pod that rolled since the list was
- * read is still the pod that is reached.
+ * The argv the agent pod runs to land in a conversation's pane: kubectl into the workspace's
+ * pod, then the workspace's own shell.sh with the session, the checkout, the home and the mode,
+ * exactly as the workspace's shell row runs it. The Deployment rather than a pod by name, so a
+ * pod that rolled since the page loaded is still the one reached.
  */
-async function attachmentFor(id: string): Promise<Attachment> {
-  const api = await requireAgents();
-  const pod = await api.agent.pod();
+export function paneCommand(workspace: string, id: string, mode: 'claude' | 'shell' = 'claude'): string[] {
+  const namespace = workspaceNamespace(workspace);
 
-  if (!pod) {
-    throw new Error('The agent pod is not running yet, so there is nowhere to hold a conversation.');
-  }
+  return [
+    'kubectl', 'exec', '-i', '-t', '-n', namespace, `deploy/${ namespace }`, '-c', WORKSPACE_CONTAINER, '--',
+    '/bin/sh', '/seed/shell.sh', id, WORKSPACE_WORKDIR, WORKSPACE_HOME, mode,
+  ];
+}
 
+function attachment(workspace: string, id: string, pod: string): Attachment {
   return {
-    namespace: api.agent.namespace, pod, container: api.agent.container, command: api.agent.command(id),
+    namespace: workspaceNamespace(workspace), pod, container: WORKSPACE_CONTAINER, command: paneCommand(workspace, id), workspace, id,
   };
 }
 
 export async function listConversations(workspace: string): Promise<ProjectConversation[]> {
   const api = await requireAgents();
   const sessions = await api.agent.projectSessions(workspace);
-  const pod = await api.agent.pod();
+  const pod = sessions.length ? (await workspacePod(workspace).catch(() => null)) || '' : '';
 
-  return sessions.map((session) => ({
-    id:     session.id,
-    title:  session.title,
-    attach: {
-      namespace: api.agent.namespace, pod: pod || '', container: api.agent.container, command: api.agent.command(session.id),
-    },
-  }));
+  return sessions.map((session) => ({ id: session.id, title: session.title, attach: attachment(workspace, session.id, pod) }));
 }
 
-/** Start a conversation, optionally with a name and the prompt it opens with. */
+/**
+ * Start a conversation, optionally with a name and the prompt it opens with.
+ *
+ * Registered with the agents extension, which is what hands out the id; the prompt is queued in
+ * the workspace's pod, where the pane will run. A workspace whose pod is not up yet takes the
+ * registration and rejects the prompt: callers that can wait (reviews.ts) queue it themselves
+ * once the pod is there.
+ */
 export async function startConversation(workspace: string, title = '', prompt = ''): Promise<ProjectConversation> {
   const api = await requireAgents();
-  const id = await api.agent.startInProject(workspace, title, prompt);
+  const before = new Set((await api.agent.projectSessions(workspace).catch(() => [])).map((s) => s.id));
+  let id: string;
 
-  return { id, title: title || id.slice(id.lastIndexOf('-') + 1), attach: await attachmentFor(id) };
+  try {
+    id = await api.agent.startInProject(workspace, title);
+  } catch (e) {
+    // The registry's exec answers through a websocket the apiserver proxy sometimes closes
+    // before the final status frame, and the agents extension reports that as a failure even
+    // when the mkdir and the rename behind it went through. So before giving up, look: if
+    // exactly one conversation appeared, that is the one that was asked for.
+    const after = (await api.agent.projectSessions(workspace).catch(() => [])).filter((s) => !before.has(s.id));
+
+    if (after.length !== 1) {
+      throw e;
+    }
+    id = after[0].id;
+    if (title && after[0].title !== title) {
+      await api.agent.rename(id, title).catch(() => {});
+    }
+  }
+
+  const conversation = { id, title: title || id.slice(id.lastIndexOf('-') + 1), attach: attachment(workspace, id, (await workspacePod(workspace).catch(() => null)) || '') };
+
+  if (prompt) {
+    await queueInWorkspace(workspace, id, prompt);
+  }
+
+  return conversation;
 }
 
 export async function renameConversation(workspace: string, id: string, title: string): Promise<void> {
   await (await requireAgents()).agent.rename(id, title);
 }
 
+/** End it in both places: the registry, and the pane in the workspace pod with claude in it. */
 export async function endConversation(workspace: string, id: string): Promise<void> {
+  await endPane(workspace, id).catch(() => {});
   await (await requireAgents()).agent.end(id);
 }
 
-/**
- * Queue a prompt for a conversation to open with, or say something into one that is running.
- *
- * The agents extension writes it where the pane's runner reads it: `/workspace/.queue/<id>`,
- * picked up on the pane's first start. The conversation need not be running yet; that is the
- * point of a queue.
- */
+/** Queue a prompt for a conversation to open with, or say something into one that is running. */
 export async function queuePrompt(attach: Attachment, prompt: string): Promise<void> {
-  await (await requireAgents()).agent.queue(attach.command[2], prompt);
+  await queueInWorkspace(attach.workspace, attach.id, prompt);
 }
 
-// ── The Studio's browser API ──────────────────────────────────────────────────────────────
+// ── The agents extension's browser API ──────────────────────────────────────────────────────
 //
-// Extension Studio puts its terminal, and the agent pod behind it, on `window.__extensionStudio`
-// (its public-api.ts). Every pane this extension shows onto the agent pod is that component:
-// the conversation list, the review agent docked over a pull request, a discussion under one
-// comment. Borrowed rather than copied, so there is one terminal in this dashboard and one
-// place it is fixed.
+// The agents extension puts its terminal, and the agent pod behind it, on `window.__agents`
+// (Extension Studio 0.5.92 to 0.5.93 put the same on `window.__extensionStudio`). Every pane
+// this extension shows is that component: the conversation list, the review agent docked over
+// a pull request, a discussion under one comment. Borrowed rather than copied, so there is one
+// terminal in this dashboard and one place it is fixed.
 
-/** Where the agents extension's browser API is, and the name Extension Studio used before it. */
 export const AGENTS_GLOBAL = '__agents';
 export const STUDIO_GLOBAL = '__extensionStudio';
 export const AGENTS_READY_EVENT = 'agents:ready';
@@ -127,7 +149,7 @@ export interface StudioBrowserApi {
   };
 }
 
-/** The Studio's browser API, if its bundle has loaded. */
+/** The agents extension's browser API, if its bundle has loaded. */
 export function studioApi(): StudioBrowserApi | null {
   const w = window as unknown as Record<string, unknown>;
   const api = (w[AGENTS_GLOBAL] || w[STUDIO_GLOBAL]) as StudioBrowserApi | undefined;
@@ -147,11 +169,11 @@ async function requireAgents(): Promise<StudioBrowserApi> {
 }
 
 /**
- * The Studio's browser API, waiting for it if the Studio's bundle is still loading.
+ * The API, waiting for it if the agents extension's bundle is still loading.
  *
- * Extensions load in no particular order, so a page of this one can render before the Studio
- * has installed its API. It fires an event when it does; failing that, a short poll, because a
- * Studio that is installed but slow is the common case and one that is absent is the rare one.
+ * Extensions load in no particular order, so a page of this one can render before the agents
+ * extension has installed its API. It fires an event when it does; failing that, a short poll,
+ * because one that is installed but slow is the common case and one that is absent is rare.
  */
 export function waitForStudio(timeoutMs = 15000): Promise<StudioBrowserApi | null> {
   const now = studioApi();
@@ -187,17 +209,4 @@ export function waitForStudio(timeoutMs = 15000): Promise<StudioBrowserApi | nul
     }, 500);
     deadline = setTimeout(() => done(studioApi()), timeoutMs);
   });
-}
-
-/** The DevTerminal props for one conversation's pane. */
-export function paneFor(conversation: ProjectConversation): { namespace: string; labels: Record<string, string>; container: string; command: string[]; cluster: string } {
-  return {
-    namespace: conversation.attach.namespace,
-    // The agent pod by its label rather than by the name the list reported: a pod that rolled
-    // between the list and the click has a new name and the same label.
-    labels:    { app: 'extension-studio-agent' },
-    container: conversation.attach.container,
-    command:   conversation.attach.command,
-    cluster:   STUDIO_CLUSTER,
-  };
 }

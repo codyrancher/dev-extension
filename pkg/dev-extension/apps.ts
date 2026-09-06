@@ -21,8 +21,12 @@ import {
   APP, APP_INSTANCE, LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, DEFAULT_APP, WORKSPACE_PORT_ANNOTATION,
   APP_KIND_LABEL, APP_KIND_WORKSPACE, LEGACY_WORKSPACE_APPS,
   WORKSPACE_SCHEME_ANNOTATION, WORKSPACE_WORKDIR, WORKSPACE_HOME,
+  DEV_API_IN_CLUSTER,
 } from './config/constants';
 import { WORKSPACE_VUE_CONFIG } from './workspace-config';
+
+/** The browser beside every workspace: the image the harness's browser sidecar and the dev-browser App use. */
+const BROWSER_IMAGE = 'lscr.io/linuxserver/chromium:latest';
 
 // The Vuex store the dashboard hands every component. Untyped for the same reason the
 // dashboard's own extensions leave it untyped: the shell exports no type for it.
@@ -233,6 +237,10 @@ const WORKSPACE_SCRIPT = [
   `chown node:node /workspace ${ WORKSPACE_HOME } 2>/dev/null || true`,
   '[ -f /workspace/.owned ] || (chown -R node:node /workspace 2>/dev/null; touch /workspace/.owned)',
   `[ -f /seed/terminal-tools.sh ] && (HOME_DIR=${ WORKSPACE_HOME } /bin/sh /seed/terminal-tools.sh >/workspace/.terminal-tools.log 2>&1 &) || true`,
+  // What a recording and a CI-style check need and the image lacks: ffmpeg (browser.mjs
+  // record), jq, lsof and ss. Root's to install and the rootfs is the pod's, so on every boot,
+  // in the background so the dev server is not a minute later for it.
+  '(command -v ffmpeg >/dev/null 2>&1 && command -v lsof >/dev/null 2>&1) || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg jq lsof iproute2 >/workspace/.apt.log 2>&1 &) || true',
   `exec setpriv --reuid=1000 --regid=1000 --init-groups /bin/sh -c '${ [
     'set -e',
     `export HOME=${ WORKSPACE_HOME }`,
@@ -242,12 +250,41 @@ const WORKSPACE_SCRIPT = [
     `[ -d ${ WORKSPACE_WORKDIR }/.git ] || git clone --depth 1 https://github.com/\${repo} ${ WORKSPACE_WORKDIR }`,
     `cd ${ WORKSPACE_WORKDIR }`,
     '[ -f .install-done ] || (yarn install --network-timeout 600000 && touch .install-done)',
-    'git checkout -- vue.config.js || true',
-    'cp vue.config.js vue.config.orig.js',
-    'cp /dev-config/vue.config.js vue.config.js',
-    'exec yarn dev --port ${port}',
+    // An earlier App wrote its config over the checkout's vue.config.js; a checkout that boot
+    // left behind gets the repository's file back. A clean tree is a no-op.
+    'git update-index --no-skip-worktree vue.config.js 2>/dev/null || true',
+    'git checkout -- vue.config.js 2>/dev/null || true',
+    'exec /bin/bash /dev-config/serve.sh ${port}',
   ].join(' && ') }'`,
 ].join(' && ');
+
+/**
+ * The dev server, supervised: the container's process is this loop, not the server.
+ *
+ * The harness's project container ran nothing in particular; its agents started a dev server
+ * when a skill wanted one, on 8005, and stopped it when they were done. Here the server is
+ * already running for them, and the pod must survive whatever they do to it: a skill that
+ * kills what is on 8005 to start its own, a branch switch that crashes the compiler, an OOM.
+ * When the pod's main process was the server itself, each of those restarted the container
+ * and took every conversation's tmux with it, mid-review.
+ *
+ * So the server is restarted when it exits, and left alone while something else holds the
+ * port: an agent that started its own server gets the port until it is done, and this one
+ * comes back afterwards. The config is passed by path rather than written over the checkout's
+ * (see workspace-config.ts), so the tree is the repository's and stays that way.
+ */
+const WORKSPACE_SERVE = [
+  '#!/bin/bash',
+  'PORT=${1:-8005}',
+  'held() { node -e "require(\'net\').connect(Number(process.argv[1]),\'127.0.0.1\').on(\'connect\',()=>process.exit(0)).on(\'error\',()=>process.exit(1))" "$PORT" 2>/dev/null; }',
+  'while :; do',
+  '  if held; then sleep 10; continue; fi',
+  '  VUE_CLI_SERVICE_CONFIG_PATH=/dev-config/vue.config.js yarn dev --port "$PORT"',
+  '  echo "[workspace] the dev server exited; starting it again in 5s"',
+  '  sleep 5',
+  'done',
+  '',
+].join('\n');
 
 function yamlBlock(text: string, indent: number): string {
   const pad = ' '.repeat(indent);
@@ -346,6 +383,8 @@ export function rancherWorkspaceApp(): Json {
             'data:',
             '  vue.config.js: |',
             yamlBlock(WORKSPACE_VUE_CONFIG, 4),
+            '  serve.sh: |',
+            yamlBlock(WORKSPACE_SERVE, 4),
             '',
           ].join('\n'),
         },
@@ -395,6 +434,21 @@ export function rancherWorkspaceApp(): Json {
             '                  fieldPath: status.hostIP',
             '            - name: API',
             '              value: "${rancherUrl}"',
+            // The names the harness's skills read (see workspace-tools.ts): the Rancher, the
+            // in-cluster API that answers the harness API's routes, the workspace's own name,
+            // and the browser container's CDP, which shares this pod's network.
+            '            - name: RANCHER_URL',
+            '              value: "${rancherUrl}"',
+            '            - name: PROJECT_NAME',
+            '              value: ${install}',
+            '            - name: HARNESS_PROJECT',
+            '              value: ${install}',
+            '            - name: HARNESS_API',
+            `              value: ${ DEV_API_IN_CLUSTER }`,
+            '            - name: CLAUDE_HARNESS_API',
+            `              value: ${ DEV_API_IN_CLUSTER }`,
+            '            - name: CLAUDE_BROWSER_CDP',
+            '              value: http://localhost:9222',
             '          envFrom:',
             '            - secretRef:',
             '                name: dev-secrets',
@@ -417,11 +471,42 @@ export function rancherWorkspaceApp(): Json {
             '            tcpSocket:',
             '              port: ${port}',
             '            periodSeconds: 10',
+            // The harness's browser sidecar, as a second container: Chromium with CDP open on
+            // this pod's localhost, opened on the dev server, sharing /workspace/artifacts as
+            // /artifacts. Its desktop is what the Browser tab frames.
+            '        - name: browser',
+            `          image: ${ BROWSER_IMAGE }`,
+            '          ports:',
+            '            - name: browser',
+            '              containerPort: 3000',
+            '            - name: cdp',
+            '              containerPort: 9222',
+            '          env:',
+            '            - name: PUID',
+            '              value: "1000"',
+            '            - name: PGID',
+            '              value: "1000"',
+            '            - name: CUSTOM_PORT',
+            '              value: "3000"',
+            '            - name: TITLE',
+            '              value: ${install}',
+            '            - name: CHROME_CLI',
+            '              value: "https://localhost:${port} --no-first-run --start-maximized --disable-infobars --allow-insecure-localhost --ignore-certificate-errors --force-dark-mode --remote-debugging-port=9222 --remote-allow-origins=*"',
+            '          volumeMounts:',
+            '            - name: dshm',
+            '              mountPath: /dev/shm',
+            '            - name: work',
+            '              mountPath: /artifacts',
+            '              subPath: artifacts',
             '      volumes:',
             '        - name: work',
             '          hostPath:',
             '            path: /var/lib/rancher/dev-workspaces/${install}',
             '            type: DirectoryOrCreate',
+            '        - name: dshm',
+            '          emptyDir:',
+            '            medium: Memory',
+            '            sizeLimit: 1Gi',
             '        - name: dev-config',
             '          configMap:',
             '            name: dev-workspace-config',
@@ -451,6 +536,9 @@ export function rancherWorkspaceApp(): Json {
             '    - name: http',
             '      port: ${port}',
             '      targetPort: http',
+            '    - name: browser',
+            '      port: 3000',
+            '      targetPort: browser',
             '',
           ].join('\n'),
         },

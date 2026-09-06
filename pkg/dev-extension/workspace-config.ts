@@ -13,8 +13,8 @@
  *
  * It is kept here as text rather than as a file because it has to end up inside a container
  * this code only ever talks to through the API. It is written into a ConfigMap in the
- * workspace's namespace and copied into the checkout on boot, beside the repo's own config,
- * which it wraps rather than replaces: a workspace is still an ordinary clone of
+ * workspace's namespace and handed to vue-cli-service from there (VUE_CLI_SERVICE_CONFIG_PATH),
+ * wrapping the repo's own config rather than replacing it: a workspace is still an ordinary clone of
  * rancher/dashboard that someone can work in, and its config is still the repo's.
  *
  * The annotated original is `pkg/barn/dev-extension/pod/vue.config.js`, and the two have
@@ -46,11 +46,14 @@ const proxyPath = (process.env.DEV_PROXY_PATH || '').replace(/\\/$/, '');
 // the shell's config runs, because the shell reads it out of the environment as it does.
 process.env.ROUTER_BASE = proxyPath ? proxyPath + '/' : '/';
 
-// The repo's own config, kept beside this one on boot, rather than a reimplementation of it.
+// The repo's own config, untouched in the checkout, rather than a reimplementation of it.
 // rancher/dashboard is a monorepo whose shell is ./shell rather than a node_modules package,
 // and which arguments its root config passes to that shell is the repo's business and changes
-// with the repo. Wrapping it means this file only has to know about the proxy.
-const base = require('./vue.config.orig.js');
+// with the repo. Wrapping it means this file only has to know about the proxy. This file is
+// handed to vue-cli-service as VUE_CLI_SERVICE_CONFIG_PATH (see apps.ts, WORKSPACE_SCRIPT), so
+// it lives outside the checkout and the checkout's own vue.config.js is never rewritten: the
+// tree stays clean, a branch switch never trips over it, and nothing an agent commits carries it.
+const base = require(require('path').join(process.cwd(), 'vue.config.js'));
 
 // The proxy rewrites absolute URLs in HTML as they pass through, which is what lets a naive UI
 // work behind it at all, so an asset URL that already carried the prefix would carry it twice.
