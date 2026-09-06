@@ -13,6 +13,7 @@
 // in dev-system - and the review state lives in ConfigMaps beside it, one per pull request.
 import http from 'node:http';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = 'https://kubernetes.default.svc';
@@ -390,6 +391,35 @@ async function saveComments(num, comments) {
 // ensureWorkspaceApi) so a recording an agent made can be looked at before it goes anywhere.
 const AGENT_ROOT = process.env.AGENT_WORKSPACE_ROOT || '/agent-workspace';
 const AGENT_PREFIX = '/workspace/';
+// And where every workspace's /workspace is (one directory per workspace, the rancher-dev App's
+// hostPath): a review runs in the PR's workspace now, so its evidence is under that one.
+const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/dev-workspaces';
+
+/** The seed the workspaces are laid out from, as the ConfigMap carries it (gzipped) or used to. */
+function agentSeed() {
+  try {
+    return JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync('/seed/seed.json.gz.b64', 'utf8'), 'base64')).toString('utf8'));
+  } catch {
+    return JSON.parse(fs.readFileSync('/seed/seed.json', 'utf8'));
+  }
+}
+
+/**
+ * The workspace a PR's review ran in, from its run record. Remembered as the record is read or
+ * written, because the callers that want it are synchronous; a PR whose run has not been read
+ * yet answers null, and its evidence is then found by looking in every workspace instead.
+ */
+const reviewProjects = new Map();
+
+function reviewWorkspace(num) {
+  return reviewProjects.get(Number(num)) || null;
+}
+
+function rememberReviewWorkspace(num, run) {
+  if (run?.project) {
+    reviewProjects.set(Number(num), run.project);
+  }
+}
 
 const ARTIFACT_TYPES = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
@@ -409,21 +439,44 @@ function attachmentKind(name) {
   return type.startsWith('image/') ? 'image' : type.startsWith('video/') ? 'video' : 'file';
 }
 
-/** A path an agent wrote (`/workspace/artifacts/x.webm`, or relative to it) as a file here, or null. */
-function artifactFile(given) {
+/**
+ * A path an agent wrote (`/workspace/artifacts/x.webm`, or relative to it) as a file here, or
+ * null. Looked for in the PR's own workspace first, then in any workspace, then in the agent
+ * pod's directory, which is where a review ran before workspaces were the harness's containers.
+ */
+function artifactFile(given, num = null) {
   const rel = String(given || '').replace(/^\/?workspace\//, '').replace(/^\/+/, '');
 
   if (!rel || rel.split('/').includes('..')) {
     return null;
   }
 
-  const full = `${ AGENT_ROOT }/${ rel }`;
+  const roots = [];
+  const own = num ? reviewWorkspace(num) : null;
 
-  try {
-    return fs.statSync(full).isFile() ? full : null;
-  } catch {
-    return null;
+  if (own) {
+    roots.push(`${ WORKSPACES_ROOT }/${ own }`);
   }
+  try {
+    for (const name of fs.readdirSync(WORKSPACES_ROOT)) {
+      if (name !== own) {
+        roots.push(`${ WORKSPACES_ROOT }/${ name }`);
+      }
+    }
+  } catch { /* no workspaces mounted */ }
+  roots.push(AGENT_ROOT);
+
+  for (const root of roots) {
+    const full = `${ root }/${ rel }`;
+
+    try {
+      if (fs.statSync(full).isFile()) {
+        return full;
+      }
+    } catch { /* not there */ }
+  }
+
+  return null;
 }
 
 function cleanAttachments(list) {
@@ -444,7 +497,7 @@ function decorate(c) {
       ...a,
       name:  a.path.split('/').pop(),
       kind:  attachmentKind(a.path),
-      found: !!artifactFile(a.path),
+      found: !!artifactFile(a.path, c.pr),
     })),
   };
 }
@@ -789,7 +842,7 @@ const routes = [
   ['GET', /^\/templates$/, async() => ({ templates: await apps() })],
   // The skills and rules a review or fix agent needs, as the extension bundled them. Served to
   // the agent pod because an exec command is URL arguments and this is half a megabyte.
-  ['GET', /^\/agent-seed$/, async() => JSON.parse(fs.readFileSync('/seed/seed.json', 'utf8'))],
+  ['GET', /^\/agent-seed$/, async() => agentSeed()],
   ['GET', /^\/workspaces$/, async() => {
     const list = await k8s(`${ INSTANCES }?labelSelector=${ LABEL_WORKSPACE }`);
 
@@ -960,7 +1013,13 @@ const routes = [
 
     return { combined: false, files: [...byFile.values()].sort((a, b) => a.path.localeCompare(b.path)) };
   }],
-  ['GET', /^\/my-work\/pr\/(\d+)\/review-run$/, async(m) => ({ run: await readDoc(reviewMap(Number(m[1])), 'run.json') })],
+  ['GET', /^\/my-work\/pr\/(\d+)\/review-run$/, async(m) => {
+    const run = await readDoc(reviewMap(Number(m[1])), 'run.json');
+
+    rememberReviewWorkspace(m[1], run);
+
+    return { run };
+  }],
   ['POST', /^\/my-work\/pr\/(\d+)\/review-run$/, async(m, url, body) => {
     const num = Number(m[1]);
     const state = String(body.state || '');
@@ -980,6 +1039,7 @@ const routes = [
     };
 
     await writeDoc(reviewMap(num), 'run.json', run, { 'dev.rancher.io/pr': String(num) });
+    rememberReviewWorkspace(num, run);
 
     return { run };
   }],
@@ -1021,7 +1081,7 @@ http.createServer(async(req, res) => {
   const artifact = /^\/my-work\/pr\/\d+\/artifact$/.test(url.pathname) && req.method === 'GET';
 
   if (artifact) {
-    const file = artifactFile(url.searchParams.get('path'));
+    const file = artifactFile(url.searchParams.get('path'), Number(url.pathname.split('/')[3]));
 
     if (!file) {
       return send(res, 404, { error: 'No such file in the agent workspace.' });

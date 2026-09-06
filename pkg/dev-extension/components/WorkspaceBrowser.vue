@@ -17,7 +17,9 @@
 //   - a template without one frames the workspace through the apiserver's service proxy, on
 //     Rancher's origin. A dashboard framed that way sends its API calls to Rancher rather than
 //     to the dev server it came from, which is why the rancher template does not do this.
-import { workspaceProxyUrl } from '../api';
+import {
+  workspaceProxyUrl, workspaceNamespace, devFetch, clusterBase
+} from '../api';
 
 export default {
   name: 'WorkspaceBrowser',
@@ -29,11 +31,34 @@ export default {
     },
   },
 
+  data() {
+    return { browserPort: null, checked: false };
+  },
+
+  async fetch() {
+    // Whether this workspace has a browser beside it: the rancher-dev App's Chromium container,
+    // published on the Service as a port named `browser`. Read once; the Service does not change.
+    const namespace = workspaceNamespace(this.workspace.name);
+    const service = await devFetch(`${ clusterBase(this.workspace.cluster || 'local') }/v1/services/${ namespace }/${ namespace }`).catch(() => null);
+    const port = (service?.spec?.ports || []).find((p) => p.name === 'browser');
+
+    this.browserPort = port?.port || null;
+    this.checked = true;
+  },
+
   computed: {
-    // What the workspace itself serves, through the apiserver's service proxy. The port and the
-    // scheme are the workspace's own, written on its namespace by the App that made it.
+    // The browser beside the workspace when there is one (its desktop, Chromium already on the
+    // dev server and able to click through its certificate), else what the workspace itself
+    // serves, through the apiserver's service proxy. The port and the scheme are the
+    // workspace's own, written on its namespace by the App that made it.
     src() {
-      return workspaceProxyUrl(this.workspace.name, this.workspace.port, this.workspace.scheme);
+      if (!this.checked) {
+        return '';
+      }
+
+      return this.browserPort
+        ? workspaceProxyUrl(this.workspace.name, this.browserPort, 'http')
+        : workspaceProxyUrl(this.workspace.name, this.workspace.port, this.workspace.scheme);
     },
   },
 };
@@ -41,9 +66,14 @@ export default {
 
 <template>
   <iframe
+    v-if="src"
     class="workspace-browser"
     :src="src"
     title="What this workspace serves"
+  />
+  <div
+    v-else
+    class="workspace-browser"
   />
 </template>
 

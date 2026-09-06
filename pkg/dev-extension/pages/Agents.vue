@@ -12,7 +12,7 @@ import StudioTerminal from '../components/StudioTerminal.vue';
 import ClaudeLogo from '../components/ClaudeLogo.vue';
 import { listAllWorkspaces } from '../api';
 import {
-  listConversations, endConversation, renameConversation
+  listConversations, endConversation, renameConversation, paneCommand
 } from '../conversations';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE } from '../config/constants';
 
@@ -63,6 +63,11 @@ export default {
   },
 
   methods: {
+    /** The argv of one conversation's pane: claude in its workspace's pod, reached through the agent pod. */
+    paneFor(c) {
+      return paneCommand(c.workspace, c.id);
+    },
+
     async refresh() {
       try {
         const workspaces = (await listAllWorkspaces()).filter((workspace) => !workspace.preview);
@@ -173,7 +178,7 @@ export default {
         v-if="!selected"
         class="dev-agents__hint text-muted"
       >
-        Pick a conversation. Every one of them runs in Extension Studio's agent pod; this pane is the Studio's terminal onto it.
+        Pick a conversation. Every one of them runs in its workspace's pod; this pane reaches it through the agents extension's terminal.
       </p>
       <template
         v-for="c in all"
@@ -183,6 +188,7 @@ export default {
           v-if="seen[c.id]"
           v-show="c.id === current"
           :session="c.id"
+          :command="paneFor(c)"
           class="dev-agents__terminal"
           @state="onState(c.id, $event)"
         />

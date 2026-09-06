@@ -65,8 +65,11 @@
 .prm-header-row {
   display:     flex;
   align-items: center;
-  gap:         var(--dev-space-4);
-  height:      32px;
+  gap:         var(--dev-space-2) var(--dev-space-4);
+  min-height:  32px;
+  // Wrap the row rather than the actions: at a narrow width the actions drop under the title
+  // as one line, instead of folding inside a fixed-height row and lying over the line below.
+  flex-wrap:   wrap;
 }
 
 .prm-title {
@@ -203,7 +206,8 @@
   display:     flex;
   align-items: center;
   gap:         var(--dev-space-3);
-  flex-wrap:   wrap;
+  flex-wrap:   nowrap;
+  flex-shrink: 0;
 }
 
 .prm-close {

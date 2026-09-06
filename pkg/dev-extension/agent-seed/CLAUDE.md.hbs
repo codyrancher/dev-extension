@@ -1,0 +1,54 @@
+# Rancher Instance
+
+- The environment variables can be accessed via .env
+- It can be accessed at https://$RANCHER_HOST_NAME
+- You can use the following admin credentials
+- user: $RANCHER_ADMIN_USER
+- pass: $RANCHER_ADMIN_PASS
+{{#if issueNumber}}
+
+# Issue
+This project is for issue https://github.com/rancher/dashboard/issues/{{issueNumber}}
+{{/if}}
+{{#if prNumber}}
+
+# Pull Request
+This project is for PR https://github.com/rancher/dashboard/pull/{{prNumber}}
+{{/if}}
+
+# Writing style
+- Never use em dashes in any output: code, comments, commit messages, PR descriptions, or chat replies. Use a regular dash, parentheses, or split the sentence instead.
+
+# Environment rules
+`.claude/rules/` describes the environment itself - how to drive it and what it can be changed into. Read the relevant one before you use that part of it, the same way you read a skill.
+
+- `sidecars.md` - starting Rancher, the browser and Figma, and **changing what they are**: the Rancher version, Prime branding, the auth provider. Read this before concluding a bug doesn't reproduce, since the reported version may not be the one running. These endpoints need `$CLAUDE_HARNESS_API` (credentialed); the bare `$HARNESS_API` answers them with 401.
+- `browser-control.md` - driving the browser sidecar over CDP.
+- `accessibility.md` - proving an accessibility fix: Chromium's own AX tree over CDP (`a11y axtree`, nothing to install), and the AT-SPI / speech / Orca stack in the browser sidecar (`a11y tier`). Read this before claiming an a11y change works, and before recording audio for one.
+- `project-environment.md` - what's installed and where things live in this container.
+- `github-links.md`, `git-fix-commit.md`, `insights.md` - conventions for links, commits, and reporting missing tools.
+
+# Workflow skills
+The detailed playbooks for the most common tasks live in `.claude/skills/` and are auto-discovered by the Skill tool. Read the skill's `SKILL.md` and follow it when you reach the matching phase. Do not paraphrase or duplicate skill content here.
+
+- `my-issue-fix` - the end-to-end fix workflow: understand, reproduce, plan, fix, verify, self-review, commit, draft PR. This is the playbook for "fix the issue", use it every time.
+- `my-issue-reproduce` - reproduce the issue against the live Rancher and record the before video.
+- `my-browser-record-video` - script-driven before/after recordings against the live Rancher (CDP, hover->wait->click pattern, deferred recording).
+- `my-browser-screenshot` - one annotated screenshot with a header bar, red highlights, and labelled badges.
+- `my-browser-screenshot-comparison` - the same visual language, two panels side by side (master vs branch).
+- `my-a11y-screenreader-video` - before/after video with real Orca speech, for a fix that changes what assistive technology announces.
+- `my-a11y-axe-screenshot` - a matched before/after pair of real axe DevTools panel captures, for a fix that is silent to a screen reader.
+- `my-commit-create` - concise commit on a new `issue-$(issueNumber)` branch, no AI co-author.
+- `my-pr-create` - push and open a draft PR upstream. Includes the **Playwright + CDP upload flow** that posts videos and screenshots to GitHub `user-attachments` so they embed inline in the PR body.
+- `my-pr-review` - pending inline review comments only, never submit. This is the review playbook, use it for every PR review.
+- `my-pr-address-feedback` - fix or reply to every inline comment on an existing PR, then push one follow-up commit.
+
+# Fix Issue
+Follow the `my-issue-fix` skill. It is the full playbook and it supersedes any shorter description of the fix workflow: which phases run in which order, what counts as reproducing, how to plan a change that matches this codebase, what verification actually requires, and the self-review pass that happens before the commit exists.
+
+The issue number is the trailing `issue-<N>` token in the project name.
+
+# Review PR
+- Follow the `my-pr-review` skill. It is the full playbook: what earns a comment, how short it has to be, permalinks instead of prose, screenshots when they help, and how to keep the review in PENDING state.
+- The PR number is the trailing `pr-<N>` token in the project name.
+- Leave the review PENDING. Never submit it, the user submits from Files Changed.

@@ -20,6 +20,7 @@ import {
 import {
   listConversations, startConversation, endConversation, renameConversation, STUDIO_CLUSTER
 } from '../conversations';
+import { prepareWorkspace } from '../reviews';
 
 const ROW_STATE = {
   open: 'running', connecting: 'starting', waiting: 'starting', closed: 'stopped'
@@ -52,6 +53,7 @@ export default {
 
   data() {
     return {
+      prepared: false,
       conversations: [],
       current:       '',
       states:        {},
@@ -138,10 +140,23 @@ export default {
       if (!this.current || !this.rows.some((row) => row.key === this.current)) {
         this.current = this.conversations[0]?.id || SHELL;
       }
+
+      // The workspace made ready for whatever gets typed into a pane: the harness's skills,
+      // gh, the env. Once per page, in the background; a pane opened before it finishes is a
+      // claude that starts a moment before its skills are all there.
+      if (this.ready && !this.prepared) {
+        this.prepared = true;
+        prepareWorkspace(this.workspace.name).catch((e) => {
+          this.prepared = false;
+          this.error = `The workspace could not be prepared for the harness's skills: ${ e?.message || e }`;
+          console.error('[dev] preparing the workspace failed', e); // eslint-disable-line no-console
+        });
+      }
     },
 
+    /** shell.sh's four arguments (session, checkout, home) and then the mode: a shell, not claude. */
     shellCommand() {
-      return [...workspaceTerminalCommand('shell').slice(0, 4), 'shell'];
+      return [...workspaceTerminalCommand('shell'), 'shell'];
     },
 
     async newConversation() {
@@ -270,6 +285,7 @@ export default {
         :key="conversation.id"
         class="workspace-conversations__terminal"
         :session="conversation.id"
+        :command="conversation.attach.command"
         @state="onState(conversation.id, $event)"
       />
       <StudioTerminal

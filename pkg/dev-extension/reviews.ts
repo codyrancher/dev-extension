@@ -18,11 +18,16 @@
 // ("marked good"), then posted to GitHub as one review. That is the harness's flow exactly, and
 // the local store is the in-cluster API's ConfigMaps rather than the harness's sqlite.
 
-import { devFetch, clusterBase, githubToken, createWorkspace, listAllWorkspaces } from './api';
+import {
+  devFetch, clusterBase, githubToken, createWorkspace, listAllWorkspaces, workspacePod
+} from './api';
 import {
   listConversations, startConversation, endConversation, queuePrompt, Attachment, ProjectConversation
 } from './conversations';
-import { ensureAgentReady, conversationPane } from './agent-tools';
+import {
+  ensureWorkspaceReady, waitForWorkspacePod, queuePrompt as queueInWorkspace, conversationPane
+} from './workspace-tools';
+import type { WorkspaceContext } from './workspace-tools';
 import { rerunFailed } from './github';
 import { DEFAULT_APP, DEV_API_IN_CLUSTER } from './config/constants';
 
@@ -352,21 +357,21 @@ export async function rerunFailedJobs(pr: { repo: string; runs: Json[] }): Promi
 // ── Agent actions ───────────────────────────────────────────────────────────────────────────
 
 /**
- * The agent's opening instructions: where the code is, where the API is, how to reach GitHub.
+ * The harness's prompts, verbatim.
  *
- * The harness gave its agents all three by building the container around them. The Studio's
- * agent pod gets them by being told, once per conversation: a checkout to work in, the
- * in-cluster API the skills read as $CLAUDE_HARNESS_API, and the GitHub token, which
- * ensureAgentReady wrote into the pane's home so it never travels in a prompt.
+ * The harness built its project containers so that these were all a skill needed to be told;
+ * workspace-tools.ts builds the workspace's pod the same way, so they are the same words here,
+ * em dashes and all. `$CLAUDE_HARNESS_API` is set in the pod (the App's env and the seed's
+ * settings.json) to the in-cluster API, which answers the same routes.
  */
-export function preamble(repo: string): string {
-  const dir = `/workspace/repos/${ repo.split('/')[1] }`;
+const API_HINT = '$CLAUDE_HARNESS_API/my-work/pr';
 
-  return [
-    `First: \`export CLAUDE_HARNESS_API=${ DEV_API_IN_CLUSTER } GH_TOKEN=$(cat ~/.gh-token)\`.`,
-    `Work in ${ dir }; if it is missing, \`git clone https://github.com/${ repo } ${ dir }\` first, then cd into it.`,
-    'Then:',
-  ].join(' ');
+export function reviewPrompt(pr: number, repo = DEFAULT_REPO): string {
+  return `/my-pr-full-review Review ${ repo } PR #${ pr } — harness portal context, file through ${ API_HINT }/${ pr }.`;
+}
+
+export function fixPrompt(num: number, repo = DEFAULT_REPO): string {
+  return `/my-issue-fix Fix ${ repo } issue #${ num } — this project was created for it.`;
 }
 
 async function ensureWorkspace(store: Store, name: string): Promise<boolean> {
@@ -379,11 +384,43 @@ async function ensureWorkspace(store: Store, name: string): Promise<boolean> {
   return !existing;
 }
 
-/** A conversation in the workspace with a prompt queued, the agent pod made ready for it. */
-async function openWith(workspace: string, title: string, prompt: string): Promise<ProjectConversation> {
-  const conversation = await startConversation(workspace, title, prompt);
+/**
+ * A conversation in the workspace with a prompt queued, the workspace's pod made ready for it.
+ *
+ * The registration is immediate; the rest waits for the pod, which for a workspace made a
+ * moment ago is minutes away (a clone and a yarn install), and runs in the background so the
+ * button that asked for this comes back now. The pane, docked wherever it was asked for,
+ * shows the pod arriving and then the prompt starting. `onNote` hears where it has got to.
+ */
+async function openWith(workspace: string, title: string, prompt: string, ctx?: WorkspaceContext, onNote?: (note: string) => void): Promise<ProjectConversation> {
+  const conversation = await startConversation(workspace, title);
+  const prepare = async() => {
+    onNote?.('preparing the workspace (skills, gh, browser)');
+    await ensureWorkspaceReady(workspace, ctx);
+    await queueInWorkspace(workspace, conversation.id, prompt);
+    onNote?.('prompt queued; the review starts when its pane is attached');
+  };
 
-  await ensureAgentReady(conversation.attach, await githubToken());
+  // A pod that is up is prepared now, before this returns: a page that navigates away a
+  // moment after the click would otherwise take the preparation with it and leave a
+  // conversation with nothing queued. Only a pod that does not exist yet is waited for in the
+  // background, since that wait is minutes and the pane shows it arriving.
+  if (await workspacePod(workspace).catch(() => null)) {
+    await prepare();
+
+    return conversation;
+  }
+
+  (async() => {
+    try {
+      onNote?.('waiting for the workspace pod');
+      await waitForWorkspacePod(workspace);
+      await prepare();
+    } catch (e: Json) {
+      onNote?.(`could not start: ${ e?.message || e }`);
+      console.error('[dev] preparing the workspace failed', e); // eslint-disable-line no-console
+    }
+  })();
 
   return conversation;
 }
@@ -409,10 +446,10 @@ export async function startPrReview(store: Store, pr: { number: number; issue?: 
     return { workspace, conversation: existing, created };
   }
 
-  const conversation = await openWith(workspace, title,
-    `${ preamble(repo) } /my-pr-full-review Review ${ repo } PR #${ pr.number } - harness portal context, file through $CLAUDE_HARNESS_API/my-work/pr/${ pr.number }.`);
+  const conversation = await openWith(workspace, title, reviewPrompt(pr.number, repo), { pr: pr.number, issue: pr.issue?.number || null },
+    (note) => setReviewRun(pr.number, 'starting', note, workspace).catch(() => {}));
 
-  await setReviewRun(pr.number, 'starting', 'conversation opened; the review starts when its pane is attached', workspace).catch(() => {});
+  await setReviewRun(pr.number, 'starting', 'conversation opened; waiting for the workspace', workspace).catch(() => {});
 
   return { workspace, conversation, created };
 }
@@ -421,8 +458,7 @@ export async function startPrReview(store: Store, pr: { number: number; issue?: 
 export async function startIssueFix(store: Store, issue: { number: number; title: string }, repo = DEFAULT_REPO): Promise<Started> {
   const workspace = `issue-${ issue.number }`;
   const created = await ensureWorkspace(store, workspace);
-  const conversation = await openWith(workspace, `Fix #${ issue.number }`,
-    `${ preamble(repo) } /my-issue-fix Fix ${ repo } issue #${ issue.number } - this workspace was created for it. ${ JSON.stringify(issue.title) }`);
+  const conversation = await openWith(workspace, `Fix #${ issue.number }`, fixPrompt(issue.number, repo), { issue: issue.number });
 
   return { workspace, conversation, created };
 }
@@ -439,7 +475,7 @@ export async function startAlertFix(store: Store, group: Json, repo = DEFAULT_RE
   const created = await ensureWorkspace(store, workspace);
   const alertList = (group.alerts || []).map((a: Json) => `#${ a.number } ${ a.packageName } in ${ a.manifest }`).join('; ');
   const conversation = await openWith(workspace, `Fix ${ group.packages[0] || group.slug }`,
-    `${ preamble(repo) } /my-dependabot-fix ${ JSON.stringify(group.title) } - ${ (group.alerts || []).length } open alert(s): ${ alertList }. The advisories: $CLAUDE_HARNESS_API/my-work/dependabot.`);
+    `/my-dependabot-fix ${ JSON.stringify(group.title) } — ${ (group.alerts || []).length } open alert(s): ${ alertList }. The advisories: $CLAUDE_HARNESS_API/my-work/dependabot.`);
 
   return { workspace, conversation, created };
 }
@@ -451,7 +487,7 @@ export async function startDependabotReview(store: Store, pr: { number: number }
   const title = `Dependabot review #${ pr.number }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
   const conversation = existing || await openWith(workspace, title,
-    `${ preamble(repo) } /my-dependabot-review Review ${ repo } PR #${ pr.number } - a dependabot bump. Its full context: curl -s "$CLAUDE_HARNESS_API/my-work/dependabot/pr/${ pr.number }/review-context". Finish with MERGE or STOP alone on the last line.`);
+    `/my-dependabot-review Review ${ repo } PR #${ pr.number } — a dependabot bump. Its full context: curl -s "$CLAUDE_HARNESS_API/my-work/dependabot/pr/${ pr.number }/review-context". Finish with MERGE or STOP alone on the last line.`, { pr: pr.number });
 
   await api(`/my-work/dependabot/reviews/${ pr.number }`, {
     method: 'PUT',
@@ -470,7 +506,7 @@ export async function startCiTriage(store: Store, pr: { number: number; issue?: 
   const failures = await ciFailures(pr.number, repo).catch(() => ({ checks: [] }));
   const details = (failures.checks || []).slice(0, 6).map((c: Json) => `- ${ c.name }: ${ c.conclusion }${ c.title ? ` - ${ c.title }` : '' }${ c.summary ? `\n  ${ c.summary.slice(0, 300) }` : '' } (${ c.url })`).join('\n');
   const conversation = await openWith(workspace, `CI #${ pr.number }`,
-    `${ preamble(repo) } /my-ci-triage ${ repo } PR #${ pr.number } is red. The failing checks:\n\n${ details || '(read them from $CLAUDE_HARNESS_API/my-work/pr/' + pr.number + '/ci)' }\n\nDecide whether this PR's own change caused them. If they are ours, fix them with /my-ci-fix, verify, commit and push; if not, re-run the failed jobs with gh. Finish with OURS or FLAKE alone on the last line.`);
+    `/my-ci-triage ${ repo } PR #${ pr.number } is red. The failing checks:\n\n${ details || '(read them from $CLAUDE_HARNESS_API/my-work/pr/' + pr.number + '/ci)' }\n\nDecide whether this PR's own change caused them. If they are ours, fix them with /my-ci-fix, verify, commit and push; if not, re-run the failed jobs with gh. Finish with OURS or FLAKE alone on the last line.`);
 
   return { workspace, conversation, created };
 }
@@ -480,25 +516,30 @@ export function discussPrompt(num: number, comment: LocalComment, message: strin
   const oneline = String(comment.body).replace(/\s+/g, ' ').slice(0, 400);
   const where = comment.path ? `file ${ comment.path }${ comment.line ? `, line ${ comment.line }` : '' }` : 'a PR-level comment';
   const opener = message
-    ? ` The user's opening message about it: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" - address that directly first.`
-    : ' Anything after this sentence is their question - answer that; if there is nothing there, start with your read of the code in question and whether the comment holds up.';
-  const apiHint = `${ DEV_API_IN_CLUSTER }/my-work/pr`;
+    ? ` The user's opening message about it: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" — address that directly first.`
+    : ' Anything after this sentence is their question — answer that; if there is nothing there, start with your read of the code in question and whether the comment holds up.';
+  const apiHint = API_HINT;
 
-  return `${ preamble(repo) } The user wants to discuss pending review comment #${ comment.id } on ${ repo } PR #${ num } - ${ where }: "${ oneline }". Fetch the PR for context with: curl -s ${ apiHint }/${ num } (find the relevant hunk in files[].patch${ comment.path ? ` for ${ comment.path }` : '' }).${ opener } Keep responses conversational and concise - this is a live discussion. When the user settles on improved wording, update the comment: curl -s -X PUT ${ apiHint }/${ num }/comments/${ comment.id } -H 'Content-Type: application/json' -d '{"body":"<new text>"}'. If they decide to drop it: curl -s -X DELETE ${ apiHint }/${ num }/comments/${ comment.id }.`;
+  return `The user wants to discuss pending review comment #${ comment.id } on ${ repo } PR #${ num } — ${ where }: "${ oneline }". Fetch the PR for context with: curl -s ${ apiHint }/${ num } (find the relevant hunk in files[].patch${ comment.path ? ` for ${ comment.path }` : '' }).${ opener } Keep responses conversational and concise — this is a live discussion. When the user settles on improved wording, update the comment: curl -s -X PUT ${ apiHint }/${ num }/comments/${ comment.id } -H 'Content-Type: application/json' -d '{"body":"<new text>"}'. If they decide to drop it: curl -s -X DELETE ${ apiHint }/${ num }/comments/${ comment.id }.`;
 }
 
 /** The opening prompt of a discussion about some lines, with no comment filed. */
 export function linesPrompt(num: number, lines: { path: string; line: number; startLine: number | null; side: string; code?: string }, message: string, repo = DEFAULT_REPO): string {
   const range = lines.startLine ? `lines ${ lines.startLine }-${ lines.line }` : `line ${ lines.line }`;
-  const apiHint = `${ DEV_API_IN_CLUSTER }/my-work/pr`;
+  const apiHint = API_HINT;
   const code = (lines.code || '').slice(0, 4000);
 
-  return `${ preamble(repo) } The user is reviewing ${ repo } PR #${ num } and wants to discuss ${ lines.path } ${ range } (${ lines.side } side of the diff). Fetch the PR with: curl -s ${ apiHint }/${ num } and find that file in files[].patch for context.${ code ? ` The selected lines are:\n\n${ code }\n` : '' }${ message ? ` Their opening message: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" - address it directly.` : ' Anything after this sentence is their question - answer that; if there is nothing there, start with your read of that code.' } Keep it conversational. Do NOT file a review comment unless the user asks; if they do, run: curl -s -X POST ${ apiHint }/${ num }/comments -H 'Content-Type: application/json' -d '{"path":"${ lines.path }","line":${ lines.line }${ lines.startLine ? `,"startLine":${ lines.startLine }` : '' },"side":"${ lines.side }","body":"<comment>"}'`;
+  return `The user is reviewing ${ repo } PR #${ num } and wants to discuss ${ lines.path } ${ range } (${ lines.side } side of the diff). Fetch the PR with: curl -s ${ apiHint }/${ num } and find that file in files[].patch for context.${ code ? ` The selected lines are:\n\n${ code }\n` : '' }${ message ? ` Their opening message: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" — address it directly.` : ' Anything after this sentence is their question — answer that; if there is nothing there, start with your read of that code.' } Keep it conversational. Do NOT file a review comment unless the user asks; if they do, run: curl -s -X POST ${ apiHint }/${ num }/comments -H 'Content-Type: application/json' -d '{"path":"${ lines.path }","line":${ lines.line }${ lines.startLine ? `,"startLine":${ lines.startLine }` : '' },"side":"${ lines.side }","body":"<comment>"}'`;
 }
 
 /** A discussion: a conversation in the workspace, opened with its context, the pod made ready. */
 export async function startDiscussion(workspace: string, title: string, prompt: string): Promise<ProjectConversation> {
   return openWith(workspace, title, prompt);
+}
+
+/** The workspace made ready for whatever a person types: the same preparation an action gets. */
+export async function prepareWorkspace(workspace: string): Promise<void> {
+  await ensureWorkspaceReady(workspace);
 }
 
 /** Say something into a running conversation: queued the same way, read by the pane's runner. */
@@ -591,7 +632,7 @@ export async function closeDependabotReview(num: number): Promise<void> {
 
 /** Read one bot review's pane and record what it says. */
 export async function refreshDependabotReview(review: BotReview, attach: Attachment): Promise<BotReview> {
-  const pane = await conversationPane(attach, 80).catch(() => ({ text: '', running: false }));
+  const pane = await conversationPane(attach.workspace, attach.id, 80).catch(() => ({ text: '', running: false }));
   const { verdict, reason } = verdictFromPane(pane.text);
   const busy = BUSY_RE.test(pane.text);
   const state: BotReview['state'] = verdict ? 'done' : (pane.running ? (busy ? 'running' : 'ended') : review.state);

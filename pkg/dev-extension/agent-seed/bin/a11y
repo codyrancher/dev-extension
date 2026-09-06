@@ -1,0 +1,20 @@
+#!/bin/bash
+# The harness's `a11y` drives an AT-SPI / speech / Orca stack inside its browser sidecar, through
+# the harness API's sidecar exec endpoint. This workspace's browser is a plain Chromium with CDP
+# open and nothing of that installed, so the tiers do not exist here.
+#
+# What does exist is the half that runs over CDP: the accessibility tree.
+case "$1" in
+  axtree|tree)
+    shift
+    exec node /workspace/axtree.mjs "$@"
+    ;;
+  tier|status)
+    echo "a11y: no assistive-technology tier is available in this environment (no AT-SPI, speech or Orca); the CDP accessibility tree is: a11y axtree ..."
+    exit 0
+    ;;
+  *)
+    echo "a11y: '$1' needs the harness browser sidecar's AT stack, which this environment does not have. Available: a11y axtree (Chromium's own accessibility tree over CDP)." >&2
+    exit 1
+    ;;
+esac
