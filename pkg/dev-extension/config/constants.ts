@@ -35,6 +35,8 @@ export const MY_WORK_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ MY_WORK_PAGE }`;
 export const INSIGHTS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ INSIGHTS_PAGE }`;
 export const SETTINGS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ SETTINGS_PAGE }`;
 export const AGENTS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ AGENTS_PAGE }`;
+export const AGENT_EDIT_PAGE = 'agents/edit';
+export const AGENT_EDIT_ROUTE = `${ DEV_PRODUCT }-c-cluster-agent-edit`;
 
 /**
  * The tabs a workspace opens as, and the one a link with no tab in it means.

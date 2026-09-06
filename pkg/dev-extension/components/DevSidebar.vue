@@ -16,6 +16,7 @@ import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
 import { DEFAULT_APP, LEGACY_WORKSPACE_APPS } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
 import { listRanchers, setDefaultRancher, createRancherInstance } from '../ranchers';
+import { tickAgents } from '../agent-defs';
 import DevList from './DevList.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
 import Stack from '../design/Stack.vue';
@@ -230,6 +231,9 @@ export default {
         // A workspace made by the in-cluster API is an Installation nobody has rendered yet.
         // This browser is the one that can; see apps.ts.
         reconcileUnrendered(this.$store).catch(() => {});
+
+        // The agents' clock: what is due starts, what is over is recorded. See agent-defs.ts.
+        tickAgents(this.$store).catch(() => {});
 
         // The App every Rancher gets. From here rather than only from the product's init,
         // because at init Apps Plus's own types are not in the store yet - its bundle loads
