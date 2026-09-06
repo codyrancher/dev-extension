@@ -133,14 +133,16 @@ export async function deployPreview(store: Store, workspace: string, values: { r
  * and an nginx is put up to serve that directory. Rebuilding is building again; nginx serves
  * whatever is there.
  */
-export async function shareWorkspace(store: Store, workspace: string, kind: ShareKind, rancherUrl: string, cluster = 'local', host: ShareHost = LOCAL_HOST): Promise<void> {
-  const { branch } = await workspaceBranch(workspace);
+export async function shareWorkspace(store: Store, workspace: string, kind: ShareKind, rancherUrl: string, cluster = 'local', host: ShareHost = LOCAL_HOST, ref = ''): Promise<void> {
+  const current = await workspaceBranch(workspace);
+  const branch = ref || current.branch;
   const remote = !!host.ip;
   const hostname = shareHostname(workspace, kind, host);
 
   // A build is routed for where it will be served: /dashboard/ on a public name, the proxied
-  // path here. So moving a share is a rebuild.
-  await buildShare(workspace, kind, remote ? (kind === 'storybook' ? '/' : '/dashboard/') : previewBase(workspace, cluster, kind));
+  // path here. So moving a share is a rebuild. `ref` is a branch of the checkout to build
+  // instead of the one it is on (workspace-tools.ts, buildShare: a worktree).
+  await buildShare(workspace, kind, remote ? (kind === 'storybook' ? '/' : '/dashboard/') : previewBase(workspace, cluster, kind), ref);
 
   const state = await previewState(store, workspace, cluster, kind);
   const asWanted = state.exists && state.host === hostname && (remote || !!state.sourceDir);

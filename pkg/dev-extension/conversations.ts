@@ -172,7 +172,11 @@ export interface StudioBrowserApi {
     container: string;
     pod(): Promise<string | null>;
     command(id: string, mode?: 'claude' | 'shell'): string[];
+    /** The drawer's own conversations (`agent-<n>`). */
+    sessions(): Promise<{ id: string; title: string }[]>;
     projectSessions(project: string): Promise<{ id: string; title: string }[]>;
+    /** A new drawer conversation; its id. */
+    start(): Promise<string>;
     startInProject(project: string, title?: string, prompt?: string): Promise<string>;
     queue(id: string, prompt: string): Promise<void>;
     rename(id: string, title: string): Promise<void>;
