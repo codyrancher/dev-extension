@@ -18,7 +18,7 @@ import {
   LABEL_WORKSPACE, WORKSPACE_CONTAINER, workspaceTerminalCommand
 } from '../api';
 import {
-  listConversations, startConversation, endConversation, renameConversation, STUDIO_CLUSTER
+  listConversations, startConversation, endConversation, renameConversation, STUDIO_CLUSTER, KUBECTL
 } from '../conversations';
 import { prepareWorkspace } from '../reviews';
 import { ensureDefaultShare } from '../previews';
@@ -121,7 +121,8 @@ export default {
     /** The argv the agent pod runs to land in the workspace's container: kubectl, then the workspace's own shell.sh. */
     shellViaAgentCommand() {
       return [
-        'kubectl', 'exec', '-i', '-t', '-n', this.workspace.namespace, `deploy/${ this.workspace.namespace }`, '-c', WORKSPACE_CONTAINER, '--',
+        ...KUBECTL,
+        'exec', '-i', '-t', '-n', this.workspace.namespace, `deploy/${ this.workspace.namespace }`, '-c', WORKSPACE_CONTAINER, '--',
         ...this.shellCommand(),
       ];
     },

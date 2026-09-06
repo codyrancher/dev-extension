@@ -31,7 +31,6 @@ import type { WorkspaceContext } from './workspace-tools';
 import { rerunFailed } from './github';
 import { DEFAULT_APP, DEV_API_IN_CLUSTER } from './config/constants';
 import { defaultRancherValues } from './ranchers';
-import { ensureDefaultShare } from './previews';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -402,10 +401,9 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
     await ensureWorkspaceReady(workspace, ctx);
     await queueInWorkspace(workspace, conversation.id, prompt);
     onNote?.('prompt queued; the review starts when its pane is attached');
-    // Shared by default: the workspace's build, on a link, from the start (previews.ts).
-    if (store) {
-      ensureDefaultShare(store, workspace).catch(() => {});
-    }
+    // Sharing by default happens when the workspace is opened (WorkspaceConversations), not
+    // here: a build beside an agent that has just started is two compiles on one node.
+    void store;
   };
 
   // A pod that is up is prepared now, before this returns: a page that navigates away a
