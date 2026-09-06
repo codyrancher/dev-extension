@@ -23,13 +23,14 @@ import WindowManager from '@shell/components/nav/WindowManager';
 import ActionMenu from '@shell/components/ActionMenu';
 import PromptRemove from '@shell/components/PromptRemove';
 import ModalManager from '@shell/components/ModalManager';
+import GrowlManager from '@shell/components/GrowlManager';
 import DevSidebar from '../components/DevSidebar.vue';
 
 export default {
   name: 'DevShell',
 
   components: {
-    Header, WindowManager, ActionMenu, PromptRemove, ModalManager, DevSidebar
+    Header, WindowManager, ActionMenu, PromptRemove, ModalManager, GrowlManager, DevSidebar
   },
 
   computed: {
@@ -60,6 +61,12 @@ export default {
       <ActionMenu />
       <PromptRemove />
       <ModalManager />
+      <!--
+        The growls: the shell's layout mounts this and this shell replaced that layout, so
+        every "copied", "creating" and "sent" the pages dispatched went onto a stack nothing
+        drew.
+      -->
+      <GrowlManager />
     </div>
   </div>
 </template>
