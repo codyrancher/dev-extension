@@ -747,23 +747,34 @@
   gap:            var(--dev-space-2);
 }
 
-// One click to make a comment box tall (see grow.ts), and room as you type where the browser
-// supports field-sizing.
+// One click to make a comment box tall (see grow.ts): a control laid over the box's bottom
+// corner, there while the pointer or the focus is on the box (and while it is tall, to shrink
+// it again), and room as you type where the browser supports field-sizing.
 .edit-grow {
-  min-height:  0;
-  height:      20px;
-  padding:     0 6px;
-  margin:      2px 0 0 auto;
-  display:     block;
-  border:      0;
-  background:  transparent;
-  color:       var(--pr-muted);
-  font-size:   13px;
-  line-height: 1;
-  cursor:      pointer;
+  position:      absolute;
+  z-index:       2;
+  width:         20px;
+  height:        20px;
+  min-height:    0;
+  padding:       0;
+  margin:        0;
+  border:        0;
+  border-radius: 4px;
+  background:    var(--pr-el);
+  color:         var(--pr-muted);
+  font-size:     13px;
+  line-height:   20px;
+  text-align:    center;
+  opacity:       0;
+  transition:    opacity 0.15s, color 0.15s;
+  cursor:        pointer;
 
-  &:hover { color: var(--pr-accent); }
+  &:hover, &:focus-visible { opacity: 1; color: var(--pr-accent); }
 }
+
+.edit-textarea:hover + .edit-grow,
+.edit-textarea:focus + .edit-grow,
+.edit-textarea--tall + .edit-grow { opacity: 1; }
 
 .edit-textarea--tall { min-height: 45vh !important; }
 
@@ -876,22 +887,6 @@
 
   .edit-textarea { flex: 1; min-height: 40px; height: 40px; padding: 10px var(--dev-space-4); }
   .prb { height: auto; }
-
-  // The expand control grow.ts puts after the textarea would be stretched to the row's height
-  // here, into a block that looks like a button for nothing: keep it the small corner control
-  // it is under every other comment box, sitting at the foot of the row.
-  .edit-grow {
-    flex:        0 0 auto;
-    align-self:  flex-end;
-    width:       auto;
-    height:      20px;
-    min-width:   0;
-    margin:      0 0 4px;
-    padding:     0 4px;
-    background:  transparent !important;
-    border:      0 !important;
-    box-shadow:  none;
-  }
 }
 
 .diff-spacer { width: 100%; }

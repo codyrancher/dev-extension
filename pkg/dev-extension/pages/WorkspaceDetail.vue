@@ -230,6 +230,13 @@ export default {
       if (!this.workspace || this.stopped) {
         return false;
       }
+      // Nothing listening yet is what the Deployment's readiness says (the workspace container
+      // has a TCP probe on its port): asking the service proxy instead answered 503 every few
+      // seconds, and the browser logs each one as an error. The proxy is only asked once a pod
+      // is ready, when it answers.
+      if (!(this.workspace.ready > 0)) {
+        return false;
+      }
 
       return workspaceServing(this.name, this.workspace.port, this.workspace.scheme).catch(() => false);
     },

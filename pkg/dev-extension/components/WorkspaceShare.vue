@@ -10,10 +10,10 @@
 import { Banner } from '@components/Banner';
 import AsyncButton from '@shell/components/AsyncButton';
 import {
-  previewState, removePreview, shareWorkspace, previewBase
+  previewState, removePreview, shareWorkspace, previewBase, retargetPreview
 } from '../previews';
 import { buildShare, shareStatus, workspaceBranch } from '../workspace-tools';
-import { defaultRancher } from '../ranchers';
+import { defaultRancher, listRanchers } from '../ranchers';
 import { listApps } from '../apps';
 import { DEFAULT_APP } from '../config/constants';
 import { DEFAULT_REPO } from '../reviews';
@@ -24,13 +24,13 @@ const KINDS = [
   {
     kind:        'dashboard',
     title:       'Rancher dashboard',
-    blurb:       'The dashboard built from this workspace\'s checkout as it is, on a link on this Rancher. A reviewer opens it and signs in the way they always do - GitHub included - and what they see is this branch talking to this Rancher.',
+    blurb:       'This branch as a dashboard on a link, talking to a Rancher of your choosing. Reviewers sign in as they always do.',
     needsRancher: true,
   },
   {
     kind:        'storybook',
     title:       'Storybook',
-    blurb:       'The dashboard\'s Storybook built from this workspace\'s checkout: every component, on its own. On this Rancher for anyone with a login here, and on a direct address for anyone at all.',
+    blurb:       'Every component on its own, with a direct link that needs no login.',
     needsRancher: false,
   },
 ];
@@ -61,6 +61,11 @@ export default {
       states:    {},
       builds:    {},
       rancher:   window.location.origin,
+      /** The Ranchers the sidebar lists, for the picker; only those with an address. */
+      ranchers:  [],
+      /** Per kind: a picker on "Another Rancher", with the address typed so far. */
+      other:     {},
+      custom:    '',
       error:     '',
       notice:    '',
       timer:     null,
@@ -86,6 +91,7 @@ export default {
       this.number = this.pr || 0;
       // The starred Rancher (the sidebar's Ranchers list), else the one this page is on.
       this.rancher = (await defaultRancher().catch(() => '')) || window.location.origin;
+      this.ranchers = (await listRanchers(this.$store).catch(() => [])).filter((r) => r.url);
       await this.readBranch();
     },
 
@@ -171,6 +177,75 @@ export default {
       }
     },
 
+    // ── Which Rancher a dashboard build talks to ──
+
+    /** The address a kind talks to now: the served one's, else what the next build will use. */
+    currentRancher(kind) {
+      const state = this.stateOf(kind);
+
+      return (state?.exists ? state.rancherUrl : this.rancher) || '';
+    },
+
+    /** The picker's rows: the listed Ranchers, plus the current address when it is none of them. */
+    rancherOptions(kind) {
+      const current = this.currentRancher(kind);
+      const rows = this.ranchers.map((r) => ({ url: r.url, label: `${ r.name } · ${ this.host(r.url) }` }));
+
+      if (current && !rows.some((r) => r.url === current)) {
+        rows.unshift({ url: current, label: this.host(current) });
+      }
+
+      return rows;
+    },
+
+    host(url) {
+      try {
+        return new URL(url).host;
+      } catch {
+        return url;
+      }
+    },
+
+    /** A pick: the served build is pointed there now; an unshared one remembers it for the build. */
+    async pick(kind, value) {
+      if (value === '__other') {
+        this.custom = this.currentRancher(kind);
+        this.other = { ...this.other, [kind]: true };
+
+        return;
+      }
+      this.other = { ...this.other, [kind]: false };
+      await this.retarget(kind, value);
+    },
+
+    async useCustom(kind) {
+      const url = this.custom.trim().replace(/\/$/, '');
+
+      if (!/^https?:\/\//.test(url)) {
+        this.error = 'A Rancher is an https:// address.';
+
+        return;
+      }
+      this.other = { ...this.other, [kind]: false };
+      await this.retarget(kind, url);
+    },
+
+    async retarget(kind, url) {
+      this.error = '';
+      if (!this.stateOf(kind)?.exists) {
+        this.rancher = url;
+
+        return;
+      }
+      try {
+        await retargetPreview(this.$store, this.workspace.name, kind, url);
+        this.notice = `Now talking to ${ this.host(url) }; the link is back in a moment while nginx restarts.`;
+        await this.refresh();
+      } catch (e) {
+        this.error = e.message || String(e);
+      }
+    },
+
     async copy(url) {
       try {
         await navigator.clipboard.writeText(url);
@@ -199,7 +274,7 @@ export default {
     />
 
     <p class="workspace-share__intro text-muted">
-      Builds of this workspace's checkout of <code>{{ repo }}</code> as it is<template v-if="ref"> - branch <code>{{ ref }}</code><template v-if="sha"> at <code>{{ sha }}</code></template></template>, uncommitted changes included - each on a link of its own. The workspace's tools stay where they are; only the built site is shared.
+      <code>{{ repo }}</code><template v-if="ref"> · <code>{{ ref }}</code><template v-if="sha"> at <code>{{ sha }}</code></template></template>, as checked out here, uncommitted changes included. Each build gets a link of its own.
     </p>
 
     <div class="workspace-share__grid">
@@ -243,7 +318,10 @@ export default {
         >{{ buildOf(k.kind).log }}</pre>
 
         <template v-if="stateOf(k.kind) && stateOf(k.kind).exists">
-          <p class="text-muted">
+          <p
+            v-if="stateOf(k.kind).state !== 'serving'"
+            class="text-muted"
+          >
             {{ stateOf(k.kind).detail }}
           </p>
           <p
@@ -283,11 +361,48 @@ export default {
             </button>
           </p>
           <dl class="workspace-share__facts">
-            <dt>Serving</dt>
-            <dd><code>{{ stateOf(k.kind).sourceDir ? `the workspace's build (${ stateOf(k.kind).ref })` : stateOf(k.kind).ref }}</code></dd>
+            <dt>Built from</dt>
+            <dd><code>{{ stateOf(k.kind).ref }}</code></dd>
             <template v-if="k.needsRancher">
               <dt>Talks to</dt>
-              <dd>{{ stateOf(k.kind).rancherUrl }}</dd>
+              <dd>
+                <div class="workspace-share__pick">
+                  <select
+                    :value="other[k.kind] ? '__other' : currentRancher(k.kind)"
+                    class="workspace-share__select"
+                    aria-label="Rancher the build talks to"
+                    @change="pick(k.kind, $event.target.value)"
+                  >
+                    <option
+                      v-for="r in rancherOptions(k.kind)"
+                      :key="r.url"
+                      :value="r.url"
+                    >
+                      {{ r.label }}
+                    </option>
+                    <option value="__other">
+                      Another Rancher…
+                    </option>
+                  </select>
+                  <template v-if="other[k.kind]">
+                    <input
+                      v-model="custom"
+                      class="workspace-share__rancher"
+                      type="text"
+                      placeholder="https://rancher.example.com"
+                      aria-label="Address of the Rancher"
+                      @keydown.enter.prevent="useCustom(k.kind)"
+                    >
+                    <button
+                      type="button"
+                      class="btn role-secondary btn-sm"
+                      @click="useCustom(k.kind)"
+                    >
+                      Use
+                    </button>
+                  </template>
+                </div>
+              </dd>
             </template>
           </dl>
           <div class="workspace-share__actions">
@@ -315,13 +430,43 @@ export default {
             v-if="k.needsRancher"
             class="workspace-share__row"
           >
-            <input
-              v-model="rancher"
-              class="workspace-share__rancher"
-              type="text"
-              placeholder="https://rancher.example.com"
-              aria-label="Rancher the build talks to"
-            >
+            <span class="text-muted">Talks to</span>
+            <div class="workspace-share__pick">
+              <select
+                :value="other[k.kind] ? '__other' : currentRancher(k.kind)"
+                class="workspace-share__select"
+                aria-label="Rancher the build talks to"
+                @change="pick(k.kind, $event.target.value)"
+              >
+                <option
+                  v-for="r in rancherOptions(k.kind)"
+                  :key="r.url"
+                  :value="r.url"
+                >
+                  {{ r.label }}
+                </option>
+                <option value="__other">
+                  Another Rancher…
+                </option>
+              </select>
+              <template v-if="other[k.kind]">
+                <input
+                  v-model="custom"
+                  class="workspace-share__rancher"
+                  type="text"
+                  placeholder="https://rancher.example.com"
+                  aria-label="Address of the Rancher"
+                  @keydown.enter.prevent="useCustom(k.kind)"
+                >
+                <button
+                  type="button"
+                  class="btn role-secondary btn-sm"
+                  @click="useCustom(k.kind)"
+                >
+                  Use
+                </button>
+              </template>
+            </div>
           </div>
           <div class="workspace-share__actions">
             <AsyncButton
@@ -424,8 +569,29 @@ export default {
       dd { margin: 0; }
     }
 
-    &__row { margin-bottom: var(--dev-space-3); }
-    &__rancher { width: 100%; }
+    &__row {
+      display:       flex;
+      align-items:   center;
+      flex-wrap:     wrap;
+      gap:           var(--dev-space-3);
+      margin-bottom: var(--dev-space-3);
+    }
+    &__rancher { flex: 1 1 200px; min-width: 0; }
+
+    &__pick {
+      display:     flex;
+      align-items: center;
+      flex-wrap:   wrap;
+      gap:         8px;
+    }
+
+    &__select {
+      max-width:  100%;
+      min-height: 0;
+      height:     30px;
+      padding:    0 28px 0 10px;
+      font-size:  13px;
+    }
 
     &__actions {
       display:   flex;
