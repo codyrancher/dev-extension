@@ -5,7 +5,7 @@ An extension that provides development environment and a collection of tools to 
 ## Infrastructure apart from tools
 
 A workspace talks to whichever Rancher it is told to - the `rancherUrl` value on the
-`rancher-workspace` app, or the Rancher URL field when creating one - so the Rancher a team
+`rancher-dev` app, or the Rancher URL field when creating one - so the Rancher a team
 shares is never what a workspace runs; the workspace runs its own checkout, dev server and
 tools against it. Alongside it, two more apps a fresh Rancher gets:
 

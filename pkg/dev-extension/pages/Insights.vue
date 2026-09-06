@@ -306,7 +306,7 @@ export default {
       }
 
       &--current {
-        border-color: var(--primary);
+        border-color: var(--dev-accent);
         font-weight:  600;
       }
     }

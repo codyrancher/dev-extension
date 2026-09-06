@@ -810,7 +810,7 @@ const routes = [
       throw failure(400, problem);
     }
 
-    return makeWorkspace(body.name, body.app || body.template || 'rancher-workspace', body.cluster || 'local');
+    return makeWorkspace(body.name, body.app || body.template || 'rancher-dev', body.cluster || 'local');
   }],
 
   // The harness's /my-work API, as far as its skills need it.

@@ -219,7 +219,7 @@ export default {
       border-bottom:  1px solid var(--border);
     }
 
-    &__logo { color: var(--primary); font-size: 16px; }
+    &__logo { color: var(--dev-accent); font-size: 16px; }
 
     &__empty, &__hint { padding: var(--dev-space-4); margin: 0; }
 

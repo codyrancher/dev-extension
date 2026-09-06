@@ -41,7 +41,8 @@ export default {
     // The ones this person kept (Settings), plus whichever a link asked for by name.
     const asked = this.$route.query.app || this.$route.query.template;
 
-    this.apps = shownApps(apps, prefs).concat(apps.filter((app) => app.id === asked && prefs.hiddenApps.includes(app.id)));
+    // Workspace apps only: a build or a browser is not something to create a workspace of.
+    this.apps = shownApps(apps, prefs).concat(apps.filter((app) => app.id === asked && prefs.hiddenApps.includes(app.id))).filter((app) => app.workspace);
 
     const askedCluster = this.$route.query.cluster;
     const known = (id) => this.clusters.some((entry) => entry.id === id) && id;
