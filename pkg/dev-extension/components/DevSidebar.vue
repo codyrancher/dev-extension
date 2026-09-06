@@ -16,7 +16,7 @@ import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
 import { DEFAULT_APP, LEGACY_WORKSPACE_APPS } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
 import {
-  listRanchers, setDefaultRancher, createRancherInstance, nextRancherName, rancherAddress
+  listRanchers, setDefaultRancher, createRancherInstance, nextRancherName, rancherAddress, RANCHER_STEPS
 } from '../ranchers';
 import { tickAgents } from '../agent-defs';
 import DevList from './DevList.vue';
@@ -30,6 +30,13 @@ import {
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
+
+/** "4m", "1h 12m": how long a new Rancher has been on its way. */
+function elapsed(ms) {
+  const minutes = Math.max(0, Math.floor(ms / 60000));
+
+  return minutes < 60 ? `${ minutes }m` : `${ Math.floor(minutes / 60) }h ${ minutes % 60 }m`;
+}
 
 /**
  * What counts as a cluster running low.
@@ -189,10 +196,14 @@ export default {
 
     /** The Ranchers a workspace can point at, with the starred one marked. See ranchers.ts. */
     rancherRows() {
+      const now = Date.now();
+
       return this.ranchers.map((rancher) => ({
         ...rancher,
         host:      rancher.url.replace(/^https?:\/\//, ''),
         isDefault: rancher.kind === 'host' ? !this.defaultRancher : (!!rancher.url && rancher.url === this.defaultRancher),
+        elapsed:   rancher.since ? elapsed(now - Date.parse(rancher.since)) : '',
+        stepTitle: `${ rancher.step + 1 } of ${ RANCHER_STEPS.length }: ${ RANCHER_STEPS[rancher.step] || '' }`,
       }));
     },
   },
@@ -224,6 +235,14 @@ export default {
           readPrefs().catch(() => ({ hiddenApps: [], defaultRancher: '' })),
           listRanchers(this.$store).catch(() => this.ranchers),
         ]);
+
+        // A Rancher pressed Create for a moment ago is a row already (makeRancher); the store's
+        // list can lag the save by a poll or two, and the row must not blink out in between.
+        for (const row of this.ranchers) {
+          if (row.phase === 'created' && !ranchers.some((r) => r.id === row.id) && Date.now() - Date.parse(row.since) < 120000) {
+            ranchers.push(row);
+          }
+        }
 
         this.workspaces = workspaces;
         this.clusters = clusters;
@@ -300,11 +319,26 @@ export default {
       const name = this.proposedRancher;
 
       this.askingRancher = false;
+      // The row first, then the request: the save takes a moment and the Rancher ten minutes,
+      // and somebody who pressed Create should see it moving now, not after the next poll.
+      const placeholder = {
+        id: `instance:${ name }`, name, url: '', kind: 'instance', phase: 'created', step: 0, detail: 'Creating the cluster', since: new Date().toISOString(),
+      };
+
+      if (!this.ranchers.some((r) => r.id === placeholder.id)) {
+        this.ranchers = [...this.ranchers, placeholder];
+        cache.ranchers = this.ranchers;
+      }
+      this.$store.dispatch('growl/success', {
+        title: `Creating ${ name }`, message: 'One EC2 node, then Rancher on it: about ten minutes. Its progress is under Ranchers.', timeout: 6000,
+      }, { root: true });
       try {
         await createRancherInstance(this.$store, name);
         this.error = '';
         await this.refresh();
       } catch (e) {
+        this.ranchers = this.ranchers.filter((r) => r.id !== placeholder.id);
+        cache.ranchers = this.ranchers;
         this.error = e.message || String(e);
       }
     },
@@ -470,16 +504,54 @@ export default {
           type="button"
           class="dev-sidebar__star"
           :class="{ 'dev-sidebar__star--on': rancher.isDefault }"
-          :disabled="rancher.kind !== 'host' && !rancher.url"
-          :title="rancher.isDefault ? 'New workspaces are pointed at this Rancher' : 'Point new workspaces at this Rancher'"
+          :disabled="rancher.kind !== 'host' && rancher.phase !== 'ready'"
+          :title="rancher.isDefault ? 'New workspaces are pointed at this Rancher' : rancher.kind !== 'host' && rancher.phase !== 'ready' ? 'Not up yet' : 'Point new workspaces at this Rancher'"
           @click="star(rancher)"
         >{{ rancher.isDefault ? '★' : '☆' }}</button>
         <div class="dev-sidebar__rancher-text">
           <span class="dev-sidebar__rancher-name">{{ rancher.name }}</span>
           <span
+            v-if="rancher.kind === 'host' || rancher.phase === 'ready'"
             class="dev-sidebar__rancher-url"
-            :title="rancher.url || rancher.note"
-          >{{ rancher.host || rancher.note }}</span>
+            :title="rancher.url || rancher.detail"
+          >{{ rancher.host || rancher.detail }}</span>
+          <template v-else>
+            <span
+              class="dev-sidebar__rancher-progress"
+              :class="{ 'dev-sidebar__rancher-progress--error': rancher.phase === 'error' }"
+              :title="rancher.detail"
+              data-testid="dev-rancher-progress"
+            >
+              <i
+                v-if="rancher.phase !== 'error'"
+                class="icon icon-spinner icon-spin"
+              />
+              <i
+                v-else
+                class="icon icon-warning"
+              />
+              <span class="dev-sidebar__rancher-detail">{{ rancher.detail }}</span>
+              <span
+                v-if="rancher.elapsed"
+                class="dev-sidebar__rancher-elapsed"
+              >{{ rancher.elapsed }}</span>
+            </span>
+            <span
+              class="dev-sidebar__steps"
+              :title="rancher.stepTitle"
+            >
+              <i
+                v-for="n in 4"
+                :key="n"
+                class="dev-sidebar__step"
+                :class="{
+                  'dev-sidebar__step--done': n - 1 < rancher.step,
+                  'dev-sidebar__step--now': n - 1 === rancher.step && rancher.phase !== 'error',
+                  'dev-sidebar__step--error': n - 1 === rancher.step && rancher.phase === 'error',
+                }"
+              />
+            </span>
+          </template>
         </div>
       </div>
     </div>
@@ -706,6 +778,49 @@ export default {
       letter-spacing: 0.04em;
     }
 
+    &__rancher-progress {
+      display:     flex;
+      align-items: center;
+      gap:         4px;
+      min-width:   0;
+      font-size:   11px;
+      color:       var(--muted);
+
+      .icon { flex: 0 0 auto; font-size: 10px; }
+      &--error { color: var(--error); }
+    }
+
+    &__rancher-detail {
+      min-width:     0;
+      overflow:      hidden;
+      text-overflow: ellipsis;
+      white-space:   nowrap;
+    }
+
+    &__rancher-elapsed {
+      flex:        0 0 auto;
+      font-family: monospace;
+      opacity:     0.8;
+    }
+
+    &__steps {
+      display:    flex;
+      gap:        3px;
+      margin-top: 3px;
+    }
+
+    &__step {
+      display:       block;
+      width:         14px;
+      height:        3px;
+      border-radius: 2px;
+      background:    var(--border);
+
+      &--done { background: var(--success); }
+      &--now { background: var(--primary); animation: dev-step-pulse 1.2s ease-in-out infinite; }
+      &--error { background: var(--error); }
+    }
+
     &__rancher-url {
       font-size:     11px;
       color:         var(--muted);
@@ -826,4 +941,9 @@ export default {
       }
     }
   }
+
+@keyframes dev-step-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
 </style>
