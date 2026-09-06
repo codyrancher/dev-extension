@@ -31,6 +31,16 @@ import {
 
 const REFRESH_MS = 5000;
 
+const CLUSTERS_OPEN_KEY = 'dev.sidebar.clusters.open';
+
+function readClustersOpen() {
+  try {
+    return localStorage.getItem(CLUSTERS_OPEN_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
 /** The node's IP out of `<name>.dev-extension.<ip>.sslip.io`, or ''. */
 function nodeIpOf(url) {
   return (url.match(/\.(\d+\.\d+\.\d+\.\d+)\.sslip\.io/) || [])[1] || '';
@@ -88,6 +98,8 @@ export default {
       defaultRancher: cache.defaultRancher,
       askingRancher: false,
       proposedRancher: '',
+      /** The Clusters block is a header until it is opened; the choice is kept per browser. */
+      clustersOpen: readClustersOpen(),
       /** The Rancher a delete is being confirmed for, or null. */
       deletingRancher: null,
       apps:         cache.apps,
@@ -191,10 +203,29 @@ export default {
           id, name: id, memoryFree: 0, diskFree: 0
         }));
 
-      return [...clusters, ...strays].map((cluster) => ({
-        ...cluster,
-        workspaces: this.workspaces.filter((workspace) => workspace.cluster === cluster.id).length,
-      }));
+      return [...clusters, ...strays].map((cluster) => {
+        const issues = [...(cluster.issues || [])];
+
+        if (this.low(cluster)) {
+          issues.push(`low on ${ cluster.memoryFree && cluster.memoryFree < LOW_MEMORY ? 'memory' : 'disk' }`);
+        }
+        const health = cluster.health === 'error' ? 'error' : (cluster.health === 'warn' || this.low(cluster)) ? 'warn' : 'ok';
+
+        return {
+          ...cluster,
+          health,
+          issues,
+          summary:    issues.length ? `${ issues[0] }${ issues.length > 1 ? ` · +${ issues.length - 1 } more` : '' }` : 'healthy',
+          workspaces: this.workspaces.filter((workspace) => workspace.cluster === cluster.id).length,
+        };
+      });
+    },
+
+    /** The worst of the clusters, for the collapsed header. */
+    clustersHealth() {
+      const levels = this.clusterRows.map((c) => c.health);
+
+      return levels.includes('error') ? 'error' : levels.includes('warn') ? 'warn' : 'ok';
     },
 
     currentWorkspace() {
@@ -298,6 +329,15 @@ export default {
      * number: a checkout, an install and a compile of rancher/dashboard want a few gigabytes of
      * each, and a cluster under that will take one and then fail in the middle of yarn.
      */
+    toggleClusters() {
+      this.clustersOpen = !this.clustersOpen;
+      try {
+        localStorage.setItem(CLUSTERS_OPEN_KEY, String(this.clustersOpen));
+      } catch {
+        // A browser that keeps nothing keeps the default, which is closed.
+      }
+    },
+
     low(cluster) {
       return (cluster.memoryFree && cluster.memoryFree < LOW_MEMORY) ||
         (cluster.diskFree && cluster.diskFree < LOW_DISK);
@@ -658,21 +698,58 @@ export default {
       @confirm="makeRancher"
       @cancel="askingRancher = false"
     />
-    <div class="dev-sidebar__clusters">
-      <div class="dev-sidebar__template-head">
+    <div
+      class="dev-sidebar__clusters"
+      :class="{ 'dev-sidebar__clusters--open': clustersOpen }"
+    >
+      <button
+        type="button"
+        class="dev-sidebar__template-head dev-sidebar__clusters-head"
+        :aria-expanded="clustersOpen ? 'true' : 'false'"
+        :title="clustersOpen ? 'Hide the clusters' : 'Show the clusters'"
+        data-testid="dev-clusters-toggle"
+        @click="toggleClusters"
+      >
         <i class="dev-sidebar__template-icon icon icon-cluster" />
         <span class="dev-sidebar__template-label">Clusters</span>
-      </div>
+        <span
+          class="dev-sidebar__cluster-pills"
+          data-testid="dev-clusters-summary"
+        >
+          <span
+            v-for="cluster in clusterRows"
+            :key="cluster.id"
+            class="dev-sidebar__cluster-pill"
+            :class="`dev-sidebar__cluster-pill--${ cluster.health }`"
+            :title="`${ cluster.name }: ${ cluster.summary }`"
+          >{{ cluster.name }}</span>
+        </span>
+        <i
+          class="dev-sidebar__chevron icon"
+          :class="clustersOpen ? 'icon-chevron-down' : 'icon-chevron-right'"
+        />
+      </button>
       <div
         v-for="cluster in clusterRows"
+        v-show="clustersOpen"
         :key="cluster.id"
         class="dev-sidebar__cluster-row"
-        :class="{ 'dev-sidebar__cluster-row--low': low(cluster) }"
+        :class="`dev-sidebar__cluster-row--${ cluster.health }`"
       >
         <div class="dev-sidebar__cluster-name">
-          <span>{{ cluster.name }}</span>
+          <span class="dev-sidebar__cluster-title">
+            <i
+              class="dev-sidebar__dot"
+              :class="`dev-sidebar__dot--${ cluster.health }`"
+            />{{ cluster.name }}
+          </span>
           <span class="dev-sidebar__cluster-count">{{ cluster.workspaces }}</span>
         </div>
+        <div
+          class="dev-sidebar__cluster-issue"
+          :class="`dev-sidebar__cluster-issue--${ cluster.health }`"
+          :title="cluster.issues.join('\n')"
+        >{{ cluster.summary }}</div>
         <Stack gap="1">
           <Row
             class="dev-sidebar__meter"
@@ -959,10 +1036,75 @@ export default {
       text-overflow: ellipsis;
     }
 
+    &__clusters-head {
+      width:      100%;
+      border:     0;
+      background: none;
+      color:      inherit;
+      cursor:     pointer;
+      text-align: left;
+      gap:        var(--dev-space-2);
+
+      &:hover { color: var(--body-text); }
+    }
+
+    &__cluster-pills {
+      display:     flex;
+      flex:        1 1 auto;
+      min-width:   0;
+      gap:         4px;
+      margin-left: var(--dev-space-2);
+      overflow:    hidden;
+    }
+
+    &__cluster-pill {
+      font-size:      10px;
+      font-weight:    600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding:        1px 6px;
+      border-radius:  9px;
+      border:         1px solid var(--border);
+      color:          var(--muted);
+      white-space:    nowrap;
+
+      &--warn { color: var(--warning); border-color: var(--warning); }
+      &--error { color: var(--error); border-color: var(--error); }
+    }
+
+    &__chevron {
+      flex:      0 0 auto;
+      font-size: 12px;
+      color:     var(--muted);
+    }
+
+    &__dot {
+      display:       inline-block;
+      width:         7px;
+      height:        7px;
+      border-radius: 50%;
+      margin-right:  6px;
+      background:    var(--success);
+      vertical-align: 1px;
+
+      &--warn { background: var(--warning); }
+      &--error { background: var(--error); }
+    }
+
+    &__cluster-issue {
+      font-size:     11px;
+      color:         var(--muted);
+      white-space:   nowrap;
+      overflow:      hidden;
+      text-overflow: ellipsis;
+      margin:        1px 0 3px;
+
+      &--warn { color: var(--warning); }
+      &--error { color: var(--error); }
+    }
+
     &__cluster-row {
       padding: var(--dev-space-2) var(--dev-space-4);
-
-      &--low .dev-sidebar__cluster-name { color: var(--warning); }
     }
 
     &__cluster-name {
