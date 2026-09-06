@@ -23,13 +23,13 @@ const KINDS = [
   {
     kind:        'dashboard',
     title:       'Rancher dashboard',
-    blurb:       'The dashboard built at this branch, served under /dashboard/ with its API proxied to a Rancher you name. A reviewer opens the link and logs in to that Rancher.',
+    blurb:       'The dashboard built at this branch, on a link on this Rancher. A reviewer opens it and signs in the way they always do - GitHub included - and what they see is this branch talking to this Rancher.',
     needsRancher: true,
   },
   {
     kind:        'storybook',
     title:       'Storybook',
-    blurb:       'The dashboard\'s Storybook built at this branch: every component, on its own, with nothing to log in to.',
+    blurb:       'The dashboard\'s Storybook built at this branch: every component, on its own. On this Rancher for anyone with a login here, and on a direct address for anyone at all.',
     needsRancher: false,
   },
 ];
@@ -216,6 +216,24 @@ export default {
               Copy link
             </button>
           </p>
+          <p
+            v-if="stateOf(k.kind).direct && stateOf(k.kind).state === 'serving'"
+            class="workspace-share__linkrow workspace-share__linkrow--direct"
+          >
+            <span class="text-muted">Direct, no login:</span>
+            <a
+              :href="stateOf(k.kind).direct"
+              target="_blank"
+              rel="noopener noreferrer"
+            >{{ stateOf(k.kind).direct }}</a>
+            <button
+              type="button"
+              class="btn role-tertiary btn-sm"
+              @click="copy(stateOf(k.kind).direct)"
+            >
+              Copy link
+            </button>
+          </p>
           <dl class="workspace-share__facts">
             <dt>Built at</dt>
             <dd><code>{{ stateOf(k.kind).ref }}</code></dd>
@@ -327,6 +345,7 @@ export default {
     }
 
     &__link { font-size: 15px; font-weight: 600; word-break: break-all; }
+    &__linkrow--direct { font-size: 12px; a { word-break: break-all; } }
 
     &__facts {
       display:               grid;

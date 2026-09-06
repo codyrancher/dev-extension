@@ -1,26 +1,21 @@
-// A workspace's conversations, which live in Extension Studio's agent pod.
+// A workspace's conversations, which live in the agent pod the agents extension keeps.
 //
 // The harness ran a workspace's conversations in the workspace's own container. Here they run
-// where every other conversation in this Rancher runs - the one agent pod Extension Studio
-// keeps, which can see every extension and every cluster - and are namespaced by the
-// workspace's name so that the Studio's terminal drawer, which lists the agent pod's own
-// conversations, never shows them. The Studio offers exactly that over its in-pod API,
-// /v1/projects/{project}/conversations, and the "attach" block each conversation comes with
-// is what a terminal needs to open the apiserver's exec subresource on the right pod.
-//
-// Same-origin fetch against the Studio API's service proxy, with the session the dashboard
-// already has. The service forwards the R_SESS cookie and the CSRF header to Rancher and acts
-// as the person in the browser, so nothing here holds a credential.
+// where every other conversation in this Rancher runs - the one agent pod, which can see every
+// extension and every cluster - namespaced by the workspace's name (`p-<workspace>-<n>`) so the
+// agent drawer, which lists only its own, never shows them. The agents extension offers exactly
+// that on `window.__agents`: list, start with a prompt, rename, end, read a pane, and the
+// terminal component that draws one. Nothing here holds a credential or opens a socket of its
+// own.
 
-import { devFetch, podExecOnce, clusterBase } from './api';
+
+import { clusterBase } from './api';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
 
 /** Where the Studio's API is. The Studio is what made the agent pod, so this is its cluster. */
 export const STUDIO_CLUSTER = 'local';
-const STUDIO_NS = 'extension-studio';
-const STUDIO_API = `${ clusterBase(STUDIO_CLUSTER) }/api/v1/namespaces/${ STUDIO_NS }/services/http:extension-studio-api:8006/proxy`;
 
 /** How to open a terminal on one conversation: the apiserver exec subresource's four facts. */
 export interface Attachment {
@@ -36,99 +31,66 @@ export interface ProjectConversation {
   attach: Attachment;
 }
 
-function studioError(e: Json, what: string): Error {
-  const message = e?.message || String(e);
 
-  if (/404|no such path|not found/i.test(message)) {
-    return new Error(`Extension Studio is not installed, or is older than 0.5.91, so there is nowhere to ${ what }. Install or upgrade the extension-studio extension.`);
+/**
+ * A conversation's attachment: the four facts a terminal or an exec needs to reach it.
+ *
+ * Built from the agents extension's own account of its pod rather than reported by an API: the
+ * pod's name is asked for at the moment it is wanted, so a pod that rolled since the list was
+ * read is still the pod that is reached.
+ */
+async function attachmentFor(id: string): Promise<Attachment> {
+  const api = await requireAgents();
+  const pod = await api.agent.pod();
+
+  if (!pod) {
+    throw new Error('The agent pod is not running yet, so there is nowhere to hold a conversation.');
   }
 
-  return new Error(`Could not ${ what }: ${ message }`);
+  return {
+    namespace: api.agent.namespace, pod, container: api.agent.container, command: api.agent.command(id),
+  };
 }
 
 export async function listConversations(workspace: string): Promise<ProjectConversation[]> {
-  try {
-    const body = await devFetch(`${ STUDIO_API }/v1/projects/${ encodeURIComponent(workspace) }/conversations`);
+  const api = await requireAgents();
+  const sessions = await api.agent.projectSessions(workspace);
+  const pod = await api.agent.pod();
 
-    return body?.conversations || [];
-  } catch (e) {
-    throw studioError(e, `read ${ workspace }'s conversations`);
-  }
+  return sessions.map((session) => ({
+    id:     session.id,
+    title:  session.title,
+    attach: {
+      namespace: api.agent.namespace, pod: pod || '', container: api.agent.container, command: api.agent.command(session.id),
+    },
+  }));
 }
 
-/**
- * Start a conversation, optionally with a name and the prompt it opens with.
- *
- * The prompt goes in the same request: the Studio queues it where the pane reads it on its
- * first start (0.5.92). An older Studio ignores the field and answers without `queued`, and
- * then it is written the way it used to be, by exec into the pod - so the extension works
- * against either, and says which it needed.
- */
+/** Start a conversation, optionally with a name and the prompt it opens with. */
 export async function startConversation(workspace: string, title = '', prompt = ''): Promise<ProjectConversation> {
-  let body: Json;
+  const api = await requireAgents();
+  const id = await api.agent.startInProject(workspace, title, prompt);
 
-  try {
-    body = await devFetch(`${ STUDIO_API }/v1/projects/${ encodeURIComponent(workspace) }/conversations`, {
-      method: 'POST',
-      body:   JSON.stringify({ ...(title ? { title } : {}), ...(prompt ? { prompt } : {}) }),
-    });
-  } catch (e) {
-    throw studioError(e, `start a conversation in ${ workspace }`);
-  }
-
-  const conversation = { id: body.id, title: body.title, attach: body.attach };
-
-  if (prompt && !body.queued) {
-    await queuePrompt(conversation.attach, prompt);
-  }
-
-  return conversation;
+  return { id, title: title || id.slice(id.lastIndexOf('-') + 1), attach: await attachmentFor(id) };
 }
 
 export async function renameConversation(workspace: string, id: string, title: string): Promise<void> {
-  try {
-    await devFetch(`${ STUDIO_API }/v1/projects/${ encodeURIComponent(workspace) }/conversations/${ encodeURIComponent(id) }`, {
-      method: 'PUT',
-      body:   JSON.stringify({ title }),
-    });
-  } catch (e) {
-    throw studioError(e, `rename ${ id }`);
-  }
+  await (await requireAgents()).agent.rename(id, title);
 }
 
 export async function endConversation(workspace: string, id: string): Promise<void> {
-  try {
-    await devFetch(`${ STUDIO_API }/v1/projects/${ encodeURIComponent(workspace) }/conversations/${ encodeURIComponent(id) }`, { method: 'DELETE' });
-  } catch (e) {
-    throw studioError(e, `end ${ id }`);
-  }
+  await (await requireAgents()).agent.end(id);
 }
 
 /**
- * Queue a prompt for a conversation to open with.
+ * Queue a prompt for a conversation to open with, or say something into one that is running.
  *
- * The pane's runner reads `$MC_QUEUE` - `/workspace/.queue/<conversation id>` in the agent pod -
- * on its first start and hands the contents to claude as its opening message. Written the way
- * the harness wrote it: base64 through a shell, so a prompt with quotes, newlines and dollar
- * signs in it arrives whole. The conversation need not be running yet; that is the point of a
- * queue.
+ * The agents extension writes it where the pane's runner reads it: `/workspace/.queue/<id>`,
+ * picked up on the pane's first start. The conversation need not be running yet; that is the
+ * point of a queue.
  */
 export async function queuePrompt(attach: Attachment, prompt: string): Promise<void> {
-  const id = attach.command[2];
-  const bytes = new TextEncoder().encode(prompt);
-  let binary = '';
-
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  const encoded = btoa(binary);
-  const script = `mkdir -p /workspace/.queue && echo ${ encoded } | base64 -d > /workspace/.queue/${ id } && chown 1000:1000 /workspace/.queue /workspace/.queue/${ id } 2>/dev/null; echo queued`;
-  const out = await podExecOnce(attach.namespace, attach.pod, attach.container, ['/bin/sh', '-c', script], clusterBase(STUDIO_CLUSTER));
-
-  if (!out.includes('queued')) {
-    throw new Error('The prompt could not be written into the agent pod.');
-  }
+  await (await requireAgents()).agent.queue(attach.command[2], prompt);
 }
 
 // ── The Studio's browser API ──────────────────────────────────────────────────────────────
@@ -139,12 +101,14 @@ export async function queuePrompt(attach: Attachment, prompt: string): Promise<v
 // comment. Borrowed rather than copied, so there is one terminal in this dashboard and one
 // place it is fixed.
 
-/** Where the Studio's browser API is. */
+/** Where the agents extension's browser API is, and the name Extension Studio used before it. */
+export const AGENTS_GLOBAL = '__agents';
 export const STUDIO_GLOBAL = '__extensionStudio';
+export const AGENTS_READY_EVENT = 'agents:ready';
 export const STUDIO_READY_EVENT = 'extension-studio:ready';
 
-/** The Studio version that first offered the API, for the message when it is not there. */
-export const STUDIO_API_SINCE = '0.5.92';
+/** What has to be installed for any of this to work, for the message when it is not. */
+export const STUDIO_API_SINCE = 'the agents extension (or Extension Studio 0.5.92 to 0.5.93)';
 
 export interface StudioBrowserApi {
   version: string;
@@ -165,9 +129,21 @@ export interface StudioBrowserApi {
 
 /** The Studio's browser API, if its bundle has loaded. */
 export function studioApi(): StudioBrowserApi | null {
-  const api = (window as unknown as Record<string, unknown>)[STUDIO_GLOBAL] as StudioBrowserApi | undefined;
+  const w = window as unknown as Record<string, unknown>;
+  const api = (w[AGENTS_GLOBAL] || w[STUDIO_GLOBAL]) as StudioBrowserApi | undefined;
 
   return api?.terminal?.component ? api : null;
+}
+
+/** The API, or an error that says what to install. */
+async function requireAgents(): Promise<StudioBrowserApi> {
+  const api = await waitForStudio();
+
+  if (!api) {
+    throw new Error(`Nothing here can hold a conversation: install ${ STUDIO_API_SINCE }, which brings the agent pod and its terminal.`);
+  }
+
+  return api;
 }
 
 /**
@@ -188,6 +164,7 @@ export function waitForStudio(timeoutMs = 15000): Promise<StudioBrowserApi | nul
     let timer: ReturnType<typeof setInterval> | null = null;
     let deadline: ReturnType<typeof setTimeout> | null = null;
     const done = (api: StudioBrowserApi | null) => {
+      window.removeEventListener(AGENTS_READY_EVENT, onReady);
       window.removeEventListener(STUDIO_READY_EVENT, onReady);
       if (timer) {
         clearInterval(timer);
@@ -199,6 +176,7 @@ export function waitForStudio(timeoutMs = 15000): Promise<StudioBrowserApi | nul
     };
     const onReady = () => done(studioApi());
 
+    window.addEventListener(AGENTS_READY_EVENT, onReady);
     window.addEventListener(STUDIO_READY_EVENT, onReady);
     timer = setInterval(() => {
       const api = studioApi();

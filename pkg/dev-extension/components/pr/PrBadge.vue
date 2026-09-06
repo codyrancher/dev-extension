@@ -29,8 +29,9 @@ export default {
     display:        inline-flex;
     align-items:    center;
     gap:            var(--dev-space-1);
-    padding:        var(--dev-space-1) var(--dev-space-3);
-    border-radius:  12px;
+    height:         20px;
+    padding:        0 var(--dev-space-3);
+    border-radius:  10px;
     background:     var(--pr-el);
     color:          var(--pr-muted);
     font-size:      10px;

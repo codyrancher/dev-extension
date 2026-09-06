@@ -32,6 +32,7 @@ import WorkspaceBrowser from '../components/WorkspaceBrowser.vue';
 import WorkspacePreview from '../components/WorkspacePreview.vue';
 import WorkspacePr from '../components/WorkspacePr.vue';
 import WorkspaceShare from '../components/WorkspaceShare.vue';
+import WorkspaceReview from '../components/WorkspaceReview.vue';
 import {
   getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster
 } from '../api';
@@ -47,7 +48,7 @@ export default {
 
   components: {
     Loading, Tabbed, Tab, Banner, RcButton, Row,
-    WorkspaceConversations, WorkspaceBrowser, WorkspacePreview, WorkspacePr, WorkspaceShare
+    WorkspaceConversations, WorkspaceBrowser, WorkspacePreview, WorkspacePr, WorkspaceShare, WorkspaceReview
   },
 
   async fetch() {
@@ -99,6 +100,7 @@ export default {
         (name !== 'pr' || this.prNumber || this.issueNumber) &&
         (name !== 'preview' || preview) &&
         (name !== 'share' || !preview) &&
+        (name !== 'review' || !preview) &&
         (name !== 'conversations' || !preview)
       ));
     },
@@ -333,6 +335,22 @@ export default {
           v-if="seen.conversations"
           :workspace="workspace"
           :log-tail="logTail"
+        />
+      </Tab>
+
+      <!--
+        What the agent has changed, before it is a pull request: the branch's diff out of the
+        checkout it works in, and comments that go to it as the next prompt.
+      -->
+      <Tab
+        v-if="!workspace.preview"
+        name="review"
+        label="Review"
+        :weight="2.7"
+      >
+        <WorkspaceReview
+          v-if="seen.review"
+          :workspace="workspace"
         />
       </Tab>
 

@@ -23,7 +23,19 @@ export interface PreviewState {
   /** building (init container), serving, failed, or absent */
   state: 'absent' | 'building' | 'serving' | 'failed';
   detail: string;
+  /**
+   * The link to share: this Rancher's own address, through its service proxy. Same origin as
+   * the Rancher, so a reviewer signs in the way they always do - GitHub included - and the API
+   * the build talks to is simply here. It also means the link asks for a Rancher login, which
+   * is what a build of an unreviewed branch should ask for.
+   */
   url: string;
+  /**
+   * The NodePort, on a name rather than a number: sslip.io answers `172-17-0-2.sslip.io` with
+   * 172.17.0.2. Only offered where it works - a Storybook is a static site and serves from
+   * anywhere; a dashboard build is routed for the proxied address and only serves there.
+   */
+  direct: string;
   ref: string;
   rancherUrl: string;
   kind: ShareKind;
@@ -45,7 +57,11 @@ export async function deployPreview(store: Store, workspace: string, values: { r
   // Remove followed by a Build sat "waiting for a pod" for good. Waiting here is what the
   // person would otherwise be told to do.
   await namespaceGone(workspaceNamespace(name), cluster);
-  await createWorkspaceInstance(store, name, PREVIEW_APP, cluster, { ...values, kind });
+  // The dashboard routes and fetches its assets under the proxied address, so the link on this
+  // Rancher is the one that works; the port is the App's default, which the Service listens on.
+  const base = `${ proxyBase(workspaceNamespace(name), cluster, 8080) }dashboard/`;
+
+  await createWorkspaceInstance(store, name, PREVIEW_APP, cluster, { ...values, kind, base });
 
   return name;
 }
@@ -61,6 +77,20 @@ async function namespaceGone(namespace: string, cluster: string): Promise<void> 
     }
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
+}
+
+/**
+ * Where a build is reached through this Rancher: its service, proxied. The path the proxy strips
+ * before handing the request to nginx, which is why the dashboard is built to route under it -
+ * `base` below - while nginx goes on serving /dashboard/.
+ */
+export function proxyBase(namespace: string, cluster: string, port: number): string {
+  return `${ clusterBase(cluster) }/api/v1/namespaces/${ namespace }/services/http:${ namespace }:${ port }/proxy/`;
+}
+
+/** An address as a name sslip.io resolves: 172.17.0.2 becomes 172-17-0-2.sslip.io. */
+export function sslipName(address: string): string {
+  return /^\d+\.\d+\.\d+\.\d+$/.test(address) ? `${ address.replace(/\./g, '-') }.sslip.io` : address;
 }
 
 export async function removePreview(store: Store, workspace: string, kind: ShareKind = 'dashboard'): Promise<void> {
@@ -82,7 +112,7 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
   const name = previewName(workspace, kind);
   const instance = await workspaceInstance(store, name).catch(() => null);
   const empty: PreviewState = {
-    name, exists: false, state: 'absent', detail: '', url: '', ref: '', rancherUrl: '', kind,
+    name, exists: false, state: 'absent', detail: '', url: '', direct: '', ref: '', rancherUrl: '', kind,
   };
 
   if (!instance) {
@@ -99,6 +129,7 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
   const pod: Json = (pods?.data || []).find((candidate: Json) => !candidate.metadata?.deletionTimestamp) || null;
   const service: Json = (services?.data || []).find((svc: Json) => svc.metadata?.name === namespace) || null;
   const nodePort = service?.spec?.ports?.[0]?.nodePort || 0;
+  const port = service?.spec?.ports?.[0]?.port || 8080;
   const init: Json = pod?.status?.initContainerStatuses?.[0] || null;
   const main: Json = pod?.status?.containerStatuses?.[0] || null;
   let state: PreviewState['state'] = 'building';
@@ -121,7 +152,8 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
     exists:     true,
     state,
     detail,
-    url:        nodePort ? `http://${ address }:${ nodePort }${ kind === 'storybook' ? '/' : '/dashboard/' }` : '',
+    url:        service ? `${ window.location.origin }${ proxyBase(namespace, cluster, port) }${ kind === 'storybook' ? '' : 'dashboard/' }` : '',
+    direct:     nodePort && kind === 'storybook' ? `http://${ sslipName(address) }:${ nodePort }/` : '',
     ref:        String(instance.spec?.values?.ref || ''),
     rancherUrl: String(instance.spec?.values?.rancherUrl || ''),
     kind,
