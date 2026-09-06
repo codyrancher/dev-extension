@@ -34,6 +34,10 @@ export interface RancherTarget {
   detail: string;
   /** When the instance was made (ISO), for an elapsed time beside the progress; '' for the host. */
   since: string;
+  /** The management id of its cluster, once there is one: what its API is read by. */
+  clusterId?: string;
+  /** Its node's public address, once it is up: what a preview's sslip name carries. */
+  nodeIp?: string;
 }
 
 /** The four steps a new Rancher goes through, in order, for a tooltip. */
@@ -119,7 +123,7 @@ async function instanceTarget(name: string, since: string, cluster: Json | undef
 
   if (ready && address) {
     return {
-      ...base, phase: 'ready', step: 3, detail: '', url: rancherAddress(name, address),
+      ...base, phase: 'ready', step: 3, detail: '', url: rancherAddress(name, address), clusterId: cluster.id, nodeIp: address,
     };
   }
   if (/^Err/.test(bundleState)) {

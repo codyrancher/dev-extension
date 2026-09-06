@@ -6,7 +6,10 @@
 // and the Service's NodePort; what they need beyond that is an account on the Rancher the
 // preview was built for.
 
-import { devFetch, clusterBase, nodeAddress, workspaceNamespace, deleteWorkspace } from './api';
+import {
+  devFetch, clusterBase, nodeAddress, workspaceNamespace, deleteWorkspace, DEV_SYSTEM_NAMESPACE
+} from './api';
+import { LABEL_CLUSTER } from './config/constants';
 
 export { deleteWorkspace };
 import { createWorkspaceInstance, deleteWorkspaceInstance, workspaceInstance } from './apps';
@@ -45,6 +48,46 @@ export interface PreviewState {
   kind: ShareKind;
   /** The workspace build nginx serves, as `<workspace>/share/<kind>`; '' when it was built from `ref`. */
   sourceDir: string;
+  /** The public name it is served on (`preview-<ws>.dev-extension.<ip>.sslip.io`), or '' through the proxy. */
+  host: string;
+  /** The management id of the cluster it runs on: this one, or a Rancher's from the sidebar. */
+  hostedOn: string;
+}
+
+/** Where a share is served from: this cluster (behind this Rancher's login), or a Rancher of the sidebar's, on the open internet. */
+export interface ShareHost {
+  /** The cluster's management id, for its API. */
+  id: string;
+  /** Its Fleet cluster name, for the bundle's target. */
+  fleet: string;
+  /** Its node's public IP, for the sslip name; '' for this cluster. */
+  ip: string;
+}
+
+export const LOCAL_HOST: ShareHost = { id: 'local', fleet: 'local', ip: '' };
+
+/** The public name a share gets on a Rancher's cluster: the same shape as the Rancher's own. */
+export function shareHostname(workspace: string, kind: ShareKind, host: ShareHost): string {
+  return host.ip ? `${ previewName(workspace, kind) }.dev-extension.${ host.ip }.sslip.io` : '';
+}
+
+/** A token the preview's init container fetches the build with, through this Rancher's proxy to dev-api. */
+async function mintShareToken(workspace: string): Promise<string> {
+  const minted = await devFetch('/v3/tokens', {
+    method: 'POST',
+    body:   JSON.stringify({ type: 'token', description: `share ${ workspace }: fetches the workspace build for a preview on another cluster`, ttl: 30 * 24 * 3600 * 1000 }),
+  }).catch(() => null);
+
+  if (!minted?.token) {
+    throw new Error('Could not make a token for the preview to fetch the build with.');
+  }
+
+  return minted.token;
+}
+
+/** Where a preview on another cluster fetches the workspace's build: dev-api, through this Rancher. */
+export function shareTarballUrl(workspace: string, kind: ShareKind): string {
+  return `${ window.location.origin }/k8s/clusters/local/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy/share/${ workspace }/${ kind }.tar.gz`;
 }
 
 export type ShareKind = 'dashboard' | 'storybook';
@@ -64,7 +107,7 @@ export function previewName(workspace: string, kind: ShareKind = 'dashboard'): s
   return `${ kind === 'storybook' ? 'storybook' : 'preview' }-${ workspace }`.slice(0, 40);
 }
 
-export async function deployPreview(store: Store, workspace: string, values: { repo: string; ref: string; rancherUrl: string; kind?: ShareKind; sourceDir?: string }, cluster = 'local'): Promise<string> {
+export async function deployPreview(store: Store, workspace: string, values: { repo: string; ref: string; rancherUrl: string; kind?: ShareKind; sourceDir?: string; sourceUrl?: string; sourceToken?: string; host?: string }, cluster = 'local', target = cluster): Promise<string> {
   const kind: ShareKind = values.kind || 'dashboard';
   const name = previewName(workspace, kind);
 
@@ -73,13 +116,14 @@ export async function deployPreview(store: Store, workspace: string, values: { r
   // Remove followed by a Build sat "waiting for a pod" for good. Waiting here is what the
   // person would otherwise be told to do.
   await namespaceGone(workspaceNamespace(name), cluster);
-  // The dashboard routes and fetches its assets under the proxied address, so the link on this
-  // Rancher is the one that works; the port is the App's default, which the Service listens on.
-  const base = `${ proxyBase(workspaceNamespace(name), cluster, 8080) }dashboard/`;
+  // On a public name the dashboard lives at /dashboard/ as it does anywhere; through this
+  // Rancher's proxy it routes and fetches its assets under the proxied address, so the link on
+  // this Rancher is the one that works. The port is the App's default, which the Service listens on.
+  const base = values.host ? '/dashboard/' : `${ proxyBase(workspaceNamespace(name), cluster, 8080) }dashboard/`;
 
   await createWorkspaceInstance(store, name, PREVIEW_APP, cluster, {
-    ...values, kind, base, sourceDir: values.sourceDir || 'none',
-  });
+    ...values, kind, base, sourceDir: values.sourceDir || 'none', sourceUrl: values.sourceUrl || 'none', sourceToken: values.sourceToken || 'none', host: values.host || 'none',
+  }, target);
 
   return name;
 }
@@ -89,17 +133,34 @@ export async function deployPreview(store: Store, workspace: string, values: { r
  * and an nginx is put up to serve that directory. Rebuilding is building again; nginx serves
  * whatever is there.
  */
-export async function shareWorkspace(store: Store, workspace: string, kind: ShareKind, rancherUrl: string, cluster = 'local'): Promise<void> {
+export async function shareWorkspace(store: Store, workspace: string, kind: ShareKind, rancherUrl: string, cluster = 'local', host: ShareHost = LOCAL_HOST): Promise<void> {
   const { branch } = await workspaceBranch(workspace);
+  const remote = !!host.ip;
+  const hostname = shareHostname(workspace, kind, host);
 
-  await buildShare(workspace, kind, previewBase(workspace, cluster, kind));
+  // A build is routed for where it will be served: /dashboard/ on a public name, the proxied
+  // path here. So moving a share is a rebuild.
+  await buildShare(workspace, kind, remote ? (kind === 'storybook' ? '/' : '/dashboard/') : previewBase(workspace, cluster, kind));
 
   const state = await previewState(store, workspace, cluster, kind);
+  const asWanted = state.exists && state.host === hostname && (remote || !!state.sourceDir);
 
-  if (!state.exists || !state.sourceDir) {
-    if (state.exists) {
-      await removePreview(store, workspace, kind);
+  if (asWanted) {
+    if (remote) {
+      // The pod fetches the build on every start; a rebuild reaches the public name this way.
+      await rebuildPreview(workspace, state.hostedOn || host.id, kind);
     }
+
+    return;
+  }
+  if (state.exists) {
+    await removePreview(store, workspace, kind);
+  }
+  if (remote) {
+    await deployPreview(store, workspace, {
+      repo: 'rancher/dashboard', ref: branch || 'HEAD', kind, rancherUrl, host: hostname, sourceUrl: shareTarballUrl(workspace, kind), sourceToken: await mintShareToken(workspace),
+    }, host.id, host.fleet);
+  } else {
     await deployPreview(store, workspace, {
       repo: 'rancher/dashboard', ref: branch || 'HEAD', kind, rancherUrl, sourceDir: shareSourceDir(workspace, kind),
     }, cluster);
@@ -190,15 +251,19 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
   const name = previewName(workspace, kind);
   const instance = await workspaceInstance(store, name).catch(() => null);
   const empty: PreviewState = {
-    name, exists: false, state: 'absent', detail: '', url: '', direct: '', ref: '', rancherUrl: '', kind, sourceDir: '',
+    name, exists: false, state: 'absent', detail: '', url: '', direct: '', ref: '', rancherUrl: '', kind, sourceDir: '', host: '', hostedOn: '',
   };
 
   if (!instance) {
     return empty;
   }
 
+  // Where it runs is on the instance: a share hosted on a Rancher of the sidebar's is read
+  // from that cluster, not from the workspace's.
+  const hostedOn: string = instance.metadata?.labels?.[LABEL_CLUSTER] || cluster;
+  const host = String(instance.spec?.values?.host || '') === 'none' ? '' : String(instance.spec?.values?.host || '');
   const namespace = workspaceNamespace(name);
-  const base = clusterBase(cluster);
+  const base = clusterBase(hostedOn);
   const [pods, services, address] = await Promise.all([
     devFetch(`${ base }/v1/pods/${ namespace }`).catch(() => null),
     devFetch(`${ base }/v1/services/${ namespace }`).catch(() => null),
@@ -230,11 +295,13 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
     exists:     true,
     state,
     detail,
-    url:        service ? `${ window.location.origin }${ proxyBase(namespace, cluster, port) }${ kind === 'storybook' ? '' : 'dashboard/' }` : '',
-    direct:     nodePort && kind === 'storybook' ? `http://${ sslipName(address) }:${ nodePort }/` : '',
+    url:        host ? `https://${ host }/${ kind === 'storybook' ? '' : 'dashboard/' }` : service ? `${ window.location.origin }${ proxyBase(namespace, hostedOn, port) }${ kind === 'storybook' ? '' : 'dashboard/' }` : '',
+    direct:     !host && nodePort && kind === 'storybook' ? `http://${ sslipName(address) }:${ nodePort }/` : '',
     ref:        String(instance.spec?.values?.ref || ''),
     rancherUrl: String(instance.spec?.values?.rancherUrl || ''),
     sourceDir:  String(instance.spec?.values?.sourceDir || '') === 'none' ? '' : String(instance.spec?.values?.sourceDir || ''),
+    host,
+    hostedOn,
     kind,
   };
 }
