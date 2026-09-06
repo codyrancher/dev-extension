@@ -50,7 +50,7 @@ export const AGENTS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ AGENTS_PAGE }`;
  * reason it is not component state. The list is also what the page validates against, so a URL
  * naming a tab that does not exist lands on Overview instead of on an empty pane.
  */
-export const WORKSPACE_TABS = ['conversations', 'pr', 'browser', 'share', 'preview'];
+export const WORKSPACE_TABS = ['conversations', 'review', 'pr', 'browser', 'share', 'preview'];
 export const DEFAULT_WORKSPACE_TAB = 'conversations';
 
 /**

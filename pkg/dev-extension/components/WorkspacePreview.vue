@@ -104,6 +104,17 @@ export default {
           class="workspace-preview__link"
         >{{ state.url }}</a>
       </p>
+      <p
+        v-if="state.direct && state.state === 'serving'"
+        class="workspace-preview__direct"
+      >
+        <span class="text-muted">Direct, no login: </span>
+        <a
+          :href="state.direct"
+          target="_blank"
+          rel="noopener noreferrer"
+        >{{ state.direct }}</a>
+      </p>
       <dl class="workspace-preview__facts">
         <dt>Built at</dt>
         <dd><code>{{ state.ref }}</code></dd>
@@ -113,7 +124,7 @@ export default {
         </template>
       </dl>
       <p class="text-muted">
-        {{ kind === 'storybook' ? 'Share the link. It is a static site; there is nothing to log in to.' : 'Share the link. A reviewer opens it and logs in to that Rancher; nothing else is theirs to set up.' }}
+        {{ kind === 'storybook' ? 'Share either link. The first asks for a login on this Rancher; the direct one asks for nothing.' : 'Share the link. It is on this Rancher, so a reviewer signs in the way they always do - GitHub included - and nothing else is theirs to set up.' }}
       </p>
       <div class="workspace-preview__actions">
         <AsyncButton
@@ -155,6 +166,7 @@ export default {
     }
 
     &__link { font-size: 16px; font-weight: 600; word-break: break-all; }
+    &__direct { font-size: 12px; a { word-break: break-all; } }
 
     &__facts {
       display:               grid;

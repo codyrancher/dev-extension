@@ -1,5 +1,5 @@
 <script>
-// A pane onto Extension Studio's agent pod, drawn by the Studio's own terminal.
+// A pane onto the agent pod, drawn by the agents extension's own terminal.
 //
 // This extension shows terminals in three places - a workspace's conversation list, the review
 // agent docked over a pull request, a discussion under one review comment - and every one of
@@ -7,7 +7,7 @@
 // session cookie. So they are the same component: the Studio hands its PodTerminal over on
 // `window.__extensionStudio` (see conversations.ts, studioApi) and this puts it where it is
 // wanted and says what it should run. What is *not* here is a terminal: the socket protocol,
-// the reconnect, the image paste and the clickable paths all live in one place, the Studio.
+// the reconnect, the image paste and the clickable paths all live in one place, that extension.
 //
 // `command` is the argv the pane runs, from the Studio's own `agent.command(id)` when it is a
 // conversation and spelled out by the caller when it is something else - a kubectl exec into
@@ -96,8 +96,8 @@ export default {
       color="warning"
       class="studio-terminal__missing"
     >
-      Extension Studio {{ since }} or later is not loaded in this dashboard, and it is what draws the terminals here.
-      Install or upgrade the <b>extension-studio</b> extension, then reload.
+      Nothing here draws a terminal yet: install the <b>agents</b> extension, which brings the agent pod and the
+      terminal every extension borrows, then reload. ({{ since }} would do as well.)
     </Banner>
     <component
       :is="terminal"
