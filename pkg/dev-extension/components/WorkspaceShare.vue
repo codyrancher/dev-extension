@@ -337,6 +337,15 @@ export default {
       }
     },
 
+    /**
+     * What the GitHub app has to know about a public link: the dashboard sends GitHub back to
+     * `<origin>/verify-auth`, and GitHub only goes to a callback it was given. Ten fit; each
+     * public share is one of them, the local admin password needs none.
+     */
+    callbackFor(state) {
+      return `https://${ state.host }/verify-auth`;
+    },
+
     /** The button says it happened: "Copied" for a moment, where "Copy link" was. */
     async copy(url) {
       try {
@@ -465,6 +474,23 @@ export default {
                   {{ copiedUrl === stateOf(k.kind).url ? 'Copied' : 'Copy link' }}
                 </button>
                 <span class="text-muted workspace-share__hint">{{ stateOf(k.kind).host ? 'public' : 'needs a login here' }}</span>
+              </p>
+              <p
+                v-if="stateOf(k.kind).host && k.needsRancher"
+                class="workspace-share__linkrow workspace-share__callback"
+                data-testid="share-callback"
+              >
+                <span class="text-muted">GitHub login needs this in the GitHub app's callbacks:</span>
+                <code>{{ callbackFor(stateOf(k.kind)) }}</code>
+                <button
+                  type="button"
+                  class="btn role-tertiary btn-sm"
+                  :class="{ 'workspace-share__copied': copiedUrl === callbackFor(stateOf(k.kind)) }"
+                  @click="copy(callbackFor(stateOf(k.kind)))"
+                >
+                  <i :class="copiedUrl === callbackFor(stateOf(k.kind)) ? 'icon icon-checkmark' : 'icon icon-copy'" />
+                  {{ copiedUrl === callbackFor(stateOf(k.kind)) ? 'Copied' : 'Copy' }}
+                </button>
               </p>
               <p
                 v-if="stateOf(k.kind).direct && stateOf(k.kind).state === 'serving'"
@@ -676,6 +702,7 @@ export default {
 
     &__hint { font-size: 12px; }
     &__copied { color: var(--success) !important; }
+    &__callback { font-size: 12px; code { font-size: 11px; } }
     &__detail { margin: 0; }
 
     &__pick {
