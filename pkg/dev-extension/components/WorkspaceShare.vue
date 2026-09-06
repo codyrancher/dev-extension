@@ -182,7 +182,7 @@ export default {
     },
 
     tone(state) {
-      return state === 'serving' ? 'serving' : state === 'failed' ? 'failed' : 'building';
+      return state === 'serving' ? 'serving' : ['failed', 'stopped'].includes(state) ? 'failed' : 'building';
     },
 
     async deploy(kind, done) {
@@ -433,6 +433,7 @@ export default {
               />
               <template v-if="buildOf(k.kind).state === 'building'">Building</template>
               <template v-else-if="buildOf(k.kind).state === 'ok'">Built</template>
+              <template v-else-if="buildOf(k.kind).state === 'stopped'">Stopped before it finished - the workspace restarted, or the build was killed</template>
               <template v-else>Failed</template>
               <template v-if="buildOf(k.kind).sha"> at <code>{{ buildOf(k.kind).sha }}</code></template>
               <span class="text-muted"> · {{ when(buildOf(k.kind).at) }}</span>
@@ -559,7 +560,7 @@ export default {
         </dl>
 
         <pre
-          v-if="buildOf(k.kind) && buildOf(k.kind).state === 'failed' && buildOf(k.kind).log"
+          v-if="buildOf(k.kind) && ['failed', 'stopped'].includes(buildOf(k.kind).state) && buildOf(k.kind).log"
           class="workspace-share__log"
         >{{ buildOf(k.kind).log }}</pre>
 

@@ -53,15 +53,6 @@ function elapsed(ms) {
   return minutes < 60 ? `${ minutes }m` : `${ Math.floor(minutes / 60) }h ${ minutes % 60 }m`;
 }
 
-/**
- * What counts as a cluster running low.
- *
- * A workspace clones rancher/dashboard, installs it and compiles it: that is gigabytes of disk
- * and a compile that has been given four of memory. These are the numbers under which starting
- * one is a thing that fails partway rather than a thing that is slow.
- */
-const LOW_MEMORY = 4 * 1024 ** 3;
-const LOW_DISK = 20 * 1024 ** 3;
 
 // The sidebar is rebuilt on every navigation, because the router-view above it is keyed on the
 // path. Without this the list blinks empty and fills in again on every click, which is the
@@ -206,24 +197,19 @@ export default {
         }));
 
       return [...clusters, ...strays].map((cluster) => {
-        const issues = [...(cluster.issues || [])];
-
-        if (this.low(cluster)) {
-          issues.push(`low on ${ cluster.memoryFree && cluster.memoryFree < LOW_MEMORY ? 'memory' : 'disk' }`);
-        }
-        const health = cluster.health === 'error' ? 'error' : (cluster.health === 'warn' || this.low(cluster)) ? 'warn' : 'ok';
+        const issues = cluster.issues || [];
 
         return {
           ...cluster,
-          health,
+          health:     cluster.health || 'ok',
           issues,
-          summary:    issues.length ? `${ issues[0] }${ issues.length > 1 ? ` · +${ issues.length - 1 } more` : '' }` : 'healthy',
+          summary:    issues.join(' · '),
           workspaces: this.workspaces.filter((workspace) => workspace.cluster === cluster.id).length,
         };
       });
     },
 
-    /** The worst of the clusters, for the collapsed header's one dot. */
+    /** The worst of the clusters, for the collapsed header's one dot. Room, not health. */
     clustersHealth() {
       const levels = this.clusterRows.map((c) => c.health);
 
@@ -234,7 +220,7 @@ export default {
     clustersSummary() {
       const trouble = this.clusterRows.filter((c) => c.health !== 'ok').map((c) => `${ c.name }: ${ c.summary }`);
 
-      return trouble.length ? trouble.join('\n') : 'Every cluster is healthy';
+      return trouble.length ? trouble.join('\n') : 'Every cluster has room for another workspace';
     },
 
     currentWorkspace() {
@@ -347,10 +333,6 @@ export default {
       }
     },
 
-    low(cluster) {
-      return (cluster.memoryFree && cluster.memoryFree < LOW_MEMORY) ||
-        (cluster.diskFree && cluster.diskFree < LOW_DISK);
-    },
 
     /**
      * How much of a bar is lit: what is free, as a share of what the cluster has in all.
@@ -757,6 +739,7 @@ export default {
           <span class="dev-sidebar__cluster-count">{{ cluster.workspaces }}</span>
         </div>
         <div
+          v-if="cluster.summary"
           class="dev-sidebar__cluster-issue"
           :class="`dev-sidebar__cluster-issue--${ cluster.health }`"
           :title="cluster.issues.join('\n')"
