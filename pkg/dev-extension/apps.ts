@@ -279,7 +279,9 @@ const WORKSPACE_SERVE = [
   'held() { node -e "require(\'net\').connect(Number(process.argv[1]),\'127.0.0.1\').on(\'connect\',()=>process.exit(0)).on(\'error\',()=>process.exit(1))" "$PORT" 2>/dev/null; }',
   'while :; do',
   '  if held; then sleep 10; continue; fi',
-  '  VUE_CLI_SERVICE_CONFIG_PATH=/dev-config/vue.config.js yarn dev --port "$PORT"',
+  // Below the cluster's own processes: a compile that takes every core has taken k3s down
+  // with it on a busy node, and a slow first page is the better failure.
+  '  nice -n 10 env VUE_CLI_SERVICE_CONFIG_PATH=/dev-config/vue.config.js yarn dev --port "$PORT"',
   '  echo "[workspace] the dev server exited; starting it again in 5s"',
   '  sleep 5',
   'done',

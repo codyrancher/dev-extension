@@ -42,10 +42,18 @@ export function paneCommand(workspace: string, id: string, mode: 'claude' | 'she
   const namespace = workspaceNamespace(workspace);
 
   return [
-    'kubectl', 'exec', '-i', '-t', '-n', namespace, `deploy/${ namespace }`, '-c', WORKSPACE_CONTAINER, '--',
+    ...KUBECTL,
+    'exec', '-i', '-t', '-n', namespace, `deploy/${ namespace }`, '-c', WORKSPACE_CONTAINER, '--',
     '/bin/sh', '/seed/shell.sh', id, WORKSPACE_WORKDIR, WORKSPACE_HOME, mode,
   ];
 }
+
+/**
+ * `kubectl` in the agent pod, wherever its tools were installed: the pod's seed puts it in the
+ * pane user's `~/.local/bin`, which an exec's own PATH does not have, so a pane that ran a bare
+ * `kubectl` stopped working the first time the pod restarted onto a fresh image.
+ */
+export const KUBECTL = ['/bin/sh', '-c', 'export PATH=/workspace/.home/.local/bin:/usr/local/bin:$PATH; exec kubectl "$@"', 'kubectl'];
 
 function attachment(workspace: string, id: string, pod: string): Attachment {
   return {
