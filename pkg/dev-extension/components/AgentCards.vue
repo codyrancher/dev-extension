@@ -14,7 +14,7 @@ import {
 } from '../agent-defs';
 import { AGENT_SEED } from '../agent-seed.generated';
 import {
-  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, AGENT_EDIT_ROUTE, DEV_API_IN_CLUSTER
+  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, AGENT_EDIT_ROUTE, CONVERSATIONS_ROUTE, DEV_API_IN_CLUSTER
 } from '../config/constants';
 
 const REFRESH_MS = 10000;
@@ -118,6 +118,13 @@ export default {
       } : null;
     },
 
+    /** The run's own conversation, on the Conversations page: what it said and did, with its artifacts. */
+    conversationTo(run) {
+      return run.conversation ? {
+        name: CONVERSATIONS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER }, query: { c: run.conversation },
+      } : null;
+    },
+
     apiUrl(def) {
       return `${ DEV_API_IN_CLUSTER }/agents/${ def.name }/trigger`;
     },
@@ -193,14 +200,13 @@ export default {
           Conversations that start themselves: a prompt or a skill, a workspace to run it in, and what sets it off.
         </p>
       </div>
-      <RcButton
-        variant="primary"
-        size="small"
+      <router-link
         :to="newTo"
+        class="btn role-primary btn-sm"
         data-testid="agents-new"
       >
         New agent
-      </RcButton>
+      </router-link>
     </header>
 
     <Banner
@@ -290,13 +296,13 @@ export default {
             size="sm"
             @click="(done) => run(card.def, done)"
           />
-          <RcButton
-            variant="tertiary"
-            size="small"
+          <router-link
             :to="editTo(card.def)"
+            class="btn role-tertiary btn-sm"
+            data-testid="agent-edit"
           >
             Edit
-          </RcButton>
+          </router-link>
           <button
             type="button"
             class="agent-card__link agent-card__delete"
@@ -352,6 +358,18 @@ export default {
                 class="agent-card__run-ws text-muted"
               >…</span>
               <span class="agent-card__run-dur">{{ duration(run) }}</span>
+              <router-link
+                v-if="conversationTo(run)"
+                :to="conversationTo(run)"
+                class="agent-card__run-open"
+                title="Open this run's conversation: its output, tool calls and artifacts"
+              >
+                output
+              </router-link>
+              <span
+                v-else
+                class="agent-card__run-open text-muted"
+              >&nbsp;</span>
             </li>
           </ul>
         </div>
@@ -554,7 +572,7 @@ export default {
 
   &__run {
     display:               grid;
-    grid-template-columns: 8px 64px 104px 44px 1fr 36px;
+    grid-template-columns: 8px 64px 104px 44px 1fr 36px 44px;
     gap:                   var(--dev-space-2);
     align-items:           center;
     font-size:             11px;
@@ -579,6 +597,7 @@ export default {
   &__run-when, &__run-trigger, &__run-dur { color: var(--muted); }
   &__run-dur { text-align: right; }
   &__run-ws { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; }
+  &__run-open { text-align: right; color: var(--link); font-size: 11px; }
 }
 
 @keyframes agent-pulse {

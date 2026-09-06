@@ -18,6 +18,14 @@ export const vGrow: Directive<HTMLTextAreaElement> = {
 
     button.type = 'button';
     button.className = 'edit-grow';
+    // The panel's stylesheet is scoped to its component: a control made here rather than in
+    // the template has no scope attribute, so without these it is styled as Rancher styles a
+    // bare button (40px, grey) instead of as the small corner control .edit-grow describes.
+    for (const attr of Array.from(el.attributes)) {
+      if (attr.name.startsWith('data-v-')) {
+        button.setAttribute(attr.name, attr.value);
+      }
+    }
     button.title = 'Expand the box';
     button.textContent = '⤢';
     button.addEventListener('click', () => {
