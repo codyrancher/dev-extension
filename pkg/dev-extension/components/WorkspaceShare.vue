@@ -10,7 +10,7 @@
 import { Banner } from '@components/Banner';
 import AsyncButton from '@shell/components/AsyncButton';
 import {
-  previewState, removePreview, shareWorkspace, previewBase, retargetPreview
+  previewState, removePreview, shareWorkspace, previewBase, retargetPreview, rebuildPreview, LOCAL_HOST
 } from '../previews';
 import { buildShare, shareStatus, workspaceBranch } from '../workspace-tools';
 import { defaultRancher, listRanchers } from '../ranchers';
@@ -24,7 +24,7 @@ const KINDS = [
   {
     kind:        'dashboard',
     title:       'Rancher dashboard',
-    blurb:       'This branch as a dashboard on a link, talking to a Rancher of your choosing. Reviewers sign in as they always do.',
+    blurb:       'This branch as a dashboard on a link, talking to a Rancher of your choosing. On a Rancher of the sidebar\'s it is a public link; here it is behind this Rancher\'s login.',
     needsRancher: true,
   },
   {
@@ -66,6 +66,8 @@ export default {
       /** Per kind: a picker on "Another Rancher", with the address typed so far. */
       other:     {},
       custom:    '',
+      /** The cluster the next build is hosted on: 'local', or a sidebar Rancher's cluster id. */
+      hostOn:    'local',
       error:     '',
       notice:    '',
       timer:     null,
@@ -92,6 +94,11 @@ export default {
       // The starred Rancher (the sidebar's Ranchers list), else the one this page is on.
       this.rancher = (await defaultRancher().catch(() => '')) || window.location.origin;
       this.ranchers = (await listRanchers(this.$store).catch(() => [])).filter((r) => r.url);
+      // Hosted where the starred Rancher is, when that is one of the sidebar's: a link on the
+      // open internet is what a share is for, and that is where one can be.
+      const starred = this.ranchers.find((r) => r.kind === 'instance' && r.url === this.rancher && r.clusterId);
+
+      this.hostOn = starred?.clusterId || 'local';
       await this.readBranch();
     },
 
@@ -142,7 +149,7 @@ export default {
       this.error = '';
 
       try {
-        await shareWorkspace(this.$store, this.workspace.name, kind, this.rancher.trim().replace(/\/$/, '') || window.location.origin, this.workspace.cluster);
+        await shareWorkspace(this.$store, this.workspace.name, kind, this.rancher.trim().replace(/\/$/, '') || window.location.origin, this.workspace.cluster, this.hostFor(this.hostOn));
         this.notice = `${ kind === 'storybook' ? 'Storybook' : 'Dashboard' } build started in the workspace, at ${ this.ref || 'its branch' }. It takes a few minutes; the link appears here when it is served.`;
         await this.refresh();
         done(true);
@@ -155,7 +162,14 @@ export default {
     /** Build again, from the checkout as it is now. The link keeps serving the last build until this one is done. */
     async rebuild(kind, done) {
       try {
-        const result = await buildShare(this.workspace.name, kind, previewBase(this.workspace.name, this.workspace.cluster, kind));
+        const state = this.stateOf(kind);
+        const remote = !!state?.host;
+        const result = await buildShare(this.workspace.name, kind, remote ? (kind === 'storybook' ? '/' : '/dashboard/') : previewBase(this.workspace.name, this.workspace.cluster, kind));
+
+        if (remote && result !== 'already-building') {
+          // The preview fetches the build when its pod starts; see it through once the build is done.
+          this.refetchWhenBuilt(kind, state.hostedOn);
+        }
 
         this.notice = result === 'already-building' ? 'A build is already running; wait for it.' : `Rebuilding from the checkout at ${ this.ref || 'its branch' }.`;
         await this.refresh();
@@ -166,6 +180,23 @@ export default {
       }
     },
 
+    /** After a rebuild for a public name: restart the preview's pod once the workspace's build is done, so it fetches the new one. */
+    refetchWhenBuilt(kind, hostedOn) {
+      const started = Date.now();
+      const tick = async() => {
+        const build = (await shareStatus(this.workspace.name).catch(() => ({})))[kind];
+
+        if (build && build.state === 'ok') {
+          await rebuildPreview(this.workspace.name, hostedOn, kind).catch(() => {});
+          this.notice = 'Rebuilt; the public link picks it up in a moment.';
+        } else if (build && build.state !== 'failed' && Date.now() - started < 30 * 60000) {
+          setTimeout(tick, 15000);
+        }
+      };
+
+      setTimeout(tick, 15000);
+    },
+
     async remove(kind, done) {
       try {
         await removePreview(this.$store, this.workspace.name, kind);
@@ -174,6 +205,39 @@ export default {
       } catch (e) {
         this.error = e.message || String(e);
         done(false);
+      }
+    },
+
+    // ── Where a build is hosted ──
+
+    /** This cluster, and every Rancher of the sidebar's that is up: those have a public name to serve on. */
+    hostOptions() {
+      return [
+        { id: 'local', label: 'This cluster · link needs a login here' },
+        ...this.ranchers.filter((r) => r.kind === 'instance' && r.phase === 'ready' && r.clusterId).map((r) => ({ id: r.clusterId, label: `${ r.name } · public link` })),
+      ];
+    },
+
+    hostFor(id) {
+      const rancher = this.ranchers.find((r) => r.clusterId === id);
+
+      return rancher ? { id, fleet: rancher.name, ip: rancher.nodeIp || '' } : LOCAL_HOST;
+    },
+
+    hostLabel(id) {
+      return (this.hostOptions().find((h) => h.id === id) || {}).label || (id === 'local' || !id ? 'This cluster' : id);
+    },
+
+    /** A served build moved: built again for its new address and put up there. */
+    async move(kind, id) {
+      this.error = '';
+      this.hostOn = id;
+      try {
+        this.notice = `Rebuilding for ${ this.hostLabel(id).split(' · ')[0] }; the new link appears here when it is served.`;
+        await shareWorkspace(this.$store, this.workspace.name, kind, this.currentRancher(kind) || window.location.origin, this.workspace.cluster, this.hostFor(id));
+        await this.refresh();
+      } catch (e) {
+        this.error = e.message || String(e);
       }
     },
 
@@ -363,6 +427,24 @@ export default {
           <dl class="workspace-share__facts">
             <dt>Built from</dt>
             <dd><code>{{ stateOf(k.kind).ref }}</code></dd>
+            <dt>Hosted on</dt>
+            <dd>
+              <select
+                :value="stateOf(k.kind).host ? stateOf(k.kind).hostedOn : 'local'"
+                class="workspace-share__select"
+                aria-label="Cluster the build is hosted on"
+                data-testid="share-host"
+                @change="move(k.kind, $event.target.value)"
+              >
+                <option
+                  v-for="h in hostOptions()"
+                  :key="h.id"
+                  :value="h.id"
+                >
+                  {{ h.label }}
+                </option>
+              </select>
+            </dd>
             <template v-if="k.needsRancher">
               <dt>Talks to</dt>
               <dd>
@@ -426,6 +508,23 @@ export default {
         </template>
 
         <template v-else>
+          <div class="workspace-share__row">
+            <span class="text-muted">Hosted on</span>
+            <select
+              v-model="hostOn"
+              class="workspace-share__select"
+              aria-label="Cluster the build is hosted on"
+              data-testid="share-host-new"
+            >
+              <option
+                v-for="h in hostOptions()"
+                :key="h.id"
+                :value="h.id"
+              >
+                {{ h.label }}
+              </option>
+            </select>
+          </div>
           <div
             v-if="k.needsRancher"
             class="workspace-share__row"
