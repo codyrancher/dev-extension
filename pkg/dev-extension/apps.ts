@@ -468,6 +468,18 @@ export function rancherWorkspaceApp(): Json {
 // theirs to set up. Rebuilding is restarting the pod: the init container clones and builds
 // into a shared directory and nginx serves what it left there.
 
+/**
+ * What the build runs over its index.html, base64 so it travels inside one shell line.
+ *
+ * Rancher proxies a Service through the apiserver, and the apiserver rewrites every absolute URL
+ * in an HTML response to sit under its own proxy path - `/api/v1/namespaces/.../proxy/...` -
+ * which Rancher does not serve at that address. The dashboard's index names its scripts with
+ * absolute URLs, so through the proxy it named files that could not be fetched. This takes the
+ * script and link tags out of the markup and puts them back from a script, which the rewriter
+ * never reads; what the app loads after that is its own doing, at the base it was built for.
+ */
+const UNREWRITE_B64 = 'Ly8gUmFuY2hlciBwcm94aWVzIGEgU2VydmljZSB0aHJvdWdoIHRoZSBhcGlzZXJ2ZXIsIGFuZCB0aGUgYXBpc2VydmVyIHJld3JpdGVzIGV2ZXJ5IGFic29sdXRlCi8vIFVSTCBpbiBhbiBIVE1MIHJlc3BvbnNlIHRvIHNpdCB1bmRlciBpdHMgb3duIHByb3h5IHBhdGggLSBhIHBhdGggUmFuY2hlciB0aGVuIGRvZXMgbm90IHNlcnZlLgovLyBTbyB0aGUgYnVpbHQgaW5kZXgncyBzY3JpcHQgYW5kIGxpbmsgdGFncyBhcmUgdGFrZW4gb3V0IG9mIHRoZSBtYXJrdXAgYW5kIHB1dCBiYWNrIGJ5IGEKLy8gc2NyaXB0LCB3aGljaCB0aGUgcmV3cml0ZXIgZG9lcyBub3QgcmVhZC4gRXZlcnl0aGluZyB0aGUgYXBwIGxvYWRzIGFmdGVyIHRoYXQgaXMgSmF2YVNjcmlwdCdzCi8vIGRvaW5nLCBhdCB0aGUgYmFzZSBpdCB3YXMgYnVpbHQgZm9yLgpjb25zdCBmcyA9IHJlcXVpcmUoJ2ZzJyk7CmNvbnN0IGZpbGUgPSBwcm9jZXNzLmFyZ3ZbMl07CmxldCBodG1sID0gZnMucmVhZEZpbGVTeW5jKGZpbGUsICd1dGY4Jyk7CmNvbnN0IHRhZ3MgPSBbXTsKaHRtbCA9IGh0bWwucmVwbGFjZSgvPHNjcmlwdFxiW14+XSpcc3NyYz0iKFteIl0rKSJbXj5dKj48XC9zY3JpcHQ+L2csICh3aG9sZSwgc3JjKSA9PiB7IHRhZ3MucHVzaCh7IHQ6ICdzY3JpcHQnLCB1OiBzcmMgfSk7IHJldHVybiAnJzsgfSk7Cmh0bWwgPSBodG1sLnJlcGxhY2UoLzxsaW5rXGJbXj5dKlxzaHJlZj0iKFteIl0rKSJbXj5dKj4vZywgKHdob2xlLCBocmVmKSA9PiB7CiAgY29uc3QgcmVsID0gKC9cYnJlbD0iKFteIl0rKSIvLmV4ZWMod2hvbGUpIHx8IFtdKVsxXSB8fCAnc3R5bGVzaGVldCc7CiAgY29uc3QgYXMgPSAoL1xiYXM9IihbXiJdKykiLy5leGVjKHdob2xlKSB8fCBbXSlbMV0gfHwgJyc7CiAgdGFncy5wdXNoKHsgdDogJ2xpbmsnLCB1OiBocmVmLCByZWwsIGFzIH0pOwogIHJldHVybiAnJzsKfSk7CmNvbnN0IGJvb3QgPSAnPHNjcmlwdD4oZnVuY3Rpb24oKXt2YXIgdGFncz0nICsgSlNPTi5zdHJpbmdpZnkodGFncykgKyAnO3RhZ3MuZm9yRWFjaChmdW5jdGlvbih4KXt2YXIgZTtpZih4LnQ9PT0ic2NyaXB0Iil7ZT1kb2N1bWVudC5jcmVhdGVFbGVtZW50KCJzY3JpcHQiKTtlLnNyYz14LnU7ZS5kZWZlcj10cnVlO31lbHNle2U9ZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgibGluayIpO2UuaHJlZj14LnU7ZS5yZWw9eC5yZWw7aWYoeC5hcyl7ZS5hcz14LmFzO319ZG9jdW1lbnQuaGVhZC5hcHBlbmRDaGlsZChlKTt9KTt9KSgpOzwvc2NyaXB0Pic7Cmh0bWwgPSBodG1sLnJlcGxhY2UoJzwvaGVhZD4nLCBib290ICsgJzwvaGVhZD4nKTsKZnMud3JpdGVGaWxlU3luYyhmaWxlLCBodG1sKTsKY29uc29sZS5sb2coJ2luZGV4OiAnICsgdGFncy5sZW5ndGggKyAnIHRhZ3MgbW92ZWQgaW50byBhIHNjcmlwdCcpOwo=';
+
 const PREVIEW_BUILD = [
   'set -e',
   'export HOME=/work/.home YARN_CACHE_FOLDER=/work/.yarn-cache NODE_OPTIONS=--max_old_space_size=4096',
@@ -488,6 +500,9 @@ const PREVIEW_BUILD = [
     '  printf "%s\\n" "server {" "  listen ${port};" "  root /site/dist;" "  location / { try_files \\$uri \\$uri/ /index.html; }" "}" > /site/nginx/default.conf;',
     'else',
     '  ROUTER_BASE=${base} RESOURCE_BASE=${base} OUTPUT_DIR=/site/dist yarn build &&',
+    // The apiserver rewrites absolute URLs in proxied HTML onto a path Rancher does not serve,
+    // so the index loads its scripts from a script instead. See UNREWRITE_JS.
+    `  echo ${ UNREWRITE_B64 } | base64 -d > /tmp/unrewrite.js && node /tmp/unrewrite.js /site/dist/index.html &&`,
     '  printf "%s\\n" "server {" "  listen ${port};" "  client_max_body_size 50m;" "  location = / { return 302 /dashboard/; }"',
     '    "  location /dashboard/ { alias /site/dist/; try_files \\$uri \\$uri/ /dashboard/index.html; }"',
     '    "  location ~ ^/(js|css|img|fonts|favicon\\\\.png|manifest\\\\.json|robots\\\\.txt)(/|\\$) { root /site/dist; }"',
