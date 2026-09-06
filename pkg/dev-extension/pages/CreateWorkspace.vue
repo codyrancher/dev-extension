@@ -14,6 +14,7 @@ import {
   createWorkspace, workspaceNameError, workspaceNamespace, listClusters, readableBytes
 } from '../api';
 import { listApps, appsPlusAvailable } from '../apps';
+import { defaultRancher } from '../ranchers';
 import { readPrefs, shownApps } from '../prefs';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, WORKSPACE_ROUTE, DEFAULT_APP, APP
@@ -54,6 +55,11 @@ export default {
     const knownApp = (id) => this.apps.some((app) => app.id === id) && id;
 
     this.app = knownApp(askedApp) || knownApp(DEFAULT_APP) || this.apps[0]?.id || '';
+
+    // The starred Rancher (the sidebar's Ranchers list), unless the link said which.
+    if (!this.rancherUrl) {
+      this.rancherUrl = await defaultRancher().catch(() => '');
+    }
   },
 
   data() {

@@ -385,6 +385,10 @@ export function rancherWorkspaceApp(): Json {
             yamlBlock(WORKSPACE_VUE_CONFIG, 4),
             '  serve.sh: |',
             yamlBlock(WORKSPACE_SERVE, 4),
+            // vue-cli decides whether a config file is ESM from the nearest package.json above
+            // it, and dies when there is none; this is that package.json.
+            '  package.json: |',
+            '    {"name": "dev-workspace-config", "private": true}',
             '',
           ].join('\n'),
         },
@@ -566,42 +570,49 @@ export function rancherWorkspaceApp(): Json {
  * script and link tags out of the markup and puts them back from a script, which the rewriter
  * never reads; what the app loads after that is its own doing, at the base it was built for.
  */
-const UNREWRITE_B64 = 'Ly8gUmFuY2hlciBwcm94aWVzIGEgU2VydmljZSB0aHJvdWdoIHRoZSBhcGlzZXJ2ZXIsIGFuZCB0aGUgYXBpc2VydmVyIHJld3JpdGVzIGV2ZXJ5IGFic29sdXRlCi8vIFVSTCBpbiBhbiBIVE1MIHJlc3BvbnNlIHRvIHNpdCB1bmRlciBpdHMgb3duIHByb3h5IHBhdGggLSBhIHBhdGggUmFuY2hlciB0aGVuIGRvZXMgbm90IHNlcnZlLgovLyBTbyB0aGUgYnVpbHQgaW5kZXgncyBzY3JpcHQgYW5kIGxpbmsgdGFncyBhcmUgdGFrZW4gb3V0IG9mIHRoZSBtYXJrdXAgYW5kIHB1dCBiYWNrIGJ5IGEKLy8gc2NyaXB0LCB3aGljaCB0aGUgcmV3cml0ZXIgZG9lcyBub3QgcmVhZC4gRXZlcnl0aGluZyB0aGUgYXBwIGxvYWRzIGFmdGVyIHRoYXQgaXMgSmF2YVNjcmlwdCdzCi8vIGRvaW5nLCBhdCB0aGUgYmFzZSBpdCB3YXMgYnVpbHQgZm9yLgpjb25zdCBmcyA9IHJlcXVpcmUoJ2ZzJyk7CmNvbnN0IGZpbGUgPSBwcm9jZXNzLmFyZ3ZbMl07CmxldCBodG1sID0gZnMucmVhZEZpbGVTeW5jKGZpbGUsICd1dGY4Jyk7CmNvbnN0IHRhZ3MgPSBbXTsKaHRtbCA9IGh0bWwucmVwbGFjZSgvPHNjcmlwdFxiW14+XSpcc3NyYz0iKFteIl0rKSJbXj5dKj48XC9zY3JpcHQ+L2csICh3aG9sZSwgc3JjKSA9PiB7IHRhZ3MucHVzaCh7IHQ6ICdzY3JpcHQnLCB1OiBzcmMgfSk7IHJldHVybiAnJzsgfSk7Cmh0bWwgPSBodG1sLnJlcGxhY2UoLzxsaW5rXGJbXj5dKlxzaHJlZj0iKFteIl0rKSJbXj5dKj4vZywgKHdob2xlLCBocmVmKSA9PiB7CiAgY29uc3QgcmVsID0gKC9cYnJlbD0iKFteIl0rKSIvLmV4ZWMod2hvbGUpIHx8IFtdKVsxXSB8fCAnc3R5bGVzaGVldCc7CiAgY29uc3QgYXMgPSAoL1xiYXM9IihbXiJdKykiLy5leGVjKHdob2xlKSB8fCBbXSlbMV0gfHwgJyc7CiAgdGFncy5wdXNoKHsgdDogJ2xpbmsnLCB1OiBocmVmLCByZWwsIGFzIH0pOwogIHJldHVybiAnJzsKfSk7CmNvbnN0IGJvb3QgPSAnPHNjcmlwdD4oZnVuY3Rpb24oKXt2YXIgdGFncz0nICsgSlNPTi5zdHJpbmdpZnkodGFncykgKyAnO3RhZ3MuZm9yRWFjaChmdW5jdGlvbih4KXt2YXIgZTtpZih4LnQ9PT0ic2NyaXB0Iil7ZT1kb2N1bWVudC5jcmVhdGVFbGVtZW50KCJzY3JpcHQiKTtlLnNyYz14LnU7ZS5kZWZlcj10cnVlO31lbHNle2U9ZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgibGluayIpO2UuaHJlZj14LnU7ZS5yZWw9eC5yZWw7aWYoeC5hcyl7ZS5hcz14LmFzO319ZG9jdW1lbnQuaGVhZC5hcHBlbmRDaGlsZChlKTt9KTt9KSgpOzwvc2NyaXB0Pic7Cmh0bWwgPSBodG1sLnJlcGxhY2UoJzwvaGVhZD4nLCBib290ICsgJzwvaGVhZD4nKTsKZnMud3JpdGVGaWxlU3luYyhmaWxlLCBodG1sKTsKY29uc29sZS5sb2coJ2luZGV4OiAnICsgdGFncy5sZW5ndGggKyAnIHRhZ3MgbW92ZWQgaW50byBhIHNjcmlwdCcpOwo=';
+export const UNREWRITE_B64 = 'Ly8gUmFuY2hlciBwcm94aWVzIGEgU2VydmljZSB0aHJvdWdoIHRoZSBhcGlzZXJ2ZXIsIGFuZCB0aGUgYXBpc2VydmVyIHJld3JpdGVzIGV2ZXJ5IGFic29sdXRlCi8vIFVSTCBpbiBhbiBIVE1MIHJlc3BvbnNlIHRvIHNpdCB1bmRlciBpdHMgb3duIHByb3h5IHBhdGggLSBhIHBhdGggUmFuY2hlciB0aGVuIGRvZXMgbm90IHNlcnZlLgovLyBTbyB0aGUgYnVpbHQgaW5kZXgncyBzY3JpcHQgYW5kIGxpbmsgdGFncyBhcmUgdGFrZW4gb3V0IG9mIHRoZSBtYXJrdXAgYW5kIHB1dCBiYWNrIGJ5IGEKLy8gc2NyaXB0LCB3aGljaCB0aGUgcmV3cml0ZXIgZG9lcyBub3QgcmVhZC4gRXZlcnl0aGluZyB0aGUgYXBwIGxvYWRzIGFmdGVyIHRoYXQgaXMgSmF2YVNjcmlwdCdzCi8vIGRvaW5nLCBhdCB0aGUgYmFzZSBpdCB3YXMgYnVpbHQgZm9yLgpjb25zdCBmcyA9IHJlcXVpcmUoJ2ZzJyk7CmNvbnN0IGZpbGUgPSBwcm9jZXNzLmFyZ3ZbMl07CmxldCBodG1sID0gZnMucmVhZEZpbGVTeW5jKGZpbGUsICd1dGY4Jyk7CmNvbnN0IHRhZ3MgPSBbXTsKaHRtbCA9IGh0bWwucmVwbGFjZSgvPHNjcmlwdFxiW14+XSpcc3NyYz0iKFteIl0rKSJbXj5dKj48XC9zY3JpcHQ+L2csICh3aG9sZSwgc3JjKSA9PiB7IHRhZ3MucHVzaCh7IHQ6ICdzY3JpcHQnLCB1OiBzcmMgfSk7IHJldHVybiAnJzsgfSk7Cmh0bWwgPSBodG1sLnJlcGxhY2UoLzxsaW5rXGJbXj5dKlxzaHJlZj0iKFteIl0rKSJbXj5dKj4vZywgKHdob2xlLCBocmVmKSA9PiB7CiAgY29uc3QgcmVsID0gKC9cYnJlbD0iKFteIl0rKSIvLmV4ZWMod2hvbGUpIHx8IFtdKVsxXSB8fCAnc3R5bGVzaGVldCc7CiAgY29uc3QgYXMgPSAoL1xiYXM9IihbXiJdKykiLy5leGVjKHdob2xlKSB8fCBbXSlbMV0gfHwgJyc7CiAgdGFncy5wdXNoKHsgdDogJ2xpbmsnLCB1OiBocmVmLCByZWwsIGFzIH0pOwogIHJldHVybiAnJzsKfSk7CmNvbnN0IGJvb3QgPSAnPHNjcmlwdD4oZnVuY3Rpb24oKXt2YXIgdGFncz0nICsgSlNPTi5zdHJpbmdpZnkodGFncykgKyAnO3RhZ3MuZm9yRWFjaChmdW5jdGlvbih4KXt2YXIgZTtpZih4LnQ9PT0ic2NyaXB0Iil7ZT1kb2N1bWVudC5jcmVhdGVFbGVtZW50KCJzY3JpcHQiKTtlLnNyYz14LnU7ZS5kZWZlcj10cnVlO31lbHNle2U9ZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgibGluayIpO2UuaHJlZj14LnU7ZS5yZWw9eC5yZWw7aWYoeC5hcyl7ZS5hcz14LmFzO319ZG9jdW1lbnQuaGVhZC5hcHBlbmRDaGlsZChlKTt9KTt9KSgpOzwvc2NyaXB0Pic7Cmh0bWwgPSBodG1sLnJlcGxhY2UoJzwvaGVhZD4nLCBib290ICsgJzwvaGVhZD4nKTsKZnMud3JpdGVGaWxlU3luYyhmaWxlLCBodG1sKTsKY29uc29sZS5sb2coJ2luZGV4OiAnICsgdGFncy5sZW5ndGggKyAnIHRhZ3MgbW92ZWQgaW50byBhIHNjcmlwdCcpOwo=';
 
 const PREVIEW_BUILD = [
   'set -e',
   'export HOME=/work/.home YARN_CACHE_FOLDER=/work/.yarn-cache NODE_OPTIONS=--max_old_space_size=4096',
   'mkdir -p /work /site/dist /site/nginx',
-  '[ -d /work/src/.git ] || git clone https://github.com/${repo} /work/src',
-  'cd /work/src',
-  'git fetch --depth 1 origin "${ref}" && git checkout -q FETCH_HEAD',
-  'yarn install --network-timeout 600000',
-  // Which build, and the nginx that serves it, decided here rather than in the templates: the
-  // App's values are text substitution, and a shell can branch where YAML cannot. The dashboard
-  // is built under /dashboard/ - ROUTER_BASE is where it routes, RESOURCE_BASE where it fetches
-  // its assets - with everything else proxied to the Rancher; Storybook is a plain static site.
-  // One element per branch: the list is joined with && and a branch that began with one broke
-  // the shell.
-  [
-    'if [ "${kind}" = storybook ]; then',
-    '  yarn build-storybook && rm -rf /site/dist && cp -r storybook/storybook-static /site/dist &&',
-    '  printf "%s\\n" "server {" "  listen ${port};" "  root /site/dist;" "  location / { try_files \\$uri \\$uri/ /index.html; }" "}" > /site/nginx/default.conf;',
-    'else',
-    '  ROUTER_BASE=${base} RESOURCE_BASE=${base} OUTPUT_DIR=/site/dist yarn build &&',
-    // The apiserver rewrites absolute URLs in proxied HTML onto a path Rancher does not serve,
-    // so the index loads its scripts from a script instead. See UNREWRITE_JS.
-    `  echo ${ UNREWRITE_B64 } | base64 -d > /tmp/unrewrite.js && node /tmp/unrewrite.js /site/dist/index.html &&`,
-    '  printf "%s\\n" "server {" "  listen ${port};" "  client_max_body_size 50m;" "  location = / { return 302 /dashboard/; }"',
-    '    "  location /dashboard/ { alias /site/dist/; try_files \\$uri \\$uri/ /dashboard/index.html; }"',
-    '    "  location ~ ^/(js|css|img|fonts|favicon\\\\.png|manifest\\\\.json|robots\\\\.txt)(/|\\$) { root /site/dist; }"',
-    '    "  location / { proxy_pass ${rancherUrl}; proxy_ssl_verify off; proxy_ssl_server_name on; proxy_http_version 1.1;"',
-    '    "    proxy_set_header Upgrade \\$http_upgrade; proxy_set_header Connection \\"upgrade\\"; proxy_set_header Host \\$proxy_host;"',
-    '    "    proxy_set_header X-Forwarded-Proto https; proxy_read_timeout 3600s; proxy_cookie_domain ~.* \\$host; proxy_cookie_flags ~ nosecure; }"',
-    '    "}" > /site/nginx/default.conf;',
-    'fi',
-  ].join(' '),
+  // Two sources. A workspace's own build (the Share tab: workspace-tools.ts, buildShare) is a
+  // directory on the node that nginx serves as it is, so a rebuild there shows up here with no
+  // pod restart; anything else is cloned and built here, once, on the first start.
+  'if [ "${sourceDir}" != none ]; then',
+  '  SITE=/workspaces/${sourceDir}',
+  '  until [ -f "$SITE/index.html" ]; do echo "waiting for the workspace to build into $SITE"; sleep 10; done',
+  'else',
+  '  SITE=/site/dist',
+  '  [ -d /work/src/.git ] || git clone https://github.com/${repo} /work/src',
+  '  cd /work/src',
+  '  git fetch --depth 1 origin "${ref}" && git checkout -q FETCH_HEAD',
+  '  yarn install --network-timeout 600000',
+  // The dashboard is built under /dashboard/ - ROUTER_BASE is where it routes, RESOURCE_BASE
+  // where it fetches its assets - with everything else proxied to the Rancher; Storybook is a
+  // plain static site.
+  '  if [ "${kind}" = storybook ]; then',
+  '    yarn build-storybook && rm -rf /site/dist && cp -r storybook/storybook-static /site/dist',
+  '  else',
+  '    ROUTER_BASE=${base} RESOURCE_BASE=${base} OUTPUT_DIR=/site/dist yarn build',
+  // The apiserver rewrites absolute URLs in proxied HTML onto a path Rancher does not serve,
+  // so the index loads its scripts from a script instead. See UNREWRITE_B64.
+  `    echo ${ UNREWRITE_B64 } | base64 -d > /tmp/unrewrite.js && node /tmp/unrewrite.js /site/dist/index.html`,
+  '  fi',
+  'fi',
+  'if [ "${kind}" = storybook ]; then',
+  '  printf "%s\\n" "server {" "  listen ${port};" "  root $SITE;" "  location / { try_files \\$uri \\$uri/ /index.html; }" "}" > /site/nginx/default.conf',
+  'else',
+  '  printf "%s\\n" "server {" "  listen ${port};" "  client_max_body_size 50m;" "  location = / { return 302 /dashboard/; }" \\',
+  '    "  location /dashboard/ { alias $SITE/; try_files \\$uri \\$uri/ /dashboard/index.html; }" \\',
+  '    "  location ~ ^/(js|css|img|fonts|favicon\\\\.png|manifest\\\\.json|robots\\\\.txt)(/|\\$) { root $SITE; }" \\',
+  '    "  location / { proxy_pass ${rancherUrl}; proxy_ssl_verify off; proxy_ssl_server_name on; proxy_http_version 1.1;" \\',
+  '    "    proxy_set_header Upgrade \\$http_upgrade; proxy_set_header Connection \\"upgrade\\"; proxy_set_header Host \\$proxy_host;" \\',
+  '    "    proxy_set_header X-Forwarded-Proto https; proxy_read_timeout 3600s; proxy_cookie_domain ~.* \\$host; proxy_cookie_flags ~ nosecure; }" \\',
+  '    "}" > /site/nginx/default.conf',
+  'fi',
   'echo built',
-].join(' && ');
+].join('\n');
 
 export const PREVIEW_APP = 'dashboard-preview';
 export const BROWSER_APP = 'dev-browser';
@@ -629,12 +640,16 @@ export function dashboardPreviewApp(): Json {
         rancherUrl:  'https://rancher.ourhome.dev',
         port:        8080,
         hostCluster: 'local',
+        // A build to serve instead of making one: a directory under the node's dev-workspaces
+        // (`<workspace>/share/dashboard`, which the Share tab fills). `none` builds from `ref`.
+        sourceDir:   'none',
       },
       valueLabels: {
         repo:        'GitHub repository',
         ref:         'Branch, tag, or pull/<n>/head',
         kind:        'dashboard or storybook',
         base:        'Where the dashboard build routes and fetches its assets: /dashboard/, or the path Rancher proxies it at',
+        sourceDir:   'A workspace build to serve, as <workspace>/share/<kind> under the node\'s dev-workspaces; none means build from ref',
         rancherUrl:  'Rancher a dashboard build talks to',
         port:        'Port nginx listens on',
         hostCluster: 'Cluster the preview runs on',
@@ -684,7 +699,7 @@ export function dashboardPreviewApp(): Json {
             '        - name: build',
             '          image: node:24',
             '          command:',
-            '            - /bin/sh',
+            '            - /bin/bash',
             '            - -c',
             `            - ${ JSON.stringify(PREVIEW_BUILD) }`,
             '          volumeMounts:',
@@ -692,6 +707,9 @@ export function dashboardPreviewApp(): Json {
             '              mountPath: /work',
             '            - name: site',
             '              mountPath: /site',
+            '            - name: workspaces',
+            '              mountPath: /workspaces',
+            '              readOnly: true',
             '      containers:',
             '        - name: workspace',
             '          image: nginx:1.27-alpine',
@@ -706,6 +724,9 @@ export function dashboardPreviewApp(): Json {
             '              subPath: nginx',
             '              mountPath: /etc/nginx/conf.d',
             '              readOnly: true',
+            '            - name: workspaces',
+            '              mountPath: /workspaces',
+            '              readOnly: true',
             '          readinessProbe:',
             '            tcpSocket:',
             '              port: ${port}',
@@ -717,6 +738,11 @@ export function dashboardPreviewApp(): Json {
             '            type: DirectoryOrCreate',
             '        - name: site',
             '          emptyDir: {}',
+            // Every workspace's /workspace, for the build one of them made (see sourceDir).
+            '        - name: workspaces',
+            '          hostPath:',
+            '            path: /var/lib/rancher/dev-workspaces',
+            '            type: DirectoryOrCreate',
             '',
           ].join('\n'),
         },
@@ -887,23 +913,37 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
     // Installations keep what they rendered; new ones get the new templates.
     const fingerprint = definitionVersion(body.spec);
     const existing: Json = byName.get(body.metadata.name);
+    // Two dashboards on different versions of this extension must not take turns rewriting the
+    // App - Apps Plus re-renders every Installation each time, replacing running workspace
+    // pods mid-conversation. Versions up to 0.3.2 compare the older annotation with their own
+    // fingerprint and rewrite on a mismatch, so it is left holding the value they expect
+    // (LEGACY_FINGERPRINTS) and this version keeps its own in an annotation of its own.
+    const annotations = {
+      ...(body.metadata.annotations || {}),
+      [DEFINITION_ANNOTATION]:    LEGACY_FINGERPRINTS[body.metadata.name] || fingerprint,
+      [DEFINITION_ANNOTATION_V2]: fingerprint,
+    };
 
-    body.metadata.annotations = { ...(body.metadata.annotations || {}), [DEFINITION_ANNOTATION]: fingerprint };
+    body.metadata.annotations = annotations;
 
     if (!existing) {
       const app = await store.dispatch('management/create', { type: APP, ...body });
 
       await app.save().catch(() => {});
-    } else if (existing.metadata?.annotations?.[DEFINITION_ANNOTATION] !== fingerprint) {
+    } else if (existing.metadata?.annotations?.[DEFINITION_ANNOTATION_V2] !== fingerprint) {
       existing.spec = body.spec;
-      existing.metadata.annotations = { ...(existing.metadata.annotations || {}), [DEFINITION_ANNOTATION]: fingerprint };
+      existing.metadata.annotations = { ...(existing.metadata.annotations || {}), ...annotations };
       await existing.save().catch(() => {});
     }
   }
 }
 
 /** Where an App carries the fingerprint of the definition that wrote it. */
+export const DEFINITION_ANNOTATION_V2 = 'dev.rancher.io/definition-v2';
+/** The annotation versions up to 0.3.2 read; see ensureDefaultApp for why it is kept. */
 export const DEFINITION_ANNOTATION = 'dev.rancher.io/definition';
+/** What a 0.3.2 dashboard computes for the Apps it knows, so it finds them as it left them. */
+const LEGACY_FINGERPRINTS: Record<string, string> = { [DEFAULT_APP]: '50f2859d', [BROWSER_APP]: 'fff28dbc' };
 
 function definitionVersion(spec: Json): string {
   const text = JSON.stringify(spec);

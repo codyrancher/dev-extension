@@ -21,6 +21,7 @@ import {
   listConversations, startConversation, endConversation, renameConversation, STUDIO_CLUSTER
 } from '../conversations';
 import { prepareWorkspace } from '../reviews';
+import { ensureDefaultShare } from '../previews';
 
 const ROW_STATE = {
   open: 'running', connecting: 'starting', waiting: 'starting', closed: 'stopped'
@@ -146,11 +147,14 @@ export default {
       // claude that starts a moment before its skills are all there.
       if (this.ready && !this.prepared) {
         this.prepared = true;
-        prepareWorkspace(this.workspace.name).catch((e) => {
-          this.prepared = false;
-          this.error = `The workspace could not be prepared for the harness's skills: ${ e?.message || e }`;
-          console.error('[dev] preparing the workspace failed', e); // eslint-disable-line no-console
-        });
+        prepareWorkspace(this.workspace.name)
+          // Shared by default: the checkout built and put on a link, the first time it is ready.
+          .then(() => ensureDefaultShare(this.$store, this.workspace.name, this.workspace.cluster || 'local').catch(() => {}))
+          .catch((e) => {
+            this.prepared = false;
+            this.error = `The workspace could not be prepared for the harness's skills: ${ e?.message || e }`;
+            console.error('[dev] preparing the workspace failed', e); // eslint-disable-line no-console
+          });
       }
     },
 

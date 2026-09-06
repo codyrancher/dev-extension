@@ -30,6 +30,8 @@ import {
 import type { WorkspaceContext } from './workspace-tools';
 import { rerunFailed } from './github';
 import { DEFAULT_APP, DEV_API_IN_CLUSTER } from './config/constants';
+import { defaultRancherValues } from './ranchers';
+import { ensureDefaultShare } from './previews';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -378,7 +380,8 @@ async function ensureWorkspace(store: Store, name: string): Promise<boolean> {
   const existing = (await listAllWorkspaces().catch(() => [])).some((workspace) => workspace.name === name);
 
   if (!existing) {
-    await createWorkspace(store, name, DEFAULT_APP);
+    // Pointed at the starred Rancher (ranchers.ts), as the Create page would be.
+    await createWorkspace(store, name, DEFAULT_APP, undefined, await defaultRancherValues());
   }
 
   return !existing;
@@ -392,13 +395,17 @@ async function ensureWorkspace(store: Store, name: string): Promise<boolean> {
  * button that asked for this comes back now. The pane, docked wherever it was asked for,
  * shows the pod arriving and then the prompt starting. `onNote` hears where it has got to.
  */
-async function openWith(workspace: string, title: string, prompt: string, ctx?: WorkspaceContext, onNote?: (note: string) => void): Promise<ProjectConversation> {
+async function openWith(workspace: string, title: string, prompt: string, ctx?: WorkspaceContext, onNote?: (note: string) => void, store?: Store): Promise<ProjectConversation> {
   const conversation = await startConversation(workspace, title);
   const prepare = async() => {
     onNote?.('preparing the workspace (skills, gh, browser)');
     await ensureWorkspaceReady(workspace, ctx);
     await queueInWorkspace(workspace, conversation.id, prompt);
     onNote?.('prompt queued; the review starts when its pane is attached');
+    // Shared by default: the workspace's build, on a link, from the start (previews.ts).
+    if (store) {
+      ensureDefaultShare(store, workspace).catch(() => {});
+    }
   };
 
   // A pod that is up is prepared now, before this returns: a page that navigates away a
@@ -447,7 +454,7 @@ export async function startPrReview(store: Store, pr: { number: number; issue?: 
   }
 
   const conversation = await openWith(workspace, title, reviewPrompt(pr.number, repo), { pr: pr.number, issue: pr.issue?.number || null },
-    (note) => setReviewRun(pr.number, 'starting', note, workspace).catch(() => {}));
+    (note) => setReviewRun(pr.number, 'starting', note, workspace).catch(() => {}), store);
 
   await setReviewRun(pr.number, 'starting', 'conversation opened; waiting for the workspace', workspace).catch(() => {});
 
@@ -458,7 +465,7 @@ export async function startPrReview(store: Store, pr: { number: number; issue?: 
 export async function startIssueFix(store: Store, issue: { number: number; title: string }, repo = DEFAULT_REPO): Promise<Started> {
   const workspace = `issue-${ issue.number }`;
   const created = await ensureWorkspace(store, workspace);
-  const conversation = await openWith(workspace, `Fix #${ issue.number }`, fixPrompt(issue.number, repo), { issue: issue.number });
+  const conversation = await openWith(workspace, `Fix #${ issue.number }`, fixPrompt(issue.number, repo), { issue: issue.number }, undefined, store);
 
   return { workspace, conversation, created };
 }

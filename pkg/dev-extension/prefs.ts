@@ -11,9 +11,11 @@ import { devFetch, currentOwner, DEV_SYSTEM_NAMESPACE, clusterBase } from './api
 export interface DevPrefs {
   /** App ids the person has hidden. Everything not listed is shown; a new App shows up on its own. */
   hiddenApps: string[];
+  /** The Rancher new workspaces point at, by URL; '' is the one this dashboard is on. See ranchers.ts. */
+  defaultRancher: string;
 }
 
-const EMPTY: DevPrefs = { hiddenApps: [] };
+const EMPTY: DevPrefs = { hiddenApps: [], defaultRancher: '' };
 const KIND_LABEL = 'dev.rancher.io/kind';
 const OWNER_LABEL = 'dev.rancher.io/owner';
 
@@ -31,16 +33,22 @@ export async function readPrefs(): Promise<DevPrefs> {
   try {
     const parsed = JSON.parse(found?.data?.['prefs.json'] || '{}');
 
-    return { ...EMPTY, hiddenApps: Array.isArray(parsed.hiddenApps) ? parsed.hiddenApps.filter((id: unknown) => typeof id === 'string') : [] };
+    return {
+      ...EMPTY,
+      hiddenApps:     Array.isArray(parsed.hiddenApps) ? parsed.hiddenApps.filter((id: unknown) => typeof id === 'string') : [],
+      defaultRancher: typeof parsed.defaultRancher === 'string' ? parsed.defaultRancher : '',
+    };
   } catch {
     return { ...EMPTY };
   }
 }
 
-export async function savePrefs(prefs: DevPrefs): Promise<void> {
+/** Save some of the preferences; the rest keep what they were, so two pages never undo each other. */
+export async function savePrefs(changes: Partial<DevPrefs>): Promise<void> {
   const name = await prefsName();
   const url = `${ BASE }/v1/configmaps/${ DEV_SYSTEM_NAMESPACE }/${ name }`;
   const existing = await devFetch(url).catch(() => null);
+  const prefs: DevPrefs = { ...(await readPrefs()), ...changes };
   const data = { 'prefs.json': JSON.stringify(prefs) };
 
   if (existing) {

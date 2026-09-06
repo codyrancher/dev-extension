@@ -15,6 +15,7 @@ import {
 import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
 import { DEFAULT_APP, LEGACY_WORKSPACE_APPS } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
+import { listRanchers, setDefaultRancher } from '../ranchers';
 import DevList from './DevList.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
 import Stack from '../design/Stack.vue';
@@ -49,6 +50,8 @@ const cache = {
   workspaces: [],
   clusters:   [],
   apps:       [],
+  ranchers:   [],
+  defaultRancher: '',
   scroll:     0,
 };
 // Whether this page load has already asked for the default App; see refresh().
@@ -64,6 +67,8 @@ export default {
     return {
       workspaces:   cache.workspaces,
       clusters:     cache.clusters,
+      ranchers:     cache.ranchers,
+      defaultRancher: cache.defaultRancher,
       apps:         cache.apps,
       error:        '',
       refreshTimer: null,
@@ -171,6 +176,15 @@ export default {
     currentWorkspace() {
       return this.$route.params.workspace || '';
     },
+
+    /** The Ranchers a workspace can point at, with the starred one marked. See ranchers.ts. */
+    rancherRows() {
+      return this.ranchers.map((rancher) => ({
+        ...rancher,
+        host:      rancher.url.replace(/^https?:\/\//, ''),
+        isDefault: rancher.kind === 'host' ? !this.defaultRancher : (!!rancher.url && rancher.url === this.defaultRancher),
+      }));
+    },
   },
 
   async fetch() {
@@ -193,15 +207,20 @@ export default {
   methods: {
     async refresh() {
       try {
-        const [workspaces, clusters, apps, prefs] = await Promise.all([
+        const [workspaces, clusters, apps, prefs, ranchers] = await Promise.all([
           listAllWorkspaces(),
           listClusters().catch(() => this.clusters),
           listApps(this.$store).catch(() => this.apps),
-          readPrefs().catch(() => ({ hiddenApps: [] })),
+          readPrefs().catch(() => ({ hiddenApps: [], defaultRancher: '' })),
+          listRanchers(this.$store).catch(() => this.ranchers),
         ]);
 
         this.workspaces = workspaces;
         this.clusters = clusters;
+        this.ranchers = ranchers;
+        this.defaultRancher = prefs.defaultRancher || '';
+        cache.ranchers = ranchers;
+        cache.defaultRancher = this.defaultRancher;
         // Every App for the seed check below; the sections show the ones this person kept.
         this.apps = shownApps(apps, prefs);
         cache.workspaces = workspaces;
@@ -256,6 +275,22 @@ export default {
     /** "43 GiB / 62 GiB", or the free amount alone when the total is not known. */
     amount(free, total) {
       return total ? `${ readableBytes(free) } / ${ readableBytes(total) }` : readableBytes(free);
+    },
+
+    /** Star one Rancher: new workspaces and shares point at it. This Rancher is the default when none is starred. */
+    async star(rancher) {
+      if (rancher.kind !== 'host' && !rancher.url) {
+        return;
+      }
+      const url = rancher.kind === 'host' ? '' : rancher.url;
+
+      try {
+        await setDefaultRancher(url);
+        this.defaultRancher = url;
+        cache.defaultRancher = url;
+      } catch (e) {
+        this.error = e.message || String(e);
+      }
     },
 
     readable(value) {
@@ -362,6 +397,41 @@ export default {
     a workspace. Pinned under the lists rather than scrolling with them, so it is where it was
     the last time you looked however many workspaces there are.
   -->
+    <!--
+      The Ranchers a workspace can be pointed at, and which one new ones are pointed at: the
+      starred one. This Rancher, then every Rancher this cluster runs (the rancher-ha App).
+    -->
+    <div
+      class="dev-sidebar__ranchers"
+      data-testid="dev-ranchers"
+    >
+      <div class="dev-sidebar__template-head">
+        <i class="dev-sidebar__template-icon icon icon-globe" />
+        <span class="dev-sidebar__template-label">Ranchers</span>
+      </div>
+      <div
+        v-for="rancher in rancherRows"
+        :key="rancher.id"
+        class="dev-sidebar__rancher-row"
+        :class="{ 'dev-sidebar__rancher-row--default': rancher.isDefault }"
+      >
+        <button
+          type="button"
+          class="dev-sidebar__star"
+          :class="{ 'dev-sidebar__star--on': rancher.isDefault }"
+          :disabled="rancher.kind !== 'host' && !rancher.url"
+          :title="rancher.isDefault ? 'New workspaces are pointed at this Rancher' : 'Point new workspaces at this Rancher'"
+          @click="star(rancher)"
+        >{{ rancher.isDefault ? '★' : '☆' }}</button>
+        <div class="dev-sidebar__rancher-text">
+          <span class="dev-sidebar__rancher-name">{{ rancher.name }}</span>
+          <span
+            class="dev-sidebar__rancher-url"
+            :title="rancher.url || rancher.note"
+          >{{ rancher.host || rancher.note }}</span>
+        </div>
+      </div>
+    </div>
     <div class="dev-sidebar__clusters">
       <div class="dev-sidebar__template-head">
         <i class="dev-sidebar__template-icon icon icon-cluster" />
@@ -508,6 +578,61 @@ export default {
       border-top:  1px solid var(--border);
       padding-top: var(--dev-space-2);
       background:  var(--nav-bg, var(--body-bg));
+    }
+
+    &__ranchers {
+      flex:        0 0 auto;
+      border-top:  1px solid var(--border);
+      padding-top: var(--dev-space-2);
+      background:  var(--nav-bg, var(--body-bg));
+    }
+
+    &__rancher-row {
+      display:     flex;
+      align-items: center;
+      gap:         var(--dev-space-2);
+      padding:     var(--dev-space-1) var(--dev-space-4);
+      min-width:   0;
+
+      &--default .dev-sidebar__rancher-name { color: var(--dev-accent); }
+    }
+
+    &__star {
+      flex:        0 0 auto;
+      background:  none;
+      border:      0;
+      padding:     0;
+      min-height:  0;
+      line-height: 1;
+      font-size:   15px;
+      color:       var(--muted);
+      cursor:      pointer;
+
+      &:hover:not(:disabled) { color: var(--dev-accent); }
+      &:disabled { cursor: default; opacity: 0.5; }
+      &--on { color: var(--dev-accent); }
+    }
+
+    &__rancher-text {
+      display:        flex;
+      flex-direction: column;
+      min-width:      0;
+    }
+
+    &__rancher-name {
+      font-size:      12px;
+      font-weight:    600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    &__rancher-url {
+      font-size:     11px;
+      color:         var(--muted);
+      font-family:   monospace;
+      white-space:   nowrap;
+      overflow:      hidden;
+      text-overflow: ellipsis;
     }
 
     &__cluster-row {

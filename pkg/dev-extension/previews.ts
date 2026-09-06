@@ -11,6 +11,10 @@ import { devFetch, clusterBase, nodeAddress, workspaceNamespace, deleteWorkspace
 export { deleteWorkspace };
 import { createWorkspaceInstance, deleteWorkspaceInstance, workspaceInstance } from './apps';
 import { PREVIEW_APP } from './apps';
+import {
+  buildShare, workspaceBranch, readInWorkspace, workspaceTarget
+} from './workspace-tools';
+import { defaultRancher } from './ranchers';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -39,16 +43,28 @@ export interface PreviewState {
   ref: string;
   rancherUrl: string;
   kind: ShareKind;
+  /** The workspace build nginx serves, as `<workspace>/share/<kind>`; '' when it was built from `ref`. */
+  sourceDir: string;
 }
 
 export type ShareKind = 'dashboard' | 'storybook';
+
+/** Where a workspace's own build of a kind lives, under the node's dev-workspaces. See buildShare. */
+export function shareSourceDir(workspace: string, kind: ShareKind): string {
+  return `${ workspace }/share/${ kind }`;
+}
+
+/** The path a dashboard build is routed and served at: through this Rancher's service proxy. */
+export function previewBase(workspace: string, cluster = 'local', kind: ShareKind = 'dashboard'): string {
+  return kind === 'storybook' ? '/' : `${ proxyBase(workspaceNamespace(previewName(workspace, kind)), cluster, 8080) }dashboard/`;
+}
 
 /** What a share is called: the dashboard build keeps the older `preview-` name. */
 export function previewName(workspace: string, kind: ShareKind = 'dashboard'): string {
   return `${ kind === 'storybook' ? 'storybook' : 'preview' }-${ workspace }`.slice(0, 40);
 }
 
-export async function deployPreview(store: Store, workspace: string, values: { repo: string; ref: string; rancherUrl: string; kind?: ShareKind }, cluster = 'local'): Promise<string> {
+export async function deployPreview(store: Store, workspace: string, values: { repo: string; ref: string; rancherUrl: string; kind?: ShareKind; sourceDir?: string }, cluster = 'local'): Promise<string> {
   const kind: ShareKind = values.kind || 'dashboard';
   const name = previewName(workspace, kind);
 
@@ -61,9 +77,57 @@ export async function deployPreview(store: Store, workspace: string, values: { r
   // Rancher is the one that works; the port is the App's default, which the Service listens on.
   const base = `${ proxyBase(workspaceNamespace(name), cluster, 8080) }dashboard/`;
 
-  await createWorkspaceInstance(store, name, PREVIEW_APP, cluster, { ...values, kind, base });
+  await createWorkspaceInstance(store, name, PREVIEW_APP, cluster, {
+    ...values, kind, base, sourceDir: values.sourceDir || 'none',
+  });
 
   return name;
+}
+
+/**
+ * The Share tab's build-and-share, as one call: the workspace builds its checkout as it is,
+ * and an nginx is put up to serve that directory. Rebuilding is building again; nginx serves
+ * whatever is there.
+ */
+export async function shareWorkspace(store: Store, workspace: string, kind: ShareKind, rancherUrl: string, cluster = 'local'): Promise<void> {
+  const { branch } = await workspaceBranch(workspace);
+
+  await buildShare(workspace, kind, previewBase(workspace, cluster, kind));
+
+  const state = await previewState(store, workspace, cluster, kind);
+
+  if (!state.exists || !state.sourceDir) {
+    if (state.exists) {
+      await removePreview(store, workspace, kind);
+    }
+    await deployPreview(store, workspace, {
+      repo: 'rancher/dashboard', ref: branch || 'HEAD', kind, rancherUrl, sourceDir: shareSourceDir(workspace, kind),
+    }, cluster);
+  }
+}
+
+/**
+ * Shared by default: a workspace that has never been shared gets its dashboard built and put
+ * on a link the first time it is ready, without anybody pressing anything. Once: a marker in
+ * the workspace says it happened, so a share somebody removed stays removed.
+ */
+export async function ensureDefaultShare(store: Store, workspace: string, cluster = 'local'): Promise<void> {
+  const target = await workspaceTarget(workspace).catch(() => null);
+
+  if (!target) {
+    return;
+  }
+  const done = await readInWorkspace(workspace, 'test -f /workspace/.share/auto && echo AUTO-DONE || true');
+
+  if (done.includes('AUTO-DONE')) {
+    return;
+  }
+  const state = await previewState(store, workspace, cluster, 'dashboard');
+
+  if (!state.exists) {
+    await shareWorkspace(store, workspace, 'dashboard', (await defaultRancher().catch(() => '')) || window.location.origin, cluster);
+  }
+  await readInWorkspace(workspace, 'mkdir -p /workspace/.share && touch /workspace/.share/auto');
 }
 
 async function namespaceGone(namespace: string, cluster: string): Promise<void> {
@@ -112,7 +176,7 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
   const name = previewName(workspace, kind);
   const instance = await workspaceInstance(store, name).catch(() => null);
   const empty: PreviewState = {
-    name, exists: false, state: 'absent', detail: '', url: '', direct: '', ref: '', rancherUrl: '', kind,
+    name, exists: false, state: 'absent', detail: '', url: '', direct: '', ref: '', rancherUrl: '', kind, sourceDir: '',
   };
 
   if (!instance) {
@@ -156,6 +220,7 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
     direct:     nodePort && kind === 'storybook' ? `http://${ sslipName(address) }:${ nodePort }/` : '',
     ref:        String(instance.spec?.values?.ref || ''),
     rancherUrl: String(instance.spec?.values?.rancherUrl || ''),
+    sourceDir:  String(instance.spec?.values?.sourceDir || '') === 'none' ? '' : String(instance.spec?.values?.sourceDir || ''),
     kind,
   };
 }
