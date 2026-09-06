@@ -106,7 +106,19 @@ export const APP = 'appsplus.io.app';
 export const APP_INSTANCE = 'appsplus.io.appinstance';
 
 /** The App a fresh Rancher gets, and the one My Work starts fixes in. */
-export const DEFAULT_APP = 'rancher-workspace';
+export const DEFAULT_APP = 'rancher-dev';
+
+/**
+ * What an App has to say to be a workspace app - the dev tools, pointed at a Rancher - and so
+ * to get a section in the sidebar and a place in the create page's picker. Everything else in
+ * Apps Plus (a build to share, a browser) is infrastructure a workspace uses, listed where it is
+ * used and not as a column of its own.
+ */
+export const APP_KIND_LABEL = 'dev.rancher.io/kind';
+export const APP_KIND_WORKSPACE = 'workspace';
+
+/** Apps this product used to seed under another name; their workspaces are still workspaces. */
+export const LEGACY_WORKSPACE_APPS = ['rancher-workspace'];
 
 /**
  * The labels a workspace's objects carry. On the Installation they are what marks it as a

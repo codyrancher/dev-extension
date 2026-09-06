@@ -356,7 +356,7 @@ export default {
       }
 
       .dev-list__glyph {
-        color:     var(--primary);
+        color:     var(--dev-accent);
         font-size: 14px;
       }
     }
@@ -544,7 +544,7 @@ export default {
       &:hover,
       &:focus-visible {
         opacity: 1;
-        color:   var(--primary);
+        color:   var(--dev-accent);
       }
     }
 

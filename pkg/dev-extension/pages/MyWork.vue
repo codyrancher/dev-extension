@@ -1249,7 +1249,7 @@ export default {
     &--success { background: var(--success-banner-bg); color: var(--success); }
     &--warning { background: var(--warning-banner-bg); color: var(--warning); }
     &--error   { background: var(--error-banner-bg);   color: var(--error); }
-    &--accent  { background: var(--primary-banner-bg); color: var(--primary); }
+    &--accent  { background: rgba(155, 191, 253, 0.16); color: var(--dev-accent); }
   }
 
   .dev-my-work {

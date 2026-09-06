@@ -19,6 +19,7 @@
 
 import {
   APP, APP_INSTANCE, LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, DEFAULT_APP, WORKSPACE_PORT_ANNOTATION,
+  APP_KIND_LABEL, APP_KIND_WORKSPACE, LEGACY_WORKSPACE_APPS,
   WORKSPACE_SCHEME_ANNOTATION, WORKSPACE_WORKDIR, WORKSPACE_HOME,
 } from './config/constants';
 import { WORKSPACE_VUE_CONFIG } from './workspace-config';
@@ -41,6 +42,8 @@ export interface DevApp {
   repo: string;
   /** How many workspaces are installations of it. */
   installations: number;
+  /** A workspace app: the dev tools pointed at a Rancher. See APP_KIND_LABEL. */
+  workspace: boolean;
 }
 
 function missingAppsPlus(): Error {
@@ -77,6 +80,7 @@ function appFrom(model: Json, installations: number): DevApp {
     values,
     repo:        typeof values.repo === 'string' ? values.repo : '',
     installations,
+    workspace:   model.metadata?.labels?.[APP_KIND_LABEL] === APP_KIND_WORKSPACE || LEGACY_WORKSPACE_APPS.includes(model.metadata?.name),
   };
 }
 
@@ -261,9 +265,9 @@ export function rancherWorkspaceApp(): Json {
   return {
     apiVersion: 'appsplus.io/v1alpha1',
     kind:       'App',
-    metadata:   { name: DEFAULT_APP },
+    metadata:   { name: DEFAULT_APP, labels: { [APP_KIND_LABEL]: APP_KIND_WORKSPACE } },
     spec:       {
-      description: 'A rancher/dashboard checkout with its dependencies installed and the dev server running, pointed at the Rancher this cluster belongs to. The first start is minutes: a clone, a yarn install and a first compile.',
+      description: 'The dev tools, pointed at a Rancher: a rancher/dashboard checkout with its dependencies installed and the dev server running against the Rancher it is told to. The first start is minutes: a clone, a yarn install and a first compile.',
       // `port` is a number on purpose: Apps Plus emits a declared number bare and a declared
       // string quoted, and a Service port that arrives as "8005" is one the apiserver refuses.
       // `hostCluster` is where the workspace runs; it is a value rather than the `${cluster}`

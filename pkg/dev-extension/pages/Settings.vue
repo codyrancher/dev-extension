@@ -149,7 +149,7 @@ export default {
       ]);
 
       this.keys = keys;
-      this.apps = apps;
+      this.apps = apps.filter((app) => app.workspace);
       this.hiddenApps = [...prefs.hiddenApps];
       this.hiddenSaved = [...prefs.hiddenApps];
     },
@@ -546,7 +546,7 @@ export default {
       flex:      0 0 32px;
       width:     32px;
       height:    32px;
-      color:     var(--primary);
+      color:     var(--dev-accent);
       font-size: 28px;
     }
 

@@ -47,4 +47,24 @@
   --dev-modal:    720px;
   --dev-modal-lg: 900px;
   --dev-side-col: 300px;
+
+  /*
+   * The one accent this product draws with: icons, meters, links, the review panel's
+   * highlights, its primary buttons. Rancher's own `--link` rather than its `--primary`, which
+   * this Rancher paints a saturated royal blue that shouted from every corner of the sidebar.
+   * `--link` is the muted blue the dashboard already uses for its tabs and links, in both
+   * themes, so what this product adds sits with what is around it. `--dev-on-accent` is the
+   * text on it: the page's own background, which is dark on a light-blue button in the dark
+   * theme and white on a mid-blue one in the light.
+   */
+}
+
+/*
+ * On body, not :root: Rancher sets its theme variables on body (theme-dark, theme-light), so a
+ * reference to one of them from :root resolves to nothing at all. Everything below body
+ * inherits these, which is everywhere this product draws.
+ */
+body {
+  --dev-accent:    var(--link);
+  --dev-on-accent: var(--body-bg);
 }

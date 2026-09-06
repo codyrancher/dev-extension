@@ -13,6 +13,7 @@ import {
   listAllWorkspaces, deleteWorkspace, listClusters, readableBytes
 } from '../api';
 import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
+import { DEFAULT_APP, LEGACY_WORKSPACE_APPS } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
 import DevList from './DevList.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
@@ -114,11 +115,17 @@ export default {
      * a cluster other than the local one says so on its row; the clusters themselves are one
      * section at the bottom, with what is left on each.
      */
+    /**
+     * One section per workspace app. Only those: a build to share or a browser is
+     * infrastructure a workspace uses, reached from the workspace's own tabs, and a column for
+     * each was a sidebar that was mostly headings. The workspaces of an app this product used
+     * to seed under another name sit under the current one; they are the same kind of thing.
+     */
     sections() {
-      return this.apps.map((app) => ({
+      return this.apps.filter((app) => app.workspace && !LEGACY_WORKSPACE_APPS.includes(app.id)).map((app) => ({
         id:    app.id,
         label: app.label,
-        rows:  this.rowsFor(this.workspaces.filter((workspace) => workspace.app === app.id)),
+        rows:  this.rowsFor(this.workspaces.filter((workspace) => workspace.app === app.id || (app.id === DEFAULT_APP && LEGACY_WORKSPACE_APPS.includes(workspace.app)))),
       }));
     },
 
@@ -130,9 +137,12 @@ export default {
      */
     /** Workspaces whose app is hidden in Settings, or gone. Listed, since they exist. */
     orphans() {
+      // Known apps that are not workspace apps hold builds and browsers, which are not listed
+      // here at all; what is listed is a workspace whose app is gone or hidden.
       const known = new Set(this.apps.map((app) => app.id));
+      const listed = new Set(this.sections.map((section) => section.id).concat(LEGACY_WORKSPACE_APPS));
 
-      return this.rowsFor(this.workspaces.filter((workspace) => !known.has(workspace.app)));
+      return this.rowsFor(this.workspaces.filter((workspace) => !listed.has(workspace.app) && (!known.has(workspace.app) || this.apps.find((app) => app.id === workspace.app)?.workspace)));
     },
 
     /**
@@ -471,7 +481,7 @@ export default {
       flex:         0 0 $rail;
       width:        $rail;
       margin-right: $gap;
-      color:        var(--primary);
+      color:        var(--dev-accent);
       font-size:    14px;
     }
 
@@ -539,7 +549,7 @@ export default {
     &__meter-fill {
       display:    block;
       height:     100%;
-      background: var(--primary);
+      background: var(--dev-accent);
       transition: width 0.6s ease;
     }
 

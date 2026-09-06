@@ -89,7 +89,7 @@ export default {
     }
 
     &--primary { background: var(--pr-accent); color: var(--pr-on-accent); }
-    &--primary:hover:not(:disabled) { background: var(--pr-accent-hover); }
+    &--primary:hover:not(:disabled) { filter: brightness(1.08); }
 
     &--accent { background: var(--pr-accent-fill); color: var(--pr-text); border-color: var(--pr-accent); }
     &--accent:hover:not(:disabled) { background: var(--pr-accent); color: var(--pr-on-accent); }

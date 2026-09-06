@@ -3115,10 +3115,10 @@ async function doSubmit() {
   --pr-border:       var(--border);
   --pr-text:         var(--body-text);
   --pr-muted:        var(--muted);
-  --pr-accent:       var(--primary);
-  --pr-accent-hover: var(--primary-hover-bg, var(--primary));
-  --pr-accent-fill:  var(--primary-light-bg, var(--tabbed-container-bg));
-  --pr-on-accent:    var(--primary-text, #fff);
+  --pr-accent:       var(--dev-accent);
+  --pr-accent-hover: var(--dev-accent);
+  --pr-accent-fill:  rgba(155, 191, 253, 0.16);
+  --pr-on-accent:    var(--dev-on-accent);
   --pr-success:      var(--success);
   --pr-success-fill: var(--success-banner-bg);
   --pr-warning:      var(--warning);
@@ -3263,6 +3263,8 @@ async function doSubmit() {
 }
 
 .merge:hover:not(:disabled) { filter: brightness(1.1); }
+.prb--primary:hover:not(:disabled) { filter: brightness(1.08); }
+.prb--primary:hover:not(:disabled) { filter: brightness(1.08); }
 
 .prm-title a { color: var(--pr-accent); text-decoration: none; }
 .prm-title a:hover { text-decoration: underline; }
