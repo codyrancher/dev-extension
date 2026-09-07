@@ -35,6 +35,38 @@
   .dev-root .dashboard-content,
   .dev-root .main-layout { min-width: 0; }
 
+  /*
+   * ...and `main` is the one that scrolls.
+   *
+   * Pinning the shell without this was half a fix and a regression: the viewport stopped
+   * scrolling, and so did every page that was relying on it to. A page with its own scroller -
+   * the conversation - fills this box exactly and never overflows it, so it is unaffected; a
+   * page that is simply long - My Work, five tables of it - scrolls here instead of scrolling
+   * the document, which is what was wanted in the first place.
+   */
+  .dev-root .dashboard-content > main {
+    min-height:                 0;
+    min-width:                  0;
+    overflow-y:                 auto;
+    overflow-x:                 hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /*
+   * A page that scrolled itself now lets `main` do it.
+   *
+   * Two nested scrollers with only the outer one bounded is a page that scrolls a few pixels
+   * and stops. The pages that genuinely own their height - the conversation - set it
+   * explicitly and are not in this list.
+   */
+  .dev-root .dev-my-work,
+  .dev-root .dev-insights,
+  .dev-root .dev-settings,
+  .dev-root .dev-create {
+    overflow-y: visible;
+    height:     auto;
+  }
+
   .dev-root .dev-page,
   .dev-root .dev-my-work,
   .dev-root .dev-insights,
