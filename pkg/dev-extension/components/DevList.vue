@@ -349,7 +349,20 @@ export default {
 
 <style lang="scss" scoped>
   $row-height: 33px;
-  $rail: 16px;      // the left inset, and the width of the icon slot
+  /*
+   * The left inset, and the width of the icon slot.
+   *
+   * `--dev-inset` rather than a number of its own, because this is the same column the top bar,
+   * the page headings and the page content are all drawn to - and while it was 16px against
+   * their 20px, it was the one thing on screen that started somewhere else. A sidebar row is the
+   * left edge of the product; if anything defines that column it is this, and it should not be
+   * a second opinion about it.
+   *
+   * Still a SCSS variable, because the calc below reads better than nesting var() twice, and
+   * because every other length in this file is one. Sass interpolates inside comments too, so
+   * this one deliberately shows no example of the syntax it is describing.
+   */
+  $rail: var(--dev-inset);
   // The scale, not a number of this file's own. See design/tokens.css.
   $gap: var(--dev-space-3);
   $control: 22px;   // the right-hand control, the same box in both kinds of row
