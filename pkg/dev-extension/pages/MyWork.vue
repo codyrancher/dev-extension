@@ -27,8 +27,32 @@ import {
 } from '../config/constants';
 import { NarrowMixin } from '../design/narrow';
 
-/** What a phone shows of a pull request: whether it is open, which one, what it is, and the way in. */
+/**
+ * What a phone shows of each table: what the row is, what it is called, and the way in.
+ *
+ * One list per table rather than one shared list, because the identifying column is a different
+ * column in each: a pull request is known by its number, an advisory by its severity and its
+ * title. The rule is the same everywhere - three columns, and one of them is Actions, because
+ * the only question a phone holds these tables to answer is which row to press.
+ */
 const NARROW_COLUMNS = ['state', 'pr', 'title', 'actions'];
+const NARROW_ISSUE_COLUMNS = ['number', 'title', 'actions'];
+const NARROW_ALERT_COLUMNS = ['severity', 'advisory', 'actions'];
+const NARROW_BOT_COLUMNS = ['pr', 'package', 'actions'];
+
+/**
+ * The phone's version of a header list: the few columns worth the width, and no fixed widths.
+ *
+ * The widths are dropped rather than kept because they were chosen to add up to a desktop
+ * table. Three of them totalling 280px in a 390px viewport leaves the title column the
+ * leftovers, which is the ellipsis this exists to avoid; without them the browser divides the
+ * room it actually has.
+ */
+function narrowed(all, keep) {
+  return all
+    .filter((column) => keep.includes(column.name))
+    .map(({ width, ...column }) => column); // eslint-disable-line no-unused-vars
+}
 
 /**
  * Columns shared by both tables, since the two differ only at their right-hand end.
@@ -65,8 +89,60 @@ function columns(extra, narrow = false) {
     },
   ];
 
-  return narrow ? all.filter((column) => NARROW_COLUMNS.includes(column.name)).map((column) => ({ ...column, width: column.name === 'title' ? undefined : column.width })) : all;
+  return narrow ? narrowed(all, NARROW_COLUMNS) : all;
 }
+
+// The three tables that are not about pull requests. Written out here rather than in data()
+// because they are constants that a computed narrows, and a constant that sits in data() is one
+// Vue makes reactive for nothing.
+const ISSUE_COLUMNS = [
+  {
+    name: 'number', label: 'Issue', value: 'number', width: 90
+  },
+  { name: 'title', label: 'Title', value: 'title' },
+  // The board's Status column, sorted by how much of your attention a status wants rather
+  // than alphabetically - the rank is a field on the row, see issueRows.
+  {
+    name: 'status', label: 'Status', value: 'statusRank', sort: ['statusRank', 'createdAt:desc'], width: 130
+  },
+  {
+    name: 'age', label: 'Age', value: 'createdAt', sort: ['createdAt'], width: 90
+  },
+  {
+    name: 'workspace', label: 'Workspace', value: 'key', width: 130
+  },
+  {
+    name: 'actions', label: 'Actions', align: 'right', width: 110
+  },
+];
+
+const BOT_COLUMNS = [
+  { name: 'pr', label: 'PR', value: 'number', width: 90 },
+  { name: 'ci', label: 'CI', value: 'ci', width: 130 },
+  { name: 'package', label: 'Package', value: 'packageName' },
+  { name: 'updated', label: 'Updated', value: 'updatedAt', sort: ['updatedAt:desc'], width: 110 },
+  { name: 'review', label: 'Review', value: 'number', width: 260 },
+  { name: 'actions', label: '', align: 'right', width: 230 },
+];
+
+const ALERT_COLUMNS = [
+  {
+    name: 'severity', label: 'Severity', value: 'severity', sort: ['severity'], width: 100
+  },
+  { name: 'advisory', label: 'Advisory', value: 'summary' },
+  {
+    name: 'package', label: 'Package', value: 'packages', width: 160
+  },
+  {
+    name: 'alerts', label: 'Alerts', value: 'alerts', width: 120
+  },
+  {
+    name: 'fix', label: 'Fix', value: 'patched', width: 140
+  },
+  {
+    name: 'actions', label: 'Action', align: 'right', width: 110
+  },
+];
 
 // ── Board status ──
 // Ranked by how much of your attention a status wants: work in hand, then what is queued, then
@@ -117,6 +193,32 @@ export default {
 
   mixins: [NarrowMixin],
 
+  watch: {
+    /**
+     * Put the banner where the person who caused it is looking.
+     *
+     * Every action here reports its failure into one banner at the top of the page, and the
+     * buttons that raise it are in five tables below it - Start fix on an issue is most of a
+     * screen down on a desktop and several on a phone. So the button went red and the sentence
+     * saying why was scrolled off, which is indistinguishable from a button that fails
+     * silently, and is what it was taken for.
+     */
+    error(message) {
+      if (!message) {
+        return;
+      }
+
+      this.$nextTick(() => {
+        // `ref` on a component hands back the instance, and Banner is a component, so the
+        // element is one hop further in.
+        const banner = this.$refs.banner;
+        const element = banner?.$el || banner;
+
+        element?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+      });
+    },
+  },
+
   components: {
     SortableTable, Banner, RcButton, AsyncButton
   },
@@ -130,6 +232,15 @@ export default {
       apps:       [],
       work:       null,
       error:      '',
+      // Whether the GitHub request is in flight, and whether the advisories' separate one is.
+      //
+      // Two flags rather than one because they are two requests with two failure modes: the
+      // page's own is a single GraphQL call, and the Dependabot half needs a scope the rest of
+      // the page does not and is allowed to fail on its own. `$fetchState.pending` is not
+      // enough for either: it covers the first load and says nothing about Refresh, which is
+      // the press most likely to be waited on.
+      loading:    true,
+      loadingAlerts: false,
       // The workspaces that exist, so a row can say whether it already has one. Names only:
       // this page is about pull requests and the sidebar is about workspaces.
       workspaces: [],
@@ -141,52 +252,6 @@ export default {
       botReviews: {},
       alertError: '',
       notice:     '',
-      issueHeaders: [
-        {
-          name: 'number', label: 'Issue', value: 'number', width: 90
-        },
-        { name: 'title', label: 'Title', value: 'title' },
-        // The board's Status column, sorted by how much of your attention a status wants rather
-        // than alphabetically - the rank is a field on the row, see issueRows.
-        {
-          name: 'status', label: 'Status', value: 'statusRank', sort: ['statusRank', 'createdAt:desc'], width: 130
-        },
-        {
-          name: 'age', label: 'Age', value: 'createdAt', sort: ['createdAt'], width: 90
-        },
-        {
-          name: 'workspace', label: 'Workspace', value: 'key', width: 130
-        },
-        {
-          name: 'actions', label: 'Actions', align: 'right', width: 110
-        },
-      ],
-      botHeaders: [
-        { name: 'pr', label: 'PR', value: 'number', width: 90 },
-        { name: 'ci', label: 'CI', value: 'ci', width: 130 },
-        { name: 'package', label: 'Package', value: 'packageName' },
-        { name: 'updated', label: 'Updated', value: 'updatedAt', sort: ['updatedAt:desc'], width: 110 },
-        { name: 'review', label: 'Review', value: 'number', width: 260 },
-        { name: 'actions', label: '', align: 'right', width: 230 },
-      ],
-      alertHeaders: [
-        {
-          name: 'severity', label: 'Severity', value: 'severity', sort: ['severity'], width: 100
-        },
-        { name: 'advisory', label: 'Advisory', value: 'summary' },
-        {
-          name: 'package', label: 'Package', value: 'packages', width: 160
-        },
-        {
-          name: 'alerts', label: 'Alerts', value: 'alerts', width: 120
-        },
-        {
-          name: 'fix', label: 'Fix', value: 'patched', width: 140
-        },
-        {
-          name: 'actions', label: 'Action', align: 'right', width: 110
-        },
-      ],
       settingsTo: { name: SETTINGS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } },
     };
   },
@@ -215,6 +280,33 @@ export default {
           name: 'commented', label: 'Last comment', value: 'commentedAt', width: 120
         },
       ], this.narrow);
+    },
+
+    issueHeaders() {
+      return this.narrow ? narrowed(ISSUE_COLUMNS, NARROW_ISSUE_COLUMNS) : ISSUE_COLUMNS;
+    },
+
+    /**
+     * What each table sorts by, which cannot be a column the phone has just dropped.
+     *
+     * SortableTable is told a column name, and the two most useful defaults here - the board
+     * status and when a bump was last touched - are exactly the columns not worth a phone's
+     * width. Naming a column that is not in the headers leaves the table unsorted.
+     */
+    issueSort() {
+      return this.narrow ? 'number' : 'status';
+    },
+
+    botSort() {
+      return this.narrow ? 'pr' : 'updated';
+    },
+
+    botHeaders() {
+      return this.narrow ? narrowed(BOT_COLUMNS, NARROW_BOT_COLUMNS) : BOT_COLUMNS;
+    },
+
+    alertHeaders() {
+      return this.narrow ? narrowed(ALERT_COLUMNS, NARROW_ALERT_COLUMNS) : ALERT_COLUMNS;
     },
 
     /** The issues with their board rank on them, zero-padded so the table sorts it as text. */
@@ -296,6 +388,7 @@ export default {
   methods: {
     async refresh() {
       this.error = '';
+      this.loading = true;
 
       try {
         const [work, workspaces, apps, prefs] = await Promise.all([
@@ -314,6 +407,7 @@ export default {
         // a permission the rest of this page does not, so a token without it should cost that
         // section and nothing else.
         this.alertError = '';
+        this.loadingAlerts = true;
 
         try {
           const dependabot = await dependabotData(this.repo);
@@ -326,10 +420,14 @@ export default {
           this.alerts = [];
           this.botPrs = [];
           this.alertError = e.message || String(e);
+        } finally {
+          this.loadingAlerts = false;
         }
       } catch (e) {
         this.work = null;
         this.error = e.message || String(e);
+      } finally {
+        this.loading = false;
       }
     },
 
@@ -726,10 +824,11 @@ export default {
       <RcButton
         variant="tertiary"
         size="small"
-        left-icon="refresh"
+        :left-icon="loading ? 'spinner' : 'refresh'"
+        :disabled="loading"
         @click="refresh"
       >
-        Refresh
+        {{ loading ? 'Refreshing' : 'Refresh' }}
       </RcButton>
     </header>
 
@@ -746,6 +845,7 @@ export default {
     />
     <Banner
       v-if="error"
+      ref="banner"
       color="warning"
     >
       <div class="dev-my-work__error">
@@ -759,6 +859,15 @@ export default {
         </RcButton>
       </div>
     </Banner>
+
+    <!-- Before anything has arrived: this used to be a blank page for several seconds. -->
+    <div
+      v-if="loading && !work"
+      class="dev-my-work__loading"
+    >
+      <i class="icon icon-spinner icon-spin" />
+      <span>Reading your pull requests, issues and advisories from GitHub&hellip;</span>
+    </div>
 
     <template v-if="work">
       <h3>PRs with me as a reviewer <span class="dev-my-work__count">{{ reviewing.length }}</span></h3>
@@ -959,7 +1068,6 @@ export default {
               @click="(done) => merge(row, done)"
             />
           </div>
-          <span class="text-muted">&ndash;</span>
         </template>
         <template #cell:commented="{ row }">
           <span :class="row.commentedAt ? '' : 'text-muted'">{{ ago(row.commentedAt) }}</span>
@@ -985,7 +1093,7 @@ export default {
         :headers="issueHeaders"
         :rows="issueRows"
         key-field="key"
-        default-sort-by="status"
+        :default-sort-by="issueSort"
         :table-actions="false"
         :row-actions="false"
         :search="false"
@@ -1076,6 +1184,17 @@ export default {
         color="info"
         :label="alertError"
       />
+      <!--
+        A second request, made after the page has already drawn: an empty table here means "not
+        read yet" for a few seconds and "nothing to fix" afterwards, which are opposite things.
+      -->
+      <div
+        v-else-if="loadingAlerts"
+        class="dev-my-work__loading"
+      >
+        <i class="icon icon-spinner icon-spin" />
+        <span>Reading the repository&rsquo;s advisories&hellip;</span>
+      </div>
       <SortableTable
         v-else
         :headers="alertHeaders"
@@ -1138,11 +1257,19 @@ export default {
         checklist in a conversation and reads its verdict off the pane; a MERGE verdict is what
         the Approve & merge button is for, so it lives on that verdict rather than on every row.
       -->
+      <div
+        v-if="loadingAlerts"
+        class="dev-my-work__loading"
+      >
+        <i class="icon icon-spinner icon-spin" />
+        <span>Reading Dependabot&rsquo;s open pull requests&hellip;</span>
+      </div>
       <SortableTable
+        v-else
         :headers="botHeaders"
         :rows="botPrs"
         key-field="key"
-        default-sort-by="updated"
+        :default-sort-by="botSort"
         :table-actions="false"
         :row-actions="false"
         :search="false"
@@ -1378,6 +1505,16 @@ export default {
       align-items: center;
       gap:         var(--dev-space-4);
     }
+
+    // Said in the place the thing being waited for will appear, so the spinner is where the
+    // eye already is rather than at the top of the page.
+    &__loading {
+      display:     flex;
+      align-items: center;
+      gap:         var(--dev-space-3);
+      padding:     var(--dev-space-5) 0;
+      color:       var(--muted);
+    }
   }
 
 /* ── Phones: a table of pull requests is wider than the screen, so it scrolls inside its own
@@ -1396,7 +1533,23 @@ export default {
     :deep(.sortable-table-header) { flex-wrap: wrap; }
 
     :deep(.sortable-table-wrapper) { overflow-x: auto; }
-    :deep(table.sortable-table) { min-width: 640px; }
+
+    /* Every table here drops to three columns at this width now, so the 640px floor
+       design/mobile.css puts under every table in this product would be the only reason these
+       ones scroll sideways. Overridden rather than removed: it is right for a table that has
+       not been narrowed, and several in this product have not been. */
+    :deep(table.sortable-table) { min-width: 0; }
+
+    /* The title column should absorb the leftover room, and a long unbreakable cell is what
+       stops it: a bump's package is `@types/node`, a PR title is a sentence. */
+    :deep(table.sortable-table td) {
+      overflow-wrap: anywhere;
+      white-space:   normal;
+    }
+
+    /* Two buttons in a right-aligned cell sit on two lines, which is correct; this stops the
+       second one hanging off the edge while it does. */
+    &__actions { flex-wrap: wrap; }
   }
 }
 </style>
