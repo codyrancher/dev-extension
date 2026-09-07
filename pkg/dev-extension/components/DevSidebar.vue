@@ -873,15 +873,20 @@ export default {
 
     // The two bars in a cluster's popover: a label, a track, and the number, on one line each.
 
-    &__clusters {
-      flex:        0 0 auto;
-      border-top:  1px solid var(--border);
-      padding-top: var(--dev-space-2);
-      background:  var(--nav-bg, var(--body-bg));
-    }
-
+    /*
+     * The two pinned blocks under the scrolling list.
+     *
+     * `0 1 auto` rather than `0 0 auto`, and each able to scroll itself. The root is
+     * `overflow: hidden`, so a block that cannot shrink and does not fit is not scrolled to -
+     * it is cut off, and there is no way to reach it. Clusters is the last child, so in a short
+     * window it was clusters that silently went, which is not a thing a person can tell from a
+     * thing that is switched off.
+     */
+    &__clusters,
     &__ranchers {
-      flex:        0 0 auto;
+      flex:        0 1 auto;
+      min-height:  0;
+      overflow-y:  auto;
       border-top:  1px solid var(--border);
       padding-top: var(--dev-space-2);
       background:  var(--nav-bg, var(--body-bg));
@@ -1207,6 +1212,24 @@ export default {
    of a drawer, unlabelled, they are neither. They go to the top with their names on. */
 @media (max-width: 760px) {
   .dev-sidebar {
+    /*
+     * One scroll container, not three.
+     *
+     * On a laptop this is a column with a scrolling middle and two blocks pinned under it. In
+     * the drawer there is not the height for that: the globals move to the top (`order: -1`
+     * below), which leaves Clusters as the last child of a box that hides its overflow, and
+     * Clusters was simply cut off the bottom - present, and unreachable. So the drawer scrolls
+     * as one column and every section is reachable by scrolling to it.
+     */
+    overflow-y: auto;
+
+    &__scroll,
+    &__clusters,
+    &__ranchers {
+      flex:       0 0 auto;
+      overflow-y: visible;
+    }
+
     &__globals {
       order:          -1;
       display:        flex;

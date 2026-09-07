@@ -47,6 +47,16 @@ export default {
       seen:    {},
       error:   '',
       timer:   null,
+      /**
+       * Whether the list of conversations is showing.
+       *
+       * It was a column that was always there, so the pane - a terminal, or a chat - never had
+       * the page, and on a phone the list and its workspace headings pushed the conversation
+       * off the bottom entirely. A conversation is a thing you read; the list is a thing you
+       * use once to choose which one. That is a menu, not furniture. Closed by default, and
+       * closed again by picking something.
+       */
+      listOpen: false,
     };
   },
 
@@ -57,6 +67,20 @@ export default {
 
     selected() {
       return this.all.find((c) => c.id === this.current) || null;
+    },
+
+    /** How many there are, for the button that opens the list. */
+    total() {
+      return this.all.length;
+    },
+  },
+
+  watch: {
+    // Written on every change rather than only on a pick: `fetch` and the refresh below can
+    // both change which conversation is current, and a URL that is right only when a person
+    // clicked is a URL nobody can trust.
+    current(id) {
+      this.rememberInRoute(id);
     },
   },
 
@@ -123,6 +147,47 @@ export default {
       this.seen = { ...this.seen, [id]: true };
     },
 
+    /**
+     * Choosing from the list, which is the only thing the list is for, so it closes.
+     *
+     * Separate from `select` because `fetch` also selects - the `?c=` a link from an agent run
+     * arrives with - and that must not leave the list hanging open over the conversation it
+     * was asked to show.
+     */
+    pick(id) {
+      this.select(id);
+      this.listOpen = false;
+    },
+
+    /**
+     * Keep `?c=` on the URL in step with what is open.
+     *
+     * `fetch` already reads it - that is how a link from an agent run opens on its own
+     * conversation - so the only half that was missing was writing it. Without that, reloading
+     * the page, or coming back to a tab that had been left open, landed on the picker with
+     * nothing selected and no way to tell which one you had been reading.
+     *
+     * `replace` rather than `push`: choosing a conversation is not a navigation somebody
+     * should have to press Back through five times to leave the page.
+     */
+    rememberInRoute(id) {
+      const current = this.$route.query.c || '';
+
+      if ((id || '') === current) {
+        return;
+      }
+
+      const query = { ...this.$route.query };
+
+      if (id) {
+        query.c = id;
+      } else {
+        delete query.c;
+      }
+
+      this.$router.replace({ query }).catch(() => {});
+    },
+
     workspaceTo(name) {
       return {
         name: WORKSPACE_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: name }, hash: '#conversations',
@@ -166,15 +231,51 @@ export default {
   <div class="dev-conversations">
     <!-- Every conversation in every workspace, live, with a pane onto the one picked. -->
     <section class="dev-live">
-      <header class="dev-live__head">
+      <!--
+        The title bar is the control: pressing it opens the list over the whole page and
+        pressing it again gives the whole page back to the conversation. One thing on screen at
+        a time, which is what both of them want - a list is for scanning and a conversation is
+        for reading, and neither is improved by having half the height.
+      -->
+      <header
+        class="dev-live__head"
+        role="button"
+        tabindex="0"
+        :aria-expanded="String(listOpen)"
+        @click="listOpen = !listOpen"
+        @keydown.enter.prevent="listOpen = !listOpen"
+        @keydown.space.prevent="listOpen = !listOpen"
+      >
         <ClaudeLogo class="dev-live__logo" />
+        <!--
+          "Conversations" on a phone and "Live conversations" above it. Two words wrapped onto
+          two lines at 390px, and "Live" is the half that is doing the least work: the page is
+          about conversations, and that they are the live ones is what the subtitle said.
+        -->
         <h2 class="dev-live__title">
-          Live conversations
+          <span class="dev-live__title-live">Live </span>conversations
         </h2>
-        <span class="dev-live__sub text-muted">the agents drawer's and every workspace's, as they are now</span>
+        <!--
+          The list, behind one button, beside the title rather than after the subtitle: it is
+          the control on this page and a sentence was pushing it to the far edge. What it says
+          is which conversation is open, because that is the question somebody arriving here
+          has; the list answers a different one - which others there are - asked once.
+        -->
+        <span class="dev-agents__toggle-title">{{ listOpen ? 'Pick one' : (selected ? selected.title : 'Pick one') }}</span>
+        <span
+          v-if="total"
+          class="dev-agents__toggle-count"
+        >{{ total }}</span>
+        <i
+          class="dev-agents__toggle-chevron"
+          :class="listOpen ? 'icon icon-chevron-up' : 'icon icon-chevron-down'"
+        />
       </header>
       <div class="dev-agents">
-        <div class="dev-agents__list">
+        <div
+          v-show="listOpen"
+          class="dev-agents__list"
+        >
           <p
             v-if="!groups.length"
             class="dev-agents__empty text-muted"
@@ -205,13 +306,21 @@ export default {
               renamable
               empty=""
               class="dev-agents__group"
-              @select="select"
+              @select="pick"
               @delete="end(group, $event)"
               @rename="rename(group, $event)"
             />
           </template>
         </div>
-        <div class="dev-agents__pane">
+        <!--
+          `v-show`, never `v-if`: each of these is a live exec socket onto a pod, and unmounting
+          the pane to show the list would drop every one of them and start again on the way
+          back.
+        -->
+        <div
+          v-show="!listOpen"
+          class="dev-agents__pane"
+        >
           <Banner
             v-if="error"
             color="error"
@@ -221,7 +330,7 @@ export default {
             v-if="!selected"
             class="dev-agents__hint text-muted"
           >
-            Pick a conversation on the left: the drawer's run in the agents pod, a workspace's in its own; this pane reaches either through the agents extension's terminal, chat view included.
+            Open the picker above to choose one: the drawer's run in the agents pod, a workspace's in its own; this pane reaches either through the agents extension's terminal, chat view included.
           </p>
           <template
             v-for="c in all"
@@ -270,21 +379,68 @@ export default {
     }
 
     &__logo { color: var(--dev-accent); font-size: 16px; align-self: center; }
-    &__title { margin: 0; font-size: 14px; font-weight: 600; }
-    &__sub { font-size: 12px; }
+    &__title { margin: 0; font-size: 14px; font-weight: 600; white-space: nowrap; }
+    &__sub { flex: 1 1 auto; min-width: 0; font-size: 12px; }
   }
 
   .dev-agents {
+    // `relative`, because the list is positioned against this box now rather than sharing the
+    // row with the pane: a column that is always there is a column the conversation never gets
+    // back, and the conversation is what this page is.
+    position:   relative;
     display:    flex;
     flex:       1 1 auto;
     min-height: 0;
 
+    &__toggle-title {
+      min-width:     0;
+      overflow:      hidden;
+      text-overflow: ellipsis;
+      white-space:   nowrap;
+    }
+
+    &__toggle-count {
+      // A count, not a badge: it was rendering as a wide oval taller than the text beside it.
+      min-width:     16px;
+      padding:       0 var(--dev-space-2);
+      border-radius: 8px;
+      background:    var(--tabbed-container-bg);
+      color:         var(--muted);
+      font-size:     11px;
+      line-height:   16px;
+      text-align:    center;
+    }
+
+    // Over the pane rather than beside it, so opening the list does not resize the terminal
+    // underneath: xterm refits on a width change, and a menu should not reflow a conversation.
+    &__scrim {
+      position: absolute;
+      inset:    0;
+      z-index:  1;
+    }
+
     &__list {
+      position:       absolute;
+      z-index:        2;
+      top:            0;
+      left:           0;
+      width:          min(var(--dev-side-col), calc(100% - var(--dev-space-5)));
+      max-height:     min(70%, 520px);
       display:        flex;
       flex-direction: column;
-      flex:           0 0 var(--dev-side-col);
       overflow-y:     auto;
-      border-right:   1px solid var(--border);
+      border:         1px solid var(--border);
+      border-radius:  var(--dev-space-3);
+      background:     var(--body-bg);
+      box-shadow:     0 6px 18px var(--shadow, rgba(0, 0, 0, 0.25));
+
+      /*
+       * Each group's DevList is given no label, because the workspace name is already rendered
+       * above it - but an empty label still draws a heading row, and at a row's height each.
+       * With five workspaces open that is five blank rows in a menu, which is most of the
+       * reason it needed scrolling at all.
+       */
+      :deep(.dev-list__head) { display: none; }
     }
 
     &__empty, &__hint { padding: var(--dev-space-4); margin: 0; font-size: 13px; }
@@ -315,19 +471,24 @@ export default {
 
   .dev-live { margin: 0; border-left: 0; border-right: 0; border-radius: 0; }
 
+  .dev-live__head {
+    gap:        var(--dev-space-3);
+    padding:    var(--dev-space-3);
+    // One row: this is a control now, and one that reflows to two lines when the name is long
+    // is a control that moves under your thumb as you reach for it.
+    flex-wrap:  nowrap;
+    min-height: 44px;
+  }
+
+  // "Live conversations" wrapped to two lines beside the logo. The page is about
+  // conversations; that they are the live ones is what the subtitle was for, and the subtitle
+  // is the first thing to go when the screen is 390px and the conversation is the point of it.
+  .dev-live__title-live { display: none; }
+  .dev-live__sub { display: none; }
+
   .dev-agents {
-    flex-direction: column;
-
-    &__list {
-      flex:          0 0 auto;
-      width:         auto;
-      max-height:    140px;
-      overflow-y:    auto;
-      border-right:  0;
-      border-bottom: 1px solid var(--border);
-    }
-
-    &__pane { min-height: 60vh; }
+    // Whichever half is showing gets the screen, which on a phone is the whole point.
+    &__pane, &__list { min-height: 0; }
   }
 }
 </style>

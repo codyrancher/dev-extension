@@ -128,7 +128,48 @@ export default {
     },
   },
 
+  watch: {
+    current(id) {
+      this.rememberInRoute(id);
+    },
+  },
+
   methods: {
+    /**
+     * Keep `?c=` on the URL in step with the conversation that is open.
+     *
+     * The tab is the hash here (see WorkspaceDetail for why that is not cosmetic), so the
+     * conversation is a query parameter beside it and the hash has to be carried through the
+     * replace by hand - `replace({ query })` alone drops it, which would put somebody back on
+     * the first tab every time they picked a conversation.
+     *
+     * Guarded on the hash because this component stays mounted while another tab is showing:
+     * without it, a poll that re-selected something in the background would rewrite the URL of
+     * a page nobody was looking at.
+     *
+     * `replace` rather than `push`, so choosing a conversation is not a history entry to press
+     * Back through.
+     */
+    rememberInRoute(id) {
+      if (this.$route.hash && this.$route.hash !== '#conversations') {
+        return;
+      }
+
+      const query = { ...this.$route.query };
+
+      if (id) {
+        query.c = id;
+      } else {
+        delete query.c;
+      }
+
+      if ((this.$route.query.c || '') === (query.c || '')) {
+        return;
+      }
+
+      this.$router.replace({ query, hash: this.$route.hash }).catch(() => {});
+    },
+
     async load() {
       this.error = '';
 
@@ -140,7 +181,13 @@ export default {
       }
 
       if (!this.current || !this.rows.some((row) => row.key === this.current)) {
-        this.current = this.conversations[0]?.id || SHELL;
+        // What the URL asked for, if it is still here, before falling back to the first. This
+        // is what makes a reload - or a link somebody sent - come back to the conversation
+        // that was being read rather than to whichever happens to be at the top.
+        const asked = String(this.$route.query.c || '');
+
+        this.current = (asked && this.rows.some((row) => row.key === asked) ? asked : '') ||
+          this.conversations[0]?.id || SHELL;
       }
 
       // The workspace made ready for whatever gets typed into a pane: the harness's skills,

@@ -410,8 +410,22 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
   // moment after the click would otherwise take the preparation with it and leave a
   // conversation with nothing queued. Only a pod that does not exist yet is waited for in the
   // background, since that wait is minutes and the pane shows it arriving.
+  //
+  // Reported, never thrown. The conversation above exists by the time this runs, so a caller
+  // that turned this into a failure was telling the truth about the preparation and lying
+  // about everything else: the button went red, the page did not navigate, and the
+  // conversation it had just made was left sitting in the workspace unmentioned. Pressing the
+  // button again then made a second one. The background branch below has always swallowed the
+  // same failure - `ensureWorkspaceReady` installs tools with apt and clones a checkout, and
+  // either can fail on a workspace that is otherwise perfectly usable - so this is the two
+  // branches agreeing rather than a failure being hidden.
   if (await workspacePod(workspace).catch(() => null)) {
-    await prepare();
+    try {
+      await prepare();
+    } catch (e: Json) {
+      onNote?.(`the workspace could not be prepared: ${ e?.message || e }`);
+      console.error('[dev] preparing the workspace failed', e); // eslint-disable-line no-console
+    }
 
     return conversation;
   }
@@ -459,11 +473,26 @@ export async function startPrReview(store: Store, pr: { number: number; issue?: 
   return { workspace, conversation, created };
 }
 
-/** Fix an issue: the harness's "Start fix". */
+/**
+ * Fix an issue: the harness's "Start fix". Reattaches to a fix already running.
+ *
+ * The reattach is what startPrReview and startDependabotReview have always done and this did
+ * not, which made Start fix the one button here that answered a second press by starting a
+ * second conversation about the same issue. The workspace was already shared - it is named for
+ * the issue - so what came of pressing it twice was one workspace holding two "Fix #18264"
+ * panes, both queued with the same prompt, racing each other over one checkout.
+ */
 export async function startIssueFix(store: Store, issue: { number: number; title: string }, repo = DEFAULT_REPO): Promise<Started> {
   const workspace = `issue-${ issue.number }`;
   const created = await ensureWorkspace(store, workspace);
-  const conversation = await openWith(workspace, `Fix #${ issue.number }`, fixPrompt(issue.number, repo), { issue: issue.number }, undefined, store);
+  const title = `Fix #${ issue.number }`;
+  const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
+
+  if (existing) {
+    return { workspace, conversation: existing, created };
+  }
+
+  const conversation = await openWith(workspace, title, fixPrompt(issue.number, repo), { issue: issue.number }, undefined, store);
 
   return { workspace, conversation, created };
 }
@@ -478,8 +507,15 @@ export function alertWorkspaceName(group: { packages: string[]; slug: string }):
 export async function startAlertFix(store: Store, group: Json, repo = DEFAULT_REPO): Promise<Started> {
   const workspace = alertWorkspaceName(group);
   const created = await ensureWorkspace(store, workspace);
+  const title = `Fix ${ group.packages[0] || group.slug }`;
+  const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
+
+  if (existing) {
+    return { workspace, conversation: existing, created };
+  }
+
   const alertList = (group.alerts || []).map((a: Json) => `#${ a.number } ${ a.packageName } in ${ a.manifest }`).join('; ');
-  const conversation = await openWith(workspace, `Fix ${ group.packages[0] || group.slug }`,
+  const conversation = await openWith(workspace, title,
     `/my-dependabot-fix ${ JSON.stringify(group.title) } — ${ (group.alerts || []).length } open alert(s): ${ alertList }. The advisories: $CLAUDE_HARNESS_API/my-work/dependabot.`);
 
   return { workspace, conversation, created };
