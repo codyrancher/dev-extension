@@ -463,7 +463,7 @@ export default {
 
 <style lang="scss" scoped>
   .dev-settings {
-    padding:   var(--dev-space-5);
+    padding:   var(--dev-inset);
     overflow-y: auto;
 
     header {

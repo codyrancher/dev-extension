@@ -11,6 +11,13 @@
  * make a control big enough for a thumb.
  */
 @media (max-width: 760px) {
+  /*
+   * The column moves in a step. 20px of margin on either side of a 390px screen is a tenth of
+   * it spent on nothing, and everything that draws to this inset - the bar, the headings, the
+   * page - follows from the one declaration. See design/tokens.css.
+   */
+  .dev-root { --dev-inset: var(--dev-space-4); }
+
   /* ── The page's own box ── */
   .dev-root .main-layout { min-width: 0; }
 
@@ -76,7 +83,7 @@
   .dev-root .agent-edit,
   .dev-root .workspace-share,
   .dev-root .workspace-preview {
-    padding: var(--dev-space-4) var(--dev-space-4) var(--dev-space-6);
+    padding: var(--dev-inset) var(--dev-inset) var(--dev-space-6);
   }
 
   /* ── The shell's tab strip: one row that scrolls, never a second row of tabs ── */
@@ -86,11 +93,55 @@
     overflow-y: hidden;
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
+    /* The space between tabs is here rather than on each tab's own sides, so that the first and
+       the last one are inset from the edge of the screen by the whole of it and not by half. */
+    gap: var(--dev-space-3);
+    padding: 0 var(--dev-space-3);
   }
 
   .dev-root .tabs::-webkit-scrollbar { display: none; }
-  .dev-root .tabs li.tab { flex: 0 0 auto; }
-  .dev-root .tabs li.tab a { padding: 0 var(--dev-space-4); font-size: 14px; }
+
+  .dev-root .tabs li.tab {
+    flex: 0 0 auto;
+    padding: 0;
+  }
+
+  /*
+   * 44px, because the rule this replaces made the strip 18px.
+   *
+   * The shell's anchor has no height of its own - it is padding around a line of text - and the
+   * rule that cut its side padding to fit five tabs across a phone cut the vertical padding to
+   * zero with it. What was left was five hairline labels stacked against the header, about a
+   * third of the touch guideline, with the next tab's text 8px away. A minimum rather than
+   * padding, so the row is the same height whichever tab is selected and whatever is in it.
+   */
+  .dev-root .tabs li.tab a {
+    min-height: 44px;
+    padding: 0 var(--dev-space-4);
+    font-size: 14px;
+    border-radius: var(--border-radius) var(--border-radius) 0 0;
+  }
+
+  /*
+   * Selected is the tab that is filled in, not a 2px rule under a hairline of text.
+   *
+   * The shell says selected with `--active` text over a 2px underline, and in this theme
+   * `--active` differs from the link blue the other four tabs are already painted in by nine
+   * values of red: at 18px the underline was carrying the whole signal, and at arm's length it
+   * was carrying none. Inverting the product's own accent - defined in tokens.css against the
+   * page background, so it holds in both themes - is legible without looking for it. The
+   * underline goes, since a 2px line flush under a filled tab adds nothing to it; the square
+   * bottom corners are what keep this a tab strip rather than a row of pills.
+   */
+  .dev-root .tabs li.tab:not(.active) a { color: var(--input-label); }
+
+  .dev-root .tabs li.tab.active { border-bottom: 0; }
+
+  .dev-root .tabs li.tab.active a {
+    background-color: var(--dev-accent);
+    color: var(--dev-on-accent);
+    font-weight: 600;
+  }
 
   /* ── Tables: the row is what is wide, so the box scrolls and the page does not ── */
   .dev-root .sortable-table-wrapper,
