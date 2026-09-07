@@ -870,14 +870,45 @@ async function ensureWorkspaceConfig(name: string): Promise<void> {
  * still start a workspace; what they get is a pod without the scripts, which is a terminal that
  * says claude is not installed rather than a workspace that will not boot.
  */
+/**
+ * Find a ConfigMap that actually carries the terminal scripts.
+ *
+ * The seed used to be addressed by a name derived from the URL this dashboard was served at
+ * (servedFrom, config/constants). That works when the extension is the dev server behind the
+ * apiserver proxy - the path carries its namespace and service - and it is wrong the moment the
+ * extension is the *installed UIPlugin*, where the path is `/dashboard/dev/...` and the derive
+ * falls back to a `barn/barn-dev-extension` object that does not exist. The workspace's `/seed`
+ * then mounts an empty ConfigMap, and every conversation dies on `cannot open /seed/shell.sh`.
+ *
+ * So the seed is resolved by content, not by name: the URL-derived object first (still right on
+ * the dev server), then any ConfigMap in the studio namespace that has `shell.sh`. Those scripts
+ * belong to the agent infrastructure the Studio seeds, so one of them is always present wherever
+ * a workspace can run at all - and reading the file out of whichever holds it is what makes the
+ * published install behave like the dev-served one.
+ */
+async function resolveTerminalSeed(): Promise<Record<string, string> | null> {
+  const named = await devFetch(`${ BASE }/v1/configmaps/${ SEED_NAMESPACE }/${ SEED_CONFIG_MAP }`).catch(() => null);
+
+  if (named?.data?.['shell.sh']) {
+    return named.data;
+  }
+
+  // Whatever else in the studio namespace carries these scripts. Steve returns the collection;
+  // the first that has shell.sh is as good as any - they are the same scripts, seeded together.
+  const list = await devFetch(`${ BASE }/v1/configmaps/${ STUDIO_NAMESPACE }`).catch(() => null);
+  const holder = (list?.data || []).find((cm: Json) => cm?.data?.['shell.sh']);
+
+  return holder?.data || null;
+}
+
 async function ensureWorkspaceTerminal(name: string): Promise<void> {
   const namespace = workspaceNamespace(name);
-  const seed = await devFetch(`${ BASE }/v1/configmaps/${ SEED_NAMESPACE }/${ SEED_CONFIG_MAP }`).catch(() => null);
+  const seed = await resolveTerminalSeed();
   const data: Record<string, string> = {};
 
   for (const file of TERMINAL_FILES) {
-    if (seed?.data?.[file]) {
-      data[file] = seed.data[file];
+    if (seed?.[file]) {
+      data[file] = seed[file];
     }
   }
 
@@ -1213,6 +1244,16 @@ const WORKSPACE_CONFIG_MAP = 'dev-workspace-config';
  */
 const WORKSPACE_TERMINAL_MAP = 'dev-terminal';
 const WORKSPACE_TERMINAL_MOUNT = '/seed';
+
+/**
+ * Where the agent infrastructure and every extension's seed live.
+ *
+ * The terminal scripts are seeded into ConfigMaps here by Extension Studio and the agents
+ * extension, so this is where resolveTerminalSeed looks when the URL-derived name misses - which
+ * it always does for the installed UIPlugin. A constant rather than derived, because the whole
+ * point is not to depend on how this dashboard happens to be served.
+ */
+const STUDIO_NAMESPACE = 'extension-studio';
 
 
 /**
