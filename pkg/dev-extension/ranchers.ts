@@ -51,7 +51,8 @@ export const RANCHER_STEPS = ['cluster asked for', 'node provisioning', 'Rancher
  */
 export async function listRanchers(store: Store): Promise<RancherTarget[]> {
   const out: RancherTarget[] = [{
-    id: 'host', name: 'This Rancher', url: window.location.origin, kind: 'host', phase: 'host', step: 3, detail: 'the Rancher this dashboard is on', since: '',
+    // Its own address, not the page's: read through a share, the origin is the share's name.
+    id: 'host', name: 'This Rancher', url: await ownRancherUrl(store), kind: 'host', phase: 'host', step: 3, detail: 'the Rancher this dashboard is on', since: '',
   }];
   const instances: Json[] = await store.dispatch('management/findAll', { type: APP_INSTANCE }).catch(() => []);
   const ranchers = instances.filter((instance) => [RANCHER_HA_APP, RANCHER_SINGLE_APP].includes(instance.spec?.app));
