@@ -563,10 +563,21 @@ export async function buildShare(workspace: string, kind: ShareKind, base: strin
     'RC=$?',
     `cd ${ WORKSPACE_WORKDIR } && git worktree remove --force $WT >/dev/null 2>&1; rm -rf $WT`,
     'if [ $RC -eq 0 ] && [ -f /workspace/share/$KIND.next/index.html ]; then',
-    '  rm -rf /workspace/share/$KIND.old',
-    '  [ -d /workspace/share/$KIND ] && mv /workspace/share/$KIND /workspace/share/$KIND.old',
-    '  mv /workspace/share/$KIND.next /workspace/share/$KIND && rm -rf /workspace/share/$KIND.old',
-    '  echo "ok $(date -u +%FT%TZ) $branch $sha" > $S',
+    // The swap, by rename only. `mv a b` puts a *inside* b when b is a directory, so the site
+    // has to be out of the way before the new one takes its name - and the old one is moved
+    // aside under a name nothing else can hold, rather than to a fixed `.old` that a previous
+    // build may have left behind and this one may not have the rights to delete (a build run
+    // as root once leaves a directory the pane user cannot remove). Renaming needs write on
+    // the parent and nothing else, so it works whoever owns what is there.
+    '  OLD=/workspace/share/$KIND.old-$(date +%s)-$$',
+    '  [ -e /workspace/share/$KIND ] && mv /workspace/share/$KIND $OLD',
+    '  if mv /workspace/share/$KIND.next /workspace/share/$KIND; then',
+    '    echo "ok $(date -u +%FT%TZ) $branch $sha" > $S',
+    '  else',
+    '    [ -e $OLD ] && mv $OLD /workspace/share/$KIND',
+    '    echo "failed $(date -u +%FT%TZ) $branch $sha" > $S',
+    '  fi',
+    '  rm -rf /workspace/share/$KIND.old-* /workspace/share/$KIND.old 2>/dev/null',
     'else',
     '  echo "failed $(date -u +%FT%TZ) $branch $sha" > $S',
     'fi',
