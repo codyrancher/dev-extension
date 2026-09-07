@@ -219,26 +219,44 @@ export default {
   display:       flex;
   align-items:   center;
   gap:           var(--dev-space-4);
-  padding:       0 var(--dev-space-4);
+  // The same inset the page under it uses, so the bar and the column are one edge rather than
+  // two that nearly agree. design/tokens.css.
+  padding:       0 var(--dev-inset);
   background:    var(--header-bg, var(--nav-bg));
   border-bottom: 1px solid var(--header-border, var(--border));
   min-width:     0;
 
   &__burger {
-    display:     none;
-    align-items: center;
-    width:       34px;
-    height:      34px;
-    min-height:  0;
-    padding:     0;
-    border:      0;
-    border-radius: var(--border-radius);
-    background:  transparent;
-    color:       var(--header-btn-text, var(--body-text));
-    font-size:   18px;
-    cursor:      pointer;
+    display:         none;
+    align-items:     center;
+    justify-content: center;
+    width:           var(--dev-control);
+    height:          var(--dev-control);
+    min-height:      0;
+    padding:         0;
+    border:          0;
+    border-radius:   var(--border-radius);
+    background:      transparent;
+    color:           var(--header-btn-text, var(--body-text));
+    font-size:       18px;
+    cursor:          pointer;
+    // What lines up with the heading below is the glyph, not the box a thumb has to hit, so the
+    // button hangs half its slack back into the bar's padding and the icon lands on the inset.
+    margin-left:     calc((var(--dev-control) - 1em) / -2);
 
     &:hover { background: var(--accent-btn); }
+
+    // A box of the bar's own, because icon-close and icon-menu are two glyphs of one font and
+    // nothing promises they are the same width: this is what stops the row moving as the drawer
+    // opens.
+    .icon {
+      display:         flex;
+      align-items:     center;
+      justify-content: center;
+      width:           1em;
+      height:          1em;
+      line-height:     1;
+    }
   }
 
   &__brand {
@@ -280,8 +298,8 @@ export default {
     display:       flex;
     align-items:   center;
     justify-content: center;
-    width:         34px;
-    height:        34px;
+    width:         var(--dev-control);
+    height:        var(--dev-control);
     min-height:    0;
     padding:       0;
     border:        0;
@@ -290,6 +308,8 @@ export default {
     color:         var(--header-btn-text, var(--body-text));
     font-size:     18px;
     cursor:        pointer;
+    // The burger's offset, mirrored: the page's right edge and this icon's are the same line.
+    margin-right:  calc((var(--dev-control) - 1em) / -2);
 
     &:hover { background: var(--accent-btn); }
   }
@@ -338,7 +358,7 @@ export default {
   display:       flex;
   align-items:   flex-start;
   gap:           var(--dev-space-3);
-  margin:        var(--dev-space-4) var(--dev-space-5) 0;
+  margin:        var(--dev-space-4) var(--dev-inset) 0;
   padding:       var(--dev-space-4);
   border:        1px solid var(--warning);
   border-radius: var(--border-radius);
@@ -379,11 +399,10 @@ export default {
 @media (max-width: 760px) {
   .dev-root .dashboard-content { --nav-width: 0px; }
 
-  .dev-blocked { margin: var(--dev-space-3) var(--dev-space-4) 0; }
+  .dev-blocked { margin-top: var(--dev-space-3); }
 
   .dev-top {
-    padding: 0 var(--dev-space-3);
-    gap:     var(--dev-space-3);
+    gap: var(--dev-space-3);
 
     &__burger { display: flex; }
     &__where { display: block; }

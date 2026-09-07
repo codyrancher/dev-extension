@@ -287,6 +287,10 @@ export default {
 
 <style lang="scss" scoped>
   .dev-workspaces {
+    // This page had no inset of its own, so its table began at the edge of the window while
+    // every heading in the product began a step in. The column is the product's, not the page's.
+    padding: var(--dev-inset);
+
     header {
       display:        flex;
       align-items:    flex-start;

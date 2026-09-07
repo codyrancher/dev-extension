@@ -34,6 +34,14 @@
   --dev-space-6: 30px;
 
   /*
+   * The one inset the product's column is drawn to: the bar at the top, the heading under it
+   * and the page's own content all start here, so a page reads as one column rather than three
+   * that nearly agree. A step off the scale rather than a value of its own, and narrower on a
+   * phone - design/mobile.css moves it down a step, which is the only place it changes.
+   */
+  --dev-inset: var(--dev-space-5);
+
+  /*
    * Control heights: a row in a list, a compact control, and a control on a toolbar. The shell's
    * own buttons are 24px (small) and 30px (default), and neither is a size these rows want,
    * which is why they are written down rather than inherited.
