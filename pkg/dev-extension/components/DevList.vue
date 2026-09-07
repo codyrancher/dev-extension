@@ -653,7 +653,18 @@ export default {
     }
 
     &__empty {
-      padding:   0 $gap ($gap / 2) calc(#{$rail} + #{$rail} + #{$gap});
+      /*
+       * Aligned with a row's label, not with its rail.
+       *
+       * The left inset is the same three the row spends before its text: the row's own left
+       * padding ($rail), the glyph slot ($rail wide), and the gap after it ($gap). Written as
+       * a sum of var()s rather than `calc(#{$rail} ...)` because $rail and $gap are custom
+       * properties now, not sass numbers - the old form also divided $gap by 2 for the bottom
+       * padding, which sass cannot do to a var() and which silently voided the whole
+       * declaration, leaving the text hard against the edge (measured: 0px against the label's
+       * 46px).
+       */
+      padding:   0 $gap var(--dev-space-2) calc(#{$rail} + #{$rail} + #{$gap});
       color:     var(--muted);
       font-size: 12px;
     }
