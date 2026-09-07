@@ -129,6 +129,19 @@ export default {
       draft:    '',
       // The row a delete has been asked for, so the row can ask before it does it.
       confirming: '',
+      /**
+       * Rows whose delete has been asked for and not yet finished.
+       *
+       * A delete is not instant - the Installation has to tear down what it deployed before it
+       * can go - and until this existed the UI said nothing at all about that: the tick was
+       * pressed, the controls went back to how they started, and the row sat there looking
+       * exactly like a row nobody had touched. There was no way to tell "still working" from
+       * "silently failed", which is the difference somebody actually needs.
+       *
+       * Held here rather than derived from the row's state, because the state comes from a poll
+       * and the poll is seconds behind the press.
+       */
+      deleting:   {},
     };
   },
 
@@ -142,11 +155,15 @@ export default {
      * crash loop. Muted is what the nav already uses for "nothing to report".
      */
     dotClass(row) {
+      if (this.isDeleting(row)) {
+        return 'text-warning';
+      }
+
       return row.state === 'stopped' ? 'text-muted' : colorForState(row.state);
     },
 
     stateLabel(row) {
-      return stateDisplay(row.state);
+      return this.isDeleting(row) ? 'Deleting - tearing down what it deployed' : stateDisplay(row.state);
     },
 
     startRename(row) {
@@ -167,7 +184,15 @@ export default {
 
     remove(row) {
       this.confirming = '';
+      // Marked before the emit, so the row changes under the finger that pressed it rather than
+      // on the next poll.
+      this.deleting = { ...this.deleting, [row.key]: Date.now() };
       this.$emit('delete', row.key);
+    },
+
+    /** Whether this row is mid-delete: asked for, and still here. */
+    isDeleting(row) {
+      return !!this.deleting[row.key];
     },
   },
 };
@@ -241,6 +266,7 @@ export default {
           :is="row.to ? 'router-link' : 'button'"
           v-if="renaming !== row.key"
           class="dev-list__link"
+          :class="{ 'dev-list__link--deleting': isDeleting(row) }"
           :to="row.to"
           :type="row.to ? null : 'button'"
           @click="row.to ? null : $emit('select', row.key)"
@@ -255,6 +281,15 @@ export default {
             class="dev-list__name"
             @dblclick.prevent="renamable && !row.fixed && startRename(row)"
           >{{ row.label }}</span>
+          <!--
+            Said in words, not only in colour: a dot changing from green to amber is not a
+            message somebody reads, and this is the only thing on screen that knows a delete is
+            in progress. It goes when the row does.
+          -->
+          <span
+            v-if="isDeleting(row)"
+            class="dev-list__deleting"
+          >deleting&hellip;</span>
         </component>
         <input
           v-if="renaming === row.key"
@@ -278,7 +313,7 @@ export default {
         >
           <i class="icon icon-edit" />
         </button>
-        <template v-if="deletable && !row.fixed">
+        <template v-if="deletable && !row.fixed && !isDeleting(row)">
           <button
             v-if="confirming !== row.key"
             v-clean-tooltip="`Delete ${ row.label }`"
@@ -454,7 +489,22 @@ export default {
     // currentColor in a `color` declaration is the inherited value, so this is the state colour
     // the span carries (text-success and the rest) mixed toward the theme's body text, rather
     // than a second copy of Rancher's palette written out here.
-    &__dot .icon-dot {
+    // A row on its way out: legible, and plainly not a row to press again.
+  &__link--deleting {
+    opacity: 0.65;
+  }
+
+  &__deleting {
+    flex:           0 0 auto;
+    margin-left:    auto;
+    padding-right:  $gap;
+    color:          var(--warning);
+    font-size:      11px;
+    letter-spacing: 0.02em;
+    white-space:    nowrap;
+  }
+
+  &__dot .icon-dot {
       color: color-mix(in srgb, currentColor, var(--body-text) 45%);
     }
 
