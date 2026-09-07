@@ -237,6 +237,52 @@ export async function reconcileUnrendered(store: Store): Promise<void> {
   }
 }
 
+/**
+ * Finish any deletion that was left half-done.
+ *
+ * Deleting an Installation is two steps, and only the first is Kubernetes': `remove()` puts the
+ * `appsplus.io/cleanup` finalizer on and asks for the delete, and then something has to tear the
+ * Bundles and the cluster down and take the finalizer off again. There is no controller for
+ * that - `releaseWhenEmpty()` is a method on a model, so the only thing that can drive it is a
+ * browser with Apps Plus loaded, which is the same bargain reconcileUnrendered above lives
+ * under.
+ *
+ * The problem was that the only driver was a 40-attempt loop inside the delete itself. Anything
+ * that ended that loop early left the Installation Terminating for good: teardown taking longer
+ * than the two minutes it waits, the tab being closed, a navigation away from the page, or any
+ * throw on the way round. Nothing came back to it afterwards, so the row stayed in the sidebar
+ * for ever and pressing delete again did nothing visible - the object was already deleting, and
+ * `remove()` on it is a no-op.
+ *
+ * Measured on this cluster: a workspace released on the second pass - the first deleted its
+ * Bundles and the second found nothing left and took the finalizer off. So the work itself is
+ * seconds; what was missing was anybody to do it the second time.
+ *
+ * Driven from the sidebar's own poll, beside the reconcile, because a delete that needs one more
+ * pass and a render that needs one are the same kind of unfinished business.
+ */
+export async function releaseTerminating(store: Store): Promise<void> {
+  let instances: Json[] = [];
+
+  try {
+    const all: Json[] = await store.dispatch('management/findAll', { type: APP_INSTANCE, opt: { force: true } });
+
+    instances = (all || []).filter((instance: Json) => (
+      !!instance.metadata?.deletionTimestamp && typeof instance.releaseWhenEmpty === 'function'
+    ));
+    // The Bundles have to be loaded for the emptiness check to mean anything.
+    await store.dispatch('management/findAll', { type: 'fleet.cattle.io.bundle' });
+  } catch {
+    return;
+  }
+
+  for (const instance of instances) {
+    // One pass each per poll. It returns false while there is still something to tear down, and
+    // the next poll picks it up again - which is what makes this a driver rather than a retry.
+    await instance.releaseWhenEmpty().catch(() => false);
+  }
+}
+
 // ── The App every Rancher gets ──────────────────────────────────────────────────────────────
 //
 // What the built-in `rancher` template used to make, as an App: a rancher/dashboard checkout
