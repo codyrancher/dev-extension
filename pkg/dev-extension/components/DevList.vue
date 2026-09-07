@@ -324,15 +324,24 @@ export default {
           >
             <i class="icon icon-trash" />
           </button>
+          <!--
+            The confirm step is a word, not a checkmark.
+            
+            A red tick was ambiguous twice over: a checkmark reads as "done" or "yes, keep",
+            which is the opposite of what pressing it does, and it gave no signal that the thing
+            it was confirming was destructive. "Delete" in the destructive colour says what the
+            click does and that it cannot be taken back.
+          -->
           <button
             v-else
-            v-clean-tooltip="`Confirm deleting ${ row.label }`"
+            v-clean-tooltip="`Click to permanently delete ${ row.label }`"
             type="button"
-            class="dev-list__control dev-list__delete dev-list__delete--confirm"
+            class="dev-list__confirm-delete"
             :aria-label="`Confirm deleting ${ row.label }`"
             @click="remove(row)"
+            @blur="confirming = ''"
           >
-            <i class="icon icon-checkmark" />
+            Delete
           </button>
         </template>
       </li>
@@ -617,10 +626,29 @@ export default {
         opacity: 1;
         color:   var(--error);
       }
+    }
 
-      &--confirm {
-        opacity: 1;
-        color:   var(--error);
+    // The confirm step: a small destructive button that says the word rather than a glyph. It
+    // is always visible (no reveal-on-hover) because it only exists for the moment between the
+    // trash icon being pressed and the delete happening, and a confirm you have to hover to
+    // find is a confirm nobody completes.
+    &__confirm-delete {
+      flex:          0 0 auto;
+      margin-left:   var(--dev-space-2);
+      padding:       2px var(--dev-space-3);
+      border:        1px solid var(--error);
+      border-radius: var(--border-radius);
+      background:    transparent;
+      color:         var(--error);
+      font-size:     11px;
+      font-weight:   600;
+      line-height:   1.4;
+      white-space:   nowrap;
+      cursor:        pointer;
+
+      &:hover, &:focus-visible {
+        background: var(--error);
+        color:     var(--error-banner-text, #fff);
       }
     }
 
