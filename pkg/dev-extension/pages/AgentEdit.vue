@@ -665,4 +665,15 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
   &__modal-close { margin-left: auto; min-height: 0; height: 26px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--body-text); font-size: 18px; line-height: 24px; cursor: pointer; }
   &__modal-body { flex: 1 1 auto; margin: 0; padding: 14px 18px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 }
+
+/* ── Phones: the form is one column and the buttons are full width. ── */
+@media (max-width: 760px) {
+  .agent-edit {
+    &__row { flex-direction: column; align-items: stretch; }
+    &__row > * { flex: 1 1 auto; }
+    &__actions { flex-direction: column-reverse; }
+    &__actions > * { width: 100%; }
+    &__suggest { width: 100%; min-width: 0; }
+  }
+}
 </style>

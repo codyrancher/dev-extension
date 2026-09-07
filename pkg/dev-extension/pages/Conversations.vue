@@ -308,4 +308,26 @@ export default {
 
     &__terminal { flex: 1 1 auto; min-height: 0; }
   }
+
+/* ── Phones: the list is a short scroller above the pane, not a column beside it. ── */
+@media (max-width: 760px) {
+  .dev-conversations { padding: 0; }
+
+  .dev-live { margin: 0; border-left: 0; border-right: 0; border-radius: 0; }
+
+  .dev-agents {
+    flex-direction: column;
+
+    &__list {
+      flex:          0 0 auto;
+      width:         auto;
+      max-height:    140px;
+      overflow-y:    auto;
+      border-right:  0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    &__pane { min-height: 60vh; }
+  }
+}
 </style>

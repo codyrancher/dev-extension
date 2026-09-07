@@ -798,6 +798,9 @@ export default {
             class="icon"
             :class="global.icon"
           />
+          <!-- The label is the icon's tooltip on a laptop, and there are no tooltips on a
+               phone: at drawer width these become a labelled list instead. -->
+          <span class="dev-sidebar__globals-label">{{ global.label }}</span>
         </router-link>
       </template>
     </div>
@@ -1137,6 +1140,8 @@ export default {
       font-size: 12px;
     }
 
+    &__globals-label { display: none; }
+
     &__globals {
       display:         flex;
       align-items:     center;
@@ -1195,5 +1200,45 @@ export default {
 @keyframes dev-step-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
+}
+
+/* ── Phones: the drawer.
+   The links that are icons on a laptop are the product's whole navigation, and at the bottom
+   of a drawer, unlabelled, they are neither. They go to the top with their names on. */
+@media (max-width: 760px) {
+  .dev-sidebar {
+    &__globals {
+      order:          -1;
+      display:        flex;
+      flex-direction: column;
+      align-items:    stretch;
+      gap:            0;
+      padding:        var(--dev-space-2) 0;
+      border-top:     0;
+      border-bottom:  1px solid var(--border);
+
+      a {
+        display:         flex;
+        align-items:     center;
+        justify-content: flex-start;
+        gap:             var(--dev-space-4);
+        width:           auto;
+        height:          40px;
+        padding:         0 var(--dev-space-5);
+        border-radius:   0;
+      }
+    }
+
+    &__globals-label {
+      display:   block;
+      font-size: 13px;
+    }
+
+    // A row a thumb can hit, in the lists as well.
+    &__row, &__rancher-row, &__cluster-row { padding-top: var(--dev-space-3); padding-bottom: var(--dev-space-3); }
+
+    // The tools on a Rancher row are hover-only on a laptop; there is no hover here.
+    &__rancher-tools { opacity: 1; }
+  }
 }
 </style>
