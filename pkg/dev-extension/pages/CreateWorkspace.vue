@@ -279,7 +279,7 @@ export default {
 
 <style lang="scss" scoped>
   .dev-create {
-    padding: var(--dev-space-5);
+    padding: var(--dev-inset);
 
     header {
       margin-bottom: var(--dev-space-5);

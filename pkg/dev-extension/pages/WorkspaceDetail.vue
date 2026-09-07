@@ -468,6 +468,43 @@ export default {
         border-right: 0;
       }
 
+      // Above the phone breakpoint, where design/mobile.css does not reach.
+      //
+      // A mouse does not need a 44px target, so the height is the shell's; what it does need is
+      // to be able to tell which tab it is on, and the shell's answer to that is `--active` text
+      // over a 2px rule. `--active` is nine values of red away from the link blue the other four
+      // tabs are already painted in, which leaves 2px of underline saying the whole of it. So the
+      // rest of the row recedes to label grey and the selected one is the only coloured, bold,
+      // underlined thing in the strip - the same reading as the phone's filled tab, drawn the way
+      // a pointer expects rather than a thumb.
+      //
+      // Scoped to this page rather than added to the global sheet: this is the only Tabbed in the
+      // product, and a rule that need not reach the rest of Rancher should not.
+      @media (min-width: 761px) {
+        :deep(> .tabs) {
+          // Between the tabs, not on each tab's sides, for the reason design/mobile.css gives.
+          gap: var(--dev-space-3);
+
+          li.tab {
+            padding: 0;
+
+            a { padding: var(--dev-space-4) var(--dev-space-5); }
+
+            &:not(.active) > a { color: var(--input-label); }
+
+            &.active {
+              border-bottom-width: 3px;
+              border-bottom-color: var(--dev-accent);
+
+              > a {
+                color:       var(--dev-accent);
+                font-weight: 600;
+              }
+            }
+          }
+        }
+      }
+
       // The content is everything below the strip. No padding of its own: a terminal and an
       // iframe are the two things on it, and both want the whole area.
       :deep(> .tab-container) {

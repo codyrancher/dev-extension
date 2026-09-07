@@ -1467,7 +1467,7 @@ export default {
 
   .dev-my-work {
     overflow-y: auto;
-    padding:    var(--dev-space-5);
+    padding:    var(--dev-inset);
 
     header {
       display:       flex;
