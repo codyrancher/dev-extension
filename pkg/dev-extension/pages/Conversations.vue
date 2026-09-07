@@ -18,6 +18,40 @@ import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE } from '../config/constants
 
 const REFRESH_MS = 10000;
 
+/**
+ * Which conversation this browser was last reading.
+ *
+ * Per browser rather than in the route, because the two answer different questions: `?c=` is
+ * "open this one", which a link carries and a reload keeps; this is "open the one I was on",
+ * which is what arriving at the page with no query at all should do. Without it, every visit
+ * landed on whichever conversation happened to sort first - never the one you were in the
+ * middle of.
+ *
+ * localStorage can throw outright in a private window or with site data blocked, so every read
+ * and write is guarded and an unavailable one simply means the page behaves as it did before.
+ */
+const LAST_CONVERSATION_KEY = 'dev.conversations.last';
+
+function readLastConversation() {
+  try {
+    return localStorage.getItem(LAST_CONVERSATION_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function writeLastConversation(id) {
+  try {
+    if (id) {
+      localStorage.setItem(LAST_CONVERSATION_KEY, id);
+    } else {
+      localStorage.removeItem(LAST_CONVERSATION_KEY);
+    }
+  } catch {
+    // A browser that will not remember is not a page that fails.
+  }
+}
+
 const ROW_STATE = {
   open: 'running', connecting: 'starting', waiting: 'starting', closed: 'stopped'
 };
@@ -31,11 +65,21 @@ export default {
 
   async fetch() {
     await this.refresh();
-    // Sent here to look at one conversation (an agent's run, say): pick it.
-    const asked = this.$route.query.c;
 
-    if (asked && this.all.some((c) => c.id === asked)) {
-      this.select(asked);
+    // Two ways to arrive with a conversation in mind, in the order they should win.
+    //
+    // `?c=` is explicit - a link from an agent run, or a reload of a page that was on one - so
+    // it beats the memory. The memory is what makes opening this page from the nav come back to
+    // what you were reading rather than to whatever sorts first.
+    //
+    // Both are checked against the conversations that actually exist: one that has ended is not
+    // one to reopen, and the list is already loaded by the time this runs.
+    const wanted = [this.$route.query.c, readLastConversation()]
+      .map((id) => String(id || ''))
+      .find((id) => id && this.all.some((c) => c.id === id));
+
+    if (wanted) {
+      this.select(wanted);
     }
   },
 
@@ -81,6 +125,7 @@ export default {
     // clicked is a URL nobody can trust.
     current(id) {
       this.rememberInRoute(id);
+      writeLastConversation(id);
     },
   },
 
