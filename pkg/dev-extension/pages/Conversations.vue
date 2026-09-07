@@ -352,11 +352,22 @@ export default {
 </template>
 
 <style lang="scss" scoped>
+  /*
+   * The page is the viewport; the conversation is the only thing that scrolls.
+   *
+   * `min-width: 0` on every flex child in the chain, and `overflow: hidden` on the boxes that
+   * are not meant to scroll. Without them a pane whose content is wider than the column - a
+   * terminal sized in columns, a long unbroken path in a message - makes its container wider
+   * than the page, and the whole document scrolls sideways as well as down. A flex child's
+   * default is to refuse to shrink below its content, which is exactly what that is.
+   */
   .dev-conversations {
     display:        flex;
     flex-direction: column;
     height:         100%;
     min-height:     0;
+    min-width:      0;
+    overflow:       hidden;
     padding:        var(--dev-space-4) 0 var(--dev-space-4);
   }
 
@@ -369,6 +380,8 @@ export default {
     background:     var(--body-bg);
     flex:           1 1 auto;
     min-height:     0;
+    min-width:      0;
+    overflow:       hidden;
 
     /*
      * The title bar, which is the accordion.
@@ -400,6 +413,8 @@ export default {
     display:    flex;
     flex:       1 1 auto;
     min-height: 0;
+    min-width:  0;
+    overflow:   hidden;
 
     /*
      * The conversation's name: everything between the heading and the count.
@@ -480,6 +495,8 @@ export default {
       flex-direction: column;
       flex:           1 1 auto;
       min-width:      0;
+      min-height:     0;
+      overflow:       hidden;
     }
 
     &__terminal { flex: 1 1 auto; min-height: 0; }
@@ -489,6 +506,8 @@ export default {
 @media (max-width: 760px) {
   .dev-conversations { padding: 0; }
 
+  // Edge to edge: 20px of margin either side of a 390px screen is a tenth of the conversation
+  // spent on a border.
   .dev-live { margin: 0; border-left: 0; border-right: 0; border-radius: 0; }
 
   .dev-live__head {
