@@ -13,7 +13,7 @@ import {
   previewState, removePreview, shareWorkspace, previewBase, retargetPreview, rebuildPreview, LOCAL_HOST
 } from '../previews';
 import { buildShare, shareStatus, workspaceBranches } from '../workspace-tools';
-import { defaultRancher, listRanchers } from '../ranchers';
+import { talksToDefault, listRanchers } from '../ranchers';
 import { listApps } from '../apps';
 import { DEFAULT_APP } from '../config/constants';
 import { DEFAULT_REPO } from '../reviews';
@@ -88,7 +88,7 @@ export default {
       this.repo = (own || fallback)?.repo || DEFAULT_REPO;
       this.number = this.pr || 0;
       // The starred Rancher (the sidebar's Ranchers list), else the one this page is on.
-      this.rancher = (await defaultRancher().catch(() => '')) || window.location.origin;
+      this.rancher = await talksToDefault(this.$store);
       this.ranchers = (await listRanchers(this.$store).catch(() => [])).filter((r) => r.url);
       // Hosted where the starred Rancher is, when that is one of the sidebar's: a link on the
       // open internet is what a share is for, and that is where one can be.
@@ -189,7 +189,7 @@ export default {
       this.error = '';
 
       try {
-        await shareWorkspace(this.$store, this.workspace.name, kind, this.rancher.trim().replace(/\/$/, '') || window.location.origin, this.workspace.cluster, this.hostFor(this.hostOn), this.branchFor(kind));
+        await shareWorkspace(this.$store, this.workspace.name, kind, this.rancher.trim().replace(/\/$/, '') || await talksToDefault(this.$store), this.workspace.cluster, this.hostFor(this.hostOn), this.branchFor(kind));
         this.notice = `Building ${ this.branchFor(kind) || 'the checkout' }; the link appears here when it is served.`;
         await this.refresh();
         done(true);
