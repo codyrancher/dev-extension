@@ -20,6 +20,7 @@ import ModalManager from '@shell/components/ModalManager';
 import GrowlManager from '@shell/components/GrowlManager';
 import DevSidebar from '../components/DevSidebar.vue';
 import ClaudeLogo from '../components/ClaudeLogo.vue';
+import { socketsWork, rancherOwnAddress } from '../sockets';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE } from '../config/constants';
 
 export default {
@@ -30,7 +31,9 @@ export default {
   },
 
   data() {
-    return { drawer: false, menu: false };
+    return {
+      drawer: false, menu: false, socketsBlocked: false, ownAddress: '',
+    };
   },
 
   computed: {
@@ -42,6 +45,10 @@ export default {
     /** This product's own home, for the wordmark to lead back to. */
     homeTo() {
       return { name: WORKSPACES_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } };
+    },
+
+    host() {
+      return window.location.host;
     },
 
     /** Where the page is, in a word, for the bar on a phone - the sidebar is shut there. */
@@ -59,8 +66,14 @@ export default {
     },
   },
 
-  mounted() {
+  async mounted() {
     document.addEventListener('keydown', this.onKey);
+    // One probe, so a page whose websockets cannot connect says so once instead of leaving
+    // every terminal dead and the console full of the same line. See sockets.ts.
+    if (await socketsWork() === 'blocked') {
+      this.socketsBlocked = true;
+      this.ownAddress = await rancherOwnAddress(this.$store);
+    }
   },
 
   beforeUnmount() {
@@ -152,6 +165,30 @@ export default {
         @click="drawer = false"
       />
       <main class="main-layout">
+        <div
+          v-if="socketsBlocked"
+          class="dev-blocked"
+          data-testid="dev-sockets-blocked"
+        >
+          <i class="icon icon-warning" />
+          <span>
+            This browser will not open a websocket to <code>{{ host }}</code>, so terminals, chat
+            and the conversation list cannot connect. It is almost always the certificate: a page
+            served with one the browser does not trust can be clicked through, but a websocket to
+            it cannot.
+            <template v-if="ownAddress">
+              Open this Rancher at <a :href="ownAddress + '/dashboard/dev'">{{ ownAddress }}</a> for anything interactive.
+            </template>
+          </span>
+          <button
+            type="button"
+            class="dev-blocked__close"
+            aria-label="Dismiss"
+            @click="socketsBlocked = false"
+          >
+            &times;
+          </button>
+        </div>
         <router-view />
       </main>
       <!--
@@ -297,6 +334,34 @@ export default {
   }
 }
 
+.dev-blocked {
+  display:       flex;
+  align-items:   flex-start;
+  gap:           var(--dev-space-3);
+  margin:        var(--dev-space-4) var(--dev-space-5) 0;
+  padding:       var(--dev-space-4);
+  border:        1px solid var(--warning);
+  border-radius: var(--border-radius);
+  background:    var(--warning-banner-bg, rgba(219, 171, 0, 0.12));
+  color:         var(--body-text);
+  font-size:     13px;
+  line-height:   1.5;
+
+  .icon { color: var(--warning); margin-top: 2px; }
+  code { word-break: break-all; }
+
+  &__close {
+    margin-left: auto;
+    min-height:  0;
+    padding:     0 var(--dev-space-2);
+    border:      0;
+    background:  transparent;
+    color:       var(--muted);
+    font-size:   18px;
+    cursor:      pointer;
+  }
+}
+
 .dev-scrim {
   position:   fixed;
   top:        var(--header-height);
@@ -313,6 +378,8 @@ export default {
    the one above, unchanged. */
 @media (max-width: 760px) {
   .dev-root .dashboard-content { --nav-width: 0px; }
+
+  .dev-blocked { margin: var(--dev-space-3) var(--dev-space-4) 0; }
 
   .dev-top {
     padding: 0 var(--dev-space-3);

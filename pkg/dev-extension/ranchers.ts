@@ -237,6 +237,35 @@ export async function setDefaultRancher(url: string): Promise<void> {
 }
 
 /**
+ * The Rancher a build should talk to, when nobody has said which.
+ *
+ * Not `window.location.origin`, which is what this used to fall back to. A share is opened on
+ * its own address, and the Dev pages can be opened there too - so on that page the origin is
+ * the *preview's* hostname, and a build told to talk to it makes an nginx that proxies to
+ * itself: every API call through the share answers 502, including the ones this dashboard
+ * makes. The Rancher's own `server-url` is the address it says it is at, whoever is asking.
+ */
+export async function talksToDefault(store: Store): Promise<string> {
+  const starred = await defaultRancher().catch(() => '');
+
+  return starred || await ownRancherUrl(store);
+}
+
+/**
+ * Where *this* Rancher says it is, which is not always where the page is being read.
+ *
+ * `server-url` is the address Rancher hands out for itself; a page opened through a share, or
+ * through the apiserver's service proxy, has an origin that is neither. Anything a pod will
+ * fetch later, or anything written into a build, has to be this rather than the origin.
+ */
+export async function ownRancherUrl(store: Store): Promise<string> {
+  const setting: Json = await store.dispatch('management/find', { type: 'management.cattle.io.setting', id: 'server-url' }).catch(() => null);
+  const own = String(setting?.value || setting?.default || '').replace(/\/$/, '');
+
+  return own || window.location.origin;
+}
+
+/**
  * What a new workspace is made with: the starred Rancher as its `rancherUrl`, or nothing,
  * which leaves the App's own default - the Rancher this cluster belongs to, by node address.
  */
