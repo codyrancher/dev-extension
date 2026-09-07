@@ -127,8 +127,6 @@ export default {
     return {
       renaming: '',
       draft:    '',
-      // The row a delete has been asked for, so the row can ask before it does it.
-      confirming: '',
       /**
        * Rows whose delete has been asked for and not yet finished.
        *
@@ -156,14 +154,16 @@ export default {
      */
     dotClass(row) {
       if (this.isDeleting(row)) {
-        return 'text-warning';
+        // Red, and pulsing (see the CSS): this is a destructive state in progress, which is
+        // what the colour means everywhere else in the nav.
+        return 'text-error';
       }
 
       return row.state === 'stopped' ? 'text-muted' : colorForState(row.state);
     },
 
     stateLabel(row) {
-      return this.isDeleting(row) ? 'Deleting - tearing down what it deployed' : stateDisplay(row.state);
+      return this.isDeleting(row) ? 'Deleting' : stateDisplay(row.state);
     },
 
     startRename(row) {
@@ -183,9 +183,8 @@ export default {
     },
 
     remove(row) {
-      this.confirming = '';
-      // Marked before the emit, so the row changes under the finger that pressed it rather than
-      // on the next poll.
+      // Marked before the emit, so the row goes red under the finger that pressed it rather
+      // than on the next poll.
       this.deleting = { ...this.deleting, [row.key]: Date.now() };
       this.$emit('delete', row.key);
     },
@@ -282,14 +281,14 @@ export default {
             @dblclick.prevent="renamable && !row.fixed && startRename(row)"
           >{{ row.label }}</span>
           <!--
-            Said in words, not only in colour: a dot changing from green to amber is not a
-            message somebody reads, and this is the only thing on screen that knows a delete is
-            in progress. It goes when the row does.
+            Said in words as well as in colour: a dot going red is not a message somebody reads,
+            and a spinner beside it shows the delete is doing work rather than stuck. Both go
+            when the row does.
           -->
           <span
             v-if="isDeleting(row)"
             class="dev-list__deleting"
-          >deleting&hellip;</span>
+          ><i class="icon icon-spinner icon-spin" /> Deleting</span>
         </component>
         <input
           v-if="renaming === row.key"
@@ -313,37 +312,26 @@ export default {
         >
           <i class="icon icon-edit" />
         </button>
-        <template v-if="deletable && !row.fixed && !isDeleting(row)">
-          <button
-            v-if="confirming !== row.key"
-            v-clean-tooltip="`Delete ${ row.label }`"
-            type="button"
-            class="dev-list__control dev-list__reveal dev-list__delete"
-            :aria-label="`Delete ${ row.label }`"
-            @click="confirming = row.key"
-          >
-            <i class="icon icon-trash" />
-          </button>
-          <!--
-            The confirm step is a word, not a checkmark.
-            
-            A red tick was ambiguous twice over: a checkmark reads as "done" or "yes, keep",
-            which is the opposite of what pressing it does, and it gave no signal that the thing
-            it was confirming was destructive. "Delete" in the destructive colour says what the
-            click does and that it cannot be taken back.
-          -->
-          <button
-            v-else
-            v-clean-tooltip="`Click to permanently delete ${ row.label }`"
-            type="button"
-            class="dev-list__confirm-delete"
-            :aria-label="`Confirm deleting ${ row.label }`"
-            @click="remove(row)"
-            @blur="confirming = ''"
-          >
-            Delete
-          </button>
-        </template>
+        <!--
+          One control: the trash icon, which deletes on click.
+          
+          There is no confirm step and no second button. The two-button dance (trash, then a
+          tick or a word) was answering "are you sure" with another thing to press, when the row
+          itself can answer it: the moment it is clicked the row goes red and says it is
+          deleting (see isDeleting and the row classes above), which is both the acknowledgement
+          and the progress. A delete that has visibly started and is visibly working does not
+          need to have been confirmed first.
+        -->
+        <button
+          v-if="deletable && !row.fixed && !isDeleting(row)"
+          v-clean-tooltip="`Delete ${ row.label }`"
+          type="button"
+          class="dev-list__control dev-list__reveal dev-list__delete"
+          :aria-label="`Delete ${ row.label }`"
+          @click="remove(row)"
+        >
+          <i class="icon icon-trash" />
+        </button>
       </li>
 
       <li
@@ -511,16 +499,20 @@ export default {
     // currentColor in a `color` declaration is the inherited value, so this is the state colour
     // the span carries (text-success and the rest) mixed toward the theme's body text, rather
     // than a second copy of Rancher's palette written out here.
-    // A row on its way out: legible, and plainly not a row to press again.
+  // A row on its way out: dimmed, pulsing, and plainly not a row to press again. The pulse is
+  // what says "working" rather than "stuck" - a static red row could be either.
   &__link--deleting {
-    opacity: 0.65;
+    animation: dev-list-deleting 1.4s ease-in-out infinite;
   }
 
   &__deleting {
     flex:           0 0 auto;
+    display:        inline-flex;
+    align-items:    center;
+    gap:            4px;
     margin-left:    auto;
     padding-right:  $gap;
-    color:          var(--warning);
+    color:          var(--error);
     font-size:      11px;
     letter-spacing: 0.02em;
     white-space:    nowrap;
@@ -632,27 +624,7 @@ export default {
     // is always visible (no reveal-on-hover) because it only exists for the moment between the
     // trash icon being pressed and the delete happening, and a confirm you have to hover to
     // find is a confirm nobody completes.
-    &__confirm-delete {
-      flex:          0 0 auto;
-      margin-left:   var(--dev-space-2);
-      padding:       2px var(--dev-space-3);
-      border:        1px solid var(--error);
-      border-radius: var(--border-radius);
-      background:    transparent;
-      color:         var(--error);
-      font-size:     11px;
-      font-weight:   600;
-      line-height:   1.4;
-      white-space:   nowrap;
-      cursor:        pointer;
-
-      &:hover, &:focus-visible {
-        background: var(--error);
-        color:     var(--error-banner-text, #fff);
-      }
-    }
-
-    // A panel under the heading, shown while the pointer is on it. Absolute, so it does not
+// A panel under the heading, shown while the pointer is on it. Absolute, so it does not
     // move the rows underneath, and above them, so it is not clipped by the next section.
     &__popover {
       position:      absolute;
@@ -686,4 +658,8 @@ export default {
       font-size: 12px;
     }
   }
+@keyframes dev-list-deleting {
+  0%, 100% { opacity: 0.85; }
+  50%      { opacity: 0.4; }
+}
 </style>
