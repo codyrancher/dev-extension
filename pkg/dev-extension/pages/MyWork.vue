@@ -241,6 +241,15 @@ export default {
       // the press most likely to be waited on.
       loading:    true,
       loadingAlerts: false,
+      /**
+       * The row whose secondary actions are open, on a phone.
+       *
+       * A Dependabot row has three: review it, merge it, and forget the review. Three buttons
+       * in a cell of a three-column table at 390px is three buttons on three lines, each too
+       * narrow to read - so the first one is the button and the rest are behind it. One row at
+       * a time, because two open at once is the wrapping this exists to stop.
+       */
+      openActions: '',
       // The workspaces that exist, so a row can say whether it already has one. Names only:
       // this page is about pull requests and the sidebar is about workspaces.
       workspaces: [],
@@ -656,6 +665,17 @@ export default {
         this.error = e.message || String(e);
         done(false);
       }
+    },
+
+    /**
+     * Whether this row has anything worth putting behind a caret.
+     *
+     * A row with no review has one action - Review - and nothing to hide. A row with one
+     * always has at least "forget this review", and Approve & merge as well when the verdict
+     * came back MERGE. So the question is simply whether it has been reviewed.
+     */
+    hasMoreActions(row) {
+      return !!this.botReview(row);
     },
 
     botReview(pr) {
@@ -1328,8 +1348,18 @@ export default {
             class="text-muted"
           >not reviewed</span>
         </template>
+        <!--
+          A split button on a phone: the action you came for, and a caret for the rest.
+
+          Opened downwards inside the cell rather than as a floating menu, because the cell is
+          in a table with its own overflow and a popover positioned out of one is a popover
+          that gets clipped by it.
+        -->
         <template #cell:actions="{ row }">
-          <div class="dev-my-work__actions">
+          <div
+            class="dev-my-work__actions"
+            :class="{ 'dev-my-work__actions--split': narrow && hasMoreActions(row) }"
+          >
             <AsyncButton
               mode="apply"
               :action-label="botReview(row) ? 'Review again' : 'Review'"
@@ -1338,25 +1368,37 @@ export default {
               size="sm"
               @click="(done) => reviewBotPr(row, done)"
             />
-            <AsyncButton
-              v-if="botReview(row) && botReview(row).verdict === 'merge'"
-              mode="apply"
-              action-label="Approve & merge"
-              waiting-label="Merging"
-              success-label="Merged"
-              size="sm"
-              :disabled="!!(row.ci && (row.ci.failing || row.ci.pending))"
-              @click="(done) => mergeBotPr(row, done)"
-            />
-            <RcButton
-              v-if="botReview(row)"
-              variant="tertiary"
-              size="small"
-              title="Forget this review"
-              @click="closeBotReview(row)"
+            <button
+              v-if="narrow && hasMoreActions(row)"
+              type="button"
+              class="dev-my-work__more"
+              :aria-expanded="String(openActions === row.key)"
+              :title="openActions === row.key ? 'Fewer actions' : 'More actions'"
+              @click="openActions = openActions === row.key ? '' : row.key"
             >
-              ×
-            </RcButton>
+              <i :class="openActions === row.key ? 'icon icon-chevron-up' : 'icon icon-chevron-down'" />
+            </button>
+            <template v-if="!narrow || openActions === row.key">
+              <AsyncButton
+                v-if="botReview(row) && botReview(row).verdict === 'merge'"
+                mode="apply"
+                action-label="Approve & merge"
+                waiting-label="Merging"
+                success-label="Merged"
+                size="sm"
+                :disabled="!!(row.ci && (row.ci.failing || row.ci.pending))"
+                @click="(done) => mergeBotPr(row, done)"
+              />
+              <RcButton
+                v-if="botReview(row)"
+                variant="tertiary"
+                size="small"
+                title="Forget this review"
+                @click="closeBotReview(row)"
+              >
+                ×
+              </RcButton>
+            </template>
           </div>
         </template>
       </SortableTable>
@@ -1369,6 +1411,30 @@ export default {
     display:         flex;
     justify-content: flex-end;
     gap:             var(--dev-space-2);
+  }
+
+  // Open, the extra actions go under the one that opened them rather than beside it: at this
+  // width there is no beside.
+  .dev-my-work__actions--split {
+    flex-wrap:   wrap;
+    align-items: center;
+  }
+
+  .dev-my-work__more {
+    display:         inline-flex;
+    align-items:     center;
+    justify-content: center;
+    width:           28px;
+    height:          28px;
+    min-height:      0;
+    padding:         0;
+    border:          1px solid var(--border);
+    border-radius:   var(--dev-space-3);
+    background:      transparent;
+    color:           var(--muted);
+    cursor:          pointer;
+
+    &:hover { border-color: var(--link); color: var(--body-text); }
   }
 
   .dev-my-work__reason {
