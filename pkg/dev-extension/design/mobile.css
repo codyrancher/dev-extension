@@ -14,6 +14,27 @@
   /* ── The page's own box ── */
   .dev-root .main-layout { min-width: 0; }
 
+  /*
+   * The viewport does not scroll; the thing being read does.
+   *
+   * On a phone the document was scrolling in both directions with a conversation scrolling
+   * inside it - two scrollbars going three ways, and an address bar sliding in and out over
+   * the top of the composer while you typed. The dashboard's own shell is a full-height
+   * column already; what it was missing is being told not to grow past the viewport, and that
+   * its children may shrink below their content. A flex child's default is to refuse to, which
+   * is how one wide terminal made the whole document wide.
+   */
+  .dev-root,
+  .dev-root .dashboard-content,
+  .dev-root .main-layout {
+    max-height: 100dvh;
+    min-height: 0;
+    overflow:   hidden;
+  }
+
+  .dev-root .dashboard-content,
+  .dev-root .main-layout { min-width: 0; }
+
   .dev-root .dev-page,
   .dev-root .dev-my-work,
   .dev-root .dev-insights,
