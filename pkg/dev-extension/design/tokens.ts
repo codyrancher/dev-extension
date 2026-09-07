@@ -1,6 +1,8 @@
 // The scale itself. Imported here rather than from a component, so it lands in the bundle once
 // and every layout component gets it by importing the module it already imports.
 import './tokens.css';
+// What the same product does at phone width; one breakpoint, all of it inside the query.
+import './mobile.css';
 
 /**
  * The space scale, for the components that take a step of it as a prop.

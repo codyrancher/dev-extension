@@ -589,4 +589,19 @@ export default {
   &__head { display: flex; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid var(--border); font-family: monospace; font-weight: 600; }
   &__text { flex: 1 1 auto; margin: 0; padding: 14px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
 }
+
+/* ── Phones: one card per row, and a run's line drops the columns it can do without. ── */
+@media (max-width: 760px) {
+  .agent-cards {
+    &__grid { grid-template-columns: 1fr; }
+
+    &__head { flex-direction: column; gap: var(--dev-space-3); }
+  }
+
+  .agent-card {
+    &__facts { grid-template-columns: 1fr; gap: var(--dev-space-1); }
+    &__facts dt { margin-top: var(--dev-space-3); }
+    &__actions { flex-wrap: wrap; }
+  }
+}
 </style>

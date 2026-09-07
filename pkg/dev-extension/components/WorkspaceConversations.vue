@@ -358,4 +358,22 @@ export default {
       min-height: 0;
     }
   }
+
+/* ── Phones: one column. A list beside a terminal is two things too narrow to use, so the
+   conversations become a row that scrolls across the top and the pane takes the rest. */
+@media (max-width: 760px) {
+  .workspace-conversations {
+    flex-direction: column;
+
+    &__list {
+      flex:          0 0 auto;
+      max-height:    132px;
+      overflow-y:    auto;
+      border-right:  0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    &__pane { min-height: 60vh; }
+  }
+}
 </style>

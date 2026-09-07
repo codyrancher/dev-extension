@@ -1,0 +1,78 @@
+/*
+ * What this product does at phone width.
+ *
+ * One breakpoint, 760px, the harness portal's. Everything here is inside the query and under
+ * `.dev-root`, so the desktop layout is untouched and nothing reaches the rest of Rancher: this
+ * sheet is global because most of what has to change on a phone is markup somebody else renders
+ * - the shell's tab strip, its tables, its buttons - which a scoped stylesheet cannot see.
+ *
+ * The rules are all one of four things: let a wide row scroll inside its own box rather than
+ * stretching the page, stack a two-column pane, cut the outer padding a phone cannot spare, and
+ * make a control big enough for a thumb.
+ */
+@media (max-width: 760px) {
+  /* ── The page's own box ── */
+  .dev-root .main-layout { min-width: 0; }
+
+  .dev-root .dev-page,
+  .dev-root .dev-my-work,
+  .dev-root .dev-insights,
+  .dev-root .dev-settings,
+  .dev-root .dev-create,
+  .dev-root .agent-cards,
+  .dev-root .agent-edit,
+  .dev-root .workspace-share,
+  .dev-root .workspace-preview {
+    padding: var(--dev-space-4) var(--dev-space-4) var(--dev-space-6);
+  }
+
+  /* ── The shell's tab strip: one row that scrolls, never a second row of tabs ── */
+  .dev-root .tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .dev-root .tabs::-webkit-scrollbar { display: none; }
+  .dev-root .tabs li.tab { flex: 0 0 auto; }
+  .dev-root .tabs li.tab a { padding: 0 var(--dev-space-4); font-size: 14px; }
+
+  /* ── Tables: the row is what is wide, so the box scrolls and the page does not ── */
+  .dev-root .sortable-table-wrapper,
+  .dev-root .dev-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .dev-root table.sortable-table { min-width: 640px; }
+
+  /* ── Controls a thumb has to hit ── */
+  .dev-root .btn.btn-sm,
+  .dev-root .btn.role-tertiary { min-height: 32px; }
+
+  /* A dialog is the width of the screen, less a margin. */
+  .dev-root .dev-dialog__panel,
+  .dev-root .artifact-viewer__panel,
+  .dev-root .agent-skill__panel,
+  .dev-root .agent-edit__modal-panel {
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px);
+    height: auto;
+    max-height: 88vh;
+  }
+
+  /* Rancher's growls sit over the terminal drawer's keys otherwise - and the container keeps
+     its own width, so it has to be told to fit rather than just where to sit. */
+  .dev-root .growl-container {
+    left: auto;
+    right: 8px;
+    bottom: 8px;
+    width: auto;
+    max-width: calc(100vw - 16px);
+  }
+
+  .dev-root .growl-list,
+  .dev-root .growl { max-width: 100%; }
+}
