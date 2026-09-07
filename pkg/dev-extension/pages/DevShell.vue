@@ -68,6 +68,7 @@ export default {
 
   async mounted() {
     document.addEventListener('keydown', this.onKey);
+    document.addEventListener('click', this.onDocClick, true);
     // One probe, so a page whose websockets cannot connect says so once instead of leaving
     // every terminal dead and the console full of the same line. See sockets.ts.
     if (await socketsWork() === 'blocked') {
@@ -78,12 +79,27 @@ export default {
 
   beforeUnmount() {
     document.removeEventListener('keydown', this.onKey);
+    document.removeEventListener('click', this.onDocClick, true);
   },
 
   methods: {
     onKey(event) {
       if (event.key === 'Escape') {
         this.drawer = false;
+        this.menu = false;
+      }
+    },
+
+    /**
+     * A click outside the wordmark menu closes it.
+     *
+     * Captured on the document rather than an overlay, because an overlay over the whole page
+     * would eat the first click on whatever the person actually wanted next - opening a menu
+     * should not cost a click elsewhere. `contains` lets the toggle button handle its own
+     * click first, so this never fights the button that opens it.
+     */
+    onDocClick(event) {
+      if (this.menu && !this.$refs.brandWrap?.contains(event.target)) {
         this.menu = false;
       }
     },
@@ -110,34 +126,45 @@ export default {
         >
           <i :class="drawer ? 'icon icon-close' : 'icon icon-menu'" />
         </button>
-        <router-link
-          :to="homeTo"
-          class="dev-top__brand"
+        <!--
+          The wordmark is the menu.
+          
+          "Dev" with a chevron opens a dropdown, and the way back to Rancher lives in it - a
+          product that has replaced Rancher's own top nav with its own has to give that back
+          somewhere obvious, and the product's own name is where a person looks first. The
+          previous control was a bare ... at the far right, which is where a person looks last.
+        -->
+        <div
+          ref="brandWrap"
+          class="dev-top__brand-wrap"
         >
-          <ClaudeLogo class="dev-top__logo" />
-          <span class="dev-top__name">Dev</span>
-        </router-link>
-        <span
-          v-if="where"
-          class="dev-top__where"
-        >{{ where }}</span>
-        <div class="dev-top__spacer" />
-        <div class="dev-top__menu-wrap">
           <button
             type="button"
-            class="dev-top__menu-btn"
+            class="dev-top__brand"
             :aria-expanded="menu ? 'true' : 'false'"
-            aria-label="Menu"
+            aria-haspopup="true"
             data-testid="dev-menu-toggle"
             @click="menu = !menu"
           >
-            <i class="icon icon-dots-vertical" />
+            <ClaudeLogo class="dev-top__logo" />
+            <span class="dev-top__name">Dev</span>
+            <i
+              class="dev-top__brand-chevron"
+              :class="menu ? 'icon icon-chevron-up' : 'icon icon-chevron-down'"
+            />
           </button>
           <div
             v-if="menu"
             class="dev-top__menu"
             data-testid="dev-menu"
           >
+            <router-link
+              :to="homeTo"
+              class="dev-top__item"
+              @click="menu = false"
+            >
+              <i class="icon icon-home" /> Dev home
+            </router-link>
             <span
               v-if="principal && principal.loginName"
               class="dev-top__who"
@@ -152,6 +179,11 @@ export default {
             </button>
           </div>
         </div>
+        <span
+          v-if="where"
+          class="dev-top__where"
+        >{{ where }}</span>
+        <div class="dev-top__spacer" />
       </header>
 
       <DevSidebar
@@ -259,16 +291,26 @@ export default {
     }
   }
 
+  &__brand-wrap { position: relative; flex: 0 0 auto; }
+
   &__brand {
     display:         flex;
     align-items:     center;
     gap:             var(--dev-space-3);
+    padding:         var(--dev-space-2) var(--dev-space-3);
+    margin-left:     calc(var(--dev-space-3) * -1);
+    border:          0;
+    border-radius:   var(--border-radius);
+    background:      transparent;
     color:           var(--header-btn-text, var(--body-text));
+    font:            inherit;
     text-decoration: none;
-    flex:            0 0 auto;
+    cursor:          pointer;
 
-    &:hover { color: var(--link); }
+    &:hover { background: var(--accent-btn); color: var(--link); }
   }
+
+  &__brand-chevron { font-size: 12px; opacity: 0.7; }
 
   &__logo { width: 22px; height: 22px; }
 
@@ -292,32 +334,10 @@ export default {
 
   &__spacer { flex: 1 1 auto; }
 
-  &__menu-wrap { position: relative; flex: 0 0 auto; }
-
-  &__menu-btn {
-    display:       flex;
-    align-items:   center;
-    justify-content: center;
-    width:         var(--dev-control);
-    height:        var(--dev-control);
-    min-height:    0;
-    padding:       0;
-    border:        0;
-    border-radius: var(--border-radius);
-    background:    transparent;
-    color:         var(--header-btn-text, var(--body-text));
-    font-size:     18px;
-    cursor:        pointer;
-    // The burger's offset, mirrored: the page's right edge and this icon's are the same line.
-    margin-right:  calc((var(--dev-control) - 1em) / -2);
-
-    &:hover { background: var(--accent-btn); }
-  }
-
   &__menu {
     position:      absolute;
     top:           calc(100% + 4px);
-    right:         0;
+    left:          0;
     z-index:       100;
     min-width:     200px;
     padding:       var(--dev-space-2) 0;
