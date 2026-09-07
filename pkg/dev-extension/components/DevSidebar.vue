@@ -13,7 +13,7 @@ import {
   listAllWorkspaces, deleteWorkspace, listClusters, readableBytes
 } from '../api';
 import {
-  listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp
+  listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp, workspaceInstance
 } from '../apps';
 import { DEFAULT_APP, LEGACY_WORKSPACE_APPS } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
@@ -513,6 +513,26 @@ export default {
       try {
         await deleteWorkspace(this.$store, name);
         await this.refresh();
+
+        /*
+         * Say so when the row is still there.
+         *
+         * `deleteWorkspace` resolving means the delete was accepted, not that the object has
+         * gone - it has a finalizer on it and something has to tear down what it deployed
+         * first. That is normal and is what the row's "deleting..." says. What is not normal is
+         * the object still being here with no deletionTimestamp on it at all: that is a delete
+         * that was accepted and did nothing, and until now it looked identical to a slow one.
+         *
+         * Checked after the refresh, so it is reading what the cluster just said rather than
+         * what the page remembered.
+         */
+        if (this.workspaces.some((workspace) => workspace.name === name)) {
+          const instance = await workspaceInstance(this.$store, name).catch(() => null);
+
+          if (instance && !instance.metadata?.deletionTimestamp) {
+            this.error = `${ name } was asked to delete and is still here, with nothing recorded against it. Its Installation may be owned by something else, or the delete may have been refused - the browser console will have the response.`;
+          }
+        }
 
         // Standing on a workspace that has just been deleted is standing on a page that is
         // about to say it does not exist.
