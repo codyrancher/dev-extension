@@ -522,10 +522,15 @@ export default {
 
       /*
        * On a wide screen the list is always the column beside the pane, so the header is a
-       * title and nothing more: no pointer, no hover lift. (The markup drops the button role
-       * and tabindex to match.) The accordion, and this bar being a control, are the phone.
+       * title and nothing more: no pointer, no hover lift, and none of the control padding an
+       * accordion bar needs for a thumb. (The markup drops the button role and tabindex to
+       * match.) The accordion, and this bar being a control, are the phone.
        */
-      &--static { cursor: default; }
+      &--static {
+        min-height: 0;
+        padding:    0;
+        cursor:     default;
+      }
       &--static:hover { background: transparent; }
     }
 
