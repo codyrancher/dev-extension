@@ -12,7 +12,9 @@
 import {
   listAllWorkspaces, deleteWorkspace, listClusters, readableBytes
 } from '../api';
-import { listApps, reconcileUnrendered, ensureDefaultApp } from '../apps';
+import {
+  listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp
+} from '../apps';
 import { DEFAULT_APP, LEGACY_WORKSPACE_APPS } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
 import {
@@ -299,6 +301,10 @@ export default {
         // A workspace made by the in-cluster API is an Installation nobody has rendered yet.
         // This browser is the one that can; see apps.ts.
         reconcileUnrendered(this.$store).catch(() => {});
+        // And finish any delete that was left half-done: see releaseTerminating. Without this
+        // an Installation whose teardown outlasted the delete's own loop stayed Terminating for
+        // ever, and its row stayed in this list with pressing delete again doing nothing.
+        releaseTerminating(this.$store).catch(() => {});
 
         // The agents' clock: what is due starts, what is over is recorded. See agent-defs.ts.
         tickAgents(this.$store).catch(() => {});
