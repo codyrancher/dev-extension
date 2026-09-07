@@ -507,6 +507,18 @@ export default {
       return this.$route.name === route;
     },
 
+    /**
+     * Delete a workspace, and say out loud what happened either way.
+     *
+     * Every failure here used to land in `this.error`, which is a line at the bottom of a column
+     * that scrolls - so a delete that threw looked exactly like a delete that did nothing, and
+     * the only difference between them was somewhere nobody was looking. That is the state this
+     * has been reported in repeatedly: the row does not go, and nothing on screen says why.
+     *
+     * So the failure is also written to the console with the name and the exception on it. It is
+     * the one place a person can be asked to look that does not depend on this component
+     * rendering the message where they happen to be.
+     */
     async remove(name) {
       this.error = '';
 
@@ -540,7 +552,9 @@ export default {
           this.$router.push({ name: WORKSPACES_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } });
         }
       } catch (e) {
-        this.error = e.message || String(e);
+        this.error = `Could not delete ${ name }: ${ e.message || e }`;
+        // eslint-disable-next-line no-console
+        console.error(`[dev] deleting ${ name } failed`, e);
       }
     },
   },

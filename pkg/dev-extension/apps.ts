@@ -24,6 +24,9 @@ import {
   DEV_API_IN_CLUSTER,
 } from './config/constants';
 import { WORKSPACE_VUE_CONFIG } from './workspace-config';
+// The same-origin fetch and cluster path every other Rancher call in this product goes through.
+// Imported rather than reinvented so the CSRF header and the error shape stay in one place.
+import { devFetch, clusterBase, activeCluster } from './api';
 
 /** The browser beside every workspace: the image the harness's browser sidecar and the dev-browser App use. */
 const BROWSER_IMAGE = 'lscr.io/linuxserver/chromium:latest';
@@ -175,6 +178,31 @@ export async function createWorkspaceInstance(store: Store, name: string, appId:
  * otherwise sit Terminating until somebody happened to open that page, so this polls it too,
  * for as long as a namespace full of pods reasonably takes to drain.
  */
+/** The finalizer Apps Plus tears an Installation down under. Its service takes it off again. */
+const CLEANUP_FINALIZER = 'appsplus.io/cleanup';
+
+/**
+ * Put the cleanup finalizer on an Installation, whatever model the store handed back.
+ *
+ * Straight at the CRD through Rancher's proxy, as a JSON patch, because a merge patch cannot
+ * add to a list without replacing it and this must not drop a finalizer somebody else owns.
+ */
+async function ensureCleanupFinalizer(name: string): Promise<void> {
+  const url = `${ clusterBase(activeCluster()) }/apis/appsplus.io/v1alpha1/appinstances/${ name }`;
+  const current = await devFetch(url).catch(() => null);
+  const finalizers: string[] = current?.metadata?.finalizers || [];
+
+  if (!current || finalizers.includes(CLEANUP_FINALIZER)) {
+    return;
+  }
+
+  await devFetch(url, {
+    method:  'PATCH',
+    headers: { 'Content-Type': 'application/json-patch+json' },
+    body:    JSON.stringify([{ op: 'add', path: '/metadata/finalizers', value: [...finalizers, CLEANUP_FINALIZER] }]),
+  });
+}
+
 export async function deleteWorkspaceInstance(store: Store, name: string, missingIsFine = false): Promise<void> {
   const instance = await workspaceInstance(store, name);
 
@@ -189,6 +217,21 @@ export async function deleteWorkspaceInstance(store: Store, name: string, missin
     throw new Error(`Nothing was deleted: this dashboard cannot find an Installation called "${ name }" any more. Reload the page and try again.`);
   }
 
+  // Ask for the delete in a way that does not depend on Apps Plus's own model being loaded.
+  //
+  // `instance.remove()` is that model's method: it adds the `appsplus.io/cleanup` finalizer and
+  // then deletes, which is what makes the teardown happen in order. But `appsPlusAvailable`
+  // above only checks that the CRD *schemas* exist - which they do whether or not that
+  // extension's bundle ever loaded - so `findAll` can hand back a generic Steve resource whose
+  // `remove` is the base class's plain DELETE. On a workspace that path leaves no finalizer and
+  // no deletionTimestamp, which is exactly the state repeatedly reported here: the row does not
+  // go, nothing is recorded against the object, and no error is raised because nothing failed.
+  //
+  // So the finalizer is put on directly first, and only then is the delete asked for. Two plain
+  // requests this extension can make on its own; `apps-plus-api` does the teardown afterwards
+  // and takes the finalizer off. If the real model is loaded this is what it would have done
+  // anyway, and adding a finalizer that is already there is a no-op.
+  await ensureCleanupFinalizer(name).catch(() => null);
   await instance.remove();
 
   for (let attempt = 0; attempt < 40; attempt++) {
