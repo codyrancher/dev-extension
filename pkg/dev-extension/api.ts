@@ -220,28 +220,50 @@ export async function listClusters(): Promise<DevCluster[]> {
  * rancher/dashboard, installs it and compiles it; these are the numbers under which that is a
  * thing that fails partway rather than a thing that is slow.
  */
-const LOW_MEMORY = 4 * 1024 ** 3;
-const LOW_DISK = 20 * 1024 ** 3;
+/*
+ * How little is too little, as a share of the machine and not as a number of bytes.
+ *
+ * These were absolute - 4 GiB of memory, 20 GiB of disk - which says nothing without knowing
+ * how big the node is. A 7.5 GiB node with 3.7 GiB free is half empty and was being reported
+ * as "low on memory: 3.7 GiB free", which is the kind of warning that teaches people to ignore
+ * warnings; the same 3.7 GiB on a 128 GiB node is genuinely nearly full and was silent.
+ *
+ * The floor is the second half of it, because a proportion alone has the opposite failure: 10%
+ * of a very large node is still gigabytes, and 10% of a very small one is not enough to start
+ * anything. A cluster is low when either is true.
+ */
+const LOW = {
+  memory: { share: 0.15, floor: 1 * 1024 ** 3 },
+  disk:   { share: 0.10, floor: 5 * 1024 ** 3 },
+};
+
+/** Below this share, or this floor, it is not "getting low" any more. */
+const CRITICAL = 0.45;
 
 function roomHealth(cluster: Pick<DevCluster, 'memoryFree' | 'memoryTotal' | 'diskFree' | 'diskTotal'>): { health: ClusterHealth; issues: string[] } {
   const issues: string[] = [];
   let health: ClusterHealth = 'ok';
-  const look = (free: number, total: number, low: number, what: string) => {
+  const look = (free: number, total: number, low: { share: number; floor: number }, what: string) => {
     // A cluster that does not say what it has is not a cluster with nothing left.
     if (!total || !free) {
       return;
     }
-    if (free < low / 2) {
+
+    const share = free / total;
+    const scarce = share < low.share || free < low.floor;
+    const critical = share < low.share * CRITICAL || free < low.floor * CRITICAL;
+
+    if (critical) {
       health = 'error';
       issues.unshift(`${ what }: ${ readableBytes(free) } free`);
-    } else if (free < low) {
+    } else if (scarce) {
       health = health === 'error' ? health : 'warn';
       issues.push(`low on ${ what }: ${ readableBytes(free) } free`);
     }
   };
 
-  look(cluster.memoryFree, cluster.memoryTotal, LOW_MEMORY, 'memory');
-  look(cluster.diskFree, cluster.diskTotal, LOW_DISK, 'disk');
+  look(cluster.memoryFree, cluster.memoryTotal, LOW.memory, 'memory');
+  look(cluster.diskFree, cluster.diskTotal, LOW.disk, 'disk');
 
   return { health, issues };
 }
