@@ -398,7 +398,7 @@ export default {
 
 <style lang="scss" scoped>
 .agent-cards {
-  padding: var(--dev-space-4) var(--dev-space-5) 0;
+  padding: var(--dev-space-4) var(--dev-inset) 0;
 
   &__head {
     display:         flex;
