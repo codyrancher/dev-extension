@@ -512,7 +512,14 @@ export default {
 
   .dev-live__head {
     gap:        var(--dev-space-3);
-    padding:    var(--dev-space-3);
+    /*
+     * The same inset as the bar above it and the conversation below it.
+     *
+     * It was 6px between a 10px top bar and a 10px chat log, so the one element between them
+     * was the one that did not line up - and it is the widest thing on the page, so the step
+     * showed on both edges at once.
+     */
+    padding:    var(--dev-space-3) var(--dev-space-4);
     // One row: this is a control now, and one that reflows to two lines when the name is long
     // is a control that moves under your thumb as you reach for it.
     flex-wrap:  nowrap;

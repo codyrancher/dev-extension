@@ -1139,10 +1139,24 @@ export default {
       font-variant-numeric: tabular-nums;
     }
 
+    /*
+     * Where a failure is said, which has to be somewhere it is read.
+     *
+     * It was a line near the bottom of a column that clips its overflow, so on a phone it was
+     * below the fold: `deleteWorkspace` refusing with "Nothing was deleted: this dashboard
+     * cannot find an Installation called ... any more" looked exactly like a delete that did
+     * nothing and said nothing. Sticky to the bottom of the sidebar so it is in view wherever
+     * the list is scrolled to, and coloured like the error it is.
+     */
     &__error {
-      padding:   $gap $rail;
-      color:     var(--error);
-      font-size: 12px;
+      position:      sticky;
+      bottom:        0;
+      z-index:       2;
+      padding:       $gap $rail;
+      border-top:    1px solid var(--error);
+      background:    var(--error-banner-bg, var(--nav-bg, var(--body-bg)));
+      color:         var(--error);
+      font-size:     12px;
     }
 
     &__globals-label { display: none; }
