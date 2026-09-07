@@ -99,8 +99,22 @@ export default {
        * off the bottom entirely. A conversation is a thing you read; the list is a thing you
        * use once to choose which one. That is a menu, not furniture. Closed by default, and
        * closed again by picking something.
+       *
+       * This accordion is the phone layout only. On a wide screen the list is a column that
+       * is always there beside the pane (see the styles), so `listOpen` and the header toggle
+       * do nothing there - `isMobile` is what gates all of it.
        */
       listOpen: false,
+
+      /**
+       * Whether we are at the phone width where the list is an accordion rather than a column.
+       *
+       * Read from the same `760px` breakpoint the styles use, so the two never disagree, and
+       * kept in step with a matchMedia listener rather than a resize handler that fires on
+       * every pixel. It is what turns the header from a plain title bar (wide) into the button
+       * that opens the list (narrow).
+       */
+      isMobile: false,
     };
   },
 
@@ -117,6 +131,21 @@ export default {
     total() {
       return this.all.length;
     },
+
+    /**
+     * What the header says between the heading and the count.
+     *
+     * On a phone the header is the control: "Pick one" while the list is open, the open
+     * conversation's name while it is closed. On a wide screen the list is always beside the
+     * pane, so there is nothing to pick from the header - it just names what is showing.
+     */
+    headerLabel() {
+      if (this.isMobile) {
+        return this.listOpen ? 'Pick one' : (this.selected ? this.selected.title : 'Pick one');
+      }
+
+      return this.selected ? this.selected.title : '';
+    },
   },
 
   watch: {
@@ -126,15 +155,26 @@ export default {
     current(id) {
       this.rememberInRoute(id);
       writeLastConversation(id);
+      this.repaintCurrent();
     },
   },
 
   mounted() {
     this.timer = setInterval(() => this.refresh(), REFRESH_MS);
+
+    // The phone/desktop split, read from the one breakpoint the styles use. matchMedia rather
+    // than a resize listener: it fires only when the answer actually changes.
+    this.mediaQuery = window.matchMedia('(max-width: 760px)');
+    this.isMobile = this.mediaQuery.matches;
+    this.onMediaChange = (e) => {
+      this.isMobile = e.matches;
+    };
+    this.mediaQuery.addEventListener('change', this.onMediaChange);
   },
 
   beforeUnmount() {
     clearInterval(this.timer);
+    this.mediaQuery?.removeEventListener('change', this.onMediaChange);
   },
 
   methods: {
@@ -190,6 +230,37 @@ export default {
     select(id) {
       this.current = id;
       this.seen = { ...this.seen, [id]: true };
+    },
+
+    /** The header is a button only on a phone; on a wide screen the list is already showing. */
+    toggleList() {
+      if (this.isMobile) {
+        this.listOpen = !this.listOpen;
+      }
+    },
+
+    /**
+     * Make the pane that just became current actually redraw.
+     *
+     * Every pane stays mounted behind `v-show` so its terminal socket survives a switch (see
+     * the `v-for` below). But a terminal that has been `display: none` can lose the canvas it
+     * had drawn, and when it reappears at the same size the terminal only re-fits - which does
+     * nothing when the size has not changed - so it sits blank, still showing the frame from
+     * before. The terminal itself recovers on window focus and on `visibilitychange`, which is
+     * exactly why switching browser tabs and back "fixed" a stale pane. Do that recovery here
+     * the moment a conversation is selected, for the one pane that is now visible.
+     *
+     * `__mcTerm` is the terminal instance the agents extension hangs on its own element for
+     * this kind of outside nudge; `settleFits` is its "the view is back, redraw" call. All of
+     * it is guarded, so a pane that is not one of those terminals simply does nothing.
+     */
+    repaintCurrent() {
+      this.$nextTick(() => {
+        const panes = Array.from(this.$el?.querySelectorAll('.studio-terminal__pane') || []);
+        const visible = panes.find((el) => el.offsetParent !== null);
+
+        visible?.__mcTerm?.settleFits?.();
+      });
     },
 
     /**
@@ -277,19 +348,22 @@ export default {
     <!-- Every conversation in every workspace, live, with a pane onto the one picked. -->
     <section class="dev-live">
       <!--
-        The title bar is the control: pressing it opens the list over the whole page and
-        pressing it again gives the whole page back to the conversation. One thing on screen at
-        a time, which is what both of them want - a list is for scanning and a conversation is
-        for reading, and neither is improved by having half the height.
+        On a wide screen this is just a title bar: the list is always the column on the left,
+        so choosing a conversation is a click on a list you can already see. On a phone there
+        is no room for two columns, so the bar becomes the control - pressing it opens the list
+        over the whole page and pressing it again gives the page back to the conversation. One
+        thing on screen at a time, which is what both want on a phone: a list is for scanning
+        and a conversation is for reading, and neither is improved by having half the height.
       -->
       <header
         class="dev-live__head"
-        role="button"
-        tabindex="0"
-        :aria-expanded="String(listOpen)"
-        @click="listOpen = !listOpen"
-        @keydown.enter.prevent="listOpen = !listOpen"
-        @keydown.space.prevent="listOpen = !listOpen"
+        :class="{ 'dev-live__head--static': !isMobile }"
+        :role="isMobile ? 'button' : null"
+        :tabindex="isMobile ? 0 : null"
+        :aria-expanded="isMobile ? String(listOpen) : null"
+        @click="toggleList"
+        @keydown.enter.prevent="toggleList"
+        @keydown.space.prevent="toggleList"
       >
         <ClaudeLogo class="dev-live__logo" />
         <!--
@@ -306,21 +380,22 @@ export default {
           is which conversation is open, because that is the question somebody arriving here
           has; the list answers a different one - which others there are - asked once.
         -->
-        <span class="dev-agents__toggle-title">{{ listOpen ? 'Pick one' : (selected ? selected.title : 'Pick one') }}</span>
+        <span class="dev-agents__toggle-title">{{ headerLabel }}</span>
         <span
           v-if="total"
           class="dev-agents__toggle-count"
         >{{ total }}</span>
         <i
+          v-if="isMobile"
           class="dev-agents__toggle-chevron"
           :class="listOpen ? 'icon icon-chevron-up' : 'icon icon-chevron-down'"
         />
       </header>
-      <div class="dev-agents">
-        <div
-          v-show="listOpen"
-          class="dev-agents__list"
-        >
+      <div
+        class="dev-agents"
+        :class="{ 'dev-agents--list-open': listOpen }"
+      >
+        <div class="dev-agents__list">
           <p
             v-if="!groups.length"
             class="dev-agents__empty text-muted"
@@ -362,10 +437,7 @@ export default {
           the pane to show the list would drop every one of them and start again on the way
           back.
         -->
-        <div
-          v-show="!listOpen"
-          class="dev-agents__pane"
-        >
+        <div class="dev-agents__pane">
           <Banner
             v-if="error"
             color="error"
@@ -447,6 +519,14 @@ export default {
 
       &:hover { background: var(--tabbed-container-bg); }
       &:focus-visible { outline: 1px solid var(--link); outline-offset: -2px; }
+
+      /*
+       * On a wide screen the list is always the column beside the pane, so the header is a
+       * title and nothing more: no pointer, no hover lift. (The markup drops the button role
+       * and tabindex to match.) The accordion, and this bar being a control, are the phone.
+       */
+      &--static { cursor: default; }
+      &--static:hover { background: transparent; }
     }
 
     &__logo { flex: 0 0 auto; color: var(--dev-accent); font-size: 16px; }
@@ -499,20 +579,23 @@ export default {
     }
 
     /*
-     * Open, the list is the page - not a panel floating over it.
+     * On a wide screen the list is a column that is always there, on the left of the pane -
+     * the layout a desktop app would give it, where choosing one is a click on a list you can
+     * already see rather than a click to reveal the list first. On a phone there is no room
+     * for two columns, so the title bar becomes an accordion and this turns into the half that
+     * takes the whole screen when it is open (see the `760px` media query at the end).
      *
-     * It was `position: absolute` with a capped width and height, which is a dropdown: a
-     * 300px column of names against an empty screen, still scrolling at sixteen conversations
-     * while most of the page sat unused behind it. The title bar is an accordion, so the two
-     * halves take turns having the whole body, and this one gets it when it is open.
+     * It was once `position: absolute` with a capped width and height - a dropdown, a 300px
+     * column of names against an empty screen while most of the page sat unused behind it.
      */
     &__list {
-      flex:           1 1 auto;
+      flex:           0 0 260px;
       min-height:     0;
       display:        flex;
       flex-direction: column;
       overflow-y:     auto;
       padding:        var(--dev-space-3) 0;
+      border-right:   1px solid var(--border);
 
       /*
        * Each group's DevList is given no label, because the workspace name is already rendered
@@ -578,8 +661,23 @@ export default {
   .dev-live__sub { display: none; }
 
   .dev-agents {
-    // Whichever half is showing gets the screen, which on a phone is the whole point.
+    /*
+     * Phone: the list is no longer a column beside the pane, it is the accordion the header
+     * opens. Closed, the pane has the screen; open, the list does. Whichever is showing gets
+     * all of it, which on a phone is the whole point.
+     */
+    &__list {
+      display:      none;
+      flex:         1 1 auto;
+      border-right: 0;
+    }
+
     &__pane, &__list { min-height: 0; }
+  }
+
+  .dev-agents--list-open {
+    .dev-agents__list { display: flex; }
+    .dev-agents__pane { display: none; }
   }
 }
 </style>
