@@ -516,7 +516,7 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
 <style lang="scss" scoped>
 .agent-edit {
   max-width: 860px;
-  padding:   var(--dev-space-4) var(--dev-space-5) var(--dev-space-6);
+  padding:   var(--dev-space-4) var(--dev-inset) var(--dev-space-6);
 
   h1 { margin: 0 0 4px; font-size: 20px; }
   h3 { margin: 0 0 var(--dev-space-3); font-size: 14px; }
