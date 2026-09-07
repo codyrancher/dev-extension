@@ -370,33 +370,60 @@ export default {
     flex:           1 1 auto;
     min-height:     0;
 
+    /*
+     * The title bar, which is the accordion.
+     *
+     * `center`, not `baseline`: a 16px mark, a 14px heading, an 11px count and a 12px chevron
+     * on one baseline is four things at four different heights, which is what it looked like.
+     * Centred, they are a row.
+     */
     &__head {
       display:       flex;
-      align-items:   baseline;
+      align-items:   center;
       gap:           var(--dev-space-3);
-      padding:       var(--dev-space-3) var(--dev-space-4);
+      min-height:    40px;
+      padding:       var(--dev-space-2) var(--dev-space-4);
       border-bottom: 1px solid var(--border);
+      cursor:        pointer;
+      user-select:   none;
+
+      &:hover { background: var(--tabbed-container-bg); }
+      &:focus-visible { outline: 1px solid var(--link); outline-offset: -2px; }
     }
 
-    &__logo { color: var(--dev-accent); font-size: 16px; align-self: center; }
-    &__title { margin: 0; font-size: 14px; font-weight: 600; white-space: nowrap; }
+    &__logo { flex: 0 0 auto; color: var(--dev-accent); font-size: 16px; }
+    &__title { flex: 0 0 auto; margin: 0; font-size: 14px; font-weight: 600; white-space: nowrap; }
     &__sub { flex: 1 1 auto; min-width: 0; font-size: 12px; }
   }
 
   .dev-agents {
-    // `relative`, because the list is positioned against this box now rather than sharing the
-    // row with the pane: a column that is always there is a column the conversation never gets
-    // back, and the conversation is what this page is.
-    position:   relative;
     display:    flex;
     flex:       1 1 auto;
     min-height: 0;
 
+    /*
+     * The conversation's name: everything between the heading and the count.
+     *
+     * `flex: 1 1 auto` is what puts the count and the chevron at the right-hand edge. Without
+     * it they sat immediately after the name, which left the bar looking like a label with
+     * punctuation after it rather than a control spanning the row.
+     */
     &__toggle-title {
+      flex:          1 1 auto;
       min-width:     0;
       overflow:      hidden;
       text-overflow: ellipsis;
       white-space:   nowrap;
+      color:         var(--muted);
+      font-size:     13px;
+    }
+
+    // The right-hand end of the bar, always, however short the name is.
+    &__toggle-chevron {
+      flex:        0 0 auto;
+      margin-left: var(--dev-space-2);
+      color:       var(--muted);
+      font-size:   12px;
     }
 
     &__toggle-count {
@@ -411,28 +438,21 @@ export default {
       text-align:    center;
     }
 
-    // Over the pane rather than beside it, so opening the list does not resize the terminal
-    // underneath: xterm refits on a width change, and a menu should not reflow a conversation.
-    &__scrim {
-      position: absolute;
-      inset:    0;
-      z-index:  1;
-    }
-
+    /*
+     * Open, the list is the page - not a panel floating over it.
+     *
+     * It was `position: absolute` with a capped width and height, which is a dropdown: a
+     * 300px column of names against an empty screen, still scrolling at sixteen conversations
+     * while most of the page sat unused behind it. The title bar is an accordion, so the two
+     * halves take turns having the whole body, and this one gets it when it is open.
+     */
     &__list {
-      position:       absolute;
-      z-index:        2;
-      top:            0;
-      left:           0;
-      width:          min(var(--dev-side-col), calc(100% - var(--dev-space-5)));
-      max-height:     min(70%, 520px);
+      flex:           1 1 auto;
+      min-height:     0;
       display:        flex;
       flex-direction: column;
       overflow-y:     auto;
-      border:         1px solid var(--border);
-      border-radius:  var(--dev-space-3);
-      background:     var(--body-bg);
-      box-shadow:     0 6px 18px var(--shadow, rgba(0, 0, 0, 0.25));
+      padding:        var(--dev-space-3) 0;
 
       /*
        * Each group's DevList is given no label, because the workspace name is already rendered
