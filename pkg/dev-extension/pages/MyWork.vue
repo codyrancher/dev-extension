@@ -25,10 +25,19 @@ import { readPrefs, shownApps } from '../prefs';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, SETTINGS_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_APP
 } from '../config/constants';
+import { NarrowMixin } from '../design/narrow';
 
-/** Columns shared by both tables, since the two differ only at their right-hand end. */
-function columns(extra) {
-  return [
+/** What a phone shows of a pull request: whether it is open, which one, what it is, and the way in. */
+const NARROW_COLUMNS = ['state', 'pr', 'title', 'actions'];
+
+/**
+ * Columns shared by both tables, since the two differ only at their right-hand end.
+ *
+ * At phone width most of them go. Nine columns in 390px is nine columns of ellipsis, and the
+ * question a phone is holding this table to answer is which pull request to open.
+ */
+function columns(extra, narrow = false) {
+  const all = [
     {
       name: 'state', label: 'State', value: 'draft', width: 90
     },
@@ -55,6 +64,8 @@ function columns(extra) {
       name: 'actions', label: 'Actions', align: 'right', width: 100
     },
   ];
+
+  return narrow ? all.filter((column) => NARROW_COLUMNS.includes(column.name)).map((column) => ({ ...column, width: column.name === 'title' ? undefined : column.width })) : all;
 }
 
 // ── Board status ──
@@ -103,6 +114,8 @@ const STATUS_HUE = {
 
 export default {
   name: 'DevMyWork',
+
+  mixins: [NarrowMixin],
 
   components: {
     SortableTable, Banner, RcButton, AsyncButton
@@ -175,28 +188,35 @@ export default {
         },
       ],
       settingsTo: { name: SETTINGS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } },
-      // The two tables' own last columns: when you last reviewed something that is waiting on
-      // you, and when anyone last said anything on something you wrote.
-      reviewHeaders: columns([
+    };
+  },
+
+  computed: {
+    // The two tables' own last columns: when you last reviewed something that is waiting on
+    // you, and when anyone last said anything on something you wrote. Computed rather than
+    // fixed, because which columns there are depends on how wide the window is.
+    reviewHeaders() {
+      return columns([
         {
           name: 'reviewed', label: 'My last review', value: 'reviewedAt', width: 130
         },
         {
           name: 'updated', label: 'Updated', value: 'updatedAt', sort: ['updatedAt:desc'], width: 110
         },
-      ]),
-      mineHeaders: columns([
+      ], this.narrow);
+    },
+
+    mineHeaders() {
+      return columns([
         {
           name: 'updated', label: 'Last update', value: 'updatedAt', sort: ['updatedAt:desc'], width: 110
         },
         {
           name: 'commented', label: 'Last comment', value: 'commentedAt', width: 120
         },
-      ]),
-    };
-  },
+      ], this.narrow);
+    },
 
-  computed: {
     /** The issues with their board rank on them, zero-padded so the table sorts it as text. */
     issueRows() {
       return (this.work?.issues || []).map((issue) => ({
@@ -1359,4 +1379,24 @@ export default {
       gap:         var(--dev-space-4);
     }
   }
+
+/* ── Phones: a table of pull requests is wider than the screen, so it scrolls inside its own
+   box; the page never does. See design/mobile.css for the shared half of this. ── */
+@media (max-width: 760px) {
+  .dev-my-work {
+    h3 { margin-top: var(--dev-space-5); }
+
+    header {
+      flex-direction: column;
+      align-items:    flex-start;
+      gap:            var(--dev-space-2);
+      margin-bottom:  var(--dev-space-4);
+    }
+
+    :deep(.sortable-table-header) { flex-wrap: wrap; }
+
+    :deep(.sortable-table-wrapper) { overflow-x: auto; }
+    :deep(table.sortable-table) { min-width: 640px; }
+  }
+}
 </style>

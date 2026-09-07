@@ -1047,4 +1047,46 @@
 
   .filenav-item { padding-top: var(--dev-space-3); padding-bottom: var(--dev-space-3); }
   .prm-mobile-switch, .prm-cards { width: 100%; }
+
+  // Rows that are one line on a laptop are three on a phone, and a row with a fixed height
+  // does not become taller for them - it lets them out over whatever is underneath. Every
+  // fixed height in this panel is a minimum here instead.
+  .prm-meta,
+  .prlevel-head,
+  .prm-header-row {
+    height:      auto;
+    min-height:  22px;
+    align-items: flex-start;
+    flex-wrap:   wrap;
+  }
+
+  // The line about what the box below is for goes under the badge rather than beside it.
+  .prlevel-head .muted { flex: 1 1 100%; }
+
+  .prm-panel, .prm-cards, .prm-diff { padding-left: 0; padding-right: 0; }
+
+  // The diff: two thin gutters and the code. Every character of the code column is one a
+  // person came here to read; the line numbers are how they say where it is.
+  .diff-table { font-size: 11px; line-height: 1.45; }
+
+  .lineno {
+    width:     26px;
+    min-width: 26px;
+    padding:   0 3px;
+  }
+
+  .file-header { flex-wrap: wrap; row-gap: var(--dev-space-2); }
+  .file-path { word-break: break-all; }
+
+  // A comment's own controls stack rather than squeeze.
+  .prm-card-actions, .comment-actions { flex-wrap: wrap; }
+
+  // The one-line composer is two lines of placeholder at this width, and a fixed 40px box
+  // cuts the second one off.
+  .prlevel-compose {
+    flex-wrap: wrap;
+
+    .edit-textarea { height: auto; min-height: 64px; }
+    .prb { width: 100%; }
+  }
 }

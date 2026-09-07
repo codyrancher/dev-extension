@@ -727,4 +727,16 @@ export default {
       gap:       var(--dev-space-3);
     }
   }
+
+/* ── Phones: one card, and the link is allowed to wrap rather than push the page wide. ── */
+@media (max-width: 760px) {
+  .workspace-share {
+    &__grid { grid-template-columns: 1fr; }
+    &__facts { grid-template-columns: 1fr; gap: var(--dev-space-1); }
+    &__facts dt { margin-top: var(--dev-space-3); }
+    &__link { word-break: break-all; }
+    &__linkrow { flex-wrap: wrap; }
+    &__select { max-width: 100%; }
+  }
+}
 </style>

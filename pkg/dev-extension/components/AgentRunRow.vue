@@ -130,4 +130,15 @@ export default {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
+
+/* ── Phones: state, when and the way in. The trigger and the duration go: they are the two
+   the line can be read without, and eight columns at 390px is a column of ellipses. ── */
+@media (max-width: 760px) {
+  .agent-run {
+    grid-template-columns: 8px 58px 1fr 46px;
+    gap: var(--dev-space-2);
+
+    &__trigger, &__dur { display: none; }
+  }
+}
 </style>
