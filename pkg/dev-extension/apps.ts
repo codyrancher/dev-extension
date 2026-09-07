@@ -626,7 +626,13 @@ const PREVIEW_BUILD = [
   'if [ "${kind}" = storybook ]; then',
   '  printf "%s\\n" "server {" "  listen ${port};" "  root $SITE;" "  location / { try_files \\$uri \\$uri/ /index.html; }" "}" > /site/nginx/default.conf',
   'else',
-  '  printf "%s\\n" "server {" "  listen ${port};" "  client_max_body_size 50m;" "  location = / { return 302 /dashboard/; }" \\',
+  '  printf "%s\\n" "server {" "  listen ${port};" "  client_max_body_size 50m;" "  absolute_redirect off;" "  location = / { return 302 /dashboard/; }" \\',
+  // Where an auth provider sends the browser back. The dashboard asks for
+  // `<origin>/verify-auth` whatever path it is served at, and its own server redirects that to
+  // the `auth/verify` route (shell/server/server-middleware.js); served here by nginx, nothing
+  // did, so a GitHub login on a shared link ended on a 404 with the code still in the address bar.
+  '    "  location = /verify-auth { return 301 /dashboard/auth/verify\\$is_args\\$args; }" \\',
+  '    "  location = /verify-auth-azure { return 301 /dashboard/auth/verify\\$is_args\\$args; }" \\',
   '    "  location /dashboard/ { alias $SITE/; try_files \\$uri \\$uri/ /dashboard/index.html; }" \\',
   '    "  location ~ ^/(js|css|img|fonts|favicon\\\\.png|manifest\\\\.json|robots\\\\.txt)(/|\\$) { root $SITE; }" \\',
   '    "  location / { proxy_pass ${rancherUrl}; proxy_ssl_verify off; proxy_ssl_server_name on; proxy_http_version 1.1;" \\',
@@ -640,8 +646,8 @@ const PREVIEW_BUILD = [
   // is host-routed and answers 404 to any other Host, so the links are rewritten on the way
   // out instead, onto whatever name this preview was opened on. Accept-Encoding is cleared
   // because sub_filter cannot rewrite a gzipped body.
-  '    "    proxy_set_header Accept-Encoding \"\"; sub_filter_once off; sub_filter_types application/json application/yaml text/plain;" \\',
-  '    "    sub_filter \"${rancherUrl}\" \"https://\$host\"; }" \\',
+  '    "    proxy_set_header Accept-Encoding \\"\\"; sub_filter_once off; sub_filter_types application/json application/yaml text/plain;" \\',
+  '    "    sub_filter \\"${rancherUrl}\\" \\"https://\\$host\\"; }" \\',
   '    "}" > /site/nginx/default.conf',
   'fi',
   'echo built',
