@@ -835,7 +835,9 @@ export default {
 
 <style lang="scss" scoped>
   // Rancher's own step, the same one DevList's metrics come from.
-  $rail: 16px;
+  // The product's left column, shared with the pages and the top bar. See DevList for why this
+  // is not a number of its own.
+  $rail: var(--dev-inset);
   // The scale, not a number of this file's own: this was 8px and the list beside it was 8px
   // for the same reason, which is what a scale is for.
   $gap: var(--dev-space-3);
@@ -943,7 +945,9 @@ export default {
       display:     flex;
       align-items: center;
       gap:         var(--dev-space-2);
-      padding:     var(--dev-space-1) var(--dev-space-4);
+      // The rail, like every other row in this panel: this one was on 10px and started half a
+      // glyph left of the workspaces above it.
+      padding:     var(--dev-space-1) $rail;
       min-width:   0;
 
       &--default .dev-sidebar__rancher-name { color: var(--dev-accent); }
@@ -1280,15 +1284,32 @@ export default {
       border-top:     0;
       border-bottom:  1px solid var(--border);
 
+      /*
+       * The same column as everything below them.
+       *
+       * These had a 20px inset and a 10px gap against the section headings' 16px and 6px, so
+       * the drawer had two left edges for its icons and two more for its text - four columns in
+       * a panel 300px wide. The rail is where a row starts and the glyph slot is how far its
+       * label is from that, so using both here is what makes a nav row and a workspace row line
+       * up rather than nearly line up.
+       */
       a {
         display:         flex;
         align-items:     center;
         justify-content: flex-start;
-        gap:             var(--dev-space-4);
+        gap:             $gap;
         width:           auto;
         height:          40px;
-        padding:         0 var(--dev-space-5);
+        padding:         0 $rail;
         border-radius:   0;
+      }
+
+      // The glyph occupies the same slot a list row's dot does, so the labels agree too.
+      .icon, svg {
+        flex:      0 0 $rail;
+        width:     $rail;
+        font-size: 14px;
+        text-align: left;
       }
     }
 
