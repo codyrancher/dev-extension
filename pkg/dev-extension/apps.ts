@@ -175,11 +175,18 @@ export async function createWorkspaceInstance(store: Store, name: string, appId:
  * otherwise sit Terminating until somebody happened to open that page, so this polls it too,
  * for as long as a namespace full of pods reasonably takes to drain.
  */
-export async function deleteWorkspaceInstance(store: Store, name: string): Promise<void> {
+export async function deleteWorkspaceInstance(store: Store, name: string, missingIsFine = false): Promise<void> {
   const instance = await workspaceInstance(store, name);
 
   if (!instance) {
-    return;
+    if (missingIsFine) {
+      return;
+    }
+    // Saying nothing was the bug: a delete that found no Installation returned as though it
+    // had done the work, so the row stayed and nothing said why. It happens when the list this
+    // was chosen from is older than the cluster - a tab whose socket has been down, most of
+    // all - and the answer to that is to say so and let it be tried again.
+    throw new Error(`Nothing was deleted: this dashboard cannot find an Installation called "${ name }" any more. Reload the page and try again.`);
   }
 
   await instance.remove();
@@ -637,6 +644,13 @@ const PREVIEW_BUILD = [
   '    "  location ~ ^/(js|css|img|fonts|favicon\\\\.png|manifest\\\\.json|robots\\\\.txt)(/|\\$) { root $SITE; }" \\',
   '    "  location / { proxy_pass ${rancherUrl}; proxy_ssl_verify off; proxy_ssl_server_name on; proxy_http_version 1.1;" \\',
   '    "    proxy_set_header Upgrade \\$http_upgrade; proxy_set_header Connection \\"upgrade\\"; proxy_set_header Host \\$proxy_host;" \\',
+  // Rancher refuses a websocket whose Origin is not its own host - 403 at the handshake, which
+  // is what a browser reports as "WebSocket connection failed" with no reason. Proxied under
+  // another name every socket is cross-origin by that rule: terminals, the conversation list,
+  // Rancher's own subscribe. The proxy presents the origin it is actually speaking to, which is
+  // what it does with Host one line above. Nothing is weakened by it: reaching this proxy at all
+  // needs a session cookie for *this* name, which no other site can send.
+  '    "    proxy_set_header Origin ${rancherUrl};" \\',
   '    "    proxy_set_header X-Forwarded-Proto https; proxy_read_timeout 3600s; proxy_cookie_domain ~.* \\$host; proxy_cookie_flags ~ nosecure;" \\',
   // Rancher answers with absolute links - `links.self` on every object, built from the Host
   // header it was asked on - and the dashboard follows them. Proxied under another name those

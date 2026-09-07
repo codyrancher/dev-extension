@@ -17,7 +17,7 @@ import { PREVIEW_APP } from './apps';
 import {
   buildShare, workspaceBranch, readInWorkspace, workspaceTarget
 } from './workspace-tools';
-import { defaultRancher } from './ranchers';
+import { defaultRancher, talksToDefault, ownRancherUrl } from './ranchers';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -71,6 +71,19 @@ export function shareHostname(workspace: string, kind: ShareKind, host: ShareHos
   return host.ip ? `${ previewName(workspace, kind) }.dev-extension.${ host.ip }.sslip.io` : '';
 }
 
+/**
+ * A share must not be pointed at itself. nginx would proxy to its own address and answer 502
+ * to everything - and the page that did it would be the share, since a Dev page opened there
+ * has the share for its origin.
+ */
+function refuseSelf(rancherUrl: string, host: string): void {
+  const target = String(rancherUrl || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+
+  if (target && (target === host || target === window.location.host)) {
+    throw new Error(`A shared build cannot talk to itself (${ target }). Pick the Rancher it should talk to on the Share tab.`);
+  }
+}
+
 /** A token the preview's init container fetches the build with, through this Rancher's proxy to dev-api. */
 async function mintShareToken(workspace: string): Promise<string> {
   const minted = await devFetch('/v3/tokens', {
@@ -85,9 +98,13 @@ async function mintShareToken(workspace: string): Promise<string> {
   return minted.token;
 }
 
-/** Where a preview on another cluster fetches the workspace's build: dev-api, through this Rancher. */
-export function shareTarballUrl(workspace: string, kind: ShareKind): string {
-  return `${ window.location.origin }/k8s/clusters/local/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy/share/${ workspace }/${ kind }.tar.gz`;
+/**
+ * Where a preview on another cluster fetches the workspace's build: dev-api, through this
+ * Rancher. Its own address rather than the page's origin - a pod on another cluster fetches
+ * this later, and the origin might be a share, or the apiserver's proxy path.
+ */
+export function shareTarballUrl(workspace: string, kind: ShareKind, base: string): string {
+  return `${ base.replace(/\/$/, '') }/k8s/clusters/local/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy/share/${ workspace }/${ kind }.tar.gz`;
 }
 
 export type ShareKind = 'dashboard' | 'storybook';
@@ -110,6 +127,8 @@ export function previewName(workspace: string, kind: ShareKind = 'dashboard'): s
 export async function deployPreview(store: Store, workspace: string, values: { repo: string; ref: string; rancherUrl: string; kind?: ShareKind; sourceDir?: string; sourceUrl?: string; sourceToken?: string; host?: string }, cluster = 'local', target = cluster): Promise<string> {
   const kind: ShareKind = values.kind || 'dashboard';
   const name = previewName(workspace, kind);
+
+  refuseSelf(values.rancherUrl, values.host || '');
 
   // Not while the last one's namespace is still going. A Fleet bundle that installs into a
   // namespace it finds terminating does not own it, fails the install, and never retries - so a
@@ -160,7 +179,7 @@ export async function shareWorkspace(store: Store, workspace: string, kind: Shar
   }
   if (remote) {
     await deployPreview(store, workspace, {
-      repo: 'rancher/dashboard', ref: branch || 'HEAD', kind, rancherUrl, host: hostname, sourceUrl: shareTarballUrl(workspace, kind), sourceToken: await mintShareToken(workspace),
+      repo: 'rancher/dashboard', ref: branch || 'HEAD', kind, rancherUrl, host: hostname, sourceUrl: shareTarballUrl(workspace, kind, await ownRancherUrl(store)), sourceToken: await mintShareToken(workspace),
     }, host.id, host.fleet);
   } else {
     await deployPreview(store, workspace, {
@@ -188,7 +207,7 @@ export async function ensureDefaultShare(store: Store, workspace: string, cluste
   const state = await previewState(store, workspace, cluster, 'dashboard');
 
   if (!state.exists) {
-    await shareWorkspace(store, workspace, 'dashboard', (await defaultRancher().catch(() => '')) || window.location.origin, cluster);
+    await shareWorkspace(store, workspace, 'dashboard', await talksToDefault(store), cluster);
   }
   await readInWorkspace(workspace, 'mkdir -p /workspace/.share && touch /workspace/.share/auto');
 }
@@ -221,7 +240,9 @@ export function sslipName(address: string): string {
 }
 
 export async function removePreview(store: Store, workspace: string, kind: ShareKind = 'dashboard'): Promise<void> {
-  await deleteWorkspaceInstance(store, previewName(workspace, kind));
+  // A share that is already gone is not an error here: Remove is also how a half-made one is
+  // cleared, and shareWorkspace removes before it deploys.
+  await deleteWorkspaceInstance(store, previewName(workspace, kind), true);
 }
 
 /** Restart the preview's pod, which rebuilds it: the init container is the build. */
@@ -245,6 +266,7 @@ export async function retargetPreview(store: Store, workspace: string, kind: Sha
   if (!instance) {
     throw new Error('Nothing is shared yet: build and share it first.');
   }
+  refuseSelf(rancherUrl, String(instance.spec?.values?.host || ''));
   instance.spec.values = { ...(instance.spec.values || {}), rancherUrl: rancherUrl.replace(/\/$/, '') };
   await instance.save();
 }
@@ -297,7 +319,7 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
     exists:     true,
     state,
     detail,
-    url:        host ? `https://${ host }/${ kind === 'storybook' ? '' : 'dashboard/' }` : service ? `${ window.location.origin }${ proxyBase(namespace, hostedOn, port) }${ kind === 'storybook' ? '' : 'dashboard/' }` : '',
+    url:        host ? `https://${ host }/${ kind === 'storybook' ? '' : 'dashboard/' }` : service ? `${ await ownRancherUrl(store) }${ proxyBase(namespace, hostedOn, port) }${ kind === 'storybook' ? '' : 'dashboard/' }` : '',
     direct:     !host && nodePort && kind === 'storybook' ? `http://${ sslipName(address) }:${ nodePort }/` : '',
     ref:        String(instance.spec?.values?.ref || ''),
     rancherUrl: String(instance.spec?.values?.rancherUrl || ''),
