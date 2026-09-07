@@ -163,7 +163,7 @@ export default {
               class="dev-top__item"
               @click="menu = false"
             >
-              <i class="icon icon-home" /> Dev home
+              <ClaudeLogo class="dev-top__item-logo" /> Dev
             </router-link>
             <span
               v-if="principal && principal.loginName"
@@ -311,6 +311,10 @@ export default {
   }
 
   &__brand-chevron { font-size: 12px; opacity: 0.7; }
+
+  // The dev mark in the menu, at the size the row's icons are - it stands in for the icon-home
+  // that read as "some generic home" rather than "this product".
+  &__item-logo { width: 16px; height: 16px; flex: 0 0 16px; }
 
   &__logo { width: 22px; height: 22px; }
 
