@@ -12,7 +12,7 @@ import StudioTerminal from '../components/StudioTerminal.vue';
 import ClaudeLogo from '../components/ClaudeLogo.vue';
 import { listAllWorkspaces } from '../api';
 import {
-  listConversations, endConversation, renameConversation, paneCommand, waitForStudio
+  listConversations, endConversation, renameConversation, paneCommand, waitForStudio, reconnectConversation, reconnectEverything
 } from '../conversations';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE } from '../config/constants';
 
@@ -108,6 +108,8 @@ export default {
     return {
       groups:  [],
       current: '',
+      restarting: false,
+      restartNote: '',
       states:  {},
       seen:    {},
       error:   '',
@@ -349,6 +351,37 @@ export default {
       this.states = { ...this.states, [uid]: state };
     },
 
+    /**
+     * This conversation, or every one where it lives, put back onto the login the pod has now.
+     * Manual on purpose: nothing restarts a pane by itself any more - see reconnectConversation.
+     */
+    async restart(all = false) {
+      const conversation = this.selected;
+
+      if (!conversation) {
+        return;
+      }
+      this.restarting = true;
+      this.restartNote = '';
+      try {
+        if (all) {
+          await reconnectEverything(conversation.workspace || '');
+          this.restartNote = conversation.workspace ? `Restarted every conversation in ${ conversation.workspace }.` : 'Restarted every conversation in the drawer.';
+        } else {
+          await reconnectConversation(conversation.attach);
+          this.restartNote = `Restarted ${ conversation.title }.`;
+        }
+        this.error = '';
+      } catch (e) {
+        this.error = e.message || String(e);
+      } finally {
+        this.restarting = false;
+        setTimeout(() => {
+          this.restartNote = '';
+        }, 6000);
+      }
+    },
+
     async end(group, uid) {
       const id = this.idFor(group, uid);
 
@@ -483,6 +516,40 @@ export default {
             color="error"
             :label="error"
           />
+          <!--
+            Restarting a conversation is a person's decision rather than a timer's: claude is
+            stopped and started again on the same conversation, which is how a pane picks up a
+            login that was refreshed while it was running.
+          -->
+          <div
+            v-if="selected"
+            class="dev-agents__tools"
+          >
+            <span
+              v-if="restartNote"
+              class="dev-agents__note text-muted"
+            >{{ restartNote }}</span>
+            <button
+              type="button"
+              class="btn role-tertiary btn-sm"
+              :disabled="restarting"
+              title="Stop claude in this conversation and start it again on the same conversation"
+              data-testid="dev-restart-one"
+              @click="restart(false)"
+            >
+              <i class="icon icon-refresh" /> Restart
+            </button>
+            <button
+              type="button"
+              class="btn role-tertiary btn-sm"
+              :disabled="restarting"
+              :title="selected.workspace ? `Restart every conversation in ${ selected.workspace }` : 'Restart every conversation in the drawer'"
+              data-testid="dev-restart-all"
+              @click="restart(true)"
+            >
+              Restart all here
+            </button>
+          </div>
           <p
             v-if="!selected"
             class="dev-agents__hint text-muted"
@@ -570,6 +637,17 @@ export default {
   }
 
   .dev-agents {
+
+  &__tools {
+    display:         flex;
+    align-items:     center;
+    justify-content: flex-end;
+    gap:             var(--dev-space-2);
+    padding:         var(--dev-space-2) var(--dev-space-3);
+    border-bottom:   1px solid var(--border);
+  }
+
+  &__note { font-size: 12px; margin-right: auto; }
     display:    flex;
     flex:       1 1 auto;
     min-height: 0;
