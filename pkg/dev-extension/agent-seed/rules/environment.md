@@ -39,7 +39,11 @@ Because it is shared: do not change its version, branding or auth provider (the 
 
 ## Accessibility
 
-`a11y axtree ...` works (Chromium's accessibility tree over CDP). `a11y tier` and the AT-SPI, speech and Orca stack do not exist here; the `my-a11y-*` skills that depend on them cannot be completed in this environment, and the honest result is to say so.
+The whole stack works here, as it does in the harness, and `.claude/rules/accessibility.md` is the guide to it. What is different is only how the two halves reach each other.
+
+`a11y axtree ...` reads Chromium's own accessibility tree over CDP and needs nothing installed. Everything else - `a11y tree`, `say`, `record`, `orca`, `key`, `type`, `screen`, `click`, `shot`, `desktop` - runs inside the browser container, because AT-SPI, X and PulseAudio belong to that desktop; this container reaches it with `kubectl exec -c browser` (its ServiceAccount is the pod's), where the harness used its API.
+
+The AT-SPI bridge and speech (espeak-ng, speech-dispatcher, sox, xdotool) are installed in every workspace's browser, and Chromium is started with `--force-renderer-accessibility` on a session bus, so `a11y enable` and `a11y tree` work without setting anything up. Orca is the exception: `a11y tier orca` installs it and switches that desktop to X11, which replaces the browser container and takes a few minutes - the same trade the harness makes, for the same reason.
 
 ## Publishing
 
