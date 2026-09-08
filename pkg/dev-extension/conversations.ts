@@ -148,6 +148,51 @@ export async function startPaneDetached(workspace: string, id: string): Promise<
   await podExecOnce(api.agent.namespace, pod, api.agent.container, argv);
 }
 
+/**
+ * Put a conversation back onto the login on disk, without losing it.
+ *
+ * The pod's own `claude-credentials.mjs reconnect` does it: claude in the pane is stopped and
+ * the loop that owns the pane starts it again on the same conversation, so the transcript, the
+ * name and the scrollback are all still there. The pane itself is never killed, which is the
+ * difference between this and closing the tab.
+ *
+ * It is manual on purpose. The daemon that keeps one login shared between pods used to do this
+ * by itself whenever a newer token arrived, which - while a login is being refreshed - is every
+ * few seconds, and it interrupted whatever each conversation was doing. Now it writes the token
+ * and leaves the panes alone; this is the button that picks it up.
+ */
+export async function reconnectConversation(attach: Attachment): Promise<void> {
+  await reconnectIn(attach.workspace, attach.id);
+}
+
+/** The same for every conversation in one place: the drawer, or one workspace. */
+export async function reconnectEverything(workspace: string): Promise<void> {
+  await reconnectIn(workspace, '');
+}
+
+async function reconnectIn(workspace: string, id: string): Promise<void> {
+  const argv = ['node', '/seed/claude-credentials.mjs', 'reconnect', ...(id ? [id] : [])];
+
+  if (workspace) {
+    const namespace = workspaceNamespace(workspace);
+    const pod = await workspacePod(workspace);
+
+    if (!pod) {
+      throw new Error(`${ workspace } has no pod running, so there is nothing to reconnect.`);
+    }
+    await podExecOnce(namespace, pod, WORKSPACE_CONTAINER, argv);
+
+    return;
+  }
+  const api = await requireAgents();
+  const pod = await api.agent.pod();
+
+  if (!pod) {
+    throw new Error('The agent pod is not running, so there is nothing to reconnect.');
+  }
+  await podExecOnce(api.agent.namespace, pod, api.agent.container, argv);
+}
+
 // ── The agents extension's browser API ──────────────────────────────────────────────────────
 //
 // The agents extension puts its terminal, and the agent pod behind it, on `window.__agents`
