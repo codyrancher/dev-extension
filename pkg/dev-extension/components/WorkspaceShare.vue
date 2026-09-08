@@ -10,10 +10,10 @@
 import { Banner } from '@components/Banner';
 import AsyncButton from '@shell/components/AsyncButton';
 import {
-  previewState, removePreview, shareWorkspace, previewBase, retargetPreview, rebuildPreview, preferredShareHost, LOCAL_HOST
+  previewState, removePreview, shareWorkspace, previewBase, retargetPreview, rebuildPreview, pickShareHost, LOCAL_HOST
 } from '../previews';
 import { buildShare, shareStatus, workspaceBranches } from '../workspace-tools';
-import { talksToDefault, listRanchers } from '../ranchers';
+import { talksToDefault, defaultRancher, listRanchers } from '../ranchers';
 import { listApps } from '../apps';
 import { DEFAULT_APP } from '../config/constants';
 import { DEFAULT_REPO } from '../reviews';
@@ -93,7 +93,9 @@ export default {
       // Hosted on a Rancher of the sidebar's whenever there is one up: a link on the open
       // internet is what a share is for, and that is where one can be. This cluster only serves
       // through its own proxy, which asks a reviewer for a login they do not have.
-      const host = await preferredShareHost(this.$store);
+      // From the list this page already has, so the address it hosts on is the address it
+      // shows: a second listing can answer differently while a cluster is slow.
+      const host = pickShareHost(this.ranchers, await defaultRancher().catch(() => ''));
       const hosting = this.ranchers.find((rancher) => rancher.clusterId === host.id);
 
       this.hostOn = host.id;
@@ -277,9 +279,18 @@ export default {
     },
 
     hostFor(id) {
+      if (!id || id === 'local') {
+        return LOCAL_HOST;
+      }
       const rancher = this.ranchers.find((r) => r.clusterId === id);
 
-      return rancher ? { id, fleet: rancher.name, ip: rancher.nodeIp || '' } : LOCAL_HOST;
+      // Not silently this cluster: a share built for the proxy when a public name was asked for
+      // is a link that cannot be shared, and nothing on screen would say why.
+      if (!rancher?.nodeIp) {
+        throw new Error('That Rancher has no address yet - it is still coming up, or its cluster did not answer. Try again in a moment.');
+      }
+
+      return { id, fleet: rancher.name, ip: rancher.nodeIp };
     },
 
     hostLabel(id) {
