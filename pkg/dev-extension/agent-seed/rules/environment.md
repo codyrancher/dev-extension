@@ -6,7 +6,7 @@ This workspace is a Kubernetes pod the dev extension made, standing in for the h
 
 - `/workspace/dashboard` is the rancher/dashboard checkout and your working directory. `origin` is the fork pushes go to, `upstream` is rancher/dashboard, the same as the harness.
 - The dev server for that checkout is already running, as the pod's main process, at `https://localhost:8005`. It rebuilds on edit. Do not start a second one, and do not kill it: it is the pod.
-- `https://$RANCHER_HOST_NAME` (also `$RANCHER_URL` and `$API`) is the Rancher this workspace points at. It is shared and long-lived, not a sidecar of yours.
+- `$RANCHER_URL` (= `$API` in the shell) is the Rancher this workspace points at, the one the dev server runs against. It is shared and long-lived, not a sidecar of yours. It may be the **parent** Rancher in this cluster (`rancher.cattle-system.svc` internally) or a **downstream** one the parent manages (a `*.sslip.io` address); which one is not fixed, so read it rather than assume. Note the shell `$RANCHER_URL` and the `RANCHER_URL`/`RANCHER_HOST_NAME` in `/workspace/.env` can differ - see "The Rancher" below.
 - Chromium is a second container in this pod. CDP is on `$CLAUDE_BROWSER_CDP` (localhost:9222) and the browser opened on the dev server when the pod started. `/workspace/browser.mjs`, `/workspace/axtree.mjs` and the recording skills work exactly as in the harness. What you record lands in `/workspace/artifacts`, which the browser container also sees as `/artifacts`.
 - `/workspace/bin` has `wait-for-sidecars`, `git-fix-commit`, `a11y`, `rancher-login.mjs`, `gh`, `jq`. It is on the PATH of every pane, and the same commands are in `~/.local/bin`.
 - `$CLAUDE_HARNESS_API` and `$HARNESS_API` are the same URL: the dev extension's in-cluster API. It answers every `/my-work/...` route the skills use (PR detail, comments, review-run, CI, dependabot) with no credential. It does not answer `/projects/.../sidecars...`, `/sidecars/start`, or the Jira routes: there is nothing behind them here.
@@ -28,6 +28,15 @@ set -a; source /workspace/.env; set +a
 You act in Rancher as the person who made this workspace, through `RANCHER_TOKEN`:
 
 - API: `curl -sk -H "Authorization: Bearer $RANCHER_TOKEN" $RANCHER_URL/v3/users?me=true`
+- **The token belongs to one Rancher, and a 401 means you aimed it at the wrong one.** `RANCHER_TOKEN` authenticates against exactly one Rancher - the parent, or a downstream one, not both. `/workspace/.env` is written once when the workspace is set up and is not rewritten when the target changes, so its `RANCHER_URL`/`RANCHER_HOST_NAME` can name a Rancher the token no longer matches, while the shell's `$RANCHER_URL` (what the dev server uses) still matches. So a `401` is not a dead token to work around - it is the wrong host. Do not spend time proving the token is invalid; find the host it is *for* and use that:
+
+  ```bash
+  for U in "$RANCHER_URL" "$API" "$(grep '^RANCHER_URL=' /workspace/.env 2>/dev/null | cut -d= -f2-)"; do
+    [ -n "$U" ] && [ "$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $RANCHER_TOKEN" "$U/v3/users?me=true")" = 200 ] && { export RANCHER_URL="$U" API="$U"; echo "Rancher is $U"; break; }
+  done
+  ```
+
+  If none answer `200`, the token is genuinely stale (they expire) - say so and ask the user to reopen the workspace, rather than digging further.
 - Browser: `node /workspace/bin/rancher-login.mjs` sets the session cookie for the Rancher's origin and for `localhost:8005`, so the tab is signed in without a login form. Run it after `wait-for-sidecars` and before a screenshot or recording that needs a session. If a page still shows the login form, the cookie is missing for that origin: run it again.
 - `kubectl` uses `$KUBECONFIG`, which points at the Rancher's local cluster as that user.
 
