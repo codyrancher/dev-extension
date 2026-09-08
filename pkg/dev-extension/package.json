@@ -1,0 +1,28 @@
+{
+  "name": "dev-extension",
+  "description": "Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents",
+  "version": "0.3.51",
+  "private": false,
+  "rancher": {
+    "annotations": {
+      "catalog.cattle.io/rancher-version": ">= 2.10.0",
+      "catalog.cattle.io/ui-extensions-version": ">= 3.0.0 < 4.0.0",
+      "catalog.cattle.io/display-name": "Dev Extension"
+    }
+  },
+  "scripts": {},
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@vue/cli-plugin-babel": "5.0.9",
+    "@vue/cli-service": "5.0.8",
+    "@vue/cli-plugin-typescript": "5.0.9"
+  },
+  "browserslist": [
+    "> 1%",
+    "last 2 versions",
+    "not dead"
+  ],
+  "icon": "https://codyrancher.github.io/dev-extension/icon.svg"
+}
