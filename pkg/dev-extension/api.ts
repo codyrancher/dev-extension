@@ -2396,5 +2396,5 @@ export async function deleteWorkspaceConversation(name: string, session: string 
 
 /** WebSocket URL for a conversation in a workspace's pod. */
 export function workspaceShellUrl(name: string, pod: string): string {
-  return podExecUrl(workspaceNamespace(name), pod, WORKSPACE_CONTAINER, workspaceTerminalCommand(1));
+  return podExecUrl(workspaceNamespace(name), pod, WORKSPACE_CONTAINER, workspaceTerminalCommand(name, 1));
 }
