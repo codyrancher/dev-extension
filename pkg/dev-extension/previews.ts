@@ -79,14 +79,24 @@ export const LOCAL_HOST: ShareHost = { id: 'local', fleet: 'local', ip: '' };
  * share fall back to this cluster.
  */
 export async function preferredShareHost(store: Store): Promise<ShareHost> {
-  const ranchers = await listRanchers(store).catch(() => []);
-  const public_ = ranchers.filter((rancher) => rancher.kind === 'instance' && rancher.phase === 'ready' && rancher.clusterId && rancher.nodeIp);
+  return pickShareHost(await listRanchers(store).catch(() => []), await defaultRancher().catch(() => ''));
+}
 
-  if (!public_.length) {
+/**
+ * The same decision over a list somebody already has.
+ *
+ * Worth having separately because listing the Ranchers asks each cluster for its nodes, and two
+ * callers listing it twice can disagree: the Share tab decided to host on a Rancher from one
+ * list and then looked its address up in another, where a slow cluster had answered nothing -
+ * so the build was routed for this Rancher's proxy while everything on screen said otherwise.
+ */
+export function pickShareHost(ranchers: Json[], starred = ''): ShareHost {
+  const usable = ranchers.filter((rancher) => rancher.kind === 'instance' && rancher.phase === 'ready' && rancher.clusterId && rancher.nodeIp);
+
+  if (!usable.length) {
     return LOCAL_HOST;
   }
-  const starred = await defaultRancher().catch(() => '');
-  const pick = public_.find((rancher) => rancher.url === starred) || public_[0];
+  const pick = usable.find((rancher) => rancher.url === starred) || usable[0];
 
   return { id: pick.clusterId as string, fleet: pick.name, ip: pick.nodeIp as string };
 }
