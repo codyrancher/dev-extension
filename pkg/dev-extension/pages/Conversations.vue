@@ -56,6 +56,27 @@ const ROW_STATE = {
   open: 'running', connecting: 'starting', waiting: 'starting', closed: 'stopped'
 };
 
+/**
+ * A conversation's id is unique only inside its workspace: the pod each one lives in numbers its
+ * own tmux sessions, so a workspace with a conversation `1` and another workspace with a
+ * conversation `1` are two different conversations that share an id. Flattened into one list,
+ * that id stops identifying a row - `current` matches both, both panes show, and the list picks
+ * whichever sorts first, which is how switching conversations landed on an unrelated chat.
+ *
+ * So the whole page tracks conversations by this composite instead: the workspace, which is
+ * unique, and the id, which is unique within it. Workspace names are DNS-1123 and cannot contain
+ * a slash, so the join is unambiguous and `convId` can take the id back off when a call needs
+ * the bare one (the pod only knows its own numbering). The drawer's workspace is the empty
+ * string, so its conversations are `/1`, `/2` - still distinct from any real workspace's.
+ */
+function convUid(workspace, id) {
+  return `${ workspace }/${ id }`;
+}
+
+function convId(workspace, uid) {
+  return String(uid).slice(String(workspace).length + 1);
+}
+
 export default {
   name: 'DevAgents',
 
@@ -76,7 +97,7 @@ export default {
     // one to reopen, and the list is already loaded by the time this runs.
     const wanted = [this.$route.query.c, readLastConversation()]
       .map((id) => String(id || ''))
-      .find((id) => id && this.all.some((c) => c.id === id));
+      .find((id) => id && this.all.some((c) => c.uid === id));
 
     if (wanted) {
       this.select(wanted);
@@ -120,11 +141,13 @@ export default {
 
   computed: {
     all() {
-      return this.groups.flatMap((group) => group.conversations.map((c) => ({ ...c, workspace: group.workspace })));
+      return this.groups.flatMap((group) => group.conversations.map((c) => ({
+        ...c, workspace: group.workspace, uid: convUid(group.workspace, c.id),
+      })));
     },
 
     selected() {
-      return this.all.find((c) => c.id === this.current) || null;
+      return this.all.find((c) => c.uid === this.current) || null;
     },
 
     /** How many there are, for the button that opens the list. */
@@ -211,7 +234,7 @@ export default {
         this.groups = groups.filter((group) => group.conversations.length);
         this.error = '';
 
-        if (this.current && !this.all.some((c) => c.id === this.current)) {
+        if (this.current && !this.all.some((c) => c.uid === this.current)) {
           this.current = '';
         }
       } catch (e) {
@@ -220,16 +243,23 @@ export default {
     },
 
     rows(group) {
-      return group.conversations.map((c) => ({
-        key:   c.id,
-        label: c.title,
-        state: ROW_STATE[this.states[c.id]] || 'stopped',
-      }));
+      // Keyed by the composite uid, because `current` is one - a row highlights, and selecting
+      // it opens, the conversation the uid names rather than any other workspace's same-numbered
+      // one. The state map is keyed the same way (see `onState`).
+      return group.conversations.map((c) => {
+        const uid = convUid(group.workspace, c.id);
+
+        return {
+          key:   uid,
+          label: c.title,
+          state: ROW_STATE[this.states[uid]] || 'stopped',
+        };
+      });
     },
 
-    select(id) {
-      this.current = id;
-      this.seen = { ...this.seen, [id]: true };
+    select(uid) {
+      this.current = uid;
+      this.seen = { ...this.seen, [uid]: true };
     },
 
     /** The header is a button only on a phone; on a wide screen the list is already showing. */
@@ -263,6 +293,11 @@ export default {
       });
     },
 
+    /** The bare, pod-local id behind a row's composite key, for the calls that reach the pod. */
+    idFor(group, uid) {
+      return convId(group.workspace, uid);
+    },
+
     /**
      * Choosing from the list, which is the only thing the list is for, so it closes.
      *
@@ -270,8 +305,8 @@ export default {
      * arrives with - and that must not leave the list hanging open over the conversation it
      * was asked to show.
      */
-    pick(id) {
-      this.select(id);
+    pick(uid) {
+      this.select(uid);
       this.listOpen = false;
     },
 
@@ -310,11 +345,13 @@ export default {
       };
     },
 
-    onState(id, state) {
-      this.states = { ...this.states, [id]: state };
+    onState(uid, state) {
+      this.states = { ...this.states, [uid]: state };
     },
 
-    async end(group, id) {
+    async end(group, uid) {
+      const id = this.idFor(group, uid);
+
       try {
         if (group.workspace) {
           await endConversation(group.workspace, id);
@@ -328,11 +365,13 @@ export default {
     },
 
     async rename(group, { key, title }) {
+      const id = this.idFor(group, key);
+
       try {
         if (group.workspace) {
-          await renameConversation(group.workspace, key, title);
+          await renameConversation(group.workspace, id, title);
         } else {
-          await (await waitForStudio()).agent.rename(key, title);
+          await (await waitForStudio()).agent.rename(id, title);
         }
         await this.refresh();
       } catch (e) {
@@ -348,19 +387,20 @@ export default {
     <!-- Every conversation in every workspace, live, with a pane onto the one picked. -->
     <section class="dev-live">
       <!--
-        On a wide screen this is just a title bar: the list is always the column on the left,
-        so choosing a conversation is a click on a list you can already see. On a phone there
-        is no room for two columns, so the bar becomes the control - pressing it opens the list
-        over the whole page and pressing it again gives the page back to the conversation. One
-        thing on screen at a time, which is what both want on a phone: a list is for scanning
-        and a conversation is for reading, and neither is improved by having half the height.
+        The header exists on a phone only. There, the list and the pane cannot both fit, so
+        the bar is the control - pressing it opens the list over the whole page and pressing it
+        again gives the page back to the conversation. One thing on screen at a time, which is
+        what both want on a phone: a list is for scanning and a conversation is for reading, and
+        neither is improved by having half the height. On a wide screen the list is always the
+        column on the left beside the pane, so there is nothing to toggle and no title bar to
+        spend the height on - the two columns take the whole page, edge to edge.
       -->
       <header
+        v-if="isMobile"
         class="dev-live__head"
-        :class="{ 'dev-live__head--static': !isMobile }"
-        :role="isMobile ? 'button' : null"
-        :tabindex="isMobile ? 0 : null"
-        :aria-expanded="isMobile ? String(listOpen) : null"
+        role="button"
+        :tabindex="0"
+        :aria-expanded="String(listOpen)"
         @click="toggleList"
         @keydown.enter.prevent="toggleList"
         @keydown.space.prevent="toggleList"
@@ -447,19 +487,19 @@ export default {
             v-if="!selected"
             class="dev-agents__hint text-muted"
           >
-            Open the picker above to choose one: the drawer's run in the agents pod, a workspace's in its own; this pane reaches either through the agents extension's terminal, chat view included.
+            {{ isMobile ? 'Open the picker above to choose one' : 'Choose a conversation from the list' }}: the drawer's run in the agents pod, a workspace's in its own; this pane reaches either through the agents extension's terminal, chat view included.
           </p>
           <template
             v-for="c in all"
-            :key="c.id"
+            :key="c.uid"
           >
             <StudioTerminal
-              v-if="seen[c.id]"
-              v-show="c.id === current"
-              :session="c.id"
+              v-if="seen[c.uid]"
+              v-show="c.uid === current"
+              :session="c.uid"
               :command="paneFor(c)"
               class="dev-agents__terminal"
-              @state="onState(c.id, $event)"
+              @state="onState(c.uid, $event)"
             />
           </template>
         </div>
@@ -485,15 +525,18 @@ export default {
     min-height:     0;
     min-width:      0;
     overflow:       hidden;
-    padding:        var(--dev-space-4) 0 var(--dev-space-4);
+    // No outer padding: on a wide screen the two columns take the whole page, and on a phone
+    // the media query below already goes edge to edge. The page is the conversation; the space
+    // belongs to it, not to a frame around it.
+    padding:        0;
   }
 
   .dev-live {
     display:        flex;
     flex-direction: column;
-    margin:         0 var(--dev-space-5);
-    border:         1px solid var(--border);
-    border-radius:  var(--border-radius);
+    // Edge to edge, no frame: no margin, border or radius boxing the conversation in. The
+    // list/pane split carries its own divider (the list's border-right), which is the only
+    // line this layout needs.
     background:     var(--body-bg);
     flex:           1 1 auto;
     min-height:     0;
@@ -519,19 +562,6 @@ export default {
 
       &:hover { background: var(--tabbed-container-bg); }
       &:focus-visible { outline: 1px solid var(--link); outline-offset: -2px; }
-
-      /*
-       * On a wide screen the list is always the column beside the pane, so the header is a
-       * title and nothing more: no pointer, no hover lift, and none of the control padding an
-       * accordion bar needs for a thumb. (The markup drops the button role and tabindex to
-       * match.) The accordion, and this bar being a control, are the phone.
-       */
-      &--static {
-        min-height: 0;
-        padding:    0;
-        cursor:     default;
-      }
-      &--static:hover { background: transparent; }
     }
 
     &__logo { flex: 0 0 auto; color: var(--dev-accent); font-size: 16px; }
