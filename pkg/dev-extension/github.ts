@@ -65,9 +65,20 @@ export interface GithubPr {
   checks: GithubChecks | null;
   /** The failing workflow runs, which is what Rerun acts on. Empty when nothing is red. */
   runs: GithubRun[];
+  /** When it was opened, for age. */
+  createdAt: string;
   updatedAt: string;
+  /** When its head commit was pushed, for "has it changed since I reviewed" without counting comments as changes. '' if unknown. */
+  pushedAt: string;
   /** When you last reviewed it, for the list of things waiting on you. '' when you never have. */
   reviewedAt: string;
+  /**
+   * Whether GitHub is currently asking *you* for a review (the `review-requested:@me` search).
+   * True the first time you are added, and again when a reviewer re-requests you after changes -
+   * so it is the strongest "this wants me now" signal the list has. A PR you reviewed and are
+   * only waiting on is false.
+   */
+  reviewRequested: boolean;
   /** The last comment on it, which is the other clock a person watches. */
   commentedAt: string;
 }
@@ -144,6 +155,7 @@ const QUERY = `
     title
     url
     isDraft
+    createdAt
     updatedAt
     repository { nameWithOwner }
     reviewDecision
@@ -153,6 +165,7 @@ const QUERY = `
     commits(last: 1) {
       nodes {
         commit {
+          committedDate
           statusCheckRollup {
             state
             contexts(first: 100) {
@@ -256,24 +269,27 @@ function failedRuns(node: Json): GithubRun[] {
   return [...runs.values()];
 }
 
-function prFrom(node: Json, login: string): GithubPr {
+function prFrom(node: Json, login: string, reviewRequested = false): GithubPr {
   const repo = node.repository?.nameWithOwner || '';
   const mine = (node.latestReviews?.nodes || []).find((review: Json) => review.author?.login === login);
 
   return {
-    key:         `${ repo }#${ node.number }`,
-    number:      node.number,
-    url:         node.url,
-    title:       node.title,
+    key:             `${ repo }#${ node.number }`,
+    number:          node.number,
+    url:             node.url,
+    title:           node.title,
     repo,
-    draft:       !!node.isDraft,
-    approved:    node.reviewDecision === 'APPROVED',
-    issue:       node.closingIssuesReferences?.nodes?.[0] || null,
-    checks:      checksOf(node),
-    runs:        failedRuns(node),
-    updatedAt:   node.updatedAt || '',
-    reviewedAt:  mine?.submittedAt || '',
-    commentedAt: node.comments?.nodes?.[0]?.createdAt || '',
+    draft:           !!node.isDraft,
+    approved:        node.reviewDecision === 'APPROVED',
+    issue:           node.closingIssuesReferences?.nodes?.[0] || null,
+    checks:          checksOf(node),
+    runs:            failedRuns(node),
+    createdAt:       node.createdAt || '',
+    updatedAt:       node.updatedAt || '',
+    pushedAt:        node.commits?.nodes?.[0]?.commit?.committedDate || '',
+    reviewedAt:      mine?.submittedAt || '',
+    reviewRequested,
+    commentedAt:     node.comments?.nodes?.[0]?.createdAt || '',
   };
 }
 
@@ -475,10 +491,16 @@ export async function myWork(): Promise<GithubWork> {
   const seen = new Set<string>();
   const reviewing: GithubPr[] = [];
 
-  for (const node of [...(body.data?.reviewing?.nodes || []), ...(body.data?.reviewed?.nodes || [])]) {
-    const pr = prFrom(node, login);
+  // Two searches, tagged by which one a PR came from. `reviewing` is `review-requested:@me` -
+  // GitHub is asking you now - and `reviewed` is `reviewed-by:@me` still open, which you are only
+  // waiting on. A PR in both is a re-review (you reviewed it, then were requested again); the
+  // request wins, so it is listed first and carries reviewRequested: true.
+  for (const [node, requested] of [
+    ...(body.data?.reviewing?.nodes || []).map((n: Json) => [n, true] as const),
+    ...(body.data?.reviewed?.nodes || []).map((n: Json) => [n, false] as const),
+  ]) {
+    const pr = prFrom(node, login, requested);
 
-    // The two searches overlap by design. First one wins, which is the review-requested one.
     if (!seen.has(pr.key)) {
       seen.add(pr.key);
       reviewing.push(pr);
