@@ -341,41 +341,54 @@ export default {
     },
 
     /**
-     * What is waiting on you, most urgent first.
+     * What is waiting on you, in the order it wants your attention.
      *
-     * The default sort was "updated", which is activity rather than need: a pull request somebody
-     * pushed to a minute ago is at the top whether or not it wants anything from you. This orders
-     * by what a reviewer actually decides between:
+     * The trouble with the old sort was its tiebreaker: oldest-updated-first, which buried a PR
+     * you were asked to review a minute ago under ones that have sat untouched for days - so the
+     * thing that most needs you was at the bottom. This orders by how much each is actually on
+     * your desk, and breaks ties by *recent* activity rather than stale age:
      *
-     *   1. never reviewed, because it is the only state where nothing has happened at all;
-     *   2. not approved before approved, since an approved one is off your desk;
-     *   3. green CI before red, because a review of a branch that does not build is a review that
-     *      will be asked for again;
-     *   4. oldest first inside all of that, so the one that has been waiting longest wins.
+     *   1. approved by you sinks to the bottom - it is off your desk whatever else is true;
+     *   2. on your desk first: GitHub is requesting your review, or it changed since you reviewed,
+     *      or you have never reviewed it - versus one you reviewed and are only waiting on;
+     *   3. an explicit (re-)review request beats the rest, since that is GitHub asking you by name;
+     *   4. then one that changed since your last review (they answered you), over one that has not;
+     *   5. green CI before red, because reviewing a branch that does not build gets asked for again;
+     *   6. most recently active first - the one just pushed or just requested is the live one;
+     *   7. oldest opened as the final tiebreak, so nothing waits for ever.
      */
     reviewing() {
+      const changedSince = (pr) => !!pr.reviewedAt && Date.parse(pr.pushedAt || pr.updatedAt || 0) > Date.parse(pr.reviewedAt || 0);
+      const onDesk = (pr) => !pr.approved && (pr.reviewRequested || changedSince(pr) || !pr.reviewedAt);
+      const recency = (pr) => Date.parse(pr.updatedAt || pr.createdAt || 0);
+
       return [...(this.work?.reviewing || [])].sort((a, b) => (
-        Number(!!a.reviewedAt) - Number(!!b.reviewedAt) ||
         Number(a.approved) - Number(b.approved) ||
+        Number(onDesk(b)) - Number(onDesk(a)) ||
+        Number(!!b.reviewRequested) - Number(!!a.reviewRequested) ||
+        Number(changedSince(b)) - Number(changedSince(a)) ||
         Number(!!a.checks?.failing) - Number(!!b.checks?.failing) ||
-        Date.parse(a.updatedAt || 0) - Date.parse(b.updatedAt || 0)
+        recency(b) - recency(a) ||
+        Date.parse(a.createdAt || 0) - Date.parse(b.createdAt || 0)
       ));
     },
 
     /**
      * Your own, most urgent first.
      *
-     * The other way round from the list above, because what these want from you is work rather
-     * than judgement: something red is something to fix, and something nobody has commented on
-     * is something to chase. Approved and green is the bottom of the list, which is where a pull
-     * request that only needs merging belongs.
+     * What these want from you is work rather than judgement: something red is something to fix,
+     * a draft is further from done than an open one, and approved-and-green is the bottom, where
+     * a pull request that only needs merging belongs. Ties break by recent activity, so the one
+     * you (or CI) touched last is the one in front of you.
      */
     mine() {
+      const recency = (pr) => Date.parse(pr.updatedAt || pr.createdAt || 0);
+
       return [...(this.work?.mine || [])].sort((a, b) => (
         Number(!!b.checks?.failing) - Number(!!a.checks?.failing) ||
         Number(a.approved) - Number(b.approved) ||
         Number(a.draft) - Number(b.draft) ||
-        Date.parse(a.updatedAt || 0) - Date.parse(b.updatedAt || 0)
+        recency(b) - recency(a)
       ));
     },
 
