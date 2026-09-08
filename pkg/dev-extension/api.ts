@@ -24,7 +24,7 @@ import {
 } from './apps';
 import {
   DEV_POD_NAMESPACE as POD_NAMESPACE, DEV_POD_SERVICE as POD_SERVICE,
-  LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, WORKSPACE_WORKDIR, WORKSPACE_HOME, WORKSPACE_QUEUE,
+  LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, workspaceRoot, workspaceWorkdir, workspaceHome,
   WORKSPACE_PORT_ANNOTATION, WORKSPACE_SCHEME_ANNOTATION, DEFAULT_WORKSPACE_PORT, DEFAULT_WORKSPACE_SCHEME, PREVIEW_ANNOTATION,
 } from './config/constants';
 
@@ -1798,10 +1798,11 @@ export async function queueConversation(workspace: string, session: string | num
   }
 
   const encoded = encodeSecret(prompt);
-  const file = `${ WORKSPACE_QUEUE }/${ workspaceSession(session) }`;
+  const queue = `${ workspaceRoot(workspace) }/.queue`;
+  const file = `${ queue }/${ workspaceSession(session) }`;
 
   await podExecOnce(namespace, pod, WORKSPACE_CONTAINER, asWorkspaceUser(
-    `mkdir -p ${ WORKSPACE_QUEUE } && echo ${ encoded } | base64 -d > ${ file }`,
+    `mkdir -p ${ queue } && echo ${ encoded } | base64 -d > ${ file }`,
   ));
 }
 
@@ -2312,8 +2313,8 @@ export function podExecOnce(namespace: string, pod: string, container: string, c
  *     repository is the behaviour to want rather than one to design around.
  *   - the home is on the workspace's own hostPath, so a login survives a restart.
  */
-export function workspaceTerminalCommand(session: string | number): string[] {
-  return ['/bin/sh', `${ WORKSPACE_TERMINAL_MOUNT }/shell.sh`, workspaceSession(session), WORKSPACE_WORKDIR, WORKSPACE_HOME];
+export function workspaceTerminalCommand(workspace: string, session: string | number): string[] {
+  return ['/bin/sh', `${ WORKSPACE_TERMINAL_MOUNT }/shell.sh`, workspaceSession(session), workspaceWorkdir(workspace), workspaceHome(workspace)];
 }
 
 /**

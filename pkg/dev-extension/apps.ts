@@ -20,7 +20,7 @@
 import {
   APP, APP_INSTANCE, LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, DEFAULT_APP, WORKSPACE_PORT_ANNOTATION,
   APP_KIND_LABEL, APP_KIND_WORKSPACE, LEGACY_WORKSPACE_APPS,
-  WORKSPACE_SCHEME_ANNOTATION, WORKSPACE_WORKDIR, WORKSPACE_HOME,
+  WORKSPACE_SCHEME_ANNOTATION,
   DEV_API_IN_CLUSTER,
 } from './config/constants';
 import { WORKSPACE_VUE_CONFIG } from './workspace-config';
@@ -346,28 +346,32 @@ const WORKSPACE_SCRIPT = [
   // came up with no tmux, so shell.sh could not open a pane and the conversation never started.
   // One IPv4 line fixes both, at the source; the lock timeouts below are the belt to its braces.
   "mkdir -p /etc/apt/apt.conf.d && printf 'Acquire::ForceIPv4 \"true\";\\nAcquire::Retries \"3\";\\n' > /etc/apt/apt.conf.d/99dev-ipv4",
-  `mkdir -p ${ WORKSPACE_HOME }`,
-  `chown node:node /workspace ${ WORKSPACE_HOME } 2>/dev/null || true`,
-  '[ -f /workspace/.owned ] || (chown -R node:node /workspace 2>/dev/null; touch /workspace/.owned)',
+  // WS is this workspace's tree, at the path both pods have it at. `${install}` is Apps Plus's
+  // substitution, so the App names the directory after the workspace when it renders.
+  'WS=/workspaces/${install}',
+  'mkdir -p $WS/.home',
+  'chown node:node $WS $WS/.home 2>/dev/null || true',
+  '[ -f $WS/.owned ] || (chown -R node:node $WS 2>/dev/null; touch $WS/.owned)',
   // The browser mounts .a11y/opt and .a11y/init as subPaths, and the kubelet creates a missing
   // subPath directory as root - which is the pod that came up with the seed unable to write the
   // accessibility scripts into it (EACCES in layout.mjs) and a browser with an empty /opt/a11y.
   // Make them here, as node, before the seed runs.
-  'mkdir -p /workspace/.a11y/opt /workspace/.a11y/init && chown -R node:node /workspace/.a11y 2>/dev/null || true',
-  `[ -f /seed/terminal-tools.sh ] && (HOME_DIR=${ WORKSPACE_HOME } /bin/sh /seed/terminal-tools.sh >/workspace/.terminal-tools.log 2>&1 &) || true`,
+  'mkdir -p $WS/.a11y/opt $WS/.a11y/init && chown -R node:node $WS/.a11y 2>/dev/null || true',
+  '[ -f /seed/terminal-tools.sh ] && (HOME_DIR=$WS/.home /bin/sh /seed/terminal-tools.sh >$WS/.terminal-tools.log 2>&1 &) || true',
   // What a recording and a CI-style check need and the image lacks: ffmpeg (browser.mjs
   // record), jq, lsof and ss. Root's to install and the rootfs is the pod's, so on every boot,
   // in the background so the dev server is not a minute later for it. The lock timeout lets this
   // wait for terminal-tools.sh's tmux install rather than colliding with it.
-  '(command -v ffmpeg >/dev/null 2>&1 && command -v lsof >/dev/null 2>&1) || (apt-get -o DPkg::Lock::Timeout=300 update -qq && DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq ffmpeg jq lsof iproute2 >/workspace/.apt.log 2>&1 &) || true',
+  '(command -v ffmpeg >/dev/null 2>&1 && command -v lsof >/dev/null 2>&1) || (apt-get -o DPkg::Lock::Timeout=300 update -qq && DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq ffmpeg jq lsof iproute2 >$WS/.apt.log 2>&1 &) || true',
   `exec setpriv --reuid=1000 --regid=1000 --init-groups /bin/sh -c '${ [
     'set -e',
-    `export HOME=${ WORKSPACE_HOME }`,
-    'export YARN_CACHE_FOLDER=/workspace/.yarn-cache',
+    'WS=/workspaces/${install}',
+    'export HOME=$WS/.home',
+    'export YARN_CACHE_FOLDER=$WS/.yarn-cache',
     // `\${repo}` and `\${port}` are Apps Plus's to substitute when the App is rendered, so
     // they are written as text here rather than interpolated.
-    `[ -d ${ WORKSPACE_WORKDIR }/.git ] || git clone --depth 1 https://github.com/\${repo} ${ WORKSPACE_WORKDIR }`,
-    `cd ${ WORKSPACE_WORKDIR }`,
+    '[ -d $WS/dashboard/.git ] || git clone --depth 1 https://github.com/${repo} $WS/dashboard',
+    'cd $WS/dashboard',
     '[ -f .install-done ] || (yarn install --network-timeout 600000 && touch .install-done)',
     // An earlier App wrote its config over the checkout's vue.config.js; a checkout that boot
     // left behind gets the repository's file back. A clean tree is a no-op.
@@ -590,8 +594,12 @@ export function rancherWorkspaceApp(): Json {
             '                name: dev-secrets',
             '                optional: true',
             '          volumeMounts:',
+            // The tree, at the path the agent pod also has it at (/workspaces/<name>, one
+            // mount of the parent there). A conversation about this workspace runs in that pod
+            // and forwards every command back into this one; both halves saying the same thing
+            // about where a file is only works if the path is the same on both sides.
             '            - name: work',
-            '              mountPath: /workspace',
+            '              mountPath: /workspaces/${install}',
             '            - name: dev-config',
             '              mountPath: /dev-config',
             '              readOnly: true',
@@ -608,7 +616,7 @@ export function rancherWorkspaceApp(): Json {
             '              port: ${port}',
             '            periodSeconds: 10',
             // The harness's browser sidecar, as a second container: Chromium with CDP open on
-            // this pod's localhost, opened on the dev server, sharing /workspace/artifacts as
+            // this pod's localhost, opened on the dev server, sharing the workspace's artifacts as
             // /artifacts. Its desktop is what the Browser tab frames.
             '        - name: browser',
             `          image: ${ BROWSER_IMAGE }`,

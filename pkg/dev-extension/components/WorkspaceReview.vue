@@ -23,7 +23,7 @@ import { listConversations, startConversation, queuePrompt, paneCommand } from '
 import type { ProjectConversation } from '../conversations';
 import { readInWorkspace, ensureWorkspaceReady } from '../workspace-tools';
 import { listApps } from '../apps';
-import { DEFAULT_APP, WORKSPACE_WORKDIR } from '../config/constants';
+import { DEFAULT_APP, workspaceWorkdir } from '../config/constants';
 import { DEFAULT_REPO } from '../reviews';
 import { useStore } from 'vuex';
 
@@ -71,7 +71,7 @@ async function resolveRepo() {
 }
 
 /** Where the agents work: the workspace's own checkout, which is where its dev server runs from too. */
-const dir = computed(() => WORKSPACE_WORKDIR);
+const dir = computed(() => workspaceWorkdir(props.workspace.name));
 
 /**
  * The changes, read out of the clone: the branch against where it left the default branch,

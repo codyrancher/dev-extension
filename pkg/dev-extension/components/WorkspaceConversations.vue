@@ -212,7 +212,7 @@ export default {
 
     /** shell.sh's four arguments (session, checkout, home) and then the mode: a shell, not claude. */
     shellCommand() {
-      return [...workspaceTerminalCommand('shell'), 'shell'];
+      return [...workspaceTerminalCommand(this.workspace.name, 'shell'), 'shell'];
     },
 
     async newConversation() {
