@@ -442,12 +442,19 @@ function attachmentKind(name) {
 }
 
 /**
- * A path an agent wrote (`/workspace/artifacts/x.webm`, or relative to it) as a file here, or
- * null. Looked for in the PR's own workspace first, then in any workspace, then in the agent
- * pod's directory, which is where a review ran before workspaces were the harness's containers.
+ * A path an agent wrote (`/workspaces/<name>/artifacts/x.webm`, or relative to it) as a file
+ * here, or null. Looked for in the PR's own workspace first, then in any workspace, then in the
+ * agent pod's directory, which is where a review ran before workspaces were the harness's
+ * containers.
+ *
+ * Both spellings of the root are stripped: a workspace's tree is at `/workspaces/<name>` now,
+ * and evidence recorded when it was `/workspace` is still worth finding.
  */
 function artifactFile(given, num = null) {
-  const rel = String(given || '').replace(/^\/?workspace\//, '').replace(/^\/+/, '');
+  const rel = String(given || '')
+    .replace(/^\/?workspaces\/[^/]+\//, '')
+    .replace(/^\/?workspace\//, '')
+    .replace(/^\/+/, '');
 
   if (!rel || rel.split('/').includes('..')) {
     return null;

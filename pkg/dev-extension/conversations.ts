@@ -1,19 +1,29 @@
-// A workspace's conversations: registered in the agent pod, running in the workspace's own pod.
+// A workspace's conversations: all of them in the agent pod, each one working in its workspace.
 //
-// The harness ran a project's conversations in the project's container, because that is where
-// the checkout, the browser and the environment were. So does this: the pane is claude in the
-// workspace's pod, in its checkout, with everything workspace-tools.ts put there. What the
-// agents extension keeps is the registry - which conversations a workspace has, their titles,
-// the ids (`p-<workspace>-<n>`) - and the terminal component every pane is drawn with; the
-// terminal execs into the agent pod, which reaches the workspace's pod with kubectl, so one
-// exec path and one cookie serve every pane in this dashboard. Nothing here holds a credential
-// or opens a socket of its own.
+// The harness ran a project's conversations inside the project's container, and so did this
+// until it had several: every pod then held its own claude, its own login and its own copy of
+// the skills, and the login is the one of those that expires. One went stale on its own
+// schedule and the conversations in that workspace died at their next turn, while the pod next
+// to it was fine.
+//
+// So there is one pod now. claude runs in the agent pod - one login, one place its transcripts
+// live - with the workspace's checkout as its working directory, reached through the mount that
+// pod has of every workspace's tree. What it *runs* still happens in the workspace's own pod,
+// where the dev server, the browser sidecar and the toolchain are: each pane carries a
+// CLAUDE_CODE_SHELL_PREFIX, the wrapper the seed writes at <workspace>/bin/dev-shell, and every
+// command claude runs goes through it into that pod. The tree is at `/workspaces/<name>` on
+// both sides, so a path means the same thing wherever it is read.
+//
+// What the agents extension keeps is the registry - which conversations a workspace has, their
+// titles, the ids (`p-<workspace>-<n>`) - the queue, and the terminal component every pane is
+// drawn with. Nothing here holds a credential or opens a socket of its own.
 
 import {
   workspaceNamespace, workspacePod, WORKSPACE_CONTAINER, podExecOnce
 } from './api';
-import { WORKSPACE_WORKDIR, WORKSPACE_HOME } from './config/constants';
-import { queuePrompt as queueInWorkspace, endPane } from './workspace-tools';
+import {
+  workspaceWorkdir, workspaceShellWrapper, AGENT_HOME
+} from './config/constants';
 
 /** Where the agents extension's API is. The agents extension made the agent pod, so this is its cluster. */
 export const STUDIO_CLUSTER = 'local';
@@ -35,18 +45,16 @@ export interface ProjectConversation {
 }
 
 /**
- * The argv the agent pod runs to land in a conversation's pane: kubectl into the workspace's
- * pod, then the workspace's own shell.sh with the session, the checkout, the home and the mode,
- * exactly as the workspace's shell row runs it. The Deployment rather than a pod by name, so a
- * pod that rolled since the page loaded is still the one reached.
+ * The argv a pane runs, in the agent pod: that pod's own shell.sh, pointed at this workspace.
+ *
+ * The workspace's checkout is the working directory, so claude reads that workspace's CLAUDE.md
+ * and its skills and keeps a conversation history of its own. The home is the agent pod's, which
+ * is the point: one login for every conversation in this dashboard. The last argument is the
+ * tunnel - the wrapper claude runs every command through, which puts it in the workspace's pod.
  */
 export function paneCommand(workspace: string, id: string, mode: 'claude' | 'shell' = 'claude'): string[] {
-  const namespace = workspaceNamespace(workspace);
-
   return [
-    ...KUBECTL,
-    'exec', '-i', '-t', '-n', namespace, `deploy/${ namespace }`, '-c', WORKSPACE_CONTAINER, '--',
-    '/bin/sh', '/seed/shell.sh', id, WORKSPACE_WORKDIR, WORKSPACE_HOME, mode,
+    '/bin/sh', '/seed/shell.sh', id, workspaceWorkdir(workspace), AGENT_HOME, mode, workspaceShellWrapper(workspace),
   ];
 }
 
@@ -58,6 +66,9 @@ export function paneCommand(workspace: string, id: string, mode: 'claude' | 'she
 export const KUBECTL = ['/bin/sh', '-c', 'export PATH=/workspace/.home/.local/bin:/usr/local/bin:$PATH; exec kubectl "$@"', 'kubectl'];
 
 function attachment(workspace: string, id: string, pod: string): Attachment {
+  // The namespace and pod are the workspace's, and they are what the pane is *about* rather
+  // than where it runs: the terminal always opens on the agent pod (StudioTerminal.vue) and
+  // runs the argv below. Pages read these to say which pod a conversation's commands land in.
   return {
     namespace: workspaceNamespace(workspace), pod, container: WORKSPACE_CONTAINER, command: paneCommand(workspace, id), workspace, id,
   };
@@ -105,7 +116,7 @@ export async function startConversation(workspace: string, title = '', prompt = 
   const conversation = { id, title: title || id.slice(id.lastIndexOf('-') + 1), attach: attachment(workspace, id, (await workspacePod(workspace).catch(() => null)) || '') };
 
   if (prompt) {
-    await queueInWorkspace(workspace, id, prompt);
+    await api.agent.queue(id, prompt);
   }
 
   return conversation;
@@ -115,15 +126,24 @@ export async function renameConversation(workspace: string, id: string, title: s
   await (await requireAgents()).agent.rename(id, title);
 }
 
-/** End it in both places: the registry, and the pane in the workspace pod with claude in it. */
+/**
+ * End it: the registry entry and the tmux session with claude in it, both in the agent pod.
+ *
+ * One call now that the pane lives there - the agents extension's `end` kills the session and
+ * removes the conversation's directory together.
+ */
 export async function endConversation(workspace: string, id: string): Promise<void> {
-  await endPane(workspace, id).catch(() => {});
   await (await requireAgents()).agent.end(id);
 }
 
-/** Queue a prompt for a conversation to open with, or say something into one that is running. */
+/**
+ * Queue a prompt for a conversation to open with, or say something into one that is running.
+ *
+ * The agents extension's, because the pane is in its pod: it writes the file the pane reads on
+ * its first start and types into the tmux session when one is already running.
+ */
 export async function queuePrompt(attach: Attachment, prompt: string): Promise<void> {
-  await queueInWorkspace(attach.workspace, attach.id, prompt);
+  await (await requireAgents()).agent.queue(attach.id, prompt);
 }
 
 /**
@@ -139,11 +159,7 @@ export async function startPaneDetached(workspace: string, id: string): Promise<
   if (!pod) {
     throw new Error('The agent pod is not running, so there is nothing to start the pane from.');
   }
-  const namespace = workspaceNamespace(workspace);
-  const argv = [
-    ...KUBECTL, 'exec', '-n', namespace, `deploy/${ namespace }`, '-c', WORKSPACE_CONTAINER, '--',
-    '/bin/sh', '/seed/shell.sh', id, WORKSPACE_WORKDIR, WORKSPACE_HOME, 'start',
-  ];
+  const argv = ['/bin/sh', '/seed/shell.sh', id, workspaceWorkdir(workspace), AGENT_HOME, 'start', workspaceShellWrapper(workspace)];
 
   await podExecOnce(api.agent.namespace, pod, api.agent.container, argv);
 }
@@ -172,18 +188,8 @@ export async function reconnectEverything(workspace: string): Promise<void> {
 
 async function reconnectIn(workspace: string, id: string): Promise<void> {
   const argv = ['node', '/seed/claude-credentials.mjs', 'reconnect', ...(id ? [id] : [])];
-
-  if (workspace) {
-    const namespace = workspaceNamespace(workspace);
-    const pod = await workspacePod(workspace);
-
-    if (!pod) {
-      throw new Error(`${ workspace } has no pod running, so there is nothing to reconnect.`);
-    }
-    await podExecOnce(namespace, pod, WORKSPACE_CONTAINER, argv);
-
-    return;
-  }
+  // Every pane, a workspace's included, is a tmux session in the agent pod, so `workspace` says
+  // nothing about where to run this - only `id` does, and without one it reconnects them all.
   const api = await requireAgents();
   const pod = await api.agent.pod();
 
