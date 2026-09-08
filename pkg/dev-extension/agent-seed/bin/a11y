@@ -59,16 +59,22 @@ api() {
 
 # Run a command in the browser container and print what it printed.
 #
-# As `abc`, the desktop session's own user: X, the session bus and PulseAudio all belong to it,
-# and root cannot read that session's environment. The timeout argument is the harness's, in
-# milliseconds, kept so the call sites read the same; kubectl gets it in seconds.
+# As root, which is what `kubectl exec` gives us. The scripts on the other side drop to `abc`
+# themselves for anything that touches X, the session bus or PulseAudio (a11y_as_user), and
+# root here has CAP_SYS_PTRACE, so reading the session's environment off the browser still
+# works. Root is needed for the one thing abc cannot do: `s6-svc -r` on the desktop service,
+# which is how the browser gets restarted onto the accessibility bus - nothing supervises
+# Chromium in this image, so killing it as abc just leaves the session without a browser.
+#
+# The timeout argument is the harness's, in milliseconds, kept so the call sites read the
+# same; kubectl gets it in seconds.
 sidecar_exec() {
   api
   local cmd="$1" timeout="${2:-120000}"
   local seconds=$(( (timeout + 999) / 1000 ))
 
   timeout "$seconds" kubectl exec -n "$A11Y_NS" "$A11Y_POD" -c "$A11Y_CONTAINER" -- \
-    setpriv --reuid 1000 --regid 1000 --clear-groups /bin/bash -lc "$cmd" 2>&1
+    /bin/bash -lc "$cmd" 2>&1
 }
 
 # Quote the args back into one shell string for the sidecar.
@@ -101,12 +107,15 @@ cmd_tier() {
 
   local packages='' wayland=''
 
+  # Every tier that does anything runs the desktop on X11. Under Wayland this image starts no
+  # D-Bus session bus, so at-spi-bus-launcher has nowhere to own org.a11y.Bus and Chromium
+  # exports nothing however it was launched; X11's startwm.sh provides that bus, and X is also
+  # what xdotool needs for `a11y key`. Orca additionally wants libwnck and XInput, which its
+  # rootless Xwayland does not give it.
   case "$want" in
-    off) packages='' ;;
-    atspi) packages="$A11Y_PKGS_atspi" ;;
-    speech) packages="$A11Y_PKGS_atspi|$A11Y_PKGS_speech" ;;
-    # Orca drives libwnck and XInput, which fail on this image's rootless Xwayland, so the top
-    # tier is also the one that puts the desktop back on X11.
+    off) packages=''; wayland='-' ;;
+    atspi) packages="$A11Y_PKGS_atspi"; wayland=false ;;
+    speech) packages="$A11Y_PKGS_atspi|$A11Y_PKGS_speech"; wayland=false ;;
     orca) packages="$A11Y_PKGS_atspi|$A11Y_PKGS_speech|$A11Y_PKGS_orca"; wayland=false ;;
     *) echo "tier must be off, atspi, speech or orca" >&2; exit 2 ;;
   esac
@@ -119,8 +128,14 @@ cmd_tier() {
 
   # `set env` rather than a hand-built patch: it edits one container's env by name and leaves
   # everything else in the Deployment alone, which is what this is.
+  # `PIXELFLUX_WAYLAND-` (tier off) removes the variable rather than setting it empty, so the
+  # image goes back to its own default. DBUS_SESSION_BUS_ADDRESS is removed either way: earlier
+  # workspaces pinned it at a bus of their own, which split the session in two - the browser on
+  # one bus, at-spi-bus-launcher and the tooling on the other, and an empty tree every time.
   kubectl set env "deployment/$A11Y_NS" -n "$A11Y_NS" -c browser \
-    "A11Y_TIER=$want" "INSTALL_PACKAGES=$packages" "PIXELFLUX_WAYLAND=$wayland" "DOCKER_MODS=$mods" >/dev/null ||
+    "A11Y_TIER=$want" "INSTALL_PACKAGES=$packages" \
+    "$([ "$wayland" = '-' ] && echo 'PIXELFLUX_WAYLAND-' || echo "PIXELFLUX_WAYLAND=$wayland")" \
+    'DBUS_SESSION_BUS_ADDRESS-' "DOCKER_MODS=$mods" >/dev/null ||
     { echo "the Deployment would not take the change" >&2; exit 1; }
 
   [ "$want" = off ] && { echo "tier off"; return; }
