@@ -93,7 +93,15 @@ export default {
       // Hosted on a Rancher of the sidebar's whenever there is one up: a link on the open
       // internet is what a share is for, and that is where one can be. This cluster only serves
       // through its own proxy, which asks a reviewer for a login they do not have.
-      this.hostOn = (await preferredShareHost(this.$store)).id;
+      const host = await preferredShareHost(this.$store);
+      const hosting = this.ranchers.find((rancher) => rancher.clusterId === host.id);
+
+      this.hostOn = host.id;
+      // And it talks to the Rancher it is served from, for the same reason: a build on a public
+      // name pointed at this one asks its reviewer for an account here the moment it loads.
+      if (hosting?.url) {
+        this.rancher = hosting.url;
+      }
       await this.readBranch();
     },
 
