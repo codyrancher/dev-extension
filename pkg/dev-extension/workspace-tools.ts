@@ -11,7 +11,7 @@
 // Every step is idempotent and lands under /workspace, which is a hostPath, so it survives the
 // pod and is written once; the seed carries a hash so a changed skill reaches a workspace that
 // already has the old one. Nothing here puts a token in a prompt, a transcript or a queue
-// file: the secrets go into /workspace/.env, gh's hosts.yml and git's credential store, 0600
+// file: the secrets go into the workspace's .env, gh's hosts.yml and git's credential store, 0600
 // and owned by the pane's user, the same three places the harness put them.
 
 import {
@@ -20,17 +20,20 @@ import {
 import { AGENT_SEED } from './agent-seed.generated';
 import { UNREWRITE_B64 } from './apps';
 import {
-  DEV_API_IN_CLUSTER, WORKSPACE_WORKDIR, WORKSPACE_HOME, WORKSPACE_QUEUE
+  DEV_API_IN_CLUSTER, workspaceRoot
 } from './config/constants';
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Json = any;
 
 const GH_VERSION = '2.76.1';
 const JQ_VERSION = '1.7.1';
-const BIN = '/workspace/bin';
-const ENV_FILE = '/workspace/.env';
-const SEED_MARKER = '/workspace/.dev-seed';
+// Paths inside the workspace, as the pod's shell sees them.
+//
+// `$WS` rather than a directory: a workspace's tree is at /workspaces/<name>, which asRoot and
+// asNode below put in the shell's WS before anything here runs. Every script in this file goes
+// through one of those two, so writing the tree's own name into thirty scripts would be thirty
+// chances to write the wrong one.
+const BIN = '$WS/bin';
+const ENV_FILE = '$WS/.env';
+const SEED_MARKER = '$WS/.dev-seed';
 
 /** Where the pod is: everything below execs into it. */
 export interface WorkspaceTarget {
@@ -104,16 +107,22 @@ function seedVersion(): string {
  */
 async function asRoot(target: WorkspaceTarget, script: string): Promise<string> {
   const file = `/tmp/.dev-${ Date.now().toString(36) }${ Math.random().toString(36).slice(2, 8) }.sh`;
+  const wrapped = `WS=${ workspaceRoot(target.workspace) }\n${ script }`;
 
   return podExecOnce(target.namespace, target.pod, WORKSPACE_CONTAINER, [
-    '/bin/sh', '-c', `echo ${ b64(script) } | base64 -d > ${ file } && /bin/bash ${ file } 2>&1; rc=$?; rm -f ${ file }; exit $rc`,
+    '/bin/sh', '-c', `echo ${ b64(wrapped) } | base64 -d > ${ file } && /bin/bash ${ file } 2>&1; rc=$?; rm -f ${ file }; exit $rc`,
   ]);
 }
 
 /** The same, as the pane's user, with its home: the user the checkout and the tmux server belong to. */
 async function asNode(target: WorkspaceTarget, script: string): Promise<string> {
   const file = `/tmp/.dev-${ Date.now().toString(36) }${ Math.random().toString(36).slice(2, 8) }.sh`;
-  const wrapped = `export HOME=${ WORKSPACE_HOME }; export PATH=${ BIN }:${ WORKSPACE_HOME }/.local/bin:$PATH; set -a; [ -f ${ ENV_FILE } ] && . ${ ENV_FILE }; set +a; ${ script }`;
+  const wrapped = [
+    `WS=${ workspaceRoot(target.workspace) }`,
+    `export HOME=$WS/.home; export PATH=${ BIN }:$WS/.home/.local/bin:$PATH`,
+    `set -a; [ -f ${ ENV_FILE } ] && . ${ ENV_FILE }; set +a`,
+    script,
+  ].join('\n');
 
   return podExecOnce(target.namespace, target.pod, WORKSPACE_CONTAINER, [
     '/bin/sh', '-c', `echo ${ b64(wrapped) } | base64 -d > ${ file } && chmod 755 ${ file } && if [ "$(id -u)" = 0 ]; then su node -s /bin/bash -c "/bin/bash ${ file }" 2>&1; else /bin/bash ${ file } 2>&1; fi; rc=$?; rm -f ${ file }; exit $rc`,
@@ -139,14 +148,14 @@ export function contextFromName(workspace: string): WorkspaceContext {
 async function ensureBase(target: WorkspaceTarget): Promise<void> {
   const out = await asRoot(target, [
     'set -e',
-    `mkdir -p ${ BIN } /workspace/.claude /workspace/artifacts/a11y /workspace/.kube ${ WORKSPACE_QUEUE } ${ WORKSPACE_HOME }/.local/bin ${ WORKSPACE_HOME }/.config/gh`,
+    `mkdir -p ${ BIN } $WS/.claude $WS/artifacts/a11y $WS/.kube $WS/.queue $WS/.home/.local/bin $WS/.home/.config/gh`,
     // The apt path is root's and the rootfs is the pod's, so this repeats after a restart; it is
     // in the background because a review should not wait a minute for ffmpeg it may never use.
     'if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v lsof >/dev/null 2>&1; then',
-    '  if [ ! -f /tmp/.dev-apt ]; then touch /tmp/.dev-apt; (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg jq lsof iproute2 >/dev/null 2>&1; rm -f /tmp/.dev-apt) >/workspace/.apt.log 2>&1 & fi',
+    '  if [ ! -f /tmp/.dev-apt ]; then touch /tmp/.dev-apt; (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg jq lsof iproute2 >/dev/null 2>&1; rm -f /tmp/.dev-apt) >$WS/.apt.log 2>&1 & fi',
     'fi',
-    `git config --global --add safe.directory ${ WORKSPACE_WORKDIR } 2>/dev/null || true`,
-    `chown -R node:node ${ BIN } /workspace/.claude /workspace/artifacts /workspace/.kube ${ WORKSPACE_QUEUE } ${ WORKSPACE_HOME }/.local ${ WORKSPACE_HOME }/.config 2>/dev/null || true`,
+    `git config --global --add safe.directory $WS/dashboard 2>/dev/null || true`,
+    `chown -R node:node ${ BIN } $WS/.claude $WS/artifacts $WS/.kube $WS/.queue $WS/.home/.local $WS/.home/.config 2>/dev/null || true`,
     'echo BASE-OK',
   ].join('\n'));
 
@@ -181,7 +190,7 @@ async function ensureSeed(target: WorkspaceTarget, ctx: WorkspaceContext): Promi
     'S=/tmp/dev-seed.$$.json; L=/tmp/dev-layout.$$.mjs',
     `curl -fsS ${ DEV_API_IN_CLUSTER }/agent-seed -o $S`,
     `node -e "const s=require(process.argv[1]);require('fs').writeFileSync(process.argv[2],s['layout.mjs'])" $S $L`,
-    `DEV_PROJECT=${ target.workspace } DEV_ISSUE=${ ctx.issue || '' } DEV_PR=${ ctx.pr || '' } DEV_SEED_FILE=$S DEV_WORKDIR=${ WORKSPACE_WORKDIR } DEV_HOME=${ WORKSPACE_HOME } node $L`,
+    `DEV_PROJECT=${ target.workspace } DEV_ISSUE=${ ctx.issue || '' } DEV_PR=${ ctx.pr || '' } DEV_SEED_FILE=$S DEV_ROOT=$WS DEV_WORKDIR=$WS/dashboard DEV_HOME=$WS/.home node $L`,
     `echo '${ version }' > ${ SEED_MARKER }`,
     'rm -f $S $L',
     'echo SEED-OK',
@@ -192,7 +201,7 @@ async function ensureSeed(target: WorkspaceTarget, ctx: WorkspaceContext): Promi
   }
 }
 
-/** `gh` and `jq`, static builds, in /workspace/bin. Downloaded once; the bin is on a hostPath. */
+/** `gh` and `jq`, static builds, in the workspace's bin. Downloaded once; the bin is on a hostPath. */
 async function ensureTools(target: WorkspaceTarget): Promise<void> {
   const have = await asNode(target, `for t in gh jq; do [ -x ${ BIN }/$t ] && printf '%s ' $t; done; true`);
   const missing = ['gh', 'jq'].filter((tool) => !have.includes(tool));
@@ -209,7 +218,7 @@ async function ensureTools(target: WorkspaceTarget): Promise<void> {
   if (missing.includes('gh')) {
     steps.push(`curl -fsSL https://github.com/cli/cli/releases/download/v${ GH_VERSION }/gh_${ GH_VERSION }_linux_amd64.tar.gz | tar -xz -C /tmp && mv /tmp/gh_${ GH_VERSION }_linux_amd64/bin/gh ${ BIN }/gh && rm -rf /tmp/gh_${ GH_VERSION }_linux_amd64`);
   }
-  steps.push(`for f in gh jq; do ln -sf ${ BIN }/$f ${ WORKSPACE_HOME }/.local/bin/$f; done`, 'echo TOOLS-OK');
+  steps.push(`for f in gh jq; do ln -sf ${ BIN }/$f $WS/.home/.local/bin/$f; done`, 'echo TOOLS-OK');
 
   const out = await asNode(target, steps.join('\n'));
 
@@ -224,7 +233,7 @@ async function ensureTools(target: WorkspaceTarget): Promise<void> {
  *
  * The harness had an admin password for its own Rancher; this Rancher is shared and its people
  * sign in with GitHub, so what the agent gets is a token for the user who made the workspace.
- * Kept in /workspace/.env and checked against the API before it is reused, so a token that was
+ * Kept in the workspace's .env and checked against the API before it is reused, so a token that was
  * revoked is replaced rather than handed on.
  */
 async function rancherToken(target: WorkspaceTarget): Promise<string> {
@@ -247,7 +256,7 @@ async function rancherToken(target: WorkspaceTarget): Promise<string> {
 }
 
 /**
- * /workspace/.env, ~/.bashrc, gh's hosts.yml, git's credential store and a kubeconfig: the
+ * The workspace's .env, ~/.bashrc, gh's hosts.yml, git's credential store and a kubeconfig: the
  * harness's init.sh, minus the parts a Rancher of one's own needed.
  */
 async function ensureEnvironment(target: WorkspaceTarget, github: string): Promise<void> {
@@ -271,24 +280,24 @@ async function ensureEnvironment(target: WorkspaceTarget, github: string): Promi
     'CLAUDE_BROWSER_CDP=http://localhost:9222',
     `GH_TOKEN=${ github }`,
     `GITHUB_TOKEN=${ github }`,
-    'KUBECONFIG=/workspace/.kube/config',
+    'KUBECONFIG=$WS/.kube/config',
     'EOF',
     `chown node:node ${ ENV_FILE } && chmod 600 ${ ENV_FILE }`,
     // bashrc: the same three lines init.sh appended, once.
-    `touch ${ WORKSPACE_HOME }/.bashrc`,
-    `grep -q 'source /workspace/.env' ${ WORKSPACE_HOME }/.bashrc || printf '%s\\n' '# dev extension (the harness put the same in init.sh)' 'set -a; source /workspace/.env; set +a' 'export PATH=/workspace/bin:$PATH' >> ${ WORKSPACE_HOME }/.bashrc`,
-    `chown node:node ${ WORKSPACE_HOME }/.bashrc`,
+    `touch $WS/.home/.bashrc`,
+    `grep -q 'source $WS/.env' $WS/.home/.bashrc || printf '%s\\n' '# dev extension (the harness put the same in init.sh)' 'set -a; source $WS/.env; set +a' 'export PATH=$WS/bin:$PATH' >> $WS/.home/.bashrc`,
+    `chown node:node $WS/.home/.bashrc`,
     // gh and git, the way init.sh did them.
-    github ? `cat > ${ WORKSPACE_HOME }/.config/gh/hosts.yml <<EOF
+    github ? `cat > $WS/.home/.config/gh/hosts.yml <<EOF
 github.com:
     oauth_token: ${ github }
     user: ${ login || 'codyrancher' }
     git_protocol: https
 EOF
-chown -R node:node ${ WORKSPACE_HOME }/.config/gh && chmod 600 ${ WORKSPACE_HOME }/.config/gh/hosts.yml
-echo "https://${ login || 'codyrancher' }:${ github }@github.com" > /workspace/.git-credentials && chown node:node /workspace/.git-credentials && chmod 600 /workspace/.git-credentials` : 'true',
+chown -R node:node $WS/.home/.config/gh && chmod 600 $WS/.home/.config/gh/hosts.yml
+echo "https://${ login || 'codyrancher' }:${ github }@github.com" > $WS/.git-credentials && chown node:node $WS/.git-credentials && chmod 600 $WS/.git-credentials` : 'true',
     // kubectl, at the Rancher's local cluster, as the token's user.
-    rancher ? `cat > /workspace/.kube/config <<EOF
+    rancher ? `cat > $WS/.kube/config <<EOF
 apiVersion: v1
 kind: Config
 clusters:
@@ -307,7 +316,7 @@ contexts:
     user: local
 current-context: local
 EOF
-chown -R node:node /workspace/.kube && chmod 600 /workspace/.kube/config` : 'true',
+chown -R node:node $WS/.kube && chmod 600 $WS/.kube/config` : 'true',
     'echo ENV-OK',
   ].join('\n'));
 
@@ -339,10 +348,10 @@ async function ensureCheckout(target: WorkspaceTarget, ctx: WorkspaceContext, gi
   const email = (await secretValue('GIT_EMAIL').catch(() => '')) || who.email;
   const fork = who.login || 'codyrancher';
   const out = await asNode(target, [
-    `cd ${ WORKSPACE_WORKDIR } 2>/dev/null || { echo NO-CHECKOUT; exit 0; }`,
+    `cd $WS/dashboard 2>/dev/null || { echo NO-CHECKOUT; exit 0; }`,
     name ? `git config user.name ${ JSON.stringify(name) }` : 'true',
     email ? `git config user.email ${ JSON.stringify(email) }` : 'true',
-    github ? 'git config credential.helper "store --file=/workspace/.git-credentials"' : 'true',
+    github ? 'git config credential.helper "store --file=$WS/.git-credentials"' : 'true',
     `if git remote get-url origin 2>/dev/null | grep -q 'github.com/rancher/dashboard'; then git remote rename origin upstream; git remote add origin https://github.com/${ fork }/dashboard.git; fi`,
     'git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/rancher/dashboard.git',
     'mkdir -p .git/info',
@@ -355,39 +364,14 @@ async function ensureCheckout(target: WorkspaceTarget, ctx: WorkspaceContext, gi
     'git checkout -- vue.config.js 2>/dev/null || true',
     // The PR's head, once, and only onto a clean default branch: a workspace somebody has
     // already worked in is theirs.
-    ctx.pr ? `if [ ! -f /workspace/.pr-checkout ] && [ -z "$(git status --porcelain --untracked-files=no)" ] && git rev-parse --abbrev-ref HEAD | grep -qE '^(master|main)$'; then git fetch --depth 200 upstream pull/${ ctx.pr }/head:pr-${ ctx.pr } && git checkout pr-${ ctx.pr } && echo ${ ctx.pr } > /workspace/.pr-checkout; fi` : 'true',
-    '[ -d /workspace/node_modules/playwright-core ] || (cd /workspace && npm install --no-save --silent playwright-core >/dev/null 2>&1 || echo "playwright-core install failed")',
+    ctx.pr ? `if [ ! -f $WS/.pr-checkout ] && [ -z "$(git status --porcelain --untracked-files=no)" ] && git rev-parse --abbrev-ref HEAD | grep -qE '^(master|main)$'; then git fetch --depth 200 upstream pull/${ ctx.pr }/head:pr-${ ctx.pr } && git checkout pr-${ ctx.pr } && echo ${ ctx.pr } > $WS/.pr-checkout; fi` : 'true',
+    '[ -d $WS/node_modules/playwright-core ] || (cd $WS && npm install --no-save --silent playwright-core >/dev/null 2>&1 || echo "playwright-core install failed")',
     'echo CHECKOUT-OK',
   ].join('\n'));
 
   if (!out.includes('CHECKOUT-OK') && !out.includes('NO-CHECKOUT')) {
     throw new Error(`The checkout could not be set up: ${ out.trim().slice(-300) }`);
   }
-}
-
-/**
- * The shared claude login, fresh, in the workspace.
- *
- * Every pod pulls the login from one Secret and pushes it back when claude has refreshed it
- * (the agents extension's claude-credentials.mjs, on claude's Stop hook). The push happens
- * after a turn, and a refresh can happen without one: the agent pod then holds the only
- * working token and the Secret an expired one, whose refresh token has been rotated away. A
- * workspace that pulled that is a claude that asks to log in - the whole onboarding, theme
- * picker first - and every prompt queued for it waits behind that. So before a workspace
- * pulls, the agent pod pushes what it has; the script only writes a newer token than the
- * Secret's, so this is a no-op when nothing has changed.
- */
-async function refreshSharedLogin(target: WorkspaceTarget): Promise<void> {
-  const w = window as unknown as Record<string, Json>;
-  const agents = w.__agents || w.__extensionStudio;
-  const pod = await agents?.agent?.pod?.().catch(() => null);
-
-  if (pod) {
-    await podExecOnce(agents.agent.namespace, pod, agents.agent.container, [
-      '/bin/sh', '-c', 'su node -c "HOME=/workspace/.home node /seed/claude-credentials.mjs push" 2>&1 || true',
-    ]).catch(() => '');
-  }
-  await asNode(target, 'node /seed/claude-credentials.mjs pull 2>&1 || true');
 }
 
 /**
@@ -404,7 +388,6 @@ export async function ensureWorkspaceReady(workspace: string, ctx?: WorkspaceCon
   await ensureTools(target);
   await ensureEnvironment(target, github);
   await ensureCheckout(target, context, github);
-  await refreshSharedLogin(target);
 
   return target;
 }
@@ -415,19 +398,19 @@ export async function ensureWorkspaceReady(workspace: string, ctx?: WorkspaceCon
  * Queue a prompt for a conversation to open with, or say something into one that is running.
  *
  * The pane's runner (shell.sh, then claude-session.sh, both in the workspace's /seed) reads
- * `/workspace/.queue/<id>`: on its first start as the opening prompt, and afterwards as the
+ * `<queue>/<id>`: on its first start as the opening prompt, and afterwards as the
  * next thing said. The conversation need not be running yet; that is the point of a queue.
  */
 export async function queuePrompt(workspace: string, id: string, prompt: string): Promise<void> {
   const target = await workspaceTarget(workspace);
   const out = await asRoot(target, [
-    `mkdir -p ${ WORKSPACE_QUEUE }`,
-    `echo ${ b64(prompt) } | base64 -d > ${ WORKSPACE_QUEUE }/${ id }`,
-    `chown -R node:node ${ WORKSPACE_QUEUE }`,
+    `mkdir -p $WS/.queue`,
+    `echo ${ b64(prompt) } | base64 -d > $WS/.queue/${ id }`,
+    `chown -R node:node $WS/.queue`,
     // A pane that is already running has read its queue and will not look again, so what is
     // said to it is typed into it: the text pasted as one block, then Enter. Through tmux's
     // buffer rather than send-keys, so nothing in the prompt is ever a key name.
-    `su node -c 'if tmux has-session -t mc-${ id } 2>/dev/null; then tmux load-buffer -b devq ${ WORKSPACE_QUEUE }/${ id } && tmux paste-buffer -b devq -t mc-${ id } -d -p && sleep 0.5 && tmux send-keys -t mc-${ id } Enter && rm -f ${ WORKSPACE_QUEUE }/${ id } && echo TYPED; fi' 2>/dev/null`,
+    `su node -c 'if tmux has-session -t mc-${ id } 2>/dev/null; then tmux load-buffer -b devq $WS/.queue/${ id } && tmux paste-buffer -b devq -t mc-${ id } -d -p && sleep 0.5 && tmux send-keys -t mc-${ id } Enter && rm -f $WS/.queue/${ id } && echo TYPED; fi' 2>/dev/null`,
     'echo QUEUE-OK',
   ].join('\n'));
 
@@ -486,7 +469,7 @@ export interface WorkspaceBranches {
 /** The checkout's branches, for a Share tab picking one to build. */
 export async function workspaceBranches(workspace: string): Promise<WorkspaceBranches> {
   const out = await readInWorkspace(workspace, [
-    `cd ${ WORKSPACE_WORKDIR } 2>/dev/null || exit 0`,
+    `cd $WS/dashboard 2>/dev/null || exit 0`,
     'echo "@@HEAD $(git rev-parse --abbrev-ref HEAD 2>/dev/null) $(git rev-parse --short HEAD 2>/dev/null)"',
     "git for-each-ref --sort=-committerdate --format='%(refname:short) %(objectname:short)' refs/heads 2>/dev/null | head -n 60",
   ].join('\n')).catch(() => '');
@@ -506,7 +489,7 @@ export async function workspaceBranches(workspace: string): Promise<WorkspaceBra
 
 /**
  * Build the checkout as it is - the branch it is on, uncommitted changes included - into
- * /workspace/share/<kind>, where the dashboard-preview App's nginx serves it from (apps.ts,
+ * <workspace>/share/<kind>, where the dashboard-preview App's nginx serves it from (apps.ts,
  * sourceDir). In a tmux session of its own in the workspace pod, so it outlives this page and
  * can be watched; into a `.next` directory that is swapped in when it succeeds, so the link
  * keeps serving the last good build while the next one compiles.
@@ -523,10 +506,13 @@ export async function buildShare(workspace: string, kind: ShareKind, base: strin
   const target = await workspaceTarget(workspace);
   const script = [
     '#!/bin/bash',
+    // Its own, because this one is written to a file and run later by tmux, outside the runners
+    // below that put WS in the shell for a script they carry.
+    `WS=${ workspaceRoot(workspace) }`,
     'KIND=$1; BASE=$2; REF=$3',
-    `cd ${ WORKSPACE_WORKDIR } || exit 1`,
-    'mkdir -p /workspace/.share /workspace/share',
-    'S=/workspace/.share/$KIND.status; L=/workspace/.share/$KIND.log',
+    `cd $WS/dashboard || exit 1`,
+    'mkdir -p $WS/.share $WS/share',
+    'S=$WS/.share/$KIND.status; L=$WS/.share/$KIND.log',
     'branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); sha=$(git rev-parse --short HEAD 2>/dev/null)',
     // Never built in the checkout itself. The dev server running there shares
     // node_modules/.cache with anything else that builds there, and a production build that
@@ -536,7 +522,7 @@ export async function buildShare(workspace: string, kind: ShareKind, base: strin
     // or a copy of the working tree as it is, uncommitted changes included; node_modules come
     // along as hard links (the same files, no second install) minus the cache; the staging
     // goes when the build is done.
-    'WT=/workspace/.share/src-$KIND',
+    'WT=$WS/.share/src-$KIND',
     'git worktree remove --force $WT >/dev/null 2>&1; rm -rf $WT; mkdir -p $WT',
     'if [ -n "$REF" ] && [ "$REF" != "$branch" ]; then',
     '  rmdir $WT; git worktree add --detach $WT "$REF" >/dev/null 2>&1 || { echo "failed $(date -u +%FT%TZ) $REF unknown" > $S; exit 1; }',
@@ -553,41 +539,41 @@ export async function buildShare(workspace: string, kind: ShareKind, base: strin
     'RUN="nice -n 19 taskset -c 0-$((HALF - 1))"',
     '{',
     '  export NODE_OPTIONS=--max_old_space_size=4096',
-    '  rm -rf /workspace/share/$KIND.next',
+    '  rm -rf $WS/share/$KIND.next',
     '  if [ "$KIND" = storybook ]; then',
-    '    $RUN yarn build-storybook && cp -r storybook/storybook-static /workspace/share/$KIND.next',
+    '    $RUN yarn build-storybook && cp -r storybook/storybook-static $WS/share/$KIND.next',
     '  else',
-    '    ROUTER_BASE=$BASE RESOURCE_BASE=$BASE OUTPUT_DIR=/workspace/share/$KIND.next $RUN yarn build && node /workspace/.share/unrewrite.js /workspace/share/$KIND.next/index.html',
+    '    ROUTER_BASE=$BASE RESOURCE_BASE=$BASE OUTPUT_DIR=$WS/share/$KIND.next $RUN yarn build && node $WS/.share/unrewrite.js $WS/share/$KIND.next/index.html',
     '  fi',
     '} > $L 2>&1',
     'RC=$?',
-    `cd ${ WORKSPACE_WORKDIR } && git worktree remove --force $WT >/dev/null 2>&1; rm -rf $WT`,
-    'if [ $RC -eq 0 ] && [ -f /workspace/share/$KIND.next/index.html ]; then',
+    `cd $WS/dashboard && git worktree remove --force $WT >/dev/null 2>&1; rm -rf $WT`,
+    'if [ $RC -eq 0 ] && [ -f $WS/share/$KIND.next/index.html ]; then',
     // The swap, by rename only. `mv a b` puts a *inside* b when b is a directory, so the site
     // has to be out of the way before the new one takes its name - and the old one is moved
     // aside under a name nothing else can hold, rather than to a fixed `.old` that a previous
     // build may have left behind and this one may not have the rights to delete (a build run
     // as root once leaves a directory the pane user cannot remove). Renaming needs write on
     // the parent and nothing else, so it works whoever owns what is there.
-    '  OLD=/workspace/share/$KIND.old-$(date +%s)-$$',
-    '  [ -e /workspace/share/$KIND ] && mv /workspace/share/$KIND $OLD',
-    '  if mv /workspace/share/$KIND.next /workspace/share/$KIND; then',
+    '  OLD=$WS/share/$KIND.old-$(date +%s)-$$',
+    '  [ -e $WS/share/$KIND ] && mv $WS/share/$KIND $OLD',
+    '  if mv $WS/share/$KIND.next $WS/share/$KIND; then',
     '    echo "ok $(date -u +%FT%TZ) $branch $sha" > $S',
     '  else',
-    '    [ -e $OLD ] && mv $OLD /workspace/share/$KIND',
+    '    [ -e $OLD ] && mv $OLD $WS/share/$KIND',
     '    echo "failed $(date -u +%FT%TZ) $branch $sha" > $S',
     '  fi',
-    '  rm -rf /workspace/share/$KIND.old-* /workspace/share/$KIND.old 2>/dev/null',
+    '  rm -rf $WS/share/$KIND.old-* $WS/share/$KIND.old 2>/dev/null',
     'else',
     '  echo "failed $(date -u +%FT%TZ) $branch $sha" > $S',
     'fi',
     '',
   ].join('\n');
   const out = await asNode(target, [
-    'mkdir -p /workspace/.share',
-    `echo ${ UNREWRITE_B64 } | base64 -d > /workspace/.share/unrewrite.js`,
-    `echo ${ b64(script) } | base64 -d > /workspace/.share/build.sh && chmod +x /workspace/.share/build.sh`,
-    `if tmux has-session -t mc-share-${ kind } 2>/dev/null; then echo ALREADY; else tmux new-session -d -s mc-share-${ kind } -c ${ WORKSPACE_WORKDIR } "/workspace/.share/build.sh ${ kind } ${ base } ${ shellQuote(ref) }" && echo STARTED; fi`,
+    'mkdir -p $WS/.share',
+    `echo ${ UNREWRITE_B64 } | base64 -d > $WS/.share/unrewrite.js`,
+    `echo ${ b64(script) } | base64 -d > $WS/.share/build.sh && chmod +x $WS/.share/build.sh`,
+    `if tmux has-session -t mc-share-${ kind } 2>/dev/null; then echo ALREADY; else tmux new-session -d -s mc-share-${ kind } -c $WS/dashboard "$WS/.share/build.sh ${ kind } ${ base } ${ shellQuote(ref) }" && echo STARTED; fi`,
   ].join('\n'));
 
   if (out.includes('ALREADY')) {
@@ -615,12 +601,12 @@ export interface ShareBuild {
 export async function shareStatus(workspace: string): Promise<Record<ShareKind, ShareBuild>> {
   const out = await readInWorkspace(workspace, [
     'for k in dashboard storybook; do',
-    '  echo "@@KIND $k"; cat /workspace/.share/$k.status 2>/dev/null || echo none',
+    '  echo "@@KIND $k"; cat $WS/.share/$k.status 2>/dev/null || echo none',
     // Whether it is still going, as against what it last wrote: a build whose pod restarted
     // leaves "building" behind for ever, and a tab that believes it is watching one is a tab
     // that never says the thing that happened.
     '  if tmux has-session -t mc-share-$k 2>/dev/null; then echo "@@ALIVE yes"; else echo "@@ALIVE no"; fi',
-    '  echo "@@LOG"; tail -n 12 /workspace/.share/$k.log 2>/dev/null | cut -c1-200',
+    '  echo "@@LOG"; tail -n 12 $WS/.share/$k.log 2>/dev/null | cut -c1-200',
     'done',
   ].join('\n')).catch(() => '');
   const result: Record<ShareKind, ShareBuild> = {

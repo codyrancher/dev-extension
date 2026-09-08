@@ -6,9 +6,16 @@
 //
 // `.hbs` files are rendered with the workspace's name and its issue or PR number, exactly the
 // variables the harness rendered them with; everything else is copied as it is. Skills, rules
-// and settings go beside the checkout and beside /workspace, CLAUDE.md goes to /workspace with
-// the environment's own section appended, browser.mjs and axtree.mjs to /workspace and the
-// rest of bin/ to /workspace/bin.
+// and settings go beside the checkout and beside the tree's root, CLAUDE.md goes to the root
+// with the environment's own section appended, browser.mjs and axtree.mjs to the root and the
+// rest of bin/ to <root>/bin.
+//
+// The harness had one project per container, so every one of these files says /workspace. Here
+// one node holds many, at /workspaces/<name>, and the agent pod that runs the conversations has
+// all of them mounted at once - so a file that said /workspace would name somebody else's tree,
+// or nothing. Every file laid out is rewritten as it is written (see rewriteRoot): one rule,
+// applied once, rather than the same edit made by hand in forty-odd skills that came from the
+// harness and are still worth taking updates from.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -21,10 +28,22 @@ const ctx = {
   rancherUrl,
   rancherHost: rancherUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, ''),
 };
-const WORKDIR = process.env.DEV_WORKDIR || '/workspace/dashboard';
-const HOME = process.env.DEV_HOME || '/workspace/.home';
-const BIN = '/workspace/bin';
-const roots = ['/workspace', WORKDIR];
+// This workspace's tree. Everything below is under it.
+const ROOT = process.env.DEV_ROOT || (ctx.projectName ? `/workspaces/${ ctx.projectName }` : '/workspace');
+const WORKDIR = process.env.DEV_WORKDIR || `${ ROOT }/dashboard`;
+const HOME = process.env.DEV_HOME || `${ ROOT }/.home`;
+const BIN = `${ ROOT }/bin`;
+const roots = [ROOT, WORKDIR];
+
+/**
+ * The harness's `/workspace` becomes this workspace's own tree.
+ *
+ * Deliberately blunt: a whole-word match on the path, so `/workspace/x` and a bare `/workspace`
+ * both move and `/workspaces/other/x` - already correct - is left alone.
+ */
+function rewriteRoot(text) {
+  return ROOT === '/workspace' ? text : text.replace(/\/workspace(?=[/'"`\s:)\]}]|$)/g, ROOT);
+}
 
 function render(text) {
   return text
@@ -53,31 +72,80 @@ for (const [rel, raw] of Object.entries(seed)) {
   } else if (out === 'settings.json') {
     dests = roots.map((root) => path.join(root, '.claude', 'settings.json'));
   } else if (rel === 'CLAUDE.md.hbs') {
-    dests = ['/workspace/CLAUDE.md'];
+    dests = [path.join(ROOT, 'CLAUDE.md')];
     text = `${ text.trimEnd() }\n\n${ render(seed['CLAUDE.dev.md'] || '') }`;
   } else if (rel.startsWith('browser-a11y/')) {
     // The accessibility stack the *browser* container runs: AT-SPI, speech and Orca are
     // session-local, so they live over there and this side only calls them (bin/a11y). The
     // browser mounts these two directories from the same volume - `init` as its own
     // /custom-cont-init.d, so the session bus is up before Chromium starts.
-    dests = [path.join('/workspace/.a11y', rel.slice('browser-a11y/'.length) === path.basename(rel) ? 'opt' : 'init', path.basename(rel))];
+    dests = [path.join(ROOT, '.a11y', rel.slice('browser-a11y/'.length) === path.basename(rel) ? 'opt' : 'init', path.basename(rel))];
   } else if (rel === 'bin/browser.mjs' || rel === 'bin/axtree.mjs') {
-    dests = [path.join('/workspace', path.basename(rel))];
+    dests = [path.join(ROOT, path.basename(rel))];
   } else if (rel.startsWith('bin/')) {
-    dests = [path.join('/workspace', out)];
+    dests = [path.join(ROOT, out)];
   } else {
     continue;
   }
 
+  const body = rewriteRoot(text);
+
   for (const dest of dests) {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, text);
+    fs.writeFileSync(dest, body);
     if (rel.startsWith('bin/') || rel.startsWith('browser-a11y/') || dest.endsWith('.mjs')) {
       fs.chmodSync(dest, 0o755);
     }
     written++;
   }
 }
+
+// The tunnel: how a conversation about this workspace runs a command *in* this workspace.
+//
+// claude runs in the agent pod - one login for every conversation in the dashboard, which is
+// why it is there rather than here - and it runs every command through whatever
+// CLAUDE_CODE_SHELL_PREFIX names, with the command as one argument. This is what it names.
+//
+// It carries the command into this workspace's pod, as the workspace user, with the pod's own
+// login shell: `.env`, PATH, the toolchain, the dev server on localhost and the browser
+// sidecar beside it are all there, and none of them are in the agent pod. The working
+// directory comes along too, which is the whole reason a workspace's tree is at the same path
+// on both sides.
+//
+// Written here rather than baked into the agent pod because a workspace knows its own name and
+// the pod does not: one wrapper per workspace, laid out with everything else it needs.
+const wrapper = [
+  '#!/bin/sh',
+  '# Run one command inside this workspace\'s pod. Written by the seed; see layout.mjs.',
+  `NS=dev-${ ctx.projectName }`,
+  `WS=${ ROOT }`,
+  '',
+  '# kubectl is installed into the agent pod\'s own home, which an exec\'s PATH does not have.',
+  'PATH=/workspace/.home/.local/bin:/usr/local/bin:$PATH',
+  'export PATH',
+  '',
+  '# Where claude is working. `pwd` rather than $PWD: this is run as a program, not from a',
+  '# shell, so PWD is whatever the pane exported and pwd is the truth. A command run from',
+  '# somewhere the workspace does not have - the agent pod\'s own home - lands in the checkout.',
+  'DIR=$(pwd)',
+  'case "$DIR" in',
+  '  "$WS"|"$WS"/*) ;;',
+  '  *) DIR=$WS/dashboard ;;',
+  'esac',
+  '',
+  '# One level of quoting, and the command is never part of it: it arrives as an argument and',
+  '# is run by `eval "$1"`, so an apostrophe or a here-document in it is just text.',
+  'exec kubectl exec -i -n "$NS" "deploy/$NS" -c workspace -- \\',
+  '  setpriv --reuid=1000 --regid=1000 --init-groups \\',
+  '  /usr/bin/env HOME="$WS/.home" WSD="$WS" DIR="$DIR" \\',
+  '  /bin/bash -lc \'cd "$DIR" 2>/dev/null || cd "$WSD/dashboard" || exit 1; set -a; [ -f "$WSD/.env" ] && . "$WSD/.env"; set +a; eval "$1"\' bash "$1"',
+  '',
+].join('\n');
+
+fs.mkdirSync(BIN, { recursive: true });
+fs.writeFileSync(path.join(BIN, 'dev-shell'), wrapper);
+fs.chmodSync(path.join(BIN, 'dev-shell'), 0o755);
+written++;
 
 // The same commands in the pane's own bin, which is the one on every pane's PATH.
 fs.mkdirSync(path.join(HOME, '.local', 'bin'), { recursive: true });

@@ -234,7 +234,7 @@ export async function ensureDefaultShare(store: Store, workspace: string, cluste
   if (!target) {
     return;
   }
-  const done = await readInWorkspace(workspace, 'test -f /workspace/.share/auto && echo AUTO-DONE || true');
+  const done = await readInWorkspace(workspace, 'test -f $WS/.share/auto && echo AUTO-DONE || true');
 
   if (done.includes('AUTO-DONE')) {
     return;
@@ -244,7 +244,7 @@ export async function ensureDefaultShare(store: Store, workspace: string, cluste
   if (!state.exists) {
     await shareWorkspace(store, workspace, 'dashboard', await talksToDefault(store), cluster, await preferredShareHost(store));
   }
-  await readInWorkspace(workspace, 'mkdir -p /workspace/.share && touch /workspace/.share/auto');
+  await readInWorkspace(workspace, 'mkdir -p $WS/.share && touch $WS/.share/auto');
 }
 
 async function namespaceGone(namespace: string, cluster: string): Promise<void> {

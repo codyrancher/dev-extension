@@ -2,6 +2,24 @@
 
 This workspace is a Kubernetes pod the dev extension made, standing in for the harness's project container. The skills, rules and prompts are the harness's, unchanged. What follows is what is different, and what looks like breakage but is not.
 
+## Where you are, and where your commands are
+
+You are not in the workspace pod. claude runs in one agent pod that holds every conversation in
+this dashboard - that is where the login lives, so there is one to keep alive instead of one per
+workspace going stale on its own - and it has this workspace's tree mounted.
+
+Every command you run goes into the workspace's own pod, through the wrapper the seed wrote at
+`/workspace/bin/dev-shell`. So the dev server on `localhost:8005`, the browser sidecar, the
+toolchain, `.env`, `kubectl` and the artifacts are all there, exactly as the rest of this file
+describes. Two things follow from the split, and nothing else does:
+
+- **Reading and editing files happens where you are; running things happens in the pod.** Both
+  see the same tree at the same path, because the workspace is mounted at `/workspace` in both.
+  A file you edit is a file the dev server picks up.
+- **`hostname` is the workspace's pod.** Its `pwd` is your working directory. If a command comes
+  back saying the pod is not there, the workspace is restarting - wait for it rather than
+  concluding the tool is broken.
+
 ## What is where
 
 - `/workspace/dashboard` is the rancher/dashboard checkout and your working directory. `origin` is the fork pushes go to, `upstream` is rancher/dashboard, the same as the harness.

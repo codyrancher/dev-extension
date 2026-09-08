@@ -147,10 +147,54 @@ export const WORKSPACE_SCHEME_ANNOTATION = 'dev.rancher.io/scheme';
 export const DEFAULT_WORKSPACE_PORT = 8005;
 export const DEFAULT_WORKSPACE_SCHEME = 'http';
 
-/** Where a workspace's pod keeps its checkout, its home and its queued prompts. */
-export const WORKSPACE_WORKDIR = '/workspace/dashboard';
-export const WORKSPACE_HOME = '/workspace/.home';
-export const WORKSPACE_QUEUE = '/workspace/.queue';
+/**
+ * Where a workspace's tree is - and it is the same path in two pods.
+ *
+ * A workspace's own pod mounts its tree at `/workspaces/<name>`, and the agent pod mounts the
+ * parent, so every workspace is at that same path there too. That is what lets one pod hold
+ * every conversation: claude runs in the agent pod, with the workspace's checkout as its
+ * working directory and the agent's single login as its home, while each command it runs is
+ * forwarded into the workspace's own pod - where the dev server, the browser and the toolchain
+ * are - at the very same path. Nothing has to be translated between the two halves, which is
+ * why the tree is not simply `/workspace` any more: one pod cannot hold two of those.
+ */
+export const WORKSPACES_ROOT = '/workspaces';
+
+/** A workspace's tree. */
+export function workspaceRoot(name: string): string {
+  return `${ WORKSPACES_ROOT }/${ name }`;
+}
+
+/** Its checkout, which is what a conversation about it starts in. */
+export function workspaceWorkdir(name: string): string {
+  return `${ workspaceRoot(name) }/dashboard`;
+}
+
+/**
+ * The home the *pod's* commands run with: its tools, its gh login, its shell profile.
+ *
+ * Not claude's home any more - claude keeps its login and its transcripts in the agent pod (see
+ * AGENT_HOME), which is the whole point of one pod holding the conversations. This is still
+ * where a command that runs in the workspace lands.
+ */
+export function workspaceHome(name: string): string {
+  return `${ workspaceRoot(name) }/.home`;
+}
+
+/** Where the tunnel that carries a conversation's commands into the workspace's pod lives. */
+export function workspaceShellWrapper(name: string): string {
+  return `${ workspaceRoot(name) }/bin/dev-shell`;
+}
+
+/**
+ * The agent pod's own durable directory, and the home inside it.
+ *
+ * One login for every conversation in this dashboard, workspace conversations included: it is
+ * the pod that holds them all now, so there is one credential to keep alive instead of one per
+ * workspace going stale on its own schedule.
+ */
+export const AGENT_WORKSPACE = '/workspace';
+export const AGENT_HOME = `${ AGENT_WORKSPACE }/.home`;
 
 /** The in-cluster API, as pods reach it. The harness's skills read it as $CLAUDE_HARNESS_API. */
 export const DEV_API_IN_CLUSTER = 'http://dev-api.dev-system.svc:8080';
