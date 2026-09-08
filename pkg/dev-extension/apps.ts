@@ -337,14 +337,24 @@ export async function releaseTerminating(store: Store): Promise<void> {
 
 const WORKSPACE_SCRIPT = [
   'set -e',
+  // Force every apt in this pod onto IPv4, before anything runs one. The node has no working
+  // IPv6 route to the Debian mirror, so an `apt-get update` left to its own devices resolves an
+  // IPv6 address and hangs on it for minutes - holding the apt lock the whole time. Two things
+  // then race for that lock on boot: this script's ffmpeg install below, and terminal-tools.sh's
+  // tmux install (backgrounded on the next line). Whichever loses gets "Could not get lock" and,
+  // because the lists were never fetched, "Unable to locate package" - which is how a workspace
+  // came up with no tmux, so shell.sh could not open a pane and the conversation never started.
+  // One IPv4 line fixes both, at the source; the lock timeouts below are the belt to its braces.
+  "mkdir -p /etc/apt/apt.conf.d && printf 'Acquire::ForceIPv4 \"true\";\\nAcquire::Retries \"3\";\\n' > /etc/apt/apt.conf.d/99dev-ipv4",
   `mkdir -p ${ WORKSPACE_HOME }`,
   `chown node:node /workspace ${ WORKSPACE_HOME } 2>/dev/null || true`,
   '[ -f /workspace/.owned ] || (chown -R node:node /workspace 2>/dev/null; touch /workspace/.owned)',
   `[ -f /seed/terminal-tools.sh ] && (HOME_DIR=${ WORKSPACE_HOME } /bin/sh /seed/terminal-tools.sh >/workspace/.terminal-tools.log 2>&1 &) || true`,
   // What a recording and a CI-style check need and the image lacks: ffmpeg (browser.mjs
   // record), jq, lsof and ss. Root's to install and the rootfs is the pod's, so on every boot,
-  // in the background so the dev server is not a minute later for it.
-  '(command -v ffmpeg >/dev/null 2>&1 && command -v lsof >/dev/null 2>&1) || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg jq lsof iproute2 >/workspace/.apt.log 2>&1 &) || true',
+  // in the background so the dev server is not a minute later for it. The lock timeout lets this
+  // wait for terminal-tools.sh's tmux install rather than colliding with it.
+  '(command -v ffmpeg >/dev/null 2>&1 && command -v lsof >/dev/null 2>&1) || (apt-get -o DPkg::Lock::Timeout=300 update -qq && DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq ffmpeg jq lsof iproute2 >/workspace/.apt.log 2>&1 &) || true',
   `exec setpriv --reuid=1000 --regid=1000 --init-groups /bin/sh -c '${ [
     'set -e',
     `export HOME=${ WORKSPACE_HOME }`,
