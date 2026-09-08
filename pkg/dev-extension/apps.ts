@@ -429,6 +429,12 @@ export function rancherWorkspaceApp(): Json {
       values:      {
         repo:        'rancher/dashboard',
         port:        8005,
+        // What the browser container installs for accessibility work, and what it calls the
+        // tier it is on. `a11y tier` changes them on the Deployment; these are the defaults a
+        // new workspace starts with - the AT-SPI bridge and speech, which is what showing a
+        // screen-reader fix needs. See agent-seed/bin/a11y.
+        a11yTier:    'speech',
+        a11yPackages: 'at-spi2-core|dbus-x11|gir1.2-atspi-2.0|python3-gi|python3-pyatspi|espeak-ng|speech-dispatcher|speech-dispatcher-espeak-ng|pulseaudio-utils|sox|xdotool|x11-apps',
         // The dashboard's dev server serves TLS (its own vue.config.js), which is what the
         // browser sidecar opens; the service proxy has to be told to speak it too, or every
         // "is it up yet" from the workspace page is a 503 and the Browser tab never appears.
@@ -446,6 +452,8 @@ export function rancherWorkspaceApp(): Json {
         repo:        'GitHub repository to clone',
         port:        'Port the dev server listens on',
         scheme:      'http or https',
+        a11yTier:    'Accessibility tier the browser starts on: off, atspi, speech or orca',
+        a11yPackages: 'What the browser installs for that tier (pipe separated)',
         image:       'Container image',
         hostCluster: 'Cluster the workspace runs on',
         rancherUrl:  'Rancher the dev server points at',
@@ -613,14 +621,45 @@ export function rancherWorkspaceApp(): Json {
             '              value: "3000"',
             '            - name: TITLE',
             '              value: ${install}',
+            // --force-renderer-accessibility, because Chromium exports its tree over the ATK
+            // bridge only when accessibility is on, and nothing in a container turns it on by
+            // itself. It costs nothing when no assistive technology is listening.
             '            - name: CHROME_CLI',
-            '              value: "https://localhost:${port} --no-first-run --start-maximized --disable-infobars --allow-insecure-localhost --ignore-certificate-errors --force-dark-mode --remote-debugging-port=9222 --remote-allow-origins=*"',
+            '              value: "https://localhost:${port} --no-first-run --start-maximized --disable-infobars --allow-insecure-localhost --ignore-certificate-errors --force-dark-mode --force-renderer-accessibility --remote-debugging-port=9222 --remote-allow-origins=*"',
+            // The accessibility stack, so a workspace can *show* what a screen reader gets
+            // rather than describe it. AT-SPI and speech are installed on every browser (a
+            // couple of minutes on first boot, and only once - the image layer is cached);
+            // Orca is the tier somebody asks for with `a11y tier orca`, because it is 200MB
+            // and needs the desktop switched back to X11.
+            '            - name: A11Y_TIER',
+            '              value: ${a11yTier}',
+            '            - name: DOCKER_MODS',
+            '              value: linuxserver/mods:universal-package-install',
+            '            - name: INSTALL_PACKAGES',
+            '              value: ${a11yPackages}',
+            // AT-SPI lives on the D-Bus *session* bus, and this image starts only a system
+            // one. The init hook below makes a session bus at this address; setting it as
+            // container env is what puts the compositor, Chromium and the tooling on the same
+            // bus. See browser-a11y/init/10-a11y-session-bus.sh in the seed.
+            '            - name: DBUS_SESSION_BUS_ADDRESS',
+            '              value: unix:path=/tmp/a11y-session-bus',
             '          volumeMounts:',
             '            - name: dshm',
             '              mountPath: /dev/shm',
             '            - name: work',
             '              mountPath: /artifacts',
             '              subPath: artifacts',
+            // Written by the seed (layout.mjs) into the workspace's own volume, which is why
+            // they are here rather than in a ConfigMap: they are part of the same bundle as
+            // the skills and the rules, and they update when those do.
+            '            - name: work',
+            '              mountPath: /opt/a11y',
+            '              subPath: .a11y/opt',
+            '              readOnly: true',
+            '            - name: work',
+            '              mountPath: /custom-cont-init.d',
+            '              subPath: .a11y/init',
+            '              readOnly: true',
             '      volumes:',
             '        - name: work',
             '          hostPath:',

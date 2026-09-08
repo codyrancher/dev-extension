@@ -1,20 +1,237 @@
 #!/bin/bash
-# The harness's `a11y` drives an AT-SPI / speech / Orca stack inside its browser sidecar, through
-# the harness API's sidecar exec endpoint. This workspace's browser is a plain Chromium with CDP
-# open and nothing of that installed, so the tiers do not exist here.
+# The accessibility toolkit, workspace side.
 #
-# What does exist is the half that runs over CDP: the accessibility tree.
-case "$1" in
-  axtree|tree)
-    shift
-    exec node /workspace/axtree.mjs "$@"
-    ;;
-  tier|status)
-    echo "a11y: no assistive-technology tier is available in this environment (no AT-SPI, speech or Orca); the CDP accessibility tree is: a11y axtree ..."
-    exit 0
-    ;;
-  *)
-    echo "a11y: '$1' needs the harness browser sidecar's AT stack, which this environment does not have. Available: a11y axtree (Chromium's own accessibility tree over CDP)." >&2
-    exit 1
-    ;;
+# Everything that can see a screen reader lives in the browser container: AT-SPI, X, PulseAudio
+# and Orca are session-local, and this container shares that pod's *network* namespace, not its
+# desktop. So this is a client. The harness's copy reaches its sidecar through the harness API;
+# here the two containers are in one Kubernetes pod and this container has kubectl with the
+# pod's own ServiceAccount, so `kubectl exec -c browser` is the same door.
+#
+# The half that needs none of it - Chromium's own accessibility tree, over CDP - is `a11y
+# axtree`, and it is what most fixes can be shown with. The rest of this is for the ones that
+# have to be heard.
+set -o pipefail
+
+# Which pod to exec into: this one. A pod knows its own namespace from its ServiceAccount and
+# its own name from the hostname, and the browser is a container beside this one.
+A11Y_NS="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo '')"
+A11Y_POD="${HOSTNAME:-$(hostname)}"
+A11Y_CONTAINER=browser
+
+usage() {
+  cat <<'USAGE'
+a11y <command> [args]
+
+Chromium's own tree (no setup needed):
+  axtree [args]          computed AX tree over CDP; --url, --grep, --role, --json, --save FILE
+
+The AT stack in the browser sidecar (needs `a11y tier`):
+  tier [off|atspi|speech|orca]   show or change the sidecar setting (recreates the browser)
+  status                 what is installed and whether Chromium is exporting its tree
+  tree [args]            AT-SPI tree: --relations, --role ROLE, --name TEXT, --json
+  say "text" [file]      espeak-ng the text to a wav under /workspace/artifacts/a11y
+  record start|stop      capture what the desktop is playing (Orca speech, page audio)
+  orca start|stop        run the Orca screen reader (start also logs its speech)
+  orca mark|speech       mark the speech log, then read back what Orca said as text
+  key KEY [KEY ...]      send real key presses to the browser (Tab, Return, ...)
+  type "text"            type into the focused control
+  speech "text"          speak through speech-dispatcher
+
+Driving the desktop itself (X11, needs `a11y tier atspi` or higher):
+  screen [WxH]           show or set the resolution, then report the real pointer bounds
+  focus                  raise and activate the browser window
+  click X Y              move the pointer to X,Y, check it landed there, click
+  shot NAME              capture the whole desktop to artifacts/a11y/NAME.png
+  desktop "cmd"          run a shell command in the sidecar with DISPLAY set
+
+Files written by the sidecar land in /workspace/artifacts/a11y. The sidecar sees
+/workspace/artifacts as /artifacts, so a path it writes is readable here at once.
+USAGE
+}
+
+# The browser container of this pod, or a sentence saying why not.
+api() {
+  command -v kubectl >/dev/null 2>&1 || { echo "a11y needs kubectl, which this pod does not have yet (see /workspace/.terminal-tools.log)" >&2; exit 1; }
+  [ -n "$A11Y_NS" ] || { echo "a11y: this does not look like a pod - no ServiceAccount namespace to read" >&2; exit 1; }
+  kubectl get pod "$A11Y_POD" -n "$A11Y_NS" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null | grep -qw "$A11Y_CONTAINER" ||
+    { echo "a11y: this workspace has no browser container, so there is no desktop to drive" >&2; exit 1; }
+}
+
+# Run a command in the browser container and print what it printed.
+#
+# As `abc`, the desktop session's own user: X, the session bus and PulseAudio all belong to it,
+# and root cannot read that session's environment. The timeout argument is the harness's, in
+# milliseconds, kept so the call sites read the same; kubectl gets it in seconds.
+sidecar_exec() {
+  api
+  local cmd="$1" timeout="${2:-120000}"
+  local seconds=$(( (timeout + 999) / 1000 ))
+
+  timeout "$seconds" kubectl exec -n "$A11Y_NS" "$A11Y_POD" -c "$A11Y_CONTAINER" -- \
+    setpriv --reuid 1000 --regid 1000 --clear-groups /bin/bash -lc "$cmd" 2>&1
+}
+
+# Quote the args back into one shell string for the sidecar.
+quote_args() {
+  local out=''
+  for arg in "$@"; do out="$out $(printf '%q' "$arg")"; done
+  echo "$out"
+}
+
+# The packages each tier adds, in the order they stack. The same lists the harness installs.
+A11Y_PKGS_atspi='at-spi2-core|dbus-x11|gir1.2-atspi-2.0|python3-gi|python3-pyatspi'
+A11Y_PKGS_speech='espeak-ng|speech-dispatcher|speech-dispatcher-espeak-ng|pulseaudio-utils|sox'
+A11Y_PKGS_orca='orca'
+
+# The tier is env on the browser container, and env is fixed when a pod is made - so changing it
+# is a change to the Deployment and a new pod. That costs whatever the browser had open, which
+# is why the tier is reported rather than changed when nobody asked for a change.
+#
+# `atspi` and `speech` are installed by default (see the rancher-dev App), so this is mostly for
+# `orca`, which is 200MB and a screen reader nobody needs until they do.
+cmd_tier() {
+  api
+  local want="$1"
+
+  if [ -z "$want" ]; then
+    kubectl get deploy "$A11Y_NS" -n "$A11Y_NS" -o jsonpath="{.spec.template.spec.containers[?(@.name=='browser')].env[?(@.name=='A11Y_TIER')].value}" 2>/dev/null
+    echo
+    return
+  fi
+
+  local packages='' wayland=''
+
+  case "$want" in
+    off) packages='' ;;
+    atspi) packages="$A11Y_PKGS_atspi" ;;
+    speech) packages="$A11Y_PKGS_atspi|$A11Y_PKGS_speech" ;;
+    # Orca drives libwnck and XInput, which fail on this image's rootless Xwayland, so the top
+    # tier is also the one that puts the desktop back on X11.
+    orca) packages="$A11Y_PKGS_atspi|$A11Y_PKGS_speech|$A11Y_PKGS_orca"; wayland=false ;;
+    *) echo "tier must be off, atspi, speech or orca" >&2; exit 2 ;;
+  esac
+
+  echo "Setting the accessibility tier to $want. This replaces the browser container, and its"
+  echo "first boot installs the packages, which takes a few minutes. Anything open in it is lost."
+
+  local mods=''
+  [ -n "$packages" ] && mods=linuxserver/mods:universal-package-install
+
+  # `set env` rather than a hand-built patch: it edits one container's env by name and leaves
+  # everything else in the Deployment alone, which is what this is.
+  kubectl set env "deployment/$A11Y_NS" -n "$A11Y_NS" -c browser \
+    "A11Y_TIER=$want" "INSTALL_PACKAGES=$packages" "PIXELFLUX_WAYLAND=$wayland" "DOCKER_MODS=$mods" >/dev/null ||
+    { echo "the Deployment would not take the change" >&2; exit 1; }
+
+  [ "$want" = off ] && { echo "tier off"; return; }
+
+  echo "Waiting for the browser to come back..."
+  kubectl rollout status deploy "$A11Y_NS" -n "$A11Y_NS" --timeout=900s >/dev/null 2>&1 || true
+  A11Y_POD="$(kubectl get pods -n "$A11Y_NS" -l "app=$A11Y_NS" --field-selector=status.phase=Running -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null)"
+  echo "browser pod: ${A11Y_POD:-(not up yet)}"
+  # The packages land during container init, but the bus only exports a tree once something
+  # claims to be an AT.
+  sidecar_exec '/opt/a11y/a11y.sh enable' 120000
+}
+
+# --- driving the desktop ----------------------------------------------------
+#
+# Everything below exists because a real screen reader and a real DevTools
+# extension panel are not reachable over CDP. Orca only speaks when *platform*
+# focus moves, and an extension panel is not a CDP target at all, so the only
+# way in is the sidecar's X session: xdotool for input, xwd for capture.
+
+# The browser window id, or empty. --class survives the title changing as the
+# page navigates, which --name does not.
+BROWSER_WIN='W=$(xdotool search --onlyvisible --class chromium 2>/dev/null | head -1)'
+
+cmd_desktop() {
+  [ -n "$1" ] || { echo 'usage: a11y desktop "<shell command>"' >&2; exit 2; }
+  sidecar_exec "export DISPLAY=:1; $1" "${2:-300000}"
+}
+
+cmd_focus() {
+  cmd_desktop "$BROWSER_WIN
+    [ -n \"\$W\" ] || { echo 'no chromium window on :1'; exit 1; }
+    xdotool windowactivate \"\$W\"; sleep 1
+    echo \"window \$W  \$(xdotool getwindowname \"\$W\")\"" 60000
+}
+
+# Move, verify, then click. The verify is the point: if the X framebuffer is
+# smaller than the window (which happens after a resolution change), the pointer
+# is silently clamped and every click past the edge lands somewhere else. That
+# failure looks exactly like "the button did nothing", so it is worth one probe.
+cmd_click() {
+  local x="$1" y="$2"
+  case "$x$y" in ''|*[!0-9]*) echo 'usage: a11y click X Y' >&2; exit 2 ;; esac
+  cmd_desktop "xdotool mousemove $x $y; sleep 0.3
+    eval \$(xdotool getmouselocation --shell)
+    if [ \"\$X\" != $x ] || [ \"\$Y\" != $y ]; then
+      echo \"pointer clamped to \$X,\$Y (asked for $x,$y) - run 'a11y screen' and refit the window\"
+      exit 1
+    fi
+    xdotool click 1; sleep 0.5
+    echo \"clicked $x,$y\"" 60000
+}
+
+cmd_shot() {
+  local name="${1:?usage: a11y shot NAME}" dir=/workspace/artifacts/a11y
+  mkdir -p "$dir"
+  rm -f "$dir/$name.xwd"
+  cmd_desktop "mkdir -p /artifacts/a11y && xwd -root -silent -out /artifacts/a11y/$name.xwd && echo captured" 120000
+  [ -s "$dir/$name.xwd" ] || { echo "nothing captured at $dir/$name.xwd" >&2; return 1; }
+  ffmpeg -hide_banner -loglevel error -y -i "$dir/$name.xwd" "$dir/$name.png" || return 1
+  rm -f "$dir/$name.xwd"
+  echo "$dir/$name.png  $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$dir/$name.png")"
+}
+
+# With no argument this reports; with WxH it resizes. Either way it ends by
+# probing where the pointer can actually reach and fitting the browser window
+# inside that, because the framebuffer is what bounds the pointer and it does
+# not always follow the mode.
+cmd_screen() {
+  local mode="$1" set_mode=''
+  if [ -n "$mode" ]; then
+    case "$mode" in
+      [0-9]*x[0-9]*) ;;
+      *) echo 'usage: a11y screen [WIDTHxHEIGHT]' >&2; exit 2 ;;
+    esac
+    set_mode="xrandr --output screen --mode $mode 2>/dev/null ||
+      { xrandr --newmode '$mode' \$(cvt \${mode%x*} \${mode#*x} 60 | sed -n '2s/^Modeline \"[^\"]*\" //p') 2>/dev/null
+        xrandr --addmode screen '$mode' 2>/dev/null
+        xrandr --output screen --mode '$mode' 2>&1 | head -2; }
+      sleep 3"
+  fi
+  cmd_desktop "mode=$mode
+    $set_mode
+    read SW SH <<< \$(xrandr | sed -n 's/.*current \([0-9]*\) x \([0-9]*\).*/\1 \2/p')
+    echo \"screen \${SW}x\${SH}\"
+    # Aim at the last addressable pixel, not at a huge number: xdotool wraps a
+    # coordinate past the screen back to 0 and the probe would read as clamped.
+    xdotool mousemove \$((SW - 1)) \$((SH - 1)); sleep 0.3
+    eval \$(xdotool getmouselocation --shell)
+    echo \"pointer reaches \$X,\$Y\"
+    if [ \"\$X\" -lt \$((SW - 1)) ] || [ \"\$Y\" -lt \$((SH - 1)) ]; then
+      echo 'the framebuffer is smaller than the mode: keep the window inside the pointer bounds'
+    fi
+    $BROWSER_WIN
+    if [ -n \"\$W\" ] && [ \"\$X\" -gt 400 ] && [ \"\$Y\" -gt 400 ]; then
+      xdotool windowmove \"\$W\" 0 0 windowsize \"\$W\" \$((X + 1)) \$((Y + 1)); sleep 2
+      xdotool getwindowgeometry --shell \"\$W\" | grep -E 'WIDTH|HEIGHT' | tr '\n' ' '; echo
+    fi" 120000
+}
+
+case "${1:-}" in
+  ''|-h|--help|help) usage ;;
+  axtree|ax) shift; exec node /workspace/axtree.mjs "$@" ;;
+  tier) shift; cmd_tier "$@" ;;
+  screen) shift; cmd_screen "$@" ;;
+  focus) cmd_focus ;;
+  click) shift; cmd_click "$@" ;;
+  shot) shift; cmd_shot "$@" ;;
+  desktop) shift; cmd_desktop "$@" ;;
+  status|tree|say|record|orca|speech|enable|key|type)
+    # Orca and recordings can sit for a while; the tree dump is quick.
+    sidecar_exec "/opt/a11y/a11y.sh$(quote_args "$@")" 300000 ;;
+  *) echo "unknown command: $1" >&2; usage; exit 2 ;;
 esac

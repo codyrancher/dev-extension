@@ -55,6 +55,12 @@ for (const [rel, raw] of Object.entries(seed)) {
   } else if (rel === 'CLAUDE.md.hbs') {
     dests = ['/workspace/CLAUDE.md'];
     text = `${ text.trimEnd() }\n\n${ render(seed['CLAUDE.dev.md'] || '') }`;
+  } else if (rel.startsWith('browser-a11y/')) {
+    // The accessibility stack the *browser* container runs: AT-SPI, speech and Orca are
+    // session-local, so they live over there and this side only calls them (bin/a11y). The
+    // browser mounts these two directories from the same volume - `init` as its own
+    // /custom-cont-init.d, so the session bus is up before Chromium starts.
+    dests = [path.join('/workspace/.a11y', rel.slice('browser-a11y/'.length) === path.basename(rel) ? 'opt' : 'init', path.basename(rel))];
   } else if (rel === 'bin/browser.mjs' || rel === 'bin/axtree.mjs') {
     dests = [path.join('/workspace', path.basename(rel))];
   } else if (rel.startsWith('bin/')) {
@@ -66,7 +72,7 @@ for (const [rel, raw] of Object.entries(seed)) {
   for (const dest of dests) {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, text);
-    if (rel.startsWith('bin/') || dest.endsWith('.mjs')) {
+    if (rel.startsWith('bin/') || rel.startsWith('browser-a11y/') || dest.endsWith('.mjs')) {
       fs.chmodSync(dest, 0o755);
     }
     written++;
