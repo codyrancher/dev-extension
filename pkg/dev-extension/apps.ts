@@ -349,6 +349,11 @@ const WORKSPACE_SCRIPT = [
   `mkdir -p ${ WORKSPACE_HOME }`,
   `chown node:node /workspace ${ WORKSPACE_HOME } 2>/dev/null || true`,
   '[ -f /workspace/.owned ] || (chown -R node:node /workspace 2>/dev/null; touch /workspace/.owned)',
+  // The browser mounts .a11y/opt and .a11y/init as subPaths, and the kubelet creates a missing
+  // subPath directory as root - which is the pod that came up with the seed unable to write the
+  // accessibility scripts into it (EACCES in layout.mjs) and a browser with an empty /opt/a11y.
+  // Make them here, as node, before the seed runs.
+  'mkdir -p /workspace/.a11y/opt /workspace/.a11y/init && chown -R node:node /workspace/.a11y 2>/dev/null || true',
   `[ -f /seed/terminal-tools.sh ] && (HOME_DIR=${ WORKSPACE_HOME } /bin/sh /seed/terminal-tools.sh >/workspace/.terminal-tools.log 2>&1 &) || true`,
   // What a recording and a CI-style check need and the image lacks: ffmpeg (browser.mjs
   // record), jq, lsof and ss. Root's to install and the rootfs is the pod's, so on every boot,
@@ -637,12 +642,14 @@ export function rancherWorkspaceApp(): Json {
             '              value: linuxserver/mods:universal-package-install',
             '            - name: INSTALL_PACKAGES',
             '              value: ${a11yPackages}',
-            // AT-SPI lives on the D-Bus *session* bus, and this image starts only a system
-            // one. The init hook below makes a session bus at this address; setting it as
-            // container env is what puts the compositor, Chromium and the tooling on the same
-            // bus. See browser-a11y/init/10-a11y-session-bus.sh in the seed.
-            '            - name: DBUS_SESSION_BUS_ADDRESS',
-            '              value: unix:path=/tmp/a11y-session-bus',
+            // AT-SPI lives on the D-Bus *session* bus. The X11 desktop starts one itself
+            // (`dbus-launch --exit-with-session`, in the image's startwm.sh) and everything it
+            // launches - Chromium included - inherits the address, so the tooling can read
+            // that address back off the running browser and land on the same bus. Wayland
+            // starts no session bus at all, which is why accessibility means X11 here; X is
+            // also what xdotool needs for `a11y key` and `a11y type`.
+            '            - name: PIXELFLUX_WAYLAND',
+            '              value: "false"',
             '          volumeMounts:',
             '            - name: dshm',
             '              mountPath: /dev/shm',

@@ -20,8 +20,20 @@ _env_of() {
 }
 
 # The browser process is the one that definitely has a working session.
+#
+# "The browser process" is specifically the one Chromium started first: its
+# renderers and its zygotes carry `--type=`, and they are launched with a
+# trimmed environment, so reading a session address off one of those gets you
+# nothing. `pgrep -f chromium` also matches the shell that is asking the
+# question (its own command line contains the word), so match the process name.
 a11y_session_pid() {
-  pgrep -u "$A11Y_UID" -f 'chromium' 2>/dev/null | head -1
+  local pid
+  for pid in $(pgrep -u "$A11Y_UID" -x 'chromium|chrome|chromium-browse' 2>/dev/null); do
+    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -q '^--type=' && continue
+    echo "$pid"
+    return 0
+  done
+  return 1
 }
 
 a11y_load_session() {
@@ -111,6 +123,31 @@ for i in range(d.childCount):
     if app is not None and app.name:
         print(app.name)
 ' 2>/dev/null
+}
+
+# Restart the browser so it joins the accessibility bus.
+#
+# Chromium is not supervised in this image: the desktop service starts it from
+# openbox's autostart, so `pkill chromium` leaves the session with no browser at
+# all and nothing brings it back - the pod looks alive, the stream is a grey
+# desktop, and every tree dump comes back empty. Restarting the desktop service
+# is what actually relaunches it, with the CHROME_CLI flags the pod was defined
+# with, and it works the same under X11 and Wayland.
+#
+# The session bus is a child of that service, so its address changes here.
+# Everything in this file re-reads the address per call, which is why that is
+# safe - but it does mean the bus properties have to be set again afterwards.
+a11y_restart_browser() {
+  local dir
+  for dir in /run/service/svc-de /var/run/service/svc-de /run/s6/services/svc-de; do
+    if [ -d "$dir" ]; then
+      s6-svc -r "$dir" >/dev/null 2>&1 && return 0
+    fi
+  done
+  # No s6 (or a differently-named service): fall back to killing it and hoping
+  # something supervises it after all.
+  pkill -u "$A11Y_UID" -x chromium 2>/dev/null
+  return 0
 }
 
 # Where recordings and dumps go. This is a bind mount of the project's
