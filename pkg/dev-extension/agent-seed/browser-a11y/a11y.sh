@@ -83,7 +83,7 @@ cmd_enable() {
   a11y_restart_browser
   for _ in $(seq 1 30); do
     sleep 3
-    [ -n "$(a11y_session_pid)" ] || continue
+    [ -n "$(a11y_browser_pid)" ] || continue
     # The restart brought a new session bus with it, so announce the AT again
     # before asking: the properties are per-bus, and the old bus is gone.
     a11y_enable_bus
