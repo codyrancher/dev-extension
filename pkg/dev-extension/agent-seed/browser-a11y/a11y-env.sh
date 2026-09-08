@@ -13,23 +13,66 @@
 A11Y_USER="${A11Y_USER:-abc}"
 A11Y_UID="$(id -u "$A11Y_USER" 2>/dev/null || echo 1000)"
 
+# Read a file as the desktop user.
+#
+# /proc/PID/environ is readable by the process's own uid or by CAP_SYS_PTRACE,
+# and this container's root has no CAP_SYS_PTRACE - so root, which is what
+# `kubectl exec` gives us, is refused on every process in the session. Being
+# `abc` is what makes the read work, and the redirection has to happen inside
+# that user's shell, not in root's.
+a11y_read_as_user() {
+  local file="$1"
+  if [ "$(id -u)" = "$A11Y_UID" ]; then
+    cat "$file" 2>/dev/null
+  else
+    setpriv --reuid "$A11Y_UID" --regid "$A11Y_UID" --clear-groups \
+      /bin/sh -c "cat '$file' 2>/dev/null"
+  fi
+}
+
 # Read one variable out of a running process's environment.
 _env_of() {
   local pid="$1" var="$2"
-  tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n "s/^${var}=//p" | head -1
+  a11y_read_as_user "/proc/$pid/environ" | tr '\0' '\n' | sed -n "s/^${var}=//p" | head -1
 }
 
-# The browser process is the one that definitely has a working session.
+# Chromium's own browser process — the one the desktop started, not a renderer
+# or a zygote (those carry `--type=`). This is what "is there a browser at all"
+# means everywhere below.
 #
-# "The browser process" is specifically the one Chromium started first: its
-# renderers and its zygotes carry `--type=`, and they are launched with a
-# trimmed environment, so reading a session address off one of those gets you
-# nothing. `pgrep -f chromium` also matches the shell that is asking the
-# question (its own command line contains the word), so match the process name.
+# The `[c]` is the usual pgrep guard: it matches `chromium` without matching the
+# command line asking the question.
+a11y_browser_pid() {
+  local pid
+  for pid in $(pgrep -u "$A11Y_UID" -f '[c]hromium' 2>/dev/null); do
+    [ "$pid" = "$$" ] && continue
+    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -q '^--type=' && continue
+    echo "$pid"
+    return 0
+  done
+  return 1
+}
+
+# A process in the desktop session whose environment we can actually read.
+#
+# Not necessarily the browser: Chromium marks its processes non-dumpable, which
+# makes /proc/PID/environ root-owned, so `abc` reading its own browser gets
+# EACCES. Its launcher script (wrapped-chromium), openbox and labwc are in the
+# same session with the same variables and no such protection, so prefer
+# whichever of them answers — the address, the display and the runtime dir are
+# what we came for, and they are identical across the session.
 a11y_session_pid() {
   local pid
-  for pid in $(pgrep -u "$A11Y_UID" -x 'chromium|chrome|chromium-browse' 2>/dev/null); do
+  for pid in $(pgrep -u "$A11Y_UID" -f '[c]hromium' 2>/dev/null) \
+             $(pgrep -u "$A11Y_UID" -f '[o]penbox' 2>/dev/null) \
+             $(pgrep -u "$A11Y_UID" -f '[l]abwc' 2>/dev/null); do
+    [ "$pid" = "$$" ] && continue
     tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -q '^--type=' && continue
+    # Read it, rather than testing the file: /proc entries report size 0, so `-s`
+    # rejects every candidate, and a readable mode says nothing about a process
+    # Chromium marked non-dumpable (root-owned /proc entry) or one that exited
+    # between the pgrep and here.
+    [ -n "$(a11y_read_as_user "/proc/$pid/environ" | head -c 1)" ] || continue
     echo "$pid"
     return 0
   done
@@ -39,10 +82,6 @@ a11y_session_pid() {
 a11y_load_session() {
   local pid
   pid="$(a11y_session_pid)"
-  if [ -z "$pid" ]; then
-    # No browser: fall back to openbox, which owns the session bus itself.
-    pid="$(pgrep -u "$A11Y_UID" -f 'openbox' 2>/dev/null | head -1)"
-  fi
   if [ -n "$pid" ]; then
     export DISPLAY="$(_env_of "$pid" DISPLAY)"
     export DBUS_SESSION_BUS_ADDRESS="$(_env_of "$pid" DBUS_SESSION_BUS_ADDRESS)"
