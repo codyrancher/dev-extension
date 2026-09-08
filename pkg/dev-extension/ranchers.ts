@@ -155,6 +155,21 @@ function shortenTransition(message: string): string {
 export const RANCHER_SINGLE_APP = 'rancher-single';
 
 /**
+ * The node a new Rancher gets: 16 GB of memory and a 100 GB root, up from Apps Plus's default
+ * of `c5d.xlarge` (8 GB) and 50 GB (see apps-plus cluster-template.ts). Rancher, an RKE2 node
+ * and a dashboard build sharing one machine want the headroom - a node that runs out of memory
+ * or disk comes up wedged rather than merely slow, which is worse to diagnose than to pay for.
+ * `c5d.2xlarge` keeps the same instance family as the default, so the AMI, the NVMe root and the
+ * driver behaviour are unchanged; only the size grows. Passed as the installation's values,
+ * which override the cluster template's defaults; everything not named here (region, VPC, subnet,
+ * credential) keeps its default.
+ */
+export const RANCHER_INSTANCE_VALUES: Record<string, string> = {
+  instanceType: 'c5d.2xlarge',
+  rootSize:     '100',
+};
+
+/**
  * Where an instance is reached: `<name>.dev-extension.<node ip>.sslip.io`. The shape is the
  * App's (its 60-github-auth.yaml): sslip.io resolves any name with an IP in it, the ingress
  * serves every host, and the GitHub app shared with this Rancher takes that exact URL's
@@ -207,7 +222,7 @@ export async function createRancherInstance(store: Store, name: string, app = RA
     type:     APP_INSTANCE,
     metadata: { name: clean, labels: { 'dev.rancher.io/kind': 'rancher' } },
     spec:     {
-      app, provisionCluster: { enabled: true }, targets: [], values: {},
+      app, provisionCluster: { enabled: true }, targets: [], values: { ...RANCHER_INSTANCE_VALUES },
     },
   });
 
