@@ -10,7 +10,7 @@
 import { Banner } from '@components/Banner';
 import AsyncButton from '@shell/components/AsyncButton';
 import {
-  previewState, removePreview, shareWorkspace, previewBase, retargetPreview, rebuildPreview, LOCAL_HOST
+  previewState, removePreview, shareWorkspace, previewBase, retargetPreview, rebuildPreview, preferredShareHost, LOCAL_HOST
 } from '../previews';
 import { buildShare, shareStatus, workspaceBranches } from '../workspace-tools';
 import { talksToDefault, listRanchers } from '../ranchers';
@@ -90,11 +90,10 @@ export default {
       // The starred Rancher (the sidebar's Ranchers list), else the one this page is on.
       this.rancher = await talksToDefault(this.$store);
       this.ranchers = (await listRanchers(this.$store).catch(() => [])).filter((r) => r.url);
-      // Hosted where the starred Rancher is, when that is one of the sidebar's: a link on the
-      // open internet is what a share is for, and that is where one can be.
-      const starred = this.ranchers.find((r) => r.kind === 'instance' && r.url === this.rancher && r.clusterId);
-
-      this.hostOn = starred?.clusterId || 'local';
+      // Hosted on a Rancher of the sidebar's whenever there is one up: a link on the open
+      // internet is what a share is for, and that is where one can be. This cluster only serves
+      // through its own proxy, which asks a reviewer for a login they do not have.
+      this.hostOn = (await preferredShareHost(this.$store)).id;
       await this.readBranch();
     },
 
@@ -253,9 +252,20 @@ export default {
     /** This cluster, and every Rancher of the sidebar's that is up: those have a public name to serve on. */
     hostOptions() {
       return [
+        ...this.ranchers.filter((r) => r.kind === 'instance' && r.phase === 'ready' && r.clusterId).map((r) => ({ id: r.clusterId, label: `${ r.name } · public link, no login` })),
         { id: 'local', label: 'This cluster · link needs a login here' },
-        ...this.ranchers.filter((r) => r.kind === 'instance' && r.phase === 'ready' && r.clusterId).map((r) => ({ id: r.clusterId, label: `${ r.name } · public link` })),
       ];
+    },
+
+    /** Whether the next build would move a share that is already up: it is served somewhere else. */
+    movesOnBuild(kind) {
+      const state = this.stateOf(kind);
+
+      if (!state?.exists) {
+        return false;
+      }
+
+      return (state.hostedOn || 'local') !== this.hostOn;
     },
 
     hostFor(id) {
@@ -445,6 +455,30 @@ export default {
               >stale · branch is at <code>{{ stale(k.kind).head }}</code></span>
             </dd>
           </template>
+
+          <dt>Served on</dt>
+          <dd>
+            <div class="workspace-share__pick">
+              <select
+                v-model="hostOn"
+                class="workspace-share__select"
+                aria-label="Where the share is served"
+                :data-testid="`share-host-${ k.kind }`"
+              >
+                <option
+                  v-for="h in hostOptions()"
+                  :key="h.id"
+                  :value="h.id"
+                >
+                  {{ h.label }}
+                </option>
+              </select>
+              <span
+                v-if="movesOnBuild(k.kind)"
+                class="text-muted workspace-share__hint"
+              >{{ hostOn === 'local' ? 'building moves it here' : `building moves it to ${ hostLabel(hostOn) }` }}</span>
+            </div>
+          </dd>
 
           <template v-if="stateOf(k.kind) && stateOf(k.kind).exists">
             <dt>Link</dt>

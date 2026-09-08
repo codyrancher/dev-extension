@@ -17,7 +17,7 @@ import { PREVIEW_APP } from './apps';
 import {
   buildShare, workspaceBranch, readInWorkspace, workspaceTarget
 } from './workspace-tools';
-import { defaultRancher, talksToDefault, ownRancherUrl } from './ranchers';
+import { defaultRancher, talksToDefault, ownRancherUrl, listRanchers } from './ranchers';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -65,6 +65,31 @@ export interface ShareHost {
 }
 
 export const LOCAL_HOST: ShareHost = { id: 'local', fleet: 'local', ip: '' };
+
+/**
+ * Where a share should be served from, when nobody says otherwise: a Rancher of the sidebar's.
+ *
+ * That is the whole point of a share - a reviewer opens it without an account here. On this
+ * cluster the only way in is this Rancher's service proxy, which asks for a login and is not a
+ * link anyone outside can use; a Rancher instance has a public node and an ingress, so its
+ * share gets an `<name>.dev-extension.<ip>.sslip.io` address that simply opens.
+ *
+ * The starred Rancher wins when it is up, since that is the one everything else here is
+ * pointed at; otherwise any Rancher that is up will do. Only when there is none at all does a
+ * share fall back to this cluster.
+ */
+export async function preferredShareHost(store: Store): Promise<ShareHost> {
+  const ranchers = await listRanchers(store).catch(() => []);
+  const public_ = ranchers.filter((rancher) => rancher.kind === 'instance' && rancher.phase === 'ready' && rancher.clusterId && rancher.nodeIp);
+
+  if (!public_.length) {
+    return LOCAL_HOST;
+  }
+  const starred = await defaultRancher().catch(() => '');
+  const pick = public_.find((rancher) => rancher.url === starred) || public_[0];
+
+  return { id: pick.clusterId as string, fleet: pick.name, ip: pick.nodeIp as string };
+}
 
 /** The public name a share gets on a Rancher's cluster: the same shape as the Rancher's own. */
 export function shareHostname(workspace: string, kind: ShareKind, host: ShareHost): string {
@@ -207,7 +232,7 @@ export async function ensureDefaultShare(store: Store, workspace: string, cluste
   const state = await previewState(store, workspace, cluster, 'dashboard');
 
   if (!state.exists) {
-    await shareWorkspace(store, workspace, 'dashboard', await talksToDefault(store), cluster);
+    await shareWorkspace(store, workspace, 'dashboard', await talksToDefault(store), cluster, await preferredShareHost(store));
   }
   await readInWorkspace(workspace, 'mkdir -p /workspace/.share && touch /workspace/.share/auto');
 }
