@@ -5,7 +5,7 @@ description: Push a committed fix and open a draft pull request upstream to ranc
 
 Mechanics only. This skill gets a committed fix onto a branch, gets its media hosted, opens the draft PR, and proves the result renders correctly. **What the body says is `my-pr-fill-template`'s job**, including the template itself, the word budgets, the setup block and the checklist policy. Do not compose a body here, and do not fine-tune the wording rules here; edit that skill instead.
 
-The steps are in order. Step 3 needs a URL from step 1 or an existing PR, and step 4 needs the hrefs from step 3.
+The steps are in order. Step 2 needs a PR URL to host media on (step 1's, or any open PR); step 4 needs the hrefs from step 2 and the preview URLs from step 3; step 5 needs the body step 4 writes.
 
 ## 1. Branch and push
 
@@ -42,7 +42,7 @@ Every recorded file goes to GitHub's `user-attachments` CDN through the **browse
 
    Run `my-video-censor-ip` over the videos first if the dev IP is visible anywhere in frame. Once uploaded, an asset is public and cannot be revoked.
 
-4. Parse the tab-separated output; each line is `filename\thref`. Keep those lines: they are an input to step 3.
+4. Parse the tab-separated output; each line is `filename\thref`. Keep those lines: they are an input to step 4.
 
 5. Verify each href actually resolves before relying on it, since an unconfirmed asset returns 404 only later, once the PR is already published:
 
@@ -87,13 +87,23 @@ gh release create issue-$(issueNumber)-artifacts --repo <fork> \
 # ![before](https://github.com/<fork>/releases/download/issue-$(issueNumber)-artifacts/before-fix.webp)
 ```
 
-## 3. Fill the template
+## 3. Build the shareable preview
 
-Invoke **`my-pr-fill-template`**. Give it the issue number, the branch diff, the `filename\thref` lines from step 2 (or the placeholder block), the jest paths covering the change, and the fixture you tested with. It writes the finished body to `/workspace/artifacts/pr-body.md`.
+Give the reviewer the change running. This is the **last build before the PR**, so the link serves exactly the code the PR ships.
+
+- **Dashboard:** run `my-server-shared-dev` and keep the URL it prints on its last line.
+- **Storybook:** run `my-server-shared-storybook` **only if the diff touches `pkg/rancher-components`** (`git diff --name-only master...HEAD | grep -q '^pkg/rancher-components/'`); otherwise skip it. Keep its URL.
+- If a skill says no preview is live yet (a one-time Share-tab click is needed), carry that instead of a URL and mention it at handover.
+
+The link is a **static build**: if you change the code after this, re-run the relevant share skill before you finish, or the link shows stale work. Whenever a follow-up commit lands on this PR (see `my-pr-address-feedback`), the share is rebuilt for the same reason.
+
+## 4. Fill the template
+
+Invoke **`my-pr-fill-template`**. Give it the issue number, the branch diff, the `filename\thref` lines from step 2 (or the placeholder block), the jest paths covering the change, the fixture you tested with, and the preview URL(s) from step 3 (dashboard always; Storybook only when the diff touched `pkg/rancher-components`). It writes the finished body to `/workspace/artifacts/pr-body.md`.
 
 Do not shortcut this by writing a body yourself. The word budget, the reproducible setup block and the checklist policy all live there, and a hand-rolled body reliably misses at least one.
 
-## 4. Create the draft PR
+## 5. Create the draft PR
 
 ```bash
 gh pr create --repo rancher/dashboard --draft \
@@ -102,9 +112,9 @@ gh pr create --repo rancher/dashboard --draft \
 
 Always `--body-file`, never `--body` with a heredoc: a piped body mangles the fixture YAML's indentation and eats backticks, and you only find out once the PR is public.
 
-Open it as a draft here regardless, so steps 5 and 6 run before anyone is asked to look. **A PR that is not an issue fix then stays a draft** - do not mark it ready, the user does that once they have read the description. **A PR that fixes an issue is completed and routed instead** - see step 6.
+Open it as a draft here regardless, so steps 6 and 7 run before anyone is asked to look. **A PR that is not an issue fix then stays a draft** - do not mark it ready, the user does that once they have read the description. **A PR that fixes an issue is completed and routed instead** - see step 7.
 
-## 5. Verify the published body
+## 6. Verify the published body
 
 `grep -c` proves the source is right, not that GitHub renders it right. Do both.
 
@@ -134,7 +144,7 @@ Expect exactly one task list with `li=9`, `p-wrapped=0` (a non-zero `p-wrapped` 
 
 Anything wrong here is a body problem: fix `/workspace/artifacts/pr-body.md` and `gh pr edit <PR> --body-file` it, rather than patching the live body by hand.
 
-## 6. Hand over
+## 7. Hand over
 
 `.github/workflows/valid-pr.yaml` runs a job named **`Description`** that executes `.github/workflows/scripts/pr-check-checklist.sh`, which fails the moment **any** box is `[ ]`:
 
