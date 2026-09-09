@@ -1113,8 +1113,27 @@ export async function pruneWorkspaceTrees(keep: string[]): Promise<string[]> {
     await removeWorkspaceTree(name);
     removed.push(name);
   }
+  await pruneModuleTemplates();
 
   return removed;
+}
+
+/**
+ * Keep a few node_modules templates, not one per lockfile ever seen.
+ *
+ * A template costs nothing while a workspace is linked to it - the files are the same inodes -
+ * but the moment the last workspace on that lockfile goes, the gigabyte is the template's alone.
+ * rancher/dashboard's lockfile changes often enough that "one per lockfile, for ever" is a leak
+ * with a slow fuse.
+ *
+ * Three, newest first: enough that a workspace made from a slightly older branch still links,
+ * few enough that the set stays bounded. A template that is still shared costs nothing to keep
+ * and nothing to delete - the inodes survive in the workspaces that link them.
+ */
+async function pruneModuleTemplates(keep = 3): Promise<void> {
+  await inAgentPod(
+    `cd /workspaces/.shared/template 2>/dev/null && ls -1dt */ 2>/dev/null | tail -n +${ keep + 1 } | xargs -r rm -rf; echo TEMPLATES-PRUNED`,
+  ).catch(() => '');
 }
 
 /**
