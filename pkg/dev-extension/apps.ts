@@ -370,7 +370,14 @@ const WORKSPACE_SCRIPT = [
     'export YARN_CACHE_FOLDER=$WS/.yarn-cache',
     // `\${repo}` and `\${port}` are Apps Plus's to substitute when the App is rendered, so
     // they are written as text here rather than interpolated.
-    '[ -d $WS/dashboard/.git ] || git clone --depth 1 https://github.com/${repo} $WS/dashboard',
+    //
+    // init + fetch, not `git clone`, because clone refuses a non-empty directory and this one is
+    // not reliably empty: the agent seed writes the workspace's `.claude` (skills, rules) into
+    // the checkout, and if that lands first - it is a separate trigger racing this boot - a clone
+    // would fail and leave the pod serving nothing. Fetching into the dir git-inits works whatever
+    // is already there; `checkout -f` lays the tracked files over the top and leaves the seed's
+    // untracked ones (which `.git/info/exclude` keeps out of status anyway).
+    '[ -d $WS/dashboard/.git ] || ( mkdir -p $WS/dashboard && cd $WS/dashboard && git init -q && { git remote add origin https://github.com/${repo} 2>/dev/null || true; } && D=$(git ls-remote --symref origin HEAD | sed -n "s@^ref: refs/heads/\\(.*\\)[[:space:]]HEAD@\\1@p") && git fetch --depth 1 origin "$D" && git checkout -f -B "$D" FETCH_HEAD )',
     'cd $WS/dashboard',
     '[ -f .install-done ] || (yarn install --network-timeout 600000 && touch .install-done)',
     // An earlier App wrote its config over the checkout's vue.config.js; a checkout that boot
