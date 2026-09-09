@@ -236,11 +236,22 @@ async function ensureTools(target: WorkspaceTarget): Promise<void> {
  * Kept in the workspace's .env and checked against the API before it is reused, so a token that was
  * revoked is replaced rather than handed on.
  */
-async function rancherToken(target: WorkspaceTarget): Promise<string> {
+async function rancherToken(target: WorkspaceTarget, browserRancher = ''): Promise<string> {
+  const browser = /^https?:\/\/[^'\s]+$/.test(browserRancher) ? browserRancher.replace(/\/+$/, '') : '';
   const existing = (await asRoot(target, [
     `T=$(grep '^RANCHER_TOKEN=' ${ ENV_FILE } 2>/dev/null | cut -d= -f2-)`,
     'U="${API:-$RANCHER_URL}"',
-    'if [ -n "$T" ] && [ -n "$U" ] && [ "$(curl -sk -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $T" "$U/v3/users?me=true")" = 200 ]; then echo "$T"; fi',
+    `BR='${ browser }'`,
+    `PREV=$(grep '^RANCHER_URL=' ${ ENV_FILE } 2>/dev/null | cut -d= -f2-)`,
+    // Reused when it still answers on any host it might be for - its target, the one .env
+    // records, or the browser's Rancher - not only on $U. A token that is good against the
+    // parent must not be thrown away and re-minted on every call just because the workspace's
+    // own target is a downstream it does not match; ensureEnvironment writes the host it is for.
+    '[ -n "$T" ] || exit 0',
+    'for C in "$U" "$PREV" "$BR"; do',
+    '  [ -n "$C" ] || continue',
+    '  if [ "$(curl -sk -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $T" "$C/v3/users?me=true")" = 200 ]; then echo "$T"; exit 0; fi',
+    'done',
   ].join('\n'))).trim();
 
   if (existing) {
@@ -258,14 +269,41 @@ async function rancherToken(target: WorkspaceTarget): Promise<string> {
 /**
  * The workspace's .env, ~/.bashrc, gh's hosts.yml, git's credential store and a kubeconfig: the
  * harness's init.sh, minus the parts a Rancher of one's own needed.
+ *
+ * `browserRancher` is the origin of the Rancher this dashboard is open on, and it exists to keep
+ * `.env` from going stale in the one way it used to: the token is minted against that origin
+ * (devFetch sends a relative path), while the host written into `.env` was always the pod's own
+ * `$API` - the Rancher the workspace was built to develop against. When the two are different
+ * Ranchers - the person is on the parent, the workspace targets a downstream it manages - the
+ * token is the parent's and the URL is the downstream's, so every call in the workspace comes
+ * back 401 and stays there, because re-minting produces another parent token. So rather than
+ * write a fixed host, this writes the host the token actually answers 200 on: the workspace's
+ * own target first, since that is what its dev server runs against, then the browser's Rancher
+ * as the fallback the freshly-minted token is for. Only the broken case changes; a token that
+ * already matches its target is left exactly as it was.
  */
-async function ensureEnvironment(target: WorkspaceTarget, github: string): Promise<void> {
-  const rancher = await rancherToken(target);
+async function ensureEnvironment(target: WorkspaceTarget, github: string, browserRancher = ''): Promise<void> {
+  const rancher = await rancherToken(target, browserRancher);
   const login = github ? (await ghLogin(github)).login : '';
+  const browser = /^https?:\/\/[^'\s]+$/.test(browserRancher) ? browserRancher.replace(/\/+$/, '') : '';
 
   const out = await asRoot(target, [
     'set -e',
     'U="${API:-$RANCHER_URL}"',
+    `BR='${ browser }'`,
+    `T='${ rancher }'`,
+    // The host the token authenticates against, not the one the pod was built with: the
+    // workspace's own target first (its dev server runs against it), then the .env host already
+    // there, then the browser's Rancher (which is what a freshly-minted token is for). Whichever
+    // answers 200 is the one that is written; if none do the token is genuinely spent, and the
+    // intended target is kept so the file still names the right Rancher for when it is renewed.
+    `PREV=$(grep '^RANCHER_URL=' ${ ENV_FILE } 2>/dev/null | cut -d= -f2-)`,
+    'PICK=""',
+    'for C in "$U" "$PREV" "$BR"; do',
+    '  [ -n "$C" ] || continue',
+    '  if [ -n "$T" ] && [ "$(curl -sk -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $T" "$C/v3/users?me=true")" = 200 ]; then PICK="$C"; break; fi',
+    'done',
+    'if [ -n "$PICK" ]; then U="$PICK"; fi',
     'H=$(echo "$U" | sed -e "s|^https\\?://||" -e "s|/.*$||")',
     'umask 077',
     `cat > ${ ENV_FILE } <<EOF`,
@@ -386,7 +424,7 @@ export async function ensureWorkspaceReady(workspace: string, ctx?: WorkspaceCon
   await ensureBase(target);
   await ensureSeed(target, context);
   await ensureTools(target);
-  await ensureEnvironment(target, github);
+  await ensureEnvironment(target, github, typeof window === 'undefined' ? '' : window.location.origin);
   await ensureCheckout(target, context, github);
 
   return target;
