@@ -69,7 +69,7 @@ Substitute two values into the body below:
 
 - `<MARKER>` - `.auto-fix-fired` (issue) or `.auto-review-fired` (PR)
 - `<PROMPT>` - one of the two below, verbatim. Keep them short: the depth belongs in the skill, not in a shell-quoted string.
-  - **fix**: `Use the my-issue-fix skill to fix this project's issue end to end. Follow all nine phases in order and honour its gates: reproduce on video before changing anything, weigh at least two candidate root causes before editing, prove the fix with a test that fails without it, record the fix working, then commit, open the draft PR and work its checklist. You are running unattended: nobody will answer a question, so make the best-supported call, state your assumptions, and finish. If a phase cannot complete, stop there and write up what you found rather than guessing past it. Leave the PR as a draft.`
+  - **fix**: `Use the my-issue-fix skill to fix this project's issue end to end. Follow all nine phases in order and honour its gates: reproduce on video before changing anything, weigh at least two candidate root causes before editing, prove the fix with a test that fails without it, record the fix working, then commit, open the PR, and complete and route it exactly as my-pr-create and my-pr-checklist direct. You are running unattended: nobody will answer a question, so make the best-supported call, state your assumptions, and finish. If a phase cannot complete, stop there and write up what you found rather than guessing past it.`
   - **review**: `Use the my-pr-review skill to review this project's PR. Leave pending inline comments only. Do not submit the review, leave it in PENDING for the user.`
 
 ### Wrapper body (identical in both modes)

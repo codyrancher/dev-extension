@@ -1,9 +1,9 @@
 ---
 name: my-issue-fix
-description: End-to-end workflow for fixing this project's GitHub issue in rancher/dashboard. Assess the issue, record a reproduction video, weigh several candidate root causes and pick the least special-cased one, fix it, prove it with a test and an adversarial self-review, record the fix working, then commit, open a draft PR and work its checklist. Use when asked to fix, solve, or work the issue, and as the prompt the unattended auto-fix run follows.
+description: End-to-end workflow for fixing this project's GitHub issue in rancher/dashboard. Assess the issue, record a reproduction video, weigh several candidate root causes and pick the least special-cased one, fix it, prove it with a test and an adversarial self-review, record the fix working, then commit, open the PR, complete its checklist and route it for review. Use when asked to fix, solve, or work the issue, and as the prompt the unattended auto-fix run follows.
 ---
 
-Take this project's issue from "reported" to "draft PR open with its checklist worked". This skill is the spine: it owns the order, the handoffs, and the gates between phases. Each phase's depth lives in its own skill, listed below. Read the phase, invoke the skill it names, and carry its output into the next phase.
+Take this project's issue from "reported" to "PR open, checklist complete, routed to a reviewer". This skill is the spine: it owns the order, the handoffs, and the gates between phases. Each phase's depth lives in its own skill, listed below. Read the phase, invoke the skill it names, and carry its output into the next phase.
 
 The issue number is the trailing `issue-<N>` token in the project name and is recorded in `/workspace/CLAUDE.md`.
 
@@ -102,7 +102,7 @@ Nobody will answer a question. When two readings of the issue lead to materially
 
 If a phase genuinely cannot complete (the issue does not reproduce, the root cause sits in a dependency you cannot change, the fix needs a product decision), stop at that phase and write up what you found. A confident wrong fix costs the reviewer far more than an honest "here is what I learned and where I got stuck". Stopping early is a valid outcome; a fabricated one is not.
 
-The PR stays a **draft**. The user promotes it.
+You complete the PR and route it, you do not hand it back. Phase 9's `my-pr-checklist` does the work behind all 9 checklist items and ticks every one, then once CI is green sets the milestone from the linked issue, assigns `marcelofukumoto`, adds the `bot/auto-review` label, and marks the PR ready for review. Route it only when every box is honestly earned; if one cannot be, stop and say so rather than routing past it.
 
 ## Report at the end
 
@@ -114,6 +114,6 @@ Whatever happened, close with:
 - What you verified, separating what you exercised in the running UI from what you checked by reading code.
 - The test that covers it, and confirmation it fails without the fix.
 - Anything you were unsure about, and anything you deliberately left out of scope.
-- The PR link, and what is left for the user on the checklist.
+- The PR link, that its checklist is complete and it is routed to `marcelofukumoto` for review with the `bot/auto-review` label, or - if you had to stop short of routing - which box you could not earn and why.
 
 If you stopped early, say at which phase and what would unblock it.

@@ -102,7 +102,7 @@ gh pr create --repo rancher/dashboard --draft \
 
 Always `--body-file`, never `--body` with a heredoc: a piped body mangles the fixture YAML's indentation and eats backticks, and you only find out once the PR is public.
 
-**Draft, and it stays a draft.** Do not mark it ready for review; the user marks it ready themselves once they've reviewed the description.
+Open it as a draft here regardless, so steps 5 and 6 run before anyone is asked to look. **A PR that is not an issue fix then stays a draft** - do not mark it ready, the user does that once they have read the description. **A PR that fixes an issue is completed and routed instead** - see step 6.
 
 ## 5. Verify the published body
 
@@ -144,6 +144,16 @@ UNCHECKED=$(echo "$CHECKBOXES" | grep '\[ \]' || true)
 if [ -n "$UNCHECKED" ]; then echo "Checklist has not been completed"; exit 1; fi
 ```
 
-**`Description` staying red is the expected terminal state of a draft you hand over.** `The PR has a Milestone` and `The PR has a reviewer assigned` are the user's to set, so they stay unticked, so the job fails. That is correct. It goes green when the user sets the milestone and the reviewer and ticks those two boxes, and not before.
+The two paths split here, on whether the PR fixes an issue.
 
-So your handover says: the PR URL, which checklist items you left unticked and why, that the red `Description` job is those items and not a bug, and that the PR is deliberately still a draft. Then run `my-pr-checklist` to work the items that are yours.
+**An issue-fix PR (the `my-issue-fix` flow, `Fixes #N` in the body) is completed and routed, not handed back.** Run `my-pr-checklist`, which does the work behind all 9 items and ticks every one - it owns the milestone, the reviewer, the label and the ready flip. In short: it ticks all 9, and once CI is green it sets the milestone from the linked issue, assigns `marcelofukumoto`, adds the `bot/auto-review` label, and marks the PR ready:
+
+```bash
+gh pr checks <PR> -R rancher/dashboard --watch      # wait for green; fix with my-ci-fix if red
+gh pr edit <PR> -R rancher/dashboard --add-reviewer marcelofukumoto --add-label bot/auto-review
+gh pr ready <PR> -R rancher/dashboard
+```
+
+With all 9 boxes ticked the `Description` job goes green, which is the intended end state here. Your handover is the PR URL, that it is ready and routed to `marcelofukumoto` for auto-review, and any box you could not honestly earn (stop and say so rather than route past it).
+
+**A PR that is not an issue fix stays a draft you hand over, and `Description` staying red is its expected terminal state.** `The PR has a Milestone` and `The PR has a reviewer assigned` are the user's to set, so they stay unticked, so the job fails. That is correct. It goes green when the user sets the milestone and the reviewer and ticks those two boxes, and not before. So your handover says: the PR URL, which checklist items you left unticked and why, that the red `Description` job is those items and not a bug, and that the PR is deliberately still a draft. Then run `my-pr-checklist` to work the items that are yours.

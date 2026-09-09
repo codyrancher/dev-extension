@@ -194,13 +194,13 @@ If `my-pr-create` fell back to manual upload, drop its placeholder block in verb
 
 ## The checklist
 
-Leave a box unticked when only the user can make it true, and tell the user which ones you left and why.
+This skill sets the checklist's **initial** state; `my-pr-checklist` walks all 9 items afterwards and is what actually earns the ticks. Write all 9 as `- [ ]` and leave the ticking to that skill, whichever kind of PR this is.
 
-- `The PR has a Milestone` and `The PR has a reviewer assigned` are the user's to set. Always unticked.
-- Tick the Global Roles item only if you actually exercised the change as more than one role.
-- `The PR template has been filled out` and `The PR has been self reviewed` are gates with real conditions behind them, not assertions. `my-pr-checklist` walks all 9 items and is what actually earns the ticks; this skill only sets the initial state.
+- `The PR template has been filled out` and `The PR has been self reviewed` are gates with real conditions behind them, not assertions, so do not tick them here.
+- On an **issue-fix PR** every box ends up ticked and the PR is routed to a reviewer: `my-pr-checklist` sets the milestone, assigns `marcelofukumoto`, adds the `bot/auto-review` label and marks it ready once CI is green. That is the earned completion, not a false green.
+- On a PR that is **not** an issue fix, `The PR has a Milestone` and `The PR has a reviewer assigned` stay the user's to set, so they stay unticked and the `Description` job stays red by design.
 
-**Ticking a box you did not earn is forbidden.** Unticked boxes fail the `Description` CI job by design, and that red is the expected terminal state of a draft you hand over. Turning it green by ticking converts an honest red into a false green and defeats the only thing the checklist is for. `my-pr-create` explains the job and the handover wording.
+**Ticking a box you did not earn is forbidden**, in either case. The issue-fix completion is allowed precisely because the work behind each box is done; ticking to turn `Description` green without doing that work is the failure this guards against. `my-pr-create` explains both endings.
 
 ### Never write a literal `[ ]` outside the 9 items
 
