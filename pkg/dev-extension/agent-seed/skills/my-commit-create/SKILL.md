@@ -5,6 +5,7 @@ description: Create a Rancher Dashboard commit on a new branch following this pr
 
 - Concise title stating what we did.
 - Base it off of what changes are currently staged instead of just using the conversation history.
+- Before staging, read the diff and delete any comment it adds that does not document a public interface (an exported function, type, component or prop and its contract). Comments that narrate what the code does or explain an implementation choice come out; the code stands without them. Leave comments in files you are only passing through alone.
 - Zero to two line summary if the title isn't sufficient.
 - `Fixes #$(issueNumber)` (the runtime issue number for this project).
 - Do NOT include any Co-Authored-By lines or any mention of Claude/AI in the commit.

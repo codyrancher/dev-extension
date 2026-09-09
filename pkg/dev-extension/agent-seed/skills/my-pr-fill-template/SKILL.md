@@ -68,7 +68,7 @@ Fixes #$(issueNumber)
 
 They are the whole quality bar.
 
-### 1. Terse. Keep authored prose under 450 words.
+### 1. Terse. Keep authored prose under 250 words.
 
 "Authored prose" is the whole body **minus** everything you did not compose: fenced code blocks (setup commands, the fixture YAML, the jest line), the `<details>`/`<summary>`/`</details>` tags, and the 9 verbatim checklist lines. Those are fixed costs, so counting them makes the gate unsatisfiable rather than strict. Everything else counts: headings excluded, bullets, paragraphs and media captions included.
 
@@ -91,17 +91,17 @@ console.log("TOTAL", total); for (const [k, v] of Object.entries(by)) console.lo
 ' /workspace/artifacts/pr-body.md
 ````
 
-Per section, in the same units. The rows are ceilings, and they sum to 325, so even hitting every one at once leaves headroom under the 450 cap. Being under 450 is not a licence to ignore a row: a section over its own ceiling is over budget regardless of the total.
+Per section, in the same units. The rows are ceilings, and they sum to 205, so even hitting every one at once leaves headroom under the 250 cap. Being under 250 is not a licence to ignore a row: a section over its own ceiling is over budget regardless of the total. And the cap is a hard limit, not a target: most fixes have little that clears rule 2's bar, so the ordinary body lands well under it. A body that fills the cap is the exception that has earned every line, not the norm.
 
 | Section | Budget (authored words) |
 | --- | --- |
 | Summary | `Fixes #N`, nothing else (5) |
-| Occurred changes | 3-5 bullets, one line each (50) |
-| Technical notes | up to 3 bullets, or the one `Nothing notable.` line (45) |
-| Areas to test | the fenced setup block and fixture, plus up to 4 bullets and one line saying what a correct result looks like (105 outside the blocks) |
-| Regressions | up to 3 bullets (45) |
-| Screenshot/Video | the 2 caption lines (30) |
-| Checklist notes | up to 4 short lines (45) |
+| Occurred changes | 3-5 bullets, one line each (35) |
+| Technical notes | up to 3 bullets, or the one `Nothing notable.` line (30) |
+| Areas to test | the fenced setup block and fixture, plus up to 4 bullets and one line saying what a correct result looks like (60 outside the blocks) |
+| Regressions | up to 3 bullets (30) |
+| Screenshot/Video | the 2 caption lines (20) |
+| Checklist notes | up to 4 short lines (25) |
 
 If the count is over, the cut is almost always lines that restate the diff. Which is rule 2.
 
