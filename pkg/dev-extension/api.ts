@@ -784,6 +784,39 @@ async function afterWorkspaceCreated(name: string): Promise<void> {
 
 
 /**
+ * The per-workspace objects this product owns, for a namespace that has just appeared.
+ *
+ * Not everything a workspace needs comes from its Bundle. The terminal scripts (/seed) and the
+ * credentials binding are written by this extension into the workspace's namespace, so anything
+ * that recreates that namespace takes them with it - and a workspace re-rendered onto a changed
+ * App does exactly that. The pod then boots with an empty /seed: no tmux, no kubectl, no
+ * shell.sh, and a Workspace shell row that fails with "no such file".
+ *
+ * So the sidebar's poll asks, per workspace, whether the ConfigMap is there, and writes it when
+ * it is not. One GET each while nothing is wrong, which is the price of the workspace surviving
+ * its own re-render.
+ */
+export async function ensureWorkspaceScripts(names: string[]): Promise<void> {
+  for (const name of names) {
+    const namespace = workspaceNamespace(name);
+    const exists = await devFetch(`${ BASE }/v1/configmaps/${ namespace }/${ WORKSPACE_TERMINAL_MAP }`).catch(() => null);
+
+    if (exists?.metadata?.name) {
+      continue;
+    }
+    // Only where there is a namespace to write into: a workspace that is still being created,
+    // or one on another cluster, is not this poll's business.
+    const ns = await devFetch(`${ BASE }/v1/namespaces/${ namespace }`).catch(() => null);
+
+    if (!ns?.metadata?.name) {
+      continue;
+    }
+    await ensureWorkspaceRbac(name).catch(() => {});
+    await ensureWorkspaceTerminal(name).catch(() => {});
+  }
+}
+
+/**
  * Start or stop a workspace by scaling its Deployment.
  *
  * Read-modify-write rather than a patch: Steve wants the whole object back on a PUT, and
