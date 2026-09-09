@@ -260,6 +260,7 @@ export async function deleteWorkspaceInstance(store: Store, name: string, missin
  */
 export async function reconcileUnrendered(store: Store): Promise<void> {
   let instances: Json[] = [];
+  let apps: Json[] = [];
 
   try {
     // Workspaces, and the Ranchers the sidebar makes (ranchers.ts): both are this product's
@@ -268,16 +269,82 @@ export async function reconcileUnrendered(store: Store): Promise<void> {
     const all: Json[] = await store.dispatch('management/findAll', { type: APP_INSTANCE, opt: { force: true } });
 
     instances = (all || []).filter((instance: Json) => !!instance.metadata?.labels?.[LABEL_WORKSPACE] || instance.metadata?.labels?.['dev.rancher.io/kind'] === 'rancher');
+    apps = await store.dispatch('management/findAll', { type: APP }).catch(() => []) || [];
     await store.dispatch('management/findAll', { type: 'fleet.cattle.io.bundle' });
   } catch {
     return;
   }
 
-  for (const instance of instances) {
-    if (!instance.bundle && !instance.metadata?.deletionTimestamp) {
-      await instance.reconcile().catch(() => {});
-    }
+  const definitions = new Map<string, string>();
+
+  for (const app of apps) {
+    definitions.set(app.metadata?.name || '', app.metadata?.annotations?.[DEFINITION_STAMP] || '');
   }
+
+  for (const instance of instances) {
+    if (instance.metadata?.deletionTimestamp) {
+      continue;
+    }
+    if (!instance.bundle) {
+      await instance.reconcile().catch(() => {});
+      await stampRendered(instance, definitions.get(instance.spec?.app || '') || '');
+      continue;
+    }
+    await rerenderIfStale(instance, definitions.get(instance.spec?.app || '') || '');
+  }
+}
+
+/**
+ * Which definition an Installation's Bundle was rendered from.
+ *
+ * The App carries a fingerprint of the definition it holds (DEFINITION_STAMP), and rendering is
+ * the only thing that copies that definition into a Bundle. Recording it here is what lets the
+ * next poll notice that the two have parted company.
+ */
+export const RENDERED_FROM = 'dev.rancher.io/rendered-from';
+
+async function stampRendered(instance: Json, stamp: string): Promise<void> {
+  if (!stamp || instance.metadata?.annotations?.[RENDERED_FROM] === stamp) {
+    return;
+  }
+  instance.metadata.annotations = { ...(instance.metadata.annotations || {}), [RENDERED_FROM]: stamp };
+  await instance.save().catch(() => {});
+}
+
+/**
+ * Re-render an Installation whose App has changed underneath it.
+ *
+ * A Bundle is rendered once, when the Installation is made, and nothing rendered it again: an
+ * App edited afterwards - a new mount, a new environment variable, a package the pod needs -
+ * reached workspaces made after the edit and no others. Worse than merely stale: the extension
+ * moved a workspace's tree to /workspaces/<name> and the running pods kept the old mount, so
+ * the pane started in a directory the seed could not even write to, and the conversation opened
+ * on an EACCES instead of a checkout. Nothing in the product said why, because as far as every
+ * object was concerned the App was correct and the Bundle was healthy.
+ *
+ * So a render records the fingerprint it rendered, and a poll that finds a different one on the
+ * App renders again. This restarts the workspace's pod, which is the honest cost of the App
+ * having changed - and it happens once per change rather than once per poll, because the
+ * fingerprint is written back.
+ *
+ * Only Installations this product renders from its own Apps: a Rancher instance is somebody's
+ * cluster, and re-rendering that on a definition edit is a bigger promise than this makes.
+ */
+async function rerenderIfStale(instance: Json, stamp: string): Promise<void> {
+  const rendered = instance.metadata?.annotations?.[RENDERED_FROM] || '';
+
+  if (!stamp || instance.metadata?.labels?.['dev.rancher.io/kind'] === 'rancher') {
+    return;
+  }
+  // Nothing recorded means it was rendered before this existed, which is exactly the set of
+  // Installations known to be stale - the App has moved on several times since. They are
+  // re-rendered once, on the first poll after this ships, and stamped; every poll after that is
+  // a comparison and nothing more.
+  if (rendered === stamp) {
+    return;
+  }
+  await instance.reconcile().catch(() => {});
+  await stampRendered(instance, stamp);
 }
 
 /**
