@@ -12,16 +12,38 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
     apiVersion: v2
-    appVersion: 0.3.66
-    created: "2026-09-09T17:01:42.49602979Z"
+    appVersion: 0.3.67
+    created: "2026-09-09T17:18:37.277473606Z"
     description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
       fixes, shares and agents
-    digest: ed6e5c55cbab0d1f3db76a3605e7017d6ab0a243affe0228d88dffb34d208a3e
+    digest: b68b1986b9d560419c0030f3a21a27cf59864ec33ce43bf7a8f10d6dc443eebc
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
     type: application
     urls:
-    - assets/dev-extension/dev-extension-0.3.66.tgz
+    - assets/dev-extension/dev-extension-0.3.67.tgz
+    version: 0.3.67
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/display-name: Dev Extension
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
+    apiVersion: v2
+    appVersion: 0.3.66
+    created: "2026-09-09T17:02:31.516863974Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
+    digest: 0b06c58612ebb7e59044807464c707db175a24b5725a29e413a062943bcc9f0e
+    icon: https://codyrancher.github.io/dev-extension/icon.svg
+    name: dev-extension
+    type: application
+    urls:
+    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.66/dev-extension-0.3.66.tgz
     version: 0.3.66
   - annotations:
       catalog.cattle.io/certified: rancher
@@ -1626,4 +1648,4 @@ entries:
     urls:
     - assets/dev-extension/dev-extension-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-09T17:01:42.495160634Z"
+generated: "2026-09-09T17:18:37.276927521Z"
