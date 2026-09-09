@@ -10,7 +10,7 @@
 // is left here is what is particular to the nav: which sections there are, what a row links to,
 // and the strip of everything that is not a workspace along the foot.
 import {
-  listAllWorkspaces, deleteWorkspace, listClusters, readableBytes, pruneWorkspaceTrees
+  listAllWorkspaces, deleteWorkspace, listClusters, readableBytes, pruneWorkspaceTrees, ensureWorkspaceScripts
 } from '../api';
 import {
   listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp, workspaceInstance
@@ -310,6 +310,9 @@ export default {
         // Installation, the Bundle and the namespace went, and the directory stayed. Only ones
         // over an hour old and with no workspace of that name - see pruneWorkspaceTrees.
         pruneWorkspaceTrees(workspaces.map((w) => w.name)).catch(() => {});
+        // And the scripts a workspace's pod mounts at /seed, which its namespace holds and a
+        // re-render therefore takes with it. See ensureWorkspaceScripts.
+        ensureWorkspaceScripts(workspaces.filter((w) => (w.cluster || 'local') === 'local').map((w) => w.name)).catch(() => {});
 
         // The agents' clock: what is due starts, what is over is recorded. See agent-defs.ts.
         tickAgents(this.$store).catch(() => {});
