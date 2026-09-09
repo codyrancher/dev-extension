@@ -18,6 +18,17 @@ A11Y_NS="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/nu
 A11Y_POD="${HOSTNAME:-$(hostname)}"
 A11Y_CONTAINER=browser
 
+# And this pod's own cluster, whatever the shell was pointed at.
+#
+# The workspace's .env sets KUBECONFIG to a kubeconfig for the Rancher the dev server talks to,
+# which is the right default for everything an agent does with kubectl - and it is usually a
+# different cluster from the one this pod is running in. Every command here execs into the
+# browser container beside this one, so it can only mean the local cluster; an empty KUBECONFIG
+# is what sends kubectl to the pod's own ServiceAccount. Without this the browser looks missing
+# ("no browser container"), because the namespace really is absent over there.
+KUBECONFIG=/dev/null
+export KUBECONFIG
+
 usage() {
   cat <<'USAGE'
 a11y <command> [args]
