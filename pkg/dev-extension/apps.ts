@@ -424,7 +424,19 @@ const WORKSPACE_SCRIPT = [
   // accessibility scripts into it (EACCES in layout.mjs) and a browser with an empty /opt/a11y.
   // Make them here, as node, before the seed runs.
   'mkdir -p $WS/.a11y/opt $WS/.a11y/init && chown -R node:node $WS/.a11y 2>/dev/null || true',
-  '[ -f /seed/terminal-tools.sh ] && (HOME_DIR=$WS/.home /bin/sh /seed/terminal-tools.sh >$WS/.terminal-tools.log 2>&1 &) || true',
+  // What every workspace on this node shares instead of keeping its own copy: the yarn cache,
+  // the Cypress binaries, the npm cache, and the node_modules templates the checkout below is
+  // hard-linked from. Measured per workspace before this: Cypress 813 MB, yarn 749 MB, and a
+  // gigabyte of node_modules - which is most of a workspace's 3 GB.
+  //
+  // One level of chown, not -R: the templates are large, and their files already belong to the
+  // node user because a hard link has no ownership of its own.
+  'SHARED=/workspaces/.shared',
+  'mkdir -p $SHARED/yarn $SHARED/cypress $SHARED/npm $SHARED/template && chown node:node $SHARED $SHARED/yarn $SHARED/cypress $SHARED/npm $SHARED/template 2>/dev/null || true',
+  // TOOLS_NO_CLAUDE: the conversations run in the agent pod and reach this one through a tunnel,
+  // so a claude here is 400 MB of hostPath (816 MB once it has taken an update) that nothing
+  // executes. tmux, kubectl and the rest still install.
+  '[ -f /seed/terminal-tools.sh ] && (TOOLS_NO_CLAUDE=1 HOME_DIR=$WS/.home /bin/sh /seed/terminal-tools.sh >$WS/.terminal-tools.log 2>&1 &) || true',
   // What a recording and a CI-style check need and the image lacks: ffmpeg (browser.mjs
   // record), jq, lsof and ss. Root's to install and the rootfs is the pod's, so on every boot,
   // in the background so the dev server is not a minute later for it. The lock timeout lets this
@@ -433,8 +445,9 @@ const WORKSPACE_SCRIPT = [
   `exec setpriv --reuid=1000 --regid=1000 --init-groups /bin/sh -c '${ [
     'set -e',
     'WS=/workspaces/${install}',
+    'SHARED=/workspaces/.shared',
     'export HOME=$WS/.home',
-    'export YARN_CACHE_FOLDER=$WS/.yarn-cache',
+    'export YARN_CACHE_FOLDER=$SHARED/yarn CYPRESS_CACHE_FOLDER=$SHARED/cypress npm_config_cache=$SHARED/npm',
     // `\${repo}` and `\${port}` are Apps Plus's to substitute when the App is rendered, so
     // they are written as text here rather than interpolated.
     //
@@ -446,7 +459,25 @@ const WORKSPACE_SCRIPT = [
     // untracked ones (which `.git/info/exclude` keeps out of status anyway).
     '[ -d $WS/dashboard/.git ] || ( mkdir -p $WS/dashboard && cd $WS/dashboard && git init -q && { git remote add origin https://github.com/${repo} 2>/dev/null || true; } && D=$(git ls-remote --symref origin HEAD | sed -n "s@^ref: refs/heads/\\(.*\\)[[:space:]]HEAD@\\1@p") && git fetch --depth 1 origin "$D" && git checkout -f -B "$D" FETCH_HEAD )',
     'cd $WS/dashboard',
-    '[ -f .install-done ] || (yarn install --network-timeout 600000 && touch .install-done)',
+    // node_modules, from a template of the same lockfile if the node already has one.
+    //
+    // `cp -al` links rather than copies, which is how the share build already stages a worktree:
+    // the files are the same inodes, so a second workspace's node_modules costs directory entries
+    // and nothing else. Nothing here patches installed packages in place (the repo has no
+    // patch-package step), and yarn replaces a file rather than editing it, so a workspace that
+    // does install later breaks its own links and leaves the template alone.
+    //
+    // Keyed by the lockfile's hash, so a template is only ever used by a checkout that would
+    // have installed exactly it.
+    'H=$(sha1sum yarn.lock 2>/dev/null | cut -c1-12)',
+    '[ -n "$H" ] && [ ! -d node_modules ] && [ -d $SHARED/template/$H/node_modules ] && cp -al $SHARED/template/$H/node_modules node_modules && touch .install-done || true',
+    '[ -f .install-done ] || (yarn install --mutex file:$SHARED/yarn/.mutex --network-timeout 600000 && touch .install-done)',
+    // And the first workspace to install a given lockfile leaves the template behind for the
+    // next one. Also links, so it costs nothing until the workspace that made it is deleted.
+    '[ -n "$H" ] && [ -d node_modules ] && [ ! -d $SHARED/template/$H ] && (mkdir -p $SHARED/template/$H && cp -al node_modules $SHARED/template/$H/node_modules || rm -rf $SHARED/template/$H) || true',
+    // The per-workspace copies these replace, reclaimed once. Before the install, so nothing is
+    // reading them, and only the ones this App made - an agent's own directories are its own.
+    'rm -rf $WS/.yarn-cache $WS/.home/.cache/Cypress 2>/dev/null || true',
     // An earlier App wrote its config over the checkout's vue.config.js; a checkout that boot
     // left behind gets the repository's file back. A clean tree is a no-op.
     'git update-index --no-skip-worktree vue.config.js 2>/dev/null || true',
@@ -668,12 +699,17 @@ export function rancherWorkspaceApp(): Json {
             '                name: dev-secrets',
             '                optional: true',
             '          volumeMounts:',
-            // The tree, at the path the agent pod also has it at (/workspaces/<name>, one
-            // mount of the parent there). A conversation about this workspace runs in that pod
-            // and forwards every command back into this one; both halves saying the same thing
-            // about where a file is only works if the path is the same on both sides.
+            // The workspaces root, with this one's tree inside it at /workspaces/<name> - the
+            // same path the agent pod has it at, so a conversation there and the command it
+            // forwards here mean the same thing by a path.
+            //
+            // The parent rather than this workspace's own directory, for one reason: a hard link
+            // cannot cross a mount, even between two mounts of the same filesystem, and the
+            // whole saving below is node_modules hard-linked out of a shared template. It does
+            // mean a workspace can see its neighbours' trees; they are all the same person's,
+            // and the agent pod has had the same view since conversations moved there.
             '            - name: work',
-            '              mountPath: /workspaces/${install}',
+            '              mountPath: /workspaces',
             '            - name: dev-config',
             '              mountPath: /dev-config',
             '              readOnly: true',
@@ -737,22 +773,22 @@ export function rancherWorkspaceApp(): Json {
             '              mountPath: /dev/shm',
             '            - name: work',
             '              mountPath: /artifacts',
-            '              subPath: artifacts',
+            '              subPath: ${install}/artifacts',
             // Written by the seed (layout.mjs) into the workspace's own volume, which is why
             // they are here rather than in a ConfigMap: they are part of the same bundle as
             // the skills and the rules, and they update when those do.
             '            - name: work',
             '              mountPath: /opt/a11y',
-            '              subPath: .a11y/opt',
+            '              subPath: ${install}/.a11y/opt',
             '              readOnly: true',
             '            - name: work',
             '              mountPath: /custom-cont-init.d',
-            '              subPath: .a11y/init',
+            '              subPath: ${install}/.a11y/init',
             '              readOnly: true',
             '      volumes:',
             '        - name: work',
             '          hostPath:',
-            '            path: /var/lib/rancher/dev-workspaces/${install}',
+            '            path: /var/lib/rancher/dev-workspaces',
             '            type: DirectoryOrCreate',
             '        - name: dshm',
             '          emptyDir:',
