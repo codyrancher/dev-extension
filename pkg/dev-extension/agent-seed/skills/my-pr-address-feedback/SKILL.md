@@ -41,6 +41,8 @@ The user just got a code review on their PR and wants every comment dealt with �
 
    While that runs, move on to step 7 — don't sit and wait.
 
+   **Rebuild the preview if the PR has one.** The `Live preview`/`Storybook` links in a PR body serve a static build, so a follow-up commit leaves them showing the old code. If the body carries either link (`gh pr view <PR> -R rancher/dashboard --json body -q .body | grep -qE 'Live preview:|Storybook:'`), re-run the share skill(s) it uses — `my-server-shared-dev`, and `my-server-shared-storybook` when the diff touches `pkg/rancher-components` — so the same link now serves your change. The URL does not change, so the body needs no edit; only the build is refreshed.
+
 7. **Draft a reply to every comment.** Draft, not publish: `gh api
    comments/<id>/replies` posts the moment you run it, and a reply written by an
    agent should be read by the person whose name is on it first.

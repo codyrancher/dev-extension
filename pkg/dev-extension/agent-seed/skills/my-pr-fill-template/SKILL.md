@@ -156,6 +156,16 @@ If the change has no external fixture (pure UI, existing resources), the setup b
 npx jest --ci <test paths>
 ```
 
+### The live preview links
+
+A reviewer should be able to open the change running, not only read the setup. When a preview is available, add its link to the top of "Areas or cases that should be tested", above the fenced setup block:
+
+- **Dashboard:** `**Live preview:** <url>`, where the url is what `my-server-shared-dev` prints on its last line (`https://preview-<ws>.dev-extension.<ip>.sslip.io/dashboard/`).
+- **Storybook:** `**Storybook:** <url>` from `my-server-shared-storybook`, **only when the diff touches `pkg/rancher-components`** (`git diff --name-only master...HEAD | grep -q '^pkg/rancher-components/'`). Omit it entirely otherwise: a Storybook link on a change that touches no component is noise.
+- If a share skill reports no live preview yet (it needs a one-time Share-tab click), leave the line out and say so in the handover instead of pasting a dead link.
+
+These two lines are exempt from rule 2: a runnable link is always actionable, and they count for almost nothing against the budget. The link serves a **static build**, so it is only as current as the last build - which is why `my-pr-create` builds it as its final step before the PR, and why any later change means rebuilding (re-running the skill) before you hand over.
+
 ## The Occurred changes section
 
 A plain list of the major changes, nothing more. Several bullets: the primary change the issue asked for first, then the supporting changes that were large enough for a reviewer to want to know about up front.
