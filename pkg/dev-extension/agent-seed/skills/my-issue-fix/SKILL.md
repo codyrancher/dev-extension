@@ -39,7 +39,7 @@ The plan from phase 3 names every file and the change to each. Do not execute it
 |---|---|---|
 | **Developer** | The only one who edits | Implement the task from the phase 3 plan, then fix everything the two reviewers raise. Runs the scoped checks below after every round and reports the working diff. |
 | **UX reviewer** | The experience | Scrutinise the change as a user meets it, not as a diff. Is it the simplest thing that solves the issue? Would someone who has never seen this screen understand it immediately? Does it behave like the rest of Rancher, in both themes, at keyboard and screen-reader level? Keep pushing until it is simple, obvious, consistent, and genuinely right, not merely acceptable. |
-| **Code reviewer** | The code | Scrutinise the diff. Does it use the patterns already in this repo, or invent a new one? What can be deleted, reused, or collapsed into an existing helper or component? What else calls this code, and what breaks. Hunt for the regression the developer did not think of. |
+| **Code reviewer** | The code | Scrutinise the diff. Does it use the patterns already in this repo, or invent a new one? What can be deleted, reused, or collapsed into an existing helper or component? What else calls this code, and what breaks. Hunt for the regression the developer did not think of. Evaluate every comment the diff adds or touches: one that does not document a public interface is a finding, to be deleted rather than reworded. |
 
 Rules that keep the loop honest:
 
@@ -79,6 +79,7 @@ Conventions this repo enforces, and which both reviewers hold the change to:
 - **Both themes.** Rancher ships light and dark. Use existing CSS variables, never literal colours.
 - **Follow the neighbours.** A fix that looks unlike the two or three components already solving the same shape of problem gets rejected on that alone.
 - **Keep the diff to the issue.** If you spot a second bug, note it for the PR description instead of fixing it here.
+- **Comments document public interfaces, nothing else.** Before the commit, evaluate every comment the change adds or touches and delete the ones that do not document a public interface: the doc comment on an exported function, type, component or prop that states its contract and any non-obvious constraint on calling it. A comment that narrates what the next line does, restates the diff, or explains an implementation choice comes out, and the code is made plain enough to stand without it. Preserved rationale that a reviewer genuinely needs belongs in the PR's Technical notes, not in the source. This is a house rule for the code you write upstream; do not apply it to comments already in files you are only passing through.
 - **Never use em dashes** in code, comments, or anything else you write.
 
 While iterating, scope the checks so the loop stays fast (see the project-environment rule for why `yarn lint` and `yarn test` are the wrong form here):

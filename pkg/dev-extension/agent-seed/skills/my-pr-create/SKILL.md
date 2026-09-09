@@ -130,7 +130,7 @@ console.log("videos:", (h.match(/<video/g) || []).length, "h3:", (h.match(/<h3[^
 '
 ```
 
-Expect exactly one task list with `li=9`, `p-wrapped=0` (a non-zero `p-wrapped` is the loose-list bug `my-pr-fill-template` warns about), `checkboxes=9`, `videos=2` for a before/after pair, and `h3=7`. Also run that skill's word count against `/tmp/pr-body.md` and confirm it is under 450.
+Expect exactly one task list with `li=9`, `p-wrapped=0` (a non-zero `p-wrapped` is the loose-list bug `my-pr-fill-template` warns about), `checkboxes=9`, `videos=2` for a before/after pair, and `h3=7`. Also run that skill's word count against `/tmp/pr-body.md` and confirm it is under 250.
 
 Anything wrong here is a body problem: fix `/workspace/artifacts/pr-body.md` and `gh pr edit <PR> --body-file` it, rather than patching the live body by hand.
 
