@@ -477,7 +477,10 @@ const WORKSPACE_SCRIPT = [
     '[ -n "$H" ] && [ -d node_modules ] && [ ! -d $SHARED/template/$H ] && (mkdir -p $SHARED/template/$H && cp -al node_modules $SHARED/template/$H/node_modules || rm -rf $SHARED/template/$H) || true',
     // The per-workspace copies these replace, reclaimed once. Before the install, so nothing is
     // reading them, and only the ones this App made - an agent's own directories are its own.
-    'rm -rf $WS/.yarn-cache $WS/.home/.cache/Cypress 2>/dev/null || true',
+    // The claude install goes with them: TOOLS_NO_CLAUDE stops the next one, and this removes
+    // the 412 MB (a version, twice that after an update) that workspaces installed before the
+    // conversations moved to the agent pod.
+    'rm -rf $WS/.yarn-cache $WS/.home/.cache/Cypress $WS/.home/.local/share/claude $WS/.home/.local/bin/claude 2>/dev/null || true',
     // An earlier App wrote its config over the checkout's vue.config.js; a checkout that boot
     // left behind gets the repository's file back. A clean tree is a no-op.
     'git update-index --no-skip-worktree vue.config.js 2>/dev/null || true',
