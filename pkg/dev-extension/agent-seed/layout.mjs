@@ -29,7 +29,35 @@ const ctx = {
   rancherHost: rancherUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, ''),
 };
 // This workspace's tree. Everything below is under it.
-const ROOT = process.env.DEV_ROOT || (ctx.projectName ? `/workspaces/${ ctx.projectName }` : '/workspace');
+//
+// Resolved defensively. A dropped DEV_ROOT *and* DEV_PROJECT used to fall straight back to
+// `/workspace`, the harness's root - which does not exist in a dev-extension workspace pod, so
+// every mkdir below failed with an opaque EACCES and the whole workspace failed to come up. So
+// when neither is given, find the one tree a workspace pod actually holds under /workspaces
+// before considering that fallback, and keep the harness default only where /workspace is real.
+let ROOT = process.env.DEV_ROOT || (ctx.projectName ? `/workspaces/${ ctx.projectName }` : '');
+if (!ROOT) {
+  // DEV_ROOT and DEV_PROJECT were both dropped. The workspace pod still names itself in its
+  // container env (PROJECT_NAME / HARNESS_PROJECT), so use that when its tree exists under
+  // /workspaces - which is what stops a lost env from landing the whole seed at `/workspace`,
+  // the harness root that does not exist here, where every mkdir then EACCESes and the
+  // workspace never comes up.
+  const named = process.env.PROJECT_NAME || process.env.HARNESS_PROJECT || '';
+
+  if (named && fs.existsSync(`/workspaces/${ named }`)) {
+    ROOT = `/workspaces/${ named }`;
+    ctx.projectName = ctx.projectName || named;
+  }
+}
+if (!ROOT) {
+  ROOT = '/workspace';
+}
+// A workspace pod that is not the harness has no writable `/workspace`. Refuse to seed into it
+// with a clear message rather than fail one mkdir at a time with EACCES on `/workspace/bin`.
+if (ROOT === '/workspace' && !fs.existsSync('/workspace')) {
+  console.error('layout: no workspace root found - set DEV_ROOT or DEV_PROJECT, or run where PROJECT_NAME names a tree under /workspaces.');
+  process.exit(1);
+}
 const WORKDIR = process.env.DEV_WORKDIR || `${ ROOT }/dashboard`;
 const HOME = process.env.DEV_HOME || `${ ROOT }/.home`;
 const BIN = `${ ROOT }/bin`;
