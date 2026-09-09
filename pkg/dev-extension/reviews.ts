@@ -450,8 +450,16 @@ export interface Started {
   created: boolean;
 }
 
+/**
+ * The workspace a PR action (review, CI triage) works in: named for the PR, always.
+ *
+ * It used to fold a PR that closes an issue into that issue's workspace, `issue-<n>`, so a fix
+ * and the review of its PR shared one pod. But a review is its own piece of work and reads as its
+ * own project - `pr-<n>` - so reviewing #123 makes `pr-123` whether or not it happens to close an
+ * issue, rather than reopening the issue's workspace under a name that does not mention the PR.
+ */
 export function prWorkspaceName(pr: { number: number; issue?: { number: number } | null }): string {
-  return pr.issue ? `issue-${ pr.issue.number }` : `pr-${ pr.number }`;
+  return `pr-${ pr.number }`;
 }
 
 /** Review a PR: the harness's "Review" button. Reattaches to a review already running. */
