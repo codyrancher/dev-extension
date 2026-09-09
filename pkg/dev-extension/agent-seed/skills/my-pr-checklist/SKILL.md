@@ -5,6 +5,25 @@ description: Work every item in the rancher/dashboard PR template checklist rath
 
 The checklist is a set of instructions, not a formality. Each unticked box names work someone has to do. Go through them one at a time, do the ones you are capable of, and leave the rest unticked with a stated reason. A ticked box you did not earn is worse than an unticked one: it tells the reviewer a check happened when it did not.
 
+## Issue-fix PRs are completed and routed, not handed back
+
+**When the PR fixes an issue** (the `my-issue-fix` flow, `Fixes #<N>` in the body), you finish the checklist and route the PR for review yourself rather than leaving anything for the user. This **supersedes** the two "the user's to set" items below and the "stays red" / "stays a draft" endings further down; every one of the 9 boxes ends ticked.
+
+Do all of the per-item work below exactly as written - that is how each tick is earned, and it does not change. What changes is only the ending:
+
+- **Set the milestone and assign the reviewer, then tick their boxes too.** Give the PR the same milestone as its linked issue. The reviewer is `marcelofukumoto`. With both done these two boxes are genuinely true, so they are ticked like the rest, not a false green.
+- **Once CI is green, route it.** Poll `gh pr checks <PR> -R rancher/dashboard --watch`. When it passes, assign the reviewer, add the label, and mark the PR ready:
+
+  ```bash
+  gh pr edit <PR> -R rancher/dashboard --add-reviewer marcelofukumoto --add-label bot/auto-review
+  gh pr ready <PR> -R rancher/dashboard
+  ```
+
+  If CI is red the PR is not ready to route: fix it first (`my-ci-fix`), then route.
+- **The `Description` CI job goes green here, on purpose.** All 9 ticked is what turns it green, and for an issue-fix PR that is the intended end state because you did the work behind every box.
+
+The draft-handback ending below is for PRs that are **not** issue fixes.
+
 Read the current state first, since the PR body may already have items filled in:
 
 ```bash
@@ -26,7 +45,7 @@ Tick if both are true. If the issue has no milestone, leave it unticked and say 
 
 **`The PR has a Milestone`**
 
-The user's to set. Leave unticked, mention it. This is one of the two boxes that keeps the `Description` CI job red; see below.
+The user's to set, on a PR that is not an issue fix: leave unticked, mention it, and it keeps the `Description` CI job red (see below). **On an issue-fix PR, set it yourself** from the linked issue's milestone and tick it, per the override at the top.
 
 **`The PR template has been filled out`**
 
@@ -47,7 +66,7 @@ Only tick this if `my-fix-verify` actually ran over this diff. If it did not, ru
 
 **`The PR has a reviewer assigned`**
 
-The user's to set. Leave unticked, mention it. The other of the two boxes keeping `Description` red.
+The user's to set, on a PR that is not an issue fix: leave unticked, mention it, and it is the other box keeping `Description` red. **On an issue-fix PR, assign `marcelofukumoto`** (once CI is green) and tick it, per the override at the top.
 
 **`The PR has automated tests or clear instructions for manual tests and the linked issue has appropriate QA labels, or tests are not needed`**
 
@@ -116,11 +135,13 @@ gh pr view <PR> -R rancher/dashboard --json body -q .body | grep -c '^- \[[ x]\]
 
 That `grep` proves the source, not the render. Finish with the GFM render check in `my-pr-create` ("Verify the published body") and confirm one task list, `li=9`, `p-wrapped=0`.
 
-### The `Description` CI job stays red, and that is correct
+### The `Description` CI job (non-issue-fix PRs stay red, and that is correct)
 
-`.github/workflows/valid-pr.yaml` runs a job named **`Description`** that fails while **any** box in the body is `[ ]`. Leaving `The PR has a Milestone` and `The PR has a reviewer assigned` unticked, which this skill requires, therefore turns that job red. **That is the expected terminal state of a draft you hand over.** It goes green when the user sets the milestone and the reviewer and ticks those two boxes. Say so in your report so nobody reads the red X as your bug.
+This section is for PRs that are **not** issue fixes. On an issue-fix PR you tick all 9 and the job goes green, per the override at the top.
 
-**Never tick a box to turn `Description` green.** A ticked box you did not earn is worse than an unticked one, and doing it to satisfy a CI check is that failure with a motive attached.
+`.github/workflows/valid-pr.yaml` runs a job named **`Description`** that fails while **any** box in the body is `[ ]`. On a non-issue-fix PR, leaving `The PR has a Milestone` and `The PR has a reviewer assigned` unticked, which this skill requires, therefore turns that job red. **That is the expected terminal state of a draft you hand over.** It goes green when the user sets the milestone and the reviewer and ticks those two boxes. Say so in your report so nobody reads the red X as your bug.
+
+**Never tick a box you did not earn.** A ticked box that names work nobody did is worse than an unticked one, and ticking it only to turn a CI check green is that failure with a motive attached. This is not in tension with the issue-fix override: there you *earn* every box, milestone and reviewer included, by actually setting them.
 
 The script greps the whole body for `\[.\]`, one character between the brackets, so a stray `[ ]` anywhere - prose, a fenced block, the fixture YAML - fails the job just as an unticked item would. Check before you finish:
 
@@ -134,10 +155,11 @@ gh pr view <PR> -R rancher/dashboard --json body -q .body | grep -n '\[.\]' | gr
 
 If working an item required a code change (a missing aria-label, a hardcoded colour, a new test), commit and push it, then re-run the affected checks. Do not describe the fix in the checklist and leave it unwritten.
 
-The PR stays a **draft**. The user promotes it.
+A non-issue-fix PR stays a **draft** and the user promotes it. An issue-fix PR you mark ready yourself once CI is green, per the override at the top.
 
 ## Report
 
-Per item, one line: ticked and what you did to earn it, or unticked and why. Close by listing exactly what is left for the user, which is normally the milestone, the reviewer, the UX review sign-off, and any QA label that needed a judgement call.
+Per item, one line: ticked and what you did to earn it, or unticked and why.
 
-State plainly that the `Description` CI job is red *because* the milestone and reviewer boxes are honestly unticked, and that it turns green when the user does those two things. Otherwise the first thing they see is a failing check with no explanation.
+- **Issue-fix PR:** report that all 9 are ticked and earned, that you set the milestone and assigned `marcelofukumoto`, that the `bot/auto-review` label is on and the PR is marked ready, and that the `Description` job is therefore green. Flag anything you could not genuinely satisfy rather than ticking over it: a box you cannot earn is a reason to stop and say so, not to route the PR anyway.
+- **Non-issue-fix PR:** close by listing exactly what is left for the user, normally the milestone, the reviewer, the UX review sign-off, and any QA label that needed a judgement call. State plainly that the `Description` CI job is red *because* the milestone and reviewer boxes are honestly unticked, and that it turns green when the user does those two things. Otherwise the first thing they see is a failing check with no explanation.
