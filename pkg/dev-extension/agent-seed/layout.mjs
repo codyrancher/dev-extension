@@ -143,10 +143,14 @@ const wrapper = [
   '',
   '# One level of quoting, and the command is never part of it: it arrives as an argument and',
   '# is run by `eval "$1"`, so an apostrophe or a here-document in it is just text.',
+  '#',
+  '# PATH is spelled out rather than left to a profile: this is a non-interactive login shell,',
+  '# which reads ~/.profile and not ~/.bashrc, and the workspace\'s own commands - a11y, gh,',
+  '# wait-for-sidecars, rancher-login.mjs - live in its bin.',
   'exec kubectl exec -i -n "$NS" "deploy/$NS" -c workspace -- \\',
   '  setpriv --reuid=1000 --regid=1000 --init-groups \\',
   '  /usr/bin/env HOME="$WS/.home" WSD="$WS" DIR="$DIR" \\',
-  '  /bin/bash -lc \'cd "$DIR" 2>/dev/null || cd "$WSD/dashboard" || exit 1; set -a; [ -f "$WSD/.env" ] && . "$WSD/.env"; set +a; eval "$1"\' bash "$1"',
+  '  /bin/bash -lc \'cd "$DIR" 2>/dev/null || cd "$WSD/dashboard" || exit 1; PATH="$WSD/bin:$WSD/.home/.local/bin:$PATH"; set -a; [ -f "$WSD/.env" ] && . "$WSD/.env"; set +a; eval "$1"\' bash "$1"',
   '',
 ].join('\n');
 
