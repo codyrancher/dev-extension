@@ -920,19 +920,34 @@ async function ensureWorkspaceConfig(name: string): Promise<void> {
  * published install behave like the dev-served one.
  */
 async function resolveTerminalSeed(): Promise<Record<string, string> | null> {
+  // The agent pod's own, first and by name. These scripts belong to the agents extension, and
+  // that ConfigMap is the copy it maintains; every extension pod in the namespace also carries a
+  // copy, older, because it is seeded when that pod is made and not again. "The first one with a
+  // shell.sh" therefore picked `apps-plus-extension` - alphabetically first - and workspaces
+  // spent months running scripts nobody was updating. The visible cost was a flag the agents
+  // extension had just added being ignored; the invisible one was every fix to these scripts
+  // since whenever that pod was created.
+  const agent = await devFetch(`${ BASE }/v1/configmaps/${ STUDIO_NAMESPACE }/${ AGENT_SEED_MAP }`).catch(() => null);
+
+  if (agent?.data?.['shell.sh']) {
+    return agent.data;
+  }
   const named = await devFetch(`${ BASE }/v1/configmaps/${ SEED_NAMESPACE }/${ SEED_CONFIG_MAP }`).catch(() => null);
 
   if (named?.data?.['shell.sh']) {
     return named.data;
   }
 
-  // Whatever else in the studio namespace carries these scripts. Steve returns the collection;
-  // the first that has shell.sh is as good as any - they are the same scripts, seeded together.
+  // Whatever else in the studio namespace carries these scripts: a Studio old enough not to have
+  // the agent pod still has an extension pod's copy, and those scripts do start a pane.
   const list = await devFetch(`${ BASE }/v1/configmaps/${ STUDIO_NAMESPACE }`).catch(() => null);
   const holder = (list?.data || []).find((cm: Json) => cm?.data?.['shell.sh']);
 
   return holder?.data || null;
 }
+
+/** The agents extension's seed: the pod it makes is named for it, and so is the ConfigMap. */
+const AGENT_SEED_MAP = 'extension-studio-agent';
 
 async function ensureWorkspaceTerminal(name: string): Promise<void> {
   const namespace = workspaceNamespace(name);
