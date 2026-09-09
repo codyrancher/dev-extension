@@ -983,6 +983,93 @@ export function nodeAddress(): Promise<string> {
 
 
 /**
+ * Run something in the agent pod, which is the one pod that has every workspace's tree.
+ *
+ * The trees live on the node, under one directory the agent pod mounts (/workspaces) so that a
+ * conversation there can work in one. That mount is also the only writable view of the whole
+ * set, which makes it the place to tidy up from: dev-api mounts the same root read-only.
+ */
+async function inAgentPod(script: string): Promise<string> {
+  const w = window as unknown as Record<string, Json>;
+  const agents = w.__agents || w.__extensionStudio;
+  const pod = await agents?.agent?.pod?.().catch(() => null);
+
+  if (!pod) {
+    throw new Error('The agent pod is not running, so the workspaces on the node cannot be reached.');
+  }
+
+  return podExecOnce(agents.agent.namespace, pod, agents.agent.container, ['/bin/sh', '-c', script]);
+}
+
+/** A workspace's name, or nothing: what may be interpolated into a path that gets removed. */
+function safeName(name: string): string {
+  return /^[a-z0-9][a-z0-9-]{0,62}$/.test(name) ? name : '';
+}
+
+/**
+ * Delete a workspace's tree from the node.
+ *
+ * Deleting a workspace deleted its Installation, its Bundle and its namespace, and left two to
+ * three gigabytes of checkout, caches and node_modules on the node for ever - 44 GB of them by
+ * the time anybody looked. Nothing was watching, because from Kubernetes' side the workspace was
+ * gone.
+ *
+ * The name is checked rather than trusted: this ends in `rm -rf`, and the only thing standing
+ * between a workspace called `..` and the whole directory is that check.
+ */
+export async function removeWorkspaceTree(workspace: string): Promise<void> {
+  const name = safeName(workspace);
+
+  if (!name) {
+    return;
+  }
+  await inAgentPod(`rm -rf "/workspaces/${ name }" 2>/dev/null; echo TREE-GONE`).catch(() => '');
+}
+
+/**
+ * Trees whose workspace no longer exists, removed.
+ *
+ * A delete that failed halfway, a workspace deleted from an older version, a tab closed before
+ * the tree was removed: all of them leave a directory nothing will ever look at again. Driven
+ * from the sidebar's poll, beside the render and the release, because it is the same kind of
+ * unfinished business.
+ *
+ * Only trees older than an hour, and only ones with no Installation of that name: a workspace
+ * being created has a tree before it has anything else, and deleting that would delete the
+ * checkout out from under its own first boot.
+ */
+export async function pruneWorkspaceTrees(keep: string[]): Promise<string[]> {
+  const wanted = new Set(keep.map(safeName).filter(Boolean));
+
+  // An empty list is the one answer this must not act on. It means "the workspaces did not
+  // load" at least as often as it means "there are none", and the two are indistinguishable
+  // from here - while the consequence of guessing wrong is every tree on the node.
+  if (!wanted.size) {
+    return [];
+  }
+  const listing = await inAgentPod('find /workspaces -maxdepth 1 -mindepth 1 -type d -mmin +60 -printf "%f\\n" 2>/dev/null').catch(() => '');
+  const candidates = listing.split('\n').map((line) => line.trim()).filter((name) => (
+    // `.shared` and anything else hidden is the node's, not a workspace's.
+    !!safeName(name) && !wanted.has(name)
+  ));
+  const removed: string[] = [];
+
+  for (const name of candidates) {
+    // Asked of the cluster rather than inferred from a list that may be partial: a namespace
+    // still standing means the workspace is still there, whatever this page happens to know.
+    const namespace = await devFetch(`${ BASE }/v1/namespaces/${ workspaceNamespace(name) }`).catch(() => null);
+
+    if (namespace?.metadata?.name) {
+      continue;
+    }
+    await removeWorkspaceTree(name);
+    removed.push(name);
+  }
+
+  return removed;
+}
+
+/**
  * Delete the namespace, which takes the Deployment, the Service and the pod with it.
  *
  * The one thing the namespace does not take is the RoleBinding that let this workspace read the
@@ -998,6 +1085,10 @@ export async function deleteWorkspace(store: Store, name: string): Promise<void>
   // dev-system rather than in the namespace, and the Installation record itself.
   await deleteWorkspaceInstance(store, name);
   await devFetch(`${ BASE }/v1/rbac.authorization.k8s.io.rolebindings/${ DEV_SYSTEM_NAMESPACE }/${ binding }`, { method: 'DELETE' }).catch(() => null);
+  // And the tree on the node, which nothing else owns: the checkout, the artifacts and the
+  // node_modules are two to three gigabytes that would otherwise sit there for good. Last,
+  // because it is the one part a person could still want if the delete itself failed.
+  await removeWorkspaceTree(name).catch(() => {});
 }
 
 /** How to speak to what a workspace serves. */

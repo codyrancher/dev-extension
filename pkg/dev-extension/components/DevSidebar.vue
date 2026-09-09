@@ -10,7 +10,7 @@
 // is left here is what is particular to the nav: which sections there are, what a row links to,
 // and the strip of everything that is not a workspace along the foot.
 import {
-  listAllWorkspaces, deleteWorkspace, listClusters, readableBytes
+  listAllWorkspaces, deleteWorkspace, listClusters, readableBytes, pruneWorkspaceTrees
 } from '../api';
 import {
   listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp, workspaceInstance
@@ -305,6 +305,11 @@ export default {
         // an Installation whose teardown outlasted the delete's own loop stayed Terminating for
         // ever, and its row stayed in this list with pressing delete again doing nothing.
         releaseTerminating(this.$store).catch(() => {});
+        // And the trees on the node whose workspace is gone. A workspace is two to three
+        // gigabytes of checkout and node_modules, and until this nothing removed them: the
+        // Installation, the Bundle and the namespace went, and the directory stayed. Only ones
+        // over an hour old and with no workspace of that name - see pruneWorkspaceTrees.
+        pruneWorkspaceTrees(workspaces.map((w) => w.name)).catch(() => {});
 
         // The agents' clock: what is due starts, what is over is recorded. See agent-defs.ts.
         tickAgents(this.$store).catch(() => {});
