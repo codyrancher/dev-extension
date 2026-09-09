@@ -417,6 +417,13 @@ async function ensureCheckout(target: WorkspaceTarget, ctx: WorkspaceContext, gi
  * and cheap the second time: the seed is hashed, the tools are checked, the token is verified.
  */
 export async function ensureWorkspaceReady(workspace: string, ctx?: WorkspaceContext): Promise<WorkspaceTarget> {
+  // An empty name is a caller bug, and a costly one: it would seed with no project, which is the
+  // one input layout.mjs needs to place the tree. Refuse it here with a clear message rather than
+  // let it reach the pod and fail deep in a build script.
+  if (!workspace || !workspace.trim()) {
+    throw new Error('ensureWorkspaceReady needs a workspace name; it was called with an empty one.');
+  }
+
   const target = await workspaceTarget(workspace);
   const context = ctx || contextFromName(workspace);
   const github = await githubToken().catch(() => '');
