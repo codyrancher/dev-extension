@@ -2128,8 +2128,10 @@ export async function ensureWorkspaceApi(): Promise<void> {
   });
 
   // Cluster-scoped, because a workspace is a namespace and nothing namespaced can make one. The
-  // verbs are the ones it uses and no others: it never deletes anything, and deleting a
-  // workspace stays a thing a person does from the page.
+  // verbs are the ones it uses and no others. It now finishes a workspace's teardown - the
+  // reconciler in server.mjs - so it may delete the namespace of a workspace whose Installation
+  // is already gone, and the credentials binding that went with it; deleting the Installation
+  // itself, the act that starts a teardown, stays a thing a person does from the page.
   await ensure('rbac.authorization.k8s.io.clusterroles', null, API_NAME, {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind:       'ClusterRole',
@@ -2151,15 +2153,19 @@ export async function ensureWorkspaceApi(): Promise<void> {
         apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'list', 'create', 'update', 'patch', 'delete']
       },
       { apiGroups: [''], resources: ['secrets'], verbs: ['get', 'list'] },
-      { apiGroups: [''], resources: ['namespaces'], verbs: ['get', 'list', 'create'] },
+      // delete + patch: the teardown reconciler removes a `dev-<name>` namespace whose
+      // Installation is gone, and strips a workspace label stranded on a shared namespace.
+      { apiGroups: [''], resources: ['namespaces'], verbs: ['get', 'list', 'create', 'delete', 'patch'] },
       {
         apiGroups: [''], resources: ['serviceaccounts', 'configmaps', 'secrets', 'services'], verbs: ['get', 'create']
       },
       {
         apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'create']
       },
+      // list + delete: the teardown reconciler finds and removes the credentials binding a
+      // deleted workspace leaves in dev-system.
       {
-        apiGroups: ['rbac.authorization.k8s.io'], resources: ['rolebindings'], verbs: ['get', 'create']
+        apiGroups: ['rbac.authorization.k8s.io'], resources: ['rolebindings'], verbs: ['get', 'list', 'create', 'delete']
       },
     ],
   });
