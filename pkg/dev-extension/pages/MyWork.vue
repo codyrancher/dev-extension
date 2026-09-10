@@ -12,7 +12,7 @@ import SortableTable from '@shell/components/SortableTable';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import AsyncButton from '@shell/components/AsyncButton';
-import { myWork } from '../github';
+import { myWork, setIssueStatus } from '../github';
 import {
   startPrReview, startIssueFix, startAlertFix, startDependabotReview, startCiTriage, mergePr, approveAndMerge,
   rerunFailedJobs, dependabotData, dependabotReviews, refreshDependabotReview, closeDependabotReview, listConversations
@@ -193,6 +193,24 @@ const STATUS_HUE = {
   PURPLE: 'accent',
 };
 
+/**
+ * The last results, kept across visits.
+ *
+ * My Work is a page somebody leaves and comes back to, and its data is a slow GitHub round trip;
+ * without this, every return was a blank page and a spinner for a few seconds. Module-level so it
+ * outlives the component (the same thing DevSidebar does), it lets a return render the last
+ * results at once while a refresh runs behind them. Only the very first load, before anything has
+ * ever arrived, still waits.
+ */
+const cache = {
+  work: null, apps: [], workspaces: [], alerts: [], botPrs: [], botReviews: {}, alertError: '', alertsLoaded: false,
+};
+
+// How often the open page re-reads GitHub. Slower than the sidebar's five seconds: My Work is a
+// large GraphQL round trip against GitHub's rate limit, not a cheap in-cluster list, so it polls
+// on the order of a person glancing back at it rather than continuously.
+const REFRESH_MS = 30000;
+
 export default {
   name: 'DevMyWork',
 
@@ -232,10 +250,23 @@ export default {
     await this.refresh();
   },
 
+  mounted() {
+    // Poll while the page is open, so the tables keep up without a manual Refresh. It reuses the
+    // same refresh, which writes the cache behind whatever is on screen - so a visible table is
+    // only ever replaced by newer rows, never by the spinner.
+    this.refreshTimer = setInterval(() => this.refresh().catch(() => {}), REFRESH_MS);
+  },
+
+  beforeUnmount() {
+    clearInterval(this.refreshTimer);
+  },
+
   data() {
     return {
-      apps:       [],
-      work:       null,
+      // Seeded from the cross-visit cache, so a return renders the last results immediately and
+      // refreshes behind them; a first-ever load starts empty and shows the spinner.
+      apps:       cache.apps,
+      work:       cache.work,
       error:      '',
       // Whether the GitHub request is in flight, and whether the advisories' separate one is.
       //
@@ -244,8 +275,11 @@ export default {
       // the page does not and is allowed to fail on its own. `$fetchState.pending` is not
       // enough for either: it covers the first load and says nothing about Refresh, which is
       // the press most likely to be waited on.
-      loading:    true,
+      loading:    !cache.work,
       loadingAlerts: false,
+      // Whether the advisories have been read at least once (even to nothing). Its spinner shows
+      // only until then; after that the table stands and refreshes behind it, empty or not.
+      alertsLoaded: cache.alertsLoaded,
       /**
        * The row whose secondary actions are open, on a phone.
        *
@@ -257,14 +291,14 @@ export default {
       openActions: '',
       // The workspaces that exist, so a row can say whether it already has one. Names only:
       // this page is about pull requests and the sidebar is about workspaces.
-      workspaces: [],
+      workspaces: cache.workspaces,
       // This person's own prompts, which is what a queued conversation opens on.
       // The repository's open Dependabot advisories, and why they could not be read when they
       // could not be. A token without the security tab is an ordinary thing, not a page error.
-      alerts:     [],
-      botPrs:     [],
-      botReviews: {},
-      alertError: '',
+      alerts:     cache.alerts,
+      botPrs:     cache.botPrs,
+      botReviews: cache.botReviews,
+      alertError: cache.alertError,
       notice:     '',
       settingsTo: { name: SETTINGS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } },
     };
@@ -430,6 +464,11 @@ export default {
         this.work = work;
         this.workspaces = workspaces.map((workspace) => workspace.name);
 
+        // Kept for the next visit; see the module-level cache.
+        cache.apps = this.apps;
+        cache.work = this.work;
+        cache.workspaces = this.workspaces;
+
         // Separately, and allowed to fail on its own: the alerts belong to a repository and need
         // a permission the rest of this page does not, so a token without it should cost that
         // section and nothing else.
@@ -449,9 +488,18 @@ export default {
           this.alertError = e.message || String(e);
         } finally {
           this.loadingAlerts = false;
+          this.alertsLoaded = true;
         }
+
+        cache.alertsLoaded = true;
+        cache.alerts = this.alerts;
+        cache.botPrs = this.botPrs;
+        cache.botReviews = this.botReviews;
+        cache.alertError = this.alertError;
       } catch (e) {
-        this.work = null;
+        // Keep the last-good results on screen rather than blanking the page: a poll that fails,
+        // or a token that flapped, should show the error beside the cached tables, not instead of
+        // them. A first load with nothing cached still falls through to the empty/error state.
         this.error = e.message || String(e);
       } finally {
         this.loading = false;
@@ -572,6 +620,14 @@ export default {
       try {
         const started = await startIssueFix(this.$store, issue, issue.repo || this.repo);
 
+        // Starting the fix moves the issue to its board's "working" column, so the board reflects
+        // that somebody has picked it up. Best effort and optimistic: the status shows as changed
+        // at once, and a board with no working column - or a token without project scope - just
+        // leaves it where it was rather than failing the button.
+        setIssueStatus(issue.repo || this.repo, issue.number)
+          .then((status) => status && this.applyIssueStatus(issue.key, status))
+          .catch(() => {});
+
         done(true);
         this.$router.push({
           name:   WORKSPACE_ROUTE,
@@ -581,6 +637,18 @@ export default {
       } catch (e) {
         this.error = e.message || String(e);
         done(false);
+      }
+    },
+
+    /**
+     * Set an issue's board status in place, in the list and the cross-visit cache both (they are
+     * the same object), so the change shows the moment it lands rather than after the next poll.
+     */
+    applyIssueStatus(key, status) {
+      for (const issue of this.work?.issues || []) {
+        if (issue.key === key) {
+          issue.projectStatus = status;
+        }
       }
     },
 
@@ -1227,7 +1295,7 @@ export default {
         read yet" for a few seconds and "nothing to fix" afterwards, which are opposite things.
       -->
       <div
-        v-else-if="loadingAlerts"
+        v-else-if="loadingAlerts && !alertsLoaded"
         class="dev-my-work__loading"
       >
         <i class="icon icon-spinner icon-spin" />
@@ -1296,7 +1364,7 @@ export default {
         the Approve & merge button is for, so it lives on that verdict rather than on every row.
       -->
       <div
-        v-if="loadingAlerts"
+        v-if="loadingAlerts && !alertsLoaded"
         class="dev-my-work__loading"
       >
         <i class="icon icon-spinner icon-spin" />

@@ -406,6 +406,75 @@ async function issueStatuses(): Promise<Map<string, GithubBoardStatus>> {
 }
 
 /**
+ * Move an issue's board Status to the first of `wanted` its board actually offers.
+ *
+ * The read side (issueStatuses) only names the status; setting it needs the ids a
+ * `updateProjectV2ItemFieldValue` mutation takes - the project, the item, the Status field and
+ * the option to set - so this fetches them for the one issue and then writes. Matching is on the
+ * option name, case-insensitive, because a board names its "working" column whatever it likes.
+ *
+ * Returns the status that was set, or null when the issue is on no board with a Status field, or
+ * none of `wanted` is one of that field's options - both ordinary outcomes, not errors. Writing a
+ * project field needs the token's `project` scope; a token without it makes the mutation throw,
+ * which the caller (Start fix) swallows so the fix still starts.
+ */
+const ISSUE_STATUS_FIELDS_QUERY = `
+  query IssueStatusFields($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {
+        projectItems(first: 10) {
+          nodes {
+            id
+            project {
+              id
+              title
+              url
+              field(name: "Status") {
+                ... on ProjectV2SingleSelectField { id options { id name color } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const SET_ISSUE_STATUS_MUTATION = `
+  mutation SetIssueStatus($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+    updateProjectV2ItemFieldValue(input: {
+      projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+      value: { singleSelectOptionId: $optionId }
+    }) { projectV2Item { id } }
+  }
+`;
+
+export async function setIssueStatus(repo: string, number: number, wanted: string[] = ['working', 'in progress']): Promise<GithubBoardStatus | null> {
+  const targets = wanted.map((name) => name.toLowerCase());
+  const data = await graphql(ISSUE_STATUS_FIELDS_QUERY, { ...splitRepo(repo), number });
+  const items: Json[] = data.repository?.issue?.projectItems?.nodes || [];
+
+  for (const item of items) {
+    const field = item.project?.field;
+    const option = (field?.options || []).find((candidate: Json) => targets.includes(String(candidate.name).toLowerCase()));
+
+    if (!field?.id || !option) {
+      continue;
+    }
+
+    await graphql(SET_ISSUE_STATUS_MUTATION, {
+      projectId: item.project.id, itemId: item.id, fieldId: field.id, optionId: option.id,
+    });
+
+    return {
+      name: option.name, color: option.color || 'GRAY', project: item.project.title || '', url: item.project.url || '',
+    };
+  }
+
+  return null;
+}
+
+/**
  * The open Dependabot alerts on one repository, folded by advisory.
  *
  * REST rather than GraphQL: `vulnerabilityAlerts` on the GraphQL side needs the same permission
