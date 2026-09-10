@@ -1220,6 +1220,90 @@ async function reconcileTeardown() {
   }
 }
 
+// ── Workspace media (Review tab) ──────────────────────────────────────────────
+const MEDIA_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.webm', '.mp4', '.mov']);
+
+/** A workspace's artifacts tree on the node, as this pod sees it (read-only mount). */
+function workspaceArtifactsRoot(ws) {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(ws)) {
+    return '';
+  }
+
+  return path.join(WORKSPACES_ROOT, ws, 'artifacts');
+}
+
+/** Every image and video under a workspace's artifacts, newest first, with its path and type. */
+function listWorkspaceMedia(ws) {
+  const root = workspaceArtifactsRoot(ws);
+
+  if (!root) {
+    return [];
+  }
+
+  const found = [];
+  const walk = (dir, rel) => {
+    if (found.length >= 300) {
+      return;
+    }
+
+    let entries = [];
+
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      const relPath = rel ? `${ rel }/${ entry.name }` : entry.name;
+
+      if (entry.isDirectory()) {
+        walk(abs, relPath);
+      } else if (MEDIA_EXTS.has(extOf(entry.name))) {
+        let stat = { size: 0, mtimeMs: 0 };
+
+        try {
+          stat = fs.statSync(abs);
+        } catch { /* raced deletion */ }
+
+        found.push({
+          path: relPath, name: entry.name, type: ARTIFACT_TYPES[extOf(entry.name)] || 'application/octet-stream', size: stat.size, mtimeMs: stat.mtimeMs,
+        });
+      }
+    }
+  };
+
+  walk(root, '');
+
+  return found.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+/** Resolve one media file's absolute path, or '' if it escapes the tree, is not media, or is gone. */
+function workspaceMediaPath(ws, rel) {
+  const root = workspaceArtifactsRoot(ws);
+
+  if (!root) {
+    return '';
+  }
+
+  const file = path.resolve(root, rel);
+
+  if (file !== root && !file.startsWith(root + path.sep)) {
+    return '';
+  }
+
+  if (!MEDIA_EXTS.has(extOf(file))) {
+    return '';
+  }
+
+  try {
+    return fs.statSync(file).isFile() ? file : '';
+  } catch {
+    return '';
+  }
+}
+
 http.createServer(async(req, res) => {
   const url = new URL(req.url, 'http://dev-api');
 
@@ -1268,6 +1352,37 @@ http.createServer(async(req, res) => {
     tar.stdout.pipe(res);
     tar.on('error', () => res.end());
     req.on('close', () => tar.kill());
+
+    return;
+  }
+
+  // The media an agent produced for a workspace - its repro and demo videos, its before/after
+  // screenshots - listed and served from the workspace's own artifacts tree. The Review tab shows
+  // these; a workspace pod cannot serve its own files and the browser cannot read the node disk,
+  // so this pod, which has the tree mounted, serves them.
+  const mediaList = /^\/workspace\/([a-z0-9][a-z0-9-]*)\/media$/.exec(url.pathname);
+
+  if (mediaList && req.method === 'GET') {
+    return send(res, 200, { files: listWorkspaceMedia(mediaList[1]) });
+  }
+
+  const mediaFile = /^\/workspace\/([a-z0-9][a-z0-9-]*)\/media\/file$/.exec(url.pathname);
+
+  if (mediaFile && req.method === 'GET') {
+    const file = workspaceMediaPath(mediaFile[1], url.searchParams.get('path') || '');
+
+    if (!file) {
+      return send(res, 404, { error: 'No such media in the workspace.' });
+    }
+
+    res.writeHead(200, {
+      'content-type':                ARTIFACT_TYPES[extOf(file)] || 'application/octet-stream',
+      'content-length':              fs.statSync(file).size,
+      'access-control-allow-origin': '*',
+      'accept-ranges':               'bytes',
+      'cache-control':               'private, max-age=60',
+    });
+    fs.createReadStream(file).pipe(res);
 
     return;
   }
