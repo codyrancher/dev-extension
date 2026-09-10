@@ -10,18 +10,40 @@ entries:
       catalog.cattle.io/rancher-version: '>= 2.10.0'
       catalog.cattle.io/scope: management
       catalog.cattle.io/ui-component: plugins
-      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
-    appVersion: 0.3.88
-    created: "2026-09-10T20:19:29.831143759Z"
+    appVersion: 0.3.89
+    created: "2026-09-10T20:54:34.548100807Z"
     description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
       fixes, shares and agents
-    digest: 3b78bd5ec620e563f9de345fc321721e4b4bdf4f1ad8bed251254cbe1059b6c6
+    digest: 71cf3d3178c6bf803103a2e9779eb1925a9a2551a3156068097dd4d0a40707a6
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
     type: application
     urls:
-    - assets/dev-extension/dev-extension-0.3.88.tgz
+    - assets/dev-extension/dev-extension-0.3.89.tgz
+    version: 0.3.89
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/display-name: Dev Extension
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
+    apiVersion: v2
+    appVersion: 0.3.88
+    created: "2026-09-10T20:20:39.614745455Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
+    digest: 083b5f5b10dbb8f5b8a22683fdaf52c7e09493d20b5c483e0ad6cd3a0595f390
+    icon: https://codyrancher.github.io/dev-extension/icon.svg
+    name: dev-extension
+    type: application
+    urls:
+    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.88/dev-extension-0.3.88.tgz
     version: 0.3.88
   - annotations:
       catalog.cattle.io/certified: rancher
@@ -2110,4 +2132,4 @@ entries:
     urls:
     - assets/dev-extension/dev-extension-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-10T20:19:29.830776454Z"
+generated: "2026-09-10T20:54:34.547276604Z"
