@@ -1091,6 +1091,85 @@ const routes = [
   }],
 ];
 
+// ── Workspace teardown reconciler ────────────────────────────────────────────
+//
+// Deleting a workspace is several requests, and it used to run every one of them in the browser:
+// delete the Installation (Apps Plus's cleanup then takes its Bundle and namespace), then this
+// extension's own leftovers - the credentials RoleBinding in dev-system, and a namespace stranded
+// when the Installation was gone before its Bundle could take it. A tab closed mid-delete left
+// those behind, and because the workspace list is built from namespaces carrying the workspace
+// label, a stranded one showed as a workspace that could never be deleted.
+//
+// This loop finishes teardown here instead, on an interval, so it no longer depends on whoever
+// pressed delete staying on the page. It only ever touches a workspace whose Installation is
+// already gone; anything with a live Installation is either healthy or mid-delete and is Apps
+// Plus's to handle. The node tree (two to three gigabytes of checkout) is not here: this pod
+// mounts /dev-workspaces read-only, and it is pruned where it lives, from the agent pod.
+const WS_SA = 'dev-workspace';
+const CREDS_BINDING_RE = new RegExp(`^creds-${ WS_SA }-dev-(.+)$`);
+
+async function reconcileTeardown() {
+  let live;
+
+  try {
+    const instances = await k8s(INSTANCES);
+
+    live = new Set((instances.items || []).map((i) => i.metadata?.name).filter(Boolean));
+  } catch (e) {
+    // The apiserver did not answer. An empty set would read as "every workspace is gone" and
+    // tear all of them down, so on any doubt this tick does nothing and waits for the next.
+    console.error('[dev-api] reconcile: could not list installations, skipping tick:', e.message || e);
+
+    return;
+  }
+
+  // Namespaces still labelled for a workspace whose Installation is gone.
+  const namespaces = await k8s(`/api/v1/namespaces?labelSelector=${ encodeURIComponent(LABEL_WORKSPACE) }`).catch(() => null);
+
+  for (const ns of namespaces?.items || []) {
+    const name = ns.metadata?.labels?.[LABEL_WORKSPACE];
+
+    if (!name || live.has(name) || ns.metadata?.deletionTimestamp) {
+      continue;
+    }
+
+    const nsName = ns.metadata.name;
+
+    try {
+      if (nsName === `dev-${ name }`) {
+        // This product's own namespace, whose Bundle is gone and will not take it.
+        await k8s(`/api/v1/namespaces/${ nsName }`, { method: 'DELETE' });
+      } else {
+        // A workspace label stranded on a shared namespace (a workspace once mapped onto
+        // `default`): drop the label, never delete the namespace.
+        await k8s(`/api/v1/namespaces/${ nsName }`, { method: 'PATCH', body: JSON.stringify({ metadata: { labels: { [LABEL_WORKSPACE]: null, [LABEL_APP]: null, [LABEL_CLUSTER]: null } } }) });
+      }
+      console.log(`[dev-api] reconciled teardown of workspace ${ name } (namespace ${ nsName })`);
+    } catch (e) {
+      if (e.status !== 404) {
+        console.error(`[dev-api] reconcile: namespace ${ nsName }:`, e.message || e);
+      }
+    }
+  }
+
+  // Credentials bindings a deleted workspace leaves in dev-system.
+  const bindings = await k8s(`/apis/rbac.authorization.k8s.io/v1/namespaces/${ NAMESPACE }/rolebindings`).catch(() => null);
+
+  for (const rb of bindings?.items || []) {
+    const match = CREDS_BINDING_RE.exec(rb.metadata?.name || '');
+
+    if (!match || live.has(match[1]) || rb.metadata?.deletionTimestamp) {
+      continue;
+    }
+
+    await k8s(`/apis/rbac.authorization.k8s.io/v1/namespaces/${ NAMESPACE }/rolebindings/${ rb.metadata.name }`, { method: 'DELETE' }).catch((e) => {
+      if (e.status !== 404) {
+        console.error(`[dev-api] reconcile: binding ${ rb.metadata.name }:`, e.message || e);
+      }
+    });
+  }
+}
+
 http.createServer(async(req, res) => {
   const url = new URL(req.url, 'http://dev-api');
 
@@ -1160,4 +1239,11 @@ http.createServer(async(req, res) => {
   }
 }).listen(PORT, () => {
   console.log(`[dev-api] listening on :${ PORT }`);
+
+  // Finish workspace teardowns the browser did not, and keep finishing them. A minute apart, and
+  // first a few seconds after boot rather than at the same instant everything else starts.
+  const tick = () => reconcileTeardown().catch((e) => console.error('[dev-api] reconcile tick failed:', e.message || e));
+
+  setTimeout(tick, 10_000);
+  setInterval(tick, 60_000);
 });
