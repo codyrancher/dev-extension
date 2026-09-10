@@ -60,7 +60,7 @@ function narrowed(all, keep) {
  * At phone width most of them go. Nine columns in 390px is nine columns of ellipsis, and the
  * question a phone is holding this table to answer is which pull request to open.
  */
-function columns(extra, narrow = false) {
+function columns(extra, narrow = false, withAuthor = false) {
   const all = [
     {
       name: 'state', label: 'State', value: 'draft', width: 90
@@ -75,6 +75,11 @@ function columns(extra, narrow = false) {
       name: 'issue', label: 'Issue', value: 'issue.number', width: 90
     },
     { name: 'title', label: 'Title', value: 'title' },
+    // Only where the PR is somebody else's: the reviewer table. On your own PRs the author is
+    // always you, so it is a column of one repeated name.
+    ...(withAuthor ? [{
+      name: 'author', label: 'Author', value: 'author', sort: ['author'], width: 130
+    }] : []),
     {
       name: 'ci', label: 'CI', value: 'checks.state', width: 190
     },
@@ -277,7 +282,7 @@ export default {
         {
           name: 'updated', label: 'Updated', value: 'updatedAt', sort: ['updatedAt:desc'], width: 110
         },
-      ], this.narrow);
+      ], this.narrow, true);
     },
 
     mineHeaders() {
