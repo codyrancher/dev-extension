@@ -61,15 +61,21 @@ export async function listRanchers(store: Store): Promise<RancherTarget[]> {
     return out;
   }
 
-  const [clusters, bundles] = await Promise.all([
+  const [clusters, bundles, machines] = await Promise.all([
     devFetch('/v3/clusters').then((r: Json) => r?.data || []).catch(() => []) as Promise<Json[]>,
     store.dispatch('management/findAll', { type: 'fleet.cattle.io.bundle' }).catch(() => []) as Promise<Json[]>,
+    // The CAPI machines the parent owns for its provisioning-and-cleanup link. Read here rather
+    // than from each instance's downstream, because a standalone instance's own Rancher takes
+    // over its cluster and the parent's cluster agent then disconnects (expected, not a fault) -
+    // so this is the one view of the node that stays readable once the instance is up.
+    devFetch('/v1/cluster.x-k8s.io.machines').then((r: Json) => r?.data || []).catch(() => []) as Promise<Json[]>,
   ]);
 
   for (const instance of ranchers) {
     const name = instance.metadata?.name;
     const cluster = clusters.find((c) => c.name === name || c.id === name);
     const bundle = bundles.find((b) => b.metadata?.name === `apps-plus-${ name }`);
+    const machine = machines.find((m) => m.metadata?.labels?.['cluster.x-k8s.io/cluster-name'] === name);
 
     if (instance.metadata?.deletionTimestamp) {
       out.push({
@@ -77,64 +83,89 @@ export async function listRanchers(store: Store): Promise<RancherTarget[]> {
       });
       continue;
     }
-    out.push(await instanceTarget(name, instance.metadata?.creationTimestamp || '', cluster, bundle));
+    out.push(await instanceTarget(name, instance.metadata?.creationTimestamp || '', cluster, bundle, machine));
   }
 
   return out;
 }
 
-async function instanceTarget(name: string, since: string, cluster: Json | undefined, bundle: Json | undefined): Promise<RancherTarget> {
+async function instanceTarget(name: string, since: string, cluster: Json | undefined, bundle: Json | undefined, machine: Json | undefined): Promise<RancherTarget> {
   const base = {
     id: `instance:${ name }`, name, url: '', kind: 'instance' as const, since,
   };
   const bundleState: string = bundle?.status?.display?.state || '';
   const bundleMessage: string = bundle?.status?.display?.message || '';
 
-  if (!cluster) {
+  // The node, from the CAPI machine the parent owns. A standalone instance runs its own Rancher,
+  // which takes over its cluster and drops the parent's cluster agent - so once the node is up
+  // the downstream is no longer reachable through the parent, and the parent's view of it goes
+  // "updating" / "cluster agent is not connected" and stays there. That is expected here, not a
+  // fault, and this machine is where the node's address is still readable after it happens.
+  const machineAddrs: Json[] = machine?.status?.addresses || [];
+  const machineIp = machineAddrs.find((a) => a.type === 'ExternalIP')?.address || machineAddrs.find((a) => a.type === 'InternalIP')?.address || '';
+  const nodeUp = machine?.status?.phase === 'Running' && !!machineIp;
+
+  if (!cluster && !machine) {
     // Apps Plus makes the cluster when a dashboard with it loaded reconciles the instance.
     return {
       ...base, phase: 'created', step: 0, detail: 'Creating the cluster',
     };
   }
-  const message = shortenTransition(cluster.transitioningMessage || '');
+  const message = shortenTransition(cluster?.transitioningMessage || '');
 
-  if (cluster.state === 'error' || cluster.transitioning === 'error') {
+  // While the parent still sees the cluster as active its agent is connected, so the proxy is
+  // authoritative for whether Rancher itself answers yet: the node can be up a minute or two
+  // before the chart's pod is ready, and this is the one path that tells the difference.
+  if (cluster?.state === 'active') {
+    const [nodes, deployments] = await Promise.all([
+      devFetch(`${ clusterBase(cluster.id) }/v1/nodes`).catch(() => null),
+      devFetch(`${ clusterBase(cluster.id) }/v1/apps.deployments/cattle-system`).catch(() => null),
+    ]);
+    const addresses: Json[] = (nodes?.data || []).flatMap((node: Json) => node.status?.addresses || []);
+    const address = addresses.find((a) => a.type === 'ExternalIP')?.address || addresses.find((a) => a.type === 'InternalIP')?.address || machineIp;
+    // The chart's release is named for the instance, so its Deployment is `<name>-rancher`
+    // (`ha-rancher`); a Rancher installed by hand is plain `rancher`.
+    const deployment: Json = (deployments?.data || []).find((d: Json) => [`${ name }-rancher`, 'rancher'].includes(d.metadata?.name)) || null;
+    const ready = (deployment?.status?.readyReplicas || 0) > 0;
+
+    if (ready && address) {
+      return {
+        ...base, phase: 'ready', step: 3, detail: '', url: rancherAddress(name, address), clusterId: cluster.id, nodeIp: address,
+      };
+    }
+    if (/^Err/.test(bundleState)) {
+      return {
+        ...base, phase: 'error', step: 2, detail: shortenTransition(bundleMessage) || 'Installing Rancher failed',
+      };
+    }
+
     return {
-      ...base, phase: 'error', step: 1, detail: message || 'Provisioning failed',
+      ...base, phase: 'installing', step: 2, detail: deployment ? 'Rancher is starting' : 'Installing Rancher',
     };
   }
-  if (cluster.state !== 'active') {
-    return {
-      ...base, phase: 'provisioning', step: 1, detail: message || `Provisioning (${ cluster.state })`,
-    };
-  }
 
-  // The cluster is up: its node's address is where Rancher will answer, once the chart the
-  // bundle installs has a ready pod.
-  const [nodes, deployments] = await Promise.all([
-    devFetch(`${ clusterBase(cluster.id) }/v1/nodes`).catch(() => null),
-    devFetch(`${ clusterBase(cluster.id) }/v1/apps.deployments/cattle-system`).catch(() => null),
-  ]);
-  const addresses: Json[] = (nodes?.data || []).flatMap((node: Json) => node.status?.addresses || []);
-  const address = addresses.find((a) => a.type === 'ExternalIP')?.address || addresses.find((a) => a.type === 'InternalIP')?.address || '';
-  // The chart's release is named for the instance, so its Deployment is `<name>-rancher`
-  // (`ha-rancher`); a Rancher installed by hand is plain `rancher`.
-  const deployment: Json = (deployments?.data || []).find((d: Json) => [`${ name }-rancher`, 'rancher'].includes(d.metadata?.name)) || null;
-  const ready = (deployment?.status?.readyReplicas || 0) > 0;
-
-  if (ready && address) {
-    return {
-      ...base, phase: 'ready', step: 3, detail: '', url: rancherAddress(name, address), clusterId: cluster.id, nodeIp: address,
-    };
-  }
+  // The parent's link to the downstream is degraded or gone. A real failure to install Rancher
+  // still surfaces; but a running node with the install applied is an instance that is up, and
+  // the parent no longer being able to reach it is exactly what that looks like from here - so
+  // the node, not the parent's view, decides.
   if (/^Err/.test(bundleState)) {
     return {
       ...base, phase: 'error', step: 2, detail: shortenTransition(bundleMessage) || 'Installing Rancher failed',
     };
   }
+  if (nodeUp) {
+    return {
+      ...base, phase: 'ready', step: 3, detail: '', url: rancherAddress(name, machineIp), clusterId: cluster?.id || '', nodeIp: machineIp,
+    };
+  }
+  if (cluster && (cluster.state === 'error' || cluster.transitioning === 'error')) {
+    return {
+      ...base, phase: 'error', step: 1, detail: message || 'Provisioning failed',
+    };
+  }
 
   return {
-    ...base, phase: 'installing', step: 2, detail: deployment ? 'Rancher is starting' : 'Installing Rancher',
+    ...base, phase: 'provisioning', step: 1, detail: message || `Provisioning (${ cluster?.state || 'pending' })`,
   };
 }
 
