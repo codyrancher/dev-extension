@@ -181,13 +181,6 @@ export default {
       return this.rowsFor(this.workspaces.filter((workspace) => !listed.has(workspace.app) && (!known.has(workspace.app) || this.apps.find((app) => app.id === workspace.app)?.workspace)));
     },
 
-    /**
-     * The most any one cluster has, which is what the bars are drawn against.
-     *
-     * A bar has to be a proportion of something. Against a cluster's own capacity every cluster
-     * would look equally full; against the largest, two clusters side by side compare.
-     */
-    /** What the meters are drawn against: the fullest cluster is the whole bar. */
     /** The clusters, with how many workspaces each holds. */
     clusterRows() {
       const clusters = this.clusters.length ? this.clusters : [{ id: 'local', name: 'local', memoryFree: 0, diskFree: 0 }];
@@ -349,23 +342,26 @@ export default {
 
 
     /**
-     * How much of a bar is lit: what is free, as a share of what the cluster has in all.
+     * How much of a bar is lit: how much of the cluster is in use, as a share of its total.
      *
-     * Each cluster against its own total rather than against the largest cluster's: the tracks
-     * are one width, the fill is that cluster's own headroom, and a bar moves when the number
-     * beside it does.
+     * A resource meter fills as the cluster fills, so the bar is what is used, not what is left.
+     * The data carries what is free; used is the rest. Each cluster is drawn against its own
+     * total rather than against the largest cluster's: the tracks are one width, the fill is that
+     * cluster's own utilisation, and the bar moves with the number beside it.
      */
     bar(free, total) {
       if (!total) {
         return '0%';
       }
 
-      return `${ Math.max(1, Math.min(100, Math.round((free / total) * 100))) }%`;
+      const used = Math.max(0, total - free);
+
+      return `${ Math.max(1, Math.min(100, Math.round((used / total) * 100))) }%`;
     },
 
-    /** "43 GiB / 62 GiB", or the free amount alone when the total is not known. */
+    /** "19 GiB / 62 GiB" used of total, or "unknown" when the total is not known. */
     amount(free, total) {
-      return total ? `${ readableBytes(free) } / ${ readableBytes(total) }` : readableBytes(free);
+      return total ? `${ readableBytes(Math.max(0, total - free)) } / ${ readableBytes(total) }` : readableBytes(free);
     },
 
     /** A Rancher of your own, from the single-node App: named here, confirmed, then provisioned. */
