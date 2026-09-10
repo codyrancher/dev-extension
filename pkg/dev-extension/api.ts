@@ -2167,6 +2167,15 @@ export async function ensureWorkspaceApi(): Promise<void> {
       {
         apiGroups: ['rbac.authorization.k8s.io'], resources: ['rolebindings'], verbs: ['get', 'list', 'create', 'delete']
       },
+      // The Fleet layer under a workspace. The teardown reconciler reads Bundles to tell a live
+      // workspace from a torn-down one, and deletes a BundleDeployment orphaned by a UI delete -
+      // the one that otherwise keeps reinstalling a workspace so it can never be deleted.
+      {
+        apiGroups: ['fleet.cattle.io'], resources: ['bundles'], verbs: ['get', 'list']
+      },
+      {
+        apiGroups: ['fleet.cattle.io'], resources: ['bundledeployments'], verbs: ['get', 'list', 'delete']
+      },
     ],
   });
 

@@ -1093,20 +1093,26 @@ const routes = [
 
 // ── Workspace teardown reconciler ────────────────────────────────────────────
 //
-// Deleting a workspace is several requests, and it used to run every one of them in the browser:
-// delete the Installation (Apps Plus's cleanup then takes its Bundle and namespace), then this
-// extension's own leftovers - the credentials RoleBinding in dev-system, and a namespace stranded
-// when the Installation was gone before its Bundle could take it. A tab closed mid-delete left
-// those behind, and because the workspace list is built from namespaces carrying the workspace
-// label, a stranded one showed as a workspace that could never be deleted.
+// Deleting a workspace is several requests, and it used to run every one of them in the browser.
+// A workspace is a Fleet deployment: an Installation (appsplus AppInstance) renders to a `Bundle`,
+// which Fleet turns into a `BundleDeployment` that owns Helm release `apps-plus-<name>` and the
+// `dev-<name>` namespace. A UI delete could drop the Bundle and leave the BundleDeployment behind
+// - orphaned, finalizer still set - and the orphan keeps reinstalling the release, so the
+// namespace reappears within seconds and the workspace looks undeletable (this was "delete isn't
+// stable" and workspaces that "keep coming back"). It could also leave this extension's own bits:
+// the credentials RoleBinding in dev-system, and a namespace stranded when the Installation was
+// gone before its Bundle could take it.
 //
 // This loop finishes teardown here instead, on an interval, so it no longer depends on whoever
 // pressed delete staying on the page. It only ever touches a workspace whose Installation is
-// already gone; anything with a live Installation is either healthy or mid-delete and is Apps
-// Plus's to handle. The node tree (two to three gigabytes of checkout) is not here: this pod
-// mounts /dev-workspaces read-only, and it is pruned where it lives, from the agent pod.
+// already gone; anything with a live Installation is healthy or mid-delete and is Apps Plus's to
+// handle. The node tree (gigabytes of checkout) is not here: this pod mounts /dev-workspaces
+// read-only, and it is pruned where it lives, from the agent pod.
 const WS_SA = 'dev-workspace';
 const CREDS_BINDING_RE = new RegExp(`^creds-${ WS_SA }-dev-(.+)$`);
+const APPS_PLUS_PREFIX = 'apps-plus-';
+const BUNDLES = '/apis/fleet.cattle.io/v1alpha1/bundles';
+const BUNDLE_DEPLOYMENTS = '/apis/fleet.cattle.io/v1alpha1/bundledeployments';
 
 async function reconcileTeardown() {
   let live;
@@ -1123,13 +1129,56 @@ async function reconcileTeardown() {
     return;
   }
 
-  // Namespaces still labelled for a workspace whose Installation is gone.
+  // The Fleet layer, read before anything is removed. `apps-plus-<name>` Bundles say which
+  // workspaces Fleet still means to deploy; the BundleDeployments are what actually reinstall
+  // them. A namespace is only removed directly when there is no BundleDeployment left to bring
+  // it back.
+  const bundles = await k8s(BUNDLES).catch(() => null);
+  const bundled = new Set((bundles?.items || [])
+    .map((b) => b.metadata?.name || '')
+    .filter((n) => n.startsWith(APPS_PLUS_PREFIX))
+    .map((n) => n.slice(APPS_PLUS_PREFIX.length)));
+
+  const deployments = await k8s(BUNDLE_DEPLOYMENTS).catch(() => null);
+  const bdByWorkspace = new Map();
+
+  for (const bd of deployments?.items || []) {
+    const name = bd.metadata?.name || '';
+
+    if (name.startsWith(APPS_PLUS_PREFIX)) {
+      bdByWorkspace.set(name.slice(APPS_PLUS_PREFIX.length), bd);
+    }
+  }
+
+  // 1) Orphaned BundleDeployments: the Installation is gone and so is the Bundle, but the
+  //    BundleDeployment is still there reinstalling the workspace. Delete it - the Fleet agent
+  //    releases its finalizer, uninstalls Helm and removes the namespace in ~15s. A BundleDeployment
+  //    whose Bundle still exists is left alone: deleting it would only have Fleet's Bundle
+  //    controller recreate it, and it means Apps Plus's own teardown is still in flight.
+  for (const [name, bd] of bdByWorkspace) {
+    if (live.has(name) || bundled.has(name) || bd.metadata?.deletionTimestamp) {
+      continue;
+    }
+
+    const bdNs = bd.metadata?.namespace;
+
+    await k8s(`/apis/fleet.cattle.io/v1alpha1/namespaces/${ bdNs }/bundledeployments/${ bd.metadata.name }`, { method: 'DELETE' })
+      .then(() => console.log(`[dev-api] reconciled orphaned BundleDeployment ${ bdNs }/${ bd.metadata.name } (workspace ${ name })`))
+      .catch((e) => {
+        if (e.status !== 404) {
+          console.error(`[dev-api] reconcile: bundledeployment ${ bd.metadata?.name }:`, e.message || e);
+        }
+      });
+  }
+
+  // 2) Namespaces still labelled for a workspace whose Installation is gone and which has no
+  //    BundleDeployment to recreate it - a true remnant nothing will bring back.
   const namespaces = await k8s(`/api/v1/namespaces?labelSelector=${ encodeURIComponent(LABEL_WORKSPACE) }`).catch(() => null);
 
   for (const ns of namespaces?.items || []) {
     const name = ns.metadata?.labels?.[LABEL_WORKSPACE];
 
-    if (!name || live.has(name) || ns.metadata?.deletionTimestamp) {
+    if (!name || live.has(name) || bdByWorkspace.has(name) || ns.metadata?.deletionTimestamp) {
       continue;
     }
 
@@ -1152,13 +1201,14 @@ async function reconcileTeardown() {
     }
   }
 
-  // Credentials bindings a deleted workspace leaves in dev-system.
+  // 3) Credentials bindings left in dev-system by a workspace that is fully gone - no Installation,
+  //    and no BundleDeployment that will make one again.
   const bindings = await k8s(`/apis/rbac.authorization.k8s.io/v1/namespaces/${ NAMESPACE }/rolebindings`).catch(() => null);
 
   for (const rb of bindings?.items || []) {
     const match = CREDS_BINDING_RE.exec(rb.metadata?.name || '');
 
-    if (!match || live.has(match[1]) || rb.metadata?.deletionTimestamp) {
+    if (!match || live.has(match[1]) || bdByWorkspace.has(match[1]) || rb.metadata?.deletionTimestamp) {
       continue;
     }
 
