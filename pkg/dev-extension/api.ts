@@ -2440,6 +2440,16 @@ export function workspaceProxyUrl(name: string, port: number, scheme = 'http'): 
 }
 
 /**
+ * The shared GitHub browser's web UI: the KasmVNC desktop on the `browser` service in
+ * extension-studio, framed through the apiserver's service proxy the same way a workspace's own
+ * browser is. This is the one browser with a GitHub login; opening it here is how a person signs
+ * it in, after which every agent's media upload goes through it (see GITHUB_BROWSER_CDP).
+ */
+export function globalBrowserUrl(): string {
+  return `${ BASE }/api/v1/namespaces/${ STUDIO_NAMESPACE }/services/http:browser:3000/proxy/`;
+}
+
+/**
  * Whether anything is answering on that port yet.
  *
  * A workspace can be Running with nothing listening: the image is still starting, the server
