@@ -1176,12 +1176,52 @@ export async function deleteWorkspace(store: Store, name: string): Promise<void>
   // The Installation takes its Bundle with it, and the Bundle takes the namespace and everything
   // in it. What is left is this product's own: the credentials binding, which lives in
   // dev-system rather than in the namespace, and the Installation record itself.
-  await deleteWorkspaceInstance(store, name);
+  //
+  // Idempotent, on purpose. A delete is several requests in the browser, and it is pressed again,
+  // re-rendered, or run against a workspace that half-deleted before - so the Installation is
+  // often already gone by the time this runs. That is not a failure: erroring on it left the row
+  // in the list with a banner while the teardown it started was in fact proceeding, which read as
+  // "delete is broken". So a missing Installation is fine, and the rest of the teardown runs
+  // regardless - including the namespace, which is normally the Bundle's to take but is this
+  // extension's to finish when the Installation (and therefore the Bundle) is already gone.
+  await deleteWorkspaceInstance(store, name, true);
   await devFetch(`${ BASE }/v1/rbac.authorization.k8s.io.rolebindings/${ DEV_SYSTEM_NAMESPACE }/${ binding }`, { method: 'DELETE' }).catch(() => null);
+  await removeWorkspaceNamespace(name).catch(() => {});
   // And the tree on the node, which nothing else owns: the checkout, the artifacts and the
   // node_modules are two to three gigabytes that would otherwise sit there for good. Last,
   // because it is the one part a person could still want if the delete itself failed.
   await removeWorkspaceTree(name).catch(() => {});
+}
+
+/**
+ * The namespace a deleted workspace leaves behind, when its Installation was already gone so the
+ * Bundle will never take it. This is what stops a half-deleted workspace showing in the list for
+ * good: the list is built from namespaces carrying the workspace label (see listWorkspaces), so
+ * a labelled namespace with no Installation is a row that never clears itself.
+ *
+ * A namespace this product made - named `dev-<name>` - is deleted. A workspace label stranded on
+ * a shared namespace (a workspace once mapped onto `default`) has the label dropped instead; that
+ * namespace is not ours to delete. In the ordinary delete the Bundle has already taken
+ * `dev-<name>` by the time this runs, so this finds nothing and does nothing.
+ */
+async function removeWorkspaceNamespace(name: string): Promise<void> {
+  const owned = workspaceNamespace(name);
+  const listed = await devFetch(`${ BASE }/v1/namespaces?${ WORKSPACE_FILTER }`).catch(() => null);
+  const matches = (listed?.data || []).filter((namespace: Json) => namespace.metadata?.labels?.[LABEL_WORKSPACE] === name);
+
+  for (const namespace of matches) {
+    const nsName = namespace.metadata?.name;
+
+    if (nsName === owned) {
+      await devFetch(`${ BASE }/v1/namespaces/${ nsName }`, { method: 'DELETE' }).catch(() => null);
+    } else {
+      await devFetch(`${ BASE }/v1/namespaces/${ nsName }`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/merge-patch+json' },
+        body:    JSON.stringify({ metadata: { labels: { [LABEL_WORKSPACE]: null, [LABEL_APP]: null, [LABEL_CLUSTER]: null } } }),
+      }).catch(() => null);
+    }
+  }
 }
 
 /** How to speak to what a workspace serves. */
