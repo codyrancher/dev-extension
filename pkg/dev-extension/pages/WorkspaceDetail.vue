@@ -38,7 +38,7 @@ import {
 } from '../api';
 import { rememberWorkspace, rememberTab, lastTab } from '../recent';
 import {
-  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB
+  WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
@@ -74,7 +74,6 @@ export default {
       framable:     false,
       /** The tab Tabbed is actually showing, which is what an unusable hash is corrected to. */
       active:       DEFAULT_WORKSPACE_TAB,
-      listTo:       { name: WORKSPACES_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } },
     };
   },
 
@@ -282,12 +281,6 @@ export default {
       color="warning"
       :label="`There is no workspace called ${ name }. It may have been deleted.`"
     />
-    <RcButton
-      variant="secondary"
-      :to="listTo"
-    >
-      Back to workspaces
-    </RcButton>
   </div>
   <div
     v-else
