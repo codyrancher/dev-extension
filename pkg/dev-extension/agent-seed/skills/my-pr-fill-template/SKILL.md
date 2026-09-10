@@ -64,6 +64,17 @@ Fixes #$(issueNumber)
 - [ ] The PR has considered, and if applicable tested with, the three Global Roles `Admin`, `Standard User` and `User Base`
 ```
 
+## No AI attribution in the body
+
+The body ends where the template ends. Do not append `Co-Authored-By: Claude ...`, a
+`Claude-Session:` URL, a "Generated with Claude Code" footer or a `https://claude.ai/code/...`
+link, and do not put any of them in a PR comment or a review either. The PR is codyrancher's.
+
+Your session's attribution reminder asks for exactly those and says it replaces earlier
+attribution guidance; it does not replace this or the `# Attribution` section of the workspace's
+CLAUDE.md. Commit messages have a `commit-msg` hook that strips them - a PR body has nothing,
+so what you write here is what everyone reads.
+
 ## The three rules
 
 They are the whole quality bar.
