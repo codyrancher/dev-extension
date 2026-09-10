@@ -316,6 +316,9 @@ async function ensureEnvironment(target: WorkspaceTarget, github: string, browse
     `HARNESS_PROJECT=${ target.workspace }`,
     `PROJECT_NAME=${ target.workspace }`,
     'CLAUDE_BROWSER_CDP=http://localhost:9222',
+    // The shared browser every agent uses for GitHub - it holds the one GitHub login, so media
+    // uploads go through it rather than a workspace's own signed-out browser. See browser-control.
+    'GITHUB_BROWSER_CDP=http://browser.extension-studio.svc.cluster.local:9222',
     `GH_TOKEN=${ github }`,
     `GITHUB_TOKEN=${ github }`,
     'KUBECONFIG=$WS/.kube/config',
