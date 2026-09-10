@@ -156,17 +156,26 @@ export const RANCHER_SINGLE_APP = 'rancher-single';
 
 /**
  * The node a new Rancher gets: 16 GB of memory and a 100 GB root, up from Apps Plus's default
- * of `c5d.xlarge` (8 GB) and 50 GB (see apps-plus cluster-template.ts). Rancher, an RKE2 node
- * and a dashboard build sharing one machine want the headroom - a node that runs out of memory
- * or disk comes up wedged rather than merely slow, which is worse to diagnose than to pay for.
- * `c5d.2xlarge` keeps the same instance family as the default, so the AMI, the NVMe root and the
- * driver behaviour are unchanged; only the size grows. Passed as the installation's values,
- * which override the cluster template's defaults; everything not named here (region, VPC, subnet,
- * credential) keeps its default.
+ * of `c5d.xlarge` (8 GB) and 50 GB (see apps-plus cluster-template.ts). Rancher, a Kubernetes
+ * node and a dashboard build sharing one machine want the headroom - a node that runs out of
+ * memory or disk comes up wedged rather than merely slow, which is worse to diagnose than to
+ * pay for. `c5d.2xlarge` keeps the same instance family as the default, so the AMI, the NVMe
+ * root and the driver behaviour are unchanged; only the size grows.
+ *
+ * `kubernetesVersion` overrides the template's RKE2 default (v1.34.4+rke2r1) with K3s. Each
+ * instance is its own standalone Rancher and never a manager of downstream clusters, so it does
+ * not need RKE2's heavier control plane - K3s runs the apiserver, etcd, controller-manager,
+ * scheduler and CNI as one bundled process instead of five static pods, which on this single
+ * node reclaims the better part of a gigabyte of memory (and smaller images) for the same work.
+ * v1.36.4+k3s1 is this Rancher's own default K3s release (the k3s-default-version setting).
+ *
+ * These are passed as the installation's values, which override the cluster template's defaults;
+ * everything not named here (region, VPC, subnet, credential) keeps its default.
  */
 export const RANCHER_INSTANCE_VALUES: Record<string, string> = {
-  instanceType: 'c5d.2xlarge',
-  rootSize:     '100',
+  instanceType:      'c5d.2xlarge',
+  rootSize:          '100',
+  kubernetesVersion: 'v1.36.4+k3s1',
 };
 
 /**
