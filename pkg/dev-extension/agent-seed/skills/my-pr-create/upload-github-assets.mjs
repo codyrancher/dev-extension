@@ -1,6 +1,7 @@
 import { chromium } from 'playwright-core'
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
+import { lookup } from 'node:dns/promises'
 
 // Uploads files to GitHub's user-attachments CDN through the browser sidecar's
 // authenticated session.
@@ -15,7 +16,24 @@ import { basename } from 'node:path'
 // The shared GitHub browser first: it is the one that carries the GitHub login (a person signed
 // it in once from the Agents page), which is what user-attachments uploads need. Fall back to the
 // workspace's own browser only when the shared one is not configured.
-const CDP = process.env.GITHUB_BROWSER_CDP || process.env.CLAUDE_BROWSER_CDP || 'http://localhost:9222'
+const endpoint = process.env.GITHUB_BROWSER_CDP || process.env.CLAUDE_BROWSER_CDP || 'http://localhost:9222'
+
+// Chromium's CDP rejects a Host header that is not localhost or an IP (its anti DNS-rebinding
+// guard), and the shared browser is reached across the cluster by service name - so resolve the
+// endpoint's host to an address and connect to that. localhost and a bare IP are already fine.
+async function toIpEndpoint(url) {
+  const parsed = new URL(url)
+
+  if (parsed.hostname === 'localhost' || /^[0-9.]+$/.test(parsed.hostname)) {
+    return url
+  }
+
+  parsed.hostname = (await lookup(parsed.hostname)).address
+
+  return parsed.toString()
+}
+
+const CDP = await toIpEndpoint(endpoint)
 const hostUrl = process.argv[2]
 const filePaths = process.argv.slice(3)
 
