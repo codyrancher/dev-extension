@@ -493,14 +493,33 @@ export default {
     rowsFor(workspaces) {
       return workspaces.map((workspace) => ({
         key:   workspace.name,
-        // The cluster on the row only when it is not the local one, which is where most are.
-        label: workspace.cluster && workspace.cluster !== 'local' ? `${ workspace.name } · ${ workspace.cluster }` : workspace.name,
+        label: this.rowLabel(workspace),
         state: workspace.state,
         to:    {
           name:   WORKSPACE_ROUTE,
           params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: workspace.name },
         },
       }));
+    },
+
+    /**
+     * A workspace row's label: the name, then the issue or PR title it was started from where
+     * there is one, so `pr-19001` and `pr-19078` are told apart at a glance. The cluster is
+     * appended only when it is not the local one, which is where most workspaces are. The title
+     * is trimmed to a row's worth rather than wrapped.
+     */
+    rowLabel(workspace) {
+      const parts = [workspace.name];
+
+      if (workspace.title) {
+        parts.push(workspace.title.length > 42 ? `${ workspace.title.slice(0, 42).trimEnd() }…` : workspace.title);
+      }
+
+      if (workspace.cluster && workspace.cluster !== 'local') {
+        parts.push(workspace.cluster);
+      }
+
+      return parts.join(' · ');
     },
 
     globalTo(route) {

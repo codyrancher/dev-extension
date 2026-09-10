@@ -141,6 +141,9 @@ export const LABEL_CLUSTER = 'dev.rancher.io/cluster';
  * rancher/dashboard dev server is.
  */
 export const WORKSPACE_PORT_ANNOTATION = 'dev.rancher.io/port';
+// A human label for a workspace beyond its name: the issue or PR title an action was started
+// from, so a list of `pr-19001` / `issue-15656` names can be told apart at a glance.
+export const WORKSPACE_TITLE_ANNOTATION = 'dev.rancher.io/title';
 /** On a namespace made by the dashboard-preview app: a build to look at, not a workspace to work in. */
 export const PREVIEW_ANNOTATION = 'dev.rancher.io/preview';
 export const WORKSPACE_SCHEME_ANNOTATION = 'dev.rancher.io/scheme';
