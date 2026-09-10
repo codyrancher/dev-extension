@@ -25,7 +25,7 @@ import {
   listConversations, startConversation, endConversation, queuePrompt, Attachment, ProjectConversation
 } from './conversations';
 import {
-  ensureWorkspaceReady, waitForWorkspacePod, queuePrompt as queueInWorkspace, conversationPane
+  ensureWorkspaceReady, waitForWorkspacePod, conversationPane
 } from './workspace-tools';
 import type { WorkspaceContext } from './workspace-tools';
 import { rerunFailed } from './github';
@@ -399,7 +399,12 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
   const prepare = async() => {
     onNote?.('preparing the workspace (skills, gh, browser)');
     await ensureWorkspaceReady(workspace, ctx);
-    await queueInWorkspace(workspace, conversation.id, prompt);
+    // Queued through the agents extension, because that is where the pane runs: every
+    // conversation's tmux session, a workspace's included, is in the agent pod (conversations.ts).
+    // Writing it into the workspace pod's own queue - which is what this used to do - left it
+    // somewhere the pane never reads, so the review opened and then sat at an empty prompt. This
+    // is the same call `sayInConversation` already used to talk to a running one.
+    await queuePrompt(conversation.attach, prompt);
     onNote?.('prompt queued; the review starts when its pane is attached');
     // Sharing by default happens when the workspace is opened (WorkspaceConversations), not
     // here: a build beside an agent that has just started is two compiles on one node.

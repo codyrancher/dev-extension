@@ -57,6 +57,8 @@ export interface GithubPr {
   url: string;
   title: string;
   repo: string;
+  /** The PR author's GitHub login, for the reviewer table where the PR is somebody else's. */
+  author: string;
   draft: boolean;
   /** Whether the review the PR is waiting on has been given, from GitHub's own decision. */
   approved: boolean;
@@ -157,6 +159,7 @@ const QUERY = `
     isDraft
     createdAt
     updatedAt
+    author { login }
     repository { nameWithOwner }
     reviewDecision
     closingIssuesReferences(first: 1) { nodes { number url } }
@@ -173,13 +176,19 @@ const QUERY = `
               nodes {
                 __typename
                 ... on CheckRun {
+                  # name and the timestamps are what dedupes superseded re-runs down to the
+                  # latest attempt per check (see latestContexts); without them the rollup's
+                  # historical runs are all counted and a re-run-to-green still reads as red.
+                  name
                   conclusion
+                  startedAt
+                  completedAt
                   # The workflow run this check belongs to, which is what a rerun acts on: GitHub
                   # reruns a run, not a check. The databaseId, because the REST endpoint that does
                   # it takes a number and a node id is not one.
                   checkSuite { workflowRun { databaseId url } }
                 }
-                ... on StatusContext { state }
+                ... on StatusContext { context state createdAt }
               }
             }
           }
@@ -216,6 +225,33 @@ const QUERY = `
 
 interface Json { [key: string]: any }
 
+/**
+ * The head commit's checks, one entry per name: its most recent attempt.
+ *
+ * GitHub's statusCheckRollup lists every check run on the commit, superseded ones included - a
+ * re-run adds a new CheckRun beside the old one, and a status context that was posted red and
+ * then green keeps both. So a PR whose checks are now all green still carries its old red runs
+ * here, and counting the raw list reports failures that no longer exist (thirteen red on a PR the
+ * checks UI shows entirely green). The list is reduced to the latest attempt of each named check,
+ * by the timestamp GitHub gives it, before anything is counted.
+ */
+function latestContexts(node: Json): Json[] {
+  const contexts: Json[] = node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes || [];
+  const latest = new Map<string, { at: string; context: Json }>();
+
+  for (const context of contexts) {
+    const name = context.name || context.context || '';
+    const at = context.completedAt || context.startedAt || context.createdAt || '';
+    const seen = latest.get(name);
+
+    if (!seen || at >= seen.at) {
+      latest.set(name, { at, context });
+    }
+  }
+
+  return [...latest.values()].map((entry) => entry.context);
+}
+
 /** The checks on one PR, or null where GitHub has nothing to say about it. */
 function checksOf(node: Json): GithubChecks | null {
   const rollup = node.commits?.nodes?.[0]?.commit?.statusCheckRollup;
@@ -224,7 +260,7 @@ function checksOf(node: Json): GithubChecks | null {
     return null;
   }
 
-  const contexts: Json[] = rollup.contexts?.nodes || [];
+  const contexts = latestContexts(node);
   let failing = 0;
   let pending = 0;
 
@@ -240,8 +276,13 @@ function checksOf(node: Json): GithubChecks | null {
     }
   }
 
+  // Derived from the deduped counts, not from rollup.state: GitHub's own rollup verdict lags for
+  // status contexts re-posted green after a red, so a PR whose every latest check is green can
+  // read FAILURE there for a while. The counts are the truth the checks UI shows.
+  const state = failing ? 'FAILURE' : pending ? 'PENDING' : 'SUCCESS';
+
   return {
-    state: rollup.state || '', failing, pending, total: rollup.contexts?.totalCount || contexts.length
+    state, failing, pending, total: contexts.length
   };
 }
 
@@ -253,10 +294,9 @@ function checksOf(node: Json): GithubChecks | null {
  * both.
  */
 function failedRuns(node: Json): GithubRun[] {
-  const contexts: Json[] = node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes || [];
   const runs = new Map<number, GithubRun>();
 
-  for (const context of contexts) {
+  for (const context of latestContexts(node)) {
     const failed = context.__typename === 'CheckRun' &&
       ['FAILURE', 'TIMED_OUT', 'CANCELLED', 'STARTUP_FAILURE'].includes(context.conclusion);
     const run = context.checkSuite?.workflowRun;
@@ -279,6 +319,7 @@ function prFrom(node: Json, login: string, reviewRequested = false): GithubPr {
     url:             node.url,
     title:           node.title,
     repo,
+    author:          node.author?.login || '',
     draft:           !!node.isDraft,
     approved:        node.reviewDecision === 'APPROVED',
     issue:           node.closingIssuesReferences?.nodes?.[0] || null,
