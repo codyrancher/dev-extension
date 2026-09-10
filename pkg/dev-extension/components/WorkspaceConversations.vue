@@ -67,6 +67,16 @@ export default {
       return this.workspace.state === 'running' || this.workspace.state === 'starting';
     },
 
+    /**
+     * The workspace's own pod is up, not merely on its way. A conversation's pane waits for this
+     * rather than for `ready`: its opening prompt (a review, a fix) runs the moment claude starts,
+     * and it has to run against a checkout that is there - a pane started while the pod is still
+     * cloning and installing comes up on an empty tree, or on no pod at all.
+     */
+    fullyUp() {
+      return this.workspace.state === 'running';
+    },
+
     failing() {
       return this.workspace.state === 'error';
     },
@@ -331,19 +341,53 @@ export default {
         </p>
       </Banner>
       <!--
+        A conversation waits for the workspace to be fully up before its pane starts. Its opening
+        prompt runs the instant claude starts, so starting it against a pod that is still cloning
+        and installing is what left a review sitting at an empty prompt. Until then this says what
+        the workspace is doing, and the pane starts - and the prompt runs - on its own once it is
+        up.
+      -->
+      <Banner
+        v-if="!showingShell && failing"
+        color="error"
+      >
+        <p>This workspace is not staying up: {{ progress }}.</p>
+        <p
+          v-if="logTail"
+          class="workspace-conversations__log"
+        >
+          {{ logTail }}
+        </p>
+      </Banner>
+      <Banner
+        v-else-if="!showingShell && !fullyUp"
+        color="info"
+      >
+        <p>{{ progress }}. This conversation starts on its own once the workspace is up - a first start clones the repository and installs it, which takes a few minutes.</p>
+        <p
+          v-if="logTail"
+          class="workspace-conversations__log"
+        >
+          {{ logTail }}
+        </p>
+      </Banner>
+      <!--
         Every conversation is the Studio's own pane onto its agent pod, placed here. The Studio
         hands the component over (conversations.ts, studioApi); what this says is which
-        conversation, by its id.
+        conversation, by its id. Mounted only once the workspace is fully up, so the pane - and
+        the opening prompt it carries - never starts against a half-built tree.
       -->
-      <StudioTerminal
-        v-for="conversation in conversations"
-        v-show="conversation.id === current"
-        :key="conversation.id"
-        class="workspace-conversations__terminal"
-        :session="conversation.id"
-        :command="conversation.attach.command"
-        @state="onState(conversation.id, $event)"
-      />
+      <template v-if="fullyUp">
+        <StudioTerminal
+          v-for="conversation in conversations"
+          v-show="conversation.id === current"
+          :key="conversation.id"
+          class="workspace-conversations__terminal"
+          :session="conversation.id"
+          :command="conversation.attach.command"
+          @state="onState(conversation.id, $event)"
+        />
+      </template>
       <StudioTerminal
         v-if="ready && shellViaAgent"
         v-show="showingShell"
