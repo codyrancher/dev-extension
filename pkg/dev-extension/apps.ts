@@ -697,6 +697,8 @@ export function rancherWorkspaceApp(): Json {
             `              value: ${ DEV_API_IN_CLUSTER }`,
             '            - name: CLAUDE_BROWSER_CDP',
             '              value: http://localhost:9222',
+            '            - name: GITHUB_BROWSER_CDP',
+            '              value: http://browser.extension-studio.svc.cluster.local:9222',
             '          envFrom:',
             '            - secretRef:',
             '                name: dev-secrets',

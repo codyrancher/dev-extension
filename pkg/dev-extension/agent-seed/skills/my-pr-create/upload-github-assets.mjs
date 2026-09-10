@@ -12,7 +12,10 @@ import { basename } from 'node:path'
 // GitHub's new React issue UI no longer renders that element, so point this at a
 // page that still uses the classic uploader, e.g. a pull request page.
 
-const CDP = process.env.CLAUDE_BROWSER_CDP || 'http://localhost:9222'
+// The shared GitHub browser first: it is the one that carries the GitHub login (a person signed
+// it in once from the Agents page), which is what user-attachments uploads need. Fall back to the
+// workspace's own browser only when the shared one is not configured.
+const CDP = process.env.GITHUB_BROWSER_CDP || process.env.CLAUDE_BROWSER_CDP || 'http://localhost:9222'
 const hostUrl = process.argv[2]
 const filePaths = process.argv.slice(3)
 
