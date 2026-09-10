@@ -2450,6 +2450,24 @@ export function globalBrowserUrl(): string {
 }
 
 /**
+ * The dev-api endpoints that list and serve a workspace's media (its agent's videos and
+ * screenshots), reached through the apiserver's service proxy - the dev-api is in-cluster, so the
+ * browser reaches it the same way it reaches the workspace and the shared browser. The list is
+ * JSON; each file's URL is used directly as a `<video>`/`<img>` src.
+ */
+function workspaceMediaBase(name: string): string {
+  return `${ BASE }/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy/workspace/${ encodeURIComponent(name) }/media`;
+}
+
+export function workspaceMediaListUrl(name: string): string {
+  return workspaceMediaBase(name);
+}
+
+export function workspaceMediaFileUrl(name: string, relPath: string): string {
+  return `${ workspaceMediaBase(name) }/file?path=${ encodeURIComponent(relPath) }`;
+}
+
+/**
  * Whether anything is answering on that port yet.
  *
  * A workspace can be Running with nothing listening: the image is still starting, the server

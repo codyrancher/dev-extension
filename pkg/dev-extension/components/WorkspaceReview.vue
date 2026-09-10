@@ -8,7 +8,7 @@
 // are about, press send, and they go into a conversation in this workspace as one prompt: fix
 // these, or answer these. The agent's reply is the pane docked above the diff.
 import {
-  computed, onBeforeUnmount, onMounted, reactive, ref
+  computed, onBeforeUnmount, onMounted, reactive, ref, watch
 } from 'vue';
 import { Banner } from '@components/Banner';
 import StudioTerminal from './StudioTerminal.vue';
@@ -23,6 +23,7 @@ import { listConversations, startConversation, queuePrompt, paneCommand } from '
 import type { ProjectConversation } from '../conversations';
 import { readInWorkspace, ensureWorkspaceReady } from '../workspace-tools';
 import { listApps } from '../apps';
+import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from '../api';
 import { DEFAULT_APP, workspaceWorkdir } from '../config/constants';
 import { DEFAULT_REPO } from '../reviews';
 import { useStore } from 'vuex';
@@ -60,6 +61,19 @@ const files = ref<ChangedFile[]>([]);
 const loading = ref(true);
 const error = ref('');
 const missing = ref('');
+// The branch's commits (newest first), and what the diff is taken between. Empty selections mean
+// the defaults: base = where the branch left master, head = the working tree (all changes,
+// committed or not). Picking a commit narrows it. `defaultBase` is the merge-base shown as the
+// "master" option.
+const commits = ref<{ sha: string; subject: string }[]>([]);
+const defaultBase = ref('');
+const selectedBase = ref('');
+const selectedHead = ref('');
+const SHA_RE = /^[0-9a-f]{7,40}$/;
+// The agent's media - the videos and screenshots it recorded under the workspace's artifacts, the
+// ones it wants a reviewer to see.
+const media = ref<{ path: string; name: string; type: string; size: number }[]>([]);
+const mediaError = ref('');
 let timer: ReturnType<typeof setInterval> | null = null;
 
 async function resolveRepo() {
@@ -78,15 +92,29 @@ const dir = computed(() => workspaceWorkdir(props.workspace.name));
  * plus whatever is not committed, plus files git does not know about yet.
  */
 async function readChanges() {
+  // Only ever hex commit ids from the list below reach the shell; anything else falls back to the
+  // default (merge-base for the base, the working tree for the head).
+  const baseSel = SHA_RE.test(selectedBase.value) ? selectedBase.value : '';
+  const headSel = SHA_RE.test(selectedHead.value) ? selectedHead.value : '';
+  // Head unset means the working tree: the committed diff plus what is staged, unstaged and
+  // untracked. A chosen head is a plain commit-to-commit diff, so the untracked sweep is dropped.
+  const diffCmd = headSel
+    ? `git -c core.quotepath=off diff --no-color --no-ext-diff "$base" ${ headSel } 2>/dev/null`
+    : 'git -c core.quotepath=off diff --no-color --no-ext-diff "$base" 2>/dev/null; for f in $(git ls-files --others --exclude-standard | head -40); do git -c core.quotepath=off diff --no-color --no-index /dev/null "$f" 2>/dev/null; done';
   const script = [
     `cd ${ dir.value } 2>/dev/null || { echo "@@NOREPO"; exit 0; }`,
     // upstream is rancher/dashboard once workspace-tools has set the remotes; before that it is
     // origin, and a checkout with neither is diffed against itself.
-    'base=$(git merge-base upstream/master HEAD 2>/dev/null || git merge-base origin/master HEAD 2>/dev/null || git merge-base origin/HEAD HEAD 2>/dev/null || git rev-parse HEAD)',
+    'default_base=$(git merge-base upstream/master HEAD 2>/dev/null || git merge-base origin/master HEAD 2>/dev/null || git merge-base origin/HEAD HEAD 2>/dev/null || git rev-parse HEAD)',
+    `base=${ baseSel || '$default_base' }`,
     'echo "@@BRANCH $(git rev-parse --abbrev-ref HEAD 2>/dev/null)"',
+    'echo "@@DEFAULTBASE $default_base"',
     'echo "@@BASE $base"',
-    'git -c core.quotepath=off diff --no-color --no-ext-diff "$base" 2>/dev/null',
-    'for f in $(git ls-files --others --exclude-standard | head -40); do git -c core.quotepath=off diff --no-color --no-index /dev/null "$f" 2>/dev/null; done',
+    // The branch's own commits, newest first, for the base/compare pickers.
+    'echo "@@COMMITS"',
+    'git log --format="%H%x09%s" "$default_base"..HEAD 2>/dev/null | head -100',
+    'echo "@@ENDCOMMITS"',
+    diffCmd,
     'echo "@@END"',
   ].join('; ');
   let out = '';
@@ -107,8 +135,25 @@ async function readChanges() {
   }
   missing.value = '';
   branch.value = /@@BRANCH (.*)/.exec(out)?.[1]?.trim() || '';
+  defaultBase.value = /@@DEFAULTBASE (.*)/.exec(out)?.[1]?.trim() || '';
   base.value = /@@BASE (.*)/.exec(out)?.[1]?.trim() || '';
-  files.value = parseDiff(out.slice(0, out.indexOf('@@END') >= 0 ? out.indexOf('@@END') : undefined));
+
+  const commitBlock = out.slice(out.indexOf('@@COMMITS') + '@@COMMITS'.length, out.indexOf('@@ENDCOMMITS'));
+
+  commits.value = commitBlock.split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [sha, ...rest] = line.split('\t');
+
+      return { sha, subject: rest.join('\t') };
+    })
+    .filter((commit) => SHA_RE.test(commit.sha));
+
+  const diffStart = out.indexOf('@@ENDCOMMITS') + '@@ENDCOMMITS'.length;
+  const diffEnd = out.indexOf('@@END', diffStart);
+
+  files.value = parseDiff(out.slice(diffStart, diffEnd >= 0 ? diffEnd : undefined));
 }
 
 /** git's unified diff, split into the shape the PR tab draws: one entry per file with its patch. */
@@ -314,12 +359,43 @@ async function refresh() {
   }
 }
 
+function shortSha(sha: string): string {
+  return (sha || '').slice(0, 7);
+}
+
+async function loadMedia() {
+  try {
+    const data = await devFetch(workspaceMediaListUrl(props.workspace.name));
+
+    media.value = data?.files || [];
+    mediaError.value = '';
+  } catch (e: Json) {
+    media.value = [];
+    mediaError.value = e?.message || String(e);
+  }
+}
+
+function mediaSrc(item: { path: string }): string {
+  return workspaceMediaFileUrl(props.workspace.name, item.path);
+}
+
+function isVideo(item: { type: string }): boolean {
+  return (item.type || '').startsWith('video/');
+}
+
+// Re-read the diff the moment the base or compare point changes, rather than waiting for the poll.
+watch([selectedBase, selectedHead], () => {
+  loading.value = true;
+  refresh();
+});
+
 onMounted(async() => {
   await resolveRepo();
-  await Promise.all([refresh(), loadConversations()]);
+  await Promise.all([refresh(), loadConversations(), loadMedia()]);
   timer = setInterval(() => {
     if (!document.hidden) {
       refresh();
+      loadMedia();
     }
   }, REFRESH_MS);
 });
@@ -390,9 +466,94 @@ defineExpose({ refresh });
         </div>
       </div>
       <div class="prm-meta">
-        <span>Everything on this branch since {{ base ? base.slice(0, 7) : 'its base' }}, committed or not, read from the agent's checkout in {{ dir }}. Comments are not kept: they are the next thing said to the agent.</span>
+        <label class="prm-compare">
+          <span class="muted">Diff</span>
+          <select
+            v-model="selectedBase"
+            title="What to diff from"
+          >
+            <option value="">
+              master (branch start)
+            </option>
+            <option
+              v-for="c in commits"
+              :key="`b-${ c.sha }`"
+              :value="c.sha"
+            >
+              {{ shortSha(c.sha) }} · {{ c.subject }}
+            </option>
+          </select>
+          <span class="muted">→</span>
+          <select
+            v-model="selectedHead"
+            title="What to compare"
+          >
+            <option value="">
+              working tree (all changes)
+            </option>
+            <option
+              v-for="c in commits"
+              :key="`h-${ c.sha }`"
+              :value="c.sha"
+            >
+              {{ shortSha(c.sha) }} · {{ c.subject }}
+            </option>
+          </select>
+        </label>
+        <span class="muted prm-meta-note">Read from the agent's checkout in {{ dir }}. Comments are not kept: they are the next thing said to the agent.</span>
       </div>
     </header>
+
+    <!-- The media the agent wants highlighted: its repro and demo videos, its before/after shots. -->
+    <section
+      v-if="media.length || mediaError"
+      class="wr-media"
+    >
+      <div class="wr-media-head">
+        <span class="wr-media-title">Media</span>
+        <span class="muted">{{ media.length }} from the agent</span>
+      </div>
+      <div
+        v-if="mediaError"
+        class="muted"
+      >
+        Media could not be read: {{ mediaError }}
+      </div>
+      <div class="wr-media-grid">
+        <figure
+          v-for="m in media"
+          :key="m.path"
+          class="wr-media-item"
+        >
+          <video
+            v-if="isVideo(m)"
+            :src="mediaSrc(m)"
+            class="wr-media-el"
+            controls
+            preload="metadata"
+          />
+          <a
+            v-else
+            :href="mediaSrc(m)"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <img
+              :src="mediaSrc(m)"
+              :alt="m.name"
+              class="wr-media-el"
+              loading="lazy"
+            >
+          </a>
+          <figcaption
+            class="wr-media-cap"
+            :title="m.path"
+          >
+            {{ m.path }}
+          </figcaption>
+        </figure>
+      </div>
+    </section>
 
     <div
       v-if="showPane && session"
@@ -630,6 +791,72 @@ defineExpose({ refresh });
   padding:   0 var(--dev-space-3);
   font-size: 12px;
   max-width: 220px;
+}
+
+// The base -> compare pickers on the meta row.
+.prm-compare {
+  display:      inline-flex;
+  align-items:  center;
+  gap:          6px;
+  margin-right: var(--dev-space-4, 12px);
+
+  select {
+    height:    24px;
+    max-width: 280px;
+    font-size: 12px;
+  }
+}
+
+.prm-meta-note {
+  font-size: 12px;
+}
+
+// The agent's media: a gallery above the diff.
+.wr-media {
+  padding:       var(--dev-space-3, 8px) var(--dev-space-4, 12px);
+  border-bottom: 1px solid var(--border);
+}
+
+.wr-media-head {
+  display:       flex;
+  align-items:   baseline;
+  gap:           8px;
+  margin-bottom: var(--dev-space-3, 8px);
+}
+
+.wr-media-title {
+  font-weight: 600;
+}
+
+.wr-media-grid {
+  display:               grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap:                   var(--dev-space-3, 8px);
+}
+
+.wr-media-item {
+  margin:        0;
+  border:        1px solid var(--border);
+  border-radius: var(--border-radius, 4px);
+  overflow:      hidden;
+  background:    var(--body-bg);
+}
+
+.wr-media-el {
+  display:    block;
+  width:      100%;
+  max-height: 240px;
+  object-fit: contain;
+  background: #000;
+}
+
+.wr-media-cap {
+  padding:       4px 8px;
+  font-size:     11px;
+  color:         var(--muted);
+  overflow:      hidden;
+  text-overflow: ellipsis;
+  white-space:   nowrap;
 }
 
 .prm-title-sub { font-weight: 400; font-size: 12px; white-space: nowrap; }
