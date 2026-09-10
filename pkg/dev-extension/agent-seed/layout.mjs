@@ -18,6 +18,7 @@
 // harness and are still worth taking updates from.
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const seed = JSON.parse(fs.readFileSync(process.env.DEV_SEED_FILE || '/tmp/dev-seed.json', 'utf8'));
 const rancherUrl = process.env.API || process.env.RANCHER_URL || '';
@@ -108,6 +109,11 @@ for (const [rel, raw] of Object.entries(seed)) {
     // browser mounts these two directories from the same volume - `init` as its own
     // /custom-cont-init.d, so the session bus is up before Chromium starts.
     dests = [path.join(ROOT, '.a11y', rel.slice('browser-a11y/'.length) === path.basename(rel) ? 'opt' : 'init', path.basename(rel))];
+  } else if (rel.startsWith('githooks/')) {
+    // Not in the checkout: `git clean -xfd` and a fresh clone both take .git/hooks with them,
+    // and the tree is re-cloned more often than the seed is laid out. It lives beside the
+    // workspace's other seeded files and git is pointed at it below.
+    dests = [path.join(ROOT, '.githooks', path.basename(rel))];
   } else if (rel === 'bin/browser.mjs' || rel === 'bin/axtree.mjs') {
     dests = [path.join(ROOT, path.basename(rel))];
   } else if (rel.startsWith('bin/')) {
@@ -121,10 +127,31 @@ for (const [rel, raw] of Object.entries(seed)) {
   for (const dest of dests) {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, body);
-    if (rel.startsWith('bin/') || rel.startsWith('browser-a11y/') || dest.endsWith('.mjs')) {
+    if (rel.startsWith('bin/') || rel.startsWith('browser-a11y/') || rel.startsWith('githooks/') || dest.endsWith('.mjs')) {
       fs.chmodSync(dest, 0o755);
     }
     written++;
+  }
+}
+
+// Point git at the seeded hooks, so commit-msg runs for every commit made in this workspace.
+//
+// Set globally rather than in the checkout: the seed is laid out once per workspace but the
+// tree gets re-cloned, and `.git/hooks` does not survive that. Global config does, and it also
+// covers a repo an agent clones later. Nothing in this workspace ships hooks of its own for it
+// to shadow - rancher/dashboard has no husky - and the only hook here strips AI attribution.
+const HOOKS = path.join(ROOT, '.githooks');
+
+if (fs.existsSync(HOOKS)) {
+  const git = (args, opts = {}) => {
+    try {
+      execFileSync('git', args, { env: { ...process.env, HOME }, stdio: 'ignore', ...opts });
+    } catch { /* no git, or no checkout yet: the global setting below is the one that matters */ }
+  };
+
+  git(['config', '--global', 'core.hooksPath', HOOKS]);
+  if (fs.existsSync(path.join(WORKDIR, '.git'))) {
+    git(['config', 'core.hooksPath', HOOKS], { cwd: WORKDIR });
   }
 }
 
