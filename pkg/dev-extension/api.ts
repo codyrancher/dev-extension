@@ -25,7 +25,7 @@ import {
 import {
   DEV_POD_NAMESPACE as POD_NAMESPACE, DEV_POD_SERVICE as POD_SERVICE,
   LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, workspaceRoot, workspaceWorkdir, workspaceHome,
-  WORKSPACE_PORT_ANNOTATION, WORKSPACE_SCHEME_ANNOTATION, DEFAULT_WORKSPACE_PORT, DEFAULT_WORKSPACE_SCHEME, PREVIEW_ANNOTATION,
+  WORKSPACE_PORT_ANNOTATION, WORKSPACE_SCHEME_ANNOTATION, WORKSPACE_TITLE_ANNOTATION, DEFAULT_WORKSPACE_PORT, DEFAULT_WORKSPACE_SCHEME, PREVIEW_ANNOTATION,
 } from './config/constants';
 
 // The labels live in config/constants now, beside the Apps Plus names that use them; re-exported
@@ -318,6 +318,8 @@ export interface DevWorkspace {
   /** The cluster it is hosted on, from its namespace's label. See LABEL_CLUSTER. */
   cluster: string;
   name: string;
+  /** A human label beyond the name - the issue or PR title an action was started from, if any. */
+  title: string;
   namespace: string;
   /** The Apps Plus App it is an installation of. Kept even when that App no longer exists. */
   app: string;
@@ -546,6 +548,7 @@ function workspaceFrom(namespace: Json, deployment: Json | undefined, pod?: Json
 
   return {
     name,
+    title:         annotations[WORKSPACE_TITLE_ANNOTATION] || '',
     namespace:     namespace.metadata.name,
     // The label where there is one, and the cluster it was read from otherwise: a workspace made
     // before this product could host them anywhere is in the cluster it is being listed from.
@@ -730,7 +733,7 @@ async function workspaceNameConflict(name: string): Promise<string> {
  * the workspace as Creating, and deleting it is one click. Tearing down half a workspace on
  * the user's behalf would be a guess about which half they wanted.
  */
-export async function createWorkspace(store: Store, name: string, appId: string, cluster?: string, values: Record<string, unknown> = {}): Promise<void> {
+export async function createWorkspace(store: Store, name: string, appId: string, cluster?: string, values: Record<string, unknown> = {}, title = ''): Promise<void> {
   if (cluster) {
     setCluster(cluster);
   }
@@ -754,8 +757,9 @@ export async function createWorkspace(store: Store, name: string, appId: string,
 
   // What no App can render, because it is not the App's: the terminal scripts copied from this
   // pod's own seed, and the RoleBinding that lets the workspace read the shared claude
-  // credentials. Both wait for Fleet to have made the namespace first.
-  await afterWorkspaceCreated(name);
+  // credentials. Both wait for Fleet to have made the namespace first. The title, when an action
+  // supplied one, rides along as a namespace annotation.
+  await afterWorkspaceCreated(name, title);
 }
 
 /**
@@ -765,7 +769,7 @@ export async function createWorkspace(store: Store, name: string, appId: string,
  * to make, and until it exists there is nowhere to put these. A workspace whose namespace
  * never comes is a Bundle that failed, which the list says in its own words.
  */
-async function afterWorkspaceCreated(name: string): Promise<void> {
+async function afterWorkspaceCreated(name: string, title = ''): Promise<void> {
   const namespace = workspaceNamespace(name);
 
   for (let attempt = 0; attempt < 30; attempt++) {
@@ -774,12 +778,34 @@ async function afterWorkspaceCreated(name: string): Promise<void> {
     if (exists) {
       await ensureWorkspaceRbac(name);
       await ensureWorkspaceTerminal(name);
+      await setWorkspaceTitle(name, title);
 
       return;
     }
 
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
+}
+
+/**
+ * Record the issue or PR title an action was started from, as an annotation on the workspace's
+ * namespace, so the list can show it beside the name. Trimmed to a length that is a label rather
+ * than a paragraph; empty titles are left off entirely, so a plain workspace is unchanged.
+ */
+async function setWorkspaceTitle(name: string, title: string): Promise<void> {
+  const trimmed = (title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+
+  if (!trimmed) {
+    return;
+  }
+
+  const namespace = workspaceNamespace(name);
+
+  await devFetch(`${ BASE }/v1/namespaces/${ namespace }`, {
+    method:  'PATCH',
+    headers: { 'Content-Type': 'application/merge-patch+json' },
+    body:    JSON.stringify({ metadata: { annotations: { [WORKSPACE_TITLE_ANNOTATION]: trimmed } } }),
+  }).catch(() => {});
 }
 
 
