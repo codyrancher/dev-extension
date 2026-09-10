@@ -1,6 +1,11 @@
 # Browser Control (Playwright over CDP)
 
-You can drive the browser sidecar (Chromium running alongside this project) via Playwright CDP. The debugging endpoint is exposed at `$CLAUDE_BROWSER_CDP` (already set in `.bashrc`). A helper script lives at `/workspace/browser.mjs`:
+There are **two** browsers, and which one you use depends on what you are doing:
+
+- **The workspace browser — `$CLAUDE_BROWSER_CDP`** (the sidecar beside this project). Use it for everything about *this workspace's app*: reproducing an issue, recording a repro, before/after screenshots of the dashboard. It is signed into this workspace's Rancher, not into anything else.
+- **The shared GitHub browser — `$GITHUB_BROWSER_CDP`** (one Chromium every agent shares, in `extension-studio`). Use it for **anything on github.com**: uploading media to a PR's user-attachments, or any action that needs a GitHub login. A person signs it into GitHub once from the Agents page and that login persists, so it is the only browser with a GitHub session — a workspace browser is signed out and its uploads will fail. The media-upload skill (`upload-github-assets.mjs`) already prefers it. If a GitHub action fails with a sign-in wall, say so: the fix is for someone to open the browser from the Agents page and log in, not to work around it.
+
+You can drive either over Playwright CDP with the helper script at `/workspace/browser.mjs`:
 
 ```bash
 # take a full-page screenshot
