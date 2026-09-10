@@ -440,31 +440,6 @@ export async function ensureWorkspaceReady(workspace: string, ctx?: WorkspaceCon
 // ── Talking to a conversation ───────────────────────────────────────────────────────────────
 
 /**
- * Queue a prompt for a conversation to open with, or say something into one that is running.
- *
- * The pane's runner (shell.sh, then claude-session.sh, both in the workspace's /seed) reads
- * `<queue>/<id>`: on its first start as the opening prompt, and afterwards as the
- * next thing said. The conversation need not be running yet; that is the point of a queue.
- */
-export async function queuePrompt(workspace: string, id: string, prompt: string): Promise<void> {
-  const target = await workspaceTarget(workspace);
-  const out = await asRoot(target, [
-    `mkdir -p $WS/.queue`,
-    `echo ${ b64(prompt) } | base64 -d > $WS/.queue/${ id }`,
-    `chown -R node:node $WS/.queue`,
-    // A pane that is already running has read its queue and will not look again, so what is
-    // said to it is typed into it: the text pasted as one block, then Enter. Through tmux's
-    // buffer rather than send-keys, so nothing in the prompt is ever a key name.
-    `su node -c 'if tmux has-session -t mc-${ id } 2>/dev/null; then tmux load-buffer -b devq $WS/.queue/${ id } && tmux paste-buffer -b devq -t mc-${ id } -d -p && sleep 0.5 && tmux send-keys -t mc-${ id } Enter && rm -f $WS/.queue/${ id } && echo TYPED; fi' 2>/dev/null`,
-    'echo QUEUE-OK',
-  ].join('\n'));
-
-  if (!out.includes('QUEUE-OK')) {
-    throw new Error('The prompt could not be queued in the workspace.');
-  }
-}
-
-/**
  * What a conversation's pane is showing, stripped to printable ASCII.
  *
  * Read straight off tmux in the workspace pod, as the pane's own user (a tmux server is per
