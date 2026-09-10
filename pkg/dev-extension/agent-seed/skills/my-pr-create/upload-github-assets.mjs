@@ -41,6 +41,12 @@ const browser = await chromium.connectOverCDP(CDP)
 const ctx = browser.contexts()[0] || await browser.newContext()
 const page = await ctx.newPage()
 
+// Force a desktop viewport regardless of the shared browser's display size. When no human is
+// viewing, its virtual display can be 1x1, and GitHub would then serve a mobile layout that has
+// no classic uploader (no js-data-upload-policy-url-csrf). This makes the upload independent of
+// whether anyone is watching the browser.
+await page.setViewportSize({ width: 1280, height: 800 })
+
 try {
   await page.goto(hostUrl, { waitUntil: 'domcontentloaded' })
   // hidden input, so wait for attachment rather than visibility
