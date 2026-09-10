@@ -7,10 +7,11 @@
 // of them (Extension Studio's agent), which is what makes one page of them possible: the list
 // is the pod's, by workspace, and a pane is the Studio's terminal pointed at one id.
 import { Banner } from '@components/Banner';
+import { RcButton } from '@components/RcButton';
 import DevList from '../components/DevList.vue';
 import StudioTerminal from '../components/StudioTerminal.vue';
 import ClaudeLogo from '../components/ClaudeLogo.vue';
-import { listAllWorkspaces } from '../api';
+import { listAllWorkspaces, globalBrowserUrl } from '../api';
 import {
   listConversations, endConversation, renameConversation, paneCommand, waitForStudio, reconnectConversation, reconnectEverything
 } from '../conversations';
@@ -81,7 +82,7 @@ export default {
   name: 'DevAgents',
 
   components: {
-    Banner, DevList, StudioTerminal, ClaudeLogo
+    Banner, RcButton, DevList, StudioTerminal, ClaudeLogo
   },
 
   async fetch() {
@@ -203,6 +204,14 @@ export default {
   },
 
   methods: {
+    /**
+     * Open the one shared GitHub browser in a new tab. It is where a person signs into github.com
+     * once; every agent then uploads PR media through it (see GITHUB_BROWSER_CDP, browser-control).
+     */
+    openBrowser() {
+      window.open(globalBrowserUrl(), '_blank', 'noopener');
+    },
+
     /** The argv of one conversation's pane: claude in its workspace's pod, reached through the agent pod. */
     paneFor(c) {
       return c.workspace ? paneCommand(c.workspace, c.id) : c.attach.command;
@@ -469,6 +478,20 @@ export default {
         :class="{ 'dev-agents--list-open': listOpen }"
       >
         <div class="dev-agents__list">
+          <!--
+            The shared GitHub browser: one Chromium every agent uses for github.com. A person
+            signs it into GitHub once here, and agents upload PR media through it. Opens in a new
+            tab, where signing in actually works.
+          -->
+          <div class="dev-agents__browser">
+            <RcButton
+              variant="secondary"
+              size="small"
+              @click="openBrowser"
+            >
+              Open GitHub browser
+            </RcButton>
+          </div>
           <p
             v-if="!groups.length"
             class="dev-agents__empty text-muted"
@@ -720,6 +743,12 @@ export default {
     }
 
     &__empty, &__hint { padding: var(--dev-space-4); margin: 0; font-size: 13px; }
+
+    // The shared GitHub browser control, at the top of the conversation list.
+    &__browser {
+      padding:       var(--dev-space-3, 8px) var(--dev-space-4, 12px);
+      border-bottom: 1px solid var(--border);
+    }
 
     &__workspace {
       display:     block;
