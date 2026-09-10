@@ -21,6 +21,7 @@ import {
   listAllWorkspaces, createWorkspace
 } from '../api';
 import { listApps } from '../apps';
+import { defaultRancherValues } from '../ranchers';
 import { readPrefs, shownApps } from '../prefs';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, SETTINGS_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_APP
@@ -539,6 +540,32 @@ export default {
       return this.workspaces.includes(this.workspaceName(pr));
     },
 
+    /**
+     * Start a workspace and nothing else: create it if it is not there, then open it. Unlike
+     * Review and Start fix, it queues no conversation - it is just the environment, for when you
+     * want to work in it yourself. Pointed at the starred Rancher with the default app, the same
+     * as the two actions that do open a conversation.
+     */
+    async startWorkspace(name, done) {
+      this.error = '';
+
+      try {
+        if (!this.workspaces.includes(name)) {
+          await createWorkspace(this.$store, name, DEFAULT_APP, undefined, await defaultRancherValues());
+          this.workspaces = [...this.workspaces, name];
+        }
+
+        done(true);
+        this.$router.push({
+          name:   WORKSPACE_ROUTE,
+          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: name },
+        });
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
+    },
+
     /** The same two, for an issue, whose workspace is named for the issue rather than the PR. */
     hasIssueWorkspace(issue) {
       return this.workspaces.includes(`issue-${ issue.number }`);
@@ -1045,12 +1072,22 @@ export default {
         -->
         <template #cell:workspace="{ row }">
           <RcButton
+            v-if="hasWorkspace(row)"
             variant="tertiary"
             size="small"
             :to="workspaceTo(row)"
           >
-            {{ hasWorkspace(row) ? 'Workspace' : 'Start workspace' }}
+            Workspace
           </RcButton>
+          <AsyncButton
+            v-else
+            mode="apply"
+            action-label="Start workspace"
+            waiting-label="Starting"
+            success-label="Started"
+            size="sm"
+            @click="(done) => startWorkspace(workspaceName(row), done)"
+          />
         </template>
         <template #cell:actions="{ row }">
           <AsyncButton
@@ -1142,12 +1179,22 @@ export default {
         -->
         <template #cell:workspace="{ row }">
           <RcButton
+            v-if="hasWorkspace(row)"
             variant="tertiary"
             size="small"
             :to="workspaceTo(row)"
           >
-            {{ hasWorkspace(row) ? 'Workspace' : 'Start workspace' }}
+            Workspace
           </RcButton>
+          <AsyncButton
+            v-else
+            mode="apply"
+            action-label="Start workspace"
+            waiting-label="Starting"
+            success-label="Started"
+            size="sm"
+            @click="(done) => startWorkspace(workspaceName(row), done)"
+          />
         </template>
         <!--
           Nothing to do to your own pull request from here that GitHub does not do better, and the
@@ -1251,12 +1298,22 @@ export default {
         </template>
         <template #cell:workspace="{ row }">
           <RcButton
+            v-if="hasIssueWorkspace(row)"
             variant="tertiary"
             size="small"
             :to="issueWorkspaceTo(row)"
           >
-            {{ hasIssueWorkspace(row) ? 'Workspace' : 'Start workspace' }}
+            Workspace
           </RcButton>
+          <AsyncButton
+            v-else
+            mode="apply"
+            action-label="Start workspace"
+            waiting-label="Starting"
+            success-label="Started"
+            size="sm"
+            @click="(done) => startWorkspace('issue-' + row.number, done)"
+          />
         </template>
         <template #cell:actions="{ row }">
           <AsyncButton
