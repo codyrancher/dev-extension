@@ -398,16 +398,24 @@ async function ensureWorkspace(store: Store, name: string, title = ''): Promise<
  */
 async function openWith(workspace: string, title: string, prompt: string, ctx?: WorkspaceContext, onNote?: (note: string) => void, store?: Store): Promise<ProjectConversation> {
   const conversation = await startConversation(workspace, title);
+
+  // Queue the opening prompt now, up front, not after the workspace is ready. It goes into the
+  // agent pod (queueSessionPrompt writes `<agent home>/.queue/<id>`), which is always up and has
+  // nothing to do with the workspace's own pod - so it is waiting from the moment the
+  // conversation exists. The pane reads it on its first start, and the workspace view holds that
+  // start back until the pod is fully up (WorkspaceConversations, fullyUp), so by the time claude
+  // runs the prompt the checkout it acts on is there. Queuing it in `prepare` instead - after the
+  // minutes a first `ensureWorkspaceReady` takes - is what let a pane start first and sit at an
+  // empty prompt. Queued through the agents extension because that is where every pane runs.
+  await queuePrompt(conversation.attach, prompt).catch((e: Json) => {
+    onNote?.(`the prompt could not be queued: ${ e?.message || e }`);
+    console.error('[dev] queuing the opening prompt failed', e); // eslint-disable-line no-console
+  });
+
   const prepare = async() => {
     onNote?.('preparing the workspace (skills, gh, browser)');
     await ensureWorkspaceReady(workspace, ctx);
-    // Queued through the agents extension, because that is where the pane runs: every
-    // conversation's tmux session, a workspace's included, is in the agent pod (conversations.ts).
-    // Writing it into the workspace pod's own queue - which is what this used to do - left it
-    // somewhere the pane never reads, so the review opened and then sat at an empty prompt. This
-    // is the same call `sayInConversation` already used to talk to a running one.
-    await queuePrompt(conversation.attach, prompt);
-    onNote?.('prompt queued; the review starts when its pane is attached');
+    onNote?.('workspace ready; the conversation starts when its pod is up');
     // Sharing by default happens when the workspace is opened (WorkspaceConversations), not
     // here: a build beside an agent that has just started is two compiles on one node.
     void store;
