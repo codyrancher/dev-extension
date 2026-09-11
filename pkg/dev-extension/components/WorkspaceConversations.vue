@@ -18,7 +18,7 @@ import {
   LABEL_WORKSPACE, WORKSPACE_CONTAINER, workspaceTerminalCommand
 } from '../api';
 import {
-  listConversations, startConversation, endConversation, renameConversation, STUDIO_CLUSTER, KUBECTL
+  listConversations, startConversation, endConversation, renameConversation, startedConversations, STUDIO_CLUSTER, KUBECTL
 } from '../conversations';
 import { prepareWorkspace } from '../reviews';
 import { ensureDefaultShare } from '../previews';
@@ -59,6 +59,11 @@ export default {
       current:       '',
       states:        {},
       error:         '',
+      // The conversations that have run at least once (conversations.ts, startedConversations),
+      // read while the workspace's pod is not up: their panes are shown regardless. And whether
+      // the pod has been up while this page was open - once it has, every pane stays.
+      started:       {},
+      wasUp:         false,
     };
   },
 
@@ -79,6 +84,17 @@ export default {
 
     failing() {
       return this.workspace.state === 'error';
+    },
+
+    /**
+     * Whether the open conversation's pane is on the page while the workspace's pod is not
+     * fully up - which is when the banners above the pane say so beside it rather than instead
+     * of it.
+     */
+    currentKeepsRunning() {
+      const conversation = this.conversations.find((c) => c.id === this.current);
+
+      return !!conversation && !this.fullyUp && this.paneReady(conversation);
     },
 
     progress() {
@@ -142,6 +158,12 @@ export default {
     current(id) {
       this.rememberInRoute(id);
     },
+
+    fullyUp(up) {
+      if (up) {
+        this.wasUp = true;
+      }
+    },
   },
 
   methods: {
@@ -180,14 +202,40 @@ export default {
       this.$router.replace({ query, hash: this.$route.hash }).catch(() => {});
     },
 
+    /**
+     * Whether a conversation's pane belongs on the page now.
+     *
+     * A conversation runs in the agent pod, not the workspace's, so the workspace's pod being
+     * away - terminating for a re-render, OOM-killed, waiting on a busy node - is no reason to
+     * take a running conversation off the page: it is still going, and taking the pane away
+     * looked exactly like the conversation dying, over and over. What does wait for the pod is
+     * a conversation that has never run, because the prompt it opens with runs the instant
+     * claude starts and wants the checkout there.
+     */
+    paneReady(conversation) {
+      return this.fullyUp || this.wasUp || !!this.started[conversation.id];
+    },
+
     async load() {
       this.error = '';
+
+      if (this.fullyUp) {
+        this.wasUp = true;
+      }
 
       try {
         this.conversations = await listConversations(this.workspace.name);
       } catch (e) {
         this.error = e.message || String(e);
         this.conversations = [];
+      }
+
+      // Only asked while the pod is away and before it has been seen up: both are answered
+      // without it, and the exec into the agent pod is one more call on every poll otherwise.
+      if (!this.fullyUp && !this.wasUp && this.conversations.length) {
+        const started = await startedConversations(this.workspace.name).catch(() => new Set());
+
+        this.started = Object.fromEntries([...started].map((id) => [id, true]));
       }
 
       if (!this.current || !this.rows.some((row) => row.key === this.current)) {
@@ -347,8 +395,26 @@ export default {
         the workspace is doing, and the pane starts - and the prompt runs - on its own once it is
         up.
       -->
+      <!--
+        A conversation that is already running stays on the page while the workspace's pod is
+        away: it runs in the agent pod, and only the commands it sends into the workspace fail
+        until the pod is back. The banner says so beside the pane. A conversation that has not
+        run yet is the other case, below: its pane waits.
+      -->
       <Banner
-        v-if="!showingShell && failing"
+        v-if="!showingShell && currentKeepsRunning"
+        :color="failing ? 'error' : 'warning'"
+      >
+        <p>The workspace's pod is {{ failing ? 'not staying up' : 'away' }}: {{ progress }}. This conversation keeps running in the agent pod; the commands it runs in the workspace fail until the pod is back, which it does on its own.</p>
+        <p
+          v-if="failing && logTail"
+          class="workspace-conversations__log"
+        >
+          {{ logTail }}
+        </p>
+      </Banner>
+      <Banner
+        v-else-if="!showingShell && failing"
         color="error"
       >
         <p>This workspace is not staying up: {{ progress }}.</p>
@@ -374,14 +440,18 @@ export default {
       <!--
         Every conversation is the Studio's own pane onto its agent pod, placed here. The Studio
         hands the component over (conversations.ts, studioApi); what this says is which
-        conversation, by its id. Mounted only once the workspace is fully up, so the pane - and
-        the opening prompt it carries - never starts against a half-built tree.
+        conversation, by its id. A pane is mounted once the workspace is fully up, or once it
+        has been while this page was open, or - whatever the pod is doing - when the
+        conversation has already run (paneReady): the opening prompt it carries never starts
+        against a half-built tree, and a running conversation is never taken off the page.
       -->
-      <template v-if="fullyUp">
+      <template
+        v-for="conversation in conversations"
+        :key="conversation.id"
+      >
         <StudioTerminal
-          v-for="conversation in conversations"
+          v-if="paneReady(conversation)"
           v-show="conversation.id === current"
-          :key="conversation.id"
           class="workspace-conversations__terminal"
           :session="conversation.id"
           :command="conversation.attach.command"
