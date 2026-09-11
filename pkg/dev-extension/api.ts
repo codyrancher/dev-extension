@@ -1449,6 +1449,16 @@ export const GITHUB_SECRET = 'github-token';
 
 
 
+/**
+ * The shared GitHub browser's CDP endpoint, in cluster.
+ *
+ * One Chromium in extension-studio carries the github.com login a person signed in once, and it
+ * is the only thing here that can upload to `user-attachments`. Workspaces get this in their env
+ * (workspace-tools.ts, apps.ts, settings.json.hbs); dev-api gets it because the review panel's
+ * submit asks dev-api to do the upload, from a pod with the files mounted.
+ */
+export const GITHUB_BROWSER_CDP = 'http://browser.extension-studio.svc.cluster.local:9222';
+
 /** The dev server config a workspace boots with, in the workspace's own namespace. */
 const WORKSPACE_CONFIG_MAP = 'dev-workspace-config';
 
@@ -2218,6 +2228,9 @@ export async function ensureWorkspaceApi(): Promise<void> {
               { name: 'PORT', value: String(API_PORT) },
               // The apiserver's own CA, so node verifies it rather than being told not to.
               { name: 'NODE_EXTRA_CA_CERTS', value: '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt' },
+              // The shared browser, which is the only thing here holding a github.com session:
+              // it is what puts a comment's screenshots and recordings on user-attachments.
+              { name: 'GITHUB_BROWSER_CDP', value: GITHUB_BROWSER_CDP },
             ],
             volumeMounts: [
               { name: 'seed', mountPath: '/seed', readOnly: true },
