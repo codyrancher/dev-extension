@@ -521,6 +521,14 @@ const WORKSPACE_SCRIPT = [
 const WORKSPACE_SERVE = [
   '#!/bin/bash',
   'PORT=${1:-8005}',
+  // The workspace's tree: the boot script runs this from the checkout, so its parent is the
+  // tree, and that is where the server's log and the retarget file live.
+  'WS=${WS:-$(dirname "$PWD")}',
+  'RETARGET=$WS/.dev-server.env',
+  'LOG=$WS/.dev-server.log',
+  'echo "$PORT" > $WS/.dev-server.port 2>/dev/null || true',
+  // Exported: the server runs in a shell of its own below, and reads these there.
+  'export PORT WS RETARGET LOG IONICE',
   'held() { node -e "require(\'net\').connect(Number(process.argv[1]),\'127.0.0.1\').on(\'connect\',()=>process.exit(0)).on(\'error\',()=>process.exit(1))" "$PORT" 2>/dev/null; }',
   // Not all at once. Rancher's embedded k3s runs beside these servers, and when it restarts,
   // every workspace's pod restarts with it and every webpack compiles at the same moment: a
@@ -531,8 +539,23 @@ const WORKSPACE_SERVE = [
   // is the better failure by a long way.
   'CORES=$(nproc 2>/dev/null || echo 4)',
   'gate() { load=$(cut -d. -f1 /proc/loadavg 2>/dev/null || echo 0); [ "$load" -le $(( CORES * 3 / 2 )) ]; }',
+  // One dev server per pod, whoever started it. A second webpack is another two gigabytes and
+  // more at every rebuild, and the pod's limit is five: an agent that started its own server on
+  // another port - to point it at a different Rancher, usually - had the container OOM-killed
+  // under both of them, four times in a quarter of an hour, and every command its conversation
+  // ran in here died with it. So this one stands down while another is running and comes back
+  // when it is gone. (The agent has `dev-server --api URL` to retarget this one instead.)
+  //
+  // Only node processes, by their command line: a shell or a grep that merely mentions the
+  // server would otherwise count, and stop this one for nothing. Ours is the one in the process
+  // group the server was started in.
+  'servers() { pgrep -f "^[^ ]*node .*vue-cli-service serve" 2>/dev/null; }',
+  'foreign() { local p; for p in $(servers); do [ "$(ps -o pgid= -p "$p" 2>/dev/null | tr -d " ")" = "$SERVER" ] || echo "$p"; done; }',
+  'SERVER=""',
+  'stop_ours() { if [ -n "$SERVER" ]; then kill -TERM -- -"$SERVER" 2>/dev/null; wait "$SERVER" 2>/dev/null; SERVER=""; fi; }',
+  'trap "stop_ours; exit 0" TERM INT',
   'while :; do',
-  '  if held; then sleep 10; continue; fi',
+  '  if held || [ -n "$(foreign)" ]; then sleep 10; continue; fi',
   '  sleep $(( RANDOM % 20 ))',
   '  waited=0',
   '  while ! gate && [ "$waited" -lt 300 ]; do [ "$waited" -eq 0 ] && echo "[workspace] the node is busy; waiting to start the dev server"; sleep 10; waited=$((waited + 10)); done',
@@ -540,7 +563,25 @@ const WORKSPACE_SERVE = [
   // with it on a busy node, and a slow first page is the better failure. ionice too, where
   // the image has it: etcd's fsyncs are what a slow disk stalls first.
   '  IONICE=""; command -v ionice >/dev/null 2>&1 && IONICE="ionice -c 3"',
-  '  nice -n 15 $IONICE env VUE_CLI_SERVICE_CONFIG_PATH=/dev-config/vue.config.js yarn dev --port "$PORT"',
+  // What the server runs against can be changed without a new pod: `dev-server --api URL`
+  // (layout.mjs) writes the retarget file and this restarts onto it. The file is read in the
+  // server's own shell, so its API/RANCHER_URL replace the pod's for the server alone.
+  //
+  // setsid, so the server and everything it starts are one process group that a stop can
+  // signal as a whole; tee, so the log is in the tree for `dev-server logs` as well as in the
+  // pod's own. The log starts over with each server.
+  '  STAMP=$(stat -c %Y "$RETARGET" 2>/dev/null || echo 0)',
+  '  [ -f "$RETARGET" ] && echo "[workspace] the dev server runs against $(grep "^API=" "$RETARGET" | cut -d= -f2-) (see $RETARGET)"',
+  '  setsid bash -c \'if [ -f "$RETARGET" ]; then set -a; . "$RETARGET"; set +a; fi; nice -n 15 $IONICE env VUE_CLI_SERVICE_CONFIG_PATH=/dev-config/vue.config.js yarn dev --port "$PORT" 2>&1 | tee "$LOG"\' &',
+  '  SERVER=$!',
+  // `sleep & wait`, not `sleep`: a trap runs once the foreground command returns, and a
+  // stop that waited out the sleep left the server running for the check that followed.
+  '  while kill -0 "$SERVER" 2>/dev/null; do',
+  '    sleep 10 & wait $!',
+  '    if [ -n "$(foreign)" ]; then echo "[workspace] another dev server is running in this pod; stopping the supervised one until it is gone (two exceed the pod\'s memory)"; stop_ours; sleep 10; continue 2; fi',
+  '    if [ "$(stat -c %Y "$RETARGET" 2>/dev/null || echo 0)" != "$STAMP" ]; then echo "[workspace] the dev server\'s target changed; restarting it"; stop_ours; continue 2; fi',
+  '  done',
+  '  SERVER=""',
   '  echo "[workspace] the dev server exited; starting it again in 5s"',
   '  sleep 5',
   'done',
