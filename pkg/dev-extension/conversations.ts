@@ -91,7 +91,12 @@ export async function listConversations(workspace: string): Promise<ProjectConve
  * home. So a workspace whose pod is restarting - an OOM kill, a re-render, a node under load -
  * has not lost its conversations, and the ones that already started can be shown, and go on,
  * while it is away; only a conversation that has never run waits for the pod, because the
- * prompt it opens with wants the checkout. The id file is the mark of having run.
+ * prompt it opens with wants the checkout.
+ *
+ * Two marks of having run, either will do: the state file the pane's hooks write the moment
+ * claude starts (chat-hook.mjs, SessionStart), and the id file the pane's loop writes once it
+ * has seen claude's transcript - which, for a conversation still on its first run, can be
+ * later than that. The state file is the one a running conversation has.
  */
 export async function startedConversations(workspace: string): Promise<Set<string>> {
   const api = await requireAgents();
@@ -105,8 +110,9 @@ export async function startedConversations(workspace: string): Promise<Set<strin
 
   return new Set(listing.split('\n')
     .map((line) => line.replace(/\r$/, ''))
-    .filter((file) => file.endsWith('.id') && file.startsWith(prefix))
-    .map((file) => file.slice(0, -'.id'.length)));
+    .filter((file) => file.startsWith(prefix))
+    .map((file) => file.match(/^(.+)\.(id|state\.json)$/)?.[1] || '')
+    .filter(Boolean));
 }
 
 /**
