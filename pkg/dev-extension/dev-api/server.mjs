@@ -488,6 +488,246 @@ function artifactFile(given, num = null) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// A comment's evidence, uploaded to GitHub for real.
+//
+// A screenshot or a recording cannot go up with an API token: `user-attachments`
+// is a browser flow - a CSRF token that only the classic comment box renders, a
+// policy call, a POST to the bucket it names, then a confirm. The one thing here
+// holding a github.com session is the shared browser in `extension-studio`, which
+// a person signs in once (see the Conversations page). So this pod reads the file
+// off the mounted workspace and runs GitHub's own flow *inside a page of that
+// browser*, where the cookies already are.
+//
+// Over raw CDP rather than playwright, which is not installed here and would be
+// most of a gigabyte to add for one call. Node 24's global WebSocket drives a
+// single tab well enough, and the page-side half is the same script the
+// `my-pr-create` skill runs (agent-seed/skills/my-pr-create/upload-github-assets.mjs)
+// - keep the two in step.
+
+const GITHUB_BROWSER_CDP = process.env.GITHUB_BROWSER_CDP || 'http://browser.extension-studio.svc.cluster.local:9222';
+
+// GitHub rejects the policy request when the extension and the content type disagree, so every
+// extension we upload needs an entry here.
+const UPLOAD_TYPES = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.webm': 'video/webm', '.mp4': 'video/mp4', '.mov': 'video/quicktime',
+};
+
+/**
+ * Uploads already done, so submitting a review twice does not send the bytes again.
+ *
+ * Keyed by what makes a file that file - its path, size and mtime - rather than by the comment
+ * it hangs off, because the same recording is routinely attached to more than one comment.
+ */
+const uploadCache = new Map();
+
+/**
+ * Chromium's CDP refuses a Host header that is not localhost or an IP: its anti DNS-rebinding
+ * guard. The shared browser is reached by service name across the cluster, so resolve it first.
+ */
+async function cdpBase() {
+  const parsed = new URL(GITHUB_BROWSER_CDP);
+
+  if (parsed.hostname !== 'localhost' && !/^[0-9.]+$/.test(parsed.hostname)) {
+    const { lookup } = await import('node:dns/promises');
+
+    parsed.hostname = (await lookup(parsed.hostname)).address;
+  }
+
+  return parsed.origin;
+}
+
+/** One CDP session on one target: send a command, wait for its id to come back. */
+function cdpSession(wsUrl) {
+  const socket = new WebSocket(wsUrl);
+  const pending = new Map();
+  let seq = 0;
+
+  const ready = new Promise((resolve, reject) => {
+    socket.addEventListener('open', resolve, { once: true });
+    socket.addEventListener('error', () => reject(new Error('The shared GitHub browser refused a CDP connection.')), { once: true });
+  });
+
+  socket.addEventListener('message', (event) => {
+    let msg;
+
+    try {
+      msg = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    const waiter = msg.id && pending.get(msg.id);
+
+    if (waiter) {
+      pending.delete(msg.id);
+      msg.error ? waiter.reject(new Error(msg.error.message || 'CDP error')) : waiter.resolve(msg.result);
+    }
+  });
+
+  return {
+    async send(method, params = {}) {
+      await ready;
+      const id = ++seq;
+
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        socket.send(JSON.stringify({ id, method, params }));
+        setTimeout(() => {
+          if (pending.delete(id)) {
+            reject(new Error(`${ method } timed out against the shared GitHub browser.`));
+          }
+        }, 120_000);
+      });
+    },
+    close() {
+      try {
+        socket.close();
+      } catch { /* already gone */ }
+    },
+  };
+}
+
+/** Evaluate an async function in the page and return its value, surfacing a thrown Error. */
+async function evaluate(session, fn, arg) {
+  const result = await session.send('Runtime.evaluate', {
+    expression:    `(${ fn.toString() })(${ JSON.stringify(arg) })`,
+    awaitPromise:  true,
+    returnByValue: true,
+  });
+
+  if (result.exceptionDetails) {
+    const thrown = result.exceptionDetails.exception;
+
+    throw new Error(thrown?.description || thrown?.value || result.exceptionDetails.text || 'The page threw.');
+  }
+
+  return result.result?.value;
+}
+
+/**
+ * The page-side half. Runs in the shared browser on a PR page, where the classic comment box has
+ * rendered the one CSRF token `/upload/policies/assets` accepts - the generic per-form
+ * `authenticity_token` is rejected with an HTML error page, which is why this asks for
+ * `input.js-data-upload-policy-url-csrf` by name.
+ */
+const UPLOAD_IN_PAGE = async({ b64, name, ct }) => {
+  const token = document.querySelector('input.js-data-upload-policy-url-csrf')?.value;
+
+  if (!token) {
+    throw new Error('no js-data-upload-policy-url-csrf token on the page - is the shared browser signed in to GitHub?');
+  }
+
+  const repoId = document.querySelector('file-attachment[data-upload-repository-id]')?.getAttribute('data-upload-repository-id')
+    || document.querySelector('meta[name="octolytics-dimension-repository_id"]')?.content;
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const polForm = new FormData();
+
+  polForm.append('name', name);
+  polForm.append('size', String(bytes.length));
+  polForm.append('content_type', ct);
+  polForm.append('repository_id', String(repoId));
+  polForm.append('authenticity_token', token);
+
+  const polResp = await fetch('/upload/policies/assets', { method: 'POST', headers: { Accept: 'application/json' }, body: polForm });
+
+  if (!polResp.ok) {
+    throw new Error(`policy ${ polResp.status }: ${ (await polResp.text()).slice(0, 300) }`);
+  }
+  const pol = await polResp.json();
+  const form = new FormData();
+
+  for (const [k, v] of Object.entries(pol.form)) {
+    form.append(k, String(v));
+  }
+  form.append('file', new Blob([bytes], { type: ct }), name);
+
+  const upResp = await fetch(pol.upload_url, { method: 'POST', body: form, mode: 'cors' });
+
+  if (!upResp.ok) {
+    throw new Error(`upload ${ upResp.status }: ${ (await upResp.text()).slice(0, 200) }`);
+  }
+
+  // Without the confirm the asset stays unconfirmed and its href 404s later, once the comment
+  // carrying it is already public.
+  if (pol.asset_upload_url) {
+    const body = new FormData();
+
+    body.append('authenticity_token', pol.asset_upload_authenticity_token);
+
+    const confirm = await fetch(pol.asset_upload_url, { method: 'PUT', headers: { Accept: 'application/json' }, body });
+
+    if (!confirm.ok) {
+      throw new Error(`confirm ${ confirm.status }`);
+    }
+  }
+
+  return pol.asset.href;
+};
+
+/**
+ * One file to `user-attachments`, through the shared browser, as the `user-attachments` href.
+ *
+ * `hostUrl` is any page of the repo that still renders the classic uploader - the PR's own page.
+ * The viewport is forced because the shared browser's display can be 1x1 when nobody is watching
+ * it, and GitHub then serves a mobile layout with no uploader at all.
+ */
+async function uploadToGithub(file, hostUrl) {
+  const stat = fs.statSync(file);
+  const key = `${ file }:${ stat.size }:${ stat.mtimeMs }`;
+
+  if (uploadCache.has(key)) {
+    return { href: uploadCache.get(key), cached: true };
+  }
+
+  const name = path.basename(file);
+  const ct = UPLOAD_TYPES[extOf(file)];
+
+  if (!ct) {
+    throw new Error(`${ name } is not an image or a recording, so it cannot be uploaded.`);
+  }
+
+  const base = await cdpBase();
+  const opened = await fetch(`${ base }/json/new?${ encodeURIComponent(hostUrl) }`, { method: 'PUT' })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`the shared GitHub browser would not open a tab (${ r.status })`))));
+  const session = cdpSession(opened.webSocketDebuggerUrl);
+
+  try {
+    await session.send('Page.enable');
+    await session.send('Runtime.enable');
+    await session.send('Emulation.setDeviceMetricsOverride', {
+      width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+    });
+    // Opening the tab already navigated it; this is the wait for the uploader to exist, which is
+    // also the wait for the login to be there.
+    const deadline = Date.now() + 60_000;
+
+    for (;;) {
+      const ready = await evaluate(session, () => !!document.querySelector('input.js-data-upload-policy-url-csrf'));
+
+      if (ready) {
+        break;
+      }
+      if (Date.now() > deadline) {
+        throw new Error('the PR page never rendered GitHub\'s uploader - the shared browser is probably signed out of GitHub (open it from the Conversations page and sign in).');
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
+    const href = await evaluate(session, UPLOAD_IN_PAGE, { b64: fs.readFileSync(file).toString('base64'), name, ct });
+
+    if (!href) {
+      throw new Error(`GitHub accepted ${ name } but returned no href.`);
+    }
+    uploadCache.set(key, href);
+
+    return { href, cached: false };
+  } finally {
+    session.close();
+    await fetch(`${ base }/json/close/${ opened.id }`).catch(() => null);
+  }
+}
+
 function cleanAttachments(list) {
   if (!Array.isArray(list)) {
     return [];
@@ -852,6 +1092,24 @@ const routes = [
   // The skills and rules a review or fix agent needs, as the extension bundled them. Served to
   // the agent pod because an exec command is URL arguments and this is half a megabyte.
   ['GET', /^\/agent-seed$/, async() => agentSeed()],
+  // One piece of a comment's evidence, on GitHub's CDN and ready to embed. The review panel asks
+  // for this as it submits, so a screenshot or a recording lands in the comment itself rather
+  // than as a sentence naming a path nobody reading the PR can reach.
+  ['POST', /^\/my-work\/pr\/(\d+)\/upload$/, async(m, url, body) => {
+    const num = Number(m[1]);
+    const file = artifactFile(body?.path, num);
+
+    if (!file) {
+      throw new Error(`No such file in the agent workspace: ${ body?.path }`);
+    }
+
+    const repo = typeof body?.repo === 'string' && body.repo.includes('/') ? body.repo : DEFAULT_REPO;
+    const { href, cached } = await uploadToGithub(file, `https://github.com/${ repo }/pull/${ num }`);
+
+    return {
+      href, cached, name: path.basename(file), kind: attachmentKind(file),
+    };
+  }],
   // Ask for a run of an agent (the dashboard's Agents page; see agent-defs.ts). The run is
   // recorded as requested here and started by the next dashboard tick, which has the browser
   // session the start needs. `note` rides along into the run's record.

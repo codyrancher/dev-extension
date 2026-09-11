@@ -206,10 +206,15 @@ export async function submitReview(num: number, repo = DEFAULT_REPO): Promise<{ 
 
   // Evidence goes with the comment it belongs to. A text file - a test, a log - is read from the
   // agent's workspace and inlined as a code block, which is how a reviewer wants to read it
-  // anyway. An image or a recording cannot be uploaded to GitHub from here (that needs a
-  // github.com session, not an API token), so the comment names it and where it is instead of
-  // silently dropping it.
-  const withEvidence = await Promise.all(comments.map(async(c) => ({ ...c, body: await bodyWithEvidence(num, c) })));
+  // anyway. An image or a recording is uploaded to GitHub's user-attachments CDN through the
+  // shared browser that holds the github.com session (dev-api does the driving) and embedded, so
+  // the reviewer sees the evidence rather than a sentence naming a path only this cluster can
+  // reach.
+  //
+  // Everything is resolved before the review is posted, so an upload that fails takes the whole
+  // submit with it. That is deliberate: a review that lands with its evidence missing cannot be
+  // repaired - the comments are public by then, and re-submitting would double them.
+  const withEvidence = await Promise.all(comments.map(async(c) => ({ ...c, body: await bodyWithEvidence(num, c, repo) })));
   const inline = withEvidence.filter((c) => c.path);
   const body = withEvidence.filter((c) => !c.path).map((c) => c.body).join('\n\n');
   const review = await gh('POST', `/repos/${ repo }/pulls/${ num }/reviews`, {
@@ -245,7 +250,36 @@ const CODE_LANG: Record<string, string> = {
 const ATTACH_MARKER = /\[\[attach:([^\]]+)\]\]/g;
 const MAX_INLINE = 60_000;
 
-async function bodyWithEvidence(num: number, c: LocalComment): Promise<string> {
+/**
+ * A screenshot or a recording as markdown GitHub will render, having put the bytes on its CDN.
+ *
+ * The two shapes are not interchangeable: a still is markdown image syntax, and a recording is a
+ * bare `user-attachments` URL on a line of its own, which GitHub turns into a player. Wrapping a
+ * recording in image or link syntax is what makes it render as a dead link instead.
+ */
+async function uploadedEmbed(num: number, item: LocalAttachment, repo: string): Promise<string> {
+  if (!item.found) {
+    throw new Error(`The evidence on one comment is gone: \`${ item.path }\` is no longer in the workspace. Re-record it or remove it from the comment, then submit again.`);
+  }
+
+  let href = '';
+
+  try {
+    href = (await api(`/my-work/pr/${ num }/upload`, { method: 'POST', body: JSON.stringify({ path: item.path, repo }) }) as Json).href;
+  } catch (e: unknown) {
+    throw new Error(`${ item.name } could not be uploaded to GitHub, so nothing was submitted: ${ (e as Error)?.message || e }`);
+  }
+
+  if (!href) {
+    throw new Error(`${ item.name } could not be uploaded to GitHub, so nothing was submitted.`);
+  }
+
+  const caption = item.caption ? `_${ item.caption }_\n\n` : '';
+
+  return item.kind === 'image' ? `${ caption }![${ item.name }](${ href })` : `${ caption }${ href }`;
+}
+
+async function bodyWithEvidence(num: number, c: LocalComment, repo: string): Promise<string> {
   const items = c.attachments || [];
 
   if (!items.length) {
@@ -265,6 +299,10 @@ async function bodyWithEvidence(num: number, c: LocalComment): Promise<string> {
       if (text && text.length <= MAX_INLINE) {
         embed = `${ item.caption ? `${ item.caption }\n\n` : '' }\`\`\`${ CODE_LANG[ext] }\n${ text.replace(/\`\`\`/g, '\u0060\u0060\u0060') }\n\`\`\``;
       }
+    }
+
+    if (!embed && (item.kind === 'image' || item.kind === 'video')) {
+      embed = await uploadedEmbed(num, item, repo);
     }
 
     if (!embed) {
