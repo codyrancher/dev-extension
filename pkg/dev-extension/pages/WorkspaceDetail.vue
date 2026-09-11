@@ -197,18 +197,27 @@ export default {
         // down the conversation that was open in it. The conversation runs in the agent pod and
         // was never affected. The Installation is the workspace's identity: while it stands,
         // keep what is on screen and keep looking.
-        const instance = await workspaceInstance(this.$store, this.name).catch(() => null);
+        //
+        // And a request that failed is not a request that answered "no". Rancher restarting
+        // underneath this page made every lookup fail for a minute, and the page took that
+        // for a deletion and stopped asking - so it stayed a "may have been deleted" banner
+        // until somebody reloaded it. Absence is only believed when the Installation lookup
+        // itself succeeded and found nothing; anything less keeps the page and keeps polling.
+        let instance;
 
-        if (instance) {
+        try {
+          instance = await workspaceInstance(this.$store, this.name);
+        } catch {
+          instance = undefined;
+        }
+
+        if (instance !== null) {
           this.restarting = true;
 
           return;
         }
         this.workspace = null;
         this.restarting = false;
-        // Nothing left to poll for. The page is now a banner saying the workspace is gone, and
-        // asking again every five seconds would only repeat the 404 that proved it.
-        clearInterval(this.refreshTimer);
 
         return;
       }
@@ -300,7 +309,7 @@ export default {
     <Banner
       v-if="restarting"
       color="info"
-      :label="`${ name } is restarting - its pod is being made again. Conversations carry on; this page catches up in a moment.`"
+      :label="`${ name } is restarting, or this Rancher is - its pod is not answering right now. Conversations carry on; this page catches up in a moment.`"
     />
     <Banner
       v-else
@@ -315,7 +324,7 @@ export default {
     <Banner
       v-if="restarting"
       color="info"
-      :label="`${ name } is restarting - its pod is being made again. Conversations carry on.`"
+      :label="`${ name } is restarting, or this Rancher is - its pod is not answering right now. Conversations carry on.`"
     />
     <Banner
       v-if="error"
