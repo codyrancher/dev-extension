@@ -194,7 +194,7 @@ const wrapper = [
   '# pod. Tunnelled, it found no /seed/chat-hook.mjs in the workspace and the chat never learned',
   '# claude was waiting on a question.',
   'case "$1" in',
-  '  "node /seed/"*.mjs|"node /seed/"*.mjs" "*) exec /bin/sh -c "$1" ;;',
+  '  *"/seed/chat-hook.mjs"*|*"/seed/claude-credentials.mjs"*) exec /bin/sh -c "$1" ;;',
   'esac',
   '',
   '# Where claude is working. `pwd` rather than $PWD: this is run as a program, not from a',
