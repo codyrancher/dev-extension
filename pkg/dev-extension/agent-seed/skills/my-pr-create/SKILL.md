@@ -44,18 +44,24 @@ Every recorded file goes to GitHub's `user-attachments` CDN through the **browse
 
 4. Parse the tab-separated output; each line is `filename\thref`. Keep those lines: they are an input to step 4.
 
-5. Verify each href actually resolves before relying on it, since an unconfirmed asset returns 404 only later, once the PR is already published:
+5. **Do not curl the href to check it.** A freshly uploaded asset is not public yet: GitHub serves
+   `user-attachments` to the uploader's own session until a published comment references it, so an
+   anonymous `curl -L` answers **404 for every successful upload**. Treating that as a failed upload
+   is how a PR ends up with the manual-upload placeholder block below instead of its media - the
+   upload was fine. The upload script already fails loudly if any of the three steps (policy, the
+   POST it names, the confirming PUT) did not return success; that is the check.
 
-   ```bash
-   curl -s -o /dev/null -w '%{http_code} %{content_type}\n' -L "<href>"
-   ```
+   If you want to see the asset before publishing, load it in the shared GitHub browser, which has
+   the session that can read it - an `Image()` whose `naturalWidth` comes back non-zero is proof.
+   After the comment or PR body is published, the same href is public and an anonymous `curl -L`
+   returns 200; that is the point to check it if you check it at all.
 
 **Gotchas, these cost a debugging session each, do not rediscover them:**
 
 - **The CSRF token is a dedicated element, not the generic one.** `/upload/policies/assets` rejects `input[name="authenticity_token"]` and `meta[name="csrf-token"]` (they are scoped per-form: search feedback, reactions, and so on) and answers with an **HTML error page** rather than JSON. The correct token is `input.js-data-upload-policy-url-csrf`, which ships with the classic comment box. It is a hidden input, so wait on it with `state: 'attached'`; `visible` hangs forever.
 - **Issue pages no longer have an uploader.** GitHub's new React issue UI renders no `file-attachment` element and no upload-policy token, so pointing this at `/issues/<n>` cannot work no matter what the selector is. Use a page that still uses the classic comment box, i.e. a pull request page.
 - **The policy request is `FormData`, not JSON.** Send `Accept: application/json` and let `fetch` set the multipart `Content-Type` itself; don't set it by hand or the boundary is lost.
-- **The confirmation PUT is required.** After the S3 `POST` succeeds, `PUT` to `pol.asset_upload_url` with `pol.asset_upload_authenticity_token`. Skip it and the asset stays unconfirmed and 404s later, which looks like a successful upload at the time.
+- **The confirmation PUT is required.** After the S3 `POST` succeeds, `PUT` to `pol.asset_upload_url` with `pol.asset_upload_authenticity_token`. Skip it and the asset stays unconfirmed and 404s later, which looks like a successful upload at the time. Note that a *confirmed* asset also 404s anonymously until something publishes a reference to it, so a 404 on its own does not tell you the confirm was missed - check the PUT's own status instead.
 - If you hit unexpected responses, save the raw error text and surface it to the user rather than guessing. The upload protocol is undocumented and changes. When it changes again, fix `upload-github-assets.mjs` and update this list; do not fork a private copy of the script.
 
 **If the browser sidecar isn't running (or cookies aren't synced)**, hand `my-pr-fill-template` this placeholder block instead of hrefs, and tell the user to drag-drop manually:
