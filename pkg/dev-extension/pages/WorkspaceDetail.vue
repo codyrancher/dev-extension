@@ -33,6 +33,7 @@ import WorkspacePreview from '../components/WorkspacePreview.vue';
 import WorkspacePr from '../components/WorkspacePr.vue';
 import WorkspaceShare from '../components/WorkspaceShare.vue';
 import WorkspaceReview from '../components/WorkspaceReview.vue';
+import { workspaceInstance } from '../apps';
 import {
   getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster
 } from '../api';
@@ -57,6 +58,8 @@ export default {
 
   data() {
     return {
+      /** The namespace is gone but the Installation stands: a re-render in progress, not a deletion. */
+      restarting: false,
       workspace:    null,
       pod:          '',
       // The last line the container printed, while it is still starting. See refresh.
@@ -185,21 +188,38 @@ export default {
     },
 
     async refresh() {
-      this.workspace = await getWorkspace(this.name);
+      const fresh = await getWorkspace(this.name);
+
+      if (!fresh) {
+        // No namespace is not the same as no workspace. A workspace being re-rendered onto a
+        // changed App has its namespace deleted and made again, and for those seconds - or for
+        // one failed request - this page used to declare it deleted, stop polling, and tear
+        // down the conversation that was open in it. The conversation runs in the agent pod and
+        // was never affected. The Installation is the workspace's identity: while it stands,
+        // keep what is on screen and keep looking.
+        const instance = await workspaceInstance(this.$store, this.name).catch(() => null);
+
+        if (instance) {
+          this.restarting = true;
+
+          return;
+        }
+        this.workspace = null;
+        this.restarting = false;
+        // Nothing left to poll for. The page is now a banner saying the workspace is gone, and
+        // asking again every five seconds would only repeat the 404 that proved it.
+        clearInterval(this.refreshTimer);
+
+        return;
+      }
+      this.restarting = false;
+      this.workspace = fresh;
 
       // Point everything that follows at the cluster this workspace is actually on. It is set
       // here rather than by the router because a page is about one workspace and every request
       // it makes is about that workspace's cluster: see setCluster.
       if (this.workspace?.cluster) {
         setCluster(this.workspace.cluster);
-      }
-
-      if (!this.workspace) {
-        // Nothing left to poll for. The page is now a banner saying the workspace is gone, and
-        // asking again every five seconds would only repeat the 404 that proved it.
-        clearInterval(this.refreshTimer);
-
-        return;
       }
 
       // The sidebar is the workspace list, and this page is where someone watching one would
@@ -278,6 +298,12 @@ export default {
     class="dev-workspace dev-workspace--message"
   >
     <Banner
+      v-if="restarting"
+      color="info"
+      :label="`${ name } is restarting - its pod is being made again. Conversations carry on; this page catches up in a moment.`"
+    />
+    <Banner
+      v-else
       color="warning"
       :label="`There is no workspace called ${ name }. It may have been deleted.`"
     />
@@ -286,6 +312,11 @@ export default {
     v-else
     class="dev-workspace"
   >
+    <Banner
+      v-if="restarting"
+      color="info"
+      :label="`${ name } is restarting - its pod is being made again. Conversations carry on.`"
+    />
     <Banner
       v-if="error"
       color="error"
