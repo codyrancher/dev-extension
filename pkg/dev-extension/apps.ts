@@ -340,11 +340,25 @@ async function rerenderIfStale(instance: Json, stamp: string): Promise<void> {
   // Installations known to be stale - the App has moved on several times since. They are
   // re-rendered once, on the first poll after this ships, and stamped; every poll after that is
   // a comparison and nothing more.
-  if (rendered === stamp) {
+  // The definition, not the version that wrote it. The stamp is `<version>|<fingerprint>`
+  // and comparing the whole of it re-rendered every workspace - a pod restart each - on every
+  // publish, definition changed or not; ten publishes in a day was ten restarts of every
+  // conversation's workspace, and a "this workspace may have been deleted" banner each time.
+  if (fingerprintOf(rendered) === fingerprintOf(stamp)) {
+    if (rendered !== stamp) {
+      await stampRendered(instance, stamp);
+    }
+
     return;
   }
   await instance.reconcile().catch(() => {});
   await stampRendered(instance, stamp);
+}
+
+function fingerprintOf(stamp: string): string {
+  const at = stamp.indexOf('|');
+
+  return at >= 0 ? stamp.slice(at + 1) : stamp;
 }
 
 /**
