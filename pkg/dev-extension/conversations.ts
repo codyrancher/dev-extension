@@ -22,7 +22,7 @@ import {
   workspaceNamespace, workspacePod, WORKSPACE_CONTAINER, podExecOnce
 } from './api';
 import {
-  workspaceWorkdir, workspaceShellWrapper, AGENT_HOME
+  workspaceWorkdir, workspaceShellWrapper, AGENT_HOME, AGENT_WORKSPACE
 } from './config/constants';
 
 /** Where the agents extension's API is. The agents extension made the agent pod, so this is its cluster. */
@@ -80,6 +80,33 @@ export async function listConversations(workspace: string): Promise<ProjectConve
   const pod = sessions.length ? (await workspacePod(workspace).catch(() => null)) || '' : '';
 
   return sessions.map((session) => ({ id: session.id, title: session.title, attach: attachment(workspace, session.id, pod) }));
+}
+
+/**
+ * Which of a workspace's conversations have run at least once, whatever the workspace's own pod
+ * is doing now.
+ *
+ * A conversation lives in the agent pod: its pane, its transcript and the id file the pane's
+ * loop records after claude's first run (claude-session.sh) are all there, beside the agent's
+ * home. So a workspace whose pod is restarting - an OOM kill, a re-render, a node under load -
+ * has not lost its conversations, and the ones that already started can be shown, and go on,
+ * while it is away; only a conversation that has never run waits for the pod, because the
+ * prompt it opens with wants the checkout. The id file is the mark of having run.
+ */
+export async function startedConversations(workspace: string): Promise<Set<string>> {
+  const api = await requireAgents();
+  const pod = await api.agent.pod().catch(() => null);
+
+  if (!pod) {
+    return new Set();
+  }
+  const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', `ls ${ AGENT_WORKSPACE }/sessions 2>/dev/null`]).catch(() => '');
+  const prefix = `p-${ workspace }-`;
+
+  return new Set(listing.split('\n')
+    .map((line) => line.replace(/\r$/, ''))
+    .filter((file) => file.endsWith('.id') && file.startsWith(prefix))
+    .map((file) => file.slice(0, -'.id'.length)));
 }
 
 /**
