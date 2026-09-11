@@ -522,11 +522,25 @@ const WORKSPACE_SERVE = [
   '#!/bin/bash',
   'PORT=${1:-8005}',
   'held() { node -e "require(\'net\').connect(Number(process.argv[1]),\'127.0.0.1\').on(\'connect\',()=>process.exit(0)).on(\'error\',()=>process.exit(1))" "$PORT" 2>/dev/null; }',
+  // Not all at once. Rancher's embedded k3s runs beside these servers, and when it restarts,
+  // every workspace's pod restarts with it and every webpack compiles at the same moment: a
+  // dozen of them on twelve cores, k3s's controllers fail to renew their lease ("context
+  // deadline exceeded"), k3s exits, Rancher restarts - and the herd forms again. Seven times in
+  // twelve hours. So a server waits, with a little jitter so they do not all wake together,
+  // while the node's one-minute load is above what the cores can carry; a slower first page
+  // is the better failure by a long way.
+  'CORES=$(nproc 2>/dev/null || echo 4)',
+  'gate() { load=$(cut -d. -f1 /proc/loadavg 2>/dev/null || echo 0); [ "$load" -le $(( CORES * 3 / 2 )) ]; }',
   'while :; do',
   '  if held; then sleep 10; continue; fi',
+  '  sleep $(( RANDOM % 20 ))',
+  '  waited=0',
+  '  while ! gate && [ "$waited" -lt 300 ]; do [ "$waited" -eq 0 ] && echo "[workspace] the node is busy; waiting to start the dev server"; sleep 10; waited=$((waited + 10)); done',
   // Below the cluster's own processes: a compile that takes every core has taken k3s down
-  // with it on a busy node, and a slow first page is the better failure.
-  '  nice -n 10 env VUE_CLI_SERVICE_CONFIG_PATH=/dev-config/vue.config.js yarn dev --port "$PORT"',
+  // with it on a busy node, and a slow first page is the better failure. ionice too, where
+  // the image has it: etcd's fsyncs are what a slow disk stalls first.
+  '  IONICE=""; command -v ionice >/dev/null 2>&1 && IONICE="ionice -c 3"',
+  '  nice -n 15 $IONICE env VUE_CLI_SERVICE_CONFIG_PATH=/dev-config/vue.config.js yarn dev --port "$PORT"',
   '  echo "[workspace] the dev server exited; starting it again in 5s"',
   '  sleep 5',
   'done',
@@ -678,6 +692,18 @@ export function rancherWorkspaceApp(): Json {
             '      containers:',
             '        - name: workspace',
             '          image: ${image}',
+            // What one workspace may take from the node. Without a limit a dev server was 2 GB
+            // and every core it could find, times nine workspaces, on the node that also runs
+            // Rancher's own k3s - which is what kept starving it. The memory limit is above
+            // what webpack needs (NODE_OPTIONS below allows 4 GB of heap); the CPU limit is two
+            // cores, which a compile uses and a conversation's commands never notice.
+            '          resources:',
+            '            requests:',
+            '              cpu: 250m',
+            '              memory: 1Gi',
+            '            limits:',
+            '              cpu: "2"',
+            '              memory: 5Gi',
             '          command:',
             '            - /bin/sh',
             '            - -c',
@@ -749,6 +775,14 @@ export function rancherWorkspaceApp(): Json {
             // /artifacts. Its desktop is what the Browser tab frames.
             '        - name: browser',
             `          image: ${ BROWSER_IMAGE }`,
+            // A desktop and a Chromium: measured at ~400 MB idle, more with tabs open.
+            '          resources:',
+            '            requests:',
+            '              cpu: 100m',
+            '              memory: 512Mi',
+            '            limits:',
+            '              cpu: "1"',
+            '              memory: 2Gi',
             '          ports:',
             '            - name: browser',
             '              containerPort: 3000',
