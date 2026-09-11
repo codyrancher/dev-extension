@@ -728,6 +728,13 @@ export function rancherWorkspaceApp(): Json {
             '      labels:',
             '        app: ${namespace}',
             yamlBlock(labels, 4),
+            // A ConfigMap that changes under a running pod changes nothing in it: the boot script
+            // has run and the supervisor is the old loop, and a Deployment whose template is the
+            // same rolls nothing. So the scripts' hash is on the template, and a definition that
+            // changes them is a pod that restarts onto them - which is what the fingerprint
+            // re-render was taken to do, and did not.
+            '      annotations:',
+            `        dev.rancher.io/config: ${ definitionVersion(WORKSPACE_SCRIPT + WORKSPACE_SERVE + WORKSPACE_VUE_CONFIG) }`,
             '    spec:',
             '      serviceAccountName: dev-workspace',
             '      containers:',
