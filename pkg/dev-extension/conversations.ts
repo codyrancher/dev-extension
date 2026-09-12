@@ -21,6 +21,8 @@
 import {
   workspaceNamespace, workspacePod, WORKSPACE_CONTAINER, podExecOnce
 } from './api';
+
+type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 import {
   workspaceWorkdir, workspaceShellWrapper, AGENT_HOME, AGENT_WORKSPACE
 } from './config/constants';
@@ -113,6 +115,61 @@ export async function startedConversations(workspace: string): Promise<Set<strin
     .filter((file) => file.startsWith(prefix))
     .map((file) => file.match(/^(.+)\.(id|state\.json)$/)?.[1] || '')
     .filter(Boolean));
+}
+
+export interface ConversationState {
+  id: string;
+  workspace: string;
+  /** Whether the pane is there - a tmux session in the agent pod. */
+  alive: boolean;
+  /** The last hook event the pane recorded (chat-hook.mjs), and when. */
+  event: string;
+  notification: string;
+  at: string;
+}
+
+/**
+ * Every workspace conversation's state, in one exec: the last hook event each pane wrote
+ * (`<sessions>/<id>.state.json`) and whether its tmux session exists. The state file is one
+ * short JSON line, so the whole listing is small however many conversations there are.
+ */
+export async function conversationStates(): Promise<ConversationState[]> {
+  const api = await requireAgents();
+  const pod = await api.agent.pod().catch(() => null);
+
+  if (!pod) {
+    return [];
+  }
+  const script = [
+    'export PATH=/workspace/.home/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH',
+    `cd ${ AGENT_WORKSPACE }/sessions 2>/dev/null || exit 0`,
+    'for f in p-*.state.json; do',
+    '  [ -f "$f" ] || continue',
+    '  id=${f%.state.json}; a=no',
+    '  if [ "$(id -u)" = 0 ]; then setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/workspace/.home tmux has-session -t "mc-$id" 2>/dev/null && a=yes; else tmux has-session -t "mc-$id" 2>/dev/null && a=yes; fi',
+    '  printf "%s\t%s\t%s\n" "$id" "$a" "$(head -c 800 "$f" | tr -d "\n\t")"',
+    'done',
+  ].join('\n');
+  const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script]).catch(() => '');
+  const out: ConversationState[] = [];
+
+  for (const line of listing.split('\n')) {
+    const [id, alive, json] = line.replace(/\r$/, '').split('\t');
+
+    if (!id || !/^p-.+-\d+$/.test(id)) {
+      continue;
+    }
+    let event: Json = {};
+
+    try {
+      event = JSON.parse(json || '{}');
+    } catch { /* a state file caught mid-write; the next poll reads it whole */ }
+    out.push({
+      id, workspace: id.replace(/^p-/, '').replace(/-\d+$/, ''), alive: alive === 'yes', event: String(event.event || ''), notification: String(event.notification || ''), at: String(event.at || ''),
+    });
+  }
+
+  return out;
 }
 
 /**
