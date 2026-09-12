@@ -128,6 +128,14 @@ export default {
       renaming: '',
       draft:    '',
       /**
+       * The row the pointer is resting on, and where its card goes. A row with a `card` - the
+       * sidebar's workspaces - shows it after a moment, to the right of the row, fixed so the
+       * column's own scrolling does not clip it; it stays while the pointer is on the card,
+       * which is what makes the links in it usable.
+       */
+      card:      null,
+      cardTimer: 0,
+      /**
        * Rows whose delete has been asked for and not yet finished.
        *
        * A delete is not instant - the Installation has to tear down what it deployed before it
@@ -164,6 +172,35 @@ export default {
 
     stateLabel(row) {
       return this.isDeleting(row) ? 'Deleting' : stateDisplay(row.state);
+    },
+
+    showCard(row, event) {
+      if (!row.card) {
+        return;
+      }
+      const rect = event.currentTarget.getBoundingClientRect();
+
+      clearTimeout(this.cardTimer);
+      this.cardTimer = setTimeout(() => {
+        this.card = {
+          row, top: Math.min(rect.top, window.innerHeight - 220), left: rect.right + 6,
+        };
+      }, 350);
+    },
+
+    keepCard() {
+      clearTimeout(this.cardTimer);
+    },
+
+    hideCard() {
+      clearTimeout(this.cardTimer);
+      this.cardTimer = setTimeout(() => {
+        this.card = null;
+      }, 250);
+    },
+
+    detailClass(row) {
+      return `dev-list__detail--${ row.tone || 'muted' }`;
     },
 
     startRename(row) {
@@ -253,8 +290,10 @@ export default {
       <li
         v-for="row in rows"
         :key="row.key"
-        :class="{ 'dev-list__row--current': row.key === current }"
+        :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail }"
         class="dev-list__row"
+        @mouseenter="showCard(row, $event)"
+        @mouseleave="hideCard"
       >
         <!--
           The state class goes on the wrapper and the glyph reads it back through currentColor,
@@ -277,9 +316,29 @@ export default {
           ><i class="icon icon-dot" /></span>
           <span
             v-if="renaming !== row.key"
-            class="dev-list__name"
-            @dblclick.prevent="renamable && !row.fixed && startRename(row)"
-          >{{ row.label }}</span>
+            class="dev-list__text"
+          >
+            <span
+              class="dev-list__name"
+              :title="row.title || row.label"
+              @dblclick.prevent="renamable && !row.fixed && startRename(row)"
+            >{{ row.label }}</span>
+            <!--
+              What the work needs and what the agent is doing, under the name, in the colour of
+              how much it needs the person. See workspace-status.ts.
+            -->
+            <span
+              v-if="row.detail"
+              class="dev-list__detail"
+              :class="detailClass(row)"
+            ><i
+              v-if="row.agent === 'working'"
+              class="icon icon-spinner icon-spin"
+            /><i
+              v-else-if="row.agent === 'input'"
+              class="icon icon-warning"
+            />{{ row.detail }}</span>
+          </span>
           <!--
             Said in words as well as in colour: a dot going red is not a message somebody reads,
             and a spinner beside it shows the delete is doing work rather than stuck. Both go
@@ -341,6 +400,34 @@ export default {
         {{ empty }}
       </li>
     </ul>
+    <Teleport to="body">
+      <div
+        v-if="card"
+        class="dev-list__card"
+        :style="{ top: `${ card.top }px`, left: `${ card.left }px` }"
+        @mouseenter="keepCard"
+        @mouseleave="hideCard"
+      >
+        <div class="dev-list__card-title">{{ card.row.card.title || card.row.label }}</div>
+        <div
+          v-for="(line, i) in card.row.card.lines"
+          :key="i"
+          class="dev-list__card-line"
+        >{{ line }}</div>
+        <div
+          v-if="card.row.card.links.length"
+          class="dev-list__card-links"
+        >
+          <a
+            v-for="link in card.row.card.links"
+            :key="link.url"
+            :href="link.url"
+            target="_blank"
+            rel="noopener noreferrer"
+          ><i class="icon icon-external-link" /> {{ link.label }}</a>
+        </div>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -524,10 +611,55 @@ export default {
 
     // The name, truncated rather than wrapped: a row is one line and a workspace name can be
     // forty characters. It shrinks before the control does, so a long name never runs under it.
+    &__text {
+      display:        flex;
+      flex-direction: column;
+      min-width:      0;
+      flex:           1 1 auto;
+      line-height:    1.25;
+    }
+
     &__name {
       overflow:      hidden;
       text-overflow: ellipsis;
       white-space:   nowrap;
+    }
+
+    &__detail {
+      display:       flex;
+      align-items:   center;
+      gap:           4px;
+      overflow:      hidden;
+      text-overflow: ellipsis;
+      white-space:   nowrap;
+      font-size:     11px;
+      color:         var(--muted);
+
+      .icon {
+        font-size: 10px;
+      }
+
+      &--green {
+        color: var(--success);
+      }
+
+      &--attention {
+        color: var(--warning);
+      }
+
+      &--waiting {
+        color: var(--info);
+      }
+
+      &--working {
+        color: var(--primary);
+      }
+    }
+
+    &__row--tall {
+      height:     auto;
+      min-height: $row-height;
+      padding:    3px 0;
     }
 
     // The right-hand control of either row: one box, one column, one place.
@@ -672,5 +804,43 @@ export default {
 @keyframes dev-list-deleting {
   0%, 100% { opacity: 0.85; }
   50%      { opacity: 0.4; }
+}
+</style>
+
+<style lang="scss">
+// The hover card is teleported to the body, so it is styled unscoped.
+.dev-list__card {
+  position:      fixed;
+  z-index:       1000;
+  max-width:     340px;
+  padding:       10px 12px;
+  border:        1px solid var(--border);
+  border-radius: var(--border-radius);
+  background:    var(--body-bg);
+  box-shadow:    0 4px 16px rgba(0, 0, 0, 0.25);
+  font-size:     12px;
+  line-height:   1.4;
+  color:         var(--body-text);
+
+  &-title {
+    font-weight:   600;
+    margin-bottom: 4px;
+  }
+
+  &-line {
+    color: var(--muted);
+  }
+
+  &-links {
+    display:    flex;
+    gap:        12px;
+    margin-top: 8px;
+
+    a {
+      display:     inline-flex;
+      align-items: center;
+      gap:         4px;
+    }
+  }
 }
 </style>
