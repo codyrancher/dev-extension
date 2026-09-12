@@ -2678,3 +2678,113 @@ export async function deleteWorkspaceConversation(name: string, session: string 
 export function workspaceShellUrl(name: string, pod: string): string {
   return podExecUrl(workspaceNamespace(name), pod, WORKSPACE_CONTAINER, workspaceTerminalCommand(name, 1));
 }
+
+// ---------------------------------------------------------------------------
+// Cloud credentials, and which of them a newly provisioned Rancher instance gets a copy of.
+//
+// The credentials themselves are Rancher's own - the ones in Cluster Management > Cloud
+// Credentials, stored as Secrets in cattle-global-data. This does not re-enter or duplicate
+// them; it only marks which should be copied into an instance when it is provisioned, and the
+// mark is an annotation on the credential's own Secret. So the choice is shared (not per person,
+// unlike prefs), travels with the credential, and disappears if the credential is deleted.
+//
+// A provisioned instance receives the chosen credentials through the rancher apps'
+// `65-cloud-credentials.yaml` template, which renders the `cloudCredentials` value that
+// createRancherInstance fills from `cloudCredentialsManifest()` below.
+
+const CLOUD_CRED_NS = 'cattle-global-data';
+const PROPAGATE_ANNOTATION = 'dev.rancher.io/propagate-to-instances';
+
+export interface CloudCredential {
+  id: string;
+  name: string;
+  driver: string;
+  propagate: boolean;
+}
+
+/** The driver a credential is for, read from its data key (`amazonec2credentialConfig-…`). */
+function credentialDriver(secret: Json): string {
+  const key = Object.keys(secret?.data || {}).find((k) => k.includes('credentialConfig-')) || '';
+  const raw = key.split('credentialConfig-')[0];
+
+  return ({ amazonec2: 'aws' } as Record<string, string>)[raw] || raw || 'unknown';
+}
+
+/** cc-* Secrets in the managing Rancher's cattle-global-data, always from the local cluster. */
+async function cloudCredentialSecrets(): Promise<Json[]> {
+  const list = await devFetch(`${ clusterBase('local') }/v1/secrets/${ CLOUD_CRED_NS }`).catch(() => null);
+
+  return ((list?.data || []) as Json[]).filter((secret) => (secret?.metadata?.name || '').startsWith('cc-'));
+}
+
+/** Every cloud credential the managing Rancher has, with whether it propagates to new instances. */
+export async function listCloudCredentials(): Promise<CloudCredential[]> {
+  const secrets = await cloudCredentialSecrets();
+
+  return secrets
+    .map((secret) => ({
+      id:        secret.metadata.name,
+      name:      secret.metadata?.annotations?.['field.cattle.io/name'] || secret.metadata.name,
+      driver:    credentialDriver(secret),
+      propagate: secret.metadata?.annotations?.[PROPAGATE_ANNOTATION] === 'true',
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Turn on or off whether one credential is copied into newly provisioned instances. */
+export async function setCloudCredentialPropagate(id: string, on: boolean): Promise<void> {
+  const url = `${ clusterBase('local') }/v1/secrets/${ CLOUD_CRED_NS }/${ id }`;
+  const existing = await devFetch(url).catch(() => null);
+
+  if (!existing) {
+    throw new Error(`Cloud credential ${ id } is no longer there.`);
+  }
+  const annotations = { ...(existing.metadata?.annotations || {}) };
+
+  if (on) {
+    annotations[PROPAGATE_ANNOTATION] = 'true';
+  } else {
+    delete annotations[PROPAGATE_ANNOTATION];
+  }
+
+  await devFetch(url, {
+    method: 'PUT',
+    body:   JSON.stringify({ ...existing, metadata: { ...existing.metadata, annotations } }),
+  });
+}
+
+/**
+ * The chosen credentials as the Secret manifests a provisioned instance needs in its own
+ * cattle-global-data - the text the rancher apps' `65-cloud-credentials.yaml` renders from the
+ * `cloudCredentials` value. Empty string when none are chosen, so the template renders nothing.
+ *
+ * Each secret is fetched on its own rather than taken from the list, because a list response may
+ * omit a Secret's data and the copy needs it. The propagate annotation and Rancher's own
+ * bookkeeping annotations are dropped; the credential's name and driver-config data are kept.
+ */
+export async function cloudCredentialsManifest(): Promise<string> {
+  const chosen = (await cloudCredentialSecrets())
+    .filter((secret) => secret.metadata?.annotations?.[PROPAGATE_ANNOTATION] === 'true')
+    .map((secret) => secret.metadata.name);
+
+  const docs: string[] = [];
+
+  for (const name of chosen) {
+    const secret = await devFetch(`${ clusterBase('local') }/v1/secrets/${ CLOUD_CRED_NS }/${ name }`).catch(() => null);
+
+    if (!secret) {
+      continue;
+    }
+    const anns = Object.entries(secret.metadata?.annotations || {})
+      .filter(([key]) => key !== PROPAGATE_ANNOTATION && !key.startsWith('kubectl.kubernetes.io') && !key.startsWith('objectset.rio') && !key.startsWith('meta.helm.sh'))
+      .map(([key, value]) => `    ${ key }: ${ JSON.stringify(value) }`)
+      .join('\n');
+    const data = Object.entries(secret.data || {})
+      .map(([key, value]) => `  ${ key }: ${ value }`)
+      .join('\n');
+
+    docs.push(`---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: ${ name }\n  namespace: ${ CLOUD_CRED_NS }\n  annotations:\n${ anns }\ntype: Opaque\ndata:\n${ data }`);
+  }
+
+  return docs.join('\n');
+}

@@ -29,7 +29,8 @@ import { RcButton } from '@components/RcButton';
 import { LabeledInput } from '@components/Form/LabeledInput';
 import BrandImage from '@shell/components/BrandImage';
 import {
-  setSecretKeys, saveSecrets, secretValue, migrateGithubToken
+  setSecretKeys, saveSecrets, secretValue, migrateGithubToken,
+  listCloudCredentials, setCloudCredentialPropagate
 } from '../api';
 import { GLOBAL_SECRETS } from '../secrets';
 import { listApps } from '../apps';
@@ -56,6 +57,10 @@ export default {
       apps:         [],
       hiddenApps:   [],
       hiddenSaved:  [],
+      // The managing Rancher's cloud credentials, and which are set to propagate to new
+      // provisioned instances. `credsSaved` is the on-disk state, to know what a Save changed.
+      credentials:  [],
+      credsSaved:   [],
       // The sections whose fields are showing. A card opens on its summary line, because what a
       // person comes here to know first is whether a template is configured at all.
       open:         {},
@@ -142,16 +147,52 @@ export default {
     },
 
     async refresh() {
-      const [keys, apps, prefs] = await Promise.all([
+      const [keys, apps, prefs, credentials] = await Promise.all([
         setSecretKeys().catch(() => []),
         listApps(this.$store).catch(() => []),
         readPrefs().catch(() => ({ hiddenApps: [] })),
+        listCloudCredentials().catch(() => []),
       ]);
 
       this.keys = keys;
       this.apps = apps.filter((app) => app.workspace);
       this.hiddenApps = [...prefs.hiddenApps];
       this.hiddenSaved = [...prefs.hiddenApps];
+      this.credentials = credentials.map((cred) => ({ ...cred }));
+      this.credsSaved = credentials.map((cred) => ({ ...cred }));
+    },
+
+    /** Toggle whether one credential propagates; the change is written on Save. */
+    setCredPropagate(id, on) {
+      this.credentials = this.credentials.map((cred) => (cred.id === id ? { ...cred, propagate: on } : cred));
+    },
+
+    /** Whether any credential's propagate choice differs from what is stored. */
+    credsChanged() {
+      const was = Object.fromEntries(this.credsSaved.map((cred) => [cred.id, cred.propagate]));
+
+      return this.credentials.some((cred) => !!was[cred.id] !== !!cred.propagate);
+    },
+
+    /** Write only the credentials whose choice changed, so this touches nothing else. */
+    async saveCreds(done) {
+      this.error = '';
+      this.saved = false;
+
+      const was = Object.fromEntries(this.credsSaved.map((cred) => [cred.id, cred.propagate]));
+      const changed = this.credentials.filter((cred) => !!was[cred.id] !== !!cred.propagate);
+
+      try {
+        for (const cred of changed) {
+          await setCloudCredentialPropagate(cred.id, cred.propagate);
+        }
+        this.credsSaved = this.credentials.map((cred) => ({ ...cred }));
+        this.saved = true;
+        done(true);
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
     },
 
     placeholder(secret) {
@@ -411,6 +452,57 @@ export default {
           />
         </div>
       </template>
+    </section>
+
+    <!--
+      Which of the managing Rancher's cloud credentials a newly provisioned Rancher instance gets
+      a copy of, so it can create clusters on the same clouds. The credentials are Rancher's own
+      (Cluster Management > Cloud Credentials); this only chooses which propagate, and copies the
+      chosen ones into each instance at provision time. Changing this does not touch instances
+      that already exist.
+    -->
+    <section class="dev-settings__card">
+      <div class="dev-settings__card-head">
+        <i class="dev-settings__card-icon icon icon-cloud" />
+        <div class="dev-settings__card-title">
+          <h3>Cloud credentials</h3>
+          <p>Which cloud credentials new Rancher instances are given, so they can provision clusters.</p>
+          <p class="dev-settings__card-meta">
+            {{ credentials.filter((c) => c.propagate).length }} of {{ credentials.length }} propagated &middot; shared
+          </p>
+        </div>
+      </div>
+      <p
+        v-if="!credentials.length"
+        class="dev-settings__help"
+      >
+        This Rancher has no cloud credentials yet. Add them in Cluster Management &rsaquo; Cloud Credentials, then choose here which new instances receive.
+      </p>
+      <label
+        v-for="cred in credentials"
+        :key="cred.id"
+        class="dev-settings__app"
+      >
+        <input
+          type="checkbox"
+          :checked="cred.propagate"
+          @change="(event) => setCredPropagate(cred.id, event.target.checked)"
+        >
+        <span class="dev-settings__app-name">{{ cred.name }}</span>
+        <span class="dev-settings__app-desc">{{ cred.driver }}</span>
+        <span class="dev-settings__card-meta">{{ cred.id }}</span>
+      </label>
+      <div
+        v-if="credentials.length"
+        class="dev-settings__actions"
+      >
+        <AsyncButton
+          mode="apply"
+          action-label="Save credentials"
+          :disabled="!credsChanged()"
+          @click="saveCreds"
+        />
+      </div>
     </section>
 
     <!--
