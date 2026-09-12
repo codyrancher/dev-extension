@@ -6,7 +6,7 @@
 // a workspace made from My Work or the Create page is pointed at when nobody says otherwise.
 // Kept per person, beside the other preferences (prefs.ts).
 
-import { devFetch, clusterBase } from './api';
+import { devFetch, clusterBase, cloudCredentialsManifest } from './api';
 import { APP_INSTANCE } from './config/constants';
 import { readPrefs, savePrefs } from './prefs';
 
@@ -258,11 +258,21 @@ export async function createRancherInstance(store: Store, name: string, app = RA
   if (!/^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(clean)) {
     throw new Error('A Rancher\'s name is lowercase letters, digits and dashes, up to 32 characters.');
   }
+  // The cloud credentials chosen in Settings, copied into the instance so it can provision
+  // clusters on the same clouds. Read live at provision time, so there is nothing to keep in
+  // sync; an instance created with none chosen simply gets none.
+  const values: Record<string, string> = { ...RANCHER_INSTANCE_VALUES };
+  const cloudCredentials = await cloudCredentialsManifest().catch(() => '');
+
+  if (cloudCredentials) {
+    values.cloudCredentials = cloudCredentials;
+  }
+
   const instance = await store.dispatch('management/create', {
     type:     APP_INSTANCE,
     metadata: { name: clean, labels: { 'dev.rancher.io/kind': 'rancher' } },
     spec:     {
-      app, provisionCluster: { enabled: true }, targets: [], values: { ...RANCHER_INSTANCE_VALUES },
+      app, provisionCluster: { enabled: true }, targets: [], values,
     },
   });
 
