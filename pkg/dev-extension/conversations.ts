@@ -116,6 +116,38 @@ export async function startedConversations(workspace: string): Promise<Set<strin
 }
 
 /**
+ * The conversations that have a prompt queued and no pane yet - registered, told what to do,
+ * and never started.
+ *
+ * The queue file is written when the prompt is queued and read and removed by the pane's loop
+ * the moment claude first starts (claude-session.sh), so a queue file with no tmux session
+ * behind it is exactly a conversation nobody has opened. Answered from the agent pod, where
+ * both live. The tmux server is the pane user's, so the question is asked as that user.
+ */
+export async function queuedNotStarted(): Promise<{ id: string; workspace: string }[]> {
+  const api = await requireAgents();
+  const pod = await api.agent.pod().catch(() => null);
+
+  if (!pod) {
+    return [];
+  }
+  const script = [
+    'export PATH=/workspace/.home/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH',
+    `for f in ${ AGENT_WORKSPACE }/.queue/*; do`,
+    '  [ -f "$f" ] || continue',
+    '  id=$(basename "$f")',
+    '  if [ "$(id -u)" = 0 ]; then setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/workspace/.home tmux has-session -t "mc-$id" 2>/dev/null || echo "$id"; else tmux has-session -t "mc-$id" 2>/dev/null || echo "$id"; fi',
+    'done',
+  ].join('\n');
+  const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script]).catch(() => '');
+
+  return listing.split('\n')
+    .map((line) => line.trim())
+    .filter((id) => /^p-.+-\d+$/.test(id))
+    .map((id) => ({ id, workspace: id.replace(/^p-/, '').replace(/-\d+$/, '') }));
+}
+
+/**
  * Start a conversation, optionally with a name and the prompt it opens with.
  *
  * Registered with the agents extension, which is what hands out the id; the prompt is queued in
