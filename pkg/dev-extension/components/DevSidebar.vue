@@ -22,6 +22,7 @@ import {
 } from '../ranchers';
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
+import { workspaceStatuses, agentLabel } from '../workspace-status';
 import DevList from './DevList.vue';
 import DevDialog from './DevDialog.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
@@ -100,6 +101,8 @@ export default {
       copied:          {},
       apps:         cache.apps,
       error:        '',
+      /** What each workspace needs and what its agent is doing, by name. See workspace-status.ts. */
+      statuses:     {},
       refreshTimer: null,
       /**
        * The entries that are not workspaces, as an icon row at the foot.
@@ -281,6 +284,10 @@ export default {
         }
 
         this.workspaces = workspaces;
+        // Cheap on every poll: it returns what was last read and refreshes behind the row.
+        workspaceStatuses(workspaces).then((statuses) => {
+          this.statuses = statuses;
+        }).catch(() => {});
         this.clusters = clusters;
         this.ranchers = ranchers;
         this.defaultRancher = prefs.defaultRancher || '';
@@ -496,15 +503,26 @@ export default {
 
     /** A workspace as a row: its name, its state, and the page it opens. */
     rowsFor(workspaces) {
-      return workspaces.map((workspace) => ({
-        key:   workspace.name,
-        label: this.rowLabel(workspace),
-        state: workspace.state,
-        to:    {
-          name:   WORKSPACE_ROUTE,
-          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: workspace.name },
-        },
-      }));
+      return workspaces.map((workspace) => {
+        const status = this.statuses[workspace.name];
+        const title = workspace.title || status?.title || '';
+        const lines = status ? [status.label, agentLabel(status.agent)].filter(Boolean) : [];
+
+        return {
+          key:    workspace.name,
+          label:  this.rowLabel(workspace),
+          title:  [workspace.name, title, workspace.cluster && workspace.cluster !== 'local' ? workspace.cluster : ''].filter(Boolean).join(' · '),
+          state:  workspace.state,
+          detail: lines.join(' · '),
+          tone:   status?.tone,
+          agent:  status?.agent,
+          card:   { title: title ? `${ workspace.name } · ${ title }` : workspace.name, lines, links: status?.links || [] },
+          to:     {
+            name:   WORKSPACE_ROUTE,
+            params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: workspace.name },
+          },
+        };
+      });
     },
 
     /**
