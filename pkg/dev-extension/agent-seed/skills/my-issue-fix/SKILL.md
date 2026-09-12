@@ -102,7 +102,7 @@ Nobody will answer a question. When two readings of the issue lead to materially
 
 If a phase genuinely cannot complete (the issue does not reproduce, the root cause sits in a dependency you cannot change, the fix needs a product decision), stop at that phase and write up what you found. A confident wrong fix costs the reviewer far more than an honest "here is what I learned and where I got stuck". Stopping early is a valid outcome; a fabricated one is not.
 
-You finish the PR's checklist; you do not route it. Phase 10's `my-pr-checklist` does the work behind the items that are yours and ticks them, sets the milestone from the linked issue, and once CI is green adds the `bot/auto-review` label. Assigning the reviewer and marking the PR ready for review are the user's, done by hand: do not add a reviewer and do not `gh pr ready`, so the PR you hand over is a draft. If a box that is yours cannot be honestly earned, stop and say so rather than ticking past it.
+You finish the PR's checklist; you do not route it. Phase 10's `my-pr-checklist` does the work behind the items that are yours and ticks them, and sets the milestone from the linked issue. Labels, the reviewer and marking the PR ready for review are the user's, done by hand: add no labels, do not add a reviewer and do not `gh pr ready`, so the PR you hand over is a draft. If a box that is yours cannot be honestly earned, stop and say so rather than ticking past it.
 
 ## Report at the end
 
@@ -114,6 +114,6 @@ Whatever happened, close with:
 - What you verified, separating what you exercised in the running UI from what you checked by reading code.
 - The test that covers it, and confirmation it fails without the fix.
 - Anything you were unsure about, and anything you deliberately left out of scope.
-- The PR link, that it is a draft with the milestone set and the `bot/auto-review` label on, that assigning the reviewer and marking it ready are the user's next steps, or - if you had to stop short - which box you could not earn and why.
+- The PR link, that it is a draft with the milestone set, that assigning the reviewer and marking it ready are the user's next steps, or - if you had to stop short - which box you could not earn and why.
 
 If you stopped early, say at which phase and what would unblock it.

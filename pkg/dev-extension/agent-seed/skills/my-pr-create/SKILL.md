@@ -133,6 +133,14 @@ grep -n '\[.\]' /tmp/pr-body.md | grep -v '^[0-9]*:- \[[ x]\] '
 
 Anything that prints is a stray outside the checklist. Reword it unless it is harmless: the script matches `\[.\]`, exactly one character between the brackets, so `[x]` and `[0]` match the grep but pass the job while `[abc]` never matches at all. Only a literal `[ ]` actually fails it.
 
+Then the attribution check. Nothing strips a PR body the way `commit-msg` strips a commit message, so this is the last place to catch it, and it has reached published PRs before:
+
+```bash
+grep -inE 'generated with .?claude|claude\.ai/code|co-authored-by: *claude|anthropic' /tmp/pr-body.md
+```
+
+It must print nothing. If it prints, take the lines out of `/workspace/artifacts/pr-body.md` and `gh pr edit <PR> --body-file` it. `my-pr-fill-template` says why.
+
 Then render it through GitHub's own GFM endpoint and count the DOM:
 
 ```bash
@@ -164,13 +172,14 @@ if [ -n "$UNCHECKED" ]; then echo "Checklist has not been completed"; exit 1; fi
 
 The two paths differ only in the milestone and the label.
 
-**An issue-fix PR (the `my-issue-fix` flow, `Fixes #N` in the body):** run `my-pr-checklist`, which does the work behind the items that are yours and ticks those. It sets the milestone from the linked issue and ticks that box, and once CI is green it adds the `bot/auto-review` label:
+**An issue-fix PR (the `my-issue-fix` flow, `Fixes #N` in the body):** run `my-pr-checklist`, which does the work behind the items that are yours and ticks those. It sets the milestone from the linked issue and ticks that box, and it waits for CI:
 
 ```bash
 gh pr checks <PR> -R rancher/dashboard --watch      # wait for green; fix with my-ci-fix if red
-gh pr edit <PR> -R rancher/dashboard --add-label bot/auto-review
 ```
 
-Your handover is the PR URL, that it is a draft with the milestone set and the label on, that assigning the reviewer and marking it ready are the user's next steps (and are what turns `Description` green), and any box you could not honestly earn (stop and say so rather than tick past it).
+Add no labels. The PR carries whatever labels the user puts on it and nothing else.
+
+Your handover is the PR URL, that it is a draft with the milestone set, that assigning the reviewer and marking it ready are the user's next steps (and are what turns `Description` green), and any box you could not honestly earn (stop and say so rather than tick past it).
 
 **A PR that is not an issue fix stays a draft you hand over with the milestone unset as well.** `The PR has a Milestone` and `The PR has a reviewer assigned` are the user's to set, so they stay unticked, so the job fails. That is correct. It goes green when the user sets the milestone and the reviewer and ticks those two boxes, and not before. So your handover says: the PR URL, which checklist items you left unticked and why, that the red `Description` job is those items and not a bug, and that the PR is deliberately still a draft. Then run `my-pr-checklist` to work the items that are yours.
