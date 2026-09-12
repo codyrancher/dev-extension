@@ -219,7 +219,8 @@ This skill sets the checklist's **initial** state; `my-pr-checklist` walks all 9
 
 - `The PR template has been filled out` and `The PR has been self reviewed` are gates with real conditions behind them, not assertions, so do not tick them here.
 - `The PR has a reviewer assigned` is the user's on every PR, so it stays unticked, the PR stays a draft until they mark it ready, and the `Description` job stays red by design until then.
-- On an **issue-fix PR** `my-pr-checklist` sets the milestone and ticks that box, and adds the `bot/auto-review` label once CI is green - an earned tick, not a false green. On a PR that is **not** an issue fix the milestone is the user's too and stays unticked.
+- On an **issue-fix PR** `my-pr-checklist` sets the milestone and ticks that box - an earned tick, not a false green. On a PR that is **not** an issue fix the milestone is the user's too and stays unticked.
+- Labels are the user's on every PR. Add none.
 
 **Ticking a box you did not earn is forbidden**, in either case. The milestone tick on an issue-fix PR is allowed precisely because the milestone was set; ticking to turn `Description` green without doing the work is the failure this guards against. `my-pr-create` explains both endings.
 

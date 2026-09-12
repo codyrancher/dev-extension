@@ -9,18 +9,13 @@ The checklist is a set of instructions, not a formality. Each unticked box names
 
 Never assign a reviewer and never mark a PR ready for review: the user does both by hand once they have read the PR. So `The PR has a reviewer assigned` always stays unticked, every PR you hand over is still a draft, and the `Description` job is red until the user assigns the reviewer, ticks that box and marks the PR ready. That is the expected ending, and your report says so.
 
-## Issue-fix PRs: the milestone and the label are yours
+## Issue-fix PRs: the milestone is yours
 
-**When the PR fixes an issue** (the `my-issue-fix` flow, `Fixes #<N>` in the body), two things that are otherwise the user's are yours, on top of the per-item work below, which does not change:
+**When the PR fixes an issue** (the `my-issue-fix` flow, `Fixes #<N>` in the body), one thing that is otherwise the user's is yours, on top of the per-item work below, which does not change:
 
 - **Set the milestone and tick its box.** Give the PR the same milestone as its linked issue. With that done the box is genuinely true, so it is ticked like the rest, not a false green.
-- **Once CI is green, add the label.** Poll `gh pr checks <PR> -R rancher/dashboard --watch`. When it passes:
 
-  ```bash
-  gh pr edit <PR> -R rancher/dashboard --add-label bot/auto-review
-  ```
-
-  If CI is red, fix it first (`my-ci-fix`), then add the label. No reviewer, no `gh pr ready` - those stay the user's.
+Then wait for CI: poll `gh pr checks <PR> -R rancher/dashboard --watch`, and if it is red fix it first (`my-ci-fix`). No labels, no reviewer, no `gh pr ready` - those stay the user's.
 
 On a PR that is not an issue fix the milestone is the user's too.
 
@@ -159,5 +154,5 @@ Every PR stays a **draft** and the user promotes it. Do not `gh pr ready`.
 
 Per item, one line: ticked and what you did to earn it, or unticked and why.
 
-- **Issue-fix PR:** report that the boxes that are yours are ticked and earned, that you set the milestone, that the `bot/auto-review` label is on, that the PR is a draft with the reviewer box unticked, and that the `Description` job is red because of that box until the user assigns a reviewer, ticks it and marks the PR ready. Flag anything you could not genuinely satisfy rather than ticking over it.
+- **Issue-fix PR:** report that the boxes that are yours are ticked and earned, that you set the milestone, that the PR is a draft with the reviewer box unticked, and that the `Description` job is red because of that box until the user assigns a reviewer, ticks it and marks the PR ready. Flag anything you could not genuinely satisfy rather than ticking over it.
 - **Non-issue-fix PR:** close by listing exactly what is left for the user, normally the milestone, the reviewer, the UX review sign-off, and any QA label that needed a judgement call. State plainly that the `Description` CI job is red *because* the milestone and reviewer boxes are honestly unticked, and that it turns green when the user does those two things. Otherwise the first thing they see is a failing check with no explanation.
