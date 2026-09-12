@@ -218,10 +218,10 @@ If `my-pr-create` fell back to manual upload, drop its placeholder block in verb
 This skill sets the checklist's **initial** state; `my-pr-checklist` walks all 9 items afterwards and is what actually earns the ticks. Write all 9 as `- [ ]` and leave the ticking to that skill, whichever kind of PR this is.
 
 - `The PR template has been filled out` and `The PR has been self reviewed` are gates with real conditions behind them, not assertions, so do not tick them here.
-- On an **issue-fix PR** every box ends up ticked and the PR is routed to a reviewer: `my-pr-checklist` sets the milestone, assigns `marcelofukumoto`, adds the `bot/auto-review` label and marks it ready once CI is green. That is the earned completion, not a false green.
-- On a PR that is **not** an issue fix, `The PR has a Milestone` and `The PR has a reviewer assigned` stay the user's to set, so they stay unticked and the `Description` job stays red by design.
+- `The PR has a reviewer assigned` is the user's on every PR, so it stays unticked, the PR stays a draft until they mark it ready, and the `Description` job stays red by design until then.
+- On an **issue-fix PR** `my-pr-checklist` sets the milestone and ticks that box, and adds the `bot/auto-review` label once CI is green - an earned tick, not a false green. On a PR that is **not** an issue fix the milestone is the user's too and stays unticked.
 
-**Ticking a box you did not earn is forbidden**, in either case. The issue-fix completion is allowed precisely because the work behind each box is done; ticking to turn `Description` green without doing that work is the failure this guards against. `my-pr-create` explains both endings.
+**Ticking a box you did not earn is forbidden**, in either case. The milestone tick on an issue-fix PR is allowed precisely because the milestone was set; ticking to turn `Description` green without doing the work is the failure this guards against. `my-pr-create` explains both endings.
 
 ### Never write a literal `[ ]` outside the 9 items
 
