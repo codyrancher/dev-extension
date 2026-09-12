@@ -21,6 +21,7 @@ import {
   listRanchers, setDefaultRancher, createRancherInstance, deleteRancherInstance, nextRancherName, rancherAddress, RANCHER_STEPS
 } from '../ranchers';
 import { tickAgents } from '../agent-defs';
+import { startPendingConversations } from '../reviews';
 import DevList from './DevList.vue';
 import DevDialog from './DevDialog.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
@@ -309,6 +310,10 @@ export default {
 
         // The agents' clock: what is due starts, what is over is recorded. See agent-defs.ts.
         tickAgents(this.$store).catch(() => {});
+
+        // A fix or a review started and left: its conversation begins once its workspace is
+        // up, whether or not anyone opens it. See startPendingConversations.
+        startPendingConversations(workspaces.filter((w) => (w.cluster || 'local') === 'local')).catch(() => {});
 
         // The App every Rancher gets. From here rather than only from the product's init,
         // because at init Apps Plus's own types are not in the store yet - its bundle loads

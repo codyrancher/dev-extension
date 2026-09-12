@@ -22,7 +22,7 @@ import {
   devFetch, clusterBase, githubToken, createWorkspace, listAllWorkspaces, workspacePod
 } from './api';
 import {
-  listConversations, startConversation, endConversation, queuePrompt, Attachment, ProjectConversation
+  listConversations, startConversation, endConversation, queuePrompt, startPaneDetached, queuedNotStarted, Attachment, ProjectConversation
 } from './conversations';
 import {
   ensureWorkspaceReady, waitForWorkspacePod, conversationPane
@@ -453,7 +453,14 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
   const prepare = async() => {
     onNote?.('preparing the workspace (skills, gh, browser)');
     await ensureWorkspaceReady(workspace, ctx);
-    onNote?.('workspace ready; the conversation starts when its pod is up');
+    // And started, here, rather than when somebody opens the conversation. The pane runs in
+    // the agent pod (shell.sh in `start` mode: the tmux session made detached, claude reading
+    // the queued prompt), so a fix or a review begun and left alone is finished by the time
+    // anyone comes back to it. Opening the conversation later attaches to the same pane. The
+    // workspace is prepared by now and its pod is up - the only two things the start waited
+    // for.
+    await startPaneDetached(workspace, conversation.id);
+    onNote?.('the conversation has started');
     // Sharing by default happens when the workspace is opened (WorkspaceConversations), not
     // here: a build beside an agent that has just started is two compiles on one node.
     void store;
@@ -501,6 +508,49 @@ export interface Started {
   workspace: string;
   conversation: ProjectConversation;
   created: boolean;
+}
+
+const sweepAttempted = new Map<string, number>();
+let sweeping = false;
+
+/**
+ * Start every conversation that was told what to do and never began, whose workspace is up.
+ *
+ * `openWith` starts the pane itself once the pod is up, but only while the page that pressed
+ * the button is still open: a reload, a closed tab, a Rancher that restarted under the wait,
+ * and the prompt sat in its queue until somebody opened the conversation. This runs on the
+ * sidebar's poll instead, so any page of the product, open at any later time, finishes the
+ * job: the workspace is prepared (cheap when it already is) and the pane started, detached.
+ * Once per workspace every few minutes, so a preparation that fails is not retried on every
+ * poll, and never two at once.
+ */
+export async function startPendingConversations(workspaces: { name: string; state: string }[]): Promise<void> {
+  if (sweeping) {
+    return;
+  }
+  sweeping = true;
+  try {
+    const pending = await queuedNotStarted();
+    const running = new Set(workspaces.filter((w) => w.state === 'running').map((w) => w.name));
+    const now = Date.now();
+
+    for (const workspace of new Set(pending.map((p) => p.workspace))) {
+      if (!running.has(workspace) || now - (sweepAttempted.get(workspace) || 0) < 5 * 60_000) {
+        continue;
+      }
+      sweepAttempted.set(workspace, now);
+      try {
+        await ensureWorkspaceReady(workspace);
+        for (const { id } of pending.filter((p) => p.workspace === workspace)) {
+          await startPaneDetached(workspace, id);
+        }
+      } catch (e) {
+        console.error(`[dev] starting the queued conversations of ${ workspace } failed`, e); // eslint-disable-line no-console
+      }
+    }
+  } finally {
+    sweeping = false;
+  }
 }
 
 /**
