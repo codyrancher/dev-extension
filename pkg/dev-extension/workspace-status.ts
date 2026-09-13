@@ -309,7 +309,12 @@ export async function readStatusNow(name: string, github = true): Promise<Worksp
   agentsAt = 0;
   const before = statuses.get(name) || empty();
   const [work] = await Promise.all([github ? readWork(name) : Promise.resolve({}), refreshAgents()]);
-  const next = { ...before, ...work, readAt: github ? Date.now() : before.readAt, agent: agents[name] || 'none' };
+  const agent = agents[name] || 'none';
+  const { pr, issue } = numbers(name);
+  // A fix with no PR yet moves between Assess and Code on what the checkout says and what the
+  // agent is doing, which the tick knows without GitHub.
+  const rewrite = !github && before.readAt && !pr && issue && !before.pr ? fixWork(null, agent, coded[name] || false) : {};
+  const next = { ...before, ...work, ...rewrite, readAt: github ? Date.now() : before.readAt, agent };
 
   statuses.set(name, next);
   persist();

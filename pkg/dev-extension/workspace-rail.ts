@@ -337,7 +337,7 @@ function threads(d: Json): Comment[] {
   };
   const roots = review.filter((c) => rootOf(c).id === c.id);
   const msg = (c: Json) => ({
-    who: c.author || '?', author: c.author === author, body: String(c.body || ''), html: renderMd(String(c.body || '')), at: c.createdAt || '',
+    who: c.author || '?', author: c.author === author, body: String(c.body || ''), html: linkRefs(renderMd(String(c.body || ''))), at: c.createdAt || '',
   });
   const card = (root: Json, members: Json[], where: string, path: string, line: number, rows: CodeRow[], order: number, url: string): Comment => {
     const thread = members.sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0)).map(msg);
@@ -350,7 +350,7 @@ function threads(d: Json): Comment[] {
   const out = roots.map((root) => {
     const members = review.filter((c) => rootOf(c).id === root.id);
     const file = files.findIndex((f) => f.path === root.path);
-    const line = Number(root.line) || 0;
+    const line = Number(root.line) || Number(root.originalLine) || 0;
     const patch = files[file]?.patch || '';
     // The current diff when the line is still in it; else GitHub's own hunk for the comment,
     // whose last line is the commented one.
@@ -476,7 +476,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     if (failing.length) {
       items.push({ kind: 'links', items: failing.slice(0, 8).map((c: Json) => ({ label: `${ c.name || 'check' }: ${ c.conclusion || 'failing' }`, url: c.url })) });
     }
-    items.push({ kind: 'text', text: String(d.meta?.body || ''), html: renderMd(String(d.meta?.body || '') || '_(no description)_') });
+    items.push({ kind: 'text', text: String(d.meta?.body || ''), html: linkRefs(renderMd(String(d.meta?.body || '') || '_(no description)_')) });
     sections.push({ title: 'Pull request', items });
   };
   const issueSection = () => have.issue && sections.push({ title: `The issue: ${ have.issue.title }`, items: [{ kind: 'text', text: have.issue.body, html: renderMd(have.issue.body || '_(no description)_') }, { kind: 'links', items: [{ label: 'On GitHub', url: have.issue.url }] }] });
@@ -537,7 +537,13 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     const local: Json[] = d?.localComments || [];
     const pending = local.filter((c) => !c.submitted_at);
     const submitted = local.filter((c) => c.submitted_at);
-    const submittedAt = Math.max(0, ...submitted.map((c) => Date.parse(c.submitted_at) || 0));
+    // The review's moment: the last submission here, or on GitHub itself - the same rule the
+    // status uses, so the column and the stage agree.
+    const ghReviews: Json[] = (d?.reviews || []).filter((r: Json) => r.author && r.author !== d?.meta?.author && !isBot(r.author) && r.submittedAt);
+    const submittedAt = Math.max(0, ...submitted.map((c) => Date.parse(c.submitted_at) || 0), ...ghReviews.map((r) => Date.parse(r.submittedAt) || 0));
+    // What was submitted, as threads: the review's own comments here, else the PR's threads a
+    // reviewer opened (a review left on GitHub directly).
+    const reviewThreads = () => (d ? threads(d).filter((c) => c.thread.some((t) => !t.author)) : []);
     const files: Json[] = d?.files || [];
     const findings = (list: Json[]) => ({
       kind: 'comments' as const,
@@ -564,20 +570,22 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       prSection();
       reportSection();
       break;
-    case 'submitted':
-      sections.push({ title: `Your review (${ submitted.length } comments)`, items: submitted.length ? [findings(submitted)] : [{ kind: 'empty', text: 'Nothing submitted yet.' }] });
+    case 'submitted': {
+      const mine = submitted.length ? null : reviewThreads();
+
+      sections.push({ title: `Your review (${ submitted.length || mine?.length || 0 } comments)`, items: submitted.length ? [findings(submitted)] : mine?.length ? [{ kind: 'comments', items: mine.map((c) => ({ ...c, answered: c.replied })) }] : [{ kind: 'empty', text: 'Nothing submitted yet.' }] });
       prSection();
       break;
+    }
     case 'response':
       if (d) {
         const newCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > submittedAt).map((c: Json) => ({
           sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
         }));
-        // Every thread of the review, the answered ones first and the unanswered marked, so
-        // what the developer addressed and what they did not are both on the page.
-        const mine = threads(d).filter((c) => c.thread.some((t) => !t.author)).map((c) => ({ ...c, answered: c.replied }));
+        // Every thread of the review in GitHub's own order, the unanswered ones marked, so what
+        // the developer addressed and what they did not are both on the page where they are.
+        const mine = reviewThreads().map((c) => ({ ...c, answered: c.replied }));
 
-        mine.sort((a, b) => Number(b.replied) - Number(a.replied));
         sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
         sections.push({ title: `Your threads (${ mine.filter((c) => c.replied).length } answered, ${ mine.filter((c) => !c.replied).length } not)`, items: mine.length ? [{ kind: 'comments', items: mine }] : [{ kind: 'empty', text: 'No threads.' }] });
       }
@@ -593,6 +601,11 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
   }
 
   return sections;
+}
+
+/** GitHub's `#123` references as links, in rendered markdown (outside tags and code). */
+export function linkRefs(html: string): string {
+  return html.split(/(<[^>]+>)/).map((part, i) => (i % 2 ? part : part.replace(/(^|[\s(])#(\d{2,7})\b/g, `$1<a href="https://github.com/${ DEFAULT_REPO }/issues/$2" target="_blank" rel="noopener noreferrer">#$2</a>`))).join('');
 }
 
 /** The GitHub URL of the PR a status is about, or of the issue when there is no PR yet. */

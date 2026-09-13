@@ -1005,7 +1005,9 @@ async function prDetail(repo, num) {
       sha:     c.sha,
       message: (c.commit?.message || '').split('\n')[0].slice(0, 120),
       author:  c.commit?.author?.name || c.author?.login || 'unknown',
-      date:    c.commit?.author?.date || null,
+      // The committer's date, not the author's: a rebase keeps the author date, and what the
+      // page wants to know is when the commit reached the branch.
+      date:    c.commit?.committer?.date || c.commit?.author?.date || null,
     })),
     files: (files || []).map((f) => ({
       path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions, patch: f.patch || '',
