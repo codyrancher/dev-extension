@@ -79,8 +79,28 @@ export interface ReviewRun {
   updatedAt: string;
 }
 
+const PR_DETAIL_TTL_MS = 25_000;
+const prDetailCache = new Map<string, { at: number; value: Promise<Json> }>();
+
+/**
+ * A PR with everything on it. Half a dozen GitHub calls behind the API, and twenty seconds on
+ * a PR with sixty commits, so a read is kept for a moment and shared: the workspace status
+ * and the rail's first column both ask for the same PR within seconds of each other, and
+ * used to pay twice. A failed read is not kept.
+ */
 export async function prDetail(num: number, repo = DEFAULT_REPO): Promise<Json> {
-  return api(`/my-work/pr/${ num }?repo=${ encodeURIComponent(repo) }`);
+  const key = `${ repo }#${ num }`;
+  const kept = prDetailCache.get(key);
+
+  if (kept && Date.now() - kept.at < PR_DETAIL_TTL_MS) {
+    return kept.value;
+  }
+  const value = api(`/my-work/pr/${ num }?repo=${ encodeURIComponent(repo) }`);
+
+  prDetailCache.set(key, { at: Date.now(), value });
+  value.catch(() => prDetailCache.delete(key));
+
+  return value;
 }
 
 export async function listComments(num: number): Promise<LocalComment[]> {
