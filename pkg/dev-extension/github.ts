@@ -790,3 +790,30 @@ export async function linkedPullRequest(repo: string, issue: number): Promise<nu
 
   return (open || prs[prs.length - 1])?.number || 0;
 }
+
+/**
+ * Take a draft PR out of draft. The person's own act - the skills never do it - and the one
+ * thing GitHub's UI is otherwise needed for at the draft stage. Requesting a reviewer stays on
+ * GitHub, on purpose.
+ */
+export async function markReadyForReview(repo: string, number: number): Promise<void> {
+  const data = await graphql(`
+    query PullRequestId($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) { pullRequest(number: $number) { id isDraft } }
+    }
+  `, { ...splitRepo(repo), number });
+  const pr = data.repository?.pullRequest;
+
+  if (!pr?.id) {
+    throw new Error(`PR #${ number } was not found in ${ repo }.`);
+  }
+  if (!pr.isDraft) {
+    return;
+  }
+  await graphql(`
+    mutation MarkReady($id: ID!) {
+      markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } }
+    }
+  `, { id: pr.id });
+}
+
