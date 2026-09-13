@@ -51,8 +51,24 @@ export function agentLabel(state: AgentState): string {
 const GITHUB_EVERY_MS = 5 * 60_000;
 const AGENTS_EVERY_MS = 15_000;
 
-const statuses = new Map<string, WorkspaceStatus>();
+const STORE_KEY = 'dev-extension.workspace-status';
+const statuses = new Map<string, WorkspaceStatus>(hydrate());
 let agents: Record<string, AgentState> = {};
+
+/** What was last read, kept across a reload so a page opens on it rather than on nothing. */
+function hydrate(): [string, WorkspaceStatus][] {
+  try {
+    return Object.entries(JSON.parse(sessionStorage.getItem(STORE_KEY) || '{}'));
+  } catch {
+    return [];
+  }
+}
+
+function persist(): void {
+  try {
+    sessionStorage.setItem(STORE_KEY, JSON.stringify(Object.fromEntries(statuses)));
+  } catch { /* a browser without storage opens on nothing, as before */ }
+}
 let agentsAt = 0;
 let agentsInFlight: Promise<void> | null = null;
 let reading = false;
@@ -136,6 +152,8 @@ function reviewWork(d: Json, agent: AgentState): Pick<WorkspaceStatus, 'label' |
   const local: Json[] = d.localComments || [];
   const submitted = local.filter((c) => c.submitted_at);
   const pending = local.filter((c) => !c.submitted_at);
+  // A review left on GitHub itself, by anyone but the author or a bot, counts as submitted too.
+  const reviews: Json[] = (d.reviews || []).filter((r: Json) => r.author && r.author !== m.author && !isBot(r.author) && r.submittedAt);
 
   if (m.merged) {
     return { label: 'Merged', tone: 'green', stage: 'approved' };
@@ -143,8 +161,8 @@ function reviewWork(d: Json, agent: AgentState): Pick<WorkspaceStatus, 'label' |
   if (m.approved) {
     return { label: 'Approved', tone: 'green', stage: 'approved' };
   }
-  if (submitted.length) {
-    const submittedAt = latest(submitted.map((c) => c.submitted_at));
+  if (submitted.length || reviews.length) {
+    const submittedAt = Math.max(latest(submitted.map((c) => c.submitted_at)), latest(reviews.map((r: Json) => r.submittedAt)));
     const pushed = latest((d.commits || []).map((c: Json) => c.date)) > submittedAt;
     const replied = latest([...(d.discussion || []), ...(d.reviewComments || [])].filter((c: Json) => c.author === m.author).map((c: Json) => c.createdAt)) > submittedAt;
 
@@ -198,7 +216,7 @@ function fixWork(d: Json | null, agent: AgentState, coded = false): Pick<Workspa
     return { label: 'Approved', tone: 'green', stage: 'merged' };
   }
   const comments: Json[] = [...(d.discussion || []), ...(d.reviewComments || [])];
-  const others = latest(comments.filter((c) => c.author && c.author !== m.author).map((c) => c.createdAt));
+  const others = latest(comments.filter((c) => c.author && c.author !== m.author && !isBot(c.author)).map((c) => c.createdAt));
   const mine = Math.max(latest(comments.filter((c) => c.author === m.author).map((c) => c.createdAt)), latest((d.commits || []).map((c: Json) => c.date)));
 
   if (others > mine) {
@@ -283,18 +301,24 @@ export function knownStatus(name: string): WorkspaceStatus | null {
 
 /**
  * One workspace's status, read now rather than on the sidebar's schedule: the page that shows
- * the stage wants it fresh on open, and after an action that changes it.
+ * the stage wants it fresh on open, and after an action that changes it. The agents and GitHub
+ * are read at the same time, not one after the other. With `github` false only the agents
+ * are read and the work's state is what was last read - the page's regular tick.
  */
-export async function readStatusNow(name: string): Promise<WorkspaceStatus> {
+export async function readStatusNow(name: string, github = true): Promise<WorkspaceStatus> {
   agentsAt = 0;
-  await refreshAgents();
   const before = statuses.get(name) || empty();
-  const next = { ...before, ...(await readWork(name)), readAt: Date.now(), agent: agents[name] || 'none' };
+  const [work] = await Promise.all([github ? readWork(name) : Promise.resolve({}), refreshAgents()]);
+  const next = { ...before, ...work, readAt: github ? Date.now() : before.readAt, agent: agents[name] || 'none' };
 
   statuses.set(name, next);
+  persist();
 
   return next;
 }
+
+/** GitHub's own bots, which are not reviewers. */
+export const isBot = (login: string) => /\[bot\]$/i.test(login || '') || /^(github-actions|dependabot|codecov|renovate)/i.test(login || '');
 
 /** GitHub, one workspace at a time, the stalest first; never two at once. */
 async function readStale(names: string[]): Promise<void> {
@@ -316,6 +340,7 @@ async function readStale(names: string[]): Promise<void> {
 
     try {
       statuses.set(name, { ...before, ...(await readWork(name)), readAt: Date.now() });
+      persist();
     } catch (e) {
       // Read again next time round, not on every poll: the failure is usually GitHub's rate
       // limit or a token, and either is the same in five seconds.

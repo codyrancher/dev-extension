@@ -19,6 +19,7 @@ import {
 import type { DiffRow } from './components/pr/diff';
 import { latestAgentReport } from './conversations';
 import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from './api';
+import { noteCoded, isBot } from './workspace-status';
 import type { WorkspaceStatus, Stage } from './workspace-status';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -93,6 +94,10 @@ export interface Comment {
   lastBy: string;
   lastByAuthor: boolean;
   thread: { who: string; author: boolean; body: string; html: string; at: string }[];
+  /** Whether the PR's author has answered in this thread at all. */
+  replied: boolean;
+  /** GitHub's position in the diff, for its order. */
+  position: number;
   /** @deprecated the old one-line context; `rows` is the hunk. */
   context: string;
   rows: CodeRow[];
@@ -147,14 +152,21 @@ export function ownHunkRows(path: string, diffHunk: string): CodeRow[] {
 /** A whole file's patch as rows, highlighted: what a commit opens to. */
 export function fileRows(path: string, patch: string, limit = 400): CodeRow[] {
   const rows: CodeRow[] = [];
+  const hunks = parseHunks(patch);
+  const total = hunks.reduce((n, h) => n + h.rows.length, 0);
 
-  for (const h of parseHunks(patch)) {
+  for (const h of hunks) {
     highlightRows(path, h.rows);
     for (const r of h.rows) {
       rows.push({
         type: r.type, oldN: r.oldN, newN: r.newN, html: r.type === 'hunk' ? escapeHtml(r.text) : hl(r), marked: false,
       });
       if (rows.length >= limit) {
+        // Cut, and said so: a long file must not read as complete.
+        rows.push({
+          type: 'hunk', oldN: null, newN: null, html: escapeHtml(`… ${ total - rows.length } more lines - open the file on GitHub`), marked: false,
+        });
+
         return rows;
       }
     }
@@ -265,13 +277,13 @@ async function readMedia(workspace: string): Promise<{ label: string; url: strin
   return files
     .filter((f) => !/^a11y\//.test(f.path))
     .sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0))
-    .slice(0, 12)
+    .slice(0, 80)
     .map((f) => ({
       label: f.path, url: workspaceMediaFileUrl(workspace, f.path), video: /video/.test(f.type || ''), at: new Date(f.mtimeMs || 0).toISOString(), path: f.path,
     }));
 }
 
-const mediaUnder = (media: Awaited<ReturnType<typeof readMedia>>, ...dirs: string[]) => media.filter((m) => dirs.some((d) => m.path.startsWith(`${ d }/`)));
+const mediaUnder = (media: Awaited<ReturnType<typeof readMedia>>, ...dirs: string[]) => media.filter((m) => dirs.some((d) => m.path.startsWith(`${ d }/`))).slice(0, 8);
 
 function checklist(body: string): { ticked: number; total: number } {
   const ticked = (body.match(/- \[x\]/gi) || []).length;
@@ -312,7 +324,7 @@ function threads(d: Json): Comment[] {
   const m = d.meta || {};
   const author = m.author || '';
   const files: Json[] = d.files || [];
-  const review: Json[] = (d.reviewComments || []).filter((c: Json) => !c.pending);
+  const review: Json[] = (d.reviewComments || []).filter((c: Json) => !c.pending && !isBot(c.author));
   const byId = new Map(review.map((c) => [c.id, c]));
   const rootOf = (c: Json): Json => {
     let cur = c;
@@ -332,7 +344,7 @@ function threads(d: Json): Comment[] {
     const last = thread[thread.length - 1];
 
     return {
-      id: root.id, who: root.author || '?', where, path, line, body: String(root.body || '').slice(0, 400), at: last?.at || root.createdAt || '', answered: false, lastBy: last?.who || '', lastByAuthor: !!last?.author, thread, context: '', rows, noPatch: false, url, order,
+      id: root.id, who: root.author || '?', where, path, line, body: String(root.body || '').slice(0, 400), at: last?.at || root.createdAt || '', answered: false, lastBy: last?.who || '', lastByAuthor: !!last?.author, thread, replied: thread.some((t) => t.author), position: Number(root.position) || 0, context: '', rows, noPatch: false, url, order,
     };
   };
   const out = roots.map((root) => {
@@ -352,9 +364,9 @@ function threads(d: Json): Comment[] {
     c.noPatch = !!root.path && !rows.length && !patch && !root.diffHunk;
 
     return c;
-  }).sort((a, b) => a.order - b.order || a.line - b.line || (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
+  }).sort((a, b) => a.order - b.order || (a.position && b.position ? a.position - b.position : a.line - b.line) || (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
 
-  for (const c of (d.discussion || []) as Json[]) {
+  for (const c of ((d.discussion || []) as Json[]).filter((c) => !isBot(c.author))) {
     out.push(card(c, [c], 'discussion', '', 0, [], 10000, m.url ? `${ m.url }#issuecomment-${ c.id }` : ''));
   }
 
@@ -383,12 +395,25 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
   // column is redrawn from whatever has arrived so far rather than waiting for the slowest.
   const issue = Number(/(?:^|-)issue-(\d+)(?:-|$)/.exec(workspace)?.[1]) || 0;
   const have: Sources = {};
+  const t0 = Date.now();
+  const timed = <T>(name: string, p: Promise<T>) => p.then((v) => {
+    console.debug(`[rail] ${ workspace } ${ stage }: ${ name } in ${ Date.now() - t0 } ms`); // eslint-disable-line no-console
+
+    return v;
+  });
   const reads: Promise<void>[] = [
-    latestAgentReport(workspace).catch(() => null).then((v) => { have.report = v; }),
-    readBranch(workspace).catch(() => null).then((v) => { have.branch = v; }),
-    readMedia(workspace).catch(() => []).then((v) => { have.media = v; }),
-    (status.pr ? prDetail(status.pr).catch(() => null) : Promise.resolve(null)).then((v) => { have.d = v; }),
-    (issue && status.kind === 'fix' ? issueBody(DEFAULT_REPO, issue).catch(() => null) : Promise.resolve(null)).then((v) => { have.issue = v; }),
+    timed('report', latestAgentReport(workspace).catch(() => null)).then((v) => { have.report = v; }),
+    timed('branch', readBranch(workspace).catch(() => null)).then((v) => {
+      have.branch = v;
+      // The status module learns from here whether the branch has commits (assess vs code),
+      // whatever stage's column is being composed.
+      if (v) {
+        noteCoded(workspace, !!v.commits.length);
+      }
+    }),
+    timed('media', readMedia(workspace).catch(() => [])).then((v) => { have.media = v; }),
+    timed('pr', status.pr ? prDetail(status.pr).catch(() => null) : Promise.resolve(null)).then((v) => { have.d = v; }),
+    timed('issue', issue && status.kind === 'fix' ? issueBody(DEFAULT_REPO, issue).catch(() => null) : Promise.resolve(null)).then((v) => { have.issue = v; }),
   ];
   let pending = reads.length;
   const emit = (done: boolean) => onUpdate?.(compose(status, stage, have), done);
@@ -521,7 +546,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         const body = String(c.body || '');
 
         return {
-          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderMd(body), at: c.created_at || '' }], context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
+          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderMd(body), at: c.created_at || '' }], replied: false, position: 0, context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
         };
       }).sort((a, b) => a.order - b.order || a.line - b.line),
     });
@@ -548,12 +573,17 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         const newCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > submittedAt).map((c: Json) => ({
           sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
         }));
-        // Threads the developer spoke in since the review, in the PR's order.
-        const replies = feedback(d, submittedAt, false).filter((c) => c.thread.some((t) => t.author && (Date.parse(t.at) || 0) > submittedAt));
+        // Every thread of the review, the answered ones first and the unanswered marked, so
+        // what the developer addressed and what they did not are both on the page.
+        const mine = threads(d).filter((c) => c.thread.some((t) => !t.author)).map((c) => ({ ...c, answered: c.replied }));
 
-        sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits }] : []), ...(replies.length ? [{ kind: 'comments' as const, items: replies }] : []), ...(!newCommits.length && !replies.length ? [{ kind: 'empty' as const, text: 'No new commits or replies.' }] : [])] });
+        mine.sort((a, b) => Number(b.replied) - Number(a.replied));
+        sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
+        sections.push({ title: `Your threads (${ mine.filter((c) => c.replied).length } answered, ${ mine.filter((c) => !c.replied).length } not)`, items: mine.length ? [{ kind: 'comments', items: mine }] : [{ kind: 'empty', text: 'No threads.' }] });
       }
-      reportSection('What the agent found in the new commits');
+      if (report) {
+        reportSection((Date.parse(report.at) || 0) > submittedAt ? 'What the agent found in the new commits' : 'Agent\'s review report (before the developer responded)');
+      }
       prSection();
       break;
     case 'approved':
@@ -599,7 +629,13 @@ export async function commitFiles(workspace: string, pr: number, sha: string): P
     const files: Json[] = diff?.files || [];
 
     if (files.length) {
-      return files.slice(0, 40).map((f) => ({ path: f.path || f.filename || '', rows: fileRows(f.path || f.filename || '', f.patch || '', 300), status: f.status || '' }));
+      const out = files.slice(0, 40).map((f) => ({ path: f.path || f.filename || '', rows: fileRows(f.path || f.filename || '', f.patch || '', 300), status: f.status || '' }));
+
+      if (files.length > 40) {
+        out.push({ path: `… ${ files.length - 40 } more files - open the commit on GitHub`, rows: [], status: '' });
+      }
+
+      return out;
     }
   }
   const raw = await commitPatch(workspace, sha);

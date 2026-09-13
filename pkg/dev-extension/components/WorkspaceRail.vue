@@ -14,7 +14,7 @@ import WorkspaceBrowser from './WorkspaceBrowser.vue';
 import WorkspaceShare from './WorkspaceShare.vue';
 import DevModal from './DevModal.vue';
 import {
-  readStatusNow, knownStatus, provisionalStatus, noteCoded, agentLabel
+  readStatusNow, knownStatus, provisionalStatus, agentLabel
 } from '../workspace-status';
 import {
   stepsFor, gatherEvidence, primaryLink, ago, commitFiles
@@ -71,6 +71,9 @@ export default {
       reading:     false,
       /** Which read of the first column is the current one; an older one landing is ignored. */
       readSeq:     0,
+      /** The same for the status: one read at a time, and an older one landing cannot regress the stage. */
+      statusSeq:   0,
+      statusBusy:  false,
       busy:        '',
       error:       '',
       notice:      '',
@@ -219,7 +222,10 @@ export default {
     this.load();
     this.loadConversations();
     this.timers = [
-      setInterval(() => this.refreshStatus(), STATUS_MS),
+      // The agents every fifteen seconds; GitHub every five minutes and after an action - not
+      // on every tick, which overlapped itself on a big PR.
+      setInterval(() => this.refreshStatus(false), STATUS_MS),
+      setInterval(() => this.refreshStatus(true), 5 * EVIDENCE_MS),
       setInterval(() => this.refreshEvidence(), EVIDENCE_MS),
     ];
   },
@@ -242,21 +248,37 @@ export default {
       await this.refreshEvidence();
     },
 
-    async refreshStatus() {
+    async refreshStatus(github = true) {
+      if (this.statusBusy) {
+        return;
+      }
+      const seq = ++this.statusSeq;
+
+      this.statusBusy = true;
       try {
         const before = this.status?.stage;
+        const t0 = Date.now();
+        const next = await readStatusNow(this.workspace.name, github);
 
-        this.status = await readStatusNow(this.workspace.name);
+        if (seq !== this.statusSeq) {
+          return;
+        }
+        this.status = next;
+        console.debug(`[rail] status ${ this.status.stage } in ${ Date.now() - t0 } ms (github=${ github })`); // eslint-disable-line no-console
         // A read that worked clears what an earlier one said: a dev-api restart is a minute.
         this.error = '';
         this.loadConversations();
         // A stage that moved on is what the page is for; follow it unless a past one is open.
-        if (before && before !== this.status.stage && !this.lookingBack) {
+        if (before !== this.status.stage && !this.lookingBack) {
           this.viewing = '';
           this.refreshEvidence();
         }
       } catch (e) {
         this.error = e?.message || String(e);
+      } finally {
+        if (seq === this.statusSeq) {
+          this.statusBusy = false;
+        }
       }
     },
 
@@ -273,14 +295,11 @@ export default {
       this.reading = true;
       try {
         const sections = await gatherEvidence(this.workspace.name, this.status, stage, (partial) => {
+          console.debug(`[rail] evidence ${ seq } ${ stage } partial: ${ partial.map((s) => s.title).join(' | ') } current=${ current() }`); // eslint-disable-line no-console
           if (current()) {
             this.evidence = partial;
           }
         });
-        const branch = sections.find((s) => s.title === 'The change');
-
-        // The status module learns from here whether the branch has commits (assess vs code).
-        noteCoded(this.workspace.name, !!branch);
         if (current()) {
           this.evidence = sections;
           this.error = '';
@@ -400,7 +419,10 @@ export default {
     async say(title, text) {
       await ensureWorkspaceReady(this.workspace.name);
       const conversations = await listConversations(this.workspace.name).catch(() => []);
-      const newest = conversations[conversations.length - 1];
+      // The conversation about this work - the fix's, the review's, the feedback's - before a
+      // scratch one somebody opened from the pane bar; the newest of those.
+      const about = conversations.filter((c) => /^(Fix|Review|Feedback|Improve|CI) /.test(c.title || '') || (this.status?.pr && (c.title || '').includes(`#${ this.status.pr }`)));
+      const newest = about[about.length - 1] || conversations[conversations.length - 1];
 
       if (newest && title === '') {
         await queuePrompt(newest.attach, text);
@@ -491,7 +513,7 @@ export default {
       }
       await approveAndMerge(pr);
       this.notice = `PR #${ pr } approved and merged.`;
-      await this.refreshStatus();
+      await this.refreshStatus(true);
     },
 
     async remove() {
@@ -624,7 +646,7 @@ export default {
         <!-- Column one: what there is to judge, for the stage being looked at. -->
         <section class="workspace-rail__col">
           <div class="workspace-rail__col-head">
-            <h3 class="workspace-rail__col-title">{{ lookingBack ? `What ${ shownLabel } left behind` : 'What came back' }}</h3>
+            <h3 class="workspace-rail__col-title">{{ lookingBack ? `What ${ shownLabel } left behind` : current ? 'What came back' : 'Reading where this is… meanwhile, the latest' }}</h3>
             <button
               v-if="lookingBack"
               type="button"
@@ -806,7 +828,7 @@ export default {
                     <span
                       v-if="!c.answered"
                       class="workspace-rail__tag workspace-rail__tag--open"
-                    >waiting on you</span>
+                    >{{ status.kind === 'review' && status.stage === 'response' ? 'no reply from the developer' : 'waiting on you' }}</span>
                     <a
                       v-if="c.url"
                       :href="c.url"
