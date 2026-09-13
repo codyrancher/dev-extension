@@ -223,6 +223,10 @@ export default {
   },
 
   watch: {
+    evidence() {
+      this.$nextTick(() => this.watchMedia());
+    },
+
     'workspace.name'() {
       this.viewing = '';
       this.load();
@@ -480,6 +484,25 @@ export default {
         }
       } catch (e) {
         this.error = `More of ${ c.path } could not be read: ${ e?.message || e }`;
+      }
+    },
+
+    /**
+     * An attachment GitHub no longer has - some of the older ones are simply gone, and 404 to
+     * the signed-in browser too - shows its caption rather than a broken picture. Attached
+     * after each render, once per element; the HTML itself comes from the comment bodies, so
+     * there is nowhere in it to put a handler.
+     */
+    watchMedia() {
+      for (const img of this.$el?.querySelectorAll?.('.md-body img:not([data-watched])') || []) {
+        img.dataset.watched = '1';
+        img.addEventListener('error', () => {
+          const gone = document.createElement('span');
+
+          gone.className = 'workspace-rail__gone';
+          gone.textContent = img.getAttribute('alt') ? `${ img.getAttribute('alt') } (the attachment is no longer on GitHub)` : 'An attachment that is no longer on GitHub';
+          img.replaceWith(gone);
+        }, { once: true });
       }
     },
 
@@ -1467,6 +1490,15 @@ export default {
 
   &__msg--author { border-left: 3px solid var(--pr-accent); }
   &__msg--new { background: var(--pr-accent-fill); }
+
+  &__gone {
+    display:       inline-block;
+    padding:       2px 8px;
+    border:        1px dashed var(--pr-border);
+    border-radius: var(--border-radius);
+    color:         var(--pr-muted);
+    font-size:     12px;
+  }
 
   &__expander {
     display:     block;
