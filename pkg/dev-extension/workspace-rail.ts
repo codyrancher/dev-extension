@@ -674,9 +674,7 @@ export function renderBody(text: string, kinds: Record<string, string> = {}): st
     if (/^video\//.test(kind)) {
       return `<video controls preload="metadata" src="${ ghAssetUrl(href) }"></video>`;
     }
-    if (/^image\//.test(kind) || !kind) {
-      // Unknown until the type is read: drawn as a picture, which falls back to the link's
-      // text if it is not one.
+    if (/^image\//.test(kind)) {
       return `<a target="_blank" rel="noopener" href="${ href }"><img src="${ ghAssetUrl(href) }" alt="attachment" loading="lazy"></a>`;
     }
 
