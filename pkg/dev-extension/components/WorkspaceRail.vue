@@ -17,8 +17,9 @@ import {
   readStatusNow, knownStatus, provisionalStatus, agentLabel
 } from '../workspace-status';
 import {
-  stepsFor, gatherEvidence, primaryLink, ago, commitFiles
+  stepsFor, gatherEvidence, primaryLink, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt
 } from '../workspace-rail';
+import { prFile } from '../reviews';
 import {
   listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates
 } from '../conversations';
@@ -89,6 +90,11 @@ export default {
       openCommits: {},
       /** A commit's files, read once when it is opened. */
       commitFiles: {},
+      /** Every commit of a "since" list as one diff, when asked for. */
+      combined: {},
+      /** Lines read above and below a thread's hunk, when the person asks for more context. */
+      moreAbove: {},
+      moreBelow: {},
       openComments: {},
       /** This workspace's conversations, and the one shown - the newest unless another is picked. */
       conversations: [],
@@ -400,6 +406,87 @@ export default {
       return { review: 'Review the branch', pr: `PR${ this.status?.pr ? ` #${ this.status.pr }` : '' }`, browser: 'Browser', share: 'Share a build' }[this.modal] || '';
     },
 
+    /** The skills worth running where the work is; each one is a prompt into its conversation. */
+    skillButtons() {
+      return this.status ? skillsFor(this.status.kind, this.shown) : [];
+    },
+
+    async runSkill(button) {
+      if (this.busy) {
+        return;
+      }
+      this.busy = button.skill;
+      this.error = '';
+      this.notice = '';
+      try {
+        const text = skillPrompt(button, this.status, this.issue);
+
+        await this.say(button.fresh ? `${ button.label } #${ this.status.pr || this.issue }` : '', text, !button.fresh);
+        this.notice = `${ button.label }: the agent is on it in the conversation below.`;
+      } catch (e) {
+        this.error = e?.message || String(e);
+      } finally {
+        this.busy = '';
+      }
+    },
+
+    /** Everything pushed since a moment, as one diff: the commits of that section together. */
+    async showCombined(item) {
+      const key = item.items.map((c) => c.sha).join(',');
+
+      if (this.combined[key]) {
+        this.combined = { ...this.combined, [key]: null };
+
+        return;
+      }
+      this.combined = { ...this.combined, [key]: 'reading' };
+      const files = await combinedFiles(item.pr, item.items.map((c) => c.sha)).catch(() => []);
+
+      this.combined = { ...this.combined, [key]: files.length ? files : 'none' };
+    },
+
+    combinedFor(item) {
+      return this.combined[item.items.map((c) => c.sha).join(',')];
+    },
+
+    /**
+     * More of the file around a thread's hunk, read from the PR's head and put above or below
+     * the rows it already has.
+     */
+    async extend(c, where) {
+      const store = where === 'up' ? this.moreAbove : this.moreBelow;
+      const had = store[c.id] || 0;
+      const rows = c.rows.filter((r) => r.newN);
+
+      if (!rows.length || !c.headSha || !c.path) {
+        return;
+      }
+      const first = rows[0].newN - had;
+      const last = rows[rows.length - 1].newN + had;
+      const from = where === 'up' ? Math.max(1, first - 20) : last + 1;
+      const to = where === 'up' ? first - 1 : last + 20;
+
+      if (to < from) {
+        return;
+      }
+      try {
+        const text = await prFile(this.status.pr, c.path, c.headSha);
+        const extra = contextRows(c.path, text, from, to);
+
+        if (where === 'up') {
+          this.moreAbove = { ...this.moreAbove, [c.id]: had + extra.length, [`${ c.id }-rows`]: [...extra, ...(this.moreAbove[`${ c.id }-rows`] || [])] };
+        } else {
+          this.moreBelow = { ...this.moreBelow, [c.id]: had + extra.length, [`${ c.id }-rows`]: [...(this.moreBelow[`${ c.id }-rows`] || []), ...extra] };
+        }
+      } catch (e) {
+        this.error = `More of ${ c.path } could not be read: ${ e?.message || e }`;
+      }
+    },
+
+    rowsAround(c) {
+      return [...(this.moreAbove[`${ c.id }-rows`] || []), ...c.rows, ...(this.moreBelow[`${ c.id }-rows`] || [])];
+    },
+
     async toggleCommit(c, item) {
       const open = !this.openCommits[c.sha];
 
@@ -554,7 +641,12 @@ export default {
 </script>
 
 <template>
-  <div class="workspace-rail">
+  <!--
+    `pr-review` is the PR panel's own class: it carries that panel's colour tokens and its diff,
+    file and comment rules (components/pr/panel.scss, imported below), so the code and the
+    comments here are drawn exactly as the PR page draws them.
+  -->
+  <div class="workspace-rail pr-review">
     <Banner
       v-if="error"
       color="error"
@@ -644,6 +736,24 @@ export default {
           <div class="workspace-rail__detail">{{ action.detail }}</div>
         </div>
         <div class="workspace-rail__buttons">
+          <!--
+            The skills that belong where the work is: each one a prompt into this workspace's
+            conversation, so what it starts is watched and talked to below.
+          -->
+          <RcButton
+            v-for="button in skillButtons()"
+            :key="button.skill"
+            variant="tertiary"
+            :disabled="!!busy"
+            :title="button.note"
+            @click="runSkill(button)"
+          >
+            <i
+              v-if="busy === button.skill"
+              class="icon icon-spinner icon-spin"
+            />
+            {{ button.label }}
+          </RcButton>
           <RcButton
             v-for="tool in action.tools"
             :key="tool.label"
@@ -711,7 +821,7 @@ export default {
                 >{{ ago(item.at) }}</span>
                 <div
                   v-if="item.html"
-                  class="workspace-rail__md"
+                  class="md-body workspace-rail__md"
                   v-html="item.html"
                 />
                 <template v-else>{{ item.text }}</template>
@@ -728,10 +838,55 @@ export default {
                   <dd :class="row.tone ? `workspace-rail__tone--${ row.tone }` : ''">{{ row.v }}</dd>
                 </template>
               </dl>
-              <ul
-                v-else-if="item.kind === 'commits'"
-                class="workspace-rail__list workspace-rail__list--plain"
-              >
+              <template v-else-if="item.kind === 'commits'">
+                <div
+                  v-if="item.items.length > 1 && item.pr"
+                  class="workspace-rail__combined-bar"
+                >
+                  <button
+                    type="button"
+                    class="workspace-rail__back"
+                    @click="showCombined(item)"
+                  >{{ combinedFor(item) ? 'Hide the combined diff' : `All ${ item.items.length } commits${ item.since ? ` since ${ item.since }` : '' } as one diff` }}</button>
+                </div>
+                <div
+                  v-if="combinedFor(item) === 'reading'"
+                  class="workspace-rail__empty"
+                >Reading the combined diff…</div>
+                <div
+                  v-else-if="combinedFor(item) === 'none'"
+                  class="workspace-rail__empty"
+                >The combined diff could not be read.</div>
+                <div
+                  v-else-if="combinedFor(item)"
+                  class="workspace-rail__files"
+                >
+                  <div
+                    v-for="f in combinedFor(item)"
+                    :key="f.path"
+                    class="prm-file"
+                  >
+                    <div class="prm-file-head"><code>{{ f.path }}</code><span
+                      v-if="f.status"
+                      class="workspace-rail__tag"
+                    >{{ f.status }}</span></div>
+                    <table class="diff-table">
+                      <tbody>
+                        <tr
+                          v-for="(r, k) in f.rows"
+                          :key="k"
+                          class="diff-row"
+                          :class="r.type"
+                        >
+                          <td class="lineno">{{ r.oldN ?? '' }}</td>
+                          <td class="lineno">{{ r.newN ?? '' }}</td>
+                          <td class="code"><span class="sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <ul class="workspace-rail__list workspace-rail__list--plain">
                 <li
                   v-for="c in item.items"
                   :key="c.sha"
@@ -763,29 +918,31 @@ export default {
                     <div
                       v-for="f in commitFiles[c.sha] || []"
                       :key="f.path"
-                      class="workspace-rail__file"
+                      class="prm-file"
                     >
-                      <div class="workspace-rail__file-head"><code>{{ f.path }}</code><span
+                      <div class="prm-file-head"><code>{{ f.path }}</code><span
                         v-if="f.status"
                         class="workspace-rail__tag"
                       >{{ f.status }}</span></div>
-                      <table class="workspace-rail__code">
+                      <table class="diff-table">
                         <tbody>
                           <tr
                             v-for="(r, k) in f.rows"
                             :key="k"
-                            :class="`workspace-rail__code-row workspace-rail__code-row--${ r.type }`"
+                            class="diff-row"
+                            :class="r.type"
                           >
-                            <td class="workspace-rail__lineno">{{ r.oldN ?? '' }}</td>
-                            <td class="workspace-rail__lineno">{{ r.newN ?? '' }}</td>
-                            <td class="workspace-rail__codecell"><span class="workspace-rail__sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
+                            <td class="lineno">{{ r.oldN ?? '' }}</td>
+                            <td class="lineno">{{ r.newN ?? '' }}</td>
+                            <td class="code"><span class="sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
                           </tr>
                         </tbody>
                       </table>
                     </div>
                   </div>
-                </li>
-              </ul>
+                  </li>
+                </ul>
+              </template>
               <ul
                 v-else-if="item.kind === 'files'"
                 class="workspace-rail__list workspace-rail__list--files"
@@ -833,8 +990,8 @@ export default {
                 <article
                   v-for="(c, j) in item.items"
                   :key="c.id || j"
-                  class="workspace-rail__comment"
-                  :class="{ 'workspace-rail__comment--open': !c.answered }"
+                  class="workspace-rail__thread-card"
+                  :class="{ 'workspace-rail__thread-card--open': !c.answered, 'workspace-rail__thread-card--new': c.thread.some((t) => t.isNew) }"
                 >
                   <header class="workspace-rail__comment-head">
                     <button
@@ -864,24 +1021,38 @@ export default {
                   </header>
                   <div
                     v-if="openComments[c.id] ?? !c.answered"
-                    class="workspace-rail__file"
+                    class="prm-file"
                   >
-                    <table
-                      v-if="c.rows.length"
-                      class="workspace-rail__code"
-                    >
-                      <tbody>
-                        <tr
-                          v-for="(r, k) in c.rows"
-                          :key="k"
-                          :class="[`workspace-rail__code-row workspace-rail__code-row--${ r.type }`, { 'workspace-rail__code-row--marked': r.marked }]"
-                        >
-                          <td class="workspace-rail__lineno">{{ r.oldN ?? '' }}</td>
-                          <td class="workspace-rail__lineno">{{ r.newN ?? '' }}</td>
-                          <td class="workspace-rail__codecell"><span class="workspace-rail__sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
-                        </tr>
-                      </tbody>
-                    </table>
+                    <template v-if="c.rows.length">
+                      <button
+                        v-if="c.path && c.headSha && status.pr"
+                        type="button"
+                        class="workspace-rail__expander"
+                        title="Show the lines above"
+                        @click="extend(c, 'up')"
+                      >↑ more above</button>
+                      <table class="diff-table">
+                        <tbody>
+                          <tr
+                            v-for="(r, k) in rowsAround(c)"
+                            :key="k"
+                            class="diff-row"
+                            :class="[r.type, { 'in-comment-range': r.marked }]"
+                          >
+                            <td class="lineno">{{ r.oldN ?? '' }}</td>
+                            <td class="lineno">{{ r.newN ?? '' }}</td>
+                            <td class="code"><span class="sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <button
+                        v-if="c.path && c.headSha && status.pr"
+                        type="button"
+                        class="workspace-rail__expander"
+                        title="Show the lines below"
+                        @click="extend(c, 'down')"
+                      >↓ more below</button>
+                    </template>
                     <p
                       v-else
                       class="workspace-rail__empty"
@@ -891,15 +1062,24 @@ export default {
                     <div
                       v-for="(t, k) in c.thread"
                       :key="k"
-                      class="workspace-rail__msg"
-                      :class="t.author ? 'workspace-rail__msg--author' : 'workspace-rail__msg--other'"
+                      class="comment"
+                      :class="[t.author ? 'workspace-rail__msg--author' : 'gh-comment', { 'workspace-rail__msg--new': t.isNew }]"
                     >
-                      <div class="workspace-rail__msg-head"><span class="workspace-rail__avatar">{{ (t.who || '?').slice(0, 1).toUpperCase() }}</span><strong>{{ t.who }}</strong><span
-                        v-if="t.author"
-                        class="workspace-rail__when"
-                      >author</span><span class="workspace-rail__when">{{ ago(t.at) }}</span></div>
+                      <div class="comment-head">
+                        <span class="workspace-rail__avatar">{{ (t.who || '?').slice(0, 1).toUpperCase() }}</span>
+                        <span class="comment-author">{{ t.who }}</span>
+                        <span
+                          v-if="t.author"
+                          class="comment-age"
+                        >author</span>
+                        <span class="comment-age">{{ ago(t.at) }}</span>
+                        <span
+                          v-if="t.isNew"
+                          class="workspace-rail__tag workspace-rail__tag--new"
+                        >new</span>
+                      </div>
                       <div
-                        class="workspace-rail__md"
+                        class="comment-body md-body"
                         v-html="t.html"
                       />
                     </div>
@@ -1034,6 +1214,9 @@ export default {
     </section>
   </div>
 </template>
+
+<!-- The PR panel's stylesheet, so this page and that one are one vocabulary. -->
+<style lang="scss" scoped src="./pr/panel.scss"></style>
 
 <style lang="scss" scoped>
 .workspace-rail {
@@ -1240,9 +1423,10 @@ export default {
   }
 
   &__md {
-    line-height:   1.45;
     overflow-wrap: anywhere;
     white-space:   normal;
+
+    :deep(video) { max-width: 100%; border-radius: var(--border-radius); background: #000; }
 
     :deep(p) { margin: 0 0 8px; }
     :deep(p:last-child) { margin-bottom: 0; }
@@ -1265,78 +1449,45 @@ export default {
     margin:         6px 0 8px;
   }
 
-  &__file {
-    border:        1px solid var(--border);
+  // The file box, the diff table, the comment card and the markdown body all come from
+  // panel.scss (`prm-file`, `diff-table`, `comment`, `md-body`). What is left here is this
+  // page's own: the thread card around a comment chain, and the two expanders.
+  &__thread-card {
+    border:        1px solid var(--pr-border);
     border-radius: var(--border-radius);
-    overflow:      hidden;
-    background:    var(--body-bg);
-  }
-
-  &__file-head {
-    display:     flex;
-    align-items: center;
-    gap:         8px;
-    padding:     4px 8px;
-    border-bottom: 1px solid var(--border);
-    font-size:   12px;
-  }
-
-  &__code {
-    width:           100%;
-    border-collapse: collapse;
-    font-family:     ui-monospace, 'SFMono-Regular', Menlo, monospace;
-    font-size:       12px;
-    line-height:     1.45;
-    display:         block;
-    max-height:      460px;
-    overflow:        auto;
-
-    tbody { display: table; width: 100%; }
-  }
-
-  &__lineno {
-    width:       40px;
-    padding:     0 6px;
-    text-align:  right;
-    color:       var(--muted);
-    user-select: none;
-    white-space: nowrap;
-    vertical-align: top;
-  }
-
-  &__codecell {
-    padding:     0 8px 0 4px;
-    white-space: pre;
-  }
-
-  &__sign {
-    display:     inline-block;
-    width:       10px;
-    color:       var(--muted);
-  }
-
-  &__code-row--add { background: rgba(152, 195, 121, .12); }
-  &__code-row--del { background: rgba(224, 108, 117, .12); }
-  &__code-row--hunk { background: var(--box-bg); color: var(--link); }
-  &__code-row--marked { outline: 2px solid var(--warning); outline-offset: -2px; }
-  &__code-row--marked td { background: rgba(255, 228, 122, .12); }
-
-  &__msg {
-    padding:       8px 10px;
-    border-radius: var(--border-radius);
-    border:        1px solid var(--border);
-    background:    var(--body-bg);
-
-    &--author { border-left: 3px solid var(--primary); }
-    &--other { border-left: 3px solid var(--warning); background: var(--box-bg); }
-  }
-
-  &__msg-head {
+    background:    var(--pr-bg-2);
+    padding:       10px 12px;
     display:       flex;
-    align-items:   center;
+    flex-direction: column;
     gap:           8px;
-    margin-bottom: 4px;
-    font-size:     12px;
+
+    &--open { border-color: var(--pr-warning); }
+    &--new { box-shadow: inset 3px 0 0 var(--pr-accent); }
+  }
+
+  &__msg--author { border-left: 3px solid var(--pr-accent); }
+  &__msg--new { background: var(--pr-accent-fill); }
+
+  &__expander {
+    display:     block;
+    width:       100%;
+    border:      0;
+    border-bottom: 1px solid var(--pr-border);
+    background:  var(--pr-bg-2);
+    color:       var(--pr-accent);
+    font:        inherit;
+    font-size:   11px;
+    padding:     2px 0;
+    cursor:      pointer;
+
+    &:hover { background: var(--pr-el-hover); }
+    &:last-child { border-bottom: 0; border-top: 1px solid var(--pr-border); }
+  }
+
+  &__combined-bar {
+    display:       flex;
+    justify-content: flex-end;
+    margin-bottom: 6px;
   }
 
   &__avatar {
@@ -1506,7 +1657,8 @@ export default {
     background:    var(--disabled-bg);
     color:         var(--body-text);
 
-    &--open { background: rgba(255, 228, 122, .18); color: var(--warning); }
+    &--open { background: var(--pr-warning-fill); color: var(--pr-warning); }
+    &--new { background: var(--pr-accent-fill); color: var(--pr-accent); }
   }
 
   &__media {
@@ -1536,29 +1688,13 @@ export default {
     gap:            8px;
   }
 
-  &__comment {
-    padding:       10px 12px;
-    border:        1px solid var(--border);
-    border-radius: var(--border-radius);
-    background:    var(--body-bg);
-
-    &--open { border-color: var(--warning); }
-  }
-
   &__comment-head {
     display:     flex;
     align-items: center;
     gap:         8px;
     font-size:   12px;
-    margin-bottom: 4px;
 
-    code { font-size: 11px; color: var(--muted); }
-  }
-
-  &__comment-body {
-    white-space: pre-wrap;
-    font-size:   13px;
-    line-height: 1.45;
+    code { font-size: 11px; color: var(--pr-muted); }
   }
 
   &__links { display: flex; gap: 12px; margin: 0; }

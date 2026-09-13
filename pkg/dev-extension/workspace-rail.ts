@@ -9,12 +9,12 @@
 // stage can be looked at again after it has passed: the evidence is composed per stage, from
 // what that stage left behind, so a past step on the rail is a way back to its artifacts.
 import {
-  prDetail, commitsDiff, ciFailures, DEFAULT_REPO
+  prDetail, commitsDiff, ciFailures, ghAssetUrl, ghAssetKind, DEFAULT_REPO
 } from './reviews';
 import { issueBody } from './github';
 import { readInWorkspace } from './workspace-tools';
 import {
-  parseHunks, highlightRows, hl, renderMd, escapeHtml
+  parseHunks, highlightRows, highlightLines, hl, renderMd, escapeHtml
 } from './components/pr/diff';
 import type { DiffRow } from './components/pr/diff';
 import { latestAgentReport } from './conversations';
@@ -57,7 +57,7 @@ export type EvidenceItem =
   | { kind: 'kv'; rows: { k: string; v: string; tone?: string }[] }
   | { kind: 'media'; items: { label: string; url: string; video: boolean; at: string }[] }
   | { kind: 'comments'; items: Comment[] }
-  | { kind: 'commits'; pr: number; items: { sha: string; message: string; who: string; at: string }[] }
+  | { kind: 'commits'; pr: number; items: { sha: string; message: string; who: string; at: string }[]; since?: string }
   | { kind: 'files'; items: { path: string; note: string }[] }
   | { kind: 'links'; items: { label: string; url: string }[] }
   | { kind: 'empty'; text: string };
@@ -93,9 +93,11 @@ export interface Comment {
   /** Who spoke last, and whether that was the PR's author. */
   lastBy: string;
   lastByAuthor: boolean;
-  thread: { who: string; author: boolean; body: string; html: string; at: string }[];
+  thread: { who: string; author: boolean; body: string; html: string; at: string; isNew: boolean }[];
   /** Whether the PR's author has answered in this thread at all. */
   replied: boolean;
+  /** The PR's head, for reading more of the file around the hunk. */
+  headSha: string;
   /** GitHub's position in the diff, for its order. */
   position: number;
   /** @deprecated the old one-line context; `rows` is the hunk. */
@@ -320,7 +322,7 @@ function prRows(d: Json): { k: string; v: string; tone?: string }[] {
  * in the PR, then the line; the discussion under the PR after them, oldest first. Each with
  * the whole hunk it is on and every message rendered.
  */
-function threads(d: Json): Comment[] {
+function threads(d: Json, since = 0, kinds: Record<string, string> = {}): Comment[] {
   const m = d.meta || {};
   const author = m.author || '';
   const files: Json[] = d.files || [];
@@ -337,14 +339,14 @@ function threads(d: Json): Comment[] {
   };
   const roots = review.filter((c) => rootOf(c).id === c.id);
   const msg = (c: Json) => ({
-    who: c.author || '?', author: c.author === author, body: String(c.body || ''), html: linkRefs(renderMd(String(c.body || ''))), at: c.createdAt || '',
+    who: c.author || '?', author: c.author === author, body: String(c.body || ''), html: renderBody(String(c.body || ''), kinds), at: c.createdAt || '', isNew: since > 0 && (Date.parse(c.createdAt) || 0) > since,
   });
   const card = (root: Json, members: Json[], where: string, path: string, line: number, rows: CodeRow[], order: number, url: string): Comment => {
     const thread = members.sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0)).map(msg);
     const last = thread[thread.length - 1];
 
     return {
-      id: root.id, who: root.author || '?', where, path, line, body: String(root.body || '').slice(0, 400), at: last?.at || root.createdAt || '', answered: false, lastBy: last?.who || '', lastByAuthor: !!last?.author, thread, replied: thread.some((t) => t.author), position: Number(root.position) || 0, context: '', rows, noPatch: false, url, order,
+      id: root.id, who: root.author || '?', where, path, line, body: String(root.body || '').slice(0, 400), at: last?.at || root.createdAt || '', answered: false, lastBy: last?.who || '', lastByAuthor: !!last?.author, thread, replied: thread.some((t) => t.author), headSha: m.headSha || '', position: Number(root.position) || 0, context: '', rows, noPatch: false, url, order,
     };
   };
   const out = roots.map((root) => {
@@ -378,8 +380,8 @@ function threads(d: Json): Comment[] {
  * spoke last (the author is the viewer); on a review, the author spoke last (the viewer is the
  * reviewer). `since` keeps only threads with a word after it.
  */
-function feedback(d: Json, since: number, viewerIsAuthor = true): Comment[] {
-  return threads(d)
+function feedback(d: Json, since: number, viewerIsAuthor = true, kinds: Record<string, string> = {}): Comment[] {
+  return threads(d, since, kinds)
     .filter((c) => (Date.parse(c.at) || 0) > since)
     .map((c) => ({ ...c, answered: viewerIsAuthor ? c.lastByAuthor : !c.lastByAuthor }));
 }
@@ -418,6 +420,25 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
   let pending = reads.length;
   const emit = (done: boolean) => onUpdate?.(compose(status, stage, have), done);
 
+  // What the comments' attachments are, once the PR is here: asked in parallel, kept, and
+  // drawn as images or players when the column is composed again.
+  reads[3].then(async() => {
+    const d = have.d;
+
+    if (!d) {
+      return;
+    }
+    const urls = [...new Set([...(d.reviewComments || []), ...(d.discussion || [])].flatMap((c: Json) => assetUrls(String(c.body || ''))))].slice(0, 40);
+
+    if (!urls.length) {
+      return;
+    }
+    const kinds = await Promise.all(urls.map((u) => ghAssetKind(u)));
+
+    have.kinds = Object.fromEntries(urls.map((u, i) => [u, kinds[i]]));
+    emit(pending === 0);
+  });
+
   for (const read of reads) {
     read.then(() => {
       pending--;
@@ -440,6 +461,8 @@ interface Sources {
   d?: Json;
   issue?: { title: string; body: string; url: string } | null;
   ci?: Json;
+  /** Attachment URL -> content type, for the bodies. */
+  kinds?: Record<string, string>;
 }
 
 function compose(status: WorkspaceStatus, stage: Stage, have: Sources): EvidenceSection[] {
@@ -447,6 +470,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
   const branch = have.branch || null;
   const media = have.media || [];
   const d = have.d || null;
+  const kinds = have.kinds || {};
   const sections: EvidenceSection[] = [];
   const reportSection = (title = 'Agent\'s report') => report && sections.push({ title, items: [{ kind: 'text', text: report.text, html: renderMd(report.text), at: report.at }] });
   const mediaSection = (title: string, items: ReturnType<typeof mediaUnder>) => items.length && sections.push({ title, items: [{ kind: 'media', items }] });
@@ -476,7 +500,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     if (failing.length) {
       items.push({ kind: 'links', items: failing.slice(0, 8).map((c: Json) => ({ label: `${ c.name || 'check' }: ${ c.conclusion || 'failing' }`, url: c.url })) });
     }
-    items.push({ kind: 'text', text: String(d.meta?.body || ''), html: linkRefs(renderMd(String(d.meta?.body || '') || '_(no description)_')) });
+    items.push({ kind: 'text', text: String(d.meta?.body || ''), html: renderBody(String(d.meta?.body || '') || '_(no description)_', kinds) });
     sections.push({ title: 'Pull request', items });
   };
   const issueSection = () => have.issue && sections.push({ title: `The issue: ${ have.issue.title }`, items: [{ kind: 'text', text: have.issue.body, html: renderMd(have.issue.body || '_(no description)_') }, { kind: 'links', items: [{ label: 'On GitHub', url: have.issue.url }] }] });
@@ -507,7 +531,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       // The agent's report and the change come first: after feedback, this is what it pushed.
       reportSection();
       if (d) {
-        const fb = feedback(d, 0, true);
+        const fb = feedback(d, 0, true, kinds);
 
         sections.push({ title: 'Reviewers', items: fb.length ? [{ kind: 'comments', items: fb }] : [{ kind: 'empty', text: 'Nobody has commented yet.' }] });
       }
@@ -516,11 +540,20 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       break;
     case 'feedback':
       if (d) {
-        const all = feedback(d, 0, true);
+        // New since the last push: the messages after it are marked as such.
+        const all = feedback(d, 0, true, kinds).map((c) => ({ ...c, thread: c.thread.map((t) => ({ ...t, isNew: (Date.parse(t.at) || 0) > pushedAt(d) })) }));
         const fresh = all.filter((c) => (Date.parse(c.at) || 0) > pushedAt(d));
         const older = all.filter((c) => !fresh.includes(c));
 
         sections.push({ title: 'Since your last push', items: fresh.length ? [{ kind: 'comments', items: fresh }] : [{ kind: 'empty', text: 'Nothing new since the last push.' }] });
+        // And the commits of this round, so the change the feedback is about can be read as one.
+        const roundCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > Math.min(...all.map((x) => Date.parse(x.thread[0]?.at || '') || Date.now()))).map((c: Json) => ({
+          sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
+        }));
+
+        if (roundCommits.length) {
+          sections.push({ title: 'Your commits this round', items: [{ kind: 'commits', pr: status.pr, items: roundCommits, since: 'the first comment of this round' }] });
+        }
         if (older.length) {
           sections.push({ title: 'Earlier rounds', items: [{ kind: 'comments', items: older }] });
         }
@@ -543,7 +576,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     const submittedAt = Math.max(0, ...submitted.map((c) => Date.parse(c.submitted_at) || 0), ...ghReviews.map((r) => Date.parse(r.submittedAt) || 0));
     // What was submitted, as threads: the review's own comments here, else the PR's threads a
     // reviewer opened (a review left on GitHub directly).
-    const reviewThreads = () => (d ? threads(d).filter((c) => c.thread.some((t) => !t.author)) : []);
+    const reviewThreads = () => (d ? threads(d, submittedAt, kinds).filter((c) => c.thread.some((t) => !t.author)) : []);
     const files: Json[] = d?.files || [];
     const findings = (list: Json[]) => ({
       kind: 'comments' as const,
@@ -552,7 +585,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         const body = String(c.body || '');
 
         return {
-          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderMd(body), at: c.created_at || '' }], replied: false, position: 0, context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
+          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderBody(body), at: c.created_at || '', isNew: false }], replied: false, headSha: d?.meta?.headSha || '', position: 0, context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
         };
       }).sort((a, b) => a.order - b.order || a.line - b.line),
     });
@@ -586,7 +619,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         // the developer addressed and what they did not are both on the page where they are.
         const mine = reviewThreads().map((c) => ({ ...c, answered: c.replied }));
 
-        sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
+        sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits, since: 'your review' }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
         sections.push({ title: `Your threads (${ mine.filter((c) => c.replied).length } answered, ${ mine.filter((c) => !c.replied).length } not)`, items: mine.length ? [{ kind: 'comments', items: mine }] : [{ kind: 'empty', text: 'No threads.' }] });
       }
       if (report) {
@@ -606,6 +639,40 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
 /** GitHub's `#123` references as links, in rendered markdown (outside tags and code). */
 export function linkRefs(html: string): string {
   return html.split(/(<[^>]+>)/).map((part, i) => (i % 2 ? part : part.replace(/(^|[\s(])#(\d{2,7})\b/g, `$1<a href="https://github.com/${ DEFAULT_REPO }/issues/$2" target="_blank" rel="noopener noreferrer">#$2</a>`))).join('');
+}
+
+const ASSET_RE = /https:\/\/(?:github\.com\/user-attachments\/(?:assets|files)\/[\w.-]+|github\.com\/[\w.-]+\/[\w.-]+\/assets\/[\w./-]+|private-user-images\.githubusercontent\.com\/[^\s"'<)]+|user-images\.githubusercontent\.com\/[^\s"'<)]+)/g;
+
+/** The attachment URLs a body carries, for asking what they are before drawing them. */
+export function assetUrls(text: string): string[] {
+  return [...new Set((text || '').match(ASSET_RE) || [])];
+}
+
+/**
+ * A comment body as HTML: markdown rendered, references linked, and GitHub's attachments
+ * drawn - an image as an image, a recording as a player, through the API with the token,
+ * since the browser cannot load them from GitHub itself. A bare attachment URL on a line of
+ * its own is what GitHub turns into a player, and it is turned into one here too, when the
+ * API said it is a video; an unknown one stays a link.
+ */
+export function renderBody(text: string, kinds: Record<string, string> = {}): string {
+  let html = linkRefs(renderMd(text || ''));
+
+  html = html.replace(/<img([^>]*?)\ssrc="(https:\/\/[^"]+)"/g, (m, attrs, src) => (ASSET_RE.test(src) || /githubusercontent\.com/.test(src) ? `<img${ attrs } src="${ ghAssetUrl(src) }"` : m));
+  html = html.replace(/<a target="_blank" rel="noopener" href="(https:\/\/[^"]+)">\1<\/a>/g, (m, href) => {
+    const kind = kinds[href] || '';
+
+    if (/^video\//.test(kind)) {
+      return `<video controls preload="metadata" src="${ ghAssetUrl(href) }"></video>`;
+    }
+    if (/^image\//.test(kind)) {
+      return `<a target="_blank" rel="noopener" href="${ href }"><img src="${ ghAssetUrl(href) }" alt="attachment"></a>`;
+    }
+
+    return m;
+  });
+
+  return html;
 }
 
 /** The GitHub URL of the PR a status is about, or of the issue when there is no PR yet. */
@@ -660,5 +727,123 @@ export async function commitFiles(workspace: string, pr: number, sha: string): P
   }
 
   return out;
+}
+
+/**
+ * More of a file around a hunk, from the file as it is at the PR's head: the lines above the
+ * hunk's first new-side line, or below its last, as context rows numbered on the new side.
+ */
+export function contextRows(path: string, fileText: string, fromLine: number, toLine: number): CodeRow[] {
+  const lines = (fileText || '').split('\n');
+  const first = Math.max(1, fromLine);
+  const last = Math.min(lines.length, toLine);
+
+  if (last < first) {
+    return [];
+  }
+  const slice = lines.slice(first - 1, last);
+  const html = highlightLines(path, slice);
+
+  return slice.map((_, i) => ({
+    type: 'ctx', oldN: null, newN: first + i, html: html[i], marked: false,
+  }));
+}
+
+/** Every commit of a list as one diff - what changed since a moment, read at once. */
+export async function combinedFiles(pr: number, shas: string[]): Promise<{ path: string; rows: CodeRow[]; status: string }[]> {
+  const diff = await commitsDiff(pr, shas.filter((s) => /^[0-9a-f]{7,40}$/i.test(s))).catch(() => null);
+  const files: Json[] = diff?.files || [];
+  const out = files.slice(0, 60).map((f) => ({ path: f.path || f.filename || '', rows: fileRows(f.path || f.filename || '', f.patch || '', 400), status: f.status || '' }));
+
+  if (files.length > 60) {
+    out.push({ path: `… ${ files.length - 60 } more files - open the PR on GitHub`, rows: [], status: '' });
+  }
+
+  return out;
+}
+
+/**
+ * The skills worth running at each stage, as buttons beside the one primary action.
+ *
+ * Every one of them is a prompt into the workspace's conversation - the same path everything
+ * else here takes - so what a button starts can be watched and talked to. Only the skills that
+ * make sense where the work is: a review's own passes while reviewing, the PR's while the PR
+ * is the thing being worked on.
+ */
+export interface SkillButton {
+  label: string;
+  skill: string;
+  /** What it does, for the button's title. */
+  note: string;
+  /** Whether it wants its own conversation rather than the one about this work. */
+  fresh?: boolean;
+}
+
+export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage): SkillButton[] {
+  if (kind === 'review') {
+    switch (stage) {
+    case 'agent':
+      return [
+        { label: 'Full review', skill: 'my-pr-full-review', note: 'Demo the change, demo the issue, review the diff, verify every comment', fresh: true },
+        { label: 'Comments only', skill: 'my-pr-review', note: 'Short pending inline comments, nothing submitted' },
+        { label: 'Checklist', skill: 'my-pr-checklist', note: 'Work every item of the PR template checklist' },
+      ];
+    case 'findings':
+      return [
+        { label: 'Verify the findings', skill: 'my-pr-comment-verify', note: 'Prove each comment with a recording or a screenshot attached to it' },
+        { label: 'Sharpen the wording', skill: 'my-pr-comment-refinement', note: 'Rewrite each pending comment into impact, why it matters, and evidence' },
+        { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes, against its own build' },
+      ];
+    case 'submitted':
+      return [{ label: 'Checklist', skill: 'my-pr-checklist', note: 'Work every item of the PR template checklist' }];
+    case 'response':
+      return [
+        { label: 'Review the new commits', skill: 'my-pr-review', note: 'Comment on what changed since your review' },
+        { label: 'Verify the answers', skill: 'my-pr-comment-verify', note: 'Check what the developer says they fixed' },
+        { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes now' },
+      ];
+    default:
+      return [];
+    }
+  }
+  if (kind === 'fix') {
+    switch (stage) {
+    case 'assess':
+      return [
+        { label: 'Reproduce it', skill: 'my-issue-reproduce', note: 'Record the bug happening, against the current build' },
+        { label: 'Root cause', skill: 'my-root-cause-analysis', note: 'Candidates with evidence, the chosen one, the plan' },
+      ];
+    case 'code':
+      return [
+        { label: 'Verify the fix', skill: 'my-fix-verify', note: 'Self-review, a test that fails without the fix, edge cases' },
+        { label: 'Demonstrate it', skill: 'my-fix-demonstrate', note: 'Record the same walk, now correct' },
+        { label: 'Open the PR', skill: 'my-pr-create', note: 'Branch, push, upload the media, open the draft PR' },
+      ];
+    case 'draft':
+      return [
+        { label: 'Checklist', skill: 'my-pr-checklist', note: 'Work every item of the PR template checklist' },
+        { label: 'Rewrite the body', skill: 'my-pr-fill-template', note: 'Compose the PR body from the template' },
+        { label: 'Demo the issue', skill: 'my-pr-demo-issue', note: 'Record the bug on a build without the fix' },
+      ];
+    case 'review':
+      return [{ label: 'Checklist', skill: 'my-pr-checklist', note: 'Work every item of the PR template checklist' }];
+    case 'feedback':
+      return [
+        { label: 'Address the feedback', skill: 'my-pr-address-feedback', note: 'Fix what has merit, answer what does not, push' },
+        { label: 'Re-verify', skill: 'my-fix-demonstrate', note: 'Record the same walk again after the changes' },
+      ];
+    default:
+      return [];
+    }
+  }
+
+  return [];
+}
+
+/** What a skill button sends: the slash command with the PR or issue it is about. */
+export function skillPrompt(button: SkillButton, status: WorkspaceStatus, issue: number): string {
+  const subject = status.pr ? `${ DEFAULT_REPO } PR #${ status.pr }` : issue ? `${ DEFAULT_REPO } issue #${ issue }` : 'this workspace';
+
+  return `/${ button.skill } ${ subject }${ status.pr ? ` - its context: $CLAUDE_HARNESS_API/my-work/pr/${ status.pr }.` : '.' }`;
 }
 
