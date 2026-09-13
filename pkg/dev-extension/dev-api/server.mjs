@@ -1838,6 +1838,61 @@ http.createServer(async(req, res) => {
     return send(res, 200, { files: listWorkspaceMedia(mediaList[1]) });
   }
 
+  // An image or a recording attached to a GitHub comment. The browser cannot fetch those
+  // itself: `github.com/user-attachments/assets/…` redirects to a signed URL behind the
+  // person's GitHub session, which a cross-site <img> does not carry. Fetched here with the
+  // token and streamed back; `?meta=1` answers with the type alone, for choosing <img> or
+  // <video> before anything is loaded. Only GitHub's own asset hosts.
+  if (url.pathname === '/my-work/gh-asset' && req.method === 'GET') {
+    const asset = url.searchParams.get('url') || '';
+
+    if (!/^https:\/\/(github\.com\/user-attachments\/assets\/|github\.com\/[^/]+\/[^/]+\/assets\/|private-user-images\.githubusercontent\.com\/|user-images\.githubusercontent\.com\/|github\.com\/user-attachments\/files\/)/.test(asset)) {
+      return send(res, 400, { error: 'Not a GitHub asset URL.' });
+    }
+    try {
+      const token = await githubToken();
+      const upstream = await fetch(asset, { headers: token ? { authorization: `Bearer ${ token }`, 'user-agent': 'dev-extension' } : { 'user-agent': 'dev-extension' }, redirect: 'follow' });
+
+      if (!upstream.ok) {
+        return send(res, 502, { error: `GitHub asset -> ${ upstream.status }` });
+      }
+      const type = upstream.headers.get('content-type') || 'application/octet-stream';
+
+      if (url.searchParams.get('meta')) {
+        await upstream.body?.cancel?.();
+
+        return send(res, 200, { type, size: Number(upstream.headers.get('content-length') || 0) });
+      }
+      res.writeHead(200, {
+        'content-type':                type,
+        ...(upstream.headers.get('content-length') ? { 'content-length': upstream.headers.get('content-length') } : {}),
+        'access-control-allow-origin': '*',
+        'cache-control':               'private, max-age=3600',
+      });
+      const reader = upstream.body.getReader();
+      const pump = async() => {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          res.end();
+
+          return;
+        }
+        res.write(Buffer.from(value));
+        await pump();
+      };
+
+      await pump();
+    } catch (e) {
+      if (!res.headersSent) {
+        return send(res, 502, { error: `GitHub asset: ${ e.message }` });
+      }
+      res.end();
+    }
+
+    return;
+  }
+
   const mediaFile = /^\/workspace\/([a-z0-9][a-z0-9-]*)\/media\/file$/.exec(url.pathname);
 
   if (mediaFile && req.method === 'GET') {
