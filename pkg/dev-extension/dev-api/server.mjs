@@ -741,6 +741,8 @@ function cdpSession(wsUrl) {
     socket.addEventListener('error', () => reject(new Error('The shared GitHub browser refused a CDP connection.')), { once: true });
   });
 
+  const listeners = new Map();
+
   socket.addEventListener('message', (event) => {
     let msg;
 
@@ -754,10 +756,22 @@ function cdpSession(wsUrl) {
     if (waiter) {
       pending.delete(msg.id);
       msg.error ? waiter.reject(new Error(msg.error.message || 'CDP error')) : waiter.resolve(msg.result);
+
+      return;
+    }
+    // An event rather than a reply: whoever asked for this method hears it.
+    for (const fn of listeners.get(msg.method) || []) {
+      try {
+        fn(msg.params || {});
+      } catch { /* a listener's own fault, not the socket's */ }
     }
   });
 
   return {
+    /** Hear a CDP event - `Network.responseReceived` and friends. */
+    on(method, fn) {
+      listeners.set(method, [...(listeners.get(method) || []), fn]);
+    },
     async send(method, params = {}) {
       await ready;
       const id = ++seq;
@@ -880,33 +894,55 @@ async function fetchGithubAsset(assetUrl) {
   const session = cdpSession(opened.webSocketDebuggerUrl);
 
   try {
-    await session.send('Runtime.enable');
-    const result = await evaluate(session, async(url) => {
-      const response = await fetch(url, { credentials: 'include' });
+    // The page cannot fetch it: the asset redirects to a signed URL on another origin that
+    // sends no CORS headers, so a page-side `fetch` fails whatever its credentials. The
+    // browser's own network has no such rule - so the tab is navigated to the asset and the
+    // response body is read out of the network log, redirects and cookies included.
+    await session.send('Network.enable');
+    await session.send('Page.enable');
 
-      if (!response.ok) {
-        return { error: `${ response.status }` };
-      }
-      const type = response.headers.get('content-type') || 'application/octet-stream';
-      const buffer = await response.arrayBuffer();
+    let main = '';
+    let status = 0;
+    let type = '';
+    const finished = new Promise((resolve) => {
+      session.on('Network.responseReceived', (p) => {
+        if (p.type === 'Document' || p.requestId === main) {
+          main = p.requestId;
+          status = p.response?.status || 0;
+          type = p.response?.mimeType || '';
+        }
+      });
+      session.on('Network.loadingFinished', (p) => {
+        if (p.requestId === main) {
+          resolve(p.encodedDataLength || 0);
+        }
+      });
+      session.on('Network.loadingFailed', (p) => {
+        if (p.requestId === main) {
+          resolve(-1);
+        }
+      });
+      setTimeout(() => resolve(-2), 60_000);
+    });
 
-      if (buffer.byteLength > 8 * 1024 * 1024) {
-        return { type, tooBig: buffer.byteLength };
-      }
-      const bytes = new Uint8Array(buffer);
-      let binary = '';
+    await session.send('Page.navigate', { url: assetUrl });
+    const size = await finished;
 
-      for (let i = 0; i < bytes.length; i += 0x8000) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      }
-
-      return { type, base64: btoa(binary) };
-    }, assetUrl);
-
-    if (result?.error) {
-      throw failure(502, `GitHub asset -> ${ result.error }`);
+    if (size === -2) {
+      throw failure(504, 'the shared browser did not finish loading the attachment');
     }
-    const value = result?.base64 ? { type: result.type, body: Buffer.from(result.base64, 'base64') } : { type: result?.type || '', body: null, tooBig: result?.tooBig || 0 };
+    if (size === -1 || (status && status >= 400)) {
+      throw failure(502, `GitHub asset -> ${ status || 'load failed' }`);
+    }
+    if (size > 8 * 1024 * 1024) {
+      const value = { type, body: null, tooBig: size };
+
+      assetCache.set(assetUrl, { at: Date.now(), value });
+
+      return value;
+    }
+    const got = await session.send('Network.getResponseBody', { requestId: main });
+    const value = { type, body: Buffer.from(got.body || '', got.base64Encoded ? 'base64' : 'utf8') };
 
     assetCache.set(assetUrl, { at: Date.now(), value });
 
