@@ -8,8 +8,12 @@
 // workspace's artifacts, the PR with its body, checklist, CI and comments out of GitHub. Every
 // stage can be looked at again after it has passed: the evidence is composed per stage, from
 // what that stage left behind, so a past step on the rail is a way back to its artifacts.
-import { prDetail, DEFAULT_REPO } from './reviews';
+import { prDetail, commitsDiff, DEFAULT_REPO } from './reviews';
 import { readInWorkspace } from './workspace-tools';
+import {
+  parseHunks, highlightRows, hl, renderMd, escapeHtml
+} from './components/pr/diff';
+import type { DiffRow } from './components/pr/diff';
 import { latestAgentReport } from './conversations';
 import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from './api';
 import type { WorkspaceStatus, Stage } from './workspace-status';
@@ -45,7 +49,7 @@ export function stepsFor(kind: WorkspaceStatus['kind']): RailStep[] {
 // ── Evidence ────────────────────────────────────────────────────────────────────────────────
 
 export type EvidenceItem =
-  | { kind: 'text'; text: string; at?: string; who?: string }
+  | { kind: 'text'; text: string; html?: string; at?: string; who?: string }
   | { kind: 'kv'; rows: { k: string; v: string; tone?: string }[] }
   | { kind: 'media'; items: { label: string; url: string; video: boolean; at: string }[] }
   | { kind: 'comments'; items: Comment[] }
@@ -59,23 +63,86 @@ export interface EvidenceSection {
   items: EvidenceItem[];
 }
 
+/** One row of a diff as the page draws it: highlighted code, and whether it is the commented line. */
+export interface CodeRow {
+  type: DiffRow['type'];
+  oldN: number | null;
+  newN: number | null;
+  html: string;
+  marked: boolean;
+}
+
+/**
+ * A review thread, as a card: where it is, the code it is on (the whole hunk of the PR's diff
+ * around the line, not one line), and every message in it, oldest first, rendered.
+ */
 export interface Comment {
   id: number | string;
   who: string;
   where: string;
+  path: string;
+  line: number;
   body: string;
   at: string;
+  /** Whether the last word is the viewer's side's - nothing waits on them here. */
   answered: boolean;
-  /** The chain this comment is in, oldest first, this one included; the code it is on. */
-  thread: { who: string; body: string; at: string }[];
+  /** Who spoke last, and whether that was the PR's author. */
+  lastBy: string;
+  lastByAuthor: boolean;
+  thread: { who: string; author: boolean; body: string; html: string; at: string }[];
+  /** @deprecated the old one-line context; `rows` is the hunk. */
   context: string;
+  rows: CodeRow[];
+  url: string;
+  /** Where the file sits in the PR's file list, for GitHub's order. */
+  order: number;
 }
 
 /**
- * The lines of a file's patch around one line of it - what a review comment is about. New-side
- * numbers for a comment on the right, old-side for one on the left. '' when the line is not
- * in the patch (a comment on an unchanged line, or a file that has since changed).
+ * The hunk of a file's patch that holds one line - the code a review comment is about, with
+ * the lines around it, numbered on both sides and highlighted in the file's language, the
+ * commented line marked. New-side numbers for a comment on the right, old-side on the left.
+ * Empty when the line is not in the patch any more (the file changed since).
  */
+export function hunkRows(path: string, patch: string, line: number, side = 'RIGHT'): CodeRow[] {
+  if (!patch || !line) {
+    return [];
+  }
+  const hunks = parseHunks(patch);
+  const hit = hunks.find((h) => h.rows.some((r) => (side === 'LEFT' ? r.oldN : r.newN) === line));
+
+  if (!hit) {
+    return [];
+  }
+  highlightRows(path, hit.rows);
+  const at = hit.rows.findIndex((r) => (side === 'LEFT' ? r.oldN : r.newN) === line);
+  // The whole hunk when it is short; otherwise a generous window around the line.
+  const rows = hit.rows.length <= 40 ? hit.rows : hit.rows.slice(Math.max(0, at - 18), at + 12);
+
+  return rows.map((r) => ({
+    type: r.type, oldN: r.oldN, newN: r.newN, html: r.type === 'hunk' ? escapeHtml(r.text) : hl(r), marked: (side === 'LEFT' ? r.oldN : r.newN) === line && r.type !== 'hunk',
+  }));
+}
+
+/** A whole file's patch as rows, highlighted: what a commit opens to. */
+export function fileRows(path: string, patch: string, limit = 400): CodeRow[] {
+  const rows: CodeRow[] = [];
+
+  for (const h of parseHunks(patch)) {
+    highlightRows(path, h.rows);
+    for (const r of h.rows) {
+      rows.push({
+        type: r.type, oldN: r.oldN, newN: r.newN, html: r.type === 'hunk' ? escapeHtml(r.text) : hl(r), marked: false,
+      });
+      if (rows.length >= limit) {
+        return rows;
+      }
+    }
+  }
+
+  return rows;
+}
+
 export function hunkAround(patch: string, line: number, side = 'RIGHT'): string {
   if (!patch || !line) {
     return '';
@@ -216,54 +283,62 @@ function prRows(d: Json): { k: string; v: string; tone?: string }[] {
   return rows;
 }
 
-/** Every comment on a PR with its chain and the code it is on; the raw material for the lists below. */
-function allComments(d: Json): (Comment & { author: string; raw: Json })[] {
+/**
+ * Every thread on a PR, one card each, in GitHub's "Files changed" order: by the file's place
+ * in the PR, then the line; the discussion under the PR after them, oldest first. Each with
+ * the whole hunk it is on and every message rendered.
+ */
+function threads(d: Json): Comment[] {
+  const m = d.meta || {};
+  const author = m.author || '';
   const files: Json[] = d.files || [];
   const review: Json[] = (d.reviewComments || []).filter((c: Json) => !c.pending);
+  const byId = new Map(review.map((c) => [c.id, c]));
   const rootOf = (c: Json): Json => {
     let cur = c;
 
-    for (let i = 0; i < 50 && cur.inReplyTo; i++) {
-      const parent = review.find((r) => r.id === cur.inReplyTo);
-
-      if (!parent) {
-        break;
-      }
-      cur = parent;
+    for (let i = 0; i < 50 && cur.inReplyTo && byId.has(cur.inReplyTo); i++) {
+      cur = byId.get(cur.inReplyTo);
     }
 
     return cur;
   };
-  const threadOf = (c: Json) => {
-    const root = rootOf(c);
-    const members = review.filter((r) => r.id === root.id || rootOf(r).id === root.id);
-
-    return members
-      .sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0))
-      .map((r) => ({ who: r.author || '?', body: String(r.body || ''), at: r.createdAt || '' }));
-  };
-  const toComment = (c: Json, where: string, thread: Comment['thread'], context: string) => ({
-    id: c.id, who: c.author || '?', where, body: String(c.body || '').slice(0, 400), at: c.createdAt || '', answered: false, thread, context, author: c.author || '', raw: c,
+  const roots = review.filter((c) => rootOf(c).id === c.id);
+  const msg = (c: Json) => ({
+    who: c.author || '?', author: c.author === author, body: String(c.body || ''), html: renderMd(String(c.body || '')), at: c.createdAt || '',
   });
+  const card = (root: Json, members: Json[], where: string, path: string, line: number, rows: CodeRow[], order: number, url: string): Comment => {
+    const thread = members.sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0)).map(msg);
+    const last = thread[thread.length - 1];
 
-  return [
-    ...review.map((c) => toComment(c, c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'review', threadOf(c), hunkAround(files.find((f) => f.path === c.path)?.patch || '', Number(c.line) || 0, c.side))),
-    ...(d.discussion || []).map((c: Json) => toComment(c, 'discussion', [], '')),
-  ];
+    return {
+      id: root.id, who: root.author || '?', where, path, line, body: String(root.body || '').slice(0, 400), at: last?.at || root.createdAt || '', answered: false, lastBy: last?.who || '', lastByAuthor: !!last?.author, thread, context: '', rows, url, order,
+    };
+  };
+  const out = roots.map((root) => {
+    const members = review.filter((c) => rootOf(c).id === root.id);
+    const file = files.findIndex((f) => f.path === root.path);
+    const line = Number(root.line) || 0;
+
+    return card(root, members, root.path ? `${ root.path }${ line ? `:${ line }` : '' }` : 'review', root.path || '', line, hunkRows(root.path || '', files[file]?.patch || '', line, root.side), file < 0 ? 9999 : file, m.url ? `${ m.url }#discussion_r${ root.id }` : '');
+  }).sort((a, b) => a.order - b.order || a.line - b.line || (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
+
+  for (const c of (d.discussion || []) as Json[]) {
+    out.push(card(c, [c], 'discussion', '', 0, [], 10000, m.url ? `${ m.url }#issuecomment-${ c.id }` : ''));
+  }
+
+  return out;
 }
 
-/** Comments on a PR by people other than its author, after a moment, each with whether the author answered. */
-function feedback(d: Json, since: number): Comment[] {
-  const m = d.meta || {};
-  const all = allComments(d);
-  const mine = all.filter((c) => c.author === m.author);
-
-  return all
-    .filter((c) => c.author && c.author !== m.author && (Date.parse(c.at) || 0) > since)
-    .sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0))
-    .map((c) => ({
-      ...c, answered: mine.some((r) => (r.raw.inReplyTo && r.raw.inReplyTo === c.id) || (Date.parse(r.at) || 0) > (Date.parse(c.at) || 0)),
-    }));
+/**
+ * The threads that wait on the viewer, after a moment: on a fix, someone other than the author
+ * spoke last (the author is the viewer); on a review, the author spoke last (the viewer is the
+ * reviewer). `since` keeps only threads with a word after it.
+ */
+function feedback(d: Json, since: number, viewerIsAuthor = true): Comment[] {
+  return threads(d)
+    .filter((c) => (Date.parse(c.at) || 0) > since)
+    .map((c) => ({ ...c, answered: viewerIsAuthor ? c.lastByAuthor : !c.lastByAuthor }));
 }
 
 const pushedAt = (d: Json) => Math.max(0, ...(d.commits || []).map((c: Json) => Date.parse(c.date || '') || 0));
@@ -297,7 +372,7 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
 
 function compose(status: WorkspaceStatus, stage: Stage, report: Awaited<ReturnType<typeof latestAgentReport>>, branch: Branch | null, media: Awaited<ReturnType<typeof readMedia>>, d: Json): EvidenceSection[] {
   const sections: EvidenceSection[] = [];
-  const reportSection = (title = 'Agent\'s report') => report && sections.push({ title, items: [{ kind: 'text', text: report.text, at: report.at }] });
+  const reportSection = (title = 'Agent\'s report') => report && sections.push({ title, items: [{ kind: 'text', text: report.text, html: renderMd(report.text), at: report.at }] });
   const mediaSection = (title: string, items: ReturnType<typeof mediaUnder>) => items.length && sections.push({ title, items: [{ kind: 'media', items }] });
   const branchSection = () => {
     if (!branch) {
@@ -315,7 +390,7 @@ function compose(status: WorkspaceStatus, stage: Stage, report: Awaited<ReturnTy
     }
     sections.push({ title: 'The change', items });
   };
-  const prSection = () => d && sections.push({ title: 'Pull request', items: [{ kind: 'kv', rows: prRows(d) }, { kind: 'text', text: String(d.meta?.body || '').slice(0, 1200) || '(no description)' }] });
+  const prSection = () => d && sections.push({ title: 'Pull request', items: [{ kind: 'kv', rows: prRows(d) }, { kind: 'text', text: String(d.meta?.body || ''), html: renderMd(String(d.meta?.body || '') || '_(no description)_') }] });
 
   if (status.kind === 'fix') {
     switch (stage) {
@@ -337,15 +412,16 @@ function compose(status: WorkspaceStatus, stage: Stage, report: Awaited<ReturnTy
     case 'review':
       prSection();
       if (d) {
-        const fb = feedback(d, 0);
+        const fb = feedback(d, 0, true);
 
         sections.push({ title: 'Reviewers', items: fb.length ? [{ kind: 'comments', items: fb }] : [{ kind: 'empty', text: 'Nobody has commented yet.' }] });
       }
       break;
     case 'feedback':
       if (d) {
-        const fresh = feedback(d, pushedAt(d));
-        const older = feedback(d, 0).filter((c) => !fresh.includes(c));
+        const all = feedback(d, 0, true);
+        const fresh = all.filter((c) => (Date.parse(c.at) || 0) > pushedAt(d));
+        const older = all.filter((c) => !fresh.includes(c));
 
         sections.push({ title: 'Since your last push', items: fresh.length ? [{ kind: 'comments', items: fresh }] : [{ kind: 'empty', text: 'Nothing new since the last push.' }] });
         if (older.length) {
@@ -368,9 +444,14 @@ function compose(status: WorkspaceStatus, stage: Stage, report: Awaited<ReturnTy
     const files: Json[] = d?.files || [];
     const findings = (list: Json[]) => ({
       kind: 'comments' as const,
-      items: list.map((c): Comment => ({
-        id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', body: String(c.body || '').slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, thread: [], context: hunkAround(files.find((f) => f.path === c.path)?.patch || '', Number(c.line) || 0, c.side),
-      })),
+      items: list.map((c): Comment => {
+        const file = files.findIndex((f) => f.path === c.path);
+        const body = String(c.body || '');
+
+        return {
+          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderMd(body), at: c.created_at || '' }], context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), url: '', order: file < 0 ? 9999 : file,
+        };
+      }).sort((a, b) => a.order - b.order || a.line - b.line),
     });
 
     switch (stage) {
@@ -392,9 +473,8 @@ function compose(status: WorkspaceStatus, stage: Stage, report: Awaited<ReturnTy
         const newCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > submittedAt).map((c: Json) => ({
           sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
         }));
-        const replies = allComments(d)
-          .filter((c) => c.author === d.meta?.author && (Date.parse(c.at) || 0) > submittedAt)
-          .map((c) => ({ ...c, answered: true }));
+        // Threads the developer spoke in since the review, in the PR's order.
+        const replies = feedback(d, submittedAt, false).filter((c) => c.thread.some((t) => t.author && (Date.parse(t.at) || 0) > submittedAt));
 
         sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits }] : []), ...(replies.length ? [{ kind: 'comments' as const, items: replies }] : []), ...(!newCommits.length && !replies.length ? [{ kind: 'empty' as const, text: 'No new commits or replies.' }] : [])] });
       }
@@ -430,5 +510,30 @@ export function diffRows(patch: string): { cls: string; text: string }[] {
     cls: /^\+\+\+ |^--- /.test(text) ? 'file' : text.startsWith('+') ? 'add' : text.startsWith('-') ? 'del' : text.startsWith('@@') ? 'hunk' : /^diff --git/.test(text) ? 'file' : '',
     text,
   }));
+}
+
+/**
+ * A commit's diff, file by file, as rows the page draws. From GitHub when the commit is on a
+ * PR - the checkout of a review workspace can be behind the branch - and from the checkout
+ * otherwise. Bounded per file.
+ */
+export async function commitFiles(workspace: string, pr: number, sha: string): Promise<{ path: string; rows: CodeRow[]; status: string }[]> {
+  if (pr) {
+    const diff = await commitsDiff(pr, [sha]).catch(() => null);
+    const files: Json[] = diff?.files || [];
+
+    if (files.length) {
+      return files.slice(0, 40).map((f) => ({ path: f.path || f.filename || '', rows: fileRows(f.path || f.filename || '', f.patch || '', 300), status: f.status || '' }));
+    }
+  }
+  const raw = await commitPatch(workspace, sha);
+  const out: { path: string; rows: CodeRow[]; status: string }[] = [];
+  const parts = raw.split(/^diff --git a\/(\S+) b\/\S+$/m);
+
+  for (let i = 1; i < parts.length; i += 2) {
+    out.push({ path: parts[i], rows: fileRows(parts[i], parts[i + 1] || '', 300), status: '' });
+  }
+
+  return out;
 }
 
