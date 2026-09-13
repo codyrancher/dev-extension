@@ -74,6 +74,9 @@ export default {
       /** The same for the status: one read at a time, and an older one landing cannot regress the stage. */
       statusSeq:   0,
       statusBusy:  false,
+      /** A GitHub read that failed is tried again soon: the in-cluster API restarts for a minute after a publish. */
+      statusRetry: 0,
+      statusRetryTimer: 0,
       busy:        '',
       error:       '',
       notice:      '',
@@ -232,6 +235,7 @@ export default {
 
   beforeUnmount() {
     this.timers.forEach((t) => clearInterval(t));
+    clearTimeout(this.statusRetryTimer);
   },
 
   methods: {
@@ -266,7 +270,10 @@ export default {
         this.status = next;
         console.debug(`[rail] status ${ this.status.stage } in ${ Date.now() - t0 } ms (github=${ github })`); // eslint-disable-line no-console
         // A read that worked clears what an earlier one said: a dev-api restart is a minute.
-        this.error = '';
+        if (github) {
+          this.error = '';
+          this.statusRetry = 0;
+        }
         this.loadConversations();
         // A stage that moved on is what the page is for; follow it unless a past one is open.
         if (before !== this.status.stage && !this.lookingBack) {
@@ -274,7 +281,14 @@ export default {
           this.refreshEvidence();
         }
       } catch (e) {
+        console.debug(`[rail] status read failed (github=${ github }): ${ e?.message || e }`); // eslint-disable-line no-console
         this.error = e?.message || String(e);
+        // Tried again in a moment, a few times: the failure is usually the API's own restart.
+        if (github && this.statusRetry < 4) {
+          this.statusRetry++;
+          clearTimeout(this.statusRetryTimer);
+          this.statusRetryTimer = setTimeout(() => this.refreshStatus(true), 5000 * this.statusRetry);
+        }
       } finally {
         if (seq === this.statusSeq) {
           this.statusBusy = false;
@@ -302,7 +316,6 @@ export default {
         });
         if (current()) {
           this.evidence = sections;
-          this.error = '';
         }
       } catch (e) {
         if (current()) {
