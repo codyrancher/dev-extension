@@ -257,6 +257,13 @@ export function noteCoded(name: string, value: boolean): void {
   coded[name] = value;
 }
 
+/** What was last read for a workspace, if anything - the page draws this first and reads behind it. */
+export function knownStatus(name: string): WorkspaceStatus | null {
+  const known = statuses.get(name);
+
+  return known ? { ...known, agent: agents[name] || known.agent } : null;
+}
+
 /**
  * One workspace's status, read now rather than on the sidebar's schedule: the page that shows
  * the stage wants it fresh on open, and after an action that changes it.

@@ -13,7 +13,9 @@ import WorkspacePr from './WorkspacePr.vue';
 import WorkspaceBrowser from './WorkspaceBrowser.vue';
 import WorkspaceShare from './WorkspaceShare.vue';
 import DevModal from './DevModal.vue';
-import { readStatusNow, noteCoded, agentLabel } from '../workspace-status';
+import {
+  readStatusNow, knownStatus, noteCoded, agentLabel
+} from '../workspace-status';
 import {
   stepsFor, gatherEvidence, primaryLink, ago, commitPatch, diffRows
 } from '../workspace-rail';
@@ -215,10 +217,16 @@ export default {
     ago,
 
     async load() {
-      this.loading = true;
+      // What the sidebar last read is drawn now; the fresh read lands behind it. The page is
+      // never blank for GitHub's sake.
+      this.status = knownStatus(this.workspace.name);
+      this.loading = !this.status;
+      if (this.status) {
+        this.refreshEvidence();
+      }
       await this.refreshStatus();
-      await this.refreshEvidence();
       this.loading = false;
+      await this.refreshEvidence();
     },
 
     async refreshStatus() {
@@ -243,13 +251,22 @@ export default {
         return;
       }
       this.reading = true;
+      const stage = this.shown;
+
       try {
-        const sections = await gatherEvidence(this.workspace.name, this.status, this.shown);
+        const sections = await gatherEvidence(this.workspace.name, this.status, stage, (partial) => {
+          // Each source as it lands, unless the person has moved to another stage meanwhile.
+          if (this.shown === stage) {
+            this.evidence = partial;
+          }
+        });
         const branch = sections.find((s) => s.title === 'The change');
 
         // The status module learns from here whether the branch has commits (assess vs code).
         noteCoded(this.workspace.name, !!branch);
-        this.evidence = sections;
+        if (this.shown === stage) {
+          this.evidence = sections;
+        }
         this.error = '';
       } catch (e) {
         this.error = e?.message || String(e);
@@ -439,7 +456,7 @@ export default {
     >
       Reading where this workspace is…
     </div>
-    <template v-else-if="status && steps.length">
+    <template v-if="status && steps.length">
       <div class="workspace-rail__head">
         <div class="workspace-rail__title">
           <span class="workspace-rail__name">{{ workspace.name }}</span>
@@ -730,49 +747,7 @@ export default {
           </div>
         </section>
 
-        <!--
-          Column two: the conversations themselves - the standard terminal and chat, with the
-          list of this workspace's conversations - so the agent is talked to right here. The
-          other views open over the page (DevModal) rather than instead of it.
-        -->
-        <section
-          ref="pane"
-          class="workspace-rail__col workspace-rail__col--pane"
-        >
-          <div class="workspace-rail__col-head">
-            <h3 class="workspace-rail__col-title">Conversations</h3>
-            <div class="workspace-rail__views">
-              <button
-                type="button"
-                class="workspace-rail__back"
-                @click="openTab('review')"
-              >Review the branch</button>
-              <button
-                v-if="status.pr || issue"
-                type="button"
-                class="workspace-rail__back"
-                @click="openTab('pr')"
-              >PR file by file</button>
-              <button
-                type="button"
-                class="workspace-rail__back"
-                @click="openTab('browser')"
-              >Browser</button>
-              <button
-                type="button"
-                class="workspace-rail__back"
-                @click="openTab('share')"
-              >Share</button>
-            </div>
-          </div>
-          <WorkspaceConversations
-            class="workspace-rail__conversations"
-            :workspace="workspace"
-            :log-tail="logTail"
-          />
-        </section>
       </div>
-
       <DevModal
         v-if="modal"
         :title="modalTitle()"
@@ -801,12 +776,52 @@ export default {
       </DevModal>
     </template>
     <div
-      v-else
+      v-else-if="!loading && !(status && steps.length)"
       class="workspace-rail__empty workspace-rail__empty--page"
     >
       This workspace is not named for an issue or a PR, so it has no stages.
-      <a @click.prevent="openTab('conversations')">Open its conversations instead.</a>
     </div>
+    <!--
+      The conversations themselves - the standard terminal and chat, with the list of this
+      workspace's conversations - so the agent is talked to right here, whatever the status
+      reads say. The other views open over the page (DevModal) rather than instead of it.
+    -->
+    <section
+      ref="pane"
+      class="workspace-rail__col workspace-rail__col--pane"
+    >
+      <div class="workspace-rail__col-head">
+        <h3 class="workspace-rail__col-title">Conversations</h3>
+        <div class="workspace-rail__views">
+          <button
+            type="button"
+            class="workspace-rail__back"
+            @click="openTab('review')"
+          >Review the branch</button>
+          <button
+            v-if="(status && status.pr) || issue"
+            type="button"
+            class="workspace-rail__back"
+            @click="openTab('pr')"
+          >PR file by file</button>
+          <button
+            type="button"
+            class="workspace-rail__back"
+            @click="openTab('browser')"
+          >Browser</button>
+          <button
+            type="button"
+            class="workspace-rail__back"
+            @click="openTab('share')"
+          >Share</button>
+        </div>
+      </div>
+      <WorkspaceConversations
+        class="workspace-rail__conversations"
+        :workspace="workspace"
+        :log-tail="logTail"
+      />
+    </section>
   </div>
 </template>
 
@@ -983,15 +998,13 @@ export default {
   // The two columns
   &__columns {
     display:               grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     gap:                   16px;
     align-items:           start;
   }
 
   &__col--pane {
-    position: sticky;
-    top:      0;
-    padding:  10px 12px;
+    padding: 10px 12px;
   }
 
   &__conversations {
