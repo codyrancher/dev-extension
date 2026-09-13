@@ -172,6 +172,55 @@ export async function conversationStates(): Promise<ConversationState[]> {
   return out;
 }
 
+export interface AgentReport {
+  at: string;
+  text: string;
+  /** The conversation it came from, so the page can open it. */
+  conversation: string;
+}
+
+/**
+ * The last thing the agent said in a workspace, out of the newest transcript of its
+ * conversations: the report a skill ends with, or wherever it has got to. Read in the agent
+ * pod with node, which is there, rather than pulling a transcript that can be many megabytes
+ * through an exec. Meta lines and subagents' side chains are skipped.
+ */
+export async function latestAgentReport(workspace: string): Promise<AgentReport | null> {
+  const api = await requireAgents();
+  const pod = await api.agent.pod().catch(() => null);
+
+  if (!pod) {
+    return null;
+  }
+  const dir = `${ AGENT_HOME }/.claude/projects/${ workspaceWorkdir(workspace).replace(/\//g, '-') }`;
+  const js = [
+    'const fs=require("fs");const f=process.argv[1];const lines=fs.readFileSync(f,"utf8").split("\\n");',
+    'let out=null;for(let i=lines.length-1;i>=0&&!out;i--){let e;try{e=JSON.parse(lines[i])}catch{continue}',
+    'if(e.type!=="assistant"||e.isSidechain||e.isMeta)continue;const c=e.message&&e.message.content;if(!Array.isArray(c))continue;',
+    'const t=c.filter(b=>b.type==="text"&&b.text&&b.text.trim()&&!/^</.test(b.text.trim())).map(b=>b.text).join("\\n").trim();',
+    'if(t)out={at:e.timestamp||"",text:t.slice(0,2000)}}',
+    'process.stdout.write(JSON.stringify(out));',
+  ].join('');
+  const script = [
+    'export PATH=/workspace/.home/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH',
+    `f=$(ls -t ${ dir }/*.jsonl 2>/dev/null | head -1)`,
+    '[ -n "$f" ] || { echo null; exit 0; }',
+    `echo "@@FILE $f"`,
+    `node -e '${ js.replace(/'/g, "'\\''") }' "$f"`,
+  ].join('\n');
+  const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script]).catch(() => '');
+  const file = /@@FILE (\S+)/.exec(out)?.[1] || '';
+  const json = out.slice(out.lastIndexOf('\n') + 1).trim();
+
+  try {
+    const parsed = JSON.parse(json || 'null');
+
+    return parsed ? { ...parsed, conversation: file.split('/').pop()?.replace(/\.jsonl$/, '') || '' } : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The conversations that have a prompt queued and no pane yet - registered, told what to do,
  * and never started.

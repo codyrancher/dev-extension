@@ -54,3 +54,15 @@ export function lastTab(): string {
 export function rememberTab(tab: string): void {
   write(TAB_KEY, tab);
 }
+
+const VIEW_KEY = 'dev-extension.workspace-view';
+
+/** How a workspace page opens: the stage rail (the default) or the tabs. */
+export function workspaceView(): 'rail' | 'tabs' {
+  return read(VIEW_KEY) === 'tabs' ? 'tabs' : 'rail';
+}
+
+export function rememberWorkspaceView(view: 'rail' | 'tabs'): void {
+  write(VIEW_KEY, view);
+}
+
