@@ -48,8 +48,8 @@ export type EvidenceItem =
   | { kind: 'text'; text: string; at?: string; who?: string }
   | { kind: 'kv'; rows: { k: string; v: string; tone?: string }[] }
   | { kind: 'media'; items: { label: string; url: string; video: boolean; at: string }[] }
-  | { kind: 'comments'; items: { who: string; where: string; body: string; at: string; answered: boolean }[] }
-  | { kind: 'commits'; items: { sha: string; message: string; who: string; at: string }[] }
+  | { kind: 'comments'; items: Comment[] }
+  | { kind: 'commits'; pr: number; items: { sha: string; message: string; who: string; at: string }[] }
   | { kind: 'files'; items: { path: string; note: string }[] }
   | { kind: 'links'; items: { label: string; url: string }[] }
   | { kind: 'empty'; text: string };
@@ -57,6 +57,57 @@ export type EvidenceItem =
 export interface EvidenceSection {
   title: string;
   items: EvidenceItem[];
+}
+
+export interface Comment {
+  id: number | string;
+  who: string;
+  where: string;
+  body: string;
+  at: string;
+  answered: boolean;
+  /** The chain this comment is in, oldest first, this one included; the code it is on. */
+  thread: { who: string; body: string; at: string }[];
+  context: string;
+}
+
+/**
+ * The lines of a file's patch around one line of it - what a review comment is about. New-side
+ * numbers for a comment on the right, old-side for one on the left. '' when the line is not
+ * in the patch (a comment on an unchanged line, or a file that has since changed).
+ */
+export function hunkAround(patch: string, line: number, side = 'RIGHT'): string {
+  if (!patch || !line) {
+    return '';
+  }
+  const rows: { no: number; text: string }[] = [];
+  let oldNo = 0;
+  let newNo = 0;
+
+  for (const l of patch.split('\n')) {
+    const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+
+    if (h) {
+      oldNo = Number(h[1]);
+      newNo = Number(h[2]);
+      rows.push({ no: -1, text: l });
+      continue;
+    }
+    if (l.startsWith('+')) {
+      rows.push({ no: side === 'LEFT' ? -1 : newNo, text: l });
+      newNo++;
+    } else if (l.startsWith('-')) {
+      rows.push({ no: side === 'LEFT' ? oldNo : -1, text: l });
+      oldNo++;
+    } else {
+      rows.push({ no: side === 'LEFT' ? oldNo : newNo, text: l });
+      oldNo++;
+      newNo++;
+    }
+  }
+  const at = rows.findIndex((r) => r.no === line);
+
+  return at < 0 ? '' : rows.slice(Math.max(0, at - 8), at + 6).map((r) => r.text).join('\n');
 }
 
 interface Branch {
@@ -165,20 +216,53 @@ function prRows(d: Json): { k: string; v: string; tone?: string }[] {
   return rows;
 }
 
-/** Comments on a PR by people other than its author, after a moment, each with whether the author answered. */
-function feedback(d: Json, since: number): { who: string; where: string; body: string; at: string; answered: boolean }[] {
-  const m = d.meta || {};
-  const all: Json[] = [
-    ...(d.reviewComments || []).map((c: Json) => ({ ...c, where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'review' })),
-    ...(d.discussion || []).map((c: Json) => ({ ...c, where: 'discussion' })),
+/** Every comment on a PR with its chain and the code it is on; the raw material for the lists below. */
+function allComments(d: Json): (Comment & { author: string; raw: Json })[] {
+  const files: Json[] = d.files || [];
+  const review: Json[] = (d.reviewComments || []).filter((c: Json) => !c.pending);
+  const rootOf = (c: Json): Json => {
+    let cur = c;
+
+    for (let i = 0; i < 50 && cur.inReplyTo; i++) {
+      const parent = review.find((r) => r.id === cur.inReplyTo);
+
+      if (!parent) {
+        break;
+      }
+      cur = parent;
+    }
+
+    return cur;
+  };
+  const threadOf = (c: Json) => {
+    const root = rootOf(c);
+    const members = review.filter((r) => r.id === root.id || rootOf(r).id === root.id);
+
+    return members
+      .sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0))
+      .map((r) => ({ who: r.author || '?', body: String(r.body || ''), at: r.createdAt || '' }));
+  };
+  const toComment = (c: Json, where: string, thread: Comment['thread'], context: string) => ({
+    id: c.id, who: c.author || '?', where, body: String(c.body || '').slice(0, 400), at: c.createdAt || '', answered: false, thread, context, author: c.author || '', raw: c,
+  });
+
+  return [
+    ...review.map((c) => toComment(c, c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'review', threadOf(c), hunkAround(files.find((f) => f.path === c.path)?.patch || '', Number(c.line) || 0, c.side))),
+    ...(d.discussion || []).map((c: Json) => toComment(c, 'discussion', [], '')),
   ];
+}
+
+/** Comments on a PR by people other than its author, after a moment, each with whether the author answered. */
+function feedback(d: Json, since: number): Comment[] {
+  const m = d.meta || {};
+  const all = allComments(d);
   const mine = all.filter((c) => c.author === m.author);
 
   return all
-    .filter((c) => c.author && c.author !== m.author && !c.pending && (Date.parse(c.createdAt) || 0) > since)
-    .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))
+    .filter((c) => c.author && c.author !== m.author && (Date.parse(c.at) || 0) > since)
+    .sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0))
     .map((c) => ({
-      who: c.author, where: c.where, body: String(c.body || '').slice(0, 400), at: c.createdAt, answered: mine.some((r) => (r.inReplyTo && r.inReplyTo === c.id) || (Date.parse(r.createdAt) || 0) > (Date.parse(c.createdAt) || 0)),
+      ...c, answered: mine.some((r) => (r.raw.inReplyTo && r.raw.inReplyTo === c.id) || (Date.parse(r.at) || 0) > (Date.parse(c.at) || 0)),
     }));
 }
 
@@ -206,7 +290,7 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
     const items: EvidenceItem[] = [];
 
     if (branch.commits.length) {
-      items.push({ kind: 'commits', items: branch.commits });
+      items.push({ kind: 'commits', pr: status.pr, items: branch.commits });
     }
     items.push({ kind: 'kv', rows: [{ k: 'Branch', v: branch.branch }, { k: 'Diff', v: branch.stat || 'no changes over upstream' }, { k: 'Tests', v: tests.length ? tests.join(', ') : 'none added', tone: tests.length ? 'ok' : 'warn' }] });
     if (branch.files.length) {
@@ -264,10 +348,11 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
     const pending = local.filter((c) => !c.submitted_at);
     const submitted = local.filter((c) => c.submitted_at);
     const submittedAt = Math.max(0, ...submitted.map((c) => Date.parse(c.submitted_at) || 0));
+    const files: Json[] = d?.files || [];
     const findings = (list: Json[]) => ({
       kind: 'comments' as const,
-      items: list.map((c) => ({
-        who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', body: String(c.body || '').slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at,
+      items: list.map((c): Comment => ({
+        id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', body: String(c.body || '').slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, thread: [], context: hunkAround(files.find((f) => f.path === c.path)?.patch || '', Number(c.line) || 0, c.side),
       })),
     });
 
@@ -288,15 +373,13 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
     case 'response':
       if (d) {
         const newCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > submittedAt).map((c: Json) => ({
-          sha: String(c.sha || '').slice(0, 7), message: c.message, who: c.author, at: c.date,
+          sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
         }));
-        const replies = [...(d.reviewComments || []), ...(d.discussion || [])]
-          .filter((c: Json) => c.author === d.meta?.author && (Date.parse(c.createdAt) || 0) > submittedAt)
-          .map((c: Json) => ({
-            who: c.author, where: c.path ? `${ c.path }:${ c.line || '' }` : 'discussion', body: String(c.body || '').slice(0, 400), at: c.createdAt, answered: true,
-          }));
+        const replies = allComments(d)
+          .filter((c) => c.author === d.meta?.author && (Date.parse(c.at) || 0) > submittedAt)
+          .map((c) => ({ ...c, answered: true }));
 
-        sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, items: newCommits }] : []), ...(replies.length ? [{ kind: 'comments' as const, items: replies }] : []), ...(!newCommits.length && !replies.length ? [{ kind: 'empty' as const, text: 'No new commits or replies.' }] : [])] });
+        sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits }] : []), ...(replies.length ? [{ kind: 'comments' as const, items: replies }] : []), ...(!newCommits.length && !replies.length ? [{ kind: 'empty' as const, text: 'No new commits or replies.' }] : [])] });
       }
       prSection();
       break;
@@ -313,3 +396,22 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
 export function primaryLink(status: WorkspaceStatus): string {
   return (status.links.find((l) => l.label.startsWith('PR')) || status.links[0])?.url || `https://github.com/${ DEFAULT_REPO }`;
 }
+
+/** One commit's patch, out of the checkout: what a commit row expands to. Bounded. */
+export async function commitPatch(workspace: string, sha: string): Promise<string> {
+  if (!/^[0-9a-f]{6,40}$/i.test(sha)) {
+    return '';
+  }
+  const out = await readInWorkspace(workspace, `cd $WS/dashboard 2>/dev/null || exit 0; git show --no-color --format='%H%n%an · %aI%n%n%B%n---' --stat=100 -p ${ sha } 2>/dev/null | head -1500`);
+
+  return out.trim();
+}
+
+/** A patch as rows the page colours: the first character says which kind each line is. */
+export function diffRows(patch: string): { cls: string; text: string }[] {
+  return (patch || '').split('\n').map((text) => ({
+    cls: /^\+\+\+ |^--- /.test(text) ? 'file' : text.startsWith('+') ? 'add' : text.startsWith('-') ? 'del' : text.startsWith('@@') ? 'hunk' : /^diff --git/.test(text) ? 'file' : '',
+    text,
+  }));
+}
+

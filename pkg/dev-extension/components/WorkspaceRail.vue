@@ -7,9 +7,15 @@
 // to afterwards. Nothing runs an agent any other way.
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
+import WorkspaceConversations from './WorkspaceConversations.vue';
+import WorkspaceReview from './WorkspaceReview.vue';
+import WorkspacePr from './WorkspacePr.vue';
+import WorkspaceBrowser from './WorkspaceBrowser.vue';
+import WorkspaceShare from './WorkspaceShare.vue';
+import DevModal from './DevModal.vue';
 import { readStatusNow, noteCoded, agentLabel } from '../workspace-status';
 import {
-  stepsFor, gatherEvidence, primaryLink, ago
+  stepsFor, gatherEvidence, primaryLink, ago, commitPatch, diffRows
 } from '../workspace-rail';
 import {
   listConversations, startConversation, queuePrompt
@@ -26,7 +32,9 @@ const EVIDENCE_MS = 60000;
 export default {
   name: 'WorkspaceRail',
 
-  components: { Banner, RcButton },
+  components: {
+    Banner, RcButton, WorkspaceConversations, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal
+  },
 
   props: {
     workspace: {
@@ -40,6 +48,10 @@ export default {
     issue: {
       type:    Number,
       default: 0,
+    },
+    logTail: {
+      type:    String,
+      default: '',
     },
   },
 
@@ -56,9 +68,13 @@ export default {
       busy:        '',
       error:       '',
       notice:      '',
-      ask:         '',
-      asking:      false,
       timers:      [],
+      /** The view open over the page: review, pr, browser or share. */
+      modal:       '',
+      /** Rows opened to look closer: commits (their patch, read once) and comments (their chain and code). */
+      openCommits: {},
+      patches:     {},
+      openComments: {},
     };
   },
 
@@ -210,6 +226,8 @@ export default {
         const before = this.status?.stage;
 
         this.status = await readStatusNow(this.workspace.name);
+        // A read that worked clears what an earlier one said: a dev-api restart is a minute.
+        this.error = '';
         // A stage that moved on is what the page is for; follow it unless a past one is open.
         if (before && before !== this.status.stage && !this.lookingBack) {
           this.viewing = '';
@@ -232,6 +250,7 @@ export default {
         // The status module learns from here whether the branch has commits (assess vs code).
         noteCoded(this.workspace.name, !!branch);
         this.evidence = sections;
+        this.error = '';
       } catch (e) {
         this.error = e?.message || String(e);
       } finally {
@@ -283,12 +302,40 @@ export default {
       window.open(url, '_blank', 'noopener');
     },
 
+    /** The conversation is on the page; every other view opens over it. */
     openTab(name) {
-      this.$emit('open-tab', name);
+      if (name === 'conversations') {
+        this.$refs.pane?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+
+        return;
+      }
+      this.modal = name;
     },
 
     focusAsk() {
-      this.$refs.ask?.focus();
+      this.openTab('conversations');
+    },
+
+    modalTitle() {
+      return { review: 'Review the branch', pr: `PR${ this.status?.pr ? ` #${ this.status.pr }` : '' }`, browser: 'Browser', share: 'Share a build' }[this.modal] || '';
+    },
+
+    async toggleCommit(c) {
+      const open = !this.openCommits[c.sha];
+
+      this.openCommits = { ...this.openCommits, [c.sha]: open };
+      if (open && !(c.sha in this.patches)) {
+        this.patches = { ...this.patches, [c.sha]: 'Reading…' };
+        this.patches = { ...this.patches, [c.sha]: (await commitPatch(this.workspace.name, c.sha).catch((e) => `Could not read the commit: ${ e?.message || e }`)) || 'Nothing to show.' };
+      }
+    },
+
+    toggleComment(c) {
+      this.openComments = { ...this.openComments, [c.id]: !this.openComments[c.id] };
+    },
+
+    rows(patch) {
+      return diffRows(patch);
     },
 
     /** The newest conversation of the workspace, or a new one: where a prompt goes. */
@@ -370,24 +417,6 @@ export default {
       this.$router.push({ name: WORKSPACES_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } });
     },
 
-    async sendAsk() {
-      const text = this.ask.trim();
-
-      if (!text || this.asking) {
-        return;
-      }
-      this.asking = true;
-      this.error = '';
-      try {
-        await this.say('', text);
-        this.ask = '';
-        this.notice = 'Sent to the agent; the answer is in the conversation.';
-      } catch (e) {
-        this.error = e?.message || String(e);
-      } finally {
-        this.asking = false;
-      }
-    },
   },
 };
 </script>
@@ -561,12 +590,34 @@ export default {
               </dl>
               <ul
                 v-else-if="item.kind === 'commits'"
-                class="workspace-rail__list"
+                class="workspace-rail__list workspace-rail__list--plain"
               >
                 <li
                   v-for="c in item.items"
                   :key="c.sha"
-                ><code>{{ c.sha }}</code> {{ c.message }} <span class="workspace-rail__when">{{ c.who }} · {{ ago(c.at) }}</span></li>
+                  class="workspace-rail__commit"
+                >
+                  <button
+                    type="button"
+                    class="workspace-rail__row-btn"
+                    :title="openCommits[c.sha] ? 'Hide the change' : 'Show the change'"
+                    @click="toggleCommit(c)"
+                  >
+                    <i
+                      class="icon"
+                      :class="openCommits[c.sha] ? 'icon-chevron-down' : 'icon-chevron-right'"
+                    /><code>{{ c.sha.slice(0, 7) }}</code> {{ c.message }} <span class="workspace-rail__when">{{ c.who }} · {{ ago(c.at) }}</span>
+                  </button>
+                  <pre
+                    v-if="openCommits[c.sha]"
+                    class="workspace-rail__diff"
+                  ><span
+                    v-for="(r, k) in rows(patches[c.sha] || '')"
+                    :key="k"
+                    :class="r.cls ? `workspace-rail__diff--${ r.cls }` : ''"
+                  >{{ r.text }}
+</span></pre>
+                </li>
               </ul>
               <ul
                 v-else-if="item.kind === 'files'"
@@ -609,15 +660,54 @@ export default {
               >
                 <div
                   v-for="(c, j) in item.items"
-                  :key="j"
+                  :key="c.id || j"
                   class="workspace-rail__comment"
                   :class="{ 'workspace-rail__comment--open': !c.answered }"
                 >
-                  <div class="workspace-rail__comment-head"><strong>{{ c.who }}</strong><code>{{ c.where }}</code><span class="workspace-rail__when">{{ ago(c.at) }}</span><span
+                  <button
+                    type="button"
+                    class="workspace-rail__comment-head workspace-rail__row-btn"
+                    :title="c.context || c.thread.length > 1 ? 'Show the code and the chain' : 'Nothing more to show'"
+                    @click="toggleComment(c)"
+                  ><i
+                    class="icon"
+                    :class="openComments[c.id] ? 'icon-chevron-down' : 'icon-chevron-right'"
+                  /><strong>{{ c.who }}</strong><code>{{ c.where }}</code><span class="workspace-rail__when">{{ ago(c.at) }}</span><span
+                    v-if="c.thread.length > 1"
+                    class="workspace-rail__tag"
+                  >{{ c.thread.length }} in chain</span><span
                     v-if="!c.answered"
                     class="workspace-rail__tag workspace-rail__tag--open"
-                  >open</span></div>
+                  >open</span></button>
                   <div class="workspace-rail__comment-body">{{ c.body }}</div>
+                  <div
+                    v-if="openComments[c.id]"
+                    class="workspace-rail__comment-more"
+                  >
+                    <pre
+                      v-if="c.context"
+                      class="workspace-rail__diff"
+                    ><span
+                      v-for="(r, k) in rows(c.context)"
+                      :key="k"
+                      :class="r.cls ? `workspace-rail__diff--${ r.cls }` : ''"
+                    >{{ r.text }}
+</span></pre>
+                    <p
+                      v-else
+                      class="workspace-rail__empty"
+                    >The line is not in the PR's diff any more.</p>
+                    <div
+                      v-if="c.thread.length > 1"
+                      class="workspace-rail__thread"
+                    >
+                      <div
+                        v-for="(t, k) in c.thread"
+                        :key="k"
+                        class="workspace-rail__thread-msg"
+                      ><span class="workspace-rail__comment-head"><strong>{{ t.who }}</strong><span class="workspace-rail__when">{{ ago(t.at) }}</span></span><span class="workspace-rail__comment-body">{{ t.body }}</span></div>
+                    </div>
+                  </div>
                 </div>
               </div>
               <p
@@ -640,45 +730,75 @@ export default {
           </div>
         </section>
 
-        <!-- Column two: the agent, on a leash. Every message here is a conversation prompt. -->
-        <section class="workspace-rail__col workspace-rail__col--tools">
+        <!--
+          Column two: the conversations themselves - the standard terminal and chat, with the
+          list of this workspace's conversations - so the agent is talked to right here. The
+          other views open over the page (DevModal) rather than instead of it.
+        -->
+        <section
+          ref="pane"
+          class="workspace-rail__col workspace-rail__col--pane"
+        >
           <div class="workspace-rail__col-head">
-            <h3 class="workspace-rail__col-title">Ask the agent</h3>
+            <h3 class="workspace-rail__col-title">Conversations</h3>
+            <div class="workspace-rail__views">
+              <button
+                type="button"
+                class="workspace-rail__back"
+                @click="openTab('review')"
+              >Review the branch</button>
+              <button
+                v-if="status.pr || issue"
+                type="button"
+                class="workspace-rail__back"
+                @click="openTab('pr')"
+              >PR file by file</button>
+              <button
+                type="button"
+                class="workspace-rail__back"
+                @click="openTab('browser')"
+              >Browser</button>
+              <button
+                type="button"
+                class="workspace-rail__back"
+                @click="openTab('share')"
+              >Share</button>
+            </div>
           </div>
-          <p class="workspace-rail__detail">Goes to this workspace's newest conversation as the next prompt, or opens one. The answer shows up in Conversations.</p>
-          <textarea
-            ref="ask"
-            v-model="ask"
-            class="workspace-rail__ask"
-            rows="4"
-            placeholder="e.g. Keep the h2 for the section and demote the card titles instead, then push."
-            @keydown.meta.enter.prevent="sendAsk"
-            @keydown.ctrl.enter.prevent="sendAsk"
+          <WorkspaceConversations
+            class="workspace-rail__conversations"
+            :workspace="workspace"
+            :log-tail="logTail"
           />
-          <div class="workspace-rail__buttons">
-            <RcButton
-              variant="secondary"
-              :disabled="asking || !ask.trim()"
-              @click="sendAsk"
-            >
-              <i
-                v-if="asking"
-                class="icon icon-spinner icon-spin"
-              />
-              Send to the agent
-            </RcButton>
-          </div>
-          <div class="workspace-rail__section">
-            <h4 class="workspace-rail__section-title">Other views</h4>
-            <ul class="workspace-rail__list">
-              <li><a @click.prevent="openTab('review')">Review the branch's diff and comment on it</a></li>
-              <li v-if="status.pr || issue"><a @click.prevent="openTab('pr')">The PR, file by file</a></li>
-              <li><a @click.prevent="openTab('browser')">The workspace's browser</a></li>
-              <li><a @click.prevent="openTab('share')">Share a build</a></li>
-            </ul>
-          </div>
         </section>
       </div>
+
+      <DevModal
+        v-if="modal"
+        :title="modalTitle()"
+        @close="modal = ''"
+      >
+        <WorkspaceReview
+          v-if="modal === 'review'"
+          :workspace="workspace"
+        />
+        <WorkspacePr
+          v-else-if="modal === 'pr'"
+          :workspace="workspace"
+          :pr="pr"
+          :issue="issue"
+        />
+        <WorkspaceBrowser
+          v-else-if="modal === 'browser'"
+          :workspace="workspace"
+        />
+        <WorkspaceShare
+          v-else-if="modal === 'share'"
+          :workspace="workspace"
+          :pr="pr"
+          :issue="issue"
+        />
+      </DevModal>
     </template>
     <div
       v-else
@@ -863,9 +983,81 @@ export default {
   // The two columns
   &__columns {
     display:               grid;
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap:                   16px;
     align-items:           start;
+  }
+
+  &__col--pane {
+    position: sticky;
+    top:      0;
+    padding:  10px 12px;
+  }
+
+  &__conversations {
+    min-height: 70vh;
+  }
+
+  &__views {
+    display: flex;
+    gap:     12px;
+  }
+
+  &__list--plain {
+    list-style: none;
+    padding:    0;
+  }
+
+  &__row-btn {
+    display:     inline-flex;
+    align-items: center;
+    gap:         6px;
+    flex-wrap:   wrap;
+    border:      0;
+    background:  transparent;
+    color:       var(--body-text);
+    font:        inherit;
+    text-align:  left;
+    padding:     2px 0;
+    cursor:      pointer;
+
+    .icon { font-size: 10px; color: var(--muted); }
+  }
+
+  &__diff {
+    margin:        6px 0 8px;
+    padding:       8px 10px;
+    border:        1px solid var(--border);
+    border-radius: var(--border-radius);
+    background:    var(--body-bg);
+    font-size:     12px;
+    line-height:   1.45;
+    max-height:    420px;
+    overflow:      auto;
+    white-space:   pre;
+
+    &--add { color: #98c379; background: rgba(152, 195, 121, .12); display: inline-block; min-width: 100%; }
+    &--del { color: #e06c75; background: rgba(224, 108, 117, .12); display: inline-block; min-width: 100%; }
+    &--hunk { color: var(--link); }
+    &--file { color: var(--muted); font-weight: 700; }
+  }
+
+  &__comment-more {
+    margin-top: 8px;
+  }
+
+  &__thread {
+    display:        flex;
+    flex-direction: column;
+    gap:            6px;
+    padding-left:   10px;
+    border-left:    2px solid var(--border);
+  }
+
+  &__thread-msg {
+    display:        flex;
+    flex-direction: column;
+    gap:            2px;
   }
 
   &__col {
