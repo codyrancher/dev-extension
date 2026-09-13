@@ -51,6 +51,25 @@ async function api(path: string, init?: RequestInit): Promise<Json> {
 /** The in-cluster API, for the modules that keep their own routes on it (skills.ts). */
 export const devApi = api;
 
+/** A GitHub comment attachment, through the API with the token: what an <img> or <video> can load. */
+export function ghAssetUrl(url: string): string {
+  return `${ DEV_API }/my-work/gh-asset?url=${ encodeURIComponent(url) }`;
+}
+
+const assetKinds = new Map<string, Promise<string>>();
+
+/** What an attachment is - `image/png`, `video/mp4` - asked once per URL. '' when unknown. */
+export function ghAssetKind(url: string): Promise<string> {
+  let kind = assetKinds.get(url);
+
+  if (!kind) {
+    kind = api(`/my-work/gh-asset?meta=1&url=${ encodeURIComponent(url) }`).then((r: Json) => String(r?.type || '')).catch(() => '');
+    assetKinds.set(url, kind);
+  }
+
+  return kind;
+}
+
 // ── Pull request state ──────────────────────────────────────────────────────────────────────
 
 export interface LocalComment {
