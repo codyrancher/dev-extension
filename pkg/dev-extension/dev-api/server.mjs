@@ -971,8 +971,11 @@ async function prDetail(repo, num) {
     ghRest('GET', `/repos/${ repo }/commits/${ headSha }/check-runs?per_page=100`).catch(() => null),
     ghRest('GET', `/repos/${ repo }/commits/${ headSha }/status`).catch(() => null),
   ]) : [null, null];
+  // `diff_hunk` is GitHub's own context for the comment - the hunk as it was when the comment
+  // was left - which is the code to show for a comment whose line the diff has since moved
+  // past (`line` null: outdated; `original_line` is the line in that hunk).
   const mapGhComment = (c, pending) => ({
-    id: c.id, path: c.path, line: c.line ?? c.original_line ?? null, side: c.side || 'RIGHT', author: c.user?.login, body: c.body, createdAt: c.created_at, inReplyTo: c.in_reply_to_id ?? null, pending,
+    id: c.id, path: c.path, line: c.line ?? c.original_line ?? null, side: c.side || 'RIGHT', author: c.user?.login, body: c.body, createdAt: c.created_at, inReplyTo: c.in_reply_to_id ?? null, pending, outdated: c.line == null && c.original_line != null, originalLine: c.original_line ?? null, diffHunk: c.diff_hunk || '',
   });
 
   return {
