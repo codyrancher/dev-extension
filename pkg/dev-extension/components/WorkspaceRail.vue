@@ -14,16 +14,18 @@ import WorkspaceBrowser from './WorkspaceBrowser.vue';
 import WorkspaceShare from './WorkspaceShare.vue';
 import DevModal from './DevModal.vue';
 import {
-  readStatusNow, knownStatus, noteCoded, agentLabel
+  readStatusNow, knownStatus, provisionalStatus, noteCoded, agentLabel
 } from '../workspace-status';
 import {
   stepsFor, gatherEvidence, primaryLink, ago, commitFiles
 } from '../workspace-rail';
 import {
-  listConversations, startConversation, queuePrompt
+  listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates
 } from '../conversations';
 import { ensureWorkspaceReady } from '../workspace-tools';
-import { startIssueFix, approveAndMerge, DEFAULT_REPO } from '../reviews';
+import {
+  startIssueFix, startPrReview, approveAndMerge, DEFAULT_REPO
+} from '../reviews';
 import { markReadyForReview } from '../github';
 import { deleteWorkspace } from '../api';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE } from '../config/constants';
@@ -67,6 +69,8 @@ export default {
       viewing:     '',
       loading:     true,
       reading:     false,
+      /** Which read of the first column is the current one; an older one landing is ignored. */
+      readSeq:     0,
       busy:        '',
       error:       '',
       notice:      '',
@@ -169,7 +173,7 @@ export default {
         case 'agent':
           if (s.agent === 'none') {
             return {
-              headline: 'No review has run yet', detail: 'Starts a review conversation over the PR.', primary: { label: 'Review this PR', run: 'openTab', arg: 'pr' }, tools: [github],
+              headline: 'No review has run yet', detail: 'Starts a review conversation over the PR; its findings land on the left as it goes.', primary: { label: 'Review this PR', run: 'startReview' }, tools: [github],
             };
           }
 
@@ -223,15 +227,15 @@ export default {
     ago,
 
     async load() {
-      // What the sidebar last read is drawn now; the fresh read lands behind it. The page is
-      // never blank for GitHub's sake.
-      this.status = knownStatus(this.workspace.name);
-      this.loading = !this.status;
-      if (this.status) {
+      // What the sidebar last read is drawn now, or what the name alone says - the kind, the
+      // steps, the links - and the fresh read lands behind it. The page is never blank for
+      // GitHub's sake.
+      this.status = knownStatus(this.workspace.name) || provisionalStatus(this.workspace.name);
+      this.loading = false;
+      if (this.status.stage) {
         this.refreshEvidence();
       }
       await this.refreshStatus();
-      this.loading = false;
       await this.refreshEvidence();
     },
 
@@ -242,6 +246,7 @@ export default {
         this.status = await readStatusNow(this.workspace.name);
         // A read that worked clears what an earlier one said: a dev-api restart is a minute.
         this.error = '';
+        this.loadConversations();
         // A stage that moved on is what the page is for; follow it unless a past one is open.
         if (before && before !== this.status.stage && !this.lookingBack) {
           this.viewing = '';
@@ -253,16 +258,19 @@ export default {
     },
 
     async refreshEvidence() {
-      if (!this.status || this.reading) {
+      if (!this.status || !this.shown) {
         return;
       }
-      this.reading = true;
+      // Every call is a new read; an older one still in flight lands and is ignored. So a step
+      // clicked during a read gets its own read at once rather than waiting the read out.
+      const seq = ++this.readSeq;
       const stage = this.shown;
+      const current = () => seq === this.readSeq && this.shown === stage;
 
+      this.reading = true;
       try {
         const sections = await gatherEvidence(this.workspace.name, this.status, stage, (partial) => {
-          // Each source as it lands, unless the person has moved to another stage meanwhile.
-          if (this.shown === stage) {
+          if (current()) {
             this.evidence = partial;
           }
         });
@@ -270,14 +278,18 @@ export default {
 
         // The status module learns from here whether the branch has commits (assess vs code).
         noteCoded(this.workspace.name, !!branch);
-        if (this.shown === stage) {
+        if (current()) {
           this.evidence = sections;
+          this.error = '';
         }
-        this.error = '';
       } catch (e) {
-        this.error = e?.message || String(e);
+        if (current()) {
+          this.error = e?.message || String(e);
+        }
       } finally {
-        this.reading = false;
+        if (seq === this.readSeq) {
+          this.reading = false;
+        }
       }
     },
 
@@ -354,7 +366,7 @@ export default {
     },
 
     toggleComment(c) {
-      this.openComments = { ...this.openComments, [c.id]: !this.openComments[c.id] };
+      this.openComments = { ...this.openComments, [c.id]: !(this.openComments[c.id] ?? !c.answered) };
     },
 
     async loadConversations() {
@@ -378,7 +390,10 @@ export default {
       }
     },
 
-    /** The newest conversation of the workspace, or a new one: where a prompt goes. */
+    /**
+     * The newest conversation of the workspace, or a new one: where a prompt goes. A newest
+     * whose pane is gone is started again to read it - a prompt queued to nobody sat there.
+     */
     async say(title, text) {
       await ensureWorkspaceReady(this.workspace.name);
       const conversations = await listConversations(this.workspace.name).catch(() => []);
@@ -386,6 +401,14 @@ export default {
 
       if (newest && title === '') {
         await queuePrompt(newest.attach, text);
+        const alive = (await conversationStates().catch(() => [])).find((c) => c.id === newest.id)?.alive;
+
+        if (!alive) {
+          await startPaneDetached(this.workspace.name, newest.id).catch(() => {});
+        }
+        await this.loadConversations();
+        this.currentConversation = newest.id;
+        this.openTab('conversations');
 
         return newest;
       }
@@ -404,6 +427,20 @@ export default {
       }
       await startIssueFix(this.$store, { number: this.issue, title: this.workspace.title || '' });
       this.notice = 'The fix conversation has started; it opens the PR when it is done.';
+      await this.loadConversations();
+      this.openTab('conversations');
+      await this.refreshStatus();
+    },
+
+    /** A review of the PR, as its own conversation, watched from the pane. */
+    async startReview() {
+      if (!this.pr) {
+        throw new Error('This workspace is not named for a PR.');
+      }
+      await startPrReview(this.$store, { number: this.pr, title: this.workspace.title || '' }, DEFAULT_REPO, this.workspace.name);
+      this.notice = 'The review has started; its findings land on the left as it goes.';
+      await this.loadConversations();
+      this.openTab('conversations');
       await this.refreshStatus();
     },
 
@@ -753,11 +790,11 @@ export default {
                     <button
                       type="button"
                       class="workspace-rail__row-btn"
-                      :title="openComments[c.id] ? 'Hide the code' : 'Show the code it is on'"
+                      :title="(openComments[c.id] ?? !c.answered) ? 'Hide the code' : 'Show the code it is on'"
                       @click="toggleComment(c)"
                     ><i
                       class="icon"
-                      :class="openComments[c.id] ? 'icon-chevron-down' : 'icon-chevron-right'"
+                      :class="(openComments[c.id] ?? !c.answered) ? 'icon-chevron-down' : 'icon-chevron-right'"
                     /><code>{{ c.where }}</code></button>
                     <span
                       v-if="c.thread.length > 1"
@@ -776,7 +813,7 @@ export default {
                     >on GitHub</a>
                   </header>
                   <div
-                    v-if="openComments[c.id]"
+                    v-if="openComments[c.id] ?? !c.answered"
                     class="workspace-rail__file"
                   >
                     <table
@@ -798,7 +835,7 @@ export default {
                     <p
                       v-else
                       class="workspace-rail__empty"
-                    >{{ c.path ? 'The line is not in the PR\'s diff any more.' : 'A comment on the PR as a whole.' }}</p>
+                    >{{ c.noPatch ? 'The diff is too large for GitHub to send; open it there.' : c.path ? 'The line is not in the PR\'s diff any more.' : 'A comment on the PR as a whole.' }}</p>
                   </div>
                   <div class="workspace-rail__thread">
                     <div
@@ -843,7 +880,7 @@ export default {
       <DevModal
         v-if="modal"
         :title="modalTitle()"
-        @close="modal = ''"
+        @close="modal = ''; loadConversations()"
       >
         <WorkspaceReview
           v-if="modal === 'review'"
@@ -1153,8 +1190,9 @@ export default {
   }
 
   &__md {
-    line-height: 1.45;
+    line-height:   1.45;
     overflow-wrap: anywhere;
+    white-space:   normal;
 
     :deep(p) { margin: 0 0 8px; }
     :deep(p:last-child) { margin-bottom: 0; }

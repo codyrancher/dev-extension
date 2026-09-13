@@ -8,7 +8,10 @@
 // workspace's artifacts, the PR with its body, checklist, CI and comments out of GitHub. Every
 // stage can be looked at again after it has passed: the evidence is composed per stage, from
 // what that stage left behind, so a past step on the rail is a way back to its artifacts.
-import { prDetail, commitsDiff, DEFAULT_REPO } from './reviews';
+import {
+  prDetail, commitsDiff, ciFailures, DEFAULT_REPO
+} from './reviews';
+import { issueBody } from './github';
 import { readInWorkspace } from './workspace-tools';
 import {
   parseHunks, highlightRows, hl, renderMd, escapeHtml
@@ -93,6 +96,8 @@ export interface Comment {
   /** @deprecated the old one-line context; `rows` is the hunk. */
   context: string;
   rows: CodeRow[];
+  /** The file's patch was not in the PR's data (too large, or binary): the code cannot be shown. */
+  noPatch: boolean;
   url: string;
   /** Where the file sits in the PR's file list, for GitHub's order. */
   order: number;
@@ -210,7 +215,7 @@ async function readBranch(workspace: string): Promise<Branch | null> {
     'base=$(git merge-base upstream/master HEAD 2>/dev/null || git merge-base origin/master HEAD 2>/dev/null || git rev-parse HEAD)',
     'echo "@@BRANCH $(git rev-parse --abbrev-ref HEAD 2>/dev/null)"',
     'echo "@@COMMITS"',
-    'git log --format="%h%x09%s%x09%an%x09%aI" "$base"..HEAD 2>/dev/null | head -30',
+    'git log --format="%H%x09%s%x09%an%x09%aI" "$base"..HEAD 2>/dev/null | head -30',
     'echo "@@STAT"',
     'git diff --shortstat "$base" 2>/dev/null',
     'echo "@@FILES"',
@@ -312,15 +317,19 @@ function threads(d: Json): Comment[] {
     const last = thread[thread.length - 1];
 
     return {
-      id: root.id, who: root.author || '?', where, path, line, body: String(root.body || '').slice(0, 400), at: last?.at || root.createdAt || '', answered: false, lastBy: last?.who || '', lastByAuthor: !!last?.author, thread, context: '', rows, url, order,
+      id: root.id, who: root.author || '?', where, path, line, body: String(root.body || '').slice(0, 400), at: last?.at || root.createdAt || '', answered: false, lastBy: last?.who || '', lastByAuthor: !!last?.author, thread, context: '', rows, noPatch: false, url, order,
     };
   };
   const out = roots.map((root) => {
     const members = review.filter((c) => rootOf(c).id === root.id);
     const file = files.findIndex((f) => f.path === root.path);
     const line = Number(root.line) || 0;
+    const patch = files[file]?.patch || '';
+    const c = card(root, members, root.path ? `${ root.path }${ line ? `:${ line }` : '' }` : 'review', root.path || '', line, hunkRows(root.path || '', patch, line, root.side), file < 0 ? 9999 : file, m.url ? `${ m.url }#discussion_r${ root.id }` : '');
 
-    return card(root, members, root.path ? `${ root.path }${ line ? `:${ line }` : '' }` : 'review', root.path || '', line, hunkRows(root.path || '', files[file]?.patch || '', line, root.side), file < 0 ? 9999 : file, m.url ? `${ m.url }#discussion_r${ root.id }` : '');
+    c.noPatch = !!root.path && file >= 0 && !patch;
+
+    return c;
   }).sort((a, b) => a.order - b.order || a.line - b.line || (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
 
   for (const c of (d.discussion || []) as Json[]) {
@@ -350,27 +359,47 @@ const pushedAt = (d: Json) => Math.max(0, ...(d.commits || []).map((c: Json) => 
 export async function gatherEvidence(workspace: string, status: WorkspaceStatus, stage: Stage, onUpdate?: (sections: EvidenceSection[], done: boolean) => void): Promise<EvidenceSection[]> {
   // Each source arrives when it does - the checkout in a second, GitHub in a few - and the
   // column is redrawn from whatever has arrived so far rather than waiting for the slowest.
-  const have: { report?: Awaited<ReturnType<typeof latestAgentReport>>; branch?: Branch | null; media?: Awaited<ReturnType<typeof readMedia>>; d?: Json } = {};
+  const issue = Number(/(?:^|-)issue-(\d+)(?:-|$)/.exec(workspace)?.[1]) || 0;
+  const have: Sources = {};
   const reads: Promise<void>[] = [
     latestAgentReport(workspace).catch(() => null).then((v) => { have.report = v; }),
     readBranch(workspace).catch(() => null).then((v) => { have.branch = v; }),
     readMedia(workspace).catch(() => []).then((v) => { have.media = v; }),
     (status.pr ? prDetail(status.pr).catch(() => null) : Promise.resolve(null)).then((v) => { have.d = v; }),
+    (issue && status.kind === 'fix' ? issueBody(DEFAULT_REPO, issue).catch(() => null) : Promise.resolve(null)).then((v) => { have.issue = v; }),
   ];
   let pending = reads.length;
+  const emit = (done: boolean) => onUpdate?.(compose(status, stage, have), done);
 
   for (const read of reads) {
     read.then(() => {
       pending--;
-      onUpdate?.(compose(status, stage, have.report || null, have.branch || null, have.media || [], have.d || null), pending === 0);
+      emit(pending === 0);
     });
   }
   await Promise.all(reads);
+  // Which CI jobs fail, once the PR says some do: one more read, worth it only then.
+  if (have.d?.meta?.ci?.failing && status.pr) {
+    have.ci = await ciFailures(status.pr).catch(() => null);
+  }
 
-  return compose(status, stage, have.report || null, have.branch || null, have.media || [], have.d || null);
+  return compose(status, stage, have);
 }
 
-function compose(status: WorkspaceStatus, stage: Stage, report: Awaited<ReturnType<typeof latestAgentReport>>, branch: Branch | null, media: Awaited<ReturnType<typeof readMedia>>, d: Json): EvidenceSection[] {
+interface Sources {
+  report?: Awaited<ReturnType<typeof latestAgentReport>>;
+  branch?: Branch | null;
+  media?: Awaited<ReturnType<typeof readMedia>>;
+  d?: Json;
+  issue?: { title: string; body: string; url: string } | null;
+  ci?: Json;
+}
+
+function compose(status: WorkspaceStatus, stage: Stage, have: Sources): EvidenceSection[] {
+  const report = have.report || null;
+  const branch = have.branch || null;
+  const media = have.media || [];
+  const d = have.d || null;
   const sections: EvidenceSection[] = [];
   const reportSection = (title = 'Agent\'s report') => report && sections.push({ title, items: [{ kind: 'text', text: report.text, html: renderMd(report.text), at: report.at }] });
   const mediaSection = (title: string, items: ReturnType<typeof mediaUnder>) => items.length && sections.push({ title, items: [{ kind: 'media', items }] });
@@ -390,14 +419,31 @@ function compose(status: WorkspaceStatus, stage: Stage, report: Awaited<ReturnTy
     }
     sections.push({ title: 'The change', items });
   };
-  const prSection = () => d && sections.push({ title: 'Pull request', items: [{ kind: 'kv', rows: prRows(d) }, { kind: 'text', text: String(d.meta?.body || ''), html: renderMd(String(d.meta?.body || '') || '_(no description)_') }] });
+  const prSection = () => {
+    if (!d) {
+      return;
+    }
+    const items: EvidenceItem[] = [{ kind: 'kv', rows: prRows(d) }];
+    const failing: Json[] = (have.ci?.checks || []).filter((c: Json) => c.url);
+
+    if (failing.length) {
+      items.push({ kind: 'links', items: failing.slice(0, 8).map((c: Json) => ({ label: `${ c.name || 'check' }: ${ c.conclusion || 'failing' }`, url: c.url })) });
+    }
+    items.push({ kind: 'text', text: String(d.meta?.body || ''), html: renderMd(String(d.meta?.body || '') || '_(no description)_') });
+    sections.push({ title: 'Pull request', items });
+  };
+  const issueSection = () => have.issue && sections.push({ title: `The issue: ${ have.issue.title }`, items: [{ kind: 'text', text: have.issue.body, html: renderMd(have.issue.body || '_(no description)_') }, { kind: 'links', items: [{ label: 'On GitHub', url: have.issue.url }] }] });
 
   if (status.kind === 'fix') {
     switch (stage) {
     case 'assess':
       reportSection(report && branch?.commits.length ? 'Agent\'s latest report' : 'Agent\'s assessment');
       mediaSection('Reproduced', mediaUnder(media, 'reproduce'));
-      sections.push({ title: 'The issue', items: [{ kind: 'links', items: status.links.filter((l) => l.label.startsWith('Issue')) }] });
+      if (have.issue) {
+        issueSection();
+      } else {
+        sections.push({ title: 'The issue', items: [{ kind: 'links', items: status.links.filter((l) => l.label.startsWith('Issue')) }] });
+      }
       break;
     case 'code':
       branchSection();
@@ -406,16 +452,20 @@ function compose(status: WorkspaceStatus, stage: Stage, report: Awaited<ReturnTy
       break;
     case 'draft':
       prSection();
+      branchSection();
       mediaSection('Recorded', [...mediaUnder(media, 'verify'), ...mediaUnder(media, 'reproduce')]);
       reportSection();
       break;
     case 'review':
-      prSection();
+      // The agent's report and the change come first: after feedback, this is what it pushed.
+      reportSection();
       if (d) {
         const fb = feedback(d, 0, true);
 
         sections.push({ title: 'Reviewers', items: fb.length ? [{ kind: 'comments', items: fb }] : [{ kind: 'empty', text: 'Nobody has commented yet.' }] });
       }
+      prSection();
+      branchSection();
       break;
     case 'feedback':
       if (d) {
@@ -449,15 +499,18 @@ function compose(status: WorkspaceStatus, stage: Stage, report: Awaited<ReturnTy
         const body = String(c.body || '');
 
         return {
-          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderMd(body), at: c.created_at || '' }], context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), url: '', order: file < 0 ? 9999 : file,
+          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderMd(body), at: c.created_at || '' }], context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
         };
       }).sort((a, b) => a.order - b.order || a.line - b.line),
     });
 
     switch (stage) {
     case 'agent':
-      prSection();
+      if (pending.length) {
+        sections.push({ title: `Findings so far (${ pending.length })`, items: [findings(pending)] });
+      }
       reportSection(status.agent === 'working' ? 'Where the agent is' : 'Agent\'s report');
+      prSection();
       break;
     case 'findings':
       sections.push({ title: `Findings (${ pending.length } to go through)`, items: pending.length ? [findings(pending)] : [{ kind: 'empty', text: submitted.length ? 'All submitted.' : 'None yet.' }] });
@@ -478,6 +531,7 @@ function compose(status: WorkspaceStatus, stage: Stage, report: Awaited<ReturnTy
 
         sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits }] : []), ...(replies.length ? [{ kind: 'comments' as const, items: replies }] : []), ...(!newCommits.length && !replies.length ? [{ kind: 'empty' as const, text: 'No new commits or replies.' }] : [])] });
       }
+      reportSection('What the agent found in the new commits');
       prSection();
       break;
     case 'approved':
