@@ -975,7 +975,7 @@ async function prDetail(repo, num) {
   // was left - which is the code to show for a comment whose line the diff has since moved
   // past (`line` null: outdated; `original_line` is the line in that hunk).
   const mapGhComment = (c, pending) => ({
-    id: c.id, path: c.path, line: c.line ?? c.original_line ?? null, side: c.side || 'RIGHT', author: c.user?.login, body: c.body, createdAt: c.created_at, inReplyTo: c.in_reply_to_id ?? null, pending, outdated: c.line == null && c.original_line != null, originalLine: c.original_line ?? null, diffHunk: c.diff_hunk || '',
+    id: c.id, path: c.path, line: c.line ?? c.original_line ?? null, side: c.side || 'RIGHT', author: c.user?.login, body: c.body, createdAt: c.created_at, inReplyTo: c.in_reply_to_id ?? null, pending, outdated: c.line == null && c.original_line != null, originalLine: c.original_line ?? null, diffHunk: c.diff_hunk || '', position: c.position ?? c.original_position ?? null,
   });
 
   return {
@@ -1019,6 +1019,11 @@ async function prDetail(repo, num) {
     })),
     localComments: (await localComments(num)).map(decorate),
     run:           await readDoc(reviewMap(num), 'run.json'),
+    // Every review submitted on the PR, whoever submitted it and from wherever: the rail's
+    // "Submitted" reads these too, so a review left on GitHub itself counts.
+    reviews:       (reviews || []).filter((r) => r.state !== 'PENDING').map((r) => ({
+      author: r.user?.login || '', state: r.state, submittedAt: r.submitted_at || null,
+    })),
   };
 }
 
