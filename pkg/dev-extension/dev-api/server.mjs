@@ -397,12 +397,204 @@ const AGENT_PREFIX = '/workspace/';
 // hostPath): a review runs in the PR's workspace now, so its evidence is under that one.
 const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/dev-workspaces';
 
-/** The seed the workspaces are laid out from, as the ConfigMap carries it (gzipped) or used to. */
-function agentSeed() {
+/** The seed as the extension shipped it, as the ConfigMap carries it (gzipped) or used to. */
+function bakedSeed() {
   try {
     return JSON.parse(zlib.gunzipSync(Buffer.from(fs.readFileSync('/seed/seed.json.gz.b64', 'utf8'), 'base64')).toString('utf8'));
   } catch {
     return JSON.parse(fs.readFileSync('/seed/seed.json', 'utf8'));
+  }
+}
+
+// ── Skills, editable ──────────────────────────────────────────────────────────────────────────
+//
+// The skills ship inside the extension's seed, which only a publish changes. Edits made here -
+// by the person on the Skills page, or by an agent asked to improve one from a conversation -
+// live in a ConfigMap of overrides that the seed is served with, so every workspace lays out
+// the edited skill the next time it is prepared, and the same edit can be committed to the
+// repository the skills are kept in, so the next publish ships it.
+
+const SKILLS_MAP = process.env.DEV_SKILLS_MAP || 'dev-skills';
+const SKILLS_REPO = process.env.DEV_SKILLS_REPO || 'codyrancher/dev-extension';
+const SKILLS_BRANCH = process.env.DEV_SKILLS_BRANCH || 'main';
+const SKILLS_DIR = process.env.DEV_SKILLS_DIR || 'pkg/dev-extension/agent-seed/skills';
+const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,60}$/;
+
+function fnv(text) {
+  let h = 2166136261;
+
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+
+  return (h >>> 0).toString(16);
+}
+
+let bakedVersion = '';
+
+/** The overrides: skill name -> SKILL.md text, and the ConfigMap's resourceVersion for the seed's version. */
+async function skillOverrides() {
+  try {
+    const map = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ SKILLS_MAP }`);
+    const skills = {};
+
+    for (const [key, value] of Object.entries(map.data || {})) {
+      const m = /^skill__([a-z0-9-]+)$/.exec(key);
+
+      if (m) {
+        skills[m[1]] = value;
+      }
+    }
+
+    return { skills, version: map.metadata?.resourceVersion || '' };
+  } catch (e) {
+    if (e.status === 404) {
+      return { skills: {}, version: '' };
+    }
+    throw e;
+  }
+}
+
+/** The seed the workspaces are laid out from: what shipped, with the edited skills over it. */
+async function agentSeed() {
+  const seed = bakedSeed();
+  const { skills } = await skillOverrides();
+
+  for (const [name, content] of Object.entries(skills)) {
+    seed[`skills/${ name }/SKILL.md`] = content;
+  }
+
+  return seed;
+}
+
+/** What the seed is now, for a workspace to compare its own copy against: the shipped seed's hash, then the overrides' version. */
+async function seedVersion() {
+  if (!bakedVersion) {
+    bakedVersion = fnv(JSON.stringify(bakedSeed()));
+  }
+  const { version } = await skillOverrides();
+
+  return `${ bakedVersion }${ version ? `+${ version }` : '' }`;
+}
+
+function skillDescription(text) {
+  const front = /^---\n([\s\S]*?)\n---/.exec(text || '');
+  const line = front && /^description:\s*(.+)$/m.exec(front[1]);
+
+  return line ? line[1].trim().slice(0, 300) : '';
+}
+
+async function listSkills() {
+  const seed = bakedSeed();
+  const { skills } = await skillOverrides();
+  const names = Object.keys(seed).map((key) => /^skills\/([a-z0-9-]+)\/SKILL\.md$/.exec(key)?.[1]).filter(Boolean);
+
+  for (const name of Object.keys(skills)) {
+    if (!names.includes(name)) {
+      names.push(name);
+    }
+  }
+
+  return names.sort().map((name) => ({
+    name, description: skillDescription(skills[name] ?? seed[`skills/${ name }/SKILL.md`]), overridden: name in skills,
+  }));
+}
+
+async function readSkill(name) {
+  if (!SKILL_NAME.test(name)) {
+    throw failure(400, 'Not a skill name.');
+  }
+  const baked = bakedSeed()[`skills/${ name }/SKILL.md`] || '';
+  const { skills } = await skillOverrides();
+
+  if (!baked && !(name in skills)) {
+    throw failure(404, `There is no skill called ${ name }.`);
+  }
+
+  return {
+    name, content: skills[name] ?? baked, baked, overridden: name in skills,
+  };
+}
+
+async function writeSkillOverride(name, content) {
+  const p = `/api/v1/namespaces/${ NAMESPACE }/configmaps/${ SKILLS_MAP }`;
+  const data = { [`skill__${ name }`]: content };
+
+  try {
+    await k8s(p, { method: 'PATCH', body: JSON.stringify({ data }) });
+  } catch (e) {
+    if (e.status !== 404) {
+      throw e;
+    }
+    await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps`, {
+      method: 'POST',
+      body:   JSON.stringify({
+        apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace: NAMESPACE, name: SKILLS_MAP, labels: { 'dev.rancher.io/kind': 'skills' } }, data,
+      }),
+    });
+  }
+}
+
+/** The skill as the repository has it, committed on the branch the skills are published from. */
+async function commitSkill(name, content, message) {
+  const filePath = `${ SKILLS_DIR }/${ name }/SKILL.md`;
+  let sha = '';
+
+  try {
+    const current = await ghRest('GET', `/repos/${ SKILLS_REPO }/contents/${ filePath }?ref=${ encodeURIComponent(SKILLS_BRANCH) }`);
+
+    sha = current.sha || '';
+    if (Buffer.from(current.content || '', 'base64').toString('utf8') === content) {
+      return { committed: false, url: current.html_url || '' };
+    }
+  } catch (e) {
+    if (e.status !== 502 || !/-> 404/.test(e.message)) {
+      throw e;
+    }
+  }
+  const result = await ghRest('PUT', `/repos/${ SKILLS_REPO }/contents/${ filePath }`, {
+    message: message || `Skill ${ name }: updated from the Dev extension`,
+    content: Buffer.from(content, 'utf8').toString('base64'),
+    branch:  SKILLS_BRANCH,
+    ...(sha ? { sha } : {}),
+  });
+
+  return { committed: true, url: result.commit?.html_url || result.content?.html_url || '' };
+}
+
+/**
+ * Save a skill: the override for every workspace, and - when asked - the commit to the repo.
+ * Saving the shipped text back drops the override rather than keeping a copy of it.
+ */
+async function saveSkill(name, body) {
+  if (!SKILL_NAME.test(name)) {
+    throw failure(400, 'Not a skill name.');
+  }
+  const content = String(body?.content || '');
+
+  if (!content.trim()) {
+    throw failure(400, 'The skill is empty.');
+  }
+  const baked = bakedSeed()[`skills/${ name }/SKILL.md`] || '';
+
+  if (content === baked) {
+    await dropSkillOverride(name);
+  } else {
+    await writeSkillOverride(name, content);
+  }
+  const commit = body?.commit ? await commitSkill(name, content, String(body?.message || '')) : null;
+
+  return { ok: true, overridden: content !== baked, commit, version: await seedVersion() };
+}
+
+async function dropSkillOverride(name) {
+  try {
+    await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ SKILLS_MAP }`, { method: 'PATCH', body: JSON.stringify({ data: { [`skill__${ name }`]: null } }) });
+  } catch (e) {
+    if (e.status !== 404) {
+      throw e;
+    }
   }
 }
 
@@ -1092,6 +1284,18 @@ const routes = [
   // The skills and rules a review or fix agent needs, as the extension bundled them. Served to
   // the agent pod because an exec command is URL arguments and this is half a megabyte.
   ['GET', /^\/agent-seed$/, async() => agentSeed()],
+  ['GET', /^\/agent-seed\/version$/, async() => ({ version: await seedVersion() })],
+  ['GET', /^\/skills$/, async() => ({ skills: await listSkills(), version: await seedVersion() })],
+  ['GET', /^\/skills\/([a-z0-9-]+)$/, async(m) => readSkill(m[1])],
+  ['PUT', /^\/skills\/([a-z0-9-]+)$/, async(m, url, body) => saveSkill(m[1], body)],
+  ['POST', /^\/skills\/([a-z0-9-]+)\/reset$/, async(m) => {
+    if (!SKILL_NAME.test(m[1])) {
+      throw failure(400, 'Not a skill name.');
+    }
+    await dropSkillOverride(m[1]);
+
+    return { ok: true, version: await seedVersion() };
+  }],
   // One piece of a comment's evidence, on GitHub's CDN and ready to embed. The review panel asks
   // for this as it submits, so a screenshot or a recording lands in the comment itself rather
   // than as a sentence naming a path nobody reading the PR can reach.

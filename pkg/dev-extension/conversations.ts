@@ -221,6 +221,24 @@ export async function latestAgentReport(workspace: string): Promise<AgentReport 
   }
 }
 
+/** Where one conversation's transcript is, in the agent pod: from the id its pane recorded, or its state file. */
+export async function transcriptPathOf(workspace: string, id: string): Promise<string> {
+  const api = await requireAgents();
+  const pod = await api.agent.pod().catch(() => null);
+
+  if (!pod || !/^p-.+-\d+$/.test(id)) {
+    return '';
+  }
+  const dir = `${ AGENT_HOME }/.claude/projects/${ workspaceWorkdir(workspace).replace(/\//g, '-') }`;
+  const script = [
+    `s=$(cat ${ AGENT_WORKSPACE }/sessions/${ id }.id 2>/dev/null | tr -d '\\n')`,
+    `[ -n "$s" ] || s=$(node -e 'try{process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sessionId||""))}catch(e){}' ${ AGENT_WORKSPACE }/sessions/${ id }.state.json 2>/dev/null)`,
+    `[ -n "$s" ] && [ -f "${ dir }/$s.jsonl" ] && echo "${ dir }/$s.jsonl"`,
+  ].join('\n');
+
+  return (await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script]).catch(() => '')).trim();
+}
+
 /**
  * The conversations that have a prompt queued and no pane yet - registered, told what to do,
  * and never started.

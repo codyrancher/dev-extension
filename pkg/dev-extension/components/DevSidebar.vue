@@ -23,6 +23,7 @@ import {
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
 import { workspaceStatuses, agentLabel } from '../workspace-status';
+import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import DevList from './DevList.vue';
 import DevDialog from './DevDialog.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
@@ -30,7 +31,7 @@ import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
-  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, CONVERSATIONS_ROUTE
+  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, CONVERSATIONS_ROUTE, SKILLS_ROUTE
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
@@ -77,6 +78,31 @@ const cache = {
 };
 // Whether this page load has already asked for the default App; see refresh().
 let seeded = false;
+
+let skillsSeen = '';
+let skillsAskedAt = 0;
+let skillsBusy = false;
+
+/** The seed's version, once a minute; a move means a skill was saved somewhere, and every workspace is prepared again. */
+async function watchSkills() {
+  if (skillsBusy || Date.now() - skillsAskedAt < 60_000) {
+    return;
+  }
+  skillsAskedAt = Date.now();
+  skillsBusy = true;
+  try {
+    const version = await seedVersion();
+
+    if (version && skillsSeen && version !== skillsSeen) {
+      await refreshSkillsEverywhere();
+    }
+    if (version) {
+      skillsSeen = version;
+    }
+  } catch { /* the next minute asks again */ } finally {
+    skillsBusy = false;
+  }
+}
 
 export default {
   name: 'DevSidebar',
@@ -125,6 +151,9 @@ export default {
         },
         {
           label: 'Conversations', icon: 'icon-comment', route: CONVERSATIONS_ROUTE
+        },
+        {
+          label: 'Skills', icon: 'icon-file', route: SKILLS_ROUTE
         },
         {
           label: 'Settings', icon: 'icon-gear', route: SETTINGS_ROUTE
@@ -321,6 +350,10 @@ export default {
         // A fix or a review started and left: its conversation begins once its workspace is
         // up, whether or not anyone opens it. See startPendingConversations.
         startPendingConversations(workspaces.filter((w) => (w.cluster || 'local') === 'local')).catch(() => {});
+
+        // A skill saved - here or by an agent - reaches every workspace: when the seed's version
+        // moves, each running workspace is prepared again. Asked once a minute.
+        watchSkills();
 
         // The App every Rancher gets. From here rather than only from the product's init,
         // because at init Apps Plus's own types are not in the store yet - its bundle loads

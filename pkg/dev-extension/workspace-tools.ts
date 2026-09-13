@@ -15,7 +15,7 @@
 // and owned by the pane's user, the same three places the harness put them.
 
 import {
-  podExecOnce, workspacePod, workspaceNamespace, WORKSPACE_CONTAINER, githubToken, devFetch, secretValue
+  podExecOnce, workspacePod, workspaceNamespace, WORKSPACE_CONTAINER, githubToken, devFetch, secretValue, clusterBase
 } from './api';
 import { AGENT_SEED } from './agent-seed.generated';
 import { UNREWRITE_B64 } from './apps';
@@ -175,7 +175,10 @@ async function ensureBase(target: WorkspaceTarget): Promise<void> {
  * did, with the workspace's name and its issue or PR number.
  */
 async function ensureSeed(target: WorkspaceTarget, ctx: WorkspaceContext): Promise<void> {
-  const version = `${ seedVersion() }:${ ctx.issue || '' }:${ ctx.pr || '' }:${ target.workspace }`;
+  // The API's version, which moves when a skill is edited (skills.ts); the bundle's own when
+  // the API cannot be asked.
+  const served = await devFetch(`${ clusterBase('local') }/api/v1/namespaces/dev-system/services/http:dev-api:8080/proxy/agent-seed/version`).catch(() => null);
+  const version = `${ served?.version || seedVersion() }:${ ctx.issue || '' }:${ ctx.pr || '' }:${ target.workspace }`;
   const current = await asNode(target, `cat ${ SEED_MARKER } 2>/dev/null || true`);
 
   if (current.trim() === version) {
