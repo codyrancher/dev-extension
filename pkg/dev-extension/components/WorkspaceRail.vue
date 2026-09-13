@@ -7,7 +7,7 @@
 // to afterwards. Nothing runs an agent any other way.
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
-import WorkspaceConversations from './WorkspaceConversations.vue';
+import StudioTerminal from './StudioTerminal.vue';
 import WorkspaceReview from './WorkspaceReview.vue';
 import WorkspacePr from './WorkspacePr.vue';
 import WorkspaceBrowser from './WorkspaceBrowser.vue';
@@ -17,7 +17,7 @@ import {
   readStatusNow, knownStatus, noteCoded, agentLabel
 } from '../workspace-status';
 import {
-  stepsFor, gatherEvidence, primaryLink, ago, commitPatch, diffRows
+  stepsFor, gatherEvidence, primaryLink, ago, commitFiles
 } from '../workspace-rail';
 import {
   listConversations, startConversation, queuePrompt
@@ -35,7 +35,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, WorkspaceConversations, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal
+    Banner, RcButton, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal
   },
 
   props: {
@@ -75,8 +75,13 @@ export default {
       modal:       '',
       /** Rows opened to look closer: commits (their patch, read once) and comments (their chain and code). */
       openCommits: {},
-      patches:     {},
+      /** A commit's files, read once when it is opened. */
+      commitFiles: {},
       openComments: {},
+      /** This workspace's conversations, and the one shown - the newest unless another is picked. */
+      conversations: [],
+      currentConversation: '',
+      startingConversation: false,
     };
   },
 
@@ -203,6 +208,7 @@ export default {
 
   mounted() {
     this.load();
+    this.loadConversations();
     this.timers = [
       setInterval(() => this.refreshStatus(), STATUS_MS),
       setInterval(() => this.refreshEvidence(), EVIDENCE_MS),
@@ -337,13 +343,13 @@ export default {
       return { review: 'Review the branch', pr: `PR${ this.status?.pr ? ` #${ this.status.pr }` : '' }`, browser: 'Browser', share: 'Share a build' }[this.modal] || '';
     },
 
-    async toggleCommit(c) {
+    async toggleCommit(c, item) {
       const open = !this.openCommits[c.sha];
 
       this.openCommits = { ...this.openCommits, [c.sha]: open };
-      if (open && !(c.sha in this.patches)) {
-        this.patches = { ...this.patches, [c.sha]: 'Reading…' };
-        this.patches = { ...this.patches, [c.sha]: (await commitPatch(this.workspace.name, c.sha).catch((e) => `Could not read the commit: ${ e?.message || e }`)) || 'Nothing to show.' };
+      if (open && !(c.sha in this.commitFiles)) {
+        this.commitFiles = { ...this.commitFiles, [c.sha]: null };
+        this.commitFiles = { ...this.commitFiles, [c.sha]: await commitFiles(this.workspace.name, item.pr || 0, c.sha).catch(() => []) };
       }
     },
 
@@ -351,8 +357,25 @@ export default {
       this.openComments = { ...this.openComments, [c.id]: !this.openComments[c.id] };
     },
 
-    rows(patch) {
-      return diffRows(patch);
+    async loadConversations() {
+      this.conversations = await listConversations(this.workspace.name).catch(() => []);
+      if (!this.conversations.some((c) => c.id === this.currentConversation)) {
+        this.currentConversation = this.conversations[this.conversations.length - 1]?.id || '';
+      }
+    },
+
+    async newConversation() {
+      this.startingConversation = true;
+      try {
+        const c = await startConversation(this.workspace.name);
+
+        await this.loadConversations();
+        this.currentConversation = c.id;
+      } catch (e) {
+        this.error = e?.message || String(e);
+      } finally {
+        this.startingConversation = false;
+      }
     },
 
     /** The newest conversation of the workspace, or a new one: where a prompt goes. */
@@ -367,7 +390,12 @@ export default {
         return newest;
       }
 
-      return startConversation(this.workspace.name, title, text);
+      const started = await startConversation(this.workspace.name, title, text);
+
+      await this.loadConversations();
+      this.currentConversation = started.id;
+
+      return started;
     },
 
     async startFix() {
@@ -586,13 +614,21 @@ export default {
               v-for="(item, i) in section.items"
               :key="i"
             >
-              <p
+              <div
                 v-if="item.kind === 'text'"
                 class="workspace-rail__text"
-              ><span
-                v-if="item.at"
-                class="workspace-rail__when"
-              >{{ ago(item.at) }}</span>{{ item.text }}</p>
+              >
+                <span
+                  v-if="item.at"
+                  class="workspace-rail__when"
+                >{{ ago(item.at) }}</span>
+                <div
+                  v-if="item.html"
+                  class="workspace-rail__md"
+                  v-html="item.html"
+                />
+                <template v-else>{{ item.text }}</template>
+              </div>
               <dl
                 v-else-if="item.kind === 'kv'"
                 class="workspace-rail__kv"
@@ -618,22 +654,49 @@ export default {
                     type="button"
                     class="workspace-rail__row-btn"
                     :title="openCommits[c.sha] ? 'Hide the change' : 'Show the change'"
-                    @click="toggleCommit(c)"
+                    @click="toggleCommit(c, item)"
                   >
                     <i
                       class="icon"
                       :class="openCommits[c.sha] ? 'icon-chevron-down' : 'icon-chevron-right'"
                     /><code>{{ c.sha.slice(0, 7) }}</code> {{ c.message }} <span class="workspace-rail__when">{{ c.who }} · {{ ago(c.at) }}</span>
                   </button>
-                  <pre
+                  <div
                     v-if="openCommits[c.sha]"
-                    class="workspace-rail__diff"
-                  ><span
-                    v-for="(r, k) in rows(patches[c.sha] || '')"
-                    :key="k"
-                    :class="r.cls ? `workspace-rail__diff--${ r.cls }` : ''"
-                  >{{ r.text }}
-</span></pre>
+                    class="workspace-rail__files"
+                  >
+                    <p
+                      v-if="commitFiles[c.sha] === null"
+                      class="workspace-rail__empty"
+                    >Reading the change…</p>
+                    <p
+                      v-else-if="!(commitFiles[c.sha] || []).length"
+                      class="workspace-rail__empty"
+                    >The commit's diff could not be read.</p>
+                    <div
+                      v-for="f in commitFiles[c.sha] || []"
+                      :key="f.path"
+                      class="workspace-rail__file"
+                    >
+                      <div class="workspace-rail__file-head"><code>{{ f.path }}</code><span
+                        v-if="f.status"
+                        class="workspace-rail__tag"
+                      >{{ f.status }}</span></div>
+                      <table class="workspace-rail__code">
+                        <tbody>
+                          <tr
+                            v-for="(r, k) in f.rows"
+                            :key="k"
+                            :class="`workspace-rail__code-row workspace-rail__code-row--${ r.type }`"
+                          >
+                            <td class="workspace-rail__lineno">{{ r.oldN ?? '' }}</td>
+                            <td class="workspace-rail__lineno">{{ r.newN ?? '' }}</td>
+                            <td class="workspace-rail__codecell"><span class="workspace-rail__sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </li>
               </ul>
               <ul
@@ -675,57 +738,86 @@ export default {
                 v-else-if="item.kind === 'comments'"
                 class="workspace-rail__comments"
               >
-                <div
+                <!--
+                  One card per thread, in GitHub's order (the file's place in the PR, then the
+                  line). The code it is on is the hunk, numbered both sides, the commented line
+                  marked; every message is rendered, the PR's author told apart from the rest.
+                -->
+                <article
                   v-for="(c, j) in item.items"
                   :key="c.id || j"
                   class="workspace-rail__comment"
                   :class="{ 'workspace-rail__comment--open': !c.answered }"
                 >
-                  <button
-                    type="button"
-                    class="workspace-rail__comment-head workspace-rail__row-btn"
-                    :title="c.context || c.thread.length > 1 ? 'Show the code and the chain' : 'Nothing more to show'"
-                    @click="toggleComment(c)"
-                  ><i
-                    class="icon"
-                    :class="openComments[c.id] ? 'icon-chevron-down' : 'icon-chevron-right'"
-                  /><strong>{{ c.who }}</strong><code>{{ c.where }}</code><span class="workspace-rail__when">{{ ago(c.at) }}</span><span
-                    v-if="c.thread.length > 1"
-                    class="workspace-rail__tag"
-                  >{{ c.thread.length }} in chain</span><span
-                    v-if="!c.answered"
-                    class="workspace-rail__tag workspace-rail__tag--open"
-                  >open</span></button>
-                  <div class="workspace-rail__comment-body">{{ c.body }}</div>
+                  <header class="workspace-rail__comment-head">
+                    <button
+                      type="button"
+                      class="workspace-rail__row-btn"
+                      :title="openComments[c.id] ? 'Hide the code' : 'Show the code it is on'"
+                      @click="toggleComment(c)"
+                    ><i
+                      class="icon"
+                      :class="openComments[c.id] ? 'icon-chevron-down' : 'icon-chevron-right'"
+                    /><code>{{ c.where }}</code></button>
+                    <span
+                      v-if="c.thread.length > 1"
+                      class="workspace-rail__tag"
+                    >{{ c.thread.length }} messages</span>
+                    <span
+                      v-if="!c.answered"
+                      class="workspace-rail__tag workspace-rail__tag--open"
+                    >waiting on you</span>
+                    <a
+                      v-if="c.url"
+                      :href="c.url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="workspace-rail__when"
+                    >on GitHub</a>
+                  </header>
                   <div
                     v-if="openComments[c.id]"
-                    class="workspace-rail__comment-more"
+                    class="workspace-rail__file"
                   >
-                    <pre
-                      v-if="c.context"
-                      class="workspace-rail__diff"
-                    ><span
-                      v-for="(r, k) in rows(c.context)"
-                      :key="k"
-                      :class="r.cls ? `workspace-rail__diff--${ r.cls }` : ''"
-                    >{{ r.text }}
-</span></pre>
+                    <table
+                      v-if="c.rows.length"
+                      class="workspace-rail__code"
+                    >
+                      <tbody>
+                        <tr
+                          v-for="(r, k) in c.rows"
+                          :key="k"
+                          :class="[`workspace-rail__code-row workspace-rail__code-row--${ r.type }`, { 'workspace-rail__code-row--marked': r.marked }]"
+                        >
+                          <td class="workspace-rail__lineno">{{ r.oldN ?? '' }}</td>
+                          <td class="workspace-rail__lineno">{{ r.newN ?? '' }}</td>
+                          <td class="workspace-rail__codecell"><span class="workspace-rail__sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
+                        </tr>
+                      </tbody>
+                    </table>
                     <p
                       v-else
                       class="workspace-rail__empty"
-                    >The line is not in the PR's diff any more.</p>
+                    >{{ c.path ? 'The line is not in the PR\'s diff any more.' : 'A comment on the PR as a whole.' }}</p>
+                  </div>
+                  <div class="workspace-rail__thread">
                     <div
-                      v-if="c.thread.length > 1"
-                      class="workspace-rail__thread"
+                      v-for="(t, k) in c.thread"
+                      :key="k"
+                      class="workspace-rail__msg"
+                      :class="t.author ? 'workspace-rail__msg--author' : 'workspace-rail__msg--other'"
                     >
+                      <div class="workspace-rail__msg-head"><span class="workspace-rail__avatar">{{ (t.who || '?').slice(0, 1).toUpperCase() }}</span><strong>{{ t.who }}</strong><span
+                        v-if="t.author"
+                        class="workspace-rail__when"
+                      >author</span><span class="workspace-rail__when">{{ ago(t.at) }}</span></div>
                       <div
-                        v-for="(t, k) in c.thread"
-                        :key="k"
-                        class="workspace-rail__thread-msg"
-                      ><span class="workspace-rail__comment-head"><strong>{{ t.who }}</strong><span class="workspace-rail__when">{{ ago(t.at) }}</span></span><span class="workspace-rail__comment-body">{{ t.body }}</span></div>
+                        class="workspace-rail__md"
+                        v-html="t.html"
+                      />
                     </div>
                   </div>
-                </div>
+                </article>
               </div>
               <p
                 v-else-if="item.kind === 'links'"
@@ -816,11 +908,42 @@ export default {
           >Share</button>
         </div>
       </div>
-      <WorkspaceConversations
-        class="workspace-rail__conversations"
-        :workspace="workspace"
-        :log-tail="logTail"
-      />
+      <div class="workspace-rail__pane-bar">
+        <select
+          v-if="conversations.length"
+          v-model="currentConversation"
+          class="workspace-rail__select"
+        >
+          <option
+            v-for="c in conversations"
+            :key="c.id"
+            :value="c.id"
+          >{{ c.title }}</option>
+        </select>
+        <span
+          v-else
+          class="workspace-rail__empty"
+        >No conversation yet.</span>
+        <RcButton
+          variant="tertiary"
+          size="small"
+          :disabled="startingConversation"
+          @click="newConversation"
+        >
+          New conversation
+        </RcButton>
+      </div>
+      <template
+        v-for="c in conversations"
+        :key="c.id"
+      >
+        <StudioTerminal
+          v-if="c.id === currentConversation"
+          class="workspace-rail__terminal"
+          :session="c.id"
+          :command="c.attach.command"
+        />
+      </template>
     </section>
   </div>
 </template>
@@ -1007,8 +1130,138 @@ export default {
     padding: 10px 12px;
   }
 
-  &__conversations {
-    min-height: 70vh;
+  &__terminal {
+    height:     70vh;
+    min-height: 480px;
+  }
+
+  &__pane-bar {
+    display:     flex;
+    align-items: center;
+    gap:         10px;
+  }
+
+  &__select {
+    height:        30px;
+    max-width:     420px;
+    padding:       0 8px;
+    border:        1px solid var(--border);
+    border-radius: var(--border-radius);
+    background:    var(--input-bg);
+    color:         var(--body-text);
+    font:          inherit;
+  }
+
+  &__md {
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+
+    :deep(p) { margin: 0 0 8px; }
+    :deep(p:last-child) { margin-bottom: 0; }
+    :deep(h1), :deep(h2), :deep(h3), :deep(h4) { margin: 10px 0 6px; font-size: 14px; }
+    :deep(h1) { font-size: 16px; }
+    :deep(ul), :deep(ol) { margin: 0 0 8px; padding-left: 20px; }
+    :deep(code) { font-size: 12px; background: var(--body-bg); padding: 1px 4px; border-radius: 3px; }
+    :deep(pre) { background: var(--body-bg); border: 1px solid var(--border); border-radius: var(--border-radius); padding: 8px 10px; overflow-x: auto; }
+    :deep(pre code) { background: transparent; padding: 0; }
+    :deep(img) { max-width: 100%; }
+    :deep(blockquote) { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--border); color: var(--muted); }
+    :deep(table) { border-collapse: collapse; }
+    :deep(td), :deep(th) { border: 1px solid var(--border); padding: 2px 6px; }
+  }
+
+  &__files {
+    display:        flex;
+    flex-direction: column;
+    gap:            8px;
+    margin:         6px 0 8px;
+  }
+
+  &__file {
+    border:        1px solid var(--border);
+    border-radius: var(--border-radius);
+    overflow:      hidden;
+    background:    var(--body-bg);
+  }
+
+  &__file-head {
+    display:     flex;
+    align-items: center;
+    gap:         8px;
+    padding:     4px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size:   12px;
+  }
+
+  &__code {
+    width:           100%;
+    border-collapse: collapse;
+    font-family:     ui-monospace, 'SFMono-Regular', Menlo, monospace;
+    font-size:       12px;
+    line-height:     1.45;
+    display:         block;
+    max-height:      460px;
+    overflow:        auto;
+
+    tbody { display: table; width: 100%; }
+  }
+
+  &__lineno {
+    width:       40px;
+    padding:     0 6px;
+    text-align:  right;
+    color:       var(--muted);
+    user-select: none;
+    white-space: nowrap;
+    vertical-align: top;
+  }
+
+  &__codecell {
+    padding:     0 8px 0 4px;
+    white-space: pre;
+  }
+
+  &__sign {
+    display:     inline-block;
+    width:       10px;
+    color:       var(--muted);
+  }
+
+  &__code-row--add { background: rgba(152, 195, 121, .12); }
+  &__code-row--del { background: rgba(224, 108, 117, .12); }
+  &__code-row--hunk { background: var(--box-bg); color: var(--link); }
+  &__code-row--marked { outline: 2px solid var(--warning); outline-offset: -2px; }
+  &__code-row--marked td { background: rgba(255, 228, 122, .12); }
+
+  &__msg {
+    padding:       8px 10px;
+    border-radius: var(--border-radius);
+    border:        1px solid var(--border);
+    background:    var(--body-bg);
+
+    &--author { border-left: 3px solid var(--primary); }
+    &--other { border-left: 3px solid var(--warning); background: var(--box-bg); }
+  }
+
+  &__msg-head {
+    display:       flex;
+    align-items:   center;
+    gap:           8px;
+    margin-bottom: 4px;
+    font-size:     12px;
+  }
+
+  &__avatar {
+    display:         inline-flex;
+    align-items:     center;
+    justify-content: center;
+    width:           20px;
+    height:          20px;
+    border-radius:   50%;
+    background:      var(--primary);
+    color:           #fff;
+    font-size:       11px;
+    font-weight:     700;
   }
 
   &__views {
@@ -1063,14 +1316,7 @@ export default {
     display:        flex;
     flex-direction: column;
     gap:            6px;
-    padding-left:   10px;
-    border-left:    2px solid var(--border);
-  }
-
-  &__thread-msg {
-    display:        flex;
-    flex-direction: column;
-    gap:            2px;
+    margin-top:     6px;
   }
 
   &__col {
