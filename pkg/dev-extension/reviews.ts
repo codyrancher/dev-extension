@@ -48,6 +48,9 @@ async function api(path: string, init?: RequestInit): Promise<Json> {
   return devFetch(`${ DEV_API }${ path }`, init);
 }
 
+/** The in-cluster API, for the modules that keep their own routes on it (skills.ts). */
+export const devApi = api;
+
 // ── Pull request state ──────────────────────────────────────────────────────────────────────
 
 export interface LocalComment {
