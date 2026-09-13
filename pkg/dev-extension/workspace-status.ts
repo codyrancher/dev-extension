@@ -257,6 +257,23 @@ export function noteCoded(name: string, value: boolean): void {
   coded[name] = value;
 }
 
+/** What the name alone says - the kind, the links - so a page can draw its rail before any read answers. */
+export function provisionalStatus(name: string): WorkspaceStatus {
+  const { pr, issue } = numbers(name);
+  const links: WorkspaceStatus['links'] = [];
+
+  if (issue) {
+    links.push({ label: `Issue #${ issue }`, url: `https://github.com/${ DEFAULT_REPO }/issues/${ issue }` });
+  }
+  if (pr) {
+    links.push({ label: `PR #${ pr }`, url: `https://github.com/${ DEFAULT_REPO }/pull/${ pr }` });
+  }
+
+  return {
+    ...empty(), kind: pr ? 'review' : issue ? 'fix' : 'other', links, pr,
+  };
+}
+
 /** What was last read for a workspace, if anything - the page draws this first and reads behind it. */
 export function knownStatus(name: string): WorkspaceStatus | null {
   const known = statuses.get(name);

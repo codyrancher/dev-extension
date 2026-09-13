@@ -817,3 +817,15 @@ export async function markReadyForReview(repo: string, number: number): Promise<
   `, { id: pr.id });
 }
 
+/** An issue's title and text, for judging a fix against what was asked. */
+export async function issueBody(repo: string, number: number): Promise<{ title: string; body: string; url: string }> {
+  const data = await graphql(`
+    query Issue($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) { issue(number: $number) { title body url } }
+    }
+  `, { ...splitRepo(repo), number });
+  const issue = data.repository?.issue || {};
+
+  return { title: issue.title || '', body: issue.body || '', url: issue.url || '' };
+}
+
