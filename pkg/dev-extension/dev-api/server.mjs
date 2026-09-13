@@ -873,14 +873,16 @@ const UPLOAD_IN_PAGE = async({ b64, name, ct }) => {
 
 const assetCache = new Map();
 
+const ASSET_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
 /**
- * One attachment OUT of `user-attachments`, through the shared browser.
+ * One attachment OUT of `user-attachments`.
  *
- * The same reason the upload needs that browser: an attachment's URL redirects to a signed URL
- * that only a github.com session can mint, so a fetch from this pod - with an API token or
- * without - is a 404. Inside a page of the signed-in browser the cookies are already there, so
- * the page fetches it and hands the bytes back as base64 over CDP. Small ones only (8 MB): the
- * bytes cross a websocket as text, and a recording is meant to be opened on GitHub.
+ * On a public repository the asset is a redirect to a signed S3 URL that anyone may follow, so
+ * this pod fetches it itself - as a browser, since GitHub answers 404 to a bare client. What
+ * that cannot reach (a private repository, an asset only a session may see) falls back to the
+ * shared signed-in browser, the same one the upload uses; there the bytes come back over CDP,
+ * so only small ones (8 MB) - a big recording is meant to be opened on GitHub.
  */
 async function fetchGithubAsset(assetUrl) {
   const kept = assetCache.get(assetUrl);
@@ -888,6 +890,25 @@ async function fetchGithubAsset(assetUrl) {
   if (kept && Date.now() - kept.at < 10 * 60_000) {
     return kept.value;
   }
+
+  try {
+    const direct = await fetch(assetUrl, {
+      redirect: 'follow',
+      headers:  { 'user-agent': ASSET_UA, accept: 'image/avif,image/webp,image/*,video/*,*/*' },
+    });
+    const type = direct.headers.get('content-type') || '';
+
+    // A 404 comes back as GitHub's own HTML page, which is not the attachment.
+    if (direct.ok && !/text\/html/.test(type)) {
+      const value = { type: type || 'application/octet-stream', body: Buffer.from(await direct.arrayBuffer()) };
+
+      assetCache.set(assetUrl, { at: Date.now(), value });
+
+      return value;
+    }
+    await direct.body?.cancel?.();
+  } catch { /* the browser below is the other way */ }
+
   const base = await cdpBase();
   const opened = await fetch(`${ base }/json/new?${ encodeURIComponent('https://github.com/') }`, { method: 'PUT' })
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`the shared GitHub browser would not open a tab (${ r.status })`))));
