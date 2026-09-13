@@ -272,13 +272,30 @@ const pushedAt = (d: Json) => Math.max(0, ...(d.commits || []).map((c: Json) => 
  * What there is to look at for one stage of a workspace's work - the current one, or one that
  * has passed. Everything is read fresh: the branch, the recordings, the PR, the agent's report.
  */
-export async function gatherEvidence(workspace: string, status: WorkspaceStatus, stage: Stage): Promise<EvidenceSection[]> {
-  const [report, branch, media, d] = await Promise.all([
-    latestAgentReport(workspace).catch(() => null),
-    readBranch(workspace).catch(() => null),
-    readMedia(workspace).catch(() => []),
-    status.pr ? prDetail(status.pr).catch(() => null) : Promise.resolve(null),
-  ]);
+export async function gatherEvidence(workspace: string, status: WorkspaceStatus, stage: Stage, onUpdate?: (sections: EvidenceSection[], done: boolean) => void): Promise<EvidenceSection[]> {
+  // Each source arrives when it does - the checkout in a second, GitHub in a few - and the
+  // column is redrawn from whatever has arrived so far rather than waiting for the slowest.
+  const have: { report?: Awaited<ReturnType<typeof latestAgentReport>>; branch?: Branch | null; media?: Awaited<ReturnType<typeof readMedia>>; d?: Json } = {};
+  const reads: Promise<void>[] = [
+    latestAgentReport(workspace).catch(() => null).then((v) => { have.report = v; }),
+    readBranch(workspace).catch(() => null).then((v) => { have.branch = v; }),
+    readMedia(workspace).catch(() => []).then((v) => { have.media = v; }),
+    (status.pr ? prDetail(status.pr).catch(() => null) : Promise.resolve(null)).then((v) => { have.d = v; }),
+  ];
+  let pending = reads.length;
+
+  for (const read of reads) {
+    read.then(() => {
+      pending--;
+      onUpdate?.(compose(status, stage, have.report || null, have.branch || null, have.media || [], have.d || null), pending === 0);
+    });
+  }
+  await Promise.all(reads);
+
+  return compose(status, stage, have.report || null, have.branch || null, have.media || [], have.d || null);
+}
+
+function compose(status: WorkspaceStatus, stage: Stage, report: Awaited<ReturnType<typeof latestAgentReport>>, branch: Branch | null, media: Awaited<ReturnType<typeof readMedia>>, d: Json): EvidenceSection[] {
   const sections: EvidenceSection[] = [];
   const reportSection = (title = 'Agent\'s report') => report && sections.push({ title, items: [{ kind: 'text', text: report.text, at: report.at }] });
   const mediaSection = (title: string, items: ReturnType<typeof mediaUnder>) => items.length && sections.push({ title, items: [{ kind: 'media', items }] });
