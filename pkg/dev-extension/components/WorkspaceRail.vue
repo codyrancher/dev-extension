@@ -71,6 +71,8 @@ export default {
       reading:     false,
       /** Which read of the first column is the current one; an older one landing is ignored. */
       readSeq:     0,
+      /** The stage the column currently shows, so a refresh of it is not allowed to shrink it. */
+      evidenceStage: '',
       /** The same for the status: one read at a time, and an older one landing cannot regress the stage. */
       statusSeq:   0,
       statusBusy:  false,
@@ -308,14 +310,20 @@ export default {
 
       this.reading = true;
       try {
+        const fresh = this.evidenceStage !== stage;
+
         const sections = await gatherEvidence(this.workspace.name, this.status, stage, (partial) => {
           console.debug(`[rail] evidence ${ seq } ${ stage } partial: ${ partial.map((s) => s.title).join(' | ') } current=${ current() }`); // eslint-disable-line no-console
-          if (current()) {
+          // A refresh of the stage already on the page never shows less than it had: the
+          // column would empty and regrow every minute under whoever is reading it.
+          if (current() && (fresh || partial.length >= this.evidence.length)) {
             this.evidence = partial;
+            this.evidenceStage = stage;
           }
         });
         if (current()) {
           this.evidence = sections;
+          this.evidenceStage = stage;
         }
       } catch (e) {
         if (current()) {
@@ -334,12 +342,14 @@ export default {
       }
       this.viewing = step.key === this.current ? '' : step.key;
       this.evidence = [];
+      this.evidenceStage = '';
       this.refreshEvidence();
     },
 
     backToNow() {
       this.viewing = '';
       this.evidence = [];
+      this.evidenceStage = '';
       this.refreshEvidence();
     },
 
@@ -429,7 +439,7 @@ export default {
      * The newest conversation of the workspace, or a new one: where a prompt goes. A newest
      * whose pane is gone is started again to read it - a prompt queued to nobody sat there.
      */
-    async say(title, text) {
+    async say(title, text, reuse = !title) {
       await ensureWorkspaceReady(this.workspace.name);
       const conversations = await listConversations(this.workspace.name).catch(() => []);
       // The conversation about this work - the fix's, the review's, the feedback's - before a
@@ -437,7 +447,7 @@ export default {
       const about = conversations.filter((c) => /^(Fix|Review|Feedback|Improve|CI) /.test(c.title || '') || (this.status?.pr && (c.title || '').includes(`#${ this.status.pr }`)));
       const newest = about[about.length - 1] || conversations[conversations.length - 1];
 
-      if (newest && title === '') {
+      if (newest && reuse) {
         await queuePrompt(newest.attach, text);
         const alive = (await conversationStates().catch(() => [])).find((c) => c.id === newest.id)?.alive;
 
@@ -498,7 +508,9 @@ export default {
       if (!pr) {
         throw new Error('There is no PR to answer feedback on.');
       }
-      await this.say(`Feedback on #${ pr }`, `/my-pr-address-feedback Address the review feedback on ${ DEFAULT_REPO } PR #${ pr }: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.`);
+      // Into the fix's own conversation when there is one - it has the context of every round -
+      // and a new one named for the PR otherwise.
+      await this.say(`Feedback on #${ pr }`, `/my-pr-address-feedback Address the review feedback on ${ DEFAULT_REPO } PR #${ pr }: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.`, true);
       this.notice = 'The agent is answering the feedback in a new conversation.';
       this.openTab('conversations');
     },
@@ -1450,8 +1462,6 @@ export default {
     margin:      0;
     white-space: pre-wrap;
     line-height: 1.45;
-    max-height:  360px;
-    overflow:    auto;
   }
 
   &__when {
