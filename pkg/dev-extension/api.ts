@@ -2121,7 +2121,10 @@ export async function ensureWorkspaceApi(): Promise<void> {
           apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace, name, labels }, data,
         }),
       }).catch(() => null);
-    } else if (JSON.stringify(existing.data) !== JSON.stringify(data)) {
+    } else if (Object.keys(data).some((key) => (existing.data || {})[key] !== data[key]) || Object.keys(existing.data || {}).some((key) => !(key in data))) {
+      // Key by key: the apiserver hands the keys back sorted, so comparing the two objects as
+      // JSON said "changed" on every load - and deleted the pod every time, which is where the
+      // minute of "no endpoints available" after every dashboard load came from.
       await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data }) }).catch(() => null);
       // node read the old script at start: the pod is replaced, and the new one mounts the
       // ConfigMap as it is now. Quiet like the rest; a user who may not do this changes nothing.
