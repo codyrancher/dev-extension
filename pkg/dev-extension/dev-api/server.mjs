@@ -857,6 +857,66 @@ const UPLOAD_IN_PAGE = async({ b64, name, ct }) => {
   return pol.asset.href;
 };
 
+const assetCache = new Map();
+
+/**
+ * One attachment OUT of `user-attachments`, through the shared browser.
+ *
+ * The same reason the upload needs that browser: an attachment's URL redirects to a signed URL
+ * that only a github.com session can mint, so a fetch from this pod - with an API token or
+ * without - is a 404. Inside a page of the signed-in browser the cookies are already there, so
+ * the page fetches it and hands the bytes back as base64 over CDP. Small ones only (8 MB): the
+ * bytes cross a websocket as text, and a recording is meant to be opened on GitHub.
+ */
+async function fetchGithubAsset(assetUrl) {
+  const kept = assetCache.get(assetUrl);
+
+  if (kept && Date.now() - kept.at < 10 * 60_000) {
+    return kept.value;
+  }
+  const base = await cdpBase();
+  const opened = await fetch(`${ base }/json/new?${ encodeURIComponent('https://github.com/') }`, { method: 'PUT' })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`the shared GitHub browser would not open a tab (${ r.status })`))));
+  const session = cdpSession(opened.webSocketDebuggerUrl);
+
+  try {
+    await session.send('Runtime.enable');
+    const result = await evaluate(session, async(url) => {
+      const response = await fetch(url, { credentials: 'include' });
+
+      if (!response.ok) {
+        return { error: `${ response.status }` };
+      }
+      const type = response.headers.get('content-type') || 'application/octet-stream';
+      const buffer = await response.arrayBuffer();
+
+      if (buffer.byteLength > 8 * 1024 * 1024) {
+        return { type, tooBig: buffer.byteLength };
+      }
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
+
+      return { type, base64: btoa(binary) };
+    }, assetUrl);
+
+    if (result?.error) {
+      throw failure(502, `GitHub asset -> ${ result.error }`);
+    }
+    const value = result?.base64 ? { type: result.type, body: Buffer.from(result.base64, 'base64') } : { type: result?.type || '', body: null, tooBig: result?.tooBig || 0 };
+
+    assetCache.set(assetUrl, { at: Date.now(), value });
+
+    return value;
+  } finally {
+    session.close();
+    await fetch(`${ base }/json/close/${ opened.id }`).catch(() => {});
+  }
+}
+
 /**
  * One file to `user-attachments`, through the shared browser, as the `user-attachments` href.
  *
@@ -1850,44 +1910,23 @@ http.createServer(async(req, res) => {
       return send(res, 400, { error: 'Not a GitHub asset URL.' });
     }
     try {
-      const token = await githubToken();
-      const upstream = await fetch(asset, { headers: token ? { authorization: `Bearer ${ token }`, 'user-agent': 'dev-extension' } : { 'user-agent': 'dev-extension' }, redirect: 'follow' });
-
-      if (!upstream.ok) {
-        return send(res, 502, { error: `GitHub asset -> ${ upstream.status }` });
-      }
-      const type = upstream.headers.get('content-type') || 'application/octet-stream';
+      const got = await fetchGithubAsset(asset);
 
       if (url.searchParams.get('meta')) {
-        await upstream.body?.cancel?.();
-
-        return send(res, 200, { type, size: Number(upstream.headers.get('content-length') || 0) });
+        return send(res, 200, { type: got.type, size: got.body?.length || got.tooBig || 0, tooBig: !!got.tooBig });
+      }
+      if (!got.body) {
+        return send(res, 413, { error: 'The attachment is too large to show here; open it on GitHub.' });
       }
       res.writeHead(200, {
-        'content-type':                type,
-        ...(upstream.headers.get('content-length') ? { 'content-length': upstream.headers.get('content-length') } : {}),
+        'content-type':                got.type || 'application/octet-stream',
+        'content-length':              got.body.length,
         'access-control-allow-origin': '*',
         'cache-control':               'private, max-age=3600',
       });
-      const reader = upstream.body.getReader();
-      const pump = async() => {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          res.end();
-
-          return;
-        }
-        res.write(Buffer.from(value));
-        await pump();
-      };
-
-      await pump();
+      res.end(got.body);
     } catch (e) {
-      if (!res.headersSent) {
-        return send(res, 502, { error: `GitHub asset: ${ e.message }` });
-      }
-      res.end();
+      return send(res, e.status || 502, { error: `GitHub asset: ${ e.message }` });
     }
 
     return;
