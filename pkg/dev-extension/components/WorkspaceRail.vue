@@ -102,8 +102,13 @@ export default {
       return this.steps.findIndex((s) => s.key === this.current);
     },
 
+    /**
+     * The stage being looked at: the one clicked, else the current one, else - while the
+     * status is still being read - the kind's middle stage, whose column (the change, the
+     * report, the PR) is what there is to look at whatever the stage turns out to be.
+     */
     shown() {
-      return this.viewing || this.current;
+      return this.viewing || this.current || (this.status?.kind === 'review' ? 'agent' : this.status?.kind === 'fix' ? 'code' : '');
     },
 
     shownLabel() {
@@ -232,9 +237,7 @@ export default {
       // GitHub's sake.
       this.status = knownStatus(this.workspace.name) || provisionalStatus(this.workspace.name);
       this.loading = false;
-      if (this.status.stage) {
-        this.refreshEvidence();
-      }
+      this.refreshEvidence();
       await this.refreshStatus();
       await this.refreshEvidence();
     },

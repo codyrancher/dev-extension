@@ -129,6 +129,21 @@ export function hunkRows(path: string, patch: string, line: number, side = 'RIGH
   }));
 }
 
+/** GitHub's own hunk for a comment (`diff_hunk`), highlighted, its last line - the commented one - marked. */
+export function ownHunkRows(path: string, diffHunk: string): CodeRow[] {
+  const hunks = parseHunks(diffHunk);
+  const rows = hunks.flatMap((h) => {
+    highlightRows(path, h.rows);
+
+    return h.rows;
+  });
+  const last = [...rows].reverse().find((r) => r.type !== 'hunk');
+
+  return rows.slice(-40).map((r) => ({
+    type: r.type, oldN: r.oldN, newN: r.newN, html: r.type === 'hunk' ? escapeHtml(r.text) : hl(r), marked: r === last,
+  }));
+}
+
 /** A whole file's patch as rows, highlighted: what a commit opens to. */
 export function fileRows(path: string, patch: string, limit = 400): CodeRow[] {
   const rows: CodeRow[] = [];
@@ -325,9 +340,16 @@ function threads(d: Json): Comment[] {
     const file = files.findIndex((f) => f.path === root.path);
     const line = Number(root.line) || 0;
     const patch = files[file]?.patch || '';
-    const c = card(root, members, root.path ? `${ root.path }${ line ? `:${ line }` : '' }` : 'review', root.path || '', line, hunkRows(root.path || '', patch, line, root.side), file < 0 ? 9999 : file, m.url ? `${ m.url }#discussion_r${ root.id }` : '');
+    // The current diff when the line is still in it; else GitHub's own hunk for the comment,
+    // whose last line is the commented one.
+    let rows = root.outdated ? [] : hunkRows(root.path || '', patch, line, root.side);
 
-    c.noPatch = !!root.path && file >= 0 && !patch;
+    if (!rows.length && root.diffHunk) {
+      rows = ownHunkRows(root.path || '', root.diffHunk);
+    }
+    const c = card(root, members, root.path ? `${ root.path }${ line ? `:${ line }` : '' }` : 'review', root.path || '', line, rows, file < 0 ? 9999 : file, m.url ? `${ m.url }#discussion_r${ root.id }` : '');
+
+    c.noPatch = !!root.path && !rows.length && !patch && !root.diffHunk;
 
     return c;
   }).sort((a, b) => a.order - b.order || a.line - b.line || (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));

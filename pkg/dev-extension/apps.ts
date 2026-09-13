@@ -830,7 +830,7 @@ export function rancherWorkspaceApp(): Json {
             '              memory: 512Mi',
             '            limits:',
             '              cpu: "1"',
-            '              memory: 2Gi',
+            '              memory: 3Gi',
             '          ports:',
             '            - name: browser',
             '              containerPort: 3000',
