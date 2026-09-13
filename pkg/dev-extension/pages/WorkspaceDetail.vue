@@ -33,11 +33,14 @@ import WorkspacePreview from '../components/WorkspacePreview.vue';
 import WorkspacePr from '../components/WorkspacePr.vue';
 import WorkspaceShare from '../components/WorkspaceShare.vue';
 import WorkspaceReview from '../components/WorkspaceReview.vue';
+import WorkspaceRail from '../components/WorkspaceRail.vue';
 import { workspaceInstance } from '../apps';
 import {
   getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster
 } from '../api';
-import { rememberWorkspace, rememberTab, lastTab } from '../recent';
+import {
+  rememberWorkspace, rememberTab, lastTab, workspaceView, rememberWorkspaceView
+} from '../recent';
 import {
   WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB
 } from '../config/constants';
@@ -49,7 +52,7 @@ export default {
 
   components: {
     Loading, Tabbed, Tab, Banner, RcButton, Row,
-    WorkspaceConversations, WorkspaceBrowser, WorkspacePreview, WorkspacePr, WorkspaceShare, WorkspaceReview
+    WorkspaceConversations, WorkspaceBrowser, WorkspacePreview, WorkspacePr, WorkspaceShare, WorkspaceReview, WorkspaceRail
   },
 
   async fetch() {
@@ -77,6 +80,11 @@ export default {
       framable:     false,
       /** The tab Tabbed is actually showing, which is what an unusable hash is corrected to. */
       active:       DEFAULT_WORKSPACE_TAB,
+      /**
+       * The rail or the tabs. The rail is the default; the tabs stay a link away, and a jump
+       * from the rail into one tab shows the tabs for this visit without changing the default.
+       */
+      view:         workspaceView(),
     };
   },
 
@@ -145,6 +153,15 @@ export default {
       return this.workspace?.state === 'stopped';
     },
 
+    /** The rail is for a workspace named for an issue or a PR; anything else opens on its tabs. */
+    railable() {
+      return !!this.workspace && !this.workspace.preview && (this.prNumber > 0 || this.issueNumber > 0);
+    },
+
+    showRail() {
+      return this.railable && this.view === 'rail';
+    },
+
   },
 
   watch: {
@@ -177,6 +194,20 @@ export default {
   },
 
   methods: {
+    /** The explicit switch: remembered, so the next workspace opens the same way. */
+    setView(view) {
+      this.view = view;
+      rememberWorkspaceView(view);
+    },
+
+    /** A jump from the rail into one tab: the tabs for now, the rail again next time. */
+    openTab(name) {
+      this.view = 'tabs';
+      this.seen[name] = true;
+      this.active = name;
+      this.$router.replace({ ...this.$route, hash: `#${ name }` }).catch(() => {});
+    },
+
     /**
      * A tab became the active one. Recorded so its content is mounted from here on, and
      * remembered so the next workspace opens on it.
@@ -358,8 +389,30 @@ export default {
       </Row>
     </Banner>
 
+    <div
+      v-if="!stopped && railable"
+      class="dev-workspace__switch"
+    >
+      <a
+        v-if="showRail"
+        @click.prevent="setView('tabs')"
+      >Tabbed view</a>
+      <a
+        v-else
+        @click.prevent="setView('rail')"
+      >Stage view</a>
+    </div>
+
+    <WorkspaceRail
+      v-if="!stopped && showRail"
+      :workspace="workspace"
+      :pr="prNumber"
+      :issue="issueNumber"
+      @open-tab="openTab"
+    />
+
     <Tabbed
-      v-else
+      v-else-if="!stopped"
       class="dev-workspace__tabs"
       :default-tab="tab"
       @changed="onTabChanged"
@@ -477,6 +530,21 @@ export default {
 
     &--message {
       padding: var(--dev-space-5);
+    }
+
+    // The way to the other view: a link in the top-right corner, over the rail or the tab strip.
+    &__switch {
+      position: relative;
+      height:   0;
+      z-index:  2;
+
+      a {
+        position:  absolute;
+        top:       10px;
+        right:     24px;
+        font-size: 12px;
+        cursor:    pointer;
+      }
     }
 
     // The sentence and the button on one line, since the button is what the sentence is about.

@@ -14,6 +14,10 @@ type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 export type AgentState = 'working' | 'input' | 'idle' | 'finished' | 'none';
 export type Tone = 'green' | 'attention' | 'waiting' | 'working' | 'muted';
+/** Where the work is, on the rail: a fix's stages, or a review's. */
+export type FixStage = 'assess' | 'code' | 'draft' | 'review' | 'feedback' | 'merged';
+export type ReviewStage = 'agent' | 'findings' | 'submitted' | 'response' | 'approved';
+export type Stage = FixStage | ReviewStage;
 
 export interface WorkspaceStatus {
   /** What the agent in the workspace's conversations is doing, the busiest of them. */
@@ -24,6 +28,10 @@ export interface WorkspaceStatus {
   /** The PR's or issue's title, for the card. */
   title: string;
   links: { label: string; url: string }[];
+  /** Which kind of work this is, its stage, and the PR it is about (0 until there is one). */
+  kind: 'fix' | 'review' | 'other';
+  stage: Stage | '';
+  pr: number;
   /** When GitHub was last read for it; 0 when it never has been. */
   readAt: number;
 }
@@ -51,7 +59,7 @@ let reading = false;
 
 function empty(): WorkspaceStatus {
   return {
-    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0,
+    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0, kind: 'other', stage: '', pr: 0,
   };
 }
 
@@ -123,17 +131,17 @@ const latest = (dates: (string | null | undefined)[]) => Math.max(0, ...dates.ma
  * findings not yet submitted are the person's to go through; a submitted review is waiting
  * on the developer until they push or answer; an approval, theirs or anyone's, is done.
  */
-function reviewWork(d: Json, agent: AgentState): Pick<WorkspaceStatus, 'label' | 'tone'> {
+function reviewWork(d: Json, agent: AgentState): Pick<WorkspaceStatus, 'label' | 'tone' | 'stage'> {
   const m = d.meta || {};
   const local: Json[] = d.localComments || [];
   const submitted = local.filter((c) => c.submitted_at);
   const pending = local.filter((c) => !c.submitted_at);
 
   if (m.merged) {
-    return { label: 'Merged', tone: 'green' };
+    return { label: 'Merged', tone: 'green', stage: 'approved' };
   }
   if (m.approved) {
-    return { label: 'Approved', tone: 'green' };
+    return { label: 'Approved', tone: 'green', stage: 'approved' };
   }
   if (submitted.length) {
     const submittedAt = latest(submitted.map((c) => c.submitted_at));
@@ -141,22 +149,22 @@ function reviewWork(d: Json, agent: AgentState): Pick<WorkspaceStatus, 'label' |
     const replied = latest([...(d.discussion || []), ...(d.reviewComments || [])].filter((c: Json) => c.author === m.author).map((c: Json) => c.createdAt)) > submittedAt;
 
     if (pushed || replied) {
-      return { label: pushed ? 'Developer pushed: review again' : 'Developer replied', tone: 'attention' };
+      return { label: pushed ? 'Developer pushed: review again' : 'Developer replied', tone: 'attention', stage: 'response' };
     }
 
-    return { label: 'Waiting for the developer', tone: 'waiting' };
+    return { label: 'Waiting for the developer', tone: 'waiting', stage: 'submitted' };
   }
   if (agent === 'working') {
-    return { label: 'Agent reviewing', tone: 'working' };
+    return { label: 'Agent reviewing', tone: 'working', stage: 'agent' };
   }
   if (pending.length) {
-    return { label: 'Review the agent\'s findings', tone: 'attention' };
+    return { label: 'Review the agent\'s findings', tone: 'attention', stage: 'findings' };
   }
   if (agent === 'input') {
-    return { label: 'Agent needs an answer', tone: 'attention' };
+    return { label: 'Agent needs an answer', tone: 'attention', stage: 'agent' };
   }
 
-  return { label: 'Not reviewed yet', tone: 'muted' };
+  return { label: 'Not reviewed yet', tone: 'muted', stage: 'agent' };
 }
 
 /**
@@ -166,43 +174,47 @@ function reviewWork(d: Json, agent: AgentState): Pick<WorkspaceStatus, 'label' |
  * ready (the skills never do), a review from someone else after the last push is theirs to
  * answer, and otherwise the PR waits for a reviewer.
  */
-function fixWork(d: Json | null, agent: AgentState): Pick<WorkspaceStatus, 'label' | 'tone'> {
+function fixWork(d: Json | null, agent: AgentState, coded = false): Pick<WorkspaceStatus, 'label' | 'tone' | 'stage'> {
   if (!d) {
+    // Before a PR the branch says which of the first two stages this is: commits on it mean the
+    // code is being written (or is written); none, and the agent is still assessing.
+    const stage: FixStage = coded ? 'code' : 'assess';
+
     if (agent === 'working') {
-      return { label: 'Working on the fix', tone: 'working' };
+      return { label: coded ? 'Working on the code' : 'Assessing the issue', tone: 'working', stage };
     }
     if (agent === 'input') {
-      return { label: 'Agent needs an answer', tone: 'attention' };
+      return { label: 'Agent needs an answer', tone: 'attention', stage };
     }
 
-    return { label: 'No PR yet', tone: 'muted' };
+    return { label: coded ? 'Code written, no PR yet' : 'No PR yet', tone: 'muted', stage };
   }
   const m = d.meta || {};
 
   if (m.merged) {
-    return { label: 'Merged', tone: 'green' };
+    return { label: 'Merged', tone: 'green', stage: 'merged' };
   }
   if (m.approved) {
-    return { label: 'Approved', tone: 'green' };
+    return { label: 'Approved', tone: 'green', stage: 'merged' };
   }
   const comments: Json[] = [...(d.discussion || []), ...(d.reviewComments || [])];
   const others = latest(comments.filter((c) => c.author && c.author !== m.author).map((c) => c.createdAt));
   const mine = Math.max(latest(comments.filter((c) => c.author === m.author).map((c) => c.createdAt)), latest((d.commits || []).map((c: Json) => c.date)));
 
   if (others > mine) {
-    return { label: 'Respond to the review', tone: 'attention' };
+    return { label: 'Respond to the review', tone: 'attention', stage: 'feedback' };
   }
   if (agent === 'working') {
-    return { label: 'Agent working on the PR', tone: 'working' };
+    return { label: 'Agent working on the PR', tone: 'working', stage: m.draft ? 'draft' : 'review' };
   }
   if (m.draft) {
-    return { label: 'Draft PR: read it and mark it ready', tone: 'attention' };
+    return { label: 'Draft PR: read it and mark it ready', tone: 'attention', stage: 'draft' };
   }
   if (m.state === 'CLOSED') {
-    return { label: 'PR closed', tone: 'muted' };
+    return { label: 'PR closed', tone: 'muted', stage: 'merged' };
   }
 
-  return { label: 'Waiting for a review', tone: 'waiting' };
+  return { label: 'Waiting for a review', tone: 'waiting', stage: 'review' };
 }
 
 async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
@@ -218,7 +230,9 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
 
     links.push({ label: `PR #${ pr }`, url: d.meta?.url || `https://github.com/${ DEFAULT_REPO }/pull/${ pr }` });
 
-    return { ...reviewWork(d, agent), title: d.meta?.title || '', links };
+    return {
+      ...reviewWork(d, agent), title: d.meta?.title || '', links, kind: 'review', pr,
+    };
   }
   if (issue) {
     const n = await linkedPullRequest(DEFAULT_REPO, issue).catch(() => 0);
@@ -228,10 +242,34 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
       links.push({ label: `PR #${ n }`, url: d?.meta?.url || `https://github.com/${ DEFAULT_REPO }/pull/${ n }` });
     }
 
-    return { ...fixWork(d, agent), title: d?.meta?.title || '', links };
+    return {
+      ...fixWork(d, agent, coded[name] || false), title: d?.meta?.title || '', links, kind: 'fix', pr: n,
+    };
   }
 
-  return { links };
+  return { links, kind: 'other' };
+}
+
+/** Whether a fix workspace's branch has commits yet - told by the page, which reads the checkout. */
+const coded: Record<string, boolean> = {};
+
+export function noteCoded(name: string, value: boolean): void {
+  coded[name] = value;
+}
+
+/**
+ * One workspace's status, read now rather than on the sidebar's schedule: the page that shows
+ * the stage wants it fresh on open, and after an action that changes it.
+ */
+export async function readStatusNow(name: string): Promise<WorkspaceStatus> {
+  agentsAt = 0;
+  await refreshAgents();
+  const before = statuses.get(name) || empty();
+  const next = { ...before, ...(await readWork(name)), readAt: Date.now(), agent: agents[name] || 'none' };
+
+  statuses.set(name, next);
+
+  return next;
 }
 
 /** GitHub, one workspace at a time, the stalest first; never two at once. */
@@ -284,7 +322,7 @@ export async function workspaceStatuses(workspaces: { name: string; cluster?: st
     // The work's wording depends on the agent too, and the agent moves more often than
     // GitHub is read: a fix workspace whose agent has just gone idle says so now.
     const { pr, issue } = numbers(name);
-    const rewrite = known.readAt && !pr && issue && !known.links.some((l) => l.label.startsWith('PR')) ? fixWork(null, agent) : {};
+    const rewrite = known.readAt && !pr && issue && !known.links.some((l) => l.label.startsWith('PR')) ? fixWork(null, agent, coded[name] || false) : {};
 
     out[name] = { ...known, ...rewrite, agent };
   }
