@@ -641,11 +641,16 @@ export function linkRefs(html: string): string {
   return html.split(/(<[^>]+>)/).map((part, i) => (i % 2 ? part : part.replace(/(^|[\s(])#(\d{2,7})\b/g, `$1<a href="https://github.com/${ DEFAULT_REPO }/issues/$2" target="_blank" rel="noopener noreferrer">#$2</a>`))).join('');
 }
 
-const ASSET_RE = /https:\/\/(?:github\.com\/user-attachments\/(?:assets|files)\/[\w.-]+|github\.com\/[\w.-]+\/[\w.-]+\/assets\/[\w./-]+|private-user-images\.githubusercontent\.com\/[^\s"'<)]+|user-images\.githubusercontent\.com\/[^\s"'<)]+)/g;
+// One source, two uses: `ASSET_SOURCE` builds a fresh regex each time it is needed. A shared
+// /g/ regex carries `lastIndex` between calls, so `test()` answered true and false in turn -
+// which is why half the images in a comment kept pointing at github.com and stayed broken.
+const ASSET_SOURCE = 'https:\\/\\/(?:github\\.com\\/user-attachments\\/(?:assets|files)\\/[\\w.-]+|github\\.com\\/[\\w.-]+\\/[\\w.-]+\\/assets\\/[\\w./-]+|private-user-images\\.githubusercontent\\.com\\/[^\\s"\'<)]+|user-images\\.githubusercontent\\.com\\/[^\\s"\'<)]+)';
+
+const isAsset = (url: string) => new RegExp(`^${ ASSET_SOURCE }$`).test(url) || /githubusercontent\.com\//.test(url);
 
 /** The attachment URLs a body carries, for asking what they are before drawing them. */
 export function assetUrls(text: string): string[] {
-  return [...new Set((text || '').match(ASSET_RE) || [])];
+  return [...new Set((text || '').match(new RegExp(ASSET_SOURCE, 'g')) || [])];
 }
 
 /**
@@ -658,15 +663,21 @@ export function assetUrls(text: string): string[] {
 export function renderBody(text: string, kinds: Record<string, string> = {}): string {
   let html = linkRefs(renderMd(text || ''));
 
-  html = html.replace(/<img([^>]*?)\ssrc="(https:\/\/[^"]+)"/g, (m, attrs, src) => (ASSET_RE.test(src) || /githubusercontent\.com/.test(src) ? `<img${ attrs } src="${ ghAssetUrl(src) }"` : m));
-  html = html.replace(/<a target="_blank" rel="noopener" href="(https:\/\/[^"]+)">\1<\/a>/g, (m, href) => {
+  html = html.replace(/<img([^>]*?)\ssrc="(https:\/\/[^"]+)"/g, (m, attrs, src) => (isAsset(src) ? `<img${ attrs } src="${ ghAssetUrl(src) }" loading="lazy"` : m));
+  // A bare attachment URL on its own - what GitHub itself turns into a player or a picture.
+  html = html.replace(/<a target="_blank" rel="noopener" href="(https:\/\/[^"]+)">([^<]*)<\/a>/g, (m, href, label) => {
+    if (label !== href || !isAsset(href)) {
+      return m;
+    }
     const kind = kinds[href] || '';
 
     if (/^video\//.test(kind)) {
       return `<video controls preload="metadata" src="${ ghAssetUrl(href) }"></video>`;
     }
-    if (/^image\//.test(kind)) {
-      return `<a target="_blank" rel="noopener" href="${ href }"><img src="${ ghAssetUrl(href) }" alt="attachment"></a>`;
+    if (/^image\//.test(kind) || !kind) {
+      // Unknown until the type is read: drawn as a picture, which falls back to the link's
+      // text if it is not one.
+      return `<a target="_blank" rel="noopener" href="${ href }"><img src="${ ghAssetUrl(href) }" alt="attachment" loading="lazy"></a>`;
     }
 
     return m;
