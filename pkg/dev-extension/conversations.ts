@@ -221,6 +221,51 @@ export async function latestAgentReport(workspace: string): Promise<AgentReport 
   }
 }
 
+/**
+ * Type something into a conversation that is already running.
+ *
+ * `queuePrompt` writes the file the pane's loop reads *when claude starts*, which is right for
+ * a conversation that has not begun and does nothing at all for one that has: the prompt sat
+ * in the queue and the person watched an idle pane. This is the other half - the text pasted
+ * into the pane's tmux and entered, which is what a person at the terminal does.
+ *
+ * Through a buffer rather than `send-keys` with the text on the command line: a prompt holds
+ * quotes, newlines and dollars, and a buffer is the one path that carries them untouched.
+ */
+export async function sendToPane(id: string, text: string): Promise<void> {
+  const api = await requireAgents();
+  const pod = await api.agent.pod();
+
+  if (!pod) {
+    throw new Error('The agent pod is not running, so there is nothing to type into.');
+  }
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  const file = `/tmp/.say-${ Date.now().toString(36) }`;
+  const script = [
+    'export PATH=/workspace/.home/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH',
+    `echo ${ btoa(binary) } | base64 -d > ${ file }`,
+    `chmod 666 ${ file } 2>/dev/null || true`,
+    // As the pane's user: the tmux server is theirs, and root's is a different one.
+    `as_user() { if [ "$(id -u)" = 0 ]; then setpriv --reuid=1000 --regid=1000 --init-groups env HOME=${ AGENT_HOME } "$@"; else env HOME=${ AGENT_HOME } "$@"; fi; }`,
+    `as_user tmux load-buffer -b mc-send ${ file }`,
+    `as_user tmux paste-buffer -b mc-send -t mc-${ id } -d -p`,
+    'sleep 0.3',
+    `as_user tmux send-keys -t mc-${ id } Enter`,
+    `rm -f ${ file }`,
+    'echo SENT',
+  ].join('\n');
+  const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script]);
+
+  if (!out.includes('SENT')) {
+    throw new Error(`The message could not be typed into ${ id }: ${ out.trim().slice(-200) || 'the pane did not answer' }`);
+  }
+}
+
 /** Where one conversation's transcript is, in the agent pod: from the id its pane recorded, or its state file. */
 export async function transcriptPathOf(workspace: string, id: string): Promise<string> {
   const api = await requireAgents();
