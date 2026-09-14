@@ -912,8 +912,13 @@ export default {
         throw new Error('This workspace is not named for a PR.');
       }
       this.approving = { message: '', attached: [], error: '' };
+      // What is worth attaching: the recordings and screenshots, newest first - not the
+      // thousands of single frames a recording leaves behind while it is being made.
       this.media = await devFetch(workspaceMediaListUrl(this.workspace.name))
-        .then((d) => (d?.files || []).slice(0, 40))
+        .then((d) => (d?.files || [])
+          .filter((f) => !/(^|\/)(tmp-frames|frames|\.cache)[^/]*\//.test(f.path) && !/\/f\d+\.(png|jpe?g)$/.test(f.path))
+          .sort((a, b) => Number(/video/.test(b.type || '')) - Number(/video/.test(a.type || '')) || (b.mtimeMs || 0) - (a.mtimeMs || 0))
+          .slice(0, 20))
         .catch(() => []);
     },
 
@@ -924,7 +929,10 @@ export default {
       }
       this.approveBusy = file.path;
       try {
-        const { embed, name } = await attachToPr(this.status.pr, file.path);
+        // The media list is relative to the workspace's artifacts; the upload wants the path
+        // from the workspace's root, which is where `putArtifact` already puts its own.
+        const path = file.path.startsWith('artifacts/') ? file.path : `artifacts/${ file.path }`;
+        const { embed, name } = await attachToPr(this.status.pr, path);
         const message = this.approving.message;
 
         this.approving = {
