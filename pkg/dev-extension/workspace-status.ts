@@ -51,15 +51,20 @@ function staged(work: Work): Pick<WorkspaceStatus, 'label' | 'tone' | 'stage' | 
   };
 }
 
-/**
- * A workspace's state in one line: the stage it is at, then what that stage is waiting on
- * where there is more to say than the stage's own name. The agent's own line is added after
- * this one by whoever draws it, so a state whose only news is the agent says nothing here.
- */
-export function statusLine(status: Pick<WorkspaceStatus, 'label' | 'stageLabel' | 'stage'>): string {
+/** What to call the stage a workspace is at: the rail's own word for it. */
+export function stageName(status: Pick<WorkspaceStatus, 'stageLabel' | 'stage'>): string {
   // A status read by an older version of this and kept in session storage has the stage but
   // not its name, so the name is worked out again rather than left off for a read's worth.
-  const stage = status.stageLabel || (status.stage ? STAGE_LABELS[status.stage] : '');
+  return status.stageLabel || (status.stage ? STAGE_LABELS[status.stage] : '');
+}
+
+/**
+ * The longer form: the stage, then what that stage is waiting on where there is more to say
+ * than the stage's own name. The list has room for the stage alone; the card under the
+ * pointer has room for this.
+ */
+export function statusLine(status: Pick<WorkspaceStatus, 'label' | 'stageLabel' | 'stage'>): string {
+  const stage = stageName(status);
   const note = status.label || '';
 
   if (!stage || !note) {

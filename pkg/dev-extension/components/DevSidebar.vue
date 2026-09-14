@@ -22,7 +22,7 @@ import {
 } from '../ranchers';
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
-import { workspaceStatuses, agentLabel, statusLine } from '../workspace-status';
+import { workspaceStatuses, agentLabel, statusLine, stageName } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import DevList from './DevList.vue';
 import DevDialog from './DevDialog.vue';
@@ -539,16 +539,18 @@ export default {
       return workspaces.map((workspace) => {
         const status = this.statuses[workspace.name];
         const title = workspace.title || status?.title || '';
-        // The stage first, in the rail's own words, then what that stage waits on and what
-        // the agent is doing: "In review · waiting for a reviewer · agent idle".
+        // The row says where the work is and what the agent is doing - "In review · agent
+        // idle" - in the rail's own words for the stage. What that stage is waiting on is a
+        // sentence, not a column's width, so it waits for the card under the pointer.
         const lines = status ? [statusLine(status), agentLabel(status.agent)].filter(Boolean) : [];
+        const row = status ? [stageName(status), agentLabel(status.agent)].filter(Boolean) : [];
 
         return {
           key:    workspace.name,
           label:  this.rowLabel(workspace),
           title:  [workspace.name, title, workspace.cluster && workspace.cluster !== 'local' ? workspace.cluster : ''].filter(Boolean).join(' · '),
           state:  workspace.state,
-          detail: lines.join(' · '),
+          detail: row.join(' · '),
           tone:   status?.tone,
           agent:  status?.agent,
           card:   { title: title ? `${ workspace.name } · ${ title }` : workspace.name, lines, links: status?.links || [] },
