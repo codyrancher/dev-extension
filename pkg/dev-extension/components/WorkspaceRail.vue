@@ -1742,8 +1742,23 @@ export default {
                   </li>
                 </ul>
               </template>
+              <!--
+                The whole change in the review tool, which is the thing built for reading a
+                branch: file tree, whole-file context, the diff options. The list under it is
+                for a quick look at one file; this is for going through all of them.
+              -->
+              <div
+                v-if="item.kind === 'files' && item.open"
+                class="workspace-rail__combined"
+              >
+                <button
+                  type="button"
+                  class="workspace-rail__back"
+                  @click="openTab('review')"
+                >Review all {{ item.items.length }} files in the review tool</button>
+              </div>
               <ul
-                v-else-if="item.kind === 'files'"
+                v-if="item.kind === 'files'"
                 class="workspace-rail__list workspace-rail__list--files"
                 :class="{ 'workspace-rail__list--plain': item.open }"
               >
@@ -1842,7 +1857,7 @@ export default {
                 </li>
               </ul>
               <div
-                v-else-if="item.kind === 'media'"
+                v-if="item.kind === 'media'"
                 class="workspace-rail__media"
               >
                 <figure
@@ -2950,6 +2965,12 @@ export default {
   }
 
   /* The box under a picked range: what to ask about it. */
+  &__combined {
+    display:         flex;
+    justify-content: flex-end;
+    padding-bottom:  2px;
+  }
+
   &__ask-lines {
     display:        flex;
     flex-direction: column;
