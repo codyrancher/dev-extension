@@ -844,7 +844,17 @@
   margin:       var(--dev-space-2) 0;
 }
 
-.md-body :deep(img) { max-width: 100%; }
+.md-body :deep(img) { max-width: 100%; height: auto; }
+
+/* A recording in a comment: as wide as the comment and no wider, never taller than a screenful. */
+.md-body :deep(video) {
+  display:       block;
+  max-width:     100%;
+  max-height:    70vh;
+  height:        auto;
+  border-radius: var(--border-radius);
+  background:    #000;
+}
 .md-body :deep(table) { border-collapse: collapse; margin: var(--dev-space-2) 0; }
 .md-body :deep(th), .md-body :deep(td) { border: 1px solid var(--pr-border); padding: var(--dev-space-1) var(--dev-space-3); }
 
