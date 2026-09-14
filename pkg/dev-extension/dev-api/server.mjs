@@ -535,6 +535,47 @@ async function readSkill(name) {
   };
 }
 
+/** The edited prompt templates, by the action's key: what a button sends before the variables go in. */
+async function promptOverrides() {
+  try {
+    const map = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ SKILLS_MAP }`);
+    const out = {};
+
+    for (const [key, value] of Object.entries(map.data || {})) {
+      const m = /^prompt__([a-z0-9-]+)$/.exec(key);
+
+      if (m) {
+        out[m[1]] = value;
+      }
+    }
+
+    return out;
+  } catch (e) {
+    if (e.status === 404) {
+      return {};
+    }
+    throw e;
+  }
+}
+
+async function writeConfigValue(key, value) {
+  const p = `/api/v1/namespaces/${ NAMESPACE }/configmaps/${ SKILLS_MAP }`;
+
+  try {
+    await k8s(p, { method: 'PATCH', body: JSON.stringify({ data: { [key]: value } }) });
+  } catch (e) {
+    if (e.status !== 404 || value === null) {
+      throw e;
+    }
+    await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps`, {
+      method: 'POST',
+      body:   JSON.stringify({
+        apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace: NAMESPACE, name: SKILLS_MAP, labels: { 'dev.rancher.io/kind': 'skills' } }, data: { [key]: value },
+      }),
+    });
+  }
+}
+
 async function writeSkillOverride(name, content) {
   const p = `/api/v1/namespaces/${ NAMESPACE }/configmaps/${ SKILLS_MAP }`;
   const data = { [`skill__${ name }`]: content };
@@ -1432,6 +1473,22 @@ const routes = [
   ['GET', /^\/agent-seed$/, async() => agentSeed()],
   ['GET', /^\/agent-seed\/version$/, async() => ({ version: await seedVersion() })],
   ['GET', /^\/skills$/, async() => ({ skills: await listSkills(), version: await seedVersion() })],
+  ['GET', /^\/prompts$/, async() => ({ prompts: await promptOverrides() })],
+  ['PUT', /^\/prompts\/([a-z0-9-]+)$/, async(m, url, body) => {
+    const template = String(body?.template || '');
+
+    if (!template.trim()) {
+      throw failure(400, 'The prompt is empty.');
+    }
+    await writeConfigValue(`prompt__${ m[1] }`, template);
+
+    return { ok: true };
+  }],
+  ['DELETE', /^\/prompts\/([a-z0-9-]+)$/, async(m) => {
+    await writeConfigValue(`prompt__${ m[1] }`, null).catch(() => {});
+
+    return { ok: true };
+  }],
   ['GET', /^\/skills\/([a-z0-9-]+)$/, async(m) => readSkill(m[1])],
   ['PUT', /^\/skills\/([a-z0-9-]+)$/, async(m, url, body) => saveSkill(m[1], body)],
   ['POST', /^\/skills\/([a-z0-9-]+)\/reset$/, async(m) => {

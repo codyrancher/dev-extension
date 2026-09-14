@@ -17,7 +17,7 @@ import {
   readStatusNow, knownStatus, provisionalStatus, agentLabel
 } from '../workspace-status';
 import {
-  stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt
+  stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
 } from '../workspace-rail';
 import { prFile } from '../reviews';
 import {
@@ -25,9 +25,11 @@ import {
 } from '../conversations';
 import { ensureWorkspaceReady } from '../workspace-tools';
 import {
-  startIssueFix, startPrReview, approveAndMerge, reviewPrompt, fixPrompt, DEFAULT_REPO
+  startIssueFix, startPrReview, approveAndMerge, DEFAULT_REPO
 } from '../reviews';
-import { readSkill, saveSkill } from '../skills';
+import {
+  readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
+} from '../skills';
 import { markReadyForReview } from '../github';
 import { deleteWorkspace } from '../api';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE } from '../config/constants';
@@ -94,6 +96,10 @@ export default {
       inspecting:  null,
       skillDraft:  '',
       skillSaving: '',
+      /** The edited prompt templates, shared through the API, by the action's key. */
+      prompts:     {},
+      promptDraft: '',
+      promptSaving: '',
       /** Which thread each paged section is showing, by that section's title. */
       pages:       {},
       /** Rows opened to look closer: commits (their patch, read once) and comments (their chain and code). */
@@ -247,6 +253,9 @@ export default {
   mounted() {
     this.load();
     this.loadConversations();
+    readPrompts().then((p) => {
+      this.prompts = p;
+    }).catch(() => {});
     this.timers = [
       // The agents every fifteen seconds; GitHub every five minutes and after an action - not
       // on every tick, which overlapped itself on a big PR.
@@ -429,27 +438,34 @@ export default {
       return { review: 'Review the branch', pr: `PR${ this.status?.pr ? ` #${ this.status.pr }` : '' }`, browser: 'Browser', share: 'Share a build' }[this.modal] || '';
     },
 
+    /** What names an action's prompt in the shared store: the skill, or the method it runs. */
+    keyOf(action) {
+      return action?.skill || action?.run || '';
+    },
+
+    /** The template an action sends - the edited one where there is one, else what shipped. */
+    templateOf(action) {
+      const key = this.keyOf(action);
+
+      return this.prompts[key] || (action?.skill ? skillTemplate(action) : ACTION_TEMPLATES[action?.run] || '');
+    },
+
+    /** Everything a template may write, with what each one is right now. */
+    varsNow() {
+      return [
+        ...promptVars(this.status, this.issue, this.workspace.name),
+        { name: 'contextClause', value: this.status?.pr ? ` - its context: $CLAUDE_HARNESS_API/my-work/pr/${ this.status.pr }.` : '.', about: 'Where to read the PR, or just a full stop' },
+      ];
+    },
+
     /**
-     * The prompt an action sends, verbatim - what the middle click shows. '' for the actions
-     * that are not an agent's: marking a PR ready, merging, opening a view.
+     * The prompt an action sends, with the variables filled in. '' for the actions that are
+     * not an agent's: marking a PR ready, merging, opening a view.
      */
     promptOf(run) {
-      const pr = this.status?.pr || 0;
+      const template = this.prompts[run] || ACTION_TEMPLATES[run] || '';
 
-      switch (run) {
-      case 'startFix':
-        return fixPrompt(this.issue, DEFAULT_REPO);
-      case 'startReview':
-        return reviewPrompt(pr, DEFAULT_REPO);
-      case 'answerFeedback':
-        return `/my-pr-address-feedback Address the review feedback on ${ DEFAULT_REPO } PR #${ pr }: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.`;
-      case 'reverify':
-        return `/my-fix-demonstrate Re-verify the fix on this branch${ pr ? ` (PR #${ pr })` : '' } and record a fresh video of the same walk.`;
-      case 'reviewAgain':
-        return `The developer pushed new commits and/or replied since the review of ${ DEFAULT_REPO } PR #${ pr } was submitted. Review what changed against the comments that were made: say which are addressed, which are not, and anything new the changes introduce. File through $CLAUDE_HARNESS_API/my-work/pr/${ pr }.`;
-      default:
-        return '';
-      }
+      return template ? expandPrompt(template, this.varsNow()) : '';
     },
 
     /**
@@ -487,16 +503,18 @@ export default {
       if (event) {
         event.preventDefault();
       }
-      const prompt = action.skill ? skillPrompt(action, this.status, this.issue) : this.promptOf(action.run);
+      const template = this.templateOf(action);
 
-      if (!prompt) {
+      if (!template) {
         return;
       }
-      const skill = action.skill || this.skillIn(prompt);
+      const key = this.keyOf(action);
+      const skill = action.skill || this.skillIn(expandPrompt(template, this.varsNow()));
 
       this.inspecting = {
-        label: action.label, prompt, skill, content: '', error: '',
+        label: action.label, action, key, skill, content: '', error: '', edited: !!this.prompts[key],
       };
+      this.promptDraft = template;
       this.skillDraft = '';
       if (skill) {
         try {
@@ -507,6 +525,76 @@ export default {
         } catch (e) {
           this.inspecting = { ...this.inspecting, error: `The skill ${ skill } could not be read: ${ e?.message || e }` };
         }
+      }
+    },
+
+    /** A variable as it is written in a template, and putting one into the draft. */
+    varToken(v) {
+      return `{${ '{' } ${ v.name } }${ '}' }`;
+    },
+
+    insertVar(v) {
+      this.promptDraft = `${ this.promptDraft }${ this.promptDraft.endsWith(' ') || !this.promptDraft ? '' : ' ' }${ this.varToken(v) }`;
+    },
+
+    /** The prompt as it would be sent right now, with the draft's variables filled in. */
+    promptPreview() {
+      return expandPrompt(this.promptDraft, this.varsNow());
+    },
+
+    /** Send the draft as it stands, without keeping it. */
+    async sendDraft() {
+      const action = this.inspecting?.action;
+
+      if (!action || this.promptSaving) {
+        return;
+      }
+      this.promptSaving = 'send';
+      try {
+        await this.say(action.fresh ? `${ action.label } #${ this.status?.pr || this.issue }` : '', this.promptPreview(), !action.fresh);
+        this.notice = `${ action.label }: sent as edited; the agent is on it below.`;
+        this.inspecting = null;
+      } catch (e) {
+        this.inspecting = { ...this.inspecting, error: e?.message || String(e) };
+      } finally {
+        this.promptSaving = '';
+      }
+    },
+
+    /** Keep the draft as what this button sends, for every workspace and everyone. */
+    async savePrompt() {
+      if (!this.inspecting || this.promptSaving) {
+        return;
+      }
+      this.promptSaving = 'save';
+      try {
+        await savePromptTemplate(this.inspecting.key, this.promptDraft);
+        this.prompts = { ...this.prompts, [this.inspecting.key]: this.promptDraft };
+        this.inspecting = { ...this.inspecting, edited: true };
+        this.notice = `${ this.inspecting.label }: this is what the button sends from now on.`;
+      } catch (e) {
+        this.inspecting = { ...this.inspecting, error: e?.message || String(e) };
+      } finally {
+        this.promptSaving = '';
+      }
+    },
+
+    async resetPrompt() {
+      if (!this.inspecting || this.promptSaving) {
+        return;
+      }
+      this.promptSaving = 'reset';
+      try {
+        await resetPromptTemplate(this.inspecting.key);
+        const { [this.inspecting.key]: gone, ...rest } = this.prompts;
+
+        this.prompts = rest;
+        this.promptDraft = this.templateOf(this.inspecting.action);
+        this.inspecting = { ...this.inspecting, edited: false };
+      } catch (e) {
+        this.inspecting = { ...this.inspecting, error: e?.message || String(e) };
+      } finally {
+        this.promptSaving = '';
       }
     },
 
@@ -539,7 +627,7 @@ export default {
       this.error = '';
       this.notice = '';
       try {
-        const text = skillPrompt(button, this.status, this.issue);
+        const text = skillPrompt(button, this.status, this.issue, this.workspace.name, this.templateOf(button));
 
         await this.say(button.fresh ? `${ button.label } #${ this.status.pr || this.issue }` : '', text, !button.fresh);
         this.notice = `${ button.label }: the agent is on it in the conversation below.`;
@@ -716,7 +804,13 @@ export default {
       if (!this.issue) {
         throw new Error('This workspace is not named for an issue.');
       }
-      await startIssueFix(this.$store, { number: this.issue, title: this.workspace.title || '' });
+      const edited = this.prompts.startFix;
+
+      if (edited) {
+        await this.say(`Fix #${ this.issue }`, expandPrompt(edited, this.varsNow()));
+      } else {
+        await startIssueFix(this.$store, { number: this.issue, title: this.workspace.title || '' });
+      }
       this.notice = 'The fix conversation has started; it opens the PR when it is done.';
       await this.loadConversations();
       this.openTab('conversations');
@@ -728,7 +822,13 @@ export default {
       if (!this.pr) {
         throw new Error('This workspace is not named for a PR.');
       }
-      await startPrReview(this.$store, { number: this.pr, title: this.workspace.title || '' }, DEFAULT_REPO, this.workspace.name);
+      const editedReview = this.prompts.startReview;
+
+      if (editedReview) {
+        await this.say(`Review #${ this.pr }`, expandPrompt(editedReview, this.varsNow()));
+      } else {
+        await startPrReview(this.$store, { number: this.pr, title: this.workspace.title || '' }, DEFAULT_REPO, this.workspace.name);
+      }
       this.notice = 'The review has started; its findings land on the left as it goes.';
       await this.loadConversations();
       this.openTab('conversations');
@@ -753,7 +853,7 @@ export default {
       }
       // Into the fix's own conversation when there is one - it has the context of every round -
       // and a new one named for the PR otherwise.
-      await this.say(`Feedback on #${ pr }`, `/my-pr-address-feedback Address the review feedback on ${ DEFAULT_REPO } PR #${ pr }: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.`, true);
+      await this.say(`Feedback on #${ pr }`, this.promptOf('answerFeedback'), true);
       this.notice = 'The agent is answering the feedback in a new conversation.';
       this.openTab('conversations');
     },
@@ -761,14 +861,16 @@ export default {
     async reverify() {
       const pr = this.status?.pr;
 
-      await this.say('', `/my-fix-demonstrate Re-verify the fix on this branch${ pr ? ` (PR #${ pr })` : '' } and record a fresh video of the same walk.`);
+      void pr;
+      await this.say('', this.promptOf('reverify'));
       this.notice = 'Asked the agent to re-verify; the recording lands under Code and Draft PR.';
     },
 
     async reviewAgain() {
       const pr = this.status?.pr;
 
-      await this.say('', `The developer pushed new commits and/or replied since the review of ${ DEFAULT_REPO } PR #${ pr } was submitted. Review what changed against the comments that were made: say which are addressed, which are not, and anything new the changes introduce. File through $CLAUDE_HARNESS_API/my-work/pr/${ pr }.`);
+      void pr;
+      await this.say('', this.promptOf('reviewAgain'));
       this.notice = 'The agent is reviewing the new commits in the review conversation.';
       this.openTab('conversations');
     },
@@ -1336,9 +1438,76 @@ export default {
             :label="inspecting.error"
           />
           <section class="workspace-rail__section">
-            <h4 class="workspace-rail__section-title">The prompt, as it is sent</h4>
-            <pre class="workspace-rail__prompt">{{ inspecting.prompt }}</pre>
+            <h4 class="workspace-rail__section-title">
+              The prompt
+              <span
+                v-if="inspecting.edited"
+                class="workspace-rail__tag"
+              >edited here</span>
+            </h4>
+            <textarea
+              v-model="promptDraft"
+              class="workspace-rail__prompt-edit"
+              spellcheck="false"
+            />
             <p class="workspace-rail__detail">It goes to this workspace's conversation, so the run is watched and talked to like any other.</p>
+
+            <h4 class="workspace-rail__section-title">What goes in</h4>
+            <table class="workspace-rail__vars">
+              <tbody>
+                <tr
+                  v-for="v in varsNow()"
+                  :key="v.name"
+                >
+                  <td>
+                    <button
+                      type="button"
+                      class="workspace-rail__var"
+                      title="Put this in the prompt"
+                      @click="insertVar(v)"
+                    >{{ varToken(v) }}</button>
+                  </td>
+                  <td class="workspace-rail__var-value">{{ v.value || '—' }}</td>
+                  <td class="workspace-rail__var-about">{{ v.about }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="workspace-rail__detail">Anything else is left alone, so a shell variable like <code>$CLAUDE_HARNESS_API</code> reaches the agent as it is written and is expanded in the workspace.</p>
+
+            <h4 class="workspace-rail__section-title">As it will be sent</h4>
+            <pre class="workspace-rail__prompt">{{ promptPreview() }}</pre>
+            <div class="workspace-rail__group-buttons">
+              <RcButton
+                variant="primary"
+                :disabled="!!promptSaving || !promptDraft.trim()"
+                @click="sendDraft"
+              >
+                <i
+                  v-if="promptSaving === 'send'"
+                  class="icon icon-spinner icon-spin"
+                />
+                Send this now
+              </RcButton>
+              <RcButton
+                variant="secondary"
+                :disabled="!!promptSaving || promptDraft === templateOf(inspecting.action)"
+                @click="savePrompt"
+              >
+                <i
+                  v-if="promptSaving === 'save'"
+                  class="icon icon-spinner icon-spin"
+                />
+                Save as what this button sends
+              </RcButton>
+              <RcButton
+                v-if="inspecting.edited"
+                variant="tertiary"
+                :disabled="!!promptSaving"
+                @click="resetPrompt"
+              >
+                Back to the shipped prompt
+              </RcButton>
+            </div>
           </section>
           <section
             v-if="inspecting.skill"
@@ -1723,6 +1892,55 @@ export default {
     padding:        16px 20px;
     min-height:     0;
   }
+
+  &__prompt-edit {
+    width:         100%;
+    box-sizing:    border-box;
+    min-height:    110px;
+    padding:       10px 12px;
+    border:        1px solid var(--pr-border);
+    border-radius: var(--border-radius);
+    background:    var(--input-bg);
+    color:         var(--pr-text);
+    font-family:   var(--pr-mono);
+    font-size:     12.5px;
+    line-height:   1.5;
+    resize:        vertical;
+  }
+
+  &__vars {
+    width:           100%;
+    border-collapse: collapse;
+    font-size:       12px;
+
+    td {
+      padding:       4px 8px 4px 0;
+      vertical-align: top;
+      border-bottom: 1px solid var(--pr-border);
+    }
+  }
+
+  &__var {
+    border:        1px solid var(--pr-border);
+    border-radius: var(--border-radius);
+    background:    var(--pr-bg-2);
+    color:         var(--pr-accent);
+    font-family:   var(--pr-mono);
+    font-size:     11.5px;
+    padding:       2px 6px;
+    cursor:        pointer;
+    white-space:   nowrap;
+
+    &:hover { background: var(--pr-el-hover); }
+  }
+
+  &__var-value {
+    color:       var(--pr-text);
+    font-family: var(--pr-mono);
+    word-break:  break-word;
+  }
+
+  &__var-about { color: var(--pr-muted); }
 
   &__prompt {
     margin:        0;
