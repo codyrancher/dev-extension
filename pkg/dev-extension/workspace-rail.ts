@@ -94,7 +94,11 @@ export interface Comment {
   lastBy: string;
   lastByAuthor: boolean;
   thread: { who: string; author: boolean; body: string; html: string; at: string; isNew: boolean }[];
-  /** Whether the PR's author has answered in this thread at all. */
+  /**
+   * Whether the PR's author has spoken in this thread at all. Not the same as answered: a
+   * thread where they replied twice and the reviewer then raised something new is still
+   * waiting on them, which is what `lastByAuthor` says.
+   */
   replied: boolean;
   /** The PR's head, for reading more of the file around the hunk. */
   headSha: string;
@@ -606,7 +610,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     case 'submitted': {
       const mine = submitted.length ? null : reviewThreads();
 
-      sections.push({ title: `Your review (${ submitted.length || mine?.length || 0 } comments)`, items: submitted.length ? [findings(submitted)] : mine?.length ? [{ kind: 'comments', items: mine.map((c) => ({ ...c, answered: c.replied })) }] : [{ kind: 'empty', text: 'Nothing submitted yet.' }] });
+      sections.push({ title: `Your review (${ submitted.length || mine?.length || 0 } comments)`, items: submitted.length ? [findings(submitted)] : mine?.length ? [{ kind: 'comments', items: mine.map((c) => ({ ...c, answered: c.lastByAuthor })) }] : [{ kind: 'empty', text: 'Nothing submitted yet.' }] });
       prSection();
       break;
     }
@@ -617,10 +621,12 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         }));
         // Every thread of the review in GitHub's own order, the unanswered ones marked, so what
         // the developer addressed and what they did not are both on the page where they are.
-        const mine = reviewThreads().map((c) => ({ ...c, answered: c.replied }));
+        // Answered means the developer had the last word: a thread they replied in twice and
+        // then heard something new in is still waiting on them.
+        const mine = reviewThreads().map((c) => ({ ...c, answered: c.lastByAuthor }));
 
         sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits, since: 'your review' }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
-        sections.push({ title: `Your threads (${ mine.filter((c) => c.replied).length } answered, ${ mine.filter((c) => !c.replied).length } not)`, items: mine.length ? [{ kind: 'comments', items: mine }] : [{ kind: 'empty', text: 'No threads.' }] });
+        sections.push({ title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: mine.length ? [{ kind: 'comments', items: mine }] : [{ kind: 'empty', text: 'No threads.' }] });
       }
       if (report) {
         reportSection((Date.parse(report.at) || 0) > submittedAt ? 'What the agent found in the new commits' : 'Agent\'s review report (before the developer responded)');

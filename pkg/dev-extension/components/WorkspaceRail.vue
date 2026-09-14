@@ -1246,7 +1246,8 @@ export default {
   display:        flex;
   flex-direction: column;
   gap:            16px;
-  padding:        16px 24px 24px;
+  // The view switch sits in its own row above this now, so the top padding is a gap not a margin.
+  padding:        8px 24px 24px;
   height:         100%;
   min-height:     0;
   overflow:       auto;

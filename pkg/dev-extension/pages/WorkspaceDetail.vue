@@ -532,16 +532,15 @@ export default {
       padding: var(--dev-space-5);
     }
 
-    // The way to the other view: a link in the top-right corner, over the rail or the tab strip.
+    // The way to the other view. In the flow rather than over it: floated in the corner it sat
+    // on top of whatever the page put there - the rail's primary button, most of the time.
     &__switch {
-      position: relative;
-      height:   0;
-      z-index:  2;
+      display:         flex;
+      justify-content: flex-end;
+      flex:            0 0 auto;
+      padding:         8px 24px 0;
 
       a {
-        position:  absolute;
-        top:       10px;
-        right:     24px;
         font-size: 12px;
         cursor:    pointer;
       }
