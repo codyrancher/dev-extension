@@ -186,38 +186,32 @@ export default {
 
   computed: {
     /**
-     * The workspaces grouped by the part you play in them, not by which app they were made
-     * from: `issue-*` is work you own and ship, so you are the developer; `pr-*` is somebody
-     * else's change you are judging, so you are the reviewer. The two ask different things of
-     * you at every stage - the rail's own stages differ by exactly this - and a sidebar sorted
-     * by app put them in one heap, which is the heap the day has to be sorted out of.
+     * One list per workspace app, the way it has always been - but the rows inside it are
+     * grouped by the part you play in them: `issue-*` is work you own and ship, so you are the
+     * developer; `pr-*` is somebody else's change you are judging, so you are the reviewer.
+     * The two ask different things of you at every stage, which is what the rail's own stages
+     * differ by, and in one heap they were the heap a day has to be sorted out of.
      *
-     * An app is not a heading any more. It was one when there might be several, but the
-     * workspaces of every workspace app go in these three, and which app a workspace came from
-     * is one fact about it, which its card says when there is more than one app to tell apart.
-     * A workspace whose app has been hidden or removed is listed here too rather than in a
-     * section of its own: it is still running, and still yours to play a part in.
+     * The role is read from the workspace's name, so no row waits on a GitHub read to know
+     * where it goes.
      */
     sections() {
-      const rows = (match) => this.rowsFor(this.workspaces.filter((workspace) => this.isWorkspaceApp(workspace) && match(roleOf(workspace.name))));
-
-      return ROLES
-        .map((role) => ({ ...role, rows: rows((id) => id === role.id) }))
-        .filter((role) => role.rows.length || role.id === 'developer');
+      return this.apps.filter((app) => app.workspace && !LEGACY_WORKSPACE_APPS.includes(app.id)).map((app) => ({
+        id:     app.id,
+        label:  app.label,
+        groups: this.rolesIn(this.workspaces.filter((workspace) => workspace.app === app.id || (app.id === DEFAULT_APP && LEGACY_WORKSPACE_APPS.includes(workspace.app)))),
+      }));
     },
 
-    /** The app a new workspace is made from: the only workspace app, where there is only one. */
-    createApp() {
-      const apps = this.apps.filter((app) => app.workspace && !LEGACY_WORKSPACE_APPS.includes(app.id));
+    /**
+     * Workspaces whose app is hidden in Settings, or gone. Listed, since they exist, and
+     * grouped by role like the rest.
+     */
+    orphans() {
+      const known = new Set(this.apps.map((app) => app.id));
+      const listed = new Set(this.sections.map((section) => section.id).concat(LEGACY_WORKSPACE_APPS));
 
-      return apps.find((app) => app.id === DEFAULT_APP)?.id || apps[0]?.id || DEFAULT_APP;
-    },
-
-    /** The workspace apps, for telling one workspace's origin from another's on its card. */
-    appLabels() {
-      const apps = this.apps.filter((app) => app.workspace && !LEGACY_WORKSPACE_APPS.includes(app.id));
-
-      return apps.length > 1 ? Object.fromEntries(apps.map((app) => [app.id, app.label])) : {};
+      return this.rolesIn(this.workspaces.filter((workspace) => !listed.has(workspace.app) && (!known.has(workspace.app) || this.apps.find((app) => app.id === workspace.app)?.workspace)));
     },
 
     /** The clusters, with how many workspaces each holds. */
@@ -540,16 +534,9 @@ export default {
       };
     },
 
-    /**
-     * Whether a workspace belongs in these lists. Every workspace made from a workspace app
-     * does, and so does one whose app has been hidden or removed since - what is left out is
-     * the infrastructure a workspace uses, the builds and the browsers, which are reached from
-     * the workspace's own tabs.
-     */
-    isWorkspaceApp(workspace) {
-      const app = this.apps.find((a) => a.id === workspace.app);
-
-      return app ? !!app.workspace : true;
+    /** A list's workspaces under the part you play in each: Developer, Reviewer, Other. */
+    rolesIn(workspaces) {
+      return ROLES.map((role) => ({ ...role, rows: this.rowsFor(workspaces.filter((workspace) => roleOf(workspace.name) === role.id)) }));
     },
 
     /** A workspace as a row: its name, its state, and the page it opens. */
@@ -571,7 +558,7 @@ export default {
           detail: row.join(' · '),
           tone:   status?.tone,
           agent:  status?.agent,
-          card:   { title: title ? `${ workspace.name } · ${ title }` : workspace.name, lines: [...lines, this.appLabels[workspace.app]].filter(Boolean), links: status?.links || [] },
+          card:   { title: title ? `${ workspace.name } · ${ title }` : workspace.name, lines, links: status?.links || [] },
           to:     {
             name:   WORKSPACE_ROUTE,
             params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: workspace.name },
@@ -669,21 +656,30 @@ export default {
       class="dev-sidebar__scroll"
     >
       <!--
-        One list per part you play in a workspace - Developer, Reviewer, Other - rather than
-        one per app: which app a workspace came from does not change what it wants from you.
-        The + on a heading makes a new workspace; the heading links to the list of every one,
-        which is where one is stopped or deleted.
+        One list per app; the + on its heading makes a new workspace of that app. Inside it,
+        a heading for each part you play - Developer, Reviewer, Other - so the work you own and
+        the work you are judging are not in one heap.
       -->
       <DevList
         v-for="section in sections"
         :key="section.id"
         class="dev-sidebar__app"
         :label="section.label"
-        :icon="section.icon"
-        :rows="section.rows"
+        icon="icon-apps"
+        :groups="section.groups"
         :current="currentWorkspace"
-        :create-to="createIn(createApp)"
-        create-label="New workspace"
+        :create-to="createIn(section.id)"
+        :create-label="`New ${ section.label } workspace`"
+        deletable
+        @delete="remove"
+      />
+      <DevList
+        v-if="orphans.some((role) => role.rows.length)"
+        class="dev-sidebar__app"
+        label="Other apps"
+        icon="icon-apps"
+        :groups="orphans"
+        :current="currentWorkspace"
         deletable
         @delete="remove"
       />
