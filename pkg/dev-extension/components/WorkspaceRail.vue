@@ -110,6 +110,8 @@ export default {
       skillSaving: '',
       /** The approval being written: its message, what is attached to it, and any trouble. */
       approving:   null,
+      /** How loudly to say what went wrong: an API that is restarting is not a failure. */
+      errorTone:   'error',
       /** The second look after a change to the PR; cleared when the page goes. */
       settleTimer: null,
       /** The workspace's own recordings and screenshots, for attaching to one. */
@@ -340,6 +342,27 @@ export default {
       await this.refreshEvidence();
     },
 
+    /**
+     * Say what went wrong, in the register it deserves.
+     *
+     * "no endpoints available for service dev-api" is what the cluster says for the half minute
+     * after the in-cluster API is replaced, which happens on the first page load after this
+     * extension is updated. Nothing is broken and nothing needs doing, so it does not get the
+     * red banner an actual failure gets.
+     */
+    noteError(e) {
+      const message = e?.message || String(e);
+
+      if (/no endpoints available for service/i.test(message)) {
+        this.error = 'The in-cluster API is restarting after an update. This page picks itself up in a moment.';
+        this.errorTone = 'warning';
+
+        return;
+      }
+      this.error = message;
+      this.errorTone = 'error';
+    },
+
     async refreshStatus(github = true) {
       if (this.statusBusy) {
         return;
@@ -370,7 +393,7 @@ export default {
         }
       } catch (e) {
         console.debug(`[rail] status read failed (github=${ github }): ${ e?.message || e }`); // eslint-disable-line no-console
-        this.error = e?.message || String(e);
+        this.noteError(e);
         // Tried again in a moment, a few times: the failure is usually the API's own restart.
         if (github && this.statusRetry < 4) {
           this.statusRetry++;
@@ -469,7 +492,7 @@ export default {
       try {
         await this[action.run](action.arg);
       } catch (e) {
-        this.error = e?.message || String(e);
+        this.noteError(e);
       } finally {
         this.busy = '';
       }
@@ -1215,7 +1238,7 @@ export default {
   <div class="workspace-rail pr-review">
     <Banner
       v-if="error"
-      color="error"
+      :color="errorTone"
       :label="error"
     />
     <Banner
