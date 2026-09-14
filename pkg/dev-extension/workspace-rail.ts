@@ -433,7 +433,10 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
 
   // What the comments' attachments are, once the PR is here: asked in parallel, kept, and
   // drawn as images or players when the column is composed again.
-  reads[3].then(async() => {
+  // What the comments' attachments are, once the PR is here. Awaited with the rest: the
+  // bodies are composed with these, and a compose without them turns a recording back into a
+  // link - which is what happened when this chain was left to land on its own.
+  const kindsRead = reads[3].then(async() => {
     const d = have.d;
 
     if (!d) {
@@ -448,7 +451,7 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
 
     have.kinds = Object.fromEntries(urls.map((u, i) => [u, kinds[i]]));
     emit(pending === 0);
-  });
+  }).catch(() => { /* an attachment whose type is unknown stays a link */ });
 
   for (const read of reads) {
     read.then(() => {
@@ -456,7 +459,7 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
       emit(pending === 0);
     });
   }
-  await Promise.all(reads);
+  await Promise.all([...reads, kindsRead]);
   // Which CI jobs fail, once the PR says some do: one more read, worth it only then.
   if (have.d?.meta?.ci?.failing && status.pr) {
     have.ci = await ciFailures(status.pr).catch(() => null);

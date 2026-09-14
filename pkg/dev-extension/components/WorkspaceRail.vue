@@ -1694,11 +1694,17 @@ export default {
     }
   }
 
-  // Every button the same size, whatever it does.
+  // Every button the same size, whatever it does - and its label in the middle of it: the
+  // shared button styles align text to the start, which reads as shifted once a minimum width
+  // makes the box wider than the words.
   &__group :deep(button) {
-    height:      36px;
-    min-width:   150px;
-    white-space: nowrap;
+    display:         inline-flex;
+    align-items:     center;
+    justify-content: center;
+    text-align:      center;
+    height:          36px;
+    min-width:       150px;
+    white-space:     nowrap;
   }
 
   &__group-label {
@@ -2024,12 +2030,19 @@ export default {
     &--files { column-gap: 24px; }
   }
 
+  // The little status words - "4 messages", "no reply from the developer", "new". Room around
+  // the text on both axes, and a line of their own height, so they read as badges rather than
+  // as words with a tint behind them.
   &__tag {
-    display:       inline-block;
+    display:       inline-flex;
+    align-items:   center;
     margin-left:   6px;
-    padding:       0 6px;
-    border-radius: 9px;
+    padding:       3px 10px;
+    border-radius: 10px;
     font-size:     11px;
+    line-height:   1.2;
+    font-weight:   600;
+    white-space:   nowrap;
     background:    var(--disabled-bg);
     color:         var(--body-text);
 
@@ -2073,7 +2086,10 @@ export default {
   }
 
   &__page-step {
-    border:        1px solid var(--pr-border);
+    display:         inline-flex;
+    align-items:     center;
+    justify-content: center;
+    border:          1px solid var(--pr-border);
     border-radius: var(--border-radius);
     background:    var(--pr-bg);
     color:         var(--pr-text);
@@ -2093,7 +2109,10 @@ export default {
   }
 
   &__page-num {
-    min-width:     24px;
+    display:         inline-flex;
+    align-items:     center;
+    justify-content: center;
+    min-width:       26px;
     border:        1px solid transparent;
     border-radius: var(--border-radius);
     background:    var(--pr-bg);
@@ -2122,10 +2141,18 @@ export default {
   &__comment-head {
     display:     flex;
     align-items: center;
-    gap:         8px;
+    gap:         10px;
     font-size:   12px;
+    flex-wrap:   wrap;
 
-    code { font-size: 11px; color: var(--pr-muted); }
+    code {
+      font-size:     11px;
+      color:         var(--pr-muted);
+      padding:       3px 8px;
+      border:        1px solid var(--pr-border);
+      border-radius: var(--border-radius);
+      background:    var(--pr-bg);
+    }
   }
 
   &__links { display: flex; gap: 12px; margin: 0; }
