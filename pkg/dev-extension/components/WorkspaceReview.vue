@@ -74,6 +74,8 @@ const SHA_RE = /^[0-9a-f]{7,40}$/;
 // ones it wants a reviewer to see.
 const media = ref<{ path: string; name: string; type: string; size: number }[]>([]);
 const mediaError = ref('');
+/** Whether the media is shown. Shut to begin with: the diff is what this is for. */
+const mediaOpen = ref(false);
 let timer: ReturnType<typeof setInterval> | null = null;
 
 async function resolveRepo() {
@@ -509,17 +511,34 @@ defineExpose({ refresh });
       v-if="media.length || mediaError"
       class="wr-media"
     >
-      <div class="wr-media-head">
+      <!--
+        Shut by default, and scrolling when open. Ninety-one screenshots between the header and
+        the diff is a page you have to get past before you can read anything, and the diff is
+        what the modal is for.
+      -->
+      <button
+        type="button"
+        class="wr-media-head"
+        :title="mediaOpen ? 'Fold the media away' : 'Show the media'"
+        @click="mediaOpen = !mediaOpen"
+      >
+        <i
+          class="icon"
+          :class="mediaOpen ? 'icon-chevron-down' : 'icon-chevron-right'"
+        />
         <span class="wr-media-title">Media</span>
         <span class="muted">{{ media.length }} from the agent</span>
-      </div>
+      </button>
       <div
-        v-if="mediaError"
+        v-if="mediaError && mediaOpen"
         class="muted"
       >
         Media could not be read: {{ mediaError }}
       </div>
-      <div class="wr-media-grid">
+      <div
+        v-if="mediaOpen"
+        class="wr-media-grid"
+      >
         <figure
           v-for="m in media"
           :key="m.path"
@@ -822,6 +841,20 @@ defineExpose({ refresh });
   align-items:   baseline;
   gap:           8px;
   margin-bottom: var(--dev-space-3, 8px);
+  padding:       0;
+  border:        0;
+  background:    transparent;
+  color:         inherit;
+  font:          inherit;
+  min-height:    0;
+  cursor:        pointer;
+
+  .icon {
+    font-size: 10px;
+    color:     var(--muted);
+  }
+
+  &:hover .icon { color: var(--link); }
 }
 
 .wr-media-title {
@@ -832,6 +865,10 @@ defineExpose({ refresh });
   display:               grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap:                   var(--dev-space-3, 8px);
+  /* Its own scroller: ninety-one items must not push the diff off the page. */
+  max-height:            42vh;
+  overflow-y:            auto;
+  padding-right:         4px;
 }
 
 .wr-media-item {
