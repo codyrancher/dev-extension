@@ -2405,6 +2405,15 @@ export default {
 
     .icon { font-size: 10px; color: var(--muted); }
 
+    /*
+     * The theme pads every `code` by 5px all round, which on a one-line row is most of the
+     * row's height spent on a seven-character sha.
+     */
+    code {
+      padding:     0 5px;
+      line-height: 1.5;
+    }
+
     /* Who and when sit at the end of the row, so the messages read down the left. */
     .workspace-rail__when { margin-left: auto; margin-right: 0; }
   }
