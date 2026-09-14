@@ -213,7 +213,7 @@ export default {
           };
         case 'merged':
           return {
-            headline: s.label === 'Approved' ? 'Approved' : 'Merged', detail: 'The workspace can go; the PR and the conversation history stay on GitHub and in the agent pod.', primary: { label: 'Delete the workspace', run: 'remove' }, tools: [],
+            headline: s.label === 'Approved' ? 'Approved' : 'Merged', detail: 'The workspace can go; the PR and the conversation history stay on GitHub and in the agent pod.', primary: { label: 'Delete the workspace', run: 'remove' }, tools: s.label === 'Approved' ? [{ label: 'Merge', run: 'merge' }] : [],
           };
         }
       }
@@ -243,7 +243,9 @@ export default {
           };
         case 'approved':
           return {
-            headline: s.label === 'Merged' ? 'Merged' : 'Approved', detail: s.label === 'Merged' ? 'The workspace can go.' : 'Approved. Merging is usually the author\'s; this is here for when it is yours.', primary: s.label === 'Merged' ? { label: 'Delete the workspace', run: 'remove' } : { label: 'Merge', run: 'merge' }, tools: [],
+            // Your part is over either way: merging is the author's, so what is left here is
+            // to let the workspace go. The conversations and the PR outlive it.
+            headline: s.label === 'Merged' ? 'Merged' : 'Approved', detail: s.label === 'Merged' ? 'Nothing left to do; the workspace can go.' : 'Your review is done. The author merges; the workspace can go whenever you are finished with it.', primary: { label: 'Delete the workspace', run: 'remove' }, tools: [],
           };
         }
       }
@@ -992,6 +994,7 @@ export default {
       }
     },
 
+    /** Merging, for a fix whose PR is the person's own. A reviewer never sees this. */
     async merge() {
       const pr = this.status?.pr;
 
