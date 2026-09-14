@@ -20,7 +20,7 @@ import {
   readStatusNow, knownStatus, provisionalStatus, agentLabel
 } from '../workspace-status';
 import {
-  stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, branchFile, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
+  stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
 } from '../workspace-rail';
 import { prFile } from '../reviews';
 import {
@@ -117,11 +117,6 @@ export default {
       errorTone:   'error',
       /** The second look after a change to the PR; cleared when the page goes. */
       settleTimer: null,
-      /** The lines of the change a question is being written about. */
-      asking:      null,
-      /** The files of the branch that are open, and the diff read for each. */
-      openFiles:   {},
-      fileDiffs:   {},
       /** Which sections are folded away: `{ [title]: true }`, seeded from the section itself. */
       shut:        {},
       /** The conversation, in its own window over the page rather than under the column. */
@@ -516,72 +511,6 @@ export default {
      * Developer responded are behind you as well as ahead, so they keep their ticks rather than
      * going back to being plain numbers.
      */
-    /**
-     * Pick a line of the change to ask about, or shift-click to take a range.
-     *
-     * The reviewer's side files a comment on a line; here there is no PR to file against yet,
-     * so the line is the subject of a question to the agent that wrote it - which is the same
-     * act, one step earlier.
-     */
-    pickLine(path, file, index, event) {
-      const rows = file.rows || [];
-      const from = event?.shiftKey && this.asking?.path === path ? Math.min(this.asking.from, index) : index;
-      const to = event?.shiftKey && this.asking?.path === path ? Math.max(this.asking.to, index) : index;
-      const numbered = rows.slice(from, to + 1);
-      const first = numbered.find((r) => r.newN ?? r.oldN);
-      const last = [...numbered].reverse().find((r) => r.newN ?? r.oldN);
-      const a = first?.newN ?? first?.oldN ?? 0;
-      const z = last?.newN ?? last?.oldN ?? a;
-
-      this.asking = {
-        path,
-        from,
-        to,
-        where: `${ path }${ a ? `:${ a }${ z && z !== a ? `-${ z }` : '' }` : '' }`,
-        code:  numbered.map((r) => `${ r.type === 'add' ? '+' : r.type === 'del' ? '-' : ' ' }${ (r.html || '').replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&') }`).join('\n').slice(0, 3000),
-        text:  this.asking?.path === path ? this.asking.text : '',
-      };
-    },
-
-    /** Whether a row is inside the lines being asked about. */
-    inAsk(path, index) {
-      return !!this.asking && this.asking.path === path && index >= this.asking.from && index <= this.asking.to;
-    },
-
-    /** Send the question, with the lines under it, to the conversation that wrote the code. */
-    async askAboutLines() {
-      if (!this.asking || this.busy) {
-        return;
-      }
-      const { where, code, text } = this.asking;
-
-      this.busy = 'askLines';
-      this.error = '';
-      try {
-        await this.say('', `About ${ where } in the change you made:\n\n\`\`\`diff\n${ code }\n\`\`\`\n\n${ text.trim() }`, true);
-        this.notice = `Asked about ${ where }; the agent has it in the conversation below.`;
-        this.asking = null;
-      } catch (e) {
-        this.noteError(e);
-      } finally {
-        this.busy = '';
-      }
-    },
-
-    /** One file of the branch, opened to its diff out of the checkout. */
-    async toggleFile(file) {
-      const open = !this.openFiles[file.path];
-
-      this.openFiles = { ...this.openFiles, [file.path]: open };
-      if (!open || this.fileDiffs[file.path]) {
-        return;
-      }
-      this.fileDiffs = { ...this.fileDiffs, [file.path]: null };
-      const read = await branchFile(this.workspace.name, file.path).catch(() => []);
-
-      this.fileDiffs = { ...this.fileDiffs, [file.path]: read };
-    },
-
     /** Whether a section is folded: what was chosen for it here, else what it asked for. */
     isShut(section) {
       return this.shut[section.title] ?? !!section.collapsed;
@@ -1743,119 +1672,22 @@ export default {
                 </ul>
               </template>
               <!--
-                The whole change in the review tool, which is the thing built for reading a
-                branch: file tree, whole-file context, the diff options. The list under it is
-                for a quick look at one file; this is for going through all of them.
+                The change, read in the tool built for it: file tree, whole-file context, the
+                diff options, all of it over the page. The column used to list every path with
+                its own accordion, which was thirty-one rows of nothing much.
               -->
               <div
-                v-if="item.kind === 'files' && item.open"
-                class="workspace-rail__combined"
+                v-if="item.kind === 'review'"
+                class="workspace-rail__review-open"
               >
-                <button
-                  type="button"
-                  class="workspace-rail__back"
+                <PrButton
+                  size="sm"
+                  variant="primary"
                   @click="openTab('review')"
-                >Review all {{ item.items.length }} files in the review tool</button>
-              </div>
-              <ul
-                v-if="item.kind === 'files'"
-                class="workspace-rail__list workspace-rail__list--files"
-                :class="{ 'workspace-rail__list--plain': item.open }"
-              >
-                <li
-                  v-for="f in item.items"
-                  :key="f.path"
                 >
-                  <!--
-                    Before there is a PR the change is only in the checkout, so a file opens
-                    its own diff from there - the same rows, the same colours, as a commit's.
-                  -->
-                  <button
-                    v-if="item.open"
-                    type="button"
-                    class="workspace-rail__row-btn"
-                    :title="openFiles[f.path] ? 'Hide this file' : 'Show what changed in it'"
-                    @click="toggleFile(f)"
-                  ><i
-                    class="icon"
-                    :class="openFiles[f.path] ? 'icon-chevron-down' : 'icon-chevron-right'"
-                  /><code>{{ f.path }}</code><span
-                    v-if="f.note"
-                    class="workspace-rail__tag"
-                  >{{ f.note }}</span></button>
-                  <template v-else><code>{{ f.path }}</code><span
-                    v-if="f.note"
-                    class="workspace-rail__tag"
-                  >{{ f.note }}</span></template>
-                  <div
-                    v-if="item.open && openFiles[f.path]"
-                    class="workspace-rail__files"
-                  >
-                    <p
-                      v-if="fileDiffs[f.path] === null"
-                      class="workspace-rail__empty"
-                    >Reading the change…</p>
-                    <p
-                      v-else-if="!(fileDiffs[f.path] || []).length"
-                      class="workspace-rail__empty"
-                    >Nothing to show: the file is binary, or the diff could not be read.</p>
-                    <div
-                      v-for="d in fileDiffs[f.path] || []"
-                      :key="d.path"
-                      class="prm-file"
-                    >
-                      <!--
-                        Click a line to ask about it, shift-click to take a range: before there
-                        is a PR there is nowhere to file a comment, so the question goes to the
-                        agent that wrote the code, with the lines quoted under it.
-                      -->
-                      <table class="diff-table">
-                        <tbody>
-                          <tr
-                            v-for="(r, k) in d.rows"
-                            :key="k"
-                            class="diff-row"
-                            :class="[r.type, { 'on-comment-line': inAsk(f.path, k) }]"
-                            @click="pickLine(f.path, d, k, $event)"
-                          >
-                            <td class="lineno clickable">{{ r.oldN ?? '' }}</td>
-                            <td class="lineno clickable">{{ r.newN ?? '' }}</td>
-                            <td class="code"><span class="sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
-                          </tr>
-                        </tbody>
-                      </table>
-                      <div
-                        v-if="asking && asking.path === f.path"
-                        class="workspace-rail__ask-lines"
-                      >
-                        <span class="workspace-rail__when">{{ asking.where }}</span>
-                        <textarea
-                          v-model="asking.text"
-                          class="workspace-rail__edit-text"
-                          rows="3"
-                          placeholder="What about these lines? A question, or a change to make."
-                        />
-                        <div class="workspace-rail__comment-actions">
-                          <PrButton
-                            size="sm"
-                            variant="primary"
-                            :disabled="!asking.text.trim() || !!busy"
-                            @click="askAboutLines()"
-                          >
-                            Ask the agent
-                          </PrButton>
-                          <PrButton
-                            size="sm"
-                            @click="asking = null"
-                          >
-                            Cancel
-                          </PrButton>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </li>
-              </ul>
+                  {{ item.label }}
+                </PrButton>
+              </div>
               <div
                 v-if="item.kind === 'media'"
                 class="workspace-rail__media"
@@ -2964,20 +2796,9 @@ export default {
     padding:   8px 0 2px;
   }
 
-  /* The box under a picked range: what to ask about it. */
-  &__combined {
-    display:         flex;
-    justify-content: flex-end;
-    padding-bottom:  2px;
-  }
-
-  &__ask-lines {
-    display:        flex;
-    flex-direction: column;
-    gap:            6px;
-    padding:        8px;
-    border-top:     1px solid var(--pr-border, var(--border));
-    background:     var(--pr-bg-2, var(--box-bg));
+  &__review-open {
+    display:     flex;
+    padding-top: 2px;
   }
 
   &__edit {
