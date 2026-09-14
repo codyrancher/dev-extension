@@ -809,6 +809,18 @@ export async function combinedFiles(pr: number, shas: string[]): Promise<{ path:
 }
 
 /**
+ * The prompt each non-skill action sends, as a template. Keyed like the skills are, so an edit
+ * is kept and shared the same way.
+ */
+export const ACTION_TEMPLATES: Record<string, string> = {
+  startFix:       '/my-issue-fix Fix {{ repo }} issue {{ issue }} - this project was created for it.',
+  startReview:    '/my-pr-full-review Review {{ repo }} PR {{ pr }} - harness portal context, file through {{ context }}.',
+  answerFeedback: '/my-pr-address-feedback Address the review feedback on {{ repo }} PR {{ pr }}: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.',
+  reverify:       '/my-fix-demonstrate Re-verify the fix on this branch (PR {{ pr }}) and record a fresh video of the same walk.',
+  reviewAgain:    'The developer pushed new commits and/or replied since the review of {{ repo }} PR {{ pr }} was submitted. Review what changed against the comments that were made: say which are addressed, which are not, and anything new the changes introduce. File through {{ context }}.',
+};
+
+/**
  * The skills worth running at each stage, as buttons beside the one primary action.
  *
  * Every one of them is a prompt into the workspace's conversation - the same path everything
@@ -892,10 +904,58 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage): SkillBut
   return [];
 }
 
-/** What a skill button sends: the slash command with the PR or issue it is about. */
-export function skillPrompt(button: SkillButton, status: WorkspaceStatus, issue: number): string {
-  const subject = status.pr ? `${ DEFAULT_REPO } PR #${ status.pr }` : issue ? `${ DEFAULT_REPO } issue #${ issue }` : 'this workspace';
+/**
+ * What goes into a prompt, and what each one means: shown beside the template so the person
+ * editing it knows what they may write, and filled in when the prompt is sent.
+ *
+ * `$CLAUDE_HARNESS_API` is deliberately not one of these - it is an environment variable of
+ * the workspace's own shell, which the agent expands when it runs a command.
+ */
+export interface PromptVar {
+  name: string;
+  value: string;
+  about: string;
+}
 
-  return `/${ button.skill } ${ subject }${ status.pr ? ` - its context: $CLAUDE_HARNESS_API/my-work/pr/${ status.pr }.` : '.' }`;
+export function promptVars(status: WorkspaceStatus | null, issue: number, workspace: string): PromptVar[] {
+  const pr = status?.pr || 0;
+
+  return [
+    { name: 'repo', value: DEFAULT_REPO, about: 'The repository this workspace works in' },
+    { name: 'pr', value: pr ? `#${ pr }` : '', about: 'The pull request, when there is one' },
+    { name: 'prNumber', value: pr ? String(pr) : '', about: 'Its number alone' },
+    { name: 'issue', value: issue ? `#${ issue }` : '', about: 'The issue this workspace is for' },
+    { name: 'issueNumber', value: issue ? String(issue) : '', about: 'Its number alone' },
+    { name: 'subject', value: pr ? `${ DEFAULT_REPO } PR #${ pr }` : issue ? `${ DEFAULT_REPO } issue #${ issue }` : 'this workspace', about: 'The PR if there is one, else the issue' },
+    { name: 'title', value: status?.title || '', about: 'Its title on GitHub' },
+    { name: 'workspace', value: workspace, about: 'This workspace\'s name' },
+    { name: 'stage', value: status?.stage || '', about: 'Where the work is on the rail' },
+    { name: 'context', value: pr ? `$CLAUDE_HARNESS_API/my-work/pr/${ pr }` : '', about: 'Where the agent reads the PR from, inside the workspace' },
+  ];
+}
+
+/** A template with its variables filled in. An unknown `{{ name }}` is left as it is. */
+export function expandPrompt(template: string, vars: PromptVar[]): string {
+  return (template || '').replace(/\{\{\s*([a-zA-Z]+)\s*\}\}/g, (whole, name) => {
+    const found = vars.find((v) => v.name === name);
+
+    return found ? found.value : whole;
+  });
+}
+
+/** What a skill button sends, before the variables go in. */
+export function skillTemplate(button: SkillButton): string {
+  return `/${ button.skill } {{ subject }}{{ contextClause }}`;
+}
+
+/** The clause a PR adds; empty without one, so the sentence still ends properly. */
+function contextClause(status: WorkspaceStatus | null): PromptVar {
+  return { name: 'contextClause', value: status?.pr ? ` - its context: $CLAUDE_HARNESS_API/my-work/pr/${ status.pr }.` : '.', about: 'Where to read the PR, or just a full stop' };
+}
+
+export function skillPrompt(button: SkillButton, status: WorkspaceStatus, issue: number, workspace = '', template = ''): string {
+  const vars = [...promptVars(status, issue, workspace), contextClause(status)];
+
+  return expandPrompt(template || skillTemplate(button), vars);
 }
 

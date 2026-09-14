@@ -110,3 +110,24 @@ export async function improveSkillWith(skill: string, from: ProjectConversation 
 
   return startConversation(from.workspace, `Improve ${ skill }`, prompt);
 }
+
+// ── The prompts the rail's buttons send ─────────────────────────────────────────────────────
+//
+// Each action has a template with `{{ variables }}` in it; what ships is the default, and an
+// edit here is kept beside the skills (the same ConfigMap), so it holds for every workspace
+// and everyone who opens one.
+
+export async function readPrompts(): Promise<Record<string, string>> {
+  return (await devApi('/prompts'))?.prompts || {};
+}
+
+export async function savePromptTemplate(key: string, template: string): Promise<void> {
+  await devApi(`/prompts/${ encodeURIComponent(key) }`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ template }),
+  });
+}
+
+export async function resetPromptTemplate(key: string): Promise<void> {
+  await devApi(`/prompts/${ encodeURIComponent(key) }`, { method: 'DELETE' });
+}
+
