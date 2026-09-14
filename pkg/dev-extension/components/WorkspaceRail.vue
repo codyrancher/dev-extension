@@ -41,6 +41,13 @@ import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE } from '../config/constant
 
 const STATUS_MS = 15000;
 const EVIDENCE_MS = 60000;
+/**
+ * How often the page asks GitHub where the work is, when nothing has been pressed. It used to
+ * be five minutes, which is how long a stage that had already moved could sit there saying the
+ * old thing. Anything the page itself does re-reads at once (see `settle`); this is for what
+ * happens elsewhere - a reviewer approving, the developer pushing.
+ */
+const GITHUB_MS = 2 * 60000;
 
 export default {
   name: 'WorkspaceRail',
@@ -103,6 +110,8 @@ export default {
       skillSaving: '',
       /** The approval being written: its message, what is attached to it, and any trouble. */
       approving:   null,
+      /** The second look after a change to the PR; cleared when the page goes. */
+      settleTimer: null,
       /** The workspace's own recordings and screenshots, for attaching to one. */
       media:       [],
       /** Attaching or approving, for the spinner. */
@@ -305,7 +314,7 @@ export default {
       // The agents every fifteen seconds; GitHub every five minutes and after an action - not
       // on every tick, which overlapped itself on a big PR.
       setInterval(() => this.refreshStatus(false), STATUS_MS),
-      setInterval(() => this.refreshStatus(true), 5 * EVIDENCE_MS),
+      setInterval(() => this.refreshStatus(true), GITHUB_MS),
       setInterval(() => this.refreshEvidence(), EVIDENCE_MS),
     ];
   },
@@ -314,6 +323,7 @@ export default {
     this.timers.forEach((t) => clearInterval(t));
     clearTimeout(this.statusRetryTimer);
     clearTimeout(this.evidenceRetryTimer);
+    clearTimeout(this.settleTimer);
   },
 
   methods: {
@@ -773,6 +783,7 @@ export default {
         await run();
         forgetPrDetail(this.status.pr);
         await this.refreshEvidence();
+        this.refreshStatus(true);
       } catch (e) {
         this.error = e?.message || String(e);
       } finally {
@@ -992,8 +1003,7 @@ export default {
       }
       await markReadyForReview(DEFAULT_REPO, this.status.pr);
       this.notice = `PR #${ this.status.pr } is ready for review. Request a reviewer on GitHub.`;
-      await this.refreshStatus();
-      await this.refreshEvidence();
+      await this.settle();
     },
 
     async answerFeedback() {
@@ -1028,6 +1038,33 @@ export default {
 
     /** The approval, written rather than fired: a message, and the evidence for it. */
     /**
+     * Read the PR again after changing it on GitHub, and once more in a moment.
+     *
+     * Two things stood between pressing Approve and the rail saying Approved: the read of a PR
+     * is memoised for 25 seconds, so the read straight after the change returned the copy the
+     * page was already drawn from, and the page's own GitHub tick is five minutes. Approving
+     * therefore looked like nothing had happened for minutes. So the memo is dropped first,
+     * and because GitHub takes a moment to agree with itself about a review it has just
+     * accepted, the whole thing is done again a few seconds later.
+     */
+    async settle() {
+      const pr = this.status?.pr;
+
+      if (pr) {
+        forgetPrDetail(pr);
+      }
+      await this.refreshStatus(true);
+      await this.refreshEvidence();
+      clearTimeout(this.settleTimer);
+      this.settleTimer = setTimeout(() => {
+        if (pr) {
+          forgetPrDetail(pr);
+        }
+        this.refreshStatus(true);
+      }, 6000);
+    },
+
+    /**
      * The findings, as a review on GitHub. `event` is what the review says: changes to make,
      * or an approval carrying the comments. Only findings marked good go - submitReview
      * refuses while any is still pending, which is what marking them good is for.
@@ -1048,10 +1085,8 @@ export default {
       }
       const { url, posted } = await submitReview(this.status.pr, this.repo, event);
 
-      forgetPrDetail(this.status.pr);
       this.notice = `${ posted } comment${ posted === 1 ? '' : 's' } posted to PR #${ this.status.pr } ${ what }.${ url ? ` ${ url }` : '' }`;
-      await this.refreshStatus(true);
-      await this.refreshEvidence();
+      await this.settle();
     },
 
     requestChanges() {
@@ -1139,7 +1174,7 @@ export default {
 
         this.approving = null;
         this.notice = `PR #${ this.status.pr } approved${ discarded ? `; ${ discarded } unsubmitted comment${ discarded === 1 ? '' : 's' } dropped` : '' }.${ url ? ` ${ url }` : '' }`;
-        await this.refreshStatus(true);
+        await this.settle();
       } catch (e) {
         this.approving = { ...this.approving, error: e?.message || String(e) };
       } finally {
@@ -1156,7 +1191,7 @@ export default {
       }
       await mergePr(pr);
       this.notice = `PR #${ pr } merged.`;
-      await this.refreshStatus(true);
+      await this.settle();
     },
 
     async remove() {
