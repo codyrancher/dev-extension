@@ -2785,8 +2785,8 @@ export default {
    * is a conversation nobody asked for yet.
    */
   &__pane {
-    height:     200px;
-    min-height: 110px;
+    height:     400px;
+    min-height: 120px;
     max-height: 85vh;
     overflow:   hidden;
     resize:     vertical;
