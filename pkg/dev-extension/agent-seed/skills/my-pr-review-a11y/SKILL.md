@@ -70,14 +70,21 @@ Then measure each state with the probe. It drives the component into the state, 
 
 ```bash
 PROBE=/workspace/.claude/skills/my-pr-review-a11y/a11y-probe.mjs
-node $PROBE --goto 'https://localhost:8005/dashboard/c/local/explorer' \
-  --steps 'click:[data-testid="top-level-menu"]; wait:.cluster-switcher' \
-  --scope '.cluster-switcher' \
-  --hover '.cluster-switcher .row' \
-  --focus '.cluster-switcher button, .cluster-switcher [tabindex="0"]' \
-  --keys 'Tab,ArrowDown,ArrowDown,Enter' \
-  --json /workspace/artifacts/review/a11y/cluster-switcher-open.json
+
+# The switcher flyout, open, a row highlighted from the keyboard, rows hovered. Both themes.
+node $PROBE --goto 'https://localhost:8005/c/local/explorer' \
+  --steps 'wait:[data-testid="cluster-switcher-trigger"]; sleep:6000; click:[data-testid="cluster-switcher-trigger"]; wait:.cluster-switcher-flyout; key:ArrowDown; key:ArrowDown' \
+  --scope '.cluster-switcher-flyout' --hover '.cluster-switcher-row' \
+  --json /workspace/artifacts/review/a11y/flyout.json
+
+# The expanded nav with a pinned row, then Enter on its pin: the removal state.
+node $PROBE --goto 'https://localhost:8005/c/local/explorer' \
+  --steps 'sleep:6000; click:[data-testid="top-level-menu"]; wait:[data-testid^="pinned-menu-cluster-"]; focus:[data-testid^="pinned-menu-cluster-"] .pin' \
+  --scope '[data-testid="side-menu"]' --themes light --keys 'Enter' \
+  --json /workspace/artifacts/review/a11y/shelf-unpin.json
 ```
+
+Those two runs, against the code #19128 was written about (master at `9b04470`), report all five of its findings: the subtitle at 4.3:1 light and 3.85:1 dark, `aria-haspopup="listbox"` on a panel that also holds a combobox, the `Alt+P` pin shortcut announced only in an accessible name, the `<i role="button">` pin nested in the row's `<button>`, and focus dropping to `<body>` after the unpin. They also report the pin at 22x22, under 2.2's 24px. That is the bar for this skill. The dev server serves from `/`, not `/dashboard/`, and a state that needs data (a pinned cluster, an error) has to be set up first. Put back anything you change in the Rancher, such as a pin you added.
 
 `--steps` reaches the state (`click:`, `hover:`, `focus:`, `key:`, `type:`, `wait:`, `sleep:`). Run the probe once per state; a removal state is a `--keys` walk that ends on the key that removes the item. Each theme reloads the page and reaches the state again, so the themes don't leak styling into each other. Your own theme preference is never changed.
 

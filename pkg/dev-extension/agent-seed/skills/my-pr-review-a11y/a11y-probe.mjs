@@ -12,7 +12,9 @@
 //              the resting state and with each --hover / --focus element really hovered/focused
 //   nested     interactive content inside interactive content (a role="button" in a <button>)
 //   relations  aria-controls / labelledby / describedby / owns / activedescendant that point at
-//              nothing, and aria-haspopup whose value does not match what it controls
+//              nothing, and aria-haspopup whose value does not match the panel that opened (a
+//              "listbox" popup whose panel also holds a search box and buttons is a dialog)
+//   shortcuts  a keyboard shortcut named only in an accessible name, never on screen
 //   names      interactive elements with no accessible name
 //   target     interactive targets under 24x24 CSS px (WCAG 2.2 2.5.8), inline text links excepted
 //   focus      with --keys, where focus is after each key; landing on <body> is the finding
@@ -20,12 +22,10 @@
 //
 // Usage:
 //   node /workspace/.claude/skills/my-pr-review-a11y/a11y-probe.mjs \
-//     --goto https://localhost:8005/dashboard/c/local/explorer \
-//     --steps 'click:[data-testid="top-level-menu"]; wait:.cluster-switcher' \
-//     --scope '.cluster-switcher' \
-//     --hover '.cluster-switcher .row' --focus '.cluster-switcher button' \
-//     --keys 'Tab,ArrowDown,ArrowDown,Enter' \
-//     --themes light,dark --json /workspace/artifacts/review/a11y/switcher.json
+//     --goto https://localhost:8005/c/local/explorer \
+//     --steps 'sleep:6000; click:[data-testid="cluster-switcher-trigger"]; wait:.cluster-switcher-flyout; key:ArrowDown' \
+//     --scope '.cluster-switcher-flyout' --hover '.cluster-switcher-row' \
+//     --themes light,dark --json /workspace/artifacts/review/a11y/flyout.json
 //
 //   --goto URL      open URL in a new tab (closed on exit); or --url SUBSTR to use an open tab
 //   --steps LIST    ';'-separated, run in order to reach the state:
@@ -35,7 +35,7 @@
 //   --focus SEL     elements to focus (+ :focus-visible) and check the focus indicator (first 6)
 //   --keys LIST     ','-separated key presses to walk, after --steps (Tab, Shift+Tab, ArrowDown...)
 //   --themes LIST   light,dark (default both); toggled on <body>, so your own preference is untouched
-//   --only LIST     subset of checks: contrast,nested,relations,names,target,focus,axe
+//   --only LIST     subset of checks: contrast,nested,relations,shortcuts,names,target,focus,axe
 //   --json FILE     write every result, not just failures
 //
 // Exit code 0 always; the report is the output. A check that cannot decide (a background image,
@@ -46,7 +46,7 @@ import { dirname } from 'node:path';
 import { lookup } from 'node:dns/promises';
 
 const args = parse(process.argv.slice(2));
-const CHECKS = new Set((args.only || 'contrast,nested,relations,names,target,focus,axe').split(',').map((s) => s.trim()));
+const CHECKS = new Set((args.only || 'contrast,nested,relations,shortcuts,names,target,focus,axe').split(',').map((s) => s.trim()));
 const THEMES = (args.themes || 'light,dark').split(',').map((s) => s.trim()).filter(Boolean);
 const SCOPE = args.scope || 'body';
 const AXE = ['/workspace/dashboard/node_modules/axe-core/axe.min.js', '/workspace/node_modules/axe-core/axe.min.js'].find((p) => existsSync(p));
@@ -306,20 +306,78 @@ const IN_PAGE = ({ scopeSel, only }) => {
             broken.push({ element: describe(el), attr, missing });
           }
         }
-        const hp = el.getAttribute('aria-haspopup');
-
-        if (hp && hp !== 'false') {
-          const want = hp === 'true' ? 'menu' : hp;
-          const ids = (el.getAttribute('aria-controls') || '').split(/\s+/).filter(Boolean);
-          const targets = ids.map((id) => document.getElementById(id)).filter(Boolean);
-          const roles = targets.map((t) => t.getAttribute('role') || t.tagName.toLowerCase());
-
-          popup.push({
-            element: describe(el), haspopup: hp, expanded: el.getAttribute('aria-expanded'), controls: ids, targetRoles: roles, match: targets.length ? roles.includes(want) : null,
-          });
+      }
+      // Popup triggers are checked page-wide: the panel a trigger opens is usually portalled to
+      // <body>, outside whatever scope the component was measured in.
+      for (const el of document.querySelectorAll('[aria-haspopup]:not([aria-haspopup="false"])')) {
+        if (!scope.contains(el) && !(el.getAttribute('aria-expanded') === 'true')) {
+          continue;
         }
+        const hp = el.getAttribute('aria-haspopup');
+        const want = hp === 'true' ? 'menu' : hp;
+        const ids = (el.getAttribute('aria-controls') || '').split(/\s+/).filter(Boolean);
+        let panels = ids.map((id) => document.getElementById(id)).filter(Boolean);
+        let found = 'aria-controls';
+
+        // No aria-controls: find what actually opened - a visible popup-shaped role outside the trigger.
+        if (!panels.length && el.getAttribute('aria-expanded') === 'true') {
+          panels = [...document.querySelectorAll('[role="listbox"], [role="menu"], [role="dialog"], [role="tree"], [role="grid"]')]
+            .filter((p) => visible(p) && !el.contains(p) && !p.contains(el));
+          found = panels.length ? 'visible on the page' : '';
+        }
+        const roles = panels.map((p) => p.getAttribute('role') || p.tagName.toLowerCase());
+        // A listbox or menu popup holds options or items and nothing else. The panel around it is the
+        // highest ancestor that does not also hold the trigger - the portal root - and anything
+        // interactive in there outside the listbox means the popup is really a dialog.
+        const extras = [];
+
+        for (const p of panels) {
+          let root = p;
+
+          while (root.parentElement && root.parentElement !== document.body && !root.parentElement.contains(el)) {
+            root = root.parentElement;
+          }
+          for (const c of root.querySelectorAll(INTERACTIVE)) {
+            const r = c.getAttribute('role') || (c.tagName === 'INPUT' ? `input[type=${ c.type }]` : c.tagName.toLowerCase());
+
+            if (visible(c) && !p.contains(c) && !['option', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'treeitem'].includes(r)) {
+              extras.push(r);
+            }
+          }
+        }
+        const extraRoles = [...new Set(extras)];
+        const match = !panels.length ? null : roles.includes(want) && !(['listbox', 'menu', 'tree', 'grid'].includes(want) && extraRoles.length);
+
+        popup.push({
+          element: describe(el), haspopup: hp, expanded: el.getAttribute('aria-expanded'), controls: ids, found, targetRoles: roles, panelAlsoHolds: extraRoles, match,
+        });
       }
       res.relations = { broken, popup };
+    }
+
+    // A shortcut only a screen reader hears about: named in aria-keyshortcuts or an accessible name,
+    // and nowhere a sighted keyboard user can read it. Not always a strict WCAG failure (say which),
+    // but it is how a keyboard-only feature goes undiscovered (#19128, the pin shortcut).
+    if (only.includes('shortcuts')) {
+      const KEYS = /((?:Ctrl|Control|Cmd|Command|Alt|Option|Shift|Meta|⌘|⌥|⇧)\s*[+-]?\s*)+[A-Za-z0-9]\b/g;
+      const onScreen = (document.body.innerText || '').replace(/\s+/g, '');
+      const hints = [...document.querySelectorAll('[title], [data-tooltip], [aria-description]')].map((e) => `${ e.getAttribute('title') || '' }${ e.getAttribute('data-tooltip') || '' }`).join(' ').replace(/\s+/g, '');
+      const seen = new Map();
+
+      for (const el of [scope, ...scope.querySelectorAll('[aria-keyshortcuts], [aria-label], [aria-describedby]')]) {
+        const said = [el.getAttribute('aria-keyshortcuts') || '', el.getAttribute('aria-label') || '',
+          ...(el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)?.textContent || '')].join(' ');
+
+        for (const m of said.match(KEYS) || []) {
+          const compact = m.replace(/\s+/g, '');
+          const visibleHint = onScreen.includes(compact) || hints.includes(compact);
+
+          if (!seen.has(compact)) {
+            seen.set(compact, { shortcut: m.trim(), announcedOn: describe(el), visibleHint });
+          }
+        }
+      }
+      res.shortcuts = [...seen.values()];
     }
 
     if (only.includes('target')) {
@@ -613,16 +671,26 @@ for (const [theme, t] of Object.entries(report.themes)) {
   }
   for (const p of t.relations?.popup || []) {
     if (p.match === false) {
-      lines.push(`  POPUP ROLE MISMATCH (4.1.2) ${ p.element } aria-haspopup="${ p.haspopup }" but controls ${ p.targetRoles.join(', ') }`);
+      const why = p.panelAlsoHolds.length ? `the panel that opened (${ p.found }) is ${ p.targetRoles.join(', ') } but also holds ${ p.panelAlsoHolds.join(', ') } - a ${ p.haspopup } popup holds only its items; this behaves like a dialog` : `controls ${ p.targetRoles.join(', ') || 'no element with a popup role' }`;
+
+      lines.push(`  POPUP ROLE MISMATCH (4.1.2) ${ p.element } aria-haspopup="${ p.haspopup }": ${ why }`);
     } else if (p.match === null && p.expanded === 'true') {
-      lines.push(`  POPUP UNVERIFIABLE (4.1.2) ${ p.element } aria-haspopup="${ p.haspopup }" expanded, but aria-controls points at nothing - check the panel's role by hand`);
+      lines.push(`  POPUP UNVERIFIABLE (4.1.2) ${ p.element } aria-haspopup="${ p.haspopup }" expanded, and nothing with a popup role is open - check the panel by hand`);
+    }
+    if (!p.controls.length && p.expanded === 'true') {
+      lines.push(`  NO aria-controls (1.3.1, advisory) ${ p.element } is expanded but does not say what it controls`);
+    }
+  }
+  for (const s of t.shortcuts || []) {
+    if (!s.visibleHint) {
+      lines.push(`  SHORTCUT ONLY ANNOUNCED (2.1.1 discoverability, VPAT risk) "${ s.shortcut }" is in ${ s.announcedOn }'s accessible name but nowhere on screen or in a tooltip`);
     }
   }
   for (const n of t.names?.missing || []) {
     lines.push(`  NO ACCESSIBLE NAME (4.1.2) role=${ n.role }  ${ n.html }`);
   }
   for (const x of t.target || []) {
-    lines.push(`  TARGET SIZE (2.5.8) ${ x.width }x${ x.height } < 24x24  ${ x.element }`);
+    lines.push(`  TARGET SIZE (2.5.8) ${ x.width }x${ x.height } < 24x24  ${ x.element }  (passes only if spaced so a 24px circle on it overlaps no other target)`);
   }
   for (const f of Array.isArray(t.focus) ? t.focus : []) {
     lines.push(`  ${ f.lost ? 'FOCUS LOST (2.4.3)' : 'focus' } after ${ f.key.padEnd(10) } -> ${ f.focus }${ f.cause ? `  (${ f.cause })` : '' }${ f.activedescendant ? ` (activedescendant #${ f.activedescendant })` : '' }${ f.focus !== '<body>' && !f.inScope ? '  [left the component]' : '' }`);
@@ -644,7 +712,12 @@ for (const [theme, t] of Object.entries(report.themes)) {
 console.log(lines.join('\n'));
 
 if (args.json) {
-  mkdirSync(dirname(args.json), { recursive: true });
-  writeFileSync(args.json, JSON.stringify(report, null, 2));
-  console.log(`\nfull results: ${ args.json }`);
+  // The report above is already the result; a path that cannot be written must not take it away.
+  try {
+    mkdirSync(dirname(args.json), { recursive: true });
+    writeFileSync(args.json, JSON.stringify(report, null, 2));
+    console.log(`\nfull results: ${ args.json }`);
+  } catch (e) {
+    console.log(`\ncould not write ${ args.json }: ${ e.message }`);
+  }
 }
