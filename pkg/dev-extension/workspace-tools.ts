@@ -664,3 +664,26 @@ export async function shareStatus(workspace: string): Promise<Record<ShareKind, 
 
   return result;
 }
+
+/**
+ * Write bytes into a workspace's artifacts, so that something from the person's own machine
+ * can be attached to a review the same way an agent's recording is. Under `artifacts/review`,
+ * named safely, and owned by the workspace's user.
+ */
+export async function putArtifact(workspace: string, name: string, base64: string): Promise<string> {
+  const safe = (name || 'attachment').replace(/[^A-Za-z0-9._-]/g, '-').slice(-80);
+  const rel = `artifacts/review/${ Date.now().toString(36) }-${ safe }`;
+  const target = await workspaceTarget(workspace);
+  const out = await asNode(target, [
+    `mkdir -p $WS/artifacts/review`,
+    `printf %s '${ base64.replace(/'/g, "") }' | base64 -d > $WS/${ rel }`,
+    `[ -s $WS/${ rel } ] && echo PUT-OK`,
+  ].join('\n'));
+
+  if (!out.includes('PUT-OK')) {
+    throw new Error(`${ name } could not be written into ${ workspace }: ${ out.trim().slice(-200) }`);
+  }
+
+  return rel;
+}
+
