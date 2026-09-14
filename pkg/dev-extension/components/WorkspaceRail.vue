@@ -13,6 +13,7 @@ import WorkspacePr from './WorkspacePr.vue';
 import WorkspaceBrowser from './WorkspaceBrowser.vue';
 import WorkspaceShare from './WorkspaceShare.vue';
 import DevModal from './DevModal.vue';
+import ClaudeLogo from './ClaudeLogo.vue';
 import {
   readStatusNow, knownStatus, provisionalStatus, agentLabel
 } from '../workspace-status';
@@ -25,8 +26,9 @@ import {
 } from '../conversations';
 import { ensureWorkspaceReady } from '../workspace-tools';
 import {
-  startIssueFix, startPrReview, approveAndMerge, DEFAULT_REPO
+  startIssueFix, startPrReview, approveAndMerge, reviewPrompt, fixPrompt, DEFAULT_REPO
 } from '../reviews';
+import { readSkill, saveSkill } from '../skills';
 import { markReadyForReview } from '../github';
 import { deleteWorkspace } from '../api';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE } from '../config/constants';
@@ -38,7 +40,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal
+    Banner, RcButton, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, ClaudeLogo
   },
 
   props: {
@@ -89,6 +91,10 @@ export default {
       timers:      [],
       /** The view open over the page: review, pr, browser or share. */
       modal:       '',
+      /** The prompt a button would send, opened with a middle click: what runs, and the skill behind it. */
+      inspecting:  null,
+      skillDraft:  '',
+      skillSaving: '',
       /** Rows opened to look closer: commits (their patch, read once) and comments (their chain and code). */
       openCommits: {},
       /** A commit's files, read once when it is opened. */
@@ -420,6 +426,87 @@ export default {
 
     modalTitle() {
       return { review: 'Review the branch', pr: `PR${ this.status?.pr ? ` #${ this.status.pr }` : '' }`, browser: 'Browser', share: 'Share a build' }[this.modal] || '';
+    },
+
+    /**
+     * The prompt an action sends, verbatim - what the middle click shows. '' for the actions
+     * that are not an agent's: marking a PR ready, merging, opening a view.
+     */
+    promptOf(run) {
+      const pr = this.status?.pr || 0;
+
+      switch (run) {
+      case 'startFix':
+        return fixPrompt(this.issue, DEFAULT_REPO);
+      case 'startReview':
+        return reviewPrompt(pr, DEFAULT_REPO);
+      case 'answerFeedback':
+        return `/my-pr-address-feedback Address the review feedback on ${ DEFAULT_REPO } PR #${ pr }: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.`;
+      case 'reverify':
+        return `/my-fix-demonstrate Re-verify the fix on this branch${ pr ? ` (PR #${ pr })` : '' } and record a fresh video of the same walk.`;
+      case 'reviewAgain':
+        return `The developer pushed new commits and/or replied since the review of ${ DEFAULT_REPO } PR #${ pr } was submitted. Review what changed against the comments that were made: say which are addressed, which are not, and anything new the changes introduce. File through $CLAUDE_HARNESS_API/my-work/pr/${ pr }.`;
+      default:
+        return '';
+      }
+    },
+
+    /** Whether pressing this starts an agent - what the little mark says. */
+    startsAgent(action) {
+      return !!action && (!!action.skill || !!this.promptOf(action.run));
+    },
+
+    /** The skill a prompt runs, if it opens with one. */
+    skillIn(prompt) {
+      return /^\/([a-z0-9-]+)/.exec(prompt || '')?.[1] || '';
+    },
+
+    /**
+     * Middle click: what this button actually sends, and the skill behind it, read from the
+     * seed the workspaces are laid out from - editable here, saved for every workspace and
+     * optionally committed, the same way the Skills page does it.
+     */
+    async inspect(action, event) {
+      if (event) {
+        event.preventDefault();
+      }
+      const prompt = action.skill ? skillPrompt(action, this.status, this.issue) : this.promptOf(action.run);
+
+      if (!prompt) {
+        return;
+      }
+      const skill = action.skill || this.skillIn(prompt);
+
+      this.inspecting = {
+        label: action.label, prompt, skill, content: '', error: '',
+      };
+      this.skillDraft = '';
+      if (skill) {
+        try {
+          const read = await readSkill(skill);
+
+          this.inspecting = { ...this.inspecting, content: read.content, overridden: read.overridden };
+          this.skillDraft = read.content;
+        } catch (e) {
+          this.inspecting = { ...this.inspecting, error: `The skill ${ skill } could not be read: ${ e?.message || e }` };
+        }
+      }
+    },
+
+    async saveInspected(commit) {
+      if (!this.inspecting?.skill || this.skillSaving) {
+        return;
+      }
+      this.skillSaving = commit ? 'commit' : 'save';
+      try {
+        await saveSkill(this.inspecting.skill, this.skillDraft, commit, `Skill ${ this.inspecting.skill }: edited from a workspace`);
+        this.inspecting = { ...this.inspecting, content: this.skillDraft, overridden: true };
+        this.notice = `${ this.inspecting.skill } saved${ commit ? ' and committed' : '' }; every workspace picks it up.`;
+      } catch (e) {
+        this.inspecting = { ...this.inspecting, error: e?.message || String(e) };
+      } finally {
+        this.skillSaving = '';
+      }
     },
 
     /** The skills worth running where the work is; each one is a prompt into its conversation. */
@@ -782,21 +869,27 @@ export default {
           >
             <span class="workspace-rail__group-label">Ask the agent</span>
             <div class="workspace-rail__group-buttons">
-              <RcButton
+              <span
                 v-for="button in skillButtons()"
                 :key="button.skill"
-                variant="secondary"
-                size="small"
-                :disabled="!!busy"
-                :title="button.note"
-                @click="runSkill(button)"
+                class="workspace-rail__act"
+                @auxclick.middle="inspect(button, $event)"
               >
-                <i
-                  v-if="busy === button.skill"
-                  class="icon icon-spinner icon-spin"
-                />
-                {{ button.label }}
-              </RcButton>
+                <RcButton
+                  variant="secondary"
+                  size="small"
+                  :disabled="!!busy"
+                  :title="`${ button.note } · middle click to see the prompt and the skill`"
+                  @click="runSkill(button)"
+                >
+                  <i
+                    v-if="busy === button.skill"
+                    class="icon icon-spinner icon-spin"
+                  />
+                  {{ button.label }}
+                </RcButton>
+                <ClaudeLogo class="workspace-rail__act-mark" />
+              </span>
             </div>
           </div>
           <div class="workspace-rail__group workspace-rail__group--decide">
@@ -805,26 +898,46 @@ export default {
               class="workspace-rail__group-label"
             >Then</span>
             <div class="workspace-rail__group-buttons">
-              <RcButton
+              <span
                 v-for="tool in action.tools"
                 :key="tool.label"
-                variant="secondary"
-                :disabled="!!busy"
-                @click="run(tool)"
+                class="workspace-rail__act"
+                @auxclick.middle="startsAgent(tool) && inspect(tool, $event)"
               >
-                {{ tool.label }}
-              </RcButton>
-              <RcButton
-                variant="primary"
-                :disabled="!!busy"
-                @click="run(action.primary)"
-              >
-                <i
-                  v-if="busy === action.primary.run"
-                  class="icon icon-spinner icon-spin"
+                <RcButton
+                  variant="secondary"
+                  :disabled="!!busy"
+                  :title="startsAgent(tool) ? 'Middle click to see the prompt and the skill' : ''"
+                  @click="run(tool)"
+                >
+                  {{ tool.label }}
+                </RcButton>
+                <ClaudeLogo
+                  v-if="startsAgent(tool)"
+                  class="workspace-rail__act-mark"
                 />
-                {{ action.primary.label }}
-              </RcButton>
+              </span>
+              <span
+                class="workspace-rail__act"
+                @auxclick.middle="startsAgent(action.primary) && inspect(action.primary, $event)"
+              >
+                <RcButton
+                  variant="primary"
+                  :disabled="!!busy"
+                  :title="startsAgent(action.primary) ? 'Middle click to see the prompt and the skill' : ''"
+                  @click="run(action.primary)"
+                >
+                  <i
+                    v-if="busy === action.primary.run"
+                    class="icon icon-spinner icon-spin"
+                  />
+                  {{ action.primary.label }}
+                </RcButton>
+                <ClaudeLogo
+                  v-if="startsAgent(action.primary)"
+                  class="workspace-rail__act-mark workspace-rail__act-mark--on-primary"
+                />
+              </span>
             </div>
           </div>
         </div>
@@ -1164,6 +1277,67 @@ export default {
         </section>
 
       </div>
+      <!-- What a button sends, and the skill it runs, editable for every workspace. -->
+      <DevModal
+        v-if="inspecting"
+        :title="`${ inspecting.label }: what it runs`"
+        @close="inspecting = null"
+      >
+        <div class="workspace-rail__inspect">
+          <Banner
+            v-if="inspecting.error"
+            color="error"
+            :label="inspecting.error"
+          />
+          <section class="workspace-rail__section">
+            <h4 class="workspace-rail__section-title">The prompt, as it is sent</h4>
+            <pre class="workspace-rail__prompt">{{ inspecting.prompt }}</pre>
+            <p class="workspace-rail__detail">It goes to this workspace's conversation, so the run is watched and talked to like any other.</p>
+          </section>
+          <section
+            v-if="inspecting.skill"
+            class="workspace-rail__section"
+          >
+            <h4 class="workspace-rail__section-title">
+              {{ inspecting.skill }}/SKILL.md
+              <span
+                v-if="inspecting.overridden"
+                class="workspace-rail__tag"
+              >edited here</span>
+            </h4>
+            <textarea
+              v-model="skillDraft"
+              class="workspace-rail__skill"
+              spellcheck="false"
+            />
+            <div class="workspace-rail__group-buttons">
+              <RcButton
+                variant="secondary"
+                :disabled="!!skillSaving || skillDraft === inspecting.content"
+                @click="saveInspected(false)"
+              >
+                <i
+                  v-if="skillSaving === 'save'"
+                  class="icon icon-spinner icon-spin"
+                />
+                Save to all workspaces
+              </RcButton>
+              <RcButton
+                variant="primary"
+                :disabled="!!skillSaving || skillDraft === inspecting.content"
+                @click="saveInspected(true)"
+              >
+                <i
+                  v-if="skillSaving === 'commit'"
+                  class="icon icon-spinner icon-spin"
+                />
+                Save and commit
+              </RcButton>
+            </div>
+          </section>
+        </div>
+      </DevModal>
+
       <DevModal
         v-if="modal"
         :title="modalTitle()"
@@ -1474,6 +1648,67 @@ export default {
     display:   flex;
     gap:       8px;
     flex-wrap: wrap;
+  }
+
+  // A button that starts an agent says so with the mascot in its corner; a middle click on it
+  // opens what it sends and the skill behind it.
+  &__act {
+    position: relative;
+    display:  inline-flex;
+  }
+
+  &__act-mark {
+    position:      absolute;
+    top:           -5px;
+    right:         -5px;
+    width:         11px;
+    height:        11px;
+    padding:       2px;
+    border-radius: 50%;
+    background:    var(--pr-bg-2);
+    color:         var(--pr-accent);
+    pointer-events: none;
+
+    &--on-primary {
+      background: var(--pr-accent);
+      color:      var(--pr-on-accent);
+    }
+  }
+
+  &__inspect {
+    display:        flex;
+    flex-direction: column;
+    gap:            18px;
+    padding:        16px 20px;
+    min-height:     0;
+  }
+
+  &__prompt {
+    margin:        0;
+    padding:       10px 12px;
+    border:        1px solid var(--pr-border);
+    border-radius: var(--border-radius);
+    background:    var(--pr-bg-2);
+    font-family:   var(--pr-mono);
+    font-size:     12px;
+    line-height:   1.5;
+    white-space:   pre-wrap;
+    word-break:    break-word;
+  }
+
+  &__skill {
+    width:         100%;
+    box-sizing:    border-box;
+    min-height:    46vh;
+    padding:       10px 12px;
+    border:        1px solid var(--pr-border);
+    border-radius: var(--border-radius);
+    background:    var(--input-bg);
+    color:         var(--pr-text);
+    font-family:   var(--pr-mono);
+    font-size:     12.5px;
+    line-height:   1.5;
+    resize:        vertical;
   }
 
   // The two columns
