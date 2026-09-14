@@ -106,6 +106,18 @@ export default {
       default: false,
     },
 
+    /**
+     * Optional headings inside the list: `{ id, label, icon, rows }`, drawn in order with a
+     * small heading above each. The sidebar splits a workspace app's rows by the part you play
+     * in them; the list is still one list, because the app is still one thing.
+     *
+     * Groups with no rows are left out. With no groups the list draws `rows` as it always has.
+     */
+    groups: {
+      type:    Array,
+      default: () => [],
+    },
+
     empty: {
       type:    String,
       default: 'None yet',
@@ -120,6 +132,20 @@ export default {
     tone: {
       type:    String,
       default: '',
+    },
+  },
+
+  computed: {
+    /** What to draw: the groups that have rows, or one nameless block holding `rows`. */
+    blocks() {
+      const groups = this.groups.filter((group) => group.rows?.length);
+
+      return groups.length ? groups : [{ id: '', label: '', rows: this.rows }];
+    },
+
+    /** Whether there is anything at all to draw, groups or not. */
+    anyRows() {
+      return this.blocks.some((block) => block.rows.length);
     },
   },
 
@@ -287,114 +313,135 @@ export default {
     </div>
 
     <ul>
-      <li
-        v-for="row in rows"
-        :key="row.key"
-        :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail }"
-        class="dev-list__row"
-        @mouseenter="showCard(row, $event)"
-        @mouseleave="hideCard"
+      <!--
+        The rows, under their group headings where the list has groups: the sidebar splits a
+        workspace app by the part you play in each of its workspaces. Without groups this is
+        one nameless block and the list draws exactly as it did.
+      -->
+      <template
+        v-for="block in blocks"
+        :key="block.id || 'all'"
       >
-        <!--
-          The state class goes on the wrapper and the glyph reads it back through currentColor,
-          which is what lets the stylesheet adjust it for the theme without knowing which state
-          it is. See the __dot rule.
-        -->
-        <component
-          :is="row.to ? 'router-link' : 'button'"
-          v-if="renaming !== row.key"
-          class="dev-list__link"
-          :class="{ 'dev-list__link--deleting': isDeleting(row) }"
-          :to="row.to"
-          :type="row.to ? null : 'button'"
-          @click="row.to ? null : $emit('select', row.key)"
+        <li
+          v-if="block.label"
+          class="dev-list__subhead"
         >
-          <span
-            v-clean-tooltip="stateLabel(row)"
-            class="dev-list__glyph dev-list__dot"
-            :class="dotClass(row)"
-          ><i class="icon icon-dot" /></span>
-          <span
+          <i
+            v-if="block.icon"
+            class="dev-list__subhead-glyph icon"
+            :class="block.icon"
+          />
+          <span class="dev-list__subhead-label">{{ block.label }}</span>
+        </li>
+        <li
+          v-for="row in block.rows"
+          :key="row.key"
+          :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail }"
+          class="dev-list__row"
+          @mouseenter="showCard(row, $event)"
+          @mouseleave="hideCard"
+        >
+          <!--
+            The state class goes on the wrapper and the glyph reads it back through currentColor,
+            which is what lets the stylesheet adjust it for the theme without knowing which state
+            it is. See the __dot rule.
+          -->
+          <component
+            :is="row.to ? 'router-link' : 'button'"
             v-if="renaming !== row.key"
-            class="dev-list__text"
+            class="dev-list__link"
+            :class="{ 'dev-list__link--deleting': isDeleting(row) }"
+            :to="row.to"
+            :type="row.to ? null : 'button'"
+            @click="row.to ? null : $emit('select', row.key)"
           >
             <span
-              class="dev-list__name"
-              :title="row.title || row.label"
-              @dblclick.prevent="renamable && !row.fixed && startRename(row)"
-            >{{ row.label }}</span>
+              v-clean-tooltip="stateLabel(row)"
+              class="dev-list__glyph dev-list__dot"
+              :class="dotClass(row)"
+            ><i class="icon icon-dot" /></span>
+            <span
+              v-if="renaming !== row.key"
+              class="dev-list__text"
+            >
+              <span
+                class="dev-list__name"
+                :title="row.title || row.label"
+                @dblclick.prevent="renamable && !row.fixed && startRename(row)"
+              >{{ row.label }}</span>
+              <!--
+                What the work needs and what the agent is doing, under the name, in the colour of
+                how much it needs the person. See workspace-status.ts.
+              -->
+              <span
+                v-if="row.detail"
+                class="dev-list__detail"
+                :class="detailClass(row)"
+              ><i
+                v-if="row.agent === 'working'"
+                class="icon icon-spinner icon-spin"
+              /><i
+                v-else-if="row.agent === 'input'"
+                class="icon icon-warning"
+              />{{ row.detail }}</span>
+            </span>
             <!--
-              What the work needs and what the agent is doing, under the name, in the colour of
-              how much it needs the person. See workspace-status.ts.
+              Said in words as well as in colour: a dot going red is not a message somebody reads,
+              and a spinner beside it shows the delete is doing work rather than stuck. Both go
+              when the row does.
             -->
             <span
-              v-if="row.detail"
-              class="dev-list__detail"
-              :class="detailClass(row)"
-            ><i
-              v-if="row.agent === 'working'"
-              class="icon icon-spinner icon-spin"
-            /><i
-              v-else-if="row.agent === 'input'"
-              class="icon icon-warning"
-            />{{ row.detail }}</span>
-          </span>
+              v-if="isDeleting(row)"
+              class="dev-list__deleting"
+            ><i class="icon icon-spinner icon-spin" /> Deleting</span>
+          </component>
+          <input
+            v-if="renaming === row.key"
+            :ref="`rename-${ row.key }`"
+            v-model="draft"
+            class="dev-list__rename"
+            type="text"
+            :aria-label="`Rename ${ row.label }`"
+            @keydown.enter.prevent="commitRename(row)"
+            @keydown.esc.prevent="renaming = ''"
+            @blur="commitRename(row)"
+            @click.stop
+          >
+          <button
+            v-if="renamable && !row.fixed && renaming !== row.key"
+            v-clean-tooltip="`Rename ${ row.label }`"
+            type="button"
+            class="dev-list__control dev-list__reveal dev-list__rename-btn"
+            :aria-label="`Rename ${ row.label }`"
+            @click.stop="startRename(row)"
+          >
+            <i class="icon icon-edit" />
+          </button>
           <!--
-            Said in words as well as in colour: a dot going red is not a message somebody reads,
-            and a spinner beside it shows the delete is doing work rather than stuck. Both go
-            when the row does.
-          -->
-          <span
-            v-if="isDeleting(row)"
-            class="dev-list__deleting"
-          ><i class="icon icon-spinner icon-spin" /> Deleting</span>
-        </component>
-        <input
-          v-if="renaming === row.key"
-          :ref="`rename-${ row.key }`"
-          v-model="draft"
-          class="dev-list__rename"
-          type="text"
-          :aria-label="`Rename ${ row.label }`"
-          @keydown.enter.prevent="commitRename(row)"
-          @keydown.esc.prevent="renaming = ''"
-          @blur="commitRename(row)"
-          @click.stop
-        >
-        <button
-          v-if="renamable && !row.fixed && renaming !== row.key"
-          v-clean-tooltip="`Rename ${ row.label }`"
-          type="button"
-          class="dev-list__control dev-list__reveal dev-list__rename-btn"
-          :aria-label="`Rename ${ row.label }`"
-          @click.stop="startRename(row)"
-        >
-          <i class="icon icon-edit" />
-        </button>
-        <!--
-          One control: the trash icon, which deletes on click.
+            One control: the trash icon, which deletes on click.
           
-          There is no confirm step and no second button. The two-button dance (trash, then a
-          tick or a word) was answering "are you sure" with another thing to press, when the row
-          itself can answer it: the moment it is clicked the row goes red and says it is
-          deleting (see isDeleting and the row classes above), which is both the acknowledgement
-          and the progress. A delete that has visibly started and is visibly working does not
-          need to have been confirmed first.
-        -->
-        <button
-          v-if="deletable && !row.fixed && !isDeleting(row)"
-          v-clean-tooltip="`Delete ${ row.label }`"
-          type="button"
-          class="dev-list__control dev-list__reveal dev-list__delete"
-          :aria-label="`Delete ${ row.label }`"
-          @click="remove(row)"
-        >
-          <i class="icon icon-trash" />
-        </button>
-      </li>
+            There is no confirm step and no second button. The two-button dance (trash, then a
+            tick or a word) was answering "are you sure" with another thing to press, when the row
+            itself can answer it: the moment it is clicked the row goes red and says it is
+            deleting (see isDeleting and the row classes above), which is both the acknowledgement
+            and the progress. A delete that has visibly started and is visibly working does not
+            need to have been confirmed first.
+          -->
+          <button
+            v-if="deletable && !row.fixed && !isDeleting(row)"
+            v-clean-tooltip="`Delete ${ row.label }`"
+            type="button"
+            class="dev-list__control dev-list__reveal dev-list__delete"
+            :aria-label="`Delete ${ row.label }`"
+            @click="remove(row)"
+          >
+            <i class="icon icon-trash" />
+          </button>
+        </li>
+      </template>
 
       <li
-        v-if="!rows.length"
+        v-if="!anyRows"
         class="dev-list__empty"
       >
         {{ empty }}
@@ -782,6 +829,30 @@ export default {
       &:hover .dev-list__popover {
         display: block;
       }
+    }
+
+    /*
+     * A heading inside the list. Quieter than the list's own heading - smaller, no rail of its
+     * own - because it divides a list rather than starting one, and a sidebar of headings that
+     * all shout is a sidebar nobody reads.
+     */
+    &__subhead {
+      display:        flex;
+      align-items:    center;
+      gap:            6px;
+      padding:        var(--dev-space-3) #{$gap} var(--dev-space-1) calc(#{$rail} + #{$rail} + #{$gap});
+      color:          var(--muted);
+      font-size:      10px;
+      font-weight:    600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+
+      &:first-child { padding-top: 2px; }
+    }
+
+    &__subhead-glyph {
+      font-size: 11px;
+      opacity:   .8;
     }
 
     &__empty {
