@@ -49,9 +49,6 @@ const EVIDENCE_MS = 60000;
  */
 const GITHUB_MS = 2 * 60000;
 
-/** Where the conversation pane's height is kept between visits. */
-const PANE_KEY = 'dev-extension.rail.pane-height';
-
 export default {
   name: 'WorkspaceRail',
 
@@ -119,9 +116,8 @@ export default {
       settleTimer: null,
       /** Which sections are folded away: `{ [title]: true }`, seeded from the section itself. */
       shut:        {},
-      /** The conversation, in its own window over the page rather than under the column. */
+      /** The conversation, in its own window over the page. */
       popped:      false,
-      paneWatcher: null,
       /** The workspace's own recordings and screenshots, for attaching to one. */
       media:       [],
       /** Attaching or approving, for the spinner. */
@@ -346,11 +342,6 @@ export default {
       setInterval(() => this.refreshStatus(true), GITHUB_MS),
       setInterval(() => this.refreshEvidence(), EVIDENCE_MS),
     ];
-    // The conversation pane's height, kept between visits. The box resizes natively (the
-    // corner grip), which writes its own inline height, so the saved one is applied once here
-    // rather than bound - a bound height and a dragged one fight each other - and read back
-    // through an observer.
-    this.$nextTick(() => this.watchPane());
   },
 
   beforeUnmount() {
@@ -358,7 +349,6 @@ export default {
     clearTimeout(this.statusRetryTimer);
     clearTimeout(this.evidenceRetryTimer);
     clearTimeout(this.settleTimer);
-    this.paneWatcher?.disconnect();
   },
 
   methods: {
@@ -520,29 +510,6 @@ export default {
       this.shut = { ...this.shut, [section.title]: !this.isShut(section) };
     },
 
-    watchPane() {
-      const box = this.$refs.pane;
-
-      if (!box || this.paneWatcher) {
-        return;
-      }
-      const saved = Number(localStorage.getItem(PANE_KEY) || 0);
-
-      if (saved > 120) {
-        box.style.height = `${ saved }px`;
-      }
-      this.paneWatcher = new ResizeObserver(() => {
-        const height = Math.round(box.getBoundingClientRect().height);
-
-        if (height > 120) {
-          try {
-            localStorage.setItem(PANE_KEY, String(height));
-          } catch { /* a browser without storage just forgets the size */ }
-        }
-      });
-      this.paneWatcher.observe(box);
-    },
-
     doneBefore(index) {
       return this.round > 1 && !!this.steps[index] && ['submitted', 'response'].includes(this.steps[index].key) && index > this.currentIndex;
     },
@@ -575,8 +542,10 @@ export default {
 
     /** The conversation is on the page; every other view opens over it. */
     openTab(name) {
+      // A conversation is its own window now, so "go to the conversation" opens it rather
+      // than scrolling to a pane that is no longer on the page.
       if (name === 'conversations') {
-        this.$refs.pane?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+        this.popped = true;
 
         return;
       }
@@ -2289,37 +2258,21 @@ export default {
         >
           New conversation
         </RcButton>
-        <button
-          type="button"
-          class="workspace-rail__back workspace-rail__pop"
-          :title="popped ? 'Put the conversation back on the page' : 'Open the conversation as a window over the page'"
-          @click="popped = !popped"
-        >{{ popped ? 'Put it back' : 'Pop out' }}</button>
+        <PrButton
+          v-if="conversations.length"
+          class="workspace-rail__pop"
+          size="sm"
+          variant="primary"
+          @click="popped = true"
+        >
+          Open the conversation
+        </PrButton>
       </div>
       <!--
-        The conversation is the shortest thing on this page that took the most room, so it
-        opens small and is dragged to whatever height the work needs (the handle is the
-        bottom-right corner; the height is remembered). Anyone who wants the whole screen for
-        it pops it out instead, and the inline one steps aside so only one is attached to the
-        pane at a time.
+        The conversation opens over the page rather than under the column, the way the change
+        opens in the review tool: a terminal is a place to work, not a thing to have open while
+        reading something else, and inline it took whatever room it was given.
       -->
-      <div
-        v-if="!popped"
-        ref="pane"
-        class="workspace-rail__pane"
-      >
-        <template
-          v-for="c in conversations"
-          :key="c.id"
-        >
-          <StudioTerminal
-            v-if="c.id === currentConversation"
-            class="workspace-rail__terminal"
-            :session="c.id"
-            :command="c.attach.command"
-          />
-        </template>
-      </div>
       <DevModal
         v-if="popped"
         :title="`${ workspace.name } · ${ (conversations.find((c) => c.id === currentConversation) || {}).title || 'conversation' }`"
@@ -2712,19 +2665,6 @@ export default {
 
   &__col--pane {
     padding: 10px 12px;
-  }
-
-  /*
-   * Small by default and dragged bigger, rather than two thirds of the screen every time: the
-   * column above it is what the page is for, and a conversation that pushes it off the screen
-   * is a conversation nobody asked for yet.
-   */
-  &__pane {
-    height:     400px;
-    min-height: 120px;
-    max-height: 85vh;
-    overflow:   hidden;
-    resize:     vertical;
   }
 
   &__popped {
