@@ -21,7 +21,7 @@ import {
 } from '../workspace-rail';
 import { prFile } from '../reviews';
 import {
-  listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates
+  listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates, sendToPane
 } from '../conversations';
 import { ensureWorkspaceReady } from '../workspace-tools';
 import {
@@ -619,6 +619,20 @@ export default {
       return this.status ? skillsFor(this.status.kind, this.shown) : [];
     },
 
+    /**
+     * The stage's own actions, split by what they are rather than by where they were written:
+     * anything that sends a prompt belongs beside the skills, and "your call" holds only the
+     * decisions - reading the findings, marking ready, merging, deleting.
+     */
+    actionsFor(kind) {
+      if (!this.action) {
+        return [];
+      }
+      const all = [...this.action.tools, { ...this.action.primary, isPrimary: true }];
+
+      return all.filter((a) => (kind === 'agent' ? this.startsAgent(a) : !this.startsAgent(a)));
+    },
+
     async runSkill(button) {
       if (this.busy) {
         return;
@@ -779,10 +793,14 @@ export default {
       const newest = about[about.length - 1] || conversations[conversations.length - 1];
 
       if (newest && reuse) {
-        await queuePrompt(newest.attach, text);
         const alive = (await conversationStates().catch(() => [])).find((c) => c.id === newest.id)?.alive;
 
-        if (!alive) {
+        if (alive) {
+          // Typed into the pane, because a queued prompt is only read when claude starts: on a
+          // conversation already running it would sit in the queue and nothing would happen.
+          await sendToPane(newest.id, text);
+        } else {
+          await queuePrompt(newest.attach, text);
           await startPaneDetached(this.workspace.name, newest.id).catch(() => {});
         }
         await this.loadConversations();
@@ -1000,11 +1018,27 @@ export default {
             conversation, so what it starts is watched and talked to below.
           -->
           <div
-            v-if="skillButtons().length"
+            v-if="skillButtons().length || actionsFor('agent').length"
             class="workspace-rail__group"
           >
             <span class="workspace-rail__group-label">Ask the agent</span>
             <div class="workspace-rail__group-buttons">
+              <RcButton
+                v-for="a in actionsFor('agent')"
+                :key="a.label"
+                :variant="a.isPrimary ? 'primary' : 'secondary'"
+                :disabled="!!busy"
+                title="Middle click to see the prompt and the skill"
+                @click="run(a)"
+                @mousedown="onAux(a, $event)"
+                @auxclick="onAux(a, $event)"
+              >
+                <i
+                  v-if="busy === a.run"
+                  class="icon icon-spinner icon-spin"
+                />
+                {{ a.label }}
+              </RcButton>
               <RcButton
                 v-for="button in skillButtons()"
                 :key="button.skill"
@@ -1023,34 +1057,24 @@ export default {
               </RcButton>
             </div>
           </div>
-          <div class="workspace-rail__group workspace-rail__group--decide">
+          <div
+            v-if="actionsFor('you').length"
+            class="workspace-rail__group workspace-rail__group--decide"
+          >
             <span class="workspace-rail__group-label">Your call</span>
             <div class="workspace-rail__group-buttons">
               <RcButton
-                v-for="tool in action.tools"
-                :key="tool.label"
-                variant="secondary"
+                v-for="a in actionsFor('you')"
+                :key="a.label"
+                :variant="a.isPrimary ? 'primary' : 'secondary'"
                 :disabled="!!busy"
-                :title="startsAgent(tool) ? 'Middle click to see the prompt and the skill' : ''"
-                @click="run(tool)"
-                @mousedown="onAux(tool, $event)"
-                @auxclick="onAux(tool, $event)"
-              >
-                {{ tool.label }}
-              </RcButton>
-              <RcButton
-                variant="primary"
-                :disabled="!!busy"
-                :title="startsAgent(action.primary) ? 'Middle click to see the prompt and the skill' : ''"
-                @click="run(action.primary)"
-                @mousedown="onAux(action.primary, $event)"
-                @auxclick="onAux(action.primary, $event)"
+                @click="run(a)"
               >
                 <i
-                  v-if="busy === action.primary.run"
+                  v-if="busy === a.run"
                   class="icon icon-spinner icon-spin"
                 />
-                {{ action.primary.label }}
+                {{ a.label }}
               </RcButton>
             </div>
           </div>
