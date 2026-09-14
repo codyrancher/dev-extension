@@ -216,7 +216,7 @@ export default {
           };
         case 'submitted':
           return {
-            headline: 'Your review is with the developer', detail: 'This moves on when they push or reply.', primary: { label: 'Approve and merge', run: 'approveMerge' }, tools: [],
+            headline: 'Your review is with the developer', detail: 'This moves on when they push or reply. Your comments are on the left; the PR and its diff are a click away.', primary: { label: 'Approve and merge', run: 'approveMerge' }, tools: [{ label: 'Go through the findings', run: 'openTab', arg: 'pr' }, { label: 'Review the branch', run: 'openTab', arg: 'review' }],
           };
         case 'response':
           return {
@@ -922,10 +922,7 @@ export default {
             </div>
           </div>
           <div class="workspace-rail__group workspace-rail__group--decide">
-            <span
-              v-if="action.tools.length"
-              class="workspace-rail__group-label"
-            >Then</span>
+            <span class="workspace-rail__group-label">Your call</span>
             <div class="workspace-rail__group-buttons">
               <RcButton
                 v-for="tool in action.tools"
@@ -1683,15 +1680,13 @@ export default {
     flex-direction: column;
     gap:            8px;
     align-items:    flex-start;
+    justify-content: flex-start;
     padding:        10px 12px;
     border:         1px solid var(--pr-border);
     border-radius:  var(--border-radius);
     background:     var(--pr-bg);
 
-    &--decide {
-      align-items:  flex-end;
-      border-color: var(--pr-accent);
-    }
+    &--decide { border-color: var(--pr-accent); }
   }
 
   // Every button the same size, whatever it does - and its label in the middle of it: the

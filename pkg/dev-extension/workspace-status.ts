@@ -152,8 +152,11 @@ function reviewWork(d: Json, agent: AgentState): Pick<WorkspaceStatus, 'label' |
   const local: Json[] = d.localComments || [];
   const submitted = local.filter((c) => c.submitted_at);
   const pending = local.filter((c) => !c.submitted_at);
-  // A review left on GitHub itself, by anyone but the author or a bot, counts as submitted too.
-  const reviews: Json[] = (d.reviews || []).filter((r: Json) => r.author && r.author !== m.author && !isBot(r.author) && r.submittedAt);
+  // A review YOU left on GitHub itself counts as submitted too - but only yours. Counting
+  // anyone's put the stage back to "waiting for the developer" the moment a bot approved the
+  // PR, days after the developer had answered.
+  const viewer = d.viewer || '';
+  const reviews: Json[] = (d.reviews || []).filter((r: Json) => r.submittedAt && (viewer ? r.author === viewer : r.author && r.author !== m.author && !isBot(r.author)));
 
   if (m.merged) {
     return { label: 'Merged', tone: 'green', stage: 'approved' };
