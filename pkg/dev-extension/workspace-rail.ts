@@ -56,6 +56,8 @@ export type EvidenceItem =
 export interface EvidenceSection {
   title: string;
   items: EvidenceItem[];
+  /** Drawn shut, for a section that is reference rather than news. The page remembers the rest. */
+  collapsed?: boolean;
 }
 
 /** One row of a diff as the page draws it: highlighted code, and whether it is the commented line. */
@@ -523,7 +525,10 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       items.push({ kind: 'links', items: failing.slice(0, 8).map((c: Json) => ({ label: `${ c.name || 'check' }: ${ c.conclusion || 'failing' }`, url: c.url })) });
     }
     items.push({ kind: 'text', text: String(d.meta?.body || ''), html: renderBody(String(d.meta?.body || '') || '_(no description)_', kinds) });
-    sections.push({ title: 'Pull request', items });
+    // First, and shut. What the PR is - its size, its checks, its description and checklist -
+    // is the frame everything else in the column is read inside, so it belongs at the top; but
+    // it is reference, not news, and open it was a screenful of template above the findings.
+    sections.unshift({ title: 'Pull request', items, collapsed: true });
   };
   const issueSection = () => have.issue && sections.push({ title: `The issue: ${ have.issue.title }`, items: [{ kind: 'text', text: have.issue.body, html: renderMd(have.issue.body || '_(no description)_') }, { kind: 'links', items: [{ label: 'On GitHub', url: have.issue.url }] }] });
 
