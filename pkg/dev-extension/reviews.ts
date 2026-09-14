@@ -235,13 +235,14 @@ export async function approvePr(num: number, body = '', repo = DEFAULT_REPO): Pr
 }
 
 /**
- * Post every approved local comment to GitHub as one review.
+ * Post every approved local comment to GitHub as one review, as comments (the default), as a
+ * request for changes, or as an approval with the comments on it.
  *
  * All of them have to be approved first - that is what marking a comment good is for - and the
  * PR-level ones become the review's body while the line ones ride as inline comments. Then they
  * are stamped submitted here, so the next review starts from nothing.
  */
-export async function submitReview(num: number, repo = DEFAULT_REPO): Promise<{ url: string | null; posted: number }> {
+export async function submitReview(num: number, repo = DEFAULT_REPO, event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES' = 'COMMENT'): Promise<{ url: string | null; posted: number }> {
   const comments = (await listComments(num)).filter((c) => !c.submitted_at);
 
   if (!comments.length) {
@@ -268,7 +269,7 @@ export async function submitReview(num: number, repo = DEFAULT_REPO): Promise<{ 
   const inline = withEvidence.filter((c) => c.path);
   const body = withEvidence.filter((c) => !c.path).map((c) => c.body).join('\n\n');
   const review = await gh('POST', `/repos/${ repo }/pulls/${ num }/reviews`, {
-    event:    'COMMENT',
+    event,
     ...(body ? { body } : {}),
     comments: inline.map((c) => ({
       path: c.path,
