@@ -22,6 +22,7 @@ description: Review a pull request in rancher/dashboard by leaving short, pendin
         - When using the GitHub API, omit the `event` field from the review creation request to keep it in PENDING state. Using `"event": "COMMENT"` submits the review immediately.
     - As a part of the review verify each of the PR checklist items to ensure they've been completed as expected.
         - Feel free to use the browser, users, light dark mode etc to verify.
+- **Run the accessibility pass.** If the diff renders UI (`.vue` templates, markup, styles, theme tokens, keyboard handlers, labels), follow the `my-pr-review-a11y` skill as part of this same review, before you finish. It walks the changed components through the states a page-load scan misses, in both themes, and files its findings through the same path as yours. Don't file a second comment for a point it already made, or it for one of yours. If the diff renders nothing, skip it and say so in your summary.
 - Do NOT submit the review. Only create individual review comments as pending so the user can review and submit themselves.
 
 

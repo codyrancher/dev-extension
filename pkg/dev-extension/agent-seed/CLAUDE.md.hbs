@@ -57,6 +57,7 @@ The detailed playbooks for the most common tasks live in `.claude/skills/` and a
 - `my-commit-create` - concise commit on a new `issue-$(issueNumber)` branch, no AI co-author.
 - `my-pr-create` - push and open a draft PR upstream. Includes the **Playwright + CDP upload flow** that posts videos and screenshots to GitHub `user-attachments` so they embed inline in the PR body.
 - `my-pr-review` - pending inline review comments only, never submit. This is the review playbook, use it for every PR review.
+- `my-pr-review-a11y` - the accessibility pass `my-pr-review` runs for any UI change: every state and both themes, measured with `a11y-probe.mjs`, filed as WCAG 2.2 comments.
 - `my-pr-address-feedback` - fix or reply to every inline comment on an existing PR, then push one follow-up commit.
 
 # Fix Issue

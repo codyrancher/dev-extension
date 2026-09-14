@@ -41,6 +41,7 @@ Three cautions:
 
 - The demo-issue agent checks out unfixed code. If it does that in the shared checkout while the review is reading files, they'll fight — give it its own worktree (`git -C /workspace/dashboard worktree add`) or run it after the review finishes. Decide up front and say which you chose.
 - Only the review may file comments. The demo agents produce videos and report paths.
+- The review agent drives the browser too: its accessibility pass (`my-pr-review-a11y`) opens tabs, hovers, focuses and presses keys to measure the changed components. It works in a tab of its own and never opens DevTools, so it can overlap the demo agents' planning, but don't run it while a recording is in progress - a hover in one tab can land in another's frame.
 - Both demo agents drive the one browser sidecar. They can plan, read the diff and write their scripts concurrently, but the actual recordings are serial, and a `record-script` run fails outright if another agent has DevTools open.
 - **The demos belong in a PR-level comment, not on a line.** Once both
   recordings exist, file one comment with no path (`"level":"pr"`) carrying
