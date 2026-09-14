@@ -105,6 +105,25 @@ export function agentLabel(state: AgentState): string {
   return AGENT_LABEL[state];
 }
 
+/**
+ * The agent's state as a mark rather than as words.
+ *
+ * A list of workspaces reads down the left, and "agent idle" repeated eight times down the
+ * right is eight rows of the same three words. The icon says the same thing in the space of a
+ * character, and its tooltip says it in words for anyone who wants them.
+ */
+const AGENT_ICON: Record<AgentState, string> = {
+  working:  'icon-spinner icon-spin',
+  input:    'icon-warning',
+  idle:     'icon-dot-open',
+  finished: 'icon-checkmark',
+  none:     '',
+};
+
+export function agentIcon(state: AgentState): string {
+  return AGENT_ICON[state];
+}
+
 const GITHUB_EVERY_MS = 5 * 60_000;
 const AGENTS_EVERY_MS = 15_000;
 
