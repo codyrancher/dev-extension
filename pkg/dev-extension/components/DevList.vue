@@ -336,7 +336,7 @@ export default {
         <li
           v-for="row in block.rows"
           :key="row.key"
-          :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail }"
+          :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail, 'dev-list__row--grouped': !!block.label }"
           class="dev-list__row"
           @mouseenter="showCard(row, $event)"
           @mouseleave="hideCard"
@@ -525,6 +525,26 @@ export default {
       height:        $row-height;
       margin:        0;
       padding:       0 $gap 0 $rail;
+    }
+
+    /*
+     * A row under a group heading: further in than the heading, and joined to it by a hairline
+     * down the gutter, so a list of eight workspaces reads as two groups rather than as eight
+     * workspaces with two labels somewhere in them.
+     */
+    &__row--grouped {
+      position:     relative;
+      padding-left: 38px;
+
+      &::before {
+        content:    '';
+        position:   absolute;
+        left:       30px;
+        top:        0;
+        bottom:     0;
+        width:      1px;
+        background: var(--border);
+      }
     }
 
     &__head {
@@ -840,7 +860,13 @@ export default {
       display:        flex;
       align-items:    center;
       gap:            6px;
-      padding:        var(--dev-space-3) #{$gap} var(--dev-space-1) calc(#{$rail} + #{$rail} + #{$gap});
+      /*
+       * Left of the rows it heads, not right of them. Lining the heading up with the rows'
+       * text put it further in than the workspaces underneath it, which reads as the rows
+       * being the outer thing - so the heading sits under the app's own icon instead, and the
+       * rows move out past it.
+       */
+      padding:        var(--dev-space-3) #{$gap} var(--dev-space-1) 26px;
       color:          var(--muted);
       font-size:      10px;
       font-weight:    600;
