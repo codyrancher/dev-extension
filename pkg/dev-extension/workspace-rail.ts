@@ -645,6 +645,13 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       break;
     }
     case 'response':
+      // A second pass, when the agent has been round again: whatever it filed since is still
+      // yours to go through, and the cards here are the same cards - marked good, edited,
+      // argued with, dropped - as the first pass. Put first, because a finding waiting on you
+      // is the thing on this page with something to do.
+      if (pending.length) {
+        sections.push({ title: `New findings to go through (${ pending.length })`, items: [findings(pending)] });
+      }
       if (d) {
         const newCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > submittedAt).map((c: Json) => ({
           sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
@@ -863,6 +870,7 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage): SkillBut
       // buttons with one label is worse than one.
       return [
         { label: 'Verify the answers', skill: 'my-pr-comment-verify', note: 'Check what the developer says they fixed' },
+        { label: 'Sharpen the wording', skill: 'my-pr-comment-refinement', note: 'Rewrite each pending comment into impact, why it matters, and evidence' },
         { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes now' },
       ];
     default:
