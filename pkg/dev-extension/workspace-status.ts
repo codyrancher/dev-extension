@@ -126,7 +126,9 @@ export function agentLabel(state: AgentState): string {
 const AGENT_ICON: Record<AgentState, string> = {
   working:  'icon-spinner icon-spin',
   input:    'icon-warning',
-  idle:     'icon-dot-open',
+  // Not an open dot: the theme's spinner is a broken ring, and at eleven pixels, still, beside
+  // one, the two were the same small circle. A pause bar cannot be mistaken for either.
+  idle:     'icon-pause',
   finished: 'icon-checkmark',
   none:     '',
 };
