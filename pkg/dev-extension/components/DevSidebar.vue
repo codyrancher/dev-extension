@@ -36,6 +36,25 @@ import {
 
 const REFRESH_MS = 5000;
 
+/**
+ * The three parts there are to play. A workspace named for an issue is yours to fix and ship;
+ * one named for a PR is somebody else's change to judge; anything else is a workspace someone
+ * made for a reason of their own.
+ */
+const ROLES = [
+  { id: 'developer', label: 'Developer', icon: 'icon-code' },
+  { id: 'reviewer', label: 'Reviewer', icon: 'icon-checkmark' },
+  { id: 'other', label: 'Other', icon: 'icon-folder' },
+];
+
+function roleOf(name) {
+  if (/(^|-)pr-\d+(-|$)/.test(name)) {
+    return 'reviewer';
+  }
+
+  return /(^|-)issue-\d+(-|$)/.test(name) ? 'developer' : 'other';
+}
+
 const CLUSTERS_OPEN_KEY = 'dev.sidebar.clusters.open';
 
 function readClustersOpen() {
@@ -167,51 +186,38 @@ export default {
 
   computed: {
     /**
-     * A section per cluster, with the workspaces hosted on it.
+     * The workspaces grouped by the part you play in them, not by which app they were made
+     * from: `issue-*` is work you own and ship, so you are the developer; `pr-*` is somebody
+     * else's change you are judging, so you are the reviewer. The two ask different things of
+     * you at every stage - the rail's own stages differ by exactly this - and a sidebar sorted
+     * by app put them in one heap, which is the heap the day has to be sorted out of.
      *
-     * By cluster rather than by template, because that is the thing a person is choosing between
-     * when they have workspaces in two places: a template says what a workspace runs, which the
-     * row's own page says too, and a cluster says where it is, which nothing else did.
-     *
-     * Every cluster gets a section even with nothing in it, so the plus that makes one there is
-     * somewhere to press.
-     */
-    /**
-     * One list per Apps Plus app, holding every workspace made from it wherever it runs.
-     *
-     * Not one list per app per cluster: that drew a "None yet" under every cluster under every
-     * app, and the cluster a workspace is on is one fact about it, not a heading. A workspace on
-     * a cluster other than the local one says so on its row; the clusters themselves are one
-     * section at the bottom, with what is left on each.
-     */
-    /**
-     * One section per workspace app. Only those: a build to share or a browser is
-     * infrastructure a workspace uses, reached from the workspace's own tabs, and a column for
-     * each was a sidebar that was mostly headings. The workspaces of an app this product used
-     * to seed under another name sit under the current one; they are the same kind of thing.
+     * An app is not a heading any more. It was one when there might be several, but the
+     * workspaces of every workspace app go in these three, and which app a workspace came from
+     * is one fact about it, which its card says when there is more than one app to tell apart.
+     * A workspace whose app has been hidden or removed is listed here too rather than in a
+     * section of its own: it is still running, and still yours to play a part in.
      */
     sections() {
-      return this.apps.filter((app) => app.workspace && !LEGACY_WORKSPACE_APPS.includes(app.id)).map((app) => ({
-        id:    app.id,
-        label: app.label,
-        rows:  this.rowsFor(this.workspaces.filter((workspace) => workspace.app === app.id || (app.id === DEFAULT_APP && LEGACY_WORKSPACE_APPS.includes(workspace.app)))),
-      }));
+      const rows = (match) => this.rowsFor(this.workspaces.filter((workspace) => this.isWorkspaceApp(workspace) && match(roleOf(workspace.name))));
+
+      return ROLES
+        .map((role) => ({ ...role, rows: rows((id) => id === role.id) }))
+        .filter((role) => role.rows.length || role.id === 'developer');
     },
 
-    /**
-     * Workspaces whose template is gone, grouped the same way.
-     *
-     * A template removed from the code must not take its workspaces off the page with it: they
-     * are still running and somebody still has to be able to delete them.
-     */
-    /** Workspaces whose app is hidden in Settings, or gone. Listed, since they exist. */
-    orphans() {
-      // Known apps that are not workspace apps hold builds and browsers, which are not listed
-      // here at all; what is listed is a workspace whose app is gone or hidden.
-      const known = new Set(this.apps.map((app) => app.id));
-      const listed = new Set(this.sections.map((section) => section.id).concat(LEGACY_WORKSPACE_APPS));
+    /** The app a new workspace is made from: the only workspace app, where there is only one. */
+    createApp() {
+      const apps = this.apps.filter((app) => app.workspace && !LEGACY_WORKSPACE_APPS.includes(app.id));
 
-      return this.rowsFor(this.workspaces.filter((workspace) => !listed.has(workspace.app) && (!known.has(workspace.app) || this.apps.find((app) => app.id === workspace.app)?.workspace)));
+      return apps.find((app) => app.id === DEFAULT_APP)?.id || apps[0]?.id || DEFAULT_APP;
+    },
+
+    /** The workspace apps, for telling one workspace's origin from another's on its card. */
+    appLabels() {
+      const apps = this.apps.filter((app) => app.workspace && !LEGACY_WORKSPACE_APPS.includes(app.id));
+
+      return apps.length > 1 ? Object.fromEntries(apps.map((app) => [app.id, app.label])) : {};
     },
 
     /** The clusters, with how many workspaces each holds. */
@@ -534,6 +540,18 @@ export default {
       };
     },
 
+    /**
+     * Whether a workspace belongs in these lists. Every workspace made from a workspace app
+     * does, and so does one whose app has been hidden or removed since - what is left out is
+     * the infrastructure a workspace uses, the builds and the browsers, which are reached from
+     * the workspace's own tabs.
+     */
+    isWorkspaceApp(workspace) {
+      const app = this.apps.find((a) => a.id === workspace.app);
+
+      return app ? !!app.workspace : true;
+    },
+
     /** A workspace as a row: its name, its state, and the page it opens. */
     rowsFor(workspaces) {
       return workspaces.map((workspace) => {
@@ -553,7 +571,7 @@ export default {
           detail: row.join(' · '),
           tone:   status?.tone,
           agent:  status?.agent,
-          card:   { title: title ? `${ workspace.name } · ${ title }` : workspace.name, lines, links: status?.links || [] },
+          card:   { title: title ? `${ workspace.name } · ${ title }` : workspace.name, lines: [...lines, this.appLabels[workspace.app]].filter(Boolean), links: status?.links || [] },
           to:     {
             name:   WORKSPACE_ROUTE,
             params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: workspace.name },
@@ -651,29 +669,21 @@ export default {
       class="dev-sidebar__scroll"
     >
       <!--
-        One list per app; the + on its heading makes a new workspace of that app. The heading
-        links to the list of every workspace, which is where one is stopped or deleted.
+        One list per part you play in a workspace - Developer, Reviewer, Other - rather than
+        one per app: which app a workspace came from does not change what it wants from you.
+        The + on a heading makes a new workspace; the heading links to the list of every one,
+        which is where one is stopped or deleted.
       -->
       <DevList
         v-for="section in sections"
         :key="section.id"
         class="dev-sidebar__app"
         :label="section.label"
-        icon="icon-apps"
+        :icon="section.icon"
         :rows="section.rows"
         :current="currentWorkspace"
-        :create-to="createIn(section.id)"
-        :create-label="`New ${ section.label } workspace`"
-        deletable
-        @delete="remove"
-      />
-      <DevList
-        v-if="orphans.length"
-        class="dev-sidebar__app"
-        label="Other apps"
-        icon="icon-apps"
-        :rows="orphans"
-        :current="currentWorkspace"
+        :create-to="createIn(createApp)"
+        create-label="New workspace"
         deletable
         @delete="remove"
       />
