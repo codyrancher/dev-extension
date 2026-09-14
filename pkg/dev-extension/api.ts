@@ -2551,6 +2551,10 @@ export function podExecUrl(namespace: string, pod: string, container: string, co
 export function podExecOnce(namespace: string, pod: string, container: string, command: string[], base = BASE): Promise<string> {
   return new Promise((resolve) => {
     let out = '';
+    // The frames carry bytes, and `atob` hands them back one character each - which is latin1,
+    // so every em dash and accented letter in a command's output arrived as mojibake. Decoded
+    // as UTF-8 instead, and streamed, since a character can straddle two frames.
+    const decoder = new TextDecoder('utf-8');
 
     try {
       const socket = new WebSocket(podExecUrl(namespace, pod, container, command, false, base), 'base64.channel.k8s.io');
@@ -2563,13 +2567,21 @@ export function podExecOnce(namespace: string, pod: string, container: string, c
 
         if (frame.startsWith('1')) {
           try {
-            out += atob(frame.slice(1));
+            const binary = atob(frame.slice(1));
+            const bytes = new Uint8Array(binary.length);
+
+            for (let i = 0; i < binary.length; i++) {
+              bytes[i] = binary.charCodeAt(i);
+            }
+            out += decoder.decode(bytes, { stream: true });
           } catch { /* a frame that is not base64 is not output */ }
         }
       };
 
-      socket.onclose = () => resolve(out);
-      socket.onerror = () => resolve(out);
+      const done = () => resolve(out + decoder.decode());
+
+      socket.onclose = done;
+      socket.onerror = done;
     } catch {
       resolve(out);
     }

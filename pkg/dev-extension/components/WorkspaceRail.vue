@@ -17,7 +17,7 @@ import {
   readStatusNow, knownStatus, provisionalStatus, agentLabel
 } from '../workspace-status';
 import {
-  stepsFor, gatherEvidence, primaryLink, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt
+  stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt
 } from '../workspace-rail';
 import { prFile } from '../reviews';
 import {
@@ -80,6 +80,9 @@ export default {
       /** A GitHub read that failed is tried again soon: the in-cluster API restarts for a minute after a publish. */
       statusRetry: 0,
       statusRetryTimer: 0,
+      /** The same for the column: a PR that would not read is asked for again rather than left out. */
+      evidenceRetry: 0,
+      evidenceRetryTimer: 0,
       busy:        '',
       error:       '',
       notice:      '',
@@ -147,8 +150,9 @@ export default {
       if (!s) {
         return null;
       }
-      const link = primaryLink(s);
-      const github = { label: 'Open on GitHub', run: 'openLink', arg: link };
+      // No "open on GitHub" among these: the header already links the issue and the PR, and
+      // what belongs here is what the page itself can do - the steps that would otherwise be
+      // taken by hand.
       const conversation = { label: 'Open the conversation', run: 'openTab', arg: 'conversations' };
 
       if (s.kind === 'fix') {
@@ -157,33 +161,33 @@ export default {
         case 'code':
           if (s.agent === 'none') {
             return {
-              headline: 'Nothing has started on this issue', detail: 'Starts a conversation that reproduces the issue, fixes it, verifies the fix and opens a draft PR.', primary: { label: 'Start the fix', run: 'startFix' }, tools: [github],
+              headline: 'Nothing has started on this issue', detail: 'Starts a conversation that reproduces the issue, fixes it, verifies the fix and opens a draft PR.', primary: { label: 'Start the fix', run: 'startFix' }, tools: [],
             };
           }
           if (s.agent === 'input') {
             return {
-              headline: 'The agent is waiting for an answer', detail: 'It asked something in its conversation and stopped until it hears back.', primary: { label: 'Answer it', run: 'openTab', arg: 'conversations' }, tools: [github],
+              headline: 'The agent is waiting for an answer', detail: 'It asked something in its conversation and stopped until it hears back.', primary: { label: 'Answer it', run: 'openTab', arg: 'conversations' }, tools: [],
             };
           }
 
           return {
-            headline: s.agent === 'working' ? 'The agent is working on the fix' : 'The agent stopped before opening a PR', detail: s.agent === 'working' ? 'Follow along in the conversation, or ask it something below.' : 'Read its report on the left; ask it to carry on, or to change course, below.', primary: conversation, tools: [{ label: 'Open the PR flow again', run: 'startFix' }, github],
+            headline: s.agent === 'working' ? 'The agent is working on the fix' : 'The agent stopped before opening a PR', detail: s.agent === 'working' ? 'Follow along in the conversation, or ask it something below.' : 'Read its report on the left; ask it to carry on, or to change course, below.', primary: conversation, tools: [{ label: 'Open the PR flow again', run: 'startFix' }],
           };
         case 'draft':
           return {
-            headline: 'The draft PR is ready for you to read', detail: 'Read the description and the change on the left. Marking it ready is yours; so is the reviewer, on GitHub.', primary: { label: 'Mark ready for review', run: 'markReady' }, tools: [{ label: 'Ask for a change', run: 'focusAsk' }, github],
+            headline: 'The draft PR is ready for you to read', detail: 'Read the description and the change on the left. Marking it ready is yours; so is the reviewer, on GitHub.', primary: { label: 'Mark ready for review', run: 'markReady' }, tools: [{ label: 'Ask for a change', run: 'focusAsk' }],
           };
         case 'review':
           return {
-            headline: 'Waiting for a reviewer', detail: 'Nothing to do here until someone comments. The agent can still be asked for something meanwhile.', primary: github, tools: [{ label: 'Ask the agent', run: 'focusAsk' }],
+            headline: 'Waiting for a reviewer', detail: 'Nothing to do here until someone comments. The agent can still be asked for something meanwhile.', primary: { label: 'Ask the agent', run: 'focusAsk' }, tools: [],
           };
         case 'feedback':
           return {
-            headline: 'Reviewers left comments after your last push', detail: 'The agent reads each comment, answers or changes the code, re-verifies and pushes. You read its report before anything else happens.', primary: { label: 'Answer the feedback', run: 'answerFeedback' }, tools: [{ label: 'Re-verify the fix', run: 'reverify' }, { label: 'Ask the agent', run: 'focusAsk' }, github],
+            headline: 'Reviewers left comments after your last push', detail: 'The agent reads each comment, answers or changes the code, re-verifies and pushes. You read its report before anything else happens.', primary: { label: 'Answer the feedback', run: 'answerFeedback' }, tools: [{ label: 'Re-verify the fix', run: 'reverify' }, { label: 'Ask the agent', run: 'focusAsk' }],
           };
         case 'merged':
           return {
-            headline: s.label === 'Approved' ? 'Approved' : 'Merged', detail: 'The workspace can go; the PR and the conversation history stay on GitHub and in the agent pod.', primary: { label: 'Delete the workspace', run: 'remove' }, tools: [github],
+            headline: s.label === 'Approved' ? 'Approved' : 'Merged', detail: 'The workspace can go; the PR and the conversation history stay on GitHub and in the agent pod.', primary: { label: 'Delete the workspace', run: 'remove' }, tools: [],
           };
         }
       }
@@ -192,28 +196,28 @@ export default {
         case 'agent':
           if (s.agent === 'none') {
             return {
-              headline: 'No review has run yet', detail: 'Starts a review conversation over the PR; its findings land on the left as it goes.', primary: { label: 'Review this PR', run: 'startReview' }, tools: [github],
+              headline: 'No review has run yet', detail: 'Starts a review conversation over the PR; its findings land on the left as it goes.', primary: { label: 'Review this PR', run: 'startReview' }, tools: [],
             };
           }
 
           return {
-            headline: s.agent === 'working' ? 'The agent is reviewing' : 'The agent stopped', detail: 'Its findings land on the left as it goes; go through them once it is done.', primary: conversation, tools: [github],
+            headline: s.agent === 'working' ? 'The agent is reviewing' : 'The agent stopped', detail: 'Its findings land on the left as it goes; go through them once it is done.', primary: conversation, tools: [],
           };
         case 'findings':
           return {
-            headline: 'The agent\'s findings are ready for your pass', detail: 'Go through them, keep the ones you agree with, and submit the review as yours.', primary: { label: 'Go through the findings', run: 'openTab', arg: 'pr' }, tools: [{ label: 'Ask the agent', run: 'focusAsk' }, github],
+            headline: 'The agent\'s findings are ready for your pass', detail: 'Go through them, keep the ones you agree with, and submit the review as yours.', primary: { label: 'Go through the findings', run: 'openTab', arg: 'pr' }, tools: [{ label: 'Ask the agent', run: 'focusAsk' }],
           };
         case 'submitted':
           return {
-            headline: 'Your review is with the developer', detail: 'This moves on when they push or reply.', primary: github, tools: [{ label: 'Approve and merge', run: 'approveMerge' }],
+            headline: 'Your review is with the developer', detail: 'This moves on when they push or reply.', primary: { label: 'Approve and merge', run: 'approveMerge' }, tools: [],
           };
         case 'response':
           return {
-            headline: 'The developer responded', detail: 'New commits and replies since your review are on the left. The agent can review what changed against your comments.', primary: { label: 'Review the new commits', run: 'reviewAgain' }, tools: [{ label: 'Go through the findings', run: 'openTab', arg: 'pr' }, { label: 'Approve and merge', run: 'approveMerge' }, github],
+            headline: 'The developer responded', detail: 'New commits and replies since your review are on the left. The agent can review what changed against your comments.', primary: { label: 'Review the new commits', run: 'reviewAgain' }, tools: [{ label: 'Go through the findings', run: 'openTab', arg: 'pr' }, { label: 'Approve and merge', run: 'approveMerge' }],
           };
         case 'approved':
           return {
-            headline: s.label === 'Merged' ? 'Merged' : 'Approved', detail: s.label === 'Merged' ? 'The workspace can go.' : 'Approved; merge it when CI is green.', primary: s.label === 'Merged' ? { label: 'Delete the workspace', run: 'remove' } : { label: 'Merge', run: 'approveMerge' }, tools: [github],
+            headline: s.label === 'Merged' ? 'Merged' : 'Approved', detail: s.label === 'Merged' ? 'The workspace can go.' : 'Approved; merge it when CI is green.', primary: s.label === 'Merged' ? { label: 'Delete the workspace', run: 'remove' } : { label: 'Merge', run: 'approveMerge' }, tools: [],
           };
         }
       }
@@ -248,6 +252,7 @@ export default {
   beforeUnmount() {
     this.timers.forEach((t) => clearInterval(t));
     clearTimeout(this.statusRetryTimer);
+    clearTimeout(this.evidenceRetryTimer);
   },
 
   methods: {
@@ -335,6 +340,17 @@ export default {
           this.evidence = sections;
           this.evidenceStage = stage;
         }
+        // A section that says it could not be read is asked for again in a few seconds, a
+        // few times: the usual cause is the in-cluster API restarting, which is a minute.
+        const failed = sections.some((x) => x.title === 'The pull request could not be read');
+
+        clearTimeout(this.evidenceRetryTimer);
+        if (failed && this.evidenceRetry < 5) {
+          this.evidenceRetry++;
+          this.evidenceRetryTimer = setTimeout(() => this.refreshEvidence(), 4000 * this.evidenceRetry);
+        } else if (!failed) {
+          this.evidenceRetry = 0;
+        }
       } catch (e) {
         if (current()) {
           this.error = e?.message || String(e);
@@ -386,10 +402,6 @@ export default {
       } finally {
         this.busy = '';
       }
-    },
-
-    openLink(url) {
-      window.open(url, '_blank', 'noopener');
     },
 
     /** The conversation is on the page; every other view opens over it. */
@@ -760,43 +772,61 @@ export default {
         </div>
         <div class="workspace-rail__buttons">
           <!--
-            The skills that belong where the work is: each one a prompt into this workspace's
+            Two groups, and the gap between them is the point: what to ask the agent to do
+            here, then what to decide. Each skill is a prompt into this workspace's
             conversation, so what it starts is watched and talked to below.
           -->
-          <RcButton
-            v-for="button in skillButtons()"
-            :key="button.skill"
-            variant="tertiary"
-            :disabled="!!busy"
-            :title="button.note"
-            @click="runSkill(button)"
+          <div
+            v-if="skillButtons().length"
+            class="workspace-rail__group"
           >
-            <i
-              v-if="busy === button.skill"
-              class="icon icon-spinner icon-spin"
-            />
-            {{ button.label }}
-          </RcButton>
-          <RcButton
-            v-for="tool in action.tools"
-            :key="tool.label"
-            variant="secondary"
-            :disabled="!!busy"
-            @click="run(tool)"
-          >
-            {{ tool.label }}
-          </RcButton>
-          <RcButton
-            variant="primary"
-            :disabled="!!busy"
-            @click="run(action.primary)"
-          >
-            <i
-              v-if="busy === action.primary.run"
-              class="icon icon-spinner icon-spin"
-            />
-            {{ action.primary.label }}
-          </RcButton>
+            <span class="workspace-rail__group-label">Ask the agent</span>
+            <div class="workspace-rail__group-buttons">
+              <RcButton
+                v-for="button in skillButtons()"
+                :key="button.skill"
+                variant="secondary"
+                size="small"
+                :disabled="!!busy"
+                :title="button.note"
+                @click="runSkill(button)"
+              >
+                <i
+                  v-if="busy === button.skill"
+                  class="icon icon-spinner icon-spin"
+                />
+                {{ button.label }}
+              </RcButton>
+            </div>
+          </div>
+          <div class="workspace-rail__group workspace-rail__group--decide">
+            <span
+              v-if="action.tools.length"
+              class="workspace-rail__group-label"
+            >Then</span>
+            <div class="workspace-rail__group-buttons">
+              <RcButton
+                v-for="tool in action.tools"
+                :key="tool.label"
+                variant="secondary"
+                :disabled="!!busy"
+                @click="run(tool)"
+              >
+                {{ tool.label }}
+              </RcButton>
+              <RcButton
+                variant="primary"
+                :disabled="!!busy"
+                @click="run(action.primary)"
+              >
+                <i
+                  v-if="busy === action.primary.run"
+                  class="icon icon-spinner icon-spin"
+                />
+                {{ action.primary.label }}
+              </RcButton>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1254,9 +1284,10 @@ export default {
 
   &__head {
     display:         flex;
-    align-items:     flex-start;
+    align-items:     baseline;
     justify-content: space-between;
-    gap:             16px;
+    gap:             24px;
+    flex-wrap:       wrap;
   }
 
   &__title {
@@ -1278,9 +1309,10 @@ export default {
   &__meta {
     display:     flex;
     align-items: center;
-    gap:         14px;
+    gap:         16px;
     flex:        0 0 auto;
     font-size:   13px;
+    white-space: nowrap;
   }
 
   &__agent {
@@ -1297,8 +1329,8 @@ export default {
   &__steps {
     display:    flex;
     list-style: none;
-    margin:     4px 0 0;
-    padding:    0;
+    margin:     8px 0 4px;
+    padding:    0 8px;
   }
 
   &__step {
@@ -1376,8 +1408,9 @@ export default {
     display:         flex;
     align-items:     center;
     justify-content: space-between;
-    gap:             20px;
-    padding:         16px 20px;
+    gap:             32px;
+    flex-wrap:       wrap;
+    padding:         18px 20px;
     border:          1px solid var(--border);
     border-radius:   var(--border-radius);
     background:      var(--box-bg);
@@ -1391,7 +1424,9 @@ export default {
     display:        flex;
     flex-direction: column;
     gap:            4px;
-    min-width:      0;
+    min-width:      260px;
+    max-width:      440px;
+    flex:           0 1 auto;
   }
 
   &__headline {
@@ -1407,9 +1442,34 @@ export default {
 
   &__buttons {
     display:     flex;
-    gap:         8px;
-    flex:        0 0 auto;
-    align-items: center;
+    gap:         28px;
+    flex:        1 1 auto;
+    align-items: flex-end;
+    justify-content: flex-end;
+    flex-wrap:   wrap;
+  }
+
+  &__group {
+    display:        flex;
+    flex-direction: column;
+    gap:            6px;
+    align-items:    flex-start;
+
+    &--decide { align-items: flex-end; }
+  }
+
+  &__group-label {
+    font-size:      11px;
+    font-weight:    700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color:          var(--pr-muted);
+  }
+
+  &__group-buttons {
+    display:   flex;
+    gap:       8px;
+    flex-wrap: wrap;
   }
 
   // The two columns
@@ -1480,10 +1540,10 @@ export default {
     border:        1px solid var(--pr-border);
     border-radius: var(--border-radius);
     background:    var(--pr-bg-2);
-    padding:       10px 12px;
+    padding:       12px 14px;
     display:       flex;
     flex-direction: column;
-    gap:           8px;
+    gap:           10px;
 
     &--open { border-color: var(--pr-warning); }
     &--new { box-shadow: inset 3px 0 0 var(--pr-accent); }
@@ -1594,8 +1654,8 @@ export default {
   &__col {
     display:        flex;
     flex-direction: column;
-    gap:            12px;
-    padding:        14px 16px;
+    gap:            18px;
+    padding:        16px 18px;
     border:         1px solid var(--border);
     border-radius:  var(--border-radius);
     background:     var(--box-bg);
@@ -1633,7 +1693,8 @@ export default {
   &__section {
     display:        flex;
     flex-direction: column;
-    gap:            8px;
+    gap:            10px;
+    padding-bottom: 4px;
   }
 
   &__section-title {
@@ -1718,7 +1779,7 @@ export default {
   &__comments {
     display:        flex;
     flex-direction: column;
-    gap:            8px;
+    gap:            12px;
   }
 
   &__comment-head {

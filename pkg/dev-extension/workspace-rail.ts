@@ -407,6 +407,7 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
 
     return v;
   });
+  have.failed = {};
   const reads: Promise<void>[] = [
     timed('report', latestAgentReport(workspace).catch(() => null)).then((v) => { have.report = v; }),
     timed('branch', readBranch(workspace).catch(() => null)).then((v) => {
@@ -418,7 +419,10 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
       }
     }),
     timed('media', readMedia(workspace).catch(() => [])).then((v) => { have.media = v; }),
-    timed('pr', status.pr ? prDetail(status.pr).catch(() => null) : Promise.resolve(null)).then((v) => { have.d = v; }),
+    timed('pr', status.pr ? prDetail(status.pr).catch(() => null) : Promise.resolve(null)).then((v) => {
+      have.d = v;
+      have.failed = { ...have.failed, pr: !!status.pr && !v };
+    }),
     timed('issue', issue && status.kind === 'fix' ? issueBody(DEFAULT_REPO, issue).catch(() => null) : Promise.resolve(null)).then((v) => { have.issue = v; }),
   ];
   let pending = reads.length;
@@ -465,6 +469,8 @@ interface Sources {
   d?: Json;
   issue?: { title: string; body: string; url: string } | null;
   ci?: Json;
+  /** Which reads failed, so the column says so rather than quietly leaving a section out. */
+  failed?: { pr?: boolean };
   /** Attachment URL -> content type, for the bodies. */
   kinds?: Record<string, string>;
 }
@@ -476,6 +482,13 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
   const d = have.d || null;
   const kinds = have.kinds || {};
   const sections: EvidenceSection[] = [];
+
+  // A read that failed - the in-cluster API restarting, GitHub rate-limiting - is said here.
+  // Leaving the PR's sections out silently read as "there is nothing", which is a lie about
+  // fifteen comment threads.
+  if (have.failed?.pr) {
+    sections.push({ title: 'The pull request could not be read', items: [{ kind: 'empty', text: 'GitHub or the in-cluster API did not answer. Trying again in a moment.' }] });
+  }
   const reportSection = (title = 'Agent\'s report') => report && sections.push({ title, items: [{ kind: 'text', text: report.text, html: renderMd(report.text), at: report.at }] });
   const mediaSection = (title: string, items: ReturnType<typeof mediaUnder>) => items.length && sections.push({ title, items: [{ kind: 'media', items }] });
   const branchSection = () => {
