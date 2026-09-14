@@ -642,6 +642,23 @@
 .diff-row.in-comment-range { background: var(--pr-accent-fill) !important; }
 .diff-row.in-comment-range .lineno { color: var(--pr-accent); opacity: 1; }
 
+/*
+ * The line a comment is on, marked on its numbers rather than across the row.
+ *
+ * A filled row is how this diff says "added", so filling the commented line claimed a change
+ * the diff does not contain: a comment sitting on a context line that had only shifted read as
+ * an addition. The numbers carry the mark instead, with a bar down the gutter, which says
+ * where the comment is without saying anything about the code.
+ */
+.diff-row.on-comment-line .lineno {
+  background:  var(--pr-accent-fill);
+  color:       var(--pr-accent);
+  opacity:     1;
+  font-weight: 700;
+}
+
+.diff-row.on-comment-line .lineno:first-child { box-shadow: inset 2px 0 0 var(--pr-accent); }
+
 .composer-card {
   border-left:    3px solid var(--pr-accent);
   display:        flex;
