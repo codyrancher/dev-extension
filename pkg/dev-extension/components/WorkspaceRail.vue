@@ -1044,7 +1044,6 @@ export default {
                   v-for="(c, j) in item.items"
                   :key="c.id || j"
                   class="workspace-rail__thread-card"
-                  :class="{ 'workspace-rail__thread-card--open': !c.answered, 'workspace-rail__thread-card--new': c.thread.some((t) => t.isNew) }"
                 >
                   <header class="workspace-rail__comment-head">
                     <button
@@ -1112,11 +1111,16 @@ export default {
                     >{{ c.noPatch ? 'The diff is too large for GitHub to send; open it there.' : c.path ? 'The line is not in the PR\'s diff any more.' : 'A comment on the PR as a whole.' }}</p>
                   </div>
                   <div class="workspace-rail__thread">
+                    <!--
+                      The highlight is on the comment, not the thread: a message that arrived
+                      since the last round, and the one still waiting for an answer - the last
+                      of an unanswered thread - carry the same yellow border.
+                    -->
                     <div
                       v-for="(t, k) in c.thread"
                       :key="k"
                       class="comment"
-                      :class="[t.author ? 'workspace-rail__msg--author' : 'gh-comment', { 'workspace-rail__msg--new': t.isNew }]"
+                      :class="[t.author ? 'workspace-rail__msg--author' : 'gh-comment', { 'workspace-rail__msg--flag': t.isNew || (!c.answered && k === c.thread.length - 1) }]"
                     >
                       <div class="comment-head">
                         <span class="workspace-rail__avatar">{{ (t.who || '?').slice(0, 1).toUpperCase() }}</span>
@@ -1545,12 +1549,15 @@ export default {
     flex-direction: column;
     gap:           10px;
 
-    &--open { border-color: var(--pr-warning); }
-    &--new { box-shadow: inset 3px 0 0 var(--pr-accent); }
   }
 
   &__msg--author { border-left: 3px solid var(--pr-accent); }
-  &__msg--new { background: var(--pr-accent-fill); }
+
+  // What the person still has to deal with: new since the last round, or unanswered.
+  &__msg--flag {
+    border-color: var(--pr-warning);
+    background:   var(--pr-warning-fill);
+  }
 
   &__gone {
     display:       inline-block;
