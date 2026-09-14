@@ -821,13 +821,16 @@ export interface SkillButton {
 }
 
 export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage): SkillButton[] {
+  // `my-pr-checklist` is not here on the review side: the PR template's checklist is the
+  // author's work, and a reviewer ticking it is doing somebody else's job. It belongs to the
+  // fix stages below, where this person is the author.
   if (kind === 'review') {
     switch (stage) {
     case 'agent':
       return [
         { label: 'Full review', skill: 'my-pr-full-review', note: 'Demo the change, demo the issue, review the diff, verify every comment', fresh: true },
         { label: 'Comments only', skill: 'my-pr-review', note: 'Short pending inline comments, nothing submitted' },
-        { label: 'Checklist', skill: 'my-pr-checklist', note: 'Work every item of the PR template checklist' },
+        { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes, against its own build' },
       ];
     case 'findings':
       return [
@@ -836,14 +839,15 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage): SkillBut
         { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes, against its own build' },
       ];
     case 'submitted':
-      return [{ label: 'Checklist', skill: 'my-pr-checklist', note: 'Work every item of the PR template checklist' }];
+      // Nothing to ask for while it is with the developer; a re-read of the diff is the one
+      // thing that can still be useful.
+      return [{ label: 'Read the diff again', skill: 'my-pr-review', note: 'Another pass over the diff, as pending comments' }];
     case 'response':
       // Not `my-pr-review` here: the stage's own action already asks for exactly that, and two
       // buttons with one label is worse than one.
       return [
         { label: 'Verify the answers', skill: 'my-pr-comment-verify', note: 'Check what the developer says they fixed' },
         { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes now' },
-        { label: 'Checklist', skill: 'my-pr-checklist', note: 'Work every item of the PR template checklist' },
       ];
     default:
       return [];
