@@ -271,23 +271,28 @@ export default {
           // A pass ends one of three ways, and all three are here: send the findings back as
           // changes to make, approve with them attached, or approve and let them go. Each
           // marked-good finding rides along; the cards on the left are where they are read.
+          //
+          // A pass after a review of yours is another round of the same step, so it says so
+          // and offers the agent another look at what the developer did.
           return {
-            headline: 'The agent\'s findings are ready for your pass', detail: 'Go through them on the left: keep the ones you agree with, then send them back or approve.', primary: { label: 'Ask for changes', run: 'requestChanges' }, tools: [{ label: 'Ship it with comments', run: 'shipWithComments' }, { label: 'Ship it', run: 'openApprove' }, { label: 'Open the whole PR', run: 'openTab', arg: 'pr' }, { label: 'Ask the agent', run: 'focusAsk' }],
+            headline: s.reviewed ? 'A new pass over what the agent found in the developer\'s changes' : 'The agent\'s findings are ready for your pass',
+            detail:   s.reviewed ? 'The findings are on the left, under them what the agent looked at, then the commits and threads of this round.' : 'Go through them on the left: keep the ones you agree with, then send them back or approve.',
+            primary:  { label: 'Ask for changes', run: 'requestChanges' },
+            tools:    [
+              { label: 'Ship it with comments', run: 'shipWithComments' },
+              { label: 'Ship it', run: 'openApprove' },
+              ...(s.reviewed ? [{ label: 'Review the new commits again', run: 'reviewAgain' }] : []),
+              { label: 'Open the whole PR', run: 'openTab', arg: 'pr' },
+              { label: 'Ask the agent', run: 'focusAsk' },
+            ],
           };
         case 'submitted':
           return {
             headline: 'Your review is with the developer', detail: 'This moves on when they push or reply. Your comments are on the left; the PR and its diff are a click away.', primary: { label: 'Approve', run: 'openApprove' }, tools: [{ label: 'Go through the findings', run: 'openTab', arg: 'pr' }, { label: 'Review the branch', run: 'openTab', arg: 'review' }],
           };
         case 'response':
-          // Once the agent has been round again, the findings it filed are a second pass, and a
-          // pass ends the way the first one did: send them back, approve with them, or approve
-          // without them. Those only appear when there is something to send.
-          if (this.findingCount) {
-            return {
-              headline: `The agent found ${ this.findingCount } more thing${ this.findingCount === 1 ? '' : 's' } in the developer's changes`, detail: 'Go through them on the left, the same as your first pass, then send them back or approve.', primary: { label: 'Ask for changes', run: 'requestChanges' }, tools: [{ label: 'Ship it with comments', run: 'shipWithComments' }, { label: 'Ship it', run: 'openApprove' }, { label: 'Review the new commits again', run: 'reviewAgain' }, { label: 'Open the whole PR', run: 'openTab', arg: 'pr' }],
-            };
-          }
-
+          // Nothing is filed yet: what the agent finds puts the rail back on Your pass, which
+          // is where findings are gone through, whichever round it is.
           return {
             headline: 'The developer responded', detail: 'New commits and replies since your review are on the left. The agent can review what changed against your comments; what it finds comes back here as a second pass.', primary: { label: 'Review the new commits', run: 'reviewAgain' }, tools: [{ label: 'Open the whole PR', run: 'openTab', arg: 'pr' }, { label: 'Approve', run: 'openApprove' }],
           };
