@@ -117,6 +117,8 @@ export default {
       errorTone:   'error',
       /** The second look after a change to the PR; cleared when the page goes. */
       settleTimer: null,
+      /** Which sections are folded away: `{ [title]: true }`, seeded from the section itself. */
+      shut:        {},
       /** The conversation, in its own window over the page rather than under the column. */
       popped:      false,
       paneWatcher: null,
@@ -509,6 +511,15 @@ export default {
      * Developer responded are behind you as well as ahead, so they keep their ticks rather than
      * going back to being plain numbers.
      */
+    /** Whether a section is folded: what was chosen for it here, else what it asked for. */
+    isShut(section) {
+      return this.shut[section.title] ?? !!section.collapsed;
+    },
+
+    toggleSection(section) {
+      this.shut = { ...this.shut, [section.title]: !this.isShut(section) };
+    },
+
     watchPane() {
       const box = this.$refs.pane;
 
@@ -1505,7 +1516,23 @@ export default {
             class="workspace-rail__section"
           >
             <div class="workspace-rail__section-head">
-              <h4 class="workspace-rail__section-title">{{ section.title }}</h4>
+              <!--
+                Every section folds; only the pull request opens shut, because it is the frame
+                the rest is read inside rather than something that happened.
+              -->
+              <h4 class="workspace-rail__section-title">
+                <button
+                  type="button"
+                  class="workspace-rail__fold"
+                  :title="isShut(section) ? 'Show this' : 'Fold this away'"
+                  @click="toggleSection(section)"
+                >
+                  <i
+                    class="icon"
+                    :class="isShut(section) ? 'icon-chevron-right' : 'icon-chevron-down'"
+                  />{{ section.title }}
+                </button>
+              </h4>
               <!--
                 The "as one diff" link belongs on the title's row: it is about the list under
                 it, and on a row of its own it cost more height than the two commits it was
@@ -1519,7 +1546,7 @@ export default {
               >{{ combinedFor(combinedItem(section)) ? 'Hide the combined diff' : `All ${ combinedItem(section).items.length } commits${ combinedItem(section).since ? ` since ${ combinedItem(section).since }` : '' } as one diff` }}</button>
             </div>
             <template
-              v-for="(item, i) in section.items"
+              v-for="(item, i) in (isShut(section) ? [] : section.items)"
               :key="i"
             >
               <div
@@ -2984,6 +3011,27 @@ export default {
     margin:      0;
     font-size:   13px;
     font-weight: 700;
+  }
+
+  &__fold {
+    display:     inline-flex;
+    align-items: center;
+    gap:         6px;
+    min-height:  0;
+    padding:     0;
+    border:      0;
+    background:  transparent;
+    color:       inherit;
+    font:        inherit;
+    line-height: 1.4;
+    cursor:      pointer;
+
+    .icon {
+      font-size: 10px;
+      color:     var(--muted);
+    }
+
+    &:hover .icon { color: var(--link); }
   }
 
   &__text {
