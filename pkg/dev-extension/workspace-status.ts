@@ -39,15 +39,15 @@ export const STAGE_LABELS: Record<Stage, string> = {
 };
 
 /** A work state with its stage's name already on it. */
-type Work = Pick<WorkspaceStatus, 'label' | 'tone' | 'stage'> & { stageLabel?: string };
+type Work = Pick<WorkspaceStatus, 'label' | 'tone' | 'stage'> & { stageLabel?: string; reviewed?: boolean };
 
 /**
  * Name the stage on a state that has one. A state may name its own stage instead where the
  * rail has no step for it - a closed PR sits at the end of the rail without being merged.
  */
-function staged(work: Work): Pick<WorkspaceStatus, 'label' | 'tone' | 'stage' | 'stageLabel'> {
+function staged(work: Work): Pick<WorkspaceStatus, 'label' | 'tone' | 'stage' | 'stageLabel' | 'reviewed'> {
   return {
-    ...work, stageLabel: work.stageLabel ?? (work.stage ? STAGE_LABELS[work.stage] : ''),
+    ...work, stageLabel: work.stageLabel ?? (work.stage ? STAGE_LABELS[work.stage] : ''), reviewed: !!work.reviewed,
   };
 }
 
@@ -88,6 +88,11 @@ export interface WorkspaceStatus {
   stage: Stage | '';
   /** The stage's name, as the rail's stepper writes it. */
   stageLabel: string;
+  /**
+   * Whether a review of yours has already gone to GitHub. A pass after that is a second (or
+   * fifth) round, and the page says so rather than pretending this is the first look.
+   */
+  reviewed: boolean;
   pr: number;
   /** When GitHub was last read for it; 0 when it never has been. */
   readAt: number;
@@ -151,7 +156,7 @@ let reading = false;
 
 function empty(): WorkspaceStatus {
   return {
-    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0, kind: 'other', stage: '', stageLabel: '', pr: 0,
+    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0, kind: 'other', stage: '', stageLabel: '', reviewed: false, pr: 0,
   };
 }
 
@@ -247,11 +252,24 @@ function reviewWork(d: Json, agent: AgentState): Work {
     const pushed = latest((d.commits || []).map((c: Json) => c.date)) > submittedAt;
     const replied = latest([...(d.discussion || []), ...(d.reviewComments || [])].filter((c: Json) => c.author === m.author).map((c: Json) => c.createdAt)) > submittedAt;
 
-    if (pushed || replied) {
-      return { label: pushed ? 'new commits to review' : 'replied to your comments', tone: 'attention', stage: 'response' };
+    // Findings of the agent's that have not gone anywhere are a pass waiting to be made,
+    // whichever round this is: the rail goes back to Your pass and carries the round with it.
+    // A review is a loop, not a line, and the step that says what you have to do is this one.
+    if (pending.length) {
+      return {
+        label: 'go through the new findings', tone: 'attention', stage: 'findings', reviewed: true,
+      };
     }
 
-    return { label: 'waiting for the developer', tone: 'waiting', stage: 'submitted' };
+    if (pushed || replied) {
+      return {
+        label: pushed ? 'new commits to review' : 'replied to your comments', tone: 'attention', stage: 'response', reviewed: true,
+      };
+    }
+
+    return {
+      label: 'waiting for the developer', tone: 'waiting', stage: 'submitted', reviewed: true,
+    };
   }
   if (agent === 'working') {
     return { label: '', tone: 'working', stage: 'agent' };
