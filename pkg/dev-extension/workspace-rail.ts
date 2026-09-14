@@ -651,6 +651,9 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       // is the thing on this page with something to do.
       if (pending.length) {
         sections.push({ title: `New findings to go through (${ pending.length })`, items: [findings(pending)] });
+        // The report that goes with them, immediately under them: it is the agent saying what
+        // it looked at and why it filed what it filed, which is half of judging a finding.
+        reportSection((Date.parse(report?.at || '') || 0) > submittedAt ? 'What the agent found in the new commits' : 'Agent\'s report');
       }
       if (d) {
         const newCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > submittedAt).map((c: Json) => ({
@@ -665,7 +668,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits, since: 'your review' }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
         sections.push({ title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: mine.length ? [{ kind: 'comments', items: mine, paged: true }] : [{ kind: 'empty', text: 'You have no threads on this PR.' }] });
       }
-      if (report) {
+      if (report && !pending.length) {
         reportSection((Date.parse(report.at) || 0) > submittedAt ? 'What the agent found in the new commits' : 'Agent\'s review report (before the developer responded)');
       }
       prSection();
