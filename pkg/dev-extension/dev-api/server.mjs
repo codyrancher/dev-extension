@@ -126,6 +126,24 @@ function failure(status, message) {
   return error;
 }
 
+let viewerLogin = { at: 0, login: '' };
+
+/** Whose token this is - so a page can tell the person's own threads from everyone else's. */
+async function githubViewer() {
+  if (Date.now() - viewerLogin.at < 10 * 60_000 && viewerLogin.login) {
+    return viewerLogin.login;
+  }
+  try {
+    const me = await ghRest('GET', '/user');
+
+    viewerLogin = { at: Date.now(), login: me.login || '' };
+  } catch {
+    viewerLogin = { at: Date.now(), login: '' };
+  }
+
+  return viewerLogin.login;
+}
+
 async function ghRest(method, apiPath, body) {
   const token = await githubToken();
 
@@ -1138,6 +1156,7 @@ async function prDetail(repo, num) {
     })),
     localComments: (await localComments(num)).map(decorate),
     run:           await readDoc(reviewMap(num), 'run.json'),
+    viewer:        await githubViewer(),
     // Every review submitted on the PR, whoever submitted it and from wherever: the rail's
     // "Submitted" reads these too, so a review left on GitHub itself counts.
     reviews:       (reviews || []).filter((r) => r.state !== 'PENDING').map((r) => ({
