@@ -13,7 +13,6 @@ import WorkspacePr from './WorkspacePr.vue';
 import WorkspaceBrowser from './WorkspaceBrowser.vue';
 import WorkspaceShare from './WorkspaceShare.vue';
 import DevModal from './DevModal.vue';
-import ClaudeLogo from './ClaudeLogo.vue';
 import {
   readStatusNow, knownStatus, provisionalStatus, agentLabel
 } from '../workspace-status';
@@ -40,7 +39,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, ClaudeLogo
+    Banner, RcButton, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal
   },
 
   props: {
@@ -95,6 +94,8 @@ export default {
       inspecting:  null,
       skillDraft:  '',
       skillSaving: '',
+      /** Which thread each paged section is showing, by that section's title. */
+      pages:       {},
       /** Rows opened to look closer: commits (their patch, read once) and comments (their chain and code). */
       openCommits: {},
       /** A commit's files, read once when it is opened. */
@@ -451,7 +452,23 @@ export default {
       }
     },
 
-    /** Whether pressing this starts an agent - what the little mark says. */
+    /**
+     * The middle button, on `mousedown` (so the browser's autoscroll never starts) and again
+     * on `auxclick` (which is where a click of it lands). Either one opens what the button
+     * sends; the second is ignored because the first already opened it.
+     */
+    onAux(action, event) {
+      if (event.button !== 1 || !this.startsAgent(action)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.type === 'mousedown') {
+        this.inspect(action, event);
+      }
+    },
+
+    /** Whether pressing this starts an agent - the actions that queue a prompt or run a skill. */
     startsAgent(action) {
       return !!action && (!!action.skill || !!this.promptOf(action.run));
     },
@@ -603,6 +620,23 @@ export default {
           img.replaceWith(gone);
         }, { once: true });
       }
+    },
+
+    /** Which thread a paged section is on, clamped to what it holds. */
+    pageOf(section, item) {
+      return Math.min(this.pages[section.title] || 0, Math.max(0, item.items.length - 1));
+    },
+
+    shownThreads(section, item) {
+      return item.paged && item.items.length > 1 ? [item.items[this.pageOf(section, item)]] : item.items;
+    },
+
+    turn(section, item, by) {
+      this.goTo(section, Math.min(Math.max(0, this.pageOf(section, item) + by), item.items.length - 1));
+    },
+
+    goTo(section, index) {
+      this.pages = { ...this.pages, [section.title]: index };
     },
 
     rowsAround(c) {
@@ -869,27 +903,22 @@ export default {
           >
             <span class="workspace-rail__group-label">Ask the agent</span>
             <div class="workspace-rail__group-buttons">
-              <span
+              <RcButton
                 v-for="button in skillButtons()"
                 :key="button.skill"
-                class="workspace-rail__act"
-                @auxclick.middle="inspect(button, $event)"
+                variant="secondary"
+                :disabled="!!busy"
+                :title="`${ button.note } · middle click to see the prompt and the skill`"
+                @click="runSkill(button)"
+                @mousedown="onAux(button, $event)"
+                @auxclick="onAux(button, $event)"
               >
-                <RcButton
-                  variant="secondary"
-                  size="small"
-                  :disabled="!!busy"
-                  :title="`${ button.note } · middle click to see the prompt and the skill`"
-                  @click="runSkill(button)"
-                >
-                  <i
-                    v-if="busy === button.skill"
-                    class="icon icon-spinner icon-spin"
-                  />
-                  {{ button.label }}
-                </RcButton>
-                <ClaudeLogo class="workspace-rail__act-mark" />
-              </span>
+                <i
+                  v-if="busy === button.skill"
+                  class="icon icon-spinner icon-spin"
+                />
+                {{ button.label }}
+              </RcButton>
             </div>
           </div>
           <div class="workspace-rail__group workspace-rail__group--decide">
@@ -898,46 +927,32 @@ export default {
               class="workspace-rail__group-label"
             >Then</span>
             <div class="workspace-rail__group-buttons">
-              <span
+              <RcButton
                 v-for="tool in action.tools"
                 :key="tool.label"
-                class="workspace-rail__act"
-                @auxclick.middle="startsAgent(tool) && inspect(tool, $event)"
+                variant="secondary"
+                :disabled="!!busy"
+                :title="startsAgent(tool) ? 'Middle click to see the prompt and the skill' : ''"
+                @click="run(tool)"
+                @mousedown="onAux(tool, $event)"
+                @auxclick="onAux(tool, $event)"
               >
-                <RcButton
-                  variant="secondary"
-                  :disabled="!!busy"
-                  :title="startsAgent(tool) ? 'Middle click to see the prompt and the skill' : ''"
-                  @click="run(tool)"
-                >
-                  {{ tool.label }}
-                </RcButton>
-                <ClaudeLogo
-                  v-if="startsAgent(tool)"
-                  class="workspace-rail__act-mark"
-                />
-              </span>
-              <span
-                class="workspace-rail__act"
-                @auxclick.middle="startsAgent(action.primary) && inspect(action.primary, $event)"
+                {{ tool.label }}
+              </RcButton>
+              <RcButton
+                variant="primary"
+                :disabled="!!busy"
+                :title="startsAgent(action.primary) ? 'Middle click to see the prompt and the skill' : ''"
+                @click="run(action.primary)"
+                @mousedown="onAux(action.primary, $event)"
+                @auxclick="onAux(action.primary, $event)"
               >
-                <RcButton
-                  variant="primary"
-                  :disabled="!!busy"
-                  :title="startsAgent(action.primary) ? 'Middle click to see the prompt and the skill' : ''"
-                  @click="run(action.primary)"
-                >
-                  <i
-                    v-if="busy === action.primary.run"
-                    class="icon icon-spinner icon-spin"
-                  />
-                  {{ action.primary.label }}
-                </RcButton>
-                <ClaudeLogo
-                  v-if="startsAgent(action.primary)"
-                  class="workspace-rail__act-mark workspace-rail__act-mark--on-primary"
+                <i
+                  v-if="busy === action.primary.run"
+                  class="icon icon-spinner icon-spin"
                 />
-              </span>
+                {{ action.primary.label }}
+              </RcButton>
             </div>
           </div>
         </div>
@@ -1149,12 +1164,46 @@ export default {
                 class="workspace-rail__comments"
               >
                 <!--
+                  One thread at a time where there are many: the pager walks them in GitHub's
+                  order, and a number jumps straight to one. A thread still waiting on an
+                  answer is marked in the pager too, so it can be found without walking.
+                -->
+                <div
+                  v-if="item.paged && item.items.length > 1"
+                  class="workspace-rail__pager"
+                >
+                  <button
+                    type="button"
+                    class="workspace-rail__page-step"
+                    :disabled="pageOf(section, item) === 0"
+                    @click="turn(section, item, -1)"
+                  >‹ Previous</button>
+                  <span class="workspace-rail__page-nums">
+                    <button
+                      v-for="(c, n) in item.items"
+                      :key="c.id || n"
+                      type="button"
+                      class="workspace-rail__page-num"
+                      :class="{ 'workspace-rail__page-num--on': n === pageOf(section, item), 'workspace-rail__page-num--open': !c.answered }"
+                      :title="`${ c.where }${ c.answered ? '' : ' · waiting' }`"
+                      @click="goTo(section, n)"
+                    >{{ n + 1 }}</button>
+                  </span>
+                  <button
+                    type="button"
+                    class="workspace-rail__page-step"
+                    :disabled="pageOf(section, item) >= item.items.length - 1"
+                    @click="turn(section, item, 1)"
+                  >Next ›</button>
+                  <span class="workspace-rail__page-of">{{ pageOf(section, item) + 1 }} of {{ item.items.length }}</span>
+                </div>
+                <!--
                   One card per thread, in GitHub's order (the file's place in the PR, then the
                   line). The code it is on is the hunk, numbered both sides, the commented line
                   marked; every message is rendered, the PR's author told apart from the rest.
                 -->
                 <article
-                  v-for="(c, j) in item.items"
+                  v-for="(c, j) in shownThreads(section, item)"
                   :key="c.id || j"
                   class="workspace-rail__thread-card"
                 >
@@ -1620,20 +1669,36 @@ export default {
 
   &__buttons {
     display:     flex;
-    gap:         28px;
+    gap:         16px;
     flex:        1 1 auto;
-    align-items: flex-end;
+    align-items: stretch;
     justify-content: flex-end;
     flex-wrap:   wrap;
   }
 
+  // Two fenced groups: what to ask the agent for, and what to decide. The fence is what says
+  // they are different kinds of thing - a gap alone did not.
   &__group {
     display:        flex;
     flex-direction: column;
-    gap:            6px;
+    gap:            8px;
     align-items:    flex-start;
+    padding:        10px 12px;
+    border:         1px solid var(--pr-border);
+    border-radius:  var(--border-radius);
+    background:     var(--pr-bg);
 
-    &--decide { align-items: flex-end; }
+    &--decide {
+      align-items:  flex-end;
+      border-color: var(--pr-accent);
+    }
+  }
+
+  // Every button the same size, whatever it does.
+  &__group :deep(button) {
+    height:      36px;
+    min-width:   150px;
+    white-space: nowrap;
   }
 
   &__group-label {
@@ -1648,31 +1713,6 @@ export default {
     display:   flex;
     gap:       8px;
     flex-wrap: wrap;
-  }
-
-  // A button that starts an agent says so with the mascot in its corner; a middle click on it
-  // opens what it sends and the skill behind it.
-  &__act {
-    position: relative;
-    display:  inline-flex;
-  }
-
-  &__act-mark {
-    position:      absolute;
-    top:           -5px;
-    right:         -5px;
-    width:         11px;
-    height:        11px;
-    padding:       2px;
-    border-radius: 50%;
-    background:    var(--pr-bg-2);
-    color:         var(--pr-accent);
-    pointer-events: none;
-
-    &--on-primary {
-      background: var(--pr-accent);
-      color:      var(--pr-on-accent);
-    }
   }
 
   &__inspect {
@@ -2022,6 +2062,61 @@ export default {
     display:        flex;
     flex-direction: column;
     gap:            12px;
+  }
+
+  &__pager {
+    display:     flex;
+    align-items: center;
+    gap:         10px;
+    flex-wrap:   wrap;
+    padding:     4px 0 2px;
+  }
+
+  &__page-step {
+    border:        1px solid var(--pr-border);
+    border-radius: var(--border-radius);
+    background:    var(--pr-bg);
+    color:         var(--pr-text);
+    font:          inherit;
+    font-size:     12px;
+    padding:       3px 10px;
+    cursor:        pointer;
+
+    &:disabled { opacity: .4; cursor: default; }
+    &:not(:disabled):hover { background: var(--pr-el-hover); }
+  }
+
+  &__page-nums {
+    display:   flex;
+    gap:       4px;
+    flex-wrap: wrap;
+  }
+
+  &__page-num {
+    min-width:     24px;
+    border:        1px solid transparent;
+    border-radius: var(--border-radius);
+    background:    var(--pr-bg);
+    color:         var(--pr-muted);
+    font:          inherit;
+    font-size:     12px;
+    padding:       2px 6px;
+    cursor:        pointer;
+
+    &:hover { color: var(--pr-text); }
+    &--open { color: var(--pr-warning); border-color: var(--pr-warning); }
+    &--on {
+      background:   var(--pr-accent);
+      border-color: var(--pr-accent);
+      color:        var(--pr-on-accent);
+      font-weight:  700;
+    }
+  }
+
+  &__page-of {
+    margin-left: auto;
+    color:       var(--pr-muted);
+    font-size:   12px;
   }
 
   &__comment-head {

@@ -56,7 +56,7 @@ export type EvidenceItem =
   | { kind: 'text'; text: string; html?: string; at?: string; who?: string }
   | { kind: 'kv'; rows: { k: string; v: string; tone?: string }[] }
   | { kind: 'media'; items: { label: string; url: string; video: boolean; at: string }[] }
-  | { kind: 'comments'; items: Comment[] }
+  | { kind: 'comments'; items: Comment[]; paged?: boolean }
   | { kind: 'commits'; pr: number; items: { sha: string; message: string; who: string; at: string }[]; since?: string }
   | { kind: 'files'; items: { path: string; note: string }[] }
   | { kind: 'links'; items: { label: string; url: string }[] }
@@ -100,6 +100,8 @@ export interface Comment {
    * waiting on them, which is what `lastByAuthor` says.
    */
   replied: boolean;
+  /** Whether the person reading this page has a message in the thread. */
+  mine: boolean;
   /** The PR's head, for reading more of the file around the hunk. */
   headSha: string;
   /** GitHub's position in the diff, for its order. */
@@ -327,7 +329,7 @@ function prRows(d: Json): { k: string; v: string; tone?: string }[] {
  * the whole hunk it is on and every message rendered.
  */
 function threads(d: Json, since = 0, kinds: Record<string, string> = {}): Comment[] {
-  const m = d.meta || {};
+  const m = { ...(d.meta || {}), viewer: d.viewer || '' };
   const author = m.author || '';
   const files: Json[] = d.files || [];
   const review: Json[] = (d.reviewComments || []).filter((c: Json) => !c.pending && !isBot(c.author));
@@ -348,9 +350,10 @@ function threads(d: Json, since = 0, kinds: Record<string, string> = {}): Commen
   const card = (root: Json, members: Json[], where: string, path: string, line: number, rows: CodeRow[], order: number, url: string): Comment => {
     const thread = members.sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0)).map(msg);
     const last = thread[thread.length - 1];
+    const viewer = m.viewer || '';
 
     return {
-      id: root.id, who: root.author || '?', where, path, line, body: String(root.body || '').slice(0, 400), at: last?.at || root.createdAt || '', answered: false, lastBy: last?.who || '', lastByAuthor: !!last?.author, thread, replied: thread.some((t) => t.author), headSha: m.headSha || '', position: Number(root.position) || 0, context: '', rows, noPatch: false, url, order,
+      id: root.id, who: root.author || '?', where, path, line, body: String(root.body || '').slice(0, 400), at: last?.at || root.createdAt || '', answered: false, lastBy: last?.who || '', lastByAuthor: !!last?.author, thread, replied: thread.some((t) => t.author), mine: !!viewer && thread.some((t) => t.who === viewer), headSha: m.headSha || '', position: Number(root.position) || 0, context: '', rows, noPatch: false, url, order,
     };
   };
   const out = roots.map((root) => {
@@ -562,7 +565,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         const fresh = all.filter((c) => (Date.parse(c.at) || 0) > pushedAt(d));
         const older = all.filter((c) => !fresh.includes(c));
 
-        sections.push({ title: 'Since your last push', items: fresh.length ? [{ kind: 'comments', items: fresh }] : [{ kind: 'empty', text: 'Nothing new since the last push.' }] });
+        sections.push({ title: 'Since your last push', items: fresh.length ? [{ kind: 'comments', items: fresh, paged: true }] : [{ kind: 'empty', text: 'Nothing new since the last push.' }] });
         // And the commits of this round, so the change the feedback is about can be read as one.
         const roundCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > Math.min(...all.map((x) => Date.parse(x.thread[0]?.at || '') || Date.now()))).map((c: Json) => ({
           sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
@@ -572,7 +575,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
           sections.push({ title: 'Your commits this round', items: [{ kind: 'commits', pr: status.pr, items: roundCommits, since: 'the first comment of this round' }] });
         }
         if (older.length) {
-          sections.push({ title: 'Earlier rounds', items: [{ kind: 'comments', items: older }] });
+          sections.push({ title: 'Earlier rounds', items: [{ kind: 'comments', items: older, paged: true }] });
         }
       }
       prSection();
@@ -593,7 +596,17 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     const submittedAt = Math.max(0, ...submitted.map((c) => Date.parse(c.submitted_at) || 0), ...ghReviews.map((r) => Date.parse(r.submittedAt) || 0));
     // What was submitted, as threads: the review's own comments here, else the PR's threads a
     // reviewer opened (a review left on GitHub directly).
-    const reviewThreads = () => (d ? threads(d, submittedAt, kinds).filter((c) => c.thread.some((t) => !t.author)) : []);
+    // The threads this person is in - not every thread on the PR. Without a viewer (no token,
+    // an older API) it falls back to every thread somebody other than the author opened.
+    const reviewThreads = () => {
+      if (!d) {
+        return [];
+      }
+      const all = threads(d, submittedAt, kinds);
+      const ours = all.filter((c) => c.mine);
+
+      return ours.length || d.viewer ? ours : all.filter((c) => c.thread.some((t) => !t.author));
+    };
     const files: Json[] = d?.files || [];
     const findings = (list: Json[]) => ({
       kind: 'comments' as const,
@@ -602,7 +615,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         const body = String(c.body || '');
 
         return {
-          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderBody(body), at: c.created_at || '', isNew: false }], replied: false, headSha: d?.meta?.headSha || '', position: 0, context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
+          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderBody(body), at: c.created_at || '', isNew: false }], replied: false, mine: true, headSha: d?.meta?.headSha || '', position: 0, context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
         };
       }).sort((a, b) => a.order - b.order || a.line - b.line),
     });
@@ -623,7 +636,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     case 'submitted': {
       const mine = submitted.length ? null : reviewThreads();
 
-      sections.push({ title: `Your review (${ submitted.length || mine?.length || 0 } comments)`, items: submitted.length ? [findings(submitted)] : mine?.length ? [{ kind: 'comments', items: mine.map((c) => ({ ...c, answered: c.lastByAuthor })) }] : [{ kind: 'empty', text: 'Nothing submitted yet.' }] });
+      sections.push({ title: `Your review (${ submitted.length || mine?.length || 0 } comments)`, items: submitted.length ? [findings(submitted)] : mine?.length ? [{ kind: 'comments', items: mine.map((c) => ({ ...c, answered: c.lastByAuthor })), paged: true }] : [{ kind: 'empty', text: 'Nothing submitted yet.' }] });
       prSection();
       break;
     }
@@ -639,7 +652,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         const mine = reviewThreads().map((c) => ({ ...c, answered: c.lastByAuthor }));
 
         sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits, since: 'your review' }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
-        sections.push({ title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: mine.length ? [{ kind: 'comments', items: mine }] : [{ kind: 'empty', text: 'No threads.' }] });
+        sections.push({ title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: mine.length ? [{ kind: 'comments', items: mine, paged: true }] : [{ kind: 'empty', text: 'You have no threads on this PR.' }] });
       }
       if (report) {
         reportSection((Date.parse(report.at) || 0) > submittedAt ? 'What the agent found in the new commits' : 'Agent\'s review report (before the developer responded)');
@@ -825,10 +838,12 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage): SkillBut
     case 'submitted':
       return [{ label: 'Checklist', skill: 'my-pr-checklist', note: 'Work every item of the PR template checklist' }];
     case 'response':
+      // Not `my-pr-review` here: the stage's own action already asks for exactly that, and two
+      // buttons with one label is worse than one.
       return [
-        { label: 'Review the new commits', skill: 'my-pr-review', note: 'Comment on what changed since your review' },
         { label: 'Verify the answers', skill: 'my-pr-comment-verify', note: 'Check what the developer says they fixed' },
         { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes now' },
+        { label: 'Checklist', skill: 'my-pr-checklist', note: 'Work every item of the PR template checklist' },
       ];
     default:
       return [];
