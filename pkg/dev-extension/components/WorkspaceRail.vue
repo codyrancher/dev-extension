@@ -1932,26 +1932,35 @@ export default {
     resize:        vertical;
   }
 
+  // A reference table, so the rows are tight and everything on one line sits on that line's
+  // middle: the chip is taller than the words beside it, and top-alignment left them floating.
   &__vars {
     width:           100%;
     border-collapse: collapse;
     font-size:       12px;
 
     td {
-      padding:       4px 8px 4px 0;
-      vertical-align: top;
-      border-bottom: 1px solid var(--pr-border);
+      padding:        3px 12px 3px 0;
+      vertical-align:  middle;
+      line-height:     1.35;
+      border-bottom:   1px solid var(--pr-border);
     }
+
+    td:first-child { width: 1%; white-space: nowrap; }
+    td:last-child { padding-right: 0; }
+    tr:last-child td { border-bottom: 0; }
   }
 
   &__var {
+    display:       block;
     border:        1px solid var(--pr-border);
     border-radius: var(--border-radius);
     background:    var(--pr-bg-2);
     color:         var(--pr-accent);
     font-family:   var(--pr-mono);
     font-size:     11.5px;
-    padding:       2px 6px;
+    line-height:   1.35;
+    padding:       1px 6px;
     cursor:        pointer;
     white-space:   nowrap;
 
