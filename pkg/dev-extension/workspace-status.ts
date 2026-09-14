@@ -192,19 +192,23 @@ function agentStateOf(c: ConversationState): AgentState {
   if (!c.alive) {
     return 'finished';
   }
-  // A question beats everything: an agent waiting on an answer is waiting however busy its
-  // subagents are.
-  if (c.event === 'Notification' && c.notification && c.notification !== 'idle_prompt') {
-    return 'input';
-  }
-  // The transcript, when it has moved since the hook last spoke. A hook fires at the edges of
-  // a turn, so a turn spent inside subagents - twenty minutes of them - reads as finished to
-  // it, while the subagents are writing their transcripts all the while. If the writing is
-  // newer than the hook's last word and recent, the agent is working, whatever the hook said.
+  // The transcript, when it has moved since the hook last spoke.
+  //
+  // A hook fires at the edges of a turn, so a turn spent inside subagents - twenty minutes of
+  // them - reads as finished to it while the subagents write their transcripts all the while.
+  // And there is no hook at all for "the question was answered": a permission prompt answered
+  // in the terminal leaves the last Notification standing, so the question mark sat on a
+  // workspace whose agent had been working again for ten minutes.
+  //
+  // Writing since the hook spoke settles both: the agent is doing something, whatever it last
+  // said. A question with nothing written since it was asked is still a question.
   const hookAgo = (Date.now() - (Date.parse(c.at) || 0)) / 1000;
 
   if (c.wroteAgo >= 0 && c.wroteAgo <= WORKING_WINDOW_S && c.wroteAgo + 5 < hookAgo) {
     return 'working';
+  }
+  if (c.event === 'Notification' && c.notification && c.notification !== 'idle_prompt') {
+    return 'input';
   }
   switch (c.event) {
   case 'UserPromptSubmit':
