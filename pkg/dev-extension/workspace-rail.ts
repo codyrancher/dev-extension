@@ -102,6 +102,14 @@ export interface Comment {
   rows: CodeRow[];
   /** The file's patch was not in the PR's data (too large, or binary): the code cannot be shown. */
   noPatch: boolean;
+  /**
+   * A finding of yours that has not been submitted: it can still be marked good, edited,
+   * discussed with the agent or dropped, the way the PR panel's cards can.
+   */
+  local?: boolean;
+  status?: string;
+  /** What the agent attached to it: the evidence, shown the way the PR panel shows it. */
+  attachments?: Json[];
   url: string;
   /** Where the file sits in the PR's file list, for GitHub's order. */
   order: number;
@@ -611,7 +619,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         const body = String(c.body || '');
 
         return {
-          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderBody(body, kinds), at: c.created_at || '', isNew: false }], replied: false, mine: true, headSha: d?.meta?.headSha || '', position: 0, context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
+          local: !c.submitted_at, status: c.status || 'pending', attachments: c.attachments || [], id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderBody(body, kinds), at: c.created_at || '', isNew: false }], replied: false, mine: true, headSha: d?.meta?.headSha || '', position: 0, context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
         };
       }).sort((a, b) => a.order - b.order || a.line - b.line),
     });

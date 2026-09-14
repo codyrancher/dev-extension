@@ -135,6 +135,14 @@ export async function addComment(num: number, body: string, at?: { path: string;
   });
 }
 
+/**
+ * Forget the memoised read of a PR. Called after a comment is changed from a page that is not
+ * the PR panel: the next read has to see the change, not the copy taken up to 25 seconds ago.
+ */
+export function forgetPrDetail(num: number, repo = DEFAULT_REPO): void {
+  prDetailCache.delete(`${ repo }#${ num }`);
+}
+
 export async function updateComment(num: number, id: number, changes: Partial<Pick<LocalComment, 'body' | 'status' | 'line' | 'path'>> & { attachments?: { path: string; caption?: string }[] }): Promise<LocalComment> {
   return api(`/my-work/pr/${ num }/comments/${ id }`, { method: 'PUT', body: JSON.stringify(changes) });
 }

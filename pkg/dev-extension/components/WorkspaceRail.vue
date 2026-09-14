@@ -13,6 +13,9 @@ import WorkspacePr from './WorkspacePr.vue';
 import WorkspaceBrowser from './WorkspaceBrowser.vue';
 import WorkspaceShare from './WorkspaceShare.vue';
 import DevModal from './DevModal.vue';
+import PrButton from './pr/PrButton.vue';
+import CommentDiscussion from './pr/CommentDiscussion.vue';
+import CommentAttachments from './pr/CommentAttachments.vue';
 import {
   readStatusNow, knownStatus, provisionalStatus, agentLabel
 } from '../workspace-status';
@@ -25,7 +28,7 @@ import {
 } from '../conversations';
 import { ensureWorkspaceReady, putArtifact } from '../workspace-tools';
 import {
-  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, DEFAULT_REPO
+  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, updateComment, deleteComment, forgetPrDetail, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
@@ -43,7 +46,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal
+    Banner, RcButton, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments
   },
 
   props: {
@@ -120,6 +123,16 @@ export default {
       moreAbove: {},
       moreBelow: {},
       openComments: {},
+      /**
+       * A finding of yours, being worked on here rather than over on the PR page: which one is
+       * being edited and its draft, which have a discussion open with the agent and the
+       * conversation each one is attached to, and which is mid-request.
+       */
+      editingId:  0,
+      editDraft:  '',
+      discussing: {},
+      discussSession: {},
+      commentBusy: 0,
       /** This workspace's conversations, and the one shown - the newest unless another is picked. */
       conversations: [],
       currentConversation: '',
@@ -128,6 +141,11 @@ export default {
   },
 
   computed: {
+    /** The repository these workspaces are of. One, for now, as everywhere else here. */
+    repo() {
+      return DEFAULT_REPO;
+    },
+
     steps() {
       return stepsFor(this.status?.kind || 'other');
     },
@@ -679,6 +697,74 @@ export default {
         this.error = e?.message || String(e);
       } finally {
         this.busy = '';
+      }
+    },
+
+    /*
+     * A finding of yours, acted on where it is read. These are the PR panel's own actions on a
+     * pending comment - mark it good, edit the wording, talk it over with the agent, drop it -
+     * because going through the findings is the whole of this stage, and sending someone to
+     * another page to do it is the thing the rail exists to stop.
+     */
+
+    /** Mark a finding good, or take the mark off: the same toggle the PR panel has. */
+    async markGood(c) {
+      await this.changeComment(c, () => updateComment(this.status.pr, c.id, { status: c.status === 'approved' ? 'pending' : 'approved' }));
+    },
+
+    startEdit(c) {
+      this.editingId = c.id;
+      this.editDraft = c.thread?.[0]?.body || c.body || '';
+    },
+
+    cancelEdit() {
+      this.editingId = 0;
+      this.editDraft = '';
+    },
+
+    async saveEdit(c) {
+      const body = this.editDraft.trim();
+
+      if (!body) {
+        return;
+      }
+      await this.changeComment(c, () => updateComment(this.status.pr, c.id, { body }));
+      this.editingId = 0;
+      this.editDraft = '';
+    },
+
+    async dropFinding(c) {
+      // eslint-disable-next-line no-alert
+      if (!window.confirm('Delete this finding? It has not been submitted to GitHub, so it only goes from here.')) {
+        return;
+      }
+      await this.changeComment(c, () => deleteComment(this.status.pr, c.id));
+    },
+
+    /** Talk one finding over with the agent, in a conversation of its own under the card. */
+    toggleDiscuss(c) {
+      this.discussing = { ...this.discussing, [c.id]: !this.discussing[c.id] };
+    },
+
+    rememberDiscussion(c, session) {
+      this.discussSession = { ...this.discussSession, [c.id]: session };
+    },
+
+    /** One change to a finding: run it, forget the memoised PR, and read the column again. */
+    async changeComment(c, run) {
+      if (this.commentBusy) {
+        return;
+      }
+      this.commentBusy = c.id;
+      this.error = '';
+      try {
+        await run();
+        forgetPrDetail(this.status.pr);
+        await this.refreshEvidence();
+      } catch (e) {
+        this.error = e?.message || String(e);
+      } finally {
+        this.commentBusy = 0;
       }
     },
 
@@ -1559,6 +1645,86 @@ export default {
                       />
                     </div>
                   </div>
+                  <CommentAttachments
+                    v-if="c.attachments && c.attachments.length"
+                    :pr="status.pr"
+                    :attachments="c.attachments"
+                  />
+                  <!--
+                    A finding of yours that has not gone to GitHub yet: the PR panel's own
+                    actions on it, here, because going through the findings is this stage and
+                    sending someone to another page to do it is what the rail is for.
+                  -->
+                  <div
+                    v-if="c.local && editingId === c.id"
+                    class="workspace-rail__edit"
+                  >
+                    <textarea
+                      v-model="editDraft"
+                      class="workspace-rail__edit-text"
+                      rows="6"
+                    />
+                    <div class="workspace-rail__comment-actions">
+                      <PrButton
+                        size="sm"
+                        variant="primary"
+                        :disabled="commentBusy === c.id"
+                        @click="saveEdit(c)"
+                      >
+                        Save
+                      </PrButton>
+                      <PrButton
+                        size="sm"
+                        @click="cancelEdit"
+                      >
+                        Cancel
+                      </PrButton>
+                    </div>
+                  </div>
+                  <div
+                    v-else-if="c.local"
+                    class="workspace-rail__comment-actions"
+                  >
+                    <PrButton
+                      size="sm"
+                      :variant="c.status === 'approved' ? 'success' : 'primary'"
+                      :disabled="commentBusy === c.id"
+                      @click="markGood(c)"
+                    >
+                      {{ c.status === 'approved' ? 'Approved' : 'Mark good' }}
+                    </PrButton>
+                    <PrButton
+                      size="sm"
+                      @click="startEdit(c)"
+                    >
+                      Edit
+                    </PrButton>
+                    <PrButton
+                      size="sm"
+                      :variant="discussing[c.id] ? 'accent' : 'default'"
+                      @click="toggleDiscuss(c)"
+                    >
+                      {{ discussing[c.id] ? 'Discussing' : 'Discuss' }}
+                    </PrButton>
+                    <PrButton
+                      size="sm"
+                      variant="danger"
+                      :disabled="commentBusy === c.id"
+                      @click="dropFinding(c)"
+                    >
+                      Delete
+                    </PrButton>
+                  </div>
+                  <CommentDiscussion
+                    v-if="c.local && discussing[c.id]"
+                    :pr="status.pr"
+                    :repo="repo"
+                    :workspace="workspace.name"
+                    :comment="c"
+                    :session="discussSession[c.id] || ''"
+                    @session="rememberDiscussion(c, $event)"
+                    @close="toggleDiscuss(c)"
+                  />
                 </article>
               </div>
               <p
@@ -2322,6 +2488,35 @@ export default {
   // The file box, the diff table, the comment card and the markdown body all come from
   // panel.scss (`prm-file`, `diff-table`, `comment`, `md-body`). What is left here is this
   // page's own: the thread card around a comment chain, and the two expanders.
+  /* The actions on one of your own findings, as the PR panel has them. */
+  &__comment-actions {
+    display:   flex;
+    flex-wrap: wrap;
+    gap:       6px;
+    padding:   8px 0 2px;
+  }
+
+  &__edit {
+    display:        flex;
+    flex-direction: column;
+    gap:            6px;
+    padding-top:    8px;
+  }
+
+  &__edit-text {
+    width:         100%;
+    min-height:    90px;
+    box-sizing:    border-box;
+    padding:       8px;
+    border:        1px solid var(--pr-border, var(--border));
+    border-radius: var(--border-radius);
+    background:    var(--pr-bg-2, var(--box-bg));
+    color:         var(--body-text);
+    font:          inherit;
+    font-size:     13px;
+    resize:        vertical;
+  }
+
   &__thread-card {
     border:        1px solid var(--pr-border);
     border-radius: var(--border-radius);
