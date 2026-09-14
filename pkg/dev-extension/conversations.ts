@@ -126,6 +126,12 @@ export interface ConversationState {
   event: string;
   notification: string;
   at: string;
+  /**
+   * Seconds since anything was written to the conversation's transcript or to one of its
+   * subagents', or -1 when there is no transcript to look at. The hook only fires at a turn's
+   * edges; this is what says whether the turn is still going.
+   */
+  wroteAgo: number;
 }
 
 /**
@@ -140,21 +146,35 @@ export async function conversationStates(): Promise<ConversationState[]> {
   if (!pod) {
     return [];
   }
+  // The hook file says what claude last told us; the transcript says whether anything is
+  // still happening. Both are needed: a hook only fires at a turn's edges, so a turn that
+  // spends twenty minutes inside subagents looks finished to it - and the subagents write
+  // their own transcripts beside the session's, which is what gives them away.
   const script = [
     'export PATH=/workspace/.home/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH',
     `cd ${ AGENT_WORKSPACE }/sessions 2>/dev/null || exit 0`,
+    'now=$(date +%s)',
     'for f in p-*.state.json; do',
     '  [ -f "$f" ] || continue',
     '  id=${f%.state.json}; a=no',
     '  if [ "$(id -u)" = 0 ]; then setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/workspace/.home tmux has-session -t "mc-$id" 2>/dev/null && a=yes; else tmux has-session -t "mc-$id" 2>/dev/null && a=yes; fi',
-    '  printf "%s\t%s\t%s\n" "$id" "$a" "$(head -c 800 "$f" | tr -d "\n\t")"',
+    '  t=$(sed -n \'s/.*"transcript":"\\([^"]*\\)".*/\\1/p\' "$f" | head -1); m=0',
+    '  if [ -n "$t" ] && [ -f "$t" ]; then',
+    '    m=$(stat -c %Y "$t" 2>/dev/null || echo 0)',
+    '    for s in "${t%.jsonl}"/subagents/*.jsonl; do',
+    '      [ -f "$s" ] || continue',
+    '      sm=$(stat -c %Y "$s" 2>/dev/null || echo 0); [ "$sm" -gt "$m" ] && m=$sm',
+    '    done',
+    '  fi',
+    '  if [ "$m" -gt 0 ]; then wrote=$((now - m)); else wrote=-1; fi',
+    '  printf "%s\t%s\t%s\t%s\n" "$id" "$a" "$wrote" "$(head -c 800 "$f" | tr -d "\n\t")"',
     'done',
   ].join('\n');
   const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script]).catch(() => '');
   const out: ConversationState[] = [];
 
   for (const line of listing.split('\n')) {
-    const [id, alive, json] = line.replace(/\r$/, '').split('\t');
+    const [id, alive, wrote, json] = line.replace(/\r$/, '').split('\t');
 
     if (!id || !/^p-.+-\d+$/.test(id)) {
       continue;
@@ -165,7 +185,7 @@ export async function conversationStates(): Promise<ConversationState[]> {
       event = JSON.parse(json || '{}');
     } catch { /* a state file caught mid-write; the next poll reads it whole */ }
     out.push({
-      id, workspace: id.replace(/^p-/, '').replace(/-\d+$/, ''), alive: alive === 'yes', event: String(event.event || ''), notification: String(event.notification || ''), at: String(event.at || ''),
+      id, workspace: id.replace(/^p-/, '').replace(/-\d+$/, ''), alive: alive === 'yes', event: String(event.event || ''), notification: String(event.notification || ''), at: String(event.at || ''), wroteAgo: Number(wrote ?? -1),
     });
   }
 
