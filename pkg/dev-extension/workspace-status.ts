@@ -39,15 +39,15 @@ export const STAGE_LABELS: Record<Stage, string> = {
 };
 
 /** A work state with its stage's name already on it. */
-type Work = Pick<WorkspaceStatus, 'label' | 'tone' | 'stage'> & { stageLabel?: string; reviewed?: boolean };
+type Work = Pick<WorkspaceStatus, 'label' | 'tone' | 'stage'> & { stageLabel?: string; reviewed?: boolean; round?: number };
 
 /**
  * Name the stage on a state that has one. A state may name its own stage instead where the
  * rail has no step for it - a closed PR sits at the end of the rail without being merged.
  */
-function staged(work: Work): Pick<WorkspaceStatus, 'label' | 'tone' | 'stage' | 'stageLabel' | 'reviewed'> {
+function staged(work: Work): Pick<WorkspaceStatus, 'label' | 'tone' | 'stage' | 'stageLabel' | 'reviewed' | 'round'> {
   return {
-    ...work, stageLabel: work.stageLabel ?? (work.stage ? STAGE_LABELS[work.stage] : ''), reviewed: !!work.reviewed,
+    ...work, stageLabel: work.stageLabel ?? (work.stage ? STAGE_LABELS[work.stage] : ''), reviewed: !!work.reviewed, round: work.round || 1,
   };
 }
 
@@ -93,6 +93,12 @@ export interface WorkspaceStatus {
    * fifth) round, and the page says so rather than pretending this is the first look.
    */
   reviewed: boolean;
+  /**
+   * Which time round this is. 1 is the first look; 2 is a pass over what the agent found after
+   * the developer answered your first review, and so on. The rail says so on the step, because
+   * the same step twice with nothing to tell them apart reads as no progress at all.
+   */
+  round: number;
   pr: number;
   /** When GitHub was last read for it; 0 when it never has been. */
   readAt: number;
@@ -156,7 +162,7 @@ let reading = false;
 
 function empty(): WorkspaceStatus {
   return {
-    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0, kind: 'other', stage: '', stageLabel: '', reviewed: false, pr: 0,
+    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0, kind: 'other', stage: '', stageLabel: '', reviewed: false, round: 1, pr: 0,
   };
 }
 
@@ -238,6 +244,12 @@ function reviewWork(d: Json, agent: AgentState): Work {
   // PR, days after the developer had answered.
   const viewer = d.viewer || '';
   const reviews: Json[] = (d.reviews || []).filter((r: Json) => r.submittedAt && (viewer ? r.author === viewer : r.author && r.author !== m.author && !isBot(r.author)));
+  // How many times you have already sent this PR a review. The same review is often recorded
+  // twice - once as the comments submitted here, once as GitHub's own review - so they are
+  // counted by the minute they went out rather than one by one.
+  const rounds = new Set([...submitted.map((c) => c.submitted_at), ...reviews.map((r: Json) => r.submittedAt)]
+    .map((at) => String(at || '').slice(0, 16))
+    .filter(Boolean)).size;
 
   if (m.merged) {
     return {
@@ -257,18 +269,18 @@ function reviewWork(d: Json, agent: AgentState): Work {
     // A review is a loop, not a line, and the step that says what you have to do is this one.
     if (pending.length) {
       return {
-        label: 'go through the new findings', tone: 'attention', stage: 'findings', reviewed: true,
+        label: 'go through the new findings', tone: 'attention', stage: 'findings', reviewed: true, round: rounds + 1,
       };
     }
 
     if (pushed || replied) {
       return {
-        label: pushed ? 'new commits to review' : 'replied to your comments', tone: 'attention', stage: 'response', reviewed: true,
+        label: pushed ? 'new commits to review' : 'replied to your comments', tone: 'attention', stage: 'response', reviewed: true, round: rounds,
       };
     }
 
     return {
-      label: 'waiting for the developer', tone: 'waiting', stage: 'submitted', reviewed: true,
+      label: 'waiting for the developer', tone: 'waiting', stage: 'submitted', reviewed: true, round: rounds,
     };
   }
   if (agent === 'working') {

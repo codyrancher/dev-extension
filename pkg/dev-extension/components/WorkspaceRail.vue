@@ -152,6 +152,11 @@ export default {
   },
 
   computed: {
+    /** Which time round the work is at this step: 1 unless a review of yours has already gone. */
+    round() {
+      return this.status?.round || 1;
+    },
+
     /** The findings on the page that have not been submitted: what an action here acts on. */
     findingCount() {
       return this.evidence
@@ -487,12 +492,22 @@ export default {
       this.refreshEvidence();
     },
 
+    /**
+     * A step this review went through in an earlier round: after a first review, Submitted and
+     * Developer responded are behind you as well as ahead, so they keep their ticks rather than
+     * going back to being plain numbers.
+     */
+    doneBefore(index) {
+      return this.round > 1 && !!this.steps[index] && ['submitted', 'response'].includes(this.steps[index].key) && index > this.currentIndex;
+    },
+
     stepClass(step, index) {
       return {
         'workspace-rail__step--done':    index < this.currentIndex,
         'workspace-rail__step--now':     index === this.currentIndex,
         'workspace-rail__step--shown':   step.key === this.shown,
         'workspace-rail__step--future':  index > this.currentIndex,
+        'workspace-rail__step--again':   this.doneBefore(index),
       };
     },
 
@@ -1313,17 +1328,26 @@ export default {
             type="button"
             class="workspace-rail__step-btn"
             :disabled="index > currentIndex"
-            :title="index < currentIndex ? `Look at what ${ step.label } left behind` : index === currentIndex ? 'Now' : 'Not yet'"
+            :title="index < currentIndex ? `Look at what ${ step.label } left behind` : index === currentIndex ? (round > 1 ? `Now, round ${ round }` : 'Now') : doneBefore(index) ? `Done in round ${ round - 1 }; ahead of you again` : 'Not yet'"
             @click="look(step, index)"
           >
             <span class="workspace-rail__dot">
               <i
-                v-if="index < currentIndex"
+                v-if="index < currentIndex || doneBefore(index)"
                 class="icon icon-checkmark"
               />
               <span v-else>{{ index + 1 }}</span>
             </span>
             <span class="workspace-rail__step-label">{{ step.label }}</span>
+            <!--
+              Which time round this is. The same step twice with nothing to tell the two apart
+              reads as no progress, so a pass that follows a review of yours says "round 2" and
+              the steps it has already been through keep their ticks.
+            -->
+            <span
+              v-if="index === currentIndex && round > 1"
+              class="workspace-rail__round"
+            >round {{ round }}</span>
           </button>
         </li>
       </ol>
@@ -2296,6 +2320,26 @@ export default {
 
     &:last-child::after { display: none; }
     &--done::after { background: var(--primary); }
+  }
+
+  /* Which time round this step is being taken. Small, beside the label, never instead of it. */
+  &__round {
+    margin-left:    6px;
+    padding:        1px 6px;
+    border:         1px solid var(--warning);
+    border-radius:  10px;
+    color:          var(--warning);
+    font-size:      10px;
+    font-weight:    700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    white-space:    nowrap;
+  }
+
+  /* A step this review has already been through once, waiting ahead of you again. */
+  &__step--again &__dot {
+    border-style: dashed;
+    opacity:      .85;
   }
 
   &__step-btn {
