@@ -336,7 +336,7 @@ export default {
         <li
           v-for="row in block.rows"
           :key="row.key"
-          :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail, 'dev-list__row--grouped': !!block.label }"
+          :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail || row.agentIcon, 'dev-list__row--grouped': !!block.label }"
           class="dev-list__row"
           @mouseenter="showCard(row, $event)"
           @mouseleave="hideCard"
@@ -374,7 +374,7 @@ export default {
                 how much it needs the person. See workspace-status.ts.
               -->
               <span
-                v-if="row.detail"
+                v-if="row.detail || row.agentIcon"
                 class="dev-list__detail"
                 :class="detailClass(row)"
               >{{ row.detail }}<i
