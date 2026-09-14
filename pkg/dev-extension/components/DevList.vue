@@ -381,7 +381,7 @@ export default {
                 v-if="row.agentIcon"
                 v-clean-tooltip="row.agentTitle"
                 class="dev-list__agent icon"
-                :class="row.agentIcon"
+                :class="[row.agentIcon, `dev-list__agent--${ row.agent || 'none' }`]"
                 :aria-label="row.agentTitle"
               /></span>
             </span>
@@ -706,11 +706,20 @@ export default {
         font-size: 10px;
       }
 
-      /* The agent's mark sits at the end of the line, quieter than the stage it follows. */
+      /*
+       * The agent's mark sits at the end of the line, quieter than the stage it follows - but
+       * the four states have to be told apart at a glance, so each has its own shape and its
+       * own colour rather than four grey circles.
+       */
       .dev-list__agent {
         flex:      0 0 auto;
         font-size: 11px;
         opacity:   .75;
+
+        &--working  { color: var(--primary); opacity: 1; }
+        &--input    { color: var(--warning); opacity: 1; }
+        &--finished { color: var(--success); }
+        &--idle     { color: var(--muted); }
       }
 
       &--green {
