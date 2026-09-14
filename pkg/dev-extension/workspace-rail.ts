@@ -19,7 +19,7 @@ import {
 import type { DiffRow } from './components/pr/diff';
 import { latestAgentReport } from './conversations';
 import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from './api';
-import { noteCoded, isBot } from './workspace-status';
+import { noteCoded, isBot, STAGE_LABELS } from './workspace-status';
 import type { WorkspaceStatus, Stage } from './workspace-status';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -29,22 +29,13 @@ export interface RailStep {
   label: string;
 }
 
-export const FIX_STEPS: RailStep[] = [
-  { key: 'assess', label: 'Assess' },
-  { key: 'code', label: 'Code' },
-  { key: 'draft', label: 'Draft PR' },
-  { key: 'review', label: 'In review' },
-  { key: 'feedback', label: 'Feedback' },
-  { key: 'merged', label: 'Merged' },
-];
+// The stages themselves are named in workspace-status, which is also where the sidebar reads
+// them from: a workspace that reads "In review" here reads "In review" in the list.
+const step = (key: Stage): RailStep => ({ key, label: STAGE_LABELS[key] });
 
-export const REVIEW_STEPS: RailStep[] = [
-  { key: 'agent', label: 'Agent review' },
-  { key: 'findings', label: 'Your pass' },
-  { key: 'submitted', label: 'Submitted' },
-  { key: 'response', label: 'Developer responded' },
-  { key: 'approved', label: 'Approved' },
-];
+export const FIX_STEPS: RailStep[] = ['assess', 'code', 'draft', 'review', 'feedback', 'merged'].map((k) => step(k as Stage));
+
+export const REVIEW_STEPS: RailStep[] = ['agent', 'findings', 'submitted', 'response', 'approved'].map((k) => step(k as Stage));
 
 export function stepsFor(kind: WorkspaceStatus['kind']): RailStep[] {
   return kind === 'review' ? REVIEW_STEPS : kind === 'fix' ? FIX_STEPS : [];

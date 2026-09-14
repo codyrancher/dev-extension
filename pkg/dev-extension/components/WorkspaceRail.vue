@@ -205,7 +205,7 @@ export default {
           };
         case 'review':
           return {
-            headline: 'Waiting for a reviewer', detail: 'Nothing to do here until someone comments. The agent can still be asked for something meanwhile.', primary: { label: 'Ask the agent', run: 'focusAsk' }, tools: [],
+            headline: 'Waiting for a reviewer', detail: 'Nothing here is yours until someone comments. The agent can still be asked for something meanwhile.', primary: { label: 'Ask the agent', run: 'focusAsk' }, tools: [],
           };
         case 'feedback':
           return {
@@ -504,6 +504,21 @@ export default {
       return !!action && (!!action.skill || !!this.promptOf(action.run));
     },
 
+    /**
+     * Which of the two groups a button belongs in. "Your call" is the decisions only the
+     * person makes - mark ready, approve, merge, delete. Everything that ends up in a
+     * conversation with the agent belongs on the agent's side, whether it queues a prompt
+     * itself or only puts the cursor in the box below: a button reading "Ask the agent"
+     * under a heading reading "Your call" says nothing at all.
+     */
+    agentSide(action) {
+      if (!action) {
+        return false;
+      }
+
+      return this.startsAgent(action) || action.run === 'focusAsk' || (action.run === 'openTab' && action.arg === 'conversations');
+    },
+
     /** The skill a prompt runs, if it opens with one. */
     skillIn(prompt) {
       return /^\/([a-z0-9-]+)/.exec(prompt || '')?.[1] || '';
@@ -645,7 +660,7 @@ export default {
       }
       const all = [...this.action.tools, { ...this.action.primary, isPrimary: true }];
 
-      return all.filter((a) => (kind === 'agent' ? this.startsAgent(a) : !this.startsAgent(a)));
+      return all.filter((a) => (kind === 'agent' ? this.agentSide(a) : !this.agentSide(a)));
     },
 
     async runSkill(button) {
