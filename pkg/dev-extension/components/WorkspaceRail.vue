@@ -279,8 +279,17 @@ export default {
             headline: 'Your review is with the developer', detail: 'This moves on when they push or reply. Your comments are on the left; the PR and its diff are a click away.', primary: { label: 'Approve', run: 'openApprove' }, tools: [{ label: 'Go through the findings', run: 'openTab', arg: 'pr' }, { label: 'Review the branch', run: 'openTab', arg: 'review' }],
           };
         case 'response':
+          // Once the agent has been round again, the findings it filed are a second pass, and a
+          // pass ends the way the first one did: send them back, approve with them, or approve
+          // without them. Those only appear when there is something to send.
+          if (this.findingCount) {
+            return {
+              headline: `The agent found ${ this.findingCount } more thing${ this.findingCount === 1 ? '' : 's' } in the developer's changes`, detail: 'Go through them on the left, the same as your first pass, then send them back or approve.', primary: { label: 'Ask for changes', run: 'requestChanges' }, tools: [{ label: 'Ship it with comments', run: 'shipWithComments' }, { label: 'Ship it', run: 'openApprove' }, { label: 'Review the new commits again', run: 'reviewAgain' }, { label: 'Open the whole PR', run: 'openTab', arg: 'pr' }],
+            };
+          }
+
           return {
-            headline: 'The developer responded', detail: 'New commits and replies since your review are on the left. The agent can review what changed against your comments.', primary: { label: 'Review the new commits', run: 'reviewAgain' }, tools: [{ label: 'Go through the findings', run: 'openTab', arg: 'pr' }, { label: 'Approve', run: 'openApprove' }],
+            headline: 'The developer responded', detail: 'New commits and replies since your review are on the left. The agent can review what changed against your comments; what it finds comes back here as a second pass.', primary: { label: 'Review the new commits', run: 'reviewAgain' }, tools: [{ label: 'Open the whole PR', run: 'openTab', arg: 'pr' }, { label: 'Approve', run: 'openApprove' }],
           };
         case 'approved':
           return {
