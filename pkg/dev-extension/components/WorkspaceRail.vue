@@ -28,7 +28,7 @@ import {
 } from '../conversations';
 import { ensureWorkspaceReady, putArtifact } from '../workspace-tools';
 import {
-  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, updateComment, deleteComment, forgetPrDetail, DEFAULT_REPO
+  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
@@ -141,6 +141,15 @@ export default {
   },
 
   computed: {
+    /** The findings on the page that have not been submitted: what an action here acts on. */
+    findingCount() {
+      return this.evidence
+        .flatMap((section) => section.items)
+        .filter((item) => item.kind === 'comments')
+        .flatMap((item) => item.items)
+        .filter((c) => c.local).length;
+    },
+
     /** The repository these workspaces are of. One, for now, as everywhere else here. */
     repo() {
       return DEFAULT_REPO;
@@ -248,8 +257,11 @@ export default {
             headline: s.agent === 'working' ? 'The agent is reviewing' : 'The agent stopped', detail: 'Its findings land on the left as it goes; go through them once it is done.', primary: conversation, tools: [],
           };
         case 'findings':
+          // A pass ends one of three ways, and all three are here: send the findings back as
+          // changes to make, approve with them attached, or approve and let them go. Each
+          // marked-good finding rides along; the cards on the left are where they are read.
           return {
-            headline: 'The agent\'s findings are ready for your pass', detail: 'Go through them, keep the ones you agree with, and submit the review as yours.', primary: { label: 'Go through the findings', run: 'openTab', arg: 'pr' }, tools: [{ label: 'Ask the agent', run: 'focusAsk' }],
+            headline: 'The agent\'s findings are ready for your pass', detail: 'Go through them on the left: keep the ones you agree with, then send them back or approve.', primary: { label: 'Ask for changes', run: 'requestChanges' }, tools: [{ label: 'Ship it with comments', run: 'shipWithComments' }, { label: 'Ship it', run: 'openApprove' }, { label: 'Open the whole PR', run: 'openTab', arg: 'pr' }, { label: 'Ask the agent', run: 'focusAsk' }],
           };
         case 'submitted':
           return {
@@ -1015,6 +1027,41 @@ export default {
     },
 
     /** The approval, written rather than fired: a message, and the evidence for it. */
+    /**
+     * The findings, as a review on GitHub. `event` is what the review says: changes to make,
+     * or an approval carrying the comments. Only findings marked good go - submitReview
+     * refuses while any is still pending, which is what marking them good is for.
+     *
+     * It is asked for out loud first: this is the moment the comments stop being yours and
+     * become public, and there is no unsending them.
+     */
+    async submitFindings(event) {
+      if (!this.status?.pr) {
+        throw new Error('This workspace is not named for a PR.');
+      }
+      const n = this.findingCount;
+      const what = event === 'REQUEST_CHANGES' ? 'as changes to make' : 'as an approval';
+
+      // eslint-disable-next-line no-alert
+      if (!window.confirm(`Submit ${ n || 'the' } finding${ n === 1 ? '' : 's' } to PR #${ this.status.pr } ${ what }? They become public comments on GitHub.`)) {
+        return;
+      }
+      const { url, posted } = await submitReview(this.status.pr, this.repo, event);
+
+      forgetPrDetail(this.status.pr);
+      this.notice = `${ posted } comment${ posted === 1 ? '' : 's' } posted to PR #${ this.status.pr } ${ what }.${ url ? ` ${ url }` : '' }`;
+      await this.refreshStatus(true);
+      await this.refreshEvidence();
+    },
+
+    requestChanges() {
+      return this.submitFindings('REQUEST_CHANGES');
+    },
+
+    shipWithComments() {
+      return this.submitFindings('APPROVE');
+    },
+
     async openApprove() {
       if (!this.status?.pr) {
         throw new Error('This workspace is not named for a PR.');
@@ -1759,6 +1806,16 @@ export default {
             v-if="approving.error"
             color="error"
             :label="approving.error"
+          />
+          <!--
+            Approving drops whatever findings have not been submitted: the point of this button
+            is "nothing to say", and a comment left behind in the workspace would never reach
+            anybody. Said here rather than discovered afterwards in the notice.
+          -->
+          <Banner
+            v-if="findingCount"
+            color="warning"
+            :label="`${ findingCount } finding${ findingCount === 1 ? '' : 's' } here ${ findingCount === 1 ? 'has' : 'have' } not been submitted. Approving drops ${ findingCount === 1 ? 'it' : 'them' }; to send ${ findingCount === 1 ? 'it' : 'them' } instead, close this and use Ship it with comments.`"
           />
           <section class="workspace-rail__section">
             <h4 class="workspace-rail__section-title">Your message</h4>
