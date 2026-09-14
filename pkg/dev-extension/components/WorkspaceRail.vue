@@ -20,7 +20,7 @@ import {
   readStatusNow, knownStatus, provisionalStatus, agentLabel
 } from '../workspace-status';
 import {
-  stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
+  stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, branchFile, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
 } from '../workspace-rail';
 import { prFile } from '../reviews';
 import {
@@ -117,6 +117,9 @@ export default {
       errorTone:   'error',
       /** The second look after a change to the PR; cleared when the page goes. */
       settleTimer: null,
+      /** The files of the branch that are open, and the diff read for each. */
+      openFiles:   {},
+      fileDiffs:   {},
       /** Which sections are folded away: `{ [title]: true }`, seeded from the section itself. */
       shut:        {},
       /** The conversation, in its own window over the page rather than under the column. */
@@ -511,6 +514,20 @@ export default {
      * Developer responded are behind you as well as ahead, so they keep their ticks rather than
      * going back to being plain numbers.
      */
+    /** One file of the branch, opened to its diff out of the checkout. */
+    async toggleFile(file) {
+      const open = !this.openFiles[file.path];
+
+      this.openFiles = { ...this.openFiles, [file.path]: open };
+      if (!open || this.fileDiffs[file.path]) {
+        return;
+      }
+      this.fileDiffs = { ...this.fileDiffs, [file.path]: null };
+      const read = await branchFile(this.workspace.name, file.path).catch(() => []);
+
+      this.fileDiffs = { ...this.fileDiffs, [file.path]: read };
+    },
+
     /** Whether a section is folded: what was chosen for it here, else what it asked for. */
     isShut(section) {
       return this.shut[section.title] ?? !!section.collapsed;
@@ -1674,14 +1691,67 @@ export default {
               <ul
                 v-else-if="item.kind === 'files'"
                 class="workspace-rail__list workspace-rail__list--files"
+                :class="{ 'workspace-rail__list--plain': item.open }"
               >
                 <li
                   v-for="f in item.items"
                   :key="f.path"
-                ><code>{{ f.path }}</code><span
-                  v-if="f.note"
-                  class="workspace-rail__tag"
-                >{{ f.note }}</span></li>
+                >
+                  <!--
+                    Before there is a PR the change is only in the checkout, so a file opens
+                    its own diff from there - the same rows, the same colours, as a commit's.
+                  -->
+                  <button
+                    v-if="item.open"
+                    type="button"
+                    class="workspace-rail__row-btn"
+                    :title="openFiles[f.path] ? 'Hide this file' : 'Show what changed in it'"
+                    @click="toggleFile(f)"
+                  ><i
+                    class="icon"
+                    :class="openFiles[f.path] ? 'icon-chevron-down' : 'icon-chevron-right'"
+                  /><code>{{ f.path }}</code><span
+                    v-if="f.note"
+                    class="workspace-rail__tag"
+                  >{{ f.note }}</span></button>
+                  <template v-else><code>{{ f.path }}</code><span
+                    v-if="f.note"
+                    class="workspace-rail__tag"
+                  >{{ f.note }}</span></template>
+                  <div
+                    v-if="item.open && openFiles[f.path]"
+                    class="workspace-rail__files"
+                  >
+                    <p
+                      v-if="fileDiffs[f.path] === null"
+                      class="workspace-rail__empty"
+                    >Reading the change…</p>
+                    <p
+                      v-else-if="!(fileDiffs[f.path] || []).length"
+                      class="workspace-rail__empty"
+                    >Nothing to show: the file is binary, or the diff could not be read.</p>
+                    <div
+                      v-for="d in fileDiffs[f.path] || []"
+                      :key="d.path"
+                      class="prm-file"
+                    >
+                      <table class="diff-table">
+                        <tbody>
+                          <tr
+                            v-for="(r, k) in d.rows"
+                            :key="k"
+                            class="diff-row"
+                            :class="r.type"
+                          >
+                            <td class="lineno">{{ r.oldN ?? '' }}</td>
+                            <td class="lineno">{{ r.newN ?? '' }}</td>
+                            <td class="code"><span class="sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </li>
               </ul>
               <div
                 v-else-if="item.kind === 'media'"

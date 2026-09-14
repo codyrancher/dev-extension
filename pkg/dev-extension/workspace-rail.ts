@@ -49,7 +49,7 @@ export type EvidenceItem =
   | { kind: 'media'; items: { label: string; url: string; video: boolean; at: string }[] }
   | { kind: 'comments'; items: Comment[]; paged?: boolean }
   | { kind: 'commits'; pr: number; items: { sha: string; message: string; who: string; at: string }[]; since?: string }
-  | { kind: 'files'; items: { path: string; note: string }[] }
+  | { kind: 'files'; items: { path: string; note: string }[]; open?: boolean }
   | { kind: 'links'; items: { label: string; url: string }[] }
   | { kind: 'empty'; text: string };
 
@@ -510,7 +510,11 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     }
     items.push({ kind: 'kv', rows: [{ k: 'Branch', v: branch.branch }, { k: 'Diff', v: branch.stat || 'no changes over upstream' }, { k: 'Tests', v: tests.length ? tests.join(', ') : 'none added', tone: tests.length ? 'ok' : 'warn' }] });
     if (branch.files.length) {
-      items.push({ kind: 'files', items: branch.files.map((path) => ({ path, note: tests.includes(path) ? 'test' : '' })) });
+      // Openable: the point of this stage is judging the change, and a list of paths is not a
+      // change. Each one opens its own diff out of the checkout, the way a commit does.
+      items.push({
+        kind: 'files', open: true, items: branch.files.map((path) => ({ path, note: tests.includes(path) ? 'test' : '' })),
+      });
     }
     sections.push({ title: 'The change', items });
   };
@@ -792,6 +796,33 @@ export async function commitFiles(workspace: string, pr: number, sha: string): P
 
   for (let i = 1; i < parts.length; i += 2) {
     out.push({ path: parts[i], rows: fileRows(parts[i], parts[i + 1] || '', 300), status: '' });
+  }
+
+  return out;
+}
+
+/**
+ * One file of the branch's change, from the checkout: the diff against the same base the
+ * branch summary is measured from, highlighted, as the rows the page draws.
+ *
+ * The reviewer's side has GitHub's patches to read; before a PR exists there is nothing to
+ * read but the working tree, so this asks it directly. One file at a time, because a branch of
+ * 24 files is 300 kB of diff and nobody reads it in one go - the files are a list, and a file
+ * opens when it is asked for.
+ */
+export async function branchFile(workspace: string, path: string): Promise<{ path: string; rows: CodeRow[]; status: string }[]> {
+  const safe = path.replace(/'/g, '');
+  const script = [
+    'cd $WS/dashboard 2>/dev/null || exit 0',
+    'base=$(git merge-base upstream/master HEAD 2>/dev/null || git merge-base origin/master HEAD 2>/dev/null || git rev-parse HEAD)',
+    `git diff --no-color "$base" -- '${ safe }' 2>/dev/null | head -1200`,
+  ].join('\n');
+  const raw = await readInWorkspace(workspace, script).catch(() => '');
+  const out: { path: string; rows: CodeRow[]; status: string }[] = [];
+  const parts = raw.split(/^diff --git a\/(\S+) b\/\S+$/m);
+
+  for (let i = 1; i < parts.length; i += 2) {
+    out.push({ path: parts[i], rows: fileRows(parts[i], parts[i + 1] || '', 400), status: '' });
   }
 
   return out;
