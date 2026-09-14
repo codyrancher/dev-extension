@@ -22,7 +22,7 @@ import {
 } from '../ranchers';
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
-import { workspaceStatuses, agentLabel } from '../workspace-status';
+import { workspaceStatuses, agentLabel, statusLine } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import DevList from './DevList.vue';
 import DevDialog from './DevDialog.vue';
@@ -539,7 +539,9 @@ export default {
       return workspaces.map((workspace) => {
         const status = this.statuses[workspace.name];
         const title = workspace.title || status?.title || '';
-        const lines = status ? [status.label, agentLabel(status.agent)].filter(Boolean) : [];
+        // The stage first, in the rail's own words, then what that stage waits on and what
+        // the agent is doing: "In review · waiting for a reviewer · agent idle".
+        const lines = status ? [statusLine(status), agentLabel(status.agent)].filter(Boolean) : [];
 
         return {
           key:    workspace.name,
