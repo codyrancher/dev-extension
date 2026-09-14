@@ -139,6 +139,12 @@ export function agentIcon(state: AgentState): string {
 
 const GITHUB_EVERY_MS = 5 * 60_000;
 const AGENTS_EVERY_MS = 15_000;
+/**
+ * How recently the transcript must have been written for the conversation to count as working.
+ * Long enough to cover a subagent thinking between writes, short enough that a conversation
+ * nobody is in stops claiming to be busy.
+ */
+const WORKING_WINDOW_S = 90;
 
 const STORE_KEY = 'dev-extension.workspace-status';
 const statuses = new Map<string, WorkspaceStatus>(hydrate());
@@ -185,6 +191,20 @@ const RANK: Record<AgentState, number> = {
 function agentStateOf(c: ConversationState): AgentState {
   if (!c.alive) {
     return 'finished';
+  }
+  // A question beats everything: an agent waiting on an answer is waiting however busy its
+  // subagents are.
+  if (c.event === 'Notification' && c.notification && c.notification !== 'idle_prompt') {
+    return 'input';
+  }
+  // The transcript, when it has moved since the hook last spoke. A hook fires at the edges of
+  // a turn, so a turn spent inside subagents - twenty minutes of them - reads as finished to
+  // it, while the subagents are writing their transcripts all the while. If the writing is
+  // newer than the hook's last word and recent, the agent is working, whatever the hook said.
+  const hookAgo = (Date.now() - (Date.parse(c.at) || 0)) / 1000;
+
+  if (c.wroteAgo >= 0 && c.wroteAgo <= WORKING_WINDOW_S && c.wroteAgo + 5 < hookAgo) {
+    return 'working';
   }
   switch (c.event) {
   case 'UserPromptSubmit':
