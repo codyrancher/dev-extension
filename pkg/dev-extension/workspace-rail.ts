@@ -632,11 +632,29 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       reportSection(status.agent === 'working' ? 'Where the agent is' : 'Agent\'s report');
       prSection();
       break;
-    case 'findings':
+    case 'findings': {
       sections.push({ title: `Findings (${ pending.length } to go through)`, items: pending.length ? [findings(pending)] : [{ kind: 'empty', text: submitted.length ? 'All submitted.' : 'None yet.' }] });
+      // The report under the findings: it is the agent saying what it looked at and why it
+      // filed what it filed, which is half of judging any of them.
+      reportSection(status.reviewed && (Date.parse(report?.at || '') || 0) > submittedAt ? 'What the agent found in the developer\'s changes' : 'Agent\'s report');
+      // A pass after a review of yours has a round behind it, and the round is how the
+      // findings are read: what the developer changed since you last spoke, and what you and
+      // they have already said to each other. Without that, a second pass is judged as if it
+      // were the first.
+      if (status.reviewed && d) {
+        const since = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > submittedAt).map((c: Json) => ({
+          sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
+        }));
+        const mine = reviewThreads().map((c) => ({ ...c, answered: c.lastByAuthor }));
+
+        sections.push({ title: 'Since your review', items: since.length ? [{ kind: 'commits' as const, pr: status.pr, items: since, since: 'your review' }] : [{ kind: 'empty' as const, text: 'No new commits since your review.' }] });
+        if (mine.length) {
+          sections.push({ title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: [{ kind: 'comments', items: mine, paged: true }] });
+        }
+      }
       prSection();
-      reportSection();
       break;
+    }
     case 'submitted': {
       const mine = submitted.length ? null : reviewThreads();
 
@@ -645,16 +663,6 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       break;
     }
     case 'response':
-      // A second pass, when the agent has been round again: whatever it filed since is still
-      // yours to go through, and the cards here are the same cards - marked good, edited,
-      // argued with, dropped - as the first pass. Put first, because a finding waiting on you
-      // is the thing on this page with something to do.
-      if (pending.length) {
-        sections.push({ title: `New findings to go through (${ pending.length })`, items: [findings(pending)] });
-        // The report that goes with them, immediately under them: it is the agent saying what
-        // it looked at and why it filed what it filed, which is half of judging a finding.
-        reportSection((Date.parse(report?.at || '') || 0) > submittedAt ? 'What the agent found in the new commits' : 'Agent\'s report');
-      }
       if (d) {
         const newCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > submittedAt).map((c: Json) => ({
           sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
@@ -668,7 +676,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits, since: 'your review' }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
         sections.push({ title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: mine.length ? [{ kind: 'comments', items: mine, paged: true }] : [{ kind: 'empty', text: 'You have no threads on this PR.' }] });
       }
-      if (report && !pending.length) {
+      if (report) {
         reportSection((Date.parse(report.at) || 0) > submittedAt ? 'What the agent found in the new commits' : 'Agent\'s review report (before the developer responded)');
       }
       prSection();
