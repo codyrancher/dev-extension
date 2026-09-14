@@ -23,15 +23,17 @@ import { prFile } from '../reviews';
 import {
   listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates, sendToPane
 } from '../conversations';
-import { ensureWorkspaceReady } from '../workspace-tools';
+import { ensureWorkspaceReady, putArtifact } from '../workspace-tools';
 import {
-  startIssueFix, startPrReview, approveAndMerge, DEFAULT_REPO
+  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
 } from '../skills';
 import { markReadyForReview } from '../github';
-import { deleteWorkspace } from '../api';
+import {
+  deleteWorkspace, devFetch, workspaceMediaListUrl
+} from '../api';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE } from '../config/constants';
 
 const STATUS_MS = 15000;
@@ -96,6 +98,12 @@ export default {
       inspecting:  null,
       skillDraft:  '',
       skillSaving: '',
+      /** The approval being written: its message, what is attached to it, and any trouble. */
+      approving:   null,
+      /** The workspace's own recordings and screenshots, for attaching to one. */
+      media:       [],
+      /** Attaching or approving, for the spinner. */
+      approveBusy: '',
       /** The edited prompt templates, shared through the API, by the action's key. */
       prompts:     {},
       promptDraft: '',
@@ -227,15 +235,15 @@ export default {
           };
         case 'submitted':
           return {
-            headline: 'Your review is with the developer', detail: 'This moves on when they push or reply. Your comments are on the left; the PR and its diff are a click away.', primary: { label: 'Approve and merge', run: 'approveMerge' }, tools: [{ label: 'Go through the findings', run: 'openTab', arg: 'pr' }, { label: 'Review the branch', run: 'openTab', arg: 'review' }],
+            headline: 'Your review is with the developer', detail: 'This moves on when they push or reply. Your comments are on the left; the PR and its diff are a click away.', primary: { label: 'Approve', run: 'openApprove' }, tools: [{ label: 'Go through the findings', run: 'openTab', arg: 'pr' }, { label: 'Review the branch', run: 'openTab', arg: 'review' }],
           };
         case 'response':
           return {
-            headline: 'The developer responded', detail: 'New commits and replies since your review are on the left. The agent can review what changed against your comments.', primary: { label: 'Review the new commits', run: 'reviewAgain' }, tools: [{ label: 'Go through the findings', run: 'openTab', arg: 'pr' }, { label: 'Approve and merge', run: 'approveMerge' }],
+            headline: 'The developer responded', detail: 'New commits and replies since your review are on the left. The agent can review what changed against your comments.', primary: { label: 'Review the new commits', run: 'reviewAgain' }, tools: [{ label: 'Go through the findings', run: 'openTab', arg: 'pr' }, { label: 'Approve', run: 'openApprove' }],
           };
         case 'approved':
           return {
-            headline: s.label === 'Merged' ? 'Merged' : 'Approved', detail: s.label === 'Merged' ? 'The workspace can go.' : 'Approved; merge it when CI is green.', primary: s.label === 'Merged' ? { label: 'Delete the workspace', run: 'remove' } : { label: 'Merge', run: 'approveMerge' }, tools: [],
+            headline: s.label === 'Merged' ? 'Merged' : 'Approved', detail: s.label === 'Merged' ? 'The workspace can go.' : 'Approved. Merging is usually the author\'s; this is here for when it is yours.', primary: s.label === 'Merged' ? { label: 'Delete the workspace', run: 'remove' } : { label: 'Merge', run: 'merge' }, tools: [],
           };
         }
       }
@@ -898,14 +906,92 @@ export default {
       this.openTab('conversations');
     },
 
-    async approveMerge() {
-      const pr = this.status?.pr;
+    /** The approval, written rather than fired: a message, and the evidence for it. */
+    async openApprove() {
+      if (!this.status?.pr) {
+        throw new Error('This workspace is not named for a PR.');
+      }
+      this.approving = { message: '', attached: [], error: '' };
+      this.media = await devFetch(workspaceMediaListUrl(this.workspace.name))
+        .then((d) => (d?.files || []).slice(0, 40))
+        .catch(() => []);
+    },
 
-      if (!pr || !window.confirm(`Approve and merge PR #${ pr }?`)) {
+    /** One of the workspace's own recordings onto the PR, and into the message. */
+    async attach(file) {
+      if (this.approveBusy) {
         return;
       }
-      await approveAndMerge(pr);
-      this.notice = `PR #${ pr } approved and merged.`;
+      this.approveBusy = file.path;
+      try {
+        const { embed, name } = await attachToPr(this.status.pr, file.path);
+        const message = this.approving.message;
+
+        this.approving = {
+          ...this.approving,
+          message:  `${ message }${ !message || message.endsWith('\n') ? '' : '\n\n' }${ embed }\n`,
+          attached: [...this.approving.attached, name],
+          error:    '',
+        };
+      } catch (e) {
+        this.approving = { ...this.approving, error: e?.message || String(e) };
+      } finally {
+        this.approveBusy = '';
+      }
+    },
+
+    /** Something from the person's own machine: into the workspace, then onto the PR. */
+    async attachFile(event) {
+      const file = event.target?.files?.[0];
+
+      if (!file) {
+        return;
+      }
+      event.target.value = '';
+      this.approveBusy = file.name;
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = '';
+
+        for (let i = 0; i < bytes.length; i += 8192) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        }
+        const rel = await putArtifact(this.workspace.name, file.name, btoa(binary));
+
+        this.approveBusy = '';
+        await this.attach({ path: rel, name: file.name });
+      } catch (e) {
+        this.approving = { ...this.approving, error: e?.message || String(e) };
+        this.approveBusy = '';
+      }
+    },
+
+    async approve() {
+      if (this.approveBusy) {
+        return;
+      }
+      this.approveBusy = 'approve';
+      try {
+        const { url, discarded } = await approvePr(this.status.pr, this.approving.message.trim());
+
+        this.approving = null;
+        this.notice = `PR #${ this.status.pr } approved${ discarded ? `; ${ discarded } unsubmitted comment${ discarded === 1 ? '' : 's' } dropped` : '' }.${ url ? ` ${ url }` : '' }`;
+        await this.refreshStatus(true);
+      } catch (e) {
+        this.approving = { ...this.approving, error: e?.message || String(e) };
+      } finally {
+        this.approveBusy = '';
+      }
+    },
+
+    async merge() {
+      const pr = this.status?.pr;
+
+      if (!pr || !window.confirm(`Merge PR #${ pr }?`)) {
+        return;
+      }
+      await mergePr(pr);
+      this.notice = `PR #${ pr } merged.`;
       await this.refreshStatus(true);
     },
 
@@ -1462,6 +1548,107 @@ export default {
         </section>
 
       </div>
+      <!-- The approval: what it says, and the evidence that goes with it. -->
+      <DevModal
+        v-if="approving"
+        :title="`Approve PR #${ status.pr }`"
+        @close="approving = null"
+      >
+        <div class="workspace-rail__inspect">
+          <Banner
+            v-if="approving.error"
+            color="error"
+            :label="approving.error"
+          />
+          <section class="workspace-rail__section">
+            <h4 class="workspace-rail__section-title">Your message</h4>
+            <textarea
+              v-model="approving.message"
+              class="workspace-rail__prompt-edit"
+              placeholder="What convinced you. Markdown, and anything you attach below lands here."
+            />
+            <p class="workspace-rail__detail">Goes on the PR as the approval's body. Leave it empty to approve without a word.</p>
+          </section>
+
+          <section class="workspace-rail__section">
+            <h4 class="workspace-rail__section-title">
+              Attach
+              <span
+                v-if="approving.attached.length"
+                class="workspace-rail__tag"
+              >{{ approving.attached.length }} attached</span>
+            </h4>
+            <p class="workspace-rail__detail">The workspace's own recordings and screenshots - what the agent made while reviewing - or a file from this machine. Each one is uploaded to GitHub and embedded in the message.</p>
+            <div class="workspace-rail__group-buttons">
+              <RcButton
+                variant="secondary"
+                :disabled="!!approveBusy"
+                @click="$refs.approveFile.click()"
+              >
+                From this machine…
+              </RcButton>
+              <input
+                ref="approveFile"
+                type="file"
+                accept="image/*,video/*"
+                class="workspace-rail__file"
+                @change="attachFile"
+              >
+            </div>
+            <ul
+              v-if="media.length"
+              class="workspace-rail__list workspace-rail__list--plain"
+            >
+              <li
+                v-for="f in media"
+                :key="f.path"
+                class="workspace-rail__media-row"
+              >
+                <button
+                  type="button"
+                  class="workspace-rail__page-step"
+                  :disabled="!!approveBusy"
+                  @click="attach(f)"
+                >
+                  <i
+                    v-if="approveBusy === f.path"
+                    class="icon icon-spinner icon-spin"
+                  />
+                  Attach
+                </button>
+                <code>{{ f.path }}</code>
+                <span class="workspace-rail__when">{{ ago(new Date(f.mtimeMs).toISOString()) }}</span>
+              </li>
+            </ul>
+            <p
+              v-else
+              class="workspace-rail__empty"
+            >This workspace has no recordings yet.</p>
+          </section>
+
+          <div class="workspace-rail__group-buttons">
+            <RcButton
+              variant="primary"
+              :disabled="!!approveBusy"
+              @click="approve"
+            >
+              <i
+                v-if="approveBusy === 'approve'"
+                class="icon icon-spinner icon-spin"
+              />
+              Approve
+            </RcButton>
+            <RcButton
+              variant="tertiary"
+              :disabled="!!approveBusy"
+              @click="approving = null"
+            >
+              Cancel
+            </RcButton>
+          </div>
+        </div>
+      </DevModal>
+
       <!-- What a button sends, and the skill it runs, editable for every workspace. -->
       <DevModal
         v-if="inspecting"
@@ -1936,6 +2123,19 @@ export default {
     gap:            18px;
     padding:        16px 20px;
     min-height:     0;
+  }
+
+  &__file { display: none; }
+
+  &__media-row {
+    display:       flex;
+    align-items:   center;
+    gap:           10px;
+    padding:       3px 0;
+    border-bottom: 1px solid var(--pr-border);
+
+    code { font-size: 11px; color: var(--pr-muted); }
+    &:last-child { border-bottom: 0; }
   }
 
   &__prompt-edit {
