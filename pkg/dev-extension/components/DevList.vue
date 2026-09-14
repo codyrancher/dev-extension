@@ -534,12 +534,12 @@ export default {
      */
     &__row--grouped {
       position:     relative;
-      padding-left: 38px;
+      padding-left: 26px;
 
       &::before {
         content:    '';
         position:   absolute;
-        left:       30px;
+        left:       16px;
         top:        0;
         bottom:     0;
         width:      1px;
@@ -727,6 +727,14 @@ export default {
       height:     auto;
       min-height: $row-height;
       padding:    3px 0;
+    }
+
+    /*
+     * A tall row zeroes its own left padding - it is drawn without the rail - so a grouped row
+     * that is also tall has to be told its indent again, after that rule and over it.
+     */
+    &__row--tall#{&}__row--grouped {
+      padding-left: 26px;
     }
 
     // The right-hand control of either row: one box, one column, one place.
