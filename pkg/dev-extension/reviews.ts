@@ -846,3 +846,25 @@ export async function dependabotData(repo = DEFAULT_REPO): Promise<Json> {
 }
 
 export { listConversations };
+
+/**
+ * One file from a workspace onto GitHub's `user-attachments`, as the markdown that embeds it:
+ * an image inline, a recording as the bare URL GitHub turns into a player.
+ *
+ * The upload goes through the shared signed-in browser (the in-cluster API does it) because
+ * `user-attachments` is a browser flow, not an API one.
+ */
+export async function attachToPr(num: number, path: string, repo = DEFAULT_REPO): Promise<{ href: string; embed: string; name: string; kind: string }> {
+  const result = await api(`/my-work/pr/${ num }/upload`, { method: 'POST', body: JSON.stringify({ path, repo }) }) as Json;
+  const href = result?.href || '';
+
+  if (!href) {
+    throw new Error(`${ path } could not be uploaded to GitHub.`);
+  }
+  const name = result.name || path.split('/').pop() || 'attachment';
+
+  return {
+    href, name, kind: result.kind || '', embed: result.kind === 'video' ? href : `![${ name }](${ href })`,
+  };
+}
+
