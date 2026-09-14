@@ -595,7 +595,8 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     const submitted = local.filter((c) => c.submitted_at);
     // The review's moment: the last submission here, or on GitHub itself - the same rule the
     // status uses, so the column and the stage agree.
-    const ghReviews: Json[] = (d?.reviews || []).filter((r: Json) => r.author && r.author !== d?.meta?.author && !isBot(r.author) && r.submittedAt);
+    const viewer = d?.viewer || '';
+    const ghReviews: Json[] = (d?.reviews || []).filter((r: Json) => r.submittedAt && (viewer ? r.author === viewer : r.author && r.author !== d?.meta?.author && !isBot(r.author)));
     const submittedAt = Math.max(0, ...submitted.map((c) => Date.parse(c.submitted_at) || 0), ...ghReviews.map((r) => Date.parse(r.submittedAt) || 0));
     // What was submitted, as threads: the review's own comments here, else the PR's threads a
     // reviewer opened (a review left on GitHub directly).
@@ -613,12 +614,13 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     const files: Json[] = d?.files || [];
     const findings = (list: Json[]) => ({
       kind: 'comments' as const,
+      paged: true,
       items: list.map((c): Comment => {
         const file = files.findIndex((f) => f.path === c.path);
         const body = String(c.body || '');
 
         return {
-          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderBody(body), at: c.created_at || '', isNew: false }], replied: false, mine: true, headSha: d?.meta?.headSha || '', position: 0, context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
+          id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderBody(body, kinds), at: c.created_at || '', isNew: false }], replied: false, mine: true, headSha: d?.meta?.headSha || '', position: 0, context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
         };
       }).sort((a, b) => a.order - b.order || a.line - b.line),
     });
