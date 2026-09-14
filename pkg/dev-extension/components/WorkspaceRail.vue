@@ -697,6 +697,11 @@ export default {
       this.combined = { ...this.combined, [key]: files.length ? files : 'none' };
     },
 
+    /** The commits of a section that can be shown as one diff, if it has any. */
+    combinedItem(section) {
+      return section.items.find((item) => item.kind === 'commits' && item.items.length > 1 && item.pr) || null;
+    },
+
     combinedFor(item) {
       return this.combined[item.items.map((c) => c.sha).join(',')];
     },
@@ -1235,7 +1240,20 @@ export default {
             :key="section.title"
             class="workspace-rail__section"
           >
-            <h4 class="workspace-rail__section-title">{{ section.title }}</h4>
+            <div class="workspace-rail__section-head">
+              <h4 class="workspace-rail__section-title">{{ section.title }}</h4>
+              <!--
+                The "as one diff" link belongs on the title's row: it is about the list under
+                it, and on a row of its own it cost more height than the two commits it was
+                offering to combine.
+              -->
+              <button
+                v-if="combinedItem(section)"
+                type="button"
+                class="workspace-rail__back"
+                @click="showCombined(combinedItem(section))"
+              >{{ combinedFor(combinedItem(section)) ? 'Hide the combined diff' : `All ${ combinedItem(section).items.length } commits${ combinedItem(section).since ? ` since ${ combinedItem(section).since }` : '' } as one diff` }}</button>
+            </div>
             <template
               v-for="(item, i) in section.items"
               :key="i"
@@ -1268,16 +1286,6 @@ export default {
                 </template>
               </dl>
               <template v-else-if="item.kind === 'commits'">
-                <div
-                  v-if="item.items.length > 1 && item.pr"
-                  class="workspace-rail__combined-bar"
-                >
-                  <button
-                    type="button"
-                    class="workspace-rail__back"
-                    @click="showCombined(item)"
-                  >{{ combinedFor(item) ? 'Hide the combined diff' : `All ${ item.items.length } commits${ item.since ? ` since ${ item.since }` : '' } as one diff` }}</button>
-                </div>
                 <div
                   v-if="combinedFor(item) === 'reading'"
                   class="workspace-rail__empty"
@@ -2358,12 +2366,6 @@ export default {
     &:last-child { border-bottom: 0; border-top: 1px solid var(--pr-border); }
   }
 
-  &__combined-bar {
-    display:       flex;
-    justify-content: flex-end;
-    margin-bottom: 6px;
-  }
-
   &__avatar {
     display:         inline-flex;
     align-items:     center;
@@ -2392,6 +2394,7 @@ export default {
     align-items: center;
     gap:         6px;
     flex-wrap:   wrap;
+    width:       100%;
     border:      0;
     background:  transparent;
     color:       var(--body-text);
@@ -2401,6 +2404,9 @@ export default {
     cursor:      pointer;
 
     .icon { font-size: 10px; color: var(--muted); }
+
+    /* Who and when sit at the end of the row, so the messages read down the left. */
+    .workspace-rail__when { margin-left: auto; margin-right: 0; }
   }
 
   &__diff {
@@ -2435,8 +2441,8 @@ export default {
   &__col {
     display:        flex;
     flex-direction: column;
-    gap:            18px;
-    padding:        16px 18px;
+    gap:            14px;
+    padding:        12px 14px;
     border:         1px solid var(--border);
     border-radius:  var(--border-radius);
     background:     var(--box-bg);
@@ -2459,6 +2465,21 @@ export default {
     color:          var(--muted);
   }
 
+  /*
+   * These read as links and text, not as buttons, but they are buttons - and the theme gives
+   * every button a 40px minimum height. Left alone, one "as one diff" link stood in more room
+   * than the two commits it offered to combine, and every commit row was a 40px band holding
+   * 15px of text. Height comes from the line here, as it does for text.
+   */
+  &__back,
+  &__row-btn,
+  &__expander,
+  &__page-step,
+  &__page-num {
+    min-height:  0;
+    line-height: 1.4;
+  }
+
   &__back {
     border:     0;
     background: transparent;
@@ -2474,8 +2495,17 @@ export default {
   &__section {
     display:        flex;
     flex-direction: column;
-    gap:            10px;
-    padding-bottom: 4px;
+    gap:            8px;
+    padding-bottom: 0;
+  }
+
+  /* The section's title and whatever acts on the whole section, on one row. */
+  &__section-head {
+    display:         flex;
+    align-items:     baseline;
+    justify-content: space-between;
+    gap:             12px;
+    min-height:      0;
   }
 
   &__section-title {
