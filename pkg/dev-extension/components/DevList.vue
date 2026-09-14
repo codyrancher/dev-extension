@@ -377,13 +377,13 @@ export default {
                 v-if="row.detail"
                 class="dev-list__detail"
                 :class="detailClass(row)"
-              ><i
-                v-if="row.agent === 'working'"
-                class="icon icon-spinner icon-spin"
-              /><i
-                v-else-if="row.agent === 'input'"
-                class="icon icon-warning"
-              />{{ row.detail }}</span>
+              >{{ row.detail }}<i
+                v-if="row.agentIcon"
+                v-clean-tooltip="row.agentTitle"
+                class="dev-list__agent icon"
+                :class="row.agentIcon"
+                :aria-label="row.agentTitle"
+              /></span>
             </span>
             <!--
               Said in words as well as in colour: a dot going red is not a message somebody reads,
@@ -695,7 +695,7 @@ export default {
     &__detail {
       display:       flex;
       align-items:   center;
-      gap:           4px;
+      gap:           5px;
       overflow:      hidden;
       text-overflow: ellipsis;
       white-space:   nowrap;
@@ -704,6 +704,13 @@ export default {
 
       .icon {
         font-size: 10px;
+      }
+
+      /* The agent's mark sits at the end of the line, quieter than the stage it follows. */
+      .dev-list__agent {
+        flex:      0 0 auto;
+        font-size: 11px;
+        opacity:   .75;
       }
 
       &--green {

@@ -22,7 +22,9 @@ import {
 } from '../ranchers';
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
-import { workspaceStatuses, agentLabel, statusLine, stageName } from '../workspace-status';
+import {
+  workspaceStatuses, agentLabel, agentIcon, statusLine, stageName
+} from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import DevList from './DevList.vue';
 import DevDialog from './DevDialog.vue';
@@ -548,7 +550,7 @@ export default {
         // idle" - in the rail's own words for the stage. What that stage is waiting on is a
         // sentence, not a column's width, so it waits for the card under the pointer.
         const lines = status ? [statusLine(status), agentLabel(status.agent)].filter(Boolean) : [];
-        const row = status ? [stageName(status), agentLabel(status.agent)].filter(Boolean) : [];
+        const row = status ? [stageName(status)].filter(Boolean) : [];
 
         return {
           key:    workspace.name,
@@ -558,6 +560,9 @@ export default {
           detail: row.join(' · '),
           tone:   status?.tone,
           agent:  status?.agent,
+          // The agent's own state rides as a mark at the end of the row; the words are on the card.
+          agentIcon:  agentIcon(status?.agent || 'none'),
+          agentTitle: agentLabel(status?.agent || 'none'),
           card:   { title: title ? `${ workspace.name } · ${ title }` : workspace.name, lines, links: status?.links || [] },
           to:     {
             name:   WORKSPACE_ROUTE,
