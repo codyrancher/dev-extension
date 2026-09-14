@@ -157,19 +157,24 @@ export default {
      * The one thing to press now, and the tools beside it, by stage. `run` names the method.
      * A fix with no conversation at all is the stage before the rail: start it.
      */
+    /**
+     * The whole action box follows the step being looked at, not only its buttons: a past
+     * stage that kept the current one's headline read as if the page had not moved at all.
+     */
     action() {
       const s = this.status;
 
       if (!s) {
         return null;
       }
+      const stage = this.shown;
       // No "open on GitHub" among these: the header already links the issue and the PR, and
       // what belongs here is what the page itself can do - the steps that would otherwise be
       // taken by hand.
       const conversation = { label: 'Open the conversation', run: 'openTab', arg: 'conversations' };
 
       if (s.kind === 'fix') {
-        switch (s.stage) {
+        switch (stage) {
         case 'assess':
         case 'code':
           if (s.agent === 'none') {
@@ -205,7 +210,7 @@ export default {
         }
       }
       if (s.kind === 'review') {
-        switch (s.stage) {
+        switch (stage) {
         case 'agent':
           if (s.agent === 'none') {
             return {
@@ -1008,6 +1013,14 @@ export default {
         :class="`workspace-rail__action--${ status.tone }`"
       >
         <div class="workspace-rail__action-text">
+          <div
+            v-if="lookingBack"
+            class="workspace-rail__looking-back"
+          >Looking back at {{ shownLabel }} · <button
+            type="button"
+            class="workspace-rail__back"
+            @click="backToNow"
+          >back to now</button></div>
           <div class="workspace-rail__headline">{{ action.headline }}</div>
           <div class="workspace-rail__detail">{{ action.detail }}</div>
         </div>
@@ -1347,7 +1360,7 @@ export default {
                     <span
                       v-if="!c.answered"
                       class="workspace-rail__tag workspace-rail__tag--open"
-                    >{{ status.kind === 'review' && status.stage === 'response' ? 'no reply from the developer' : 'waiting on you' }}</span>
+                    >{{ status.kind === 'review' && shown === 'response' ? 'no reply from the developer' : 'waiting on you' }}</span>
                     <a
                       v-if="c.url"
                       :href="c.url"
@@ -1844,6 +1857,14 @@ export default {
     min-width:      260px;
     max-width:      440px;
     flex:           0 1 auto;
+  }
+
+  &__looking-back {
+    font-size:      11px;
+    font-weight:    700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color:          var(--pr-muted);
   }
 
   &__headline {
