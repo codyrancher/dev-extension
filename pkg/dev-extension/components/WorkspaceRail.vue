@@ -1593,7 +1593,7 @@ export default {
                             v-for="(r, k) in rowsAround(c)"
                             :key="k"
                             class="diff-row"
-                            :class="[r.type, { 'in-comment-range': r.marked }]"
+                            :class="[r.type, { 'on-comment-line': r.marked }]"
                           >
                             <td class="lineno">{{ r.oldN ?? '' }}</td>
                             <td class="lineno">{{ r.newN ?? '' }}</td>
