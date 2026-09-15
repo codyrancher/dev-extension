@@ -424,19 +424,209 @@ function bakedSeed() {
   }
 }
 
-// ── Skills, editable ──────────────────────────────────────────────────────────────────────────
+// ── Skills, rules and CLAUDE.md: codyrancher/ai-skills ──────────────────────────────────────
 //
-// The skills ship inside the extension's seed, which only a publish changes. Edits made here -
-// by the person on the Skills page, or by an agent asked to improve one from a conversation -
-// live in a ConfigMap of overrides that the seed is served with, so every workspace lays out
-// the edited skill the next time it is prepared, and the same edit can be committed to the
-// repository the skills are kept in, so the next publish ships it.
+// None of them are in this extension. They live in one repository, and this service pulls its
+// branch, so a commit there reaches every workspace without a release here: the sidebar polls
+// /agent-seed/version, which carries the repository's commit, and lays the seed out again when it
+// moves. The seed a workspace gets is three layers: what the extension ships (the layout step,
+// scripts, git hooks, settings), the repository's files over that, and the Skills page's
+// overrides over those. An edit saved on that page is an override until it is committed, and
+// committing writes it to the repository, where it replaces the override.
 
 const SKILLS_MAP = process.env.DEV_SKILLS_MAP || 'dev-skills';
-const SKILLS_REPO = process.env.DEV_SKILLS_REPO || 'codyrancher/dev-extension';
-const SKILLS_BRANCH = process.env.DEV_SKILLS_BRANCH || 'main';
-const SKILLS_DIR = process.env.DEV_SKILLS_DIR || 'pkg/dev-extension/agent-seed/skills';
+const AI_SKILLS_REPO = process.env.DEV_AI_SKILLS_REPO || 'codyrancher/ai-skills';
+const AI_SKILLS_REF = process.env.DEV_AI_SKILLS_REF || 'main';
+const AI_SKILLS_ROOT = process.env.DEV_AI_SKILLS_ROOT || 'rancher-dashboard';
+const AI_SKILLS_SNAPSHOT = 'dev-ai-skills';
+const AI_SKILLS_CHECK_MS = 60_000;
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,60}$/;
+
+/** The seed keys the repository owns. The extension's own seed must not carry any of these. */
+function repoOwnsKey(key) {
+  return key.startsWith('skills/') || key.startsWith('rules/') || /^CLAUDE(\.dev)?\.md(\.hbs)?$/.test(key);
+}
+
+/** Where a path in the repository lands in the seed, or null for a file that is not the seed's. */
+function seedKeyFor(repoPath) {
+  if (!repoPath.startsWith(`${ AI_SKILLS_ROOT }/`)) {
+    return null;
+  }
+  const rel = repoPath.slice(AI_SKILLS_ROOT.length + 1);
+
+  if (rel.startsWith('.claude/skills/') || rel.startsWith('.claude/rules/')) {
+    return rel.slice('.claude/'.length);
+  }
+
+  return rel === 'CLAUDE.md' || rel === 'CLAUDE.dev.md' ? rel : null;
+}
+
+/**
+ * A GitHub tarball as { path: text }, paths without the "<owner>-<repo>-<sha>/" GitHub puts first.
+ * POSIX tar: 512-byte headers, ustar's name prefix, and the pax records GitHub uses for long paths.
+ */
+function untar(tgz) {
+  const buf = zlib.gunzipSync(tgz);
+  const text = (b, start, length) => {
+    const field = b.subarray(start, start + length);
+    const nul = field.indexOf(0);
+
+    return field.subarray(0, nul < 0 ? length : nul).toString('utf8');
+  };
+  const files = {};
+  let offset = 0;
+  let paxPath = null;
+
+  while (offset + 512 <= buf.length) {
+    const header = buf.subarray(offset, offset + 512);
+
+    if (header.every((b) => b === 0)) {
+      break;
+    }
+    const size = parseInt(text(header, 124, 12).trim() || '0', 8);
+    const type = header[156] ? String.fromCharCode(header[156]) : '0';
+    const prefix = text(header, 257, 5) === 'ustar' ? text(header, 345, 155) : '';
+    const body = buf.subarray(offset + 512, offset + 512 + size);
+
+    offset += 512 + Math.ceil(size / 512) * 512;
+
+    if (type === 'x') {
+      paxPath = (/(?:^|\n)\d+ path=([^\n]*)\n/.exec(body.toString('utf8')) || [])[1] || null;
+      continue;
+    }
+    if (type !== '0') {
+      paxPath = null;
+      continue;
+    }
+    const name = paxPath || (prefix ? `${ prefix }/${ text(header, 0, 100) }` : text(header, 0, 100));
+
+    paxPath = null;
+    files[name.replace(/^[^/]+\//, '')] = body.toString('utf8');
+  }
+
+  return files;
+}
+
+let aiSkills = null; // { sha, files, checkedAt }
+let aiSkillsInFlight = null;
+
+async function aiSkillsSnapshot() {
+  try {
+    const map = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ AI_SKILLS_SNAPSHOT }`);
+
+    return JSON.parse(zlib.gunzipSync(Buffer.from(map.data['snapshot.json.gz.b64'], 'base64')).toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function saveAiSkillsSnapshot(snapshot) {
+  const data = { 'snapshot.json.gz.b64': zlib.gzipSync(Buffer.from(JSON.stringify(snapshot))).toString('base64') };
+  const p = `/api/v1/namespaces/${ NAMESPACE }/configmaps/${ AI_SKILLS_SNAPSHOT }`;
+
+  try {
+    await k8s(p, { method: 'PATCH', body: JSON.stringify({ data }) });
+  } catch (e) {
+    if (e.status !== 404) {
+      throw e;
+    }
+    await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps`, {
+      method: 'POST',
+      body:   JSON.stringify({
+        apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace: NAMESPACE, name: AI_SKILLS_SNAPSHOT, labels: { 'dev.rancher.io/kind': 'ai-skills' } }, data,
+      }),
+    });
+  }
+}
+
+/**
+ * The repository's files at the branch's current commit. Checked at most once a minute, and only
+ * downloaded when the commit moved. The last good copy is kept in a ConfigMap so a restart while
+ * GitHub is unreachable still serves skills; with no copy at all this throws rather than serve a
+ * seed without skills, because laying that out would empty every workspace's .claude.
+ */
+async function aiSkillsFiles(force = false) {
+  if (!force && aiSkills && Date.now() - aiSkills.checkedAt < AI_SKILLS_CHECK_MS) {
+    return aiSkills;
+  }
+  if (aiSkillsInFlight) {
+    return aiSkillsInFlight;
+  }
+  aiSkillsInFlight = (async() => {
+    try {
+      const token = await githubToken();
+
+      if (!token) {
+        throw failure(503, 'No GitHub token is set, and the skills live in a private repository. Add one in the Dev extension\'s Settings.');
+      }
+      const headers = { authorization: `Bearer ${ token }`, 'user-agent': 'dev-extension' };
+      const head = await fetch(`https://api.github.com/repos/${ AI_SKILLS_REPO }/commits/${ encodeURIComponent(AI_SKILLS_REF) }`, { headers: { ...headers, accept: 'application/vnd.github.sha' } });
+
+      if (!head.ok) {
+        throw failure(502, `GitHub could not resolve ${ AI_SKILLS_REPO }@${ AI_SKILLS_REF }: ${ head.status }`);
+      }
+      const sha = (await head.text()).trim();
+
+      if (!aiSkills) {
+        aiSkills = await aiSkillsSnapshot();
+      }
+      if (aiSkills?.sha === sha) {
+        aiSkills.checkedAt = Date.now();
+
+        return aiSkills;
+      }
+      const tarball = await fetch(`https://api.github.com/repos/${ AI_SKILLS_REPO }/tarball/${ sha }`, { headers: { ...headers, accept: 'application/vnd.github+json' } });
+
+      if (!tarball.ok) {
+        throw failure(502, `GitHub would not send ${ AI_SKILLS_REPO }@${ sha.slice(0, 12) }: ${ tarball.status }`);
+      }
+      const files = {};
+
+      for (const [repoPath, content] of Object.entries(untar(Buffer.from(await tarball.arrayBuffer())))) {
+        const key = seedKeyFor(repoPath);
+
+        if (key) {
+          files[key] = content;
+        }
+      }
+      if (!Object.keys(files).some((k) => /^skills\/[^/]+\/SKILL\.md$/.test(k))) {
+        throw failure(502, `${ AI_SKILLS_REPO }@${ sha.slice(0, 12) } has no skills under ${ AI_SKILLS_ROOT }/.claude/skills.`);
+      }
+      aiSkills = { sha, files, checkedAt: Date.now() };
+      await saveAiSkillsSnapshot({ sha, files }).catch((e) => console.error('[dev-api] could not keep the ai-skills snapshot:', e.message || e));
+      console.log(`[dev-api] skills from ${ AI_SKILLS_REPO }@${ sha.slice(0, 12) }: ${ Object.keys(files).length } files`);
+
+      return aiSkills;
+    } catch (e) {
+      const last = aiSkills || await aiSkillsSnapshot();
+
+      if (last) {
+        console.error(`[dev-api] keeping skills from ${ last.sha.slice(0, 12) }: ${ e.message || e }`);
+        aiSkills = { ...last, checkedAt: Date.now() };
+
+        return aiSkills;
+      }
+      throw e.status ? e : failure(503, `The skills could not be fetched from ${ AI_SKILLS_REPO }: ${ e.message || e }`);
+    } finally {
+      aiSkillsInFlight = null;
+    }
+  })();
+
+  return aiSkillsInFlight;
+}
+
+/** What the extension itself ships, without anything the repository owns. */
+function shippedSeed() {
+  const seed = bakedSeed();
+
+  for (const key of Object.keys(seed)) {
+    if (repoOwnsKey(key)) {
+      delete seed[key];
+    }
+  }
+
+  return seed;
+}
 
 function fnv(text) {
   let h = 2166136261;
@@ -474,9 +664,9 @@ async function skillOverrides() {
   }
 }
 
-/** The seed the workspaces are laid out from: what shipped, with the edited skills over it. */
+/** The seed the workspaces are laid out from: what shipped, the repository's files, then the edited skills. */
 async function agentSeed() {
-  const seed = bakedSeed();
+  const seed = { ...shippedSeed(), ...(await aiSkillsFiles()).files };
   const { skills } = await skillOverrides();
 
   for (const [name, content] of Object.entries(skills)) {
@@ -486,14 +676,15 @@ async function agentSeed() {
   return seed;
 }
 
-/** What the seed is now, for a workspace to compare its own copy against: the shipped seed's hash, then the overrides' version. */
+/** What the seed is now, for a workspace to compare its own copy against: shipped hash, repository commit, overrides. */
 async function seedVersion() {
   if (!bakedVersion) {
-    bakedVersion = fnv(JSON.stringify(bakedSeed()));
+    bakedVersion = fnv(JSON.stringify(shippedSeed()));
   }
+  const { sha } = await aiSkillsFiles();
   const { version } = await skillOverrides();
 
-  return `${ bakedVersion }${ version ? `+${ version }` : '' }`;
+  return `${ bakedVersion }+${ sha.slice(0, 12) }${ version ? `+${ version }` : '' }`;
 }
 
 function skillDescription(text) {
@@ -504,7 +695,7 @@ function skillDescription(text) {
 }
 
 async function listSkills() {
-  const seed = bakedSeed();
+  const seed = (await aiSkillsFiles()).files;
   const { skills } = await skillOverrides();
   const names = Object.keys(seed).map((key) => /^skills\/([a-z0-9-]+)\/SKILL\.md$/.exec(key)?.[1]).filter(Boolean);
 
@@ -523,7 +714,7 @@ async function readSkill(name) {
   if (!SKILL_NAME.test(name)) {
     throw failure(400, 'Not a skill name.');
   }
-  const baked = bakedSeed()[`skills/${ name }/SKILL.md`] || '';
+  const baked = (await aiSkillsFiles()).files[`skills/${ name }/SKILL.md`] || '';
   const { skills } = await skillOverrides();
 
   if (!baked && !(name in skills)) {
@@ -595,13 +786,13 @@ async function writeSkillOverride(name, content) {
   }
 }
 
-/** The skill as the repository has it, committed on the branch the skills are published from. */
+/** The skill committed to the skills repository, on the branch every workspace is laid out from. */
 async function commitSkill(name, content, message) {
-  const filePath = `${ SKILLS_DIR }/${ name }/SKILL.md`;
+  const filePath = `${ AI_SKILLS_ROOT }/.claude/skills/${ name }/SKILL.md`;
   let sha = '';
 
   try {
-    const current = await ghRest('GET', `/repos/${ SKILLS_REPO }/contents/${ filePath }?ref=${ encodeURIComponent(SKILLS_BRANCH) }`);
+    const current = await ghRest('GET', `/repos/${ AI_SKILLS_REPO }/contents/${ filePath }?ref=${ encodeURIComponent(AI_SKILLS_REF) }`);
 
     sha = current.sha || '';
     if (Buffer.from(current.content || '', 'base64').toString('utf8') === content) {
@@ -612,10 +803,10 @@ async function commitSkill(name, content, message) {
       throw e;
     }
   }
-  const result = await ghRest('PUT', `/repos/${ SKILLS_REPO }/contents/${ filePath }`, {
+  const result = await ghRest('PUT', `/repos/${ AI_SKILLS_REPO }/contents/${ filePath }`, {
     message: message || `Skill ${ name }: updated from the Dev extension`,
     content: Buffer.from(content, 'utf8').toString('base64'),
-    branch:  SKILLS_BRANCH,
+    branch:  AI_SKILLS_REF,
     ...(sha ? { sha } : {}),
   });
 
@@ -635,7 +826,7 @@ async function saveSkill(name, body) {
   if (!content.trim()) {
     throw failure(400, 'The skill is empty.');
   }
-  const baked = bakedSeed()[`skills/${ name }/SKILL.md`] || '';
+  const baked = (await aiSkillsFiles()).files[`skills/${ name }/SKILL.md`] || '';
 
   if (content === baked) {
     await dropSkillOverride(name);
@@ -644,7 +835,19 @@ async function saveSkill(name, body) {
   }
   const commit = body?.commit ? await commitSkill(name, content, String(body?.message || '')) : null;
 
-  return { ok: true, overridden: content !== baked, commit, version: await seedVersion() };
+  // Committed, the repository has the text, so the override is a copy of it: pull the new commit
+  // and let the override go, or the page keeps calling a committed skill "edited".
+  if (commit) {
+    const fresh = await aiSkillsFiles(true).catch(() => null);
+
+    if (fresh?.files[`skills/${ name }/SKILL.md`] === content) {
+      await dropSkillOverride(name);
+    }
+  }
+
+  const { skills } = await skillOverrides();
+
+  return { ok: true, overridden: name in skills, commit, version: await seedVersion() };
 }
 
 async function dropSkillOverride(name) {
@@ -753,7 +956,7 @@ function artifactFile(given, num = null) {
 // Over raw CDP rather than playwright, which is not installed here and would be
 // most of a gigabyte to add for one call. Node 24's global WebSocket drives a
 // single tab well enough, and the page-side half is the same script the
-// `my-pr-create` skill runs (agent-seed/skills/my-pr-create/upload-github-assets.mjs)
+// `my-pr-create` skill runs (codyrancher/ai-skills, rancher-dashboard/.claude/skills/my-pr-create/upload-github-assets.mjs)
 // - keep the two in step.
 
 const GITHUB_BROWSER_CDP = process.env.GITHUB_BROWSER_CDP || 'http://browser.extension-studio.svc.cluster.local:9222';
@@ -1468,8 +1671,9 @@ function readBody(req) {
 const routes = [
   ['GET', /^\/$/, async() => ({ api: 'ok', templates: (await apps()).map((app) => app.id) })],
   ['GET', /^\/templates$/, async() => ({ templates: await apps() })],
-  // The skills and rules a review or fix agent needs, as the extension bundled them. Served to
-  // the agent pod because an exec command is URL arguments and this is half a megabyte.
+  // What a workspace is laid out from: the extension's own files, with the skills, rules and
+  // CLAUDE.md from codyrancher/ai-skills over them. Served because an exec command is URL
+  // arguments and this is most of a megabyte.
   ['GET', /^\/agent-seed$/, async() => agentSeed()],
   ['GET', /^\/agent-seed\/version$/, async() => ({ version: await seedVersion() })],
   ['GET', /^\/skills$/, async() => ({ skills: await listSkills(), version: await seedVersion() })],

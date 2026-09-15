@@ -1,10 +1,9 @@
 // Pack pkg/dev-extension/agent-seed/ into agent-seed.generated.ts.
 //
-// The seed is what a review or a fix agent needs that the Studio's agent pod does not have:
-// the skills the harness wrote (/my-pr-full-review, /my-dependabot-review, ...) and the rules
-// they lean on. Bundled into the extension as strings, and written into the agent pod's home
-// the first time an action needs them (see agent-tools.ts), because the pod has no image to
-// bake them into and this extension is the only thing that knows about them.
+// The seed is what this extension ships into every workspace: the layout step, the scripts in
+// bin/, the git hooks, the browser's accessibility stack and the settings. It is NOT the skills,
+// the rules or CLAUDE.md. Those live in codyrancher/ai-skills and nowhere else; dev-api pulls
+// that repository and serves it over this seed (see dev-api/server.mjs, aiSkillsFiles).
 //
 //   node scripts/gen-agent-seed.mjs
 //
@@ -34,6 +33,15 @@ function walk(dir, prefix = '') {
 }
 
 const files = walk(ROOT);
+
+// Refuse to pack a skill, a rule or CLAUDE.md back into the extension: an edit made here would ship
+// in a release and be silently replaced by the repository's copy in every workspace.
+const strays = Object.keys(files).filter((rel) => rel.startsWith('skills/') || rel.startsWith('rules/') || /^CLAUDE(\.dev)?\.md(\.hbs)?$/.test(rel));
+
+if (strays.length) {
+  console.error(`agent-seed/ holds files that belong in codyrancher/ai-skills (rancher-dashboard/.claude/skills, .claude/rules, CLAUDE.md):\n  ${ strays.join('\n  ') }\nCommit them there instead; dev-api pulls that repository into every workspace.`);
+  process.exit(1);
+}
 const body = Object.entries(files)
   .map(([rel, text]) => `  ${ JSON.stringify(rel) }: ${ JSON.stringify(text) },`)
   .join('\n');
