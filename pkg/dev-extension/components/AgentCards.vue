@@ -13,7 +13,7 @@ import AgentRunRow from './AgentRunRow.vue';
 import {
   listAgents, listRuns, runAgent, deleteAgent, skillOf, triggersOf
 } from '../agent-defs';
-import { AGENT_SEED } from '../agent-seed.generated';
+import { readSkill } from '../skills';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, AGENT_EDIT_ROUTE, CONVERSATIONS_ROUTE, DEV_API_IN_CLUSTER
 } from '../config/constants';
@@ -161,10 +161,10 @@ export default {
       }
     },
 
-    showSkill(name) {
-      const text = AGENT_SEED[`skills/${ name }/SKILL.md`] || AGENT_SEED[`skills/${ name }/SKILL.md.hbs`] || '';
+    async showSkill(name) {
+      const text = await readSkill(name).then((s) => s.content).catch(() => '');
 
-      this.skill = { name, text: text || `There is no skill called ${ name } in this dashboard's seed; the workspace may still have one.` };
+      this.skill = { name, text: text || `There is no skill called ${ name }; the workspace may still have one.` };
     },
 
     when(iso) {

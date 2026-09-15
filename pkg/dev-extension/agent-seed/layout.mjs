@@ -82,6 +82,26 @@ function render(text) {
     .replace(/\{\{(\w+)\}\}/g, (m, key) => (ctx[key] == null ? '' : String(ctx[key])));
 }
 
+/**
+ * What this workspace is for, written into CLAUDE.md after its first section.
+ *
+ * The file comes from codyrancher/ai-skills as plain text, and which issue or pull request a
+ * workspace was made for is not something a repository shared by every workspace can say. So the
+ * section the harness template produced with `{{#if issueNumber}}` is added here instead.
+ */
+function withWorkspaceSection(text) {
+  const section = ctx.issueNumber
+    ? `# Issue\nThis project is for issue https://github.com/rancher/dashboard/issues/${ ctx.issueNumber }\n`
+    : ctx.prNumber ? `# Pull Request\nThis project is for PR https://github.com/rancher/dashboard/pull/${ ctx.prNumber }\n` : '';
+  const second = text.search(/\n# /);
+
+  if (!section || second < 0) {
+    return text;
+  }
+
+  return `${ text.slice(0, second + 1) }${ section }\n${ text.slice(second + 1) }`;
+}
+
 for (const root of roots) {
   for (const dir of ['skills', 'rules']) {
     fs.rmSync(path.join(root, '.claude', dir), { recursive: true, force: true });
@@ -100,9 +120,9 @@ for (const [rel, raw] of Object.entries(seed)) {
     dests = roots.map((root) => path.join(root, '.claude', out));
   } else if (out === 'settings.json') {
     dests = roots.map((root) => path.join(root, '.claude', 'settings.json'));
-  } else if (rel === 'CLAUDE.md.hbs') {
+  } else if (rel === 'CLAUDE.md' || rel === 'CLAUDE.md.hbs') {
     dests = [path.join(ROOT, 'CLAUDE.md')];
-    text = `${ text.trimEnd() }\n\n${ render(seed['CLAUDE.dev.md'] || '') }`;
+    text = `${ withWorkspaceSection(text).trimEnd() }\n\n${ render(seed['CLAUDE.dev.md'] || '') }`;
   } else if (rel.startsWith('browser-a11y/')) {
     // The accessibility stack the *browser* container runs: AT-SPI, speech and Orca are
     // session-local, so they live over there and this side only calls them (bin/a11y). The
