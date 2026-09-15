@@ -146,7 +146,7 @@ gh pr view <PR> -R rancher/dashboard --json body -q .body | grep -n '\[.\]' | gr
 
 **Where those lines go: above `### Checklist`, or below it as plain paragraphs. Never as `- ` bullets below it.** A `- ` bullet one blank line under the last `- [x]` is not a new list - Markdown absorbs it into the task list, so nine checkboxes plus three notes render as a 12-item loose list and every checkbox on the page gets stretched apart. The boxes still tick, which is why this ships unnoticed. Plain paragraphs terminate the list cleanly and cost no extra words.
 
-If working an item required a code change (a missing aria-label, a hardcoded colour, a new test), commit and push it, then re-run the affected checks. Do not describe the fix in the checklist and leave it unwritten.
+If working an item required a code change (a missing aria-label, a hardcoded colour, a new test), run `my-code-comment-refinement`, commit and push it, then re-run the affected checks. Do not describe the fix in the checklist and leave it unwritten.
 
 Every PR stays a **draft** and the user promotes it. Do not `gh pr ready`.
 

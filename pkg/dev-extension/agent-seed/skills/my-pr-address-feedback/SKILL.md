@@ -33,7 +33,7 @@ The user just got a code review on their PR and wants every comment dealt with �
 
 5. **Run the relevant tests** for any code you changed (`yarn test:ci <path>` for unit tests; `yarn lint` if you touched lots of files). Fix the failures before continuing.
 
-6. **Commit and push.** One commit per logical change is fine; one combined commit is also fine if changes are tightly related. Push to the **same branch** the PR is on (`origin/issue-<N>` typically) — never open a new PR. Run the push in the background since the codyrancher pre-push hook (yarn lint) takes a minute or two:
+6. **Commit and push.** Run `my-code-comment-refinement` first, so the follow-up adds no comment the first commit would not have been allowed. One commit per logical change is fine; one combined commit is also fine if changes are tightly related. Push to the **same branch** the PR is on (`origin/issue-<N>` typically) — never open a new PR. Run the push in the background since the codyrancher pre-push hook (yarn lint) takes a minute or two:
 
    ```bash
    git push origin issue-<N>  # via run_in_background:true
