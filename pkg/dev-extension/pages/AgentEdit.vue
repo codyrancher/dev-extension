@@ -11,7 +11,7 @@ import {
   getAgent, saveAgent, validName, cronValid, CRON_PRESETS, triggersOf, compileFilter, filterError, PROMPT_KEYS
 } from '../agent-defs';
 import { devFetch, clusterBase } from '../api';
-import { AGENT_SEED } from '../agent-seed.generated';
+import { listSkills, readSkill } from '../skills';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, AGENTS_ROUTE, DEV_API_IN_CLUSTER
 } from '../config/constants';
@@ -29,6 +29,8 @@ export default {
 
   data() {
     return {
+      // The skills' names, from codyrancher/ai-skills through dev-api: not in this bundle.
+      skillNames: [],
       def: {
         name:        '',
         description: '',
@@ -56,12 +58,9 @@ export default {
   },
 
   computed: {
-    /** The skills the agents carry (the harness's), by name. */
+    /** The skills the agents carry, by name. */
     skills() {
-      return Object.keys(AGENT_SEED)
-        .map((k) => /^skills\/([^/]+)\/SKILL\.md(\.hbs)?$/.exec(k)?.[1])
-        .filter(Boolean)
-        .sort();
+      return this.skillNames;
     },
 
     /** The `/name` the prompt opens with, if it opens with one. */
@@ -132,6 +131,10 @@ export default {
   async fetch() {
     const name = this.$route.params.name;
 
+    listSkills().then(({ skills }) => {
+      this.skillNames = skills.map((s) => s.name).sort();
+    }).catch(() => {});
+
     if (name) {
       const found = await getAgent(name).catch(() => null);
 
@@ -185,10 +188,10 @@ export default {
       }
     },
 
-    showSkill(name) {
-      const text = AGENT_SEED[`skills/${ name }/SKILL.md`] || AGENT_SEED[`skills/${ name }/SKILL.md.hbs`] || '';
+    async showSkill(name) {
+      const text = await readSkill(name).then((s) => s.content).catch(() => '');
 
-      this.doc = { name, text: text || `There is no skill called /${ name } in this dashboard's seed.` };
+      this.doc = { name, text: text || `There is no skill called /${ name }.` };
     },
 
     /** A placeholder as it is written, without putting `{{` in a template that reads it as one. */

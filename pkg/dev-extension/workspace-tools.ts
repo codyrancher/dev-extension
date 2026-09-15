@@ -5,8 +5,8 @@
 // CDP open, and an env file with everything a skill reads. A workspace here is a pod that the
 // rancher-dev App made with the checkout and the dev server in it, and this puts the rest in
 // place, so that the harness's prompts and skills run in it unchanged. The one thing that is
-// deliberately different is what CLAUDE.md says about the environment (agent-seed/CLAUDE.dev.md
-// and rules/environment.md).
+// deliberately different is what CLAUDE.md says about the environment (CLAUDE.dev.md and
+// rules/environment.md, both in codyrancher/ai-skills).
 //
 // Every step is idempotent and lands under /workspace, which is a hostPath, so it survives the
 // pod and is written once; the seed carries a hash so a changed skill reaches a workspace that
