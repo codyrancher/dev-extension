@@ -366,7 +366,7 @@ export default {
             >
               <span
                 class="dev-list__name"
-                :title="row.title || row.label"
+                :title="row.card ? null : (row.title || row.label)"
                 @dblclick.prevent="renamable && !row.fixed && startRename(row)"
               >{{ row.label }}</span>
               <!--
