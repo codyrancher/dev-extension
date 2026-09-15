@@ -1185,6 +1185,14 @@ export async function deleteWorkspace(store: Store, name: string): Promise<void>
   // regardless - including the namespace, which is normally the Bundle's to take but is this
   // extension's to finish when the Installation (and therefore the Bundle) is already gone.
   await deleteWorkspaceInstance(store, name, true);
+  // The workspace's shares are separate installations of the dashboard-preview App, one per
+  // kind, named after the workspace (see previews.ts `previewName`). Nothing else takes them
+  // when the workspace goes, so a workspace deleted with a share left a `preview-<ws>` behind
+  // for good. Remove both kinds here; the dev-api reconciler is the backstop for the ones a
+  // workspace deleted some other way (kubectl, a failed delete) still leaves.
+  for (const preview of [`preview-${ name }`.slice(0, 40), `storybook-${ name }`.slice(0, 40)]) {
+    await deleteWorkspaceInstance(store, preview, true).catch(() => {});
+  }
   await devFetch(`${ BASE }/v1/rbac.authorization.k8s.io.rolebindings/${ DEV_SYSTEM_NAMESPACE }/${ binding }`, { method: 'DELETE' }).catch(() => null);
   await removeWorkspaceNamespace(name).catch(() => {});
   // And the tree on the node, which nothing else owns: the checkout, the artifacts and the
@@ -2156,7 +2164,7 @@ export async function ensureWorkspaceApi(): Promise<void> {
         apiGroups: ['appsplus.io'], resources: ['apps'], verbs: ['get', 'list']
       },
       {
-        apiGroups: ['appsplus.io'], resources: ['appinstances'], verbs: ['get', 'list', 'create']
+        apiGroups: ['appsplus.io'], resources: ['appinstances'], verbs: ['get', 'list', 'create', 'delete']
       },
       // The review store: a ConfigMap per pull request in dev-system, which the API reads and
       // writes for the agents and the browser both. And the GitHub token, which is in the

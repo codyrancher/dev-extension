@@ -26,6 +26,9 @@ const DEFAULT_REPO = process.env.DEV_REPO || 'rancher/dashboard';
 
 const APPS = '/apis/appsplus.io/v1alpha1/apps';
 const INSTANCES = '/apis/appsplus.io/v1alpha1/appinstances';
+// The App whose installations are per-workspace shares (dashboard-preview), named
+// `preview-<ws>` / `storybook-<ws>`. The reconciler removes one whose workspace is gone.
+const PREVIEW_APP = 'dashboard-preview';
 const LABEL_WORKSPACE = 'dev.rancher.io/workspace';
 const LABEL_APP = 'dev.rancher.io/app';
 const LABEL_CLUSTER = 'dev.rancher.io/cluster';
@@ -2086,6 +2089,40 @@ async function reconcileTeardown() {
         console.error(`[dev-api] reconcile: binding ${ rb.metadata.name }:`, e.message || e);
       }
     });
+  }
+
+  // 4) Abandoned previews. A share is a separate installation of the dashboard-preview App, one
+  //    per workspace, named `preview-<ws>` / `storybook-<ws>` (see previews.ts). deleteWorkspace
+  //    removes them now, but a workspace torn down another way - kubectl, a delete that failed
+  //    part way, or one from before that cascade existed - leaves the preview standing as an
+  //    installation nothing else owns, which is what fills the Apps list with dead rows. Remove
+  //    any whose workspace installation is gone; deleting the installation takes its Bundle and
+  //    namespace with it, and steps 1-3 above collect whatever Fleet leaves behind.
+  for (const inst of (await k8s(INSTANCES).catch(() => ({ items: [] }))).items || []) {
+    if (inst.spec?.app !== PREVIEW_APP) {
+      continue;
+    }
+    const name = inst.metadata?.name || '';
+    const base = name.replace(/^(?:preview|storybook)-/, '');
+
+    if (base === name || live.has(base) || inst.metadata?.deletionTimestamp) {
+      continue;
+    }
+    // A grace window, so a preview is never taken in the moments before its workspace's own
+    // installation appears - though in practice the workspace is always created first.
+    const created = Date.parse(inst.metadata?.creationTimestamp || '');
+
+    if (Number.isFinite(created) && Date.now() - created < 10 * 60 * 1000) {
+      continue;
+    }
+
+    await k8s(`${ INSTANCES }/${ name }`, { method: 'DELETE' })
+      .then(() => console.log(`[dev-api] reconciled abandoned preview ${ name } (workspace ${ base } gone)`))
+      .catch((e) => {
+        if (e.status !== 404) {
+          console.error(`[dev-api] reconcile: preview ${ name }:`, e.message || e);
+        }
+      });
   }
 }
 
