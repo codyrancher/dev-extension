@@ -12,16 +12,38 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
-    appVersion: 0.3.165
-    created: "2026-09-14T23:12:24.984527626Z"
+    appVersion: 0.3.166
+    created: "2026-09-15T17:20:06.440923915Z"
     description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
       fixes, shares and agents
-    digest: 488d12885d100f63d3077216e67110c4b1daac2d0769e2029369a76d5eb54e3f
+    digest: e224e9cee3c83f95e69a5f399d6b90822723895e2fa6789c4665bde005508d76
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
     type: application
     urls:
-    - assets/dev-extension/dev-extension-0.3.165.tgz
+    - assets/dev-extension/dev-extension-0.3.166.tgz
+    version: 0.3.166
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/display-name: Dev Extension
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
+    apiVersion: v2
+    appVersion: 0.3.165
+    created: "2026-09-14T23:13:36.114338747Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
+    digest: 3b2b2b7c24059c4c03386c9d138566858449a431669b01e501e4c2d31fd4ffbd
+    icon: https://codyrancher.github.io/dev-extension/icon.svg
+    name: dev-extension
+    type: application
+    urls:
+    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.165/dev-extension-0.3.165.tgz
     version: 0.3.165
   - annotations:
       catalog.cattle.io/certified: rancher
@@ -3804,4 +3826,4 @@ entries:
     urls:
     - assets/dev-extension/dev-extension-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-14T23:12:24.983126602Z"
+generated: "2026-09-15T17:20:06.440383501Z"
