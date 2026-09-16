@@ -17,7 +17,7 @@ import PrButton from './pr/PrButton.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
 import {
-  readStatusNow, knownStatus, provisionalStatus, agentLabel
+  readStatusNow, knownStatus, provisionalStatus, agentLabel, agentStateOf
 } from '../workspace-status';
 import {
   stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
@@ -75,7 +75,7 @@ export default {
     },
   },
 
-  emits: ['open-tab'],
+  emits: ['open-tab', 'switch-view'],
 
   data() {
     return {
@@ -152,6 +152,14 @@ export default {
       conversations: [],
       currentConversation: '',
       startingConversation: false,
+      /**
+       * The conversations whose pane is up right now, by id, with the state each one is in.
+       * A running agent is watched on the page rather than behind a button: the panel under
+       * the action bar shows it at every stage, for a fix and for a review both.
+       */
+      live:     {},
+      /** Which live conversation the panel is showing, when more than one is running. */
+      liveShown: '',
     };
   },
 
@@ -206,6 +214,26 @@ export default {
 
     agentLine() {
       return this.status ? agentLabel(this.status.agent) : '';
+    },
+
+    /**
+     * The conversations with a pane up, newest last, each carrying the state its agent is in.
+     *
+     * `live` is the states poll; `conversations` is what they are called and how to attach to
+     * one. A conversation only appears here once both know about it, which is what stops a
+     * pane being drawn for an id whose command is not loaded yet.
+     */
+    liveConversations() {
+      return this.conversations
+        .filter((c) => this.live[c.id])
+        .map((c) => ({ ...c, agent: this.live[c.id] }));
+    },
+
+    /** The one the panel draws: the picked tab while it is still running, else the newest. */
+    shownLive() {
+      const live = this.liveConversations;
+
+      return live.find((c) => c.id === this.liveShown) || live[live.length - 1] || null;
     },
 
     /**
@@ -335,10 +363,14 @@ export default {
     readPrompts().then((p) => {
       this.prompts = p;
     }).catch(() => {});
+    this.refreshLive();
     this.timers = [
       // The agents every fifteen seconds; GitHub every five minutes and after an action - not
       // on every tick, which overlapped itself on a big PR.
       setInterval(() => this.refreshStatus(false), STATUS_MS),
+      // Which panes are up, on the same beat as the status: the panel under the action bar
+      // appears and goes on its own as agents start and stop.
+      setInterval(() => this.refreshLive(), STATUS_MS),
       setInterval(() => this.refreshStatus(true), GITHUB_MS),
       setInterval(() => this.refreshEvidence(), EVIDENCE_MS),
     ];
@@ -353,6 +385,7 @@ export default {
 
   methods: {
     ago,
+    agentLabel,
 
     async load() {
       // What the sidebar last read is drawn now, or what the name alone says - the kind, the
@@ -970,6 +1003,49 @@ export default {
       this.openComments = { ...this.openComments, [c.id]: !(this.openComments[c.id] ?? !c.answered) };
     },
 
+    /**
+     * Which of this workspace's conversations have a pane up, and what each is doing.
+     *
+     * `conversationStates` is one exec for every workspace at once, so this filters rather than
+     * asks for its own. A conversation that has just been started is not in `conversations`
+     * yet, so the listing is refreshed when the set of live ids changes.
+     */
+    /** The larger view, on the conversation the panel is showing rather than the select's. */
+    popLive() {
+      if (this.shownLive) {
+        this.currentConversation = this.shownLive.id;
+      }
+      this.popped = true;
+    },
+
+    async refreshLive() {
+      const states = await conversationStates().catch(() => null);
+
+      if (!states) {
+        return;
+      }
+
+      const next = {};
+
+      for (const c of states) {
+        if (c.workspace === this.workspace.name && c.alive) {
+          next[c.id] = agentStateOf(c);
+        }
+      }
+      const before = Object.keys(this.live).sort().join(',');
+      const after = Object.keys(next).sort().join(',');
+
+      this.live = next;
+
+      if (before !== after) {
+        // A pane that appeared may be a conversation this page has never listed.
+        await this.loadConversations();
+      }
+      if (this.liveShown && !next[this.liveShown]) {
+        this.liveShown = '';
+      }
+    },
+
     async loadConversations() {
       this.conversations = await listConversations(this.workspace.name).catch(() => []);
       if (!this.conversations.some((c) => c.id === this.currentConversation)) {
@@ -1321,6 +1397,15 @@ export default {
             v-if="status.agent === 'working'"
             class="icon icon-spinner icon-spin"
           />{{ agentLine }}</span>
+          <!--
+            The way out of the stage view, next to what the work is and what it is doing,
+            rather than on a row of its own above the page.
+          -->
+          <a
+            class="workspace-rail__view-switch"
+            href="#"
+            @click.prevent="$emit('switch-view', 'tabs')"
+          >(Tabbed view)</a>
           <RcButton
             variant="tertiary"
             size="small"
@@ -1454,6 +1539,76 @@ export default {
           </div>
         </div>
       </div>
+
+      <!--
+        The running agent, under the button that started it.
+
+        A conversation used to be reachable only through a button that opened it over the page,
+        which meant the one thing actually happening was the one thing not on screen. While a
+        pane is up it belongs here, at every stage and for a fix and a review both: the work is
+        watched where it was asked for. More than one running agent gets a tab each; only the
+        shown one is mounted, because a terminal is not free.
+      -->
+      <section
+        v-if="liveConversations.length"
+        class="workspace-rail__live"
+      >
+        <div class="workspace-rail__live-head">
+          <div
+            v-if="liveConversations.length > 1"
+            class="workspace-rail__live-tabs"
+            role="tablist"
+          >
+            <button
+              v-for="c in liveConversations"
+              :key="c.id"
+              type="button"
+              role="tab"
+              class="workspace-rail__live-tab"
+              :class="{ 'workspace-rail__live-tab--on': shownLive && c.id === shownLive.id }"
+              :aria-selected="!!shownLive && c.id === shownLive.id"
+              @click="liveShown = c.id"
+            >
+              <i
+                v-if="c.agent === 'working'"
+                class="icon icon-spinner icon-spin"
+              />
+              <i
+                v-else-if="c.agent === 'input'"
+                class="icon icon-info"
+              />
+              {{ c.title || 'conversation' }}
+            </button>
+          </div>
+          <span
+            v-else
+            class="workspace-rail__group-label"
+          >{{ (shownLive && shownLive.title) || 'Conversation' }}</span>
+          <span
+            v-if="shownLive"
+            class="workspace-rail__agent"
+            :class="`workspace-rail__agent--${ shownLive.agent }`"
+          >{{ agentLabel(shownLive.agent) }}</span>
+          <PrButton
+            size="sm"
+            variant="secondary"
+            @click="popLive"
+          >
+            Open it larger
+          </PrButton>
+        </div>
+        <!--
+          Keyed by id so switching tabs tears the old pane down rather than re-attaching the
+          same terminal to a different session.
+        -->
+        <StudioTerminal
+          v-if="shownLive && !popped"
+          :key="shownLive.id"
+          class="workspace-rail__live-terminal"
+          :session="shownLive.id"
+          :command="shownLive.attach.command"
+        />
+      </section>
 
       <div class="workspace-rail__columns">
         <!-- Column one: what there is to judge, for the stage being looked at. -->
@@ -2665,6 +2820,60 @@ export default {
 
   &__col--pane {
     padding: 10px 12px;
+  }
+
+  // The running agent under the action bar. A fixed height on purpose: it is something to
+  // glance at while reading the stage below it, and left to grow it took the whole page.
+  &__live {
+    display:       flex;
+    flex-direction: column;
+    gap:           8px;
+    border:        1px solid var(--border);
+    border-radius: var(--border-radius);
+    background:    var(--box-bg);
+    padding:       10px 12px 12px;
+  }
+
+  &__live-head {
+    display:     flex;
+    align-items: center;
+    gap:         10px;
+    flex-wrap:   wrap;
+  }
+
+  &__live-tabs {
+    display:   flex;
+    gap:       2px;
+    flex-wrap: wrap;
+  }
+
+  &__live-tab {
+    display:       flex;
+    align-items:   center;
+    gap:           6px;
+    border:        1px solid transparent;
+    border-radius: var(--border-radius) var(--border-radius) 0 0;
+    background:    transparent;
+    color:         var(--muted-text, var(--body-text));
+    cursor:        pointer;
+    font-size:     13px;
+    padding:       4px 10px;
+
+    &:hover {
+      color: var(--body-text);
+    }
+
+    &--on {
+      border-color:   var(--border);
+      border-bottom-color: transparent;
+      background:     var(--body-bg);
+      color:          var(--body-text);
+    }
+  }
+
+  &__live-terminal {
+    height:     360px;
+    min-height: 0;
   }
 
   &__popped {
