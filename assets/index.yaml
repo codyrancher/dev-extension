@@ -12,17 +12,17 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
-    appVersion: 0.3.172
-    created: "2026-09-16T00:47:24.023674958Z"
+    appVersion: 0.3.173
+    created: "2026-09-16T15:30:39.993233992Z"
     description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
       fixes, shares and agents
-    digest: baed468bb3315f18f54d5027b764768d992714178d6c0bc1040991dc49128203
+    digest: 9c93cd11589d6af76e2056938b9cdf1a1d71ba2469c362bb635181f177419a2b
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
     type: application
     urls:
-    - assets/dev-extension/dev-extension-0.3.172.tgz
-    version: 0.3.172
+    - assets/dev-extension/dev-extension-0.3.173.tgz
+    version: 0.3.173
   - annotations:
       catalog.cattle.io/certified: rancher
       catalog.cattle.io/display-name: Dev Extension
@@ -34,17 +34,17 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
-    appVersion: 0.3.171
-    created: "2026-09-16T00:25:53.350272206Z"
+    appVersion: 0.3.172
+    created: "2026-09-16T00:47:45.24633488Z"
     description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
       fixes, shares and agents
-    digest: 5bf6f9f28bdb795e189445e758a7ac847db3d011dccc7acdde323ac78e915a06
+    digest: a2f35249f2db9fc7d38aa82d57a338cd1cada68b4590c2a56c04a7139aec52db
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
     type: application
     urls:
-    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.171/dev-extension-0.3.171.tgz
-    version: 0.3.171
+    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.172/dev-extension-0.3.172.tgz
+    version: 0.3.172
   - annotations:
       catalog.cattle.io/certified: rancher
       catalog.cattle.io/display-name: Dev Extension
@@ -67,4 +67,4 @@ entries:
     urls:
     - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.168/dev-extension-0.3.168.tgz
     version: 0.3.168
-generated: "2026-09-16T00:47:24.022950254Z"
+generated: "2026-09-16T15:30:39.992858863Z"
