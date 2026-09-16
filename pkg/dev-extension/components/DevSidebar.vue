@@ -23,7 +23,7 @@ import {
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
 import {
-  workspaceStatuses, agentLabel, agentIcon, statusLine, stageName
+  workspaceStatuses, agentLabel, agentIcon, statusLine, stageName, displayTone
 } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import DevList from './DevList.vue';
@@ -558,7 +558,7 @@ export default {
           title:  [workspace.name, title, workspace.cluster && workspace.cluster !== 'local' ? workspace.cluster : ''].filter(Boolean).join(' · '),
           state:  workspace.state,
           detail: row.join(' · '),
-          tone:   status?.tone,
+          tone:   status ? displayTone(status) : undefined,
           agent:  status?.agent,
           // The agent's own state rides as a mark at the end of the row; the words are on the card.
           agentIcon:  agentIcon(status?.agent || 'none'),

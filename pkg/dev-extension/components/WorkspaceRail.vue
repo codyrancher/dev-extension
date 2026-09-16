@@ -17,7 +17,7 @@ import PrButton from './pr/PrButton.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
 import {
-  readStatusNow, knownStatus, provisionalStatus, agentLabel, agentStateOf
+  readStatusNow, knownStatus, provisionalStatus, agentLabel, agentStateOf, displayTone
 } from '../workspace-status';
 import {
   stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
@@ -386,6 +386,7 @@ export default {
   methods: {
     ago,
     agentLabel,
+    displayTone,
 
     async load() {
       // What the sidebar last read is drawn now, or what the name alone says - the kind, the
@@ -1456,7 +1457,7 @@ export default {
       <div
         v-if="action"
         class="workspace-rail__action"
-        :class="`workspace-rail__action--${ status.tone }`"
+        :class="`workspace-rail__action--${ displayTone(status) }`"
       >
         <div class="workspace-rail__action-text">
           <div

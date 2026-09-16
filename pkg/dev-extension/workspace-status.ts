@@ -112,6 +112,21 @@ const AGENT_LABEL: Record<AgentState, string> = {
   none:     '',
 };
 
+/**
+ * The tone to colour a workspace with, wherever it is drawn.
+ *
+ * The stage's own tone says what the work is waiting on, which is the right thing to say while
+ * nothing is happening. An agent actually working is the louder fact: a row reading "Developer
+ * responded" in attention amber beside a spinner asks for a person who is not needed yet.
+ *
+ * Worked out where it is drawn rather than baked into the work, because the agent state has its
+ * own poll - knownStatus refreshes `agent` on a status that was read minutes ago - so a tone
+ * decided at read time would go stale the moment an agent started or stopped.
+ */
+export function displayTone(status: Pick<WorkspaceStatus, 'tone' | 'agent'>): Tone {
+  return status.agent === 'working' ? 'working' : status.tone;
+}
+
 export function agentLabel(state: AgentState): string {
   return AGENT_LABEL[state];
 }
