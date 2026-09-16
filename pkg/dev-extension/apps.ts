@@ -241,7 +241,13 @@ export async function deleteWorkspaceInstance(store: Store, name: string, missin
       return;
     }
 
-    if (await current.releaseWhenEmpty().catch(() => false)) {
+    // `find` can hand back a generic Steve resource - the same "Apps Plus model not loaded"
+    // case the finalizer dance above is written for - and that resource has no
+    // `releaseWhenEmpty`, so calling it threw `releaseWhenEmpty is not a function` and aborted
+    // the whole delete. Guard it exactly as the render path does, and when it is missing fall
+    // through to the wait: apps-plus-api removes the finalizer once the teardown is empty, and
+    // the `!current` return above is what ends the loop then.
+    if (typeof current.releaseWhenEmpty === 'function' && await current.releaseWhenEmpty().catch(() => false)) {
       return;
     }
 
