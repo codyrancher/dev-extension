@@ -389,16 +389,16 @@ export default {
       </Row>
     </Banner>
 
+    <!--
+      Only the tabbed view needs a row of its own to get out of. The stage view puts its own
+      link in its header, beside the title and what the agent is doing, so this row would be a
+      second copy of it above the page.
+    -->
     <div
-      v-if="!stopped && railable"
+      v-if="!stopped && railable && !showRail"
       class="dev-workspace__switch"
     >
       <a
-        v-if="showRail"
-        @click.prevent="setView('tabs')"
-      >Tabbed view</a>
-      <a
-        v-else
         @click.prevent="setView('rail')"
       >Stage view</a>
     </div>
@@ -409,6 +409,7 @@ export default {
       :pr="prNumber"
       :issue="issueNumber"
       @open-tab="openTab"
+      @switch-view="setView"
     />
 
     <Tabbed

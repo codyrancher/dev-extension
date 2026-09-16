@@ -188,7 +188,7 @@ const RANK: Record<AgentState, number> = {
 };
 
 /** One conversation's state from the last hook event its pane recorded, and whether the pane is there. */
-function agentStateOf(c: ConversationState): AgentState {
+export function agentStateOf(c: ConversationState): AgentState {
   if (!c.alive) {
     return 'finished';
   }
