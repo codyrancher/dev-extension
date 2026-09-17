@@ -23,7 +23,7 @@ import {
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
 import {
-  workspaceStatuses, agentLabel, agentIcon, statusLine, stageName, displayTone
+  workspaceStatuses, agentLabel, agentIcon, statusLine, stageName, displayTone, autoStopIdle
 } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import DevList from './DevList.vue';
@@ -346,6 +346,10 @@ export default {
 
         // The agents' clock: what is due starts, what is over is recorded. See agent-defs.ts.
         tickAgents(this.$store).catch(() => {});
+
+        // Spin down dev servers no agent is in and nobody is looking at, so an idle workspace
+        // stops holding a couple of gigabytes; opening one starts it again. See autoStopIdle.
+        autoStopIdle(workspaces).catch(() => {});
 
         // A fix or a review started and left: its conversation begins once its workspace is
         // up, whether or not anyone opens it. See startPendingConversations.

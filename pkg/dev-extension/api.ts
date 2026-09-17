@@ -886,10 +886,15 @@ export async function ensureWorkspaceScripts(names: string[]): Promise<void> {
  * Read-modify-write rather than a patch: Steve wants the whole object back on a PUT, and
  * sending the one it just handed out is what keeps the resourceVersion check meaningful, so a
  * second tab scaling the same workspace loses the race instead of silently winning it.
+ *
+ * `cluster` addresses the workspace's own cluster without moving the module's BASE: the
+ * background auto-stop (see autoStopIdle) scales workspaces down while a page open on another
+ * one holds BASE pointed at that one's cluster, and must not scale the wrong Deployment.
  */
-export async function setWorkspaceRunning(name: string, running: boolean): Promise<void> {
+export async function setWorkspaceRunning(name: string, running: boolean, cluster?: string): Promise<void> {
   const namespace = workspaceNamespace(name);
-  const url = `${ BASE }/v1/apps.deployments/${ namespace }/${ namespace }`;
+  const base = cluster ? clusterBase(cluster) : BASE;
+  const url = `${ base }/v1/apps.deployments/${ namespace }/${ namespace }`;
 
   if (running) {
     // Written on every start rather than only at create: a workspace made by the in-cluster API,
