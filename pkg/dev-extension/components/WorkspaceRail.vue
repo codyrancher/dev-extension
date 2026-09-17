@@ -16,6 +16,7 @@ import WorkspaceBrowser from './WorkspaceBrowser.vue';
 import WorkspaceShare from './WorkspaceShare.vue';
 import DevModal from './DevModal.vue';
 import PrButton from './pr/PrButton.vue';
+import ConversationHeader from './ConversationHeader.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
 import {
@@ -26,7 +27,7 @@ import {
 } from '../workspace-rail';
 import { prFile } from '../reviews';
 import {
-  listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates, sendToPane
+  listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates, sendToPane, renameConversation, endConversation
 } from '../conversations';
 import { ensureWorkspaceReady, putArtifact } from '../workspace-tools';
 import {
@@ -55,7 +56,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, Tabbed, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments
+    Banner, RcButton, Tabbed, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, ConversationHeader, CommentDiscussion, CommentAttachments
   },
 
   props: {
@@ -1040,6 +1041,18 @@ export default {
       this.popped = true;
     },
 
+    /** Rename a live conversation from its tab header, then re-read so the tab's label follows. */
+    async renameLive(conversation, title) {
+      await renameConversation(conversation.workspace || this.workspace.name, conversation.id, title).catch(() => {});
+      await this.refreshLive();
+    },
+
+    /** Close a live conversation from its tab header; the next tick drops it from the strip. */
+    async closeLive(conversation) {
+      await endConversation(conversation.workspace || this.workspace.name, conversation.id).catch(() => {});
+      await this.refreshLive();
+    },
+
     async refreshLive() {
       const states = await conversationStates().catch(() => null);
 
@@ -1581,22 +1594,13 @@ export default {
             :label="c.title || 'Conversation'"
             :weight="liveConversations.length - i"
           >
-            <div class="workspace-rail__live-head">
-              <span
-                class="workspace-rail__agent"
-                :class="`workspace-rail__agent--${ c.agent }`"
-              ><i
-                v-if="c.agent === 'working'"
-                class="icon icon-spinner icon-spin"
-              />{{ agentLabel(c.agent) }}</span>
-              <PrButton
-                size="sm"
-                variant="secondary"
-                @click="popLive"
-              >
-                Open it larger
-              </PrButton>
-            </div>
+            <ConversationHeader
+              :conversation="c"
+              :agent="c.agent"
+              @rename="renameLive(c, $event)"
+              @popout="popLive"
+              @close="closeLive(c)"
+            />
             <StudioTerminal
               v-if="shownLive && shownLive.id === c.id && !popped"
               :key="c.id"
@@ -1607,23 +1611,13 @@ export default {
           </Tab>
         </Tabbed>
         <template v-else-if="shownLive">
-          <div class="workspace-rail__live-head">
-            <span class="workspace-rail__group-label">{{ shownLive.title || 'Conversation' }}</span>
-            <span
-              class="workspace-rail__agent"
-              :class="`workspace-rail__agent--${ shownLive.agent }`"
-            ><i
-              v-if="shownLive.agent === 'working'"
-              class="icon icon-spinner icon-spin"
-            />{{ agentLabel(shownLive.agent) }}</span>
-            <PrButton
-              size="sm"
-              variant="secondary"
-              @click="popLive"
-            >
-              Open it larger
-            </PrButton>
-          </div>
+          <ConversationHeader
+            :conversation="shownLive"
+            :agent="shownLive.agent"
+            @rename="renameLive(shownLive, $event)"
+            @popout="popLive"
+            @close="closeLive(shownLive)"
+          />
           <StudioTerminal
             v-if="!popped"
             :key="shownLive.id"
