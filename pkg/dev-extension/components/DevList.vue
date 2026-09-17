@@ -336,7 +336,7 @@ export default {
         <li
           v-for="row in block.rows"
           :key="row.key"
-          :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail || row.agentIcon, 'dev-list__row--grouped': !!block.label }"
+          :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail || row.agentIcon || row.reserveDetail, 'dev-list__row--grouped': !!block.label }"
           class="dev-list__row"
           @mouseenter="showCard(row, $event)"
           @mouseleave="hideCard"
@@ -374,7 +374,7 @@ export default {
                 how much it needs the person. See workspace-status.ts.
               -->
               <span
-                v-if="row.detail || row.agentIcon"
+                v-if="row.detail || row.agentIcon || row.reserveDetail"
                 class="dev-list__detail"
                 :class="detailClass(row)"
               >{{ row.detail }}<i
@@ -700,10 +700,17 @@ export default {
       text-overflow: ellipsis;
       white-space:   nowrap;
       font-size:     11px;
+      line-height:   1;
       color:         var(--muted);
+      // Reserve the line even before the status has loaded, so the name above does not jump down
+      // when it arrives. A workspace row asks for this from the moment it appears (reserveDetail).
+      min-height:    13px;
 
       .icon {
-        font-size: 10px;
+        font-size:   10px;
+        // Centre the glyph on the text: align-items handles the box, line-height:1 drops the
+        // icon font's own vertical padding that made it sit high.
+        line-height: 1;
       }
 
       /*
