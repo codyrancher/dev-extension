@@ -745,18 +745,31 @@ async function workspaceNameConflict(name: string): Promise<string> {
  * and a static import the other way round is a cycle. This runs once per create, so the cost is
  * nothing.
  */
-async function resolveWorkspaceCluster(store: Store, values: Record<string, unknown>): Promise<string> {
+async function resolveWorkspaceCluster(store: Store, values: Record<string, unknown>): Promise<{ cluster: string; target: string }> {
   const rancherUrl = String(values.rancherUrl || '').replace(/\/$/, '');
+  // The local cluster is the same string both ways, which is why the bug below never showed
+  // until a workspace was pointed at a downstream.
+  const local = { cluster: activeCluster(), target: activeCluster() };
 
   if (!rancherUrl) {
-    return activeCluster();
+    return local;
   }
 
   const { listRanchers } = await import('./ranchers');
   const ranchers = await listRanchers(store).catch(() => []);
   const match = ranchers.find((rancher) => (rancher.url || '').replace(/\/$/, '') === rancherUrl);
 
-  return match && match.kind === 'instance' && match.phase === 'ready' && match.clusterId ? match.clusterId : activeCluster();
+  // Two names for one cluster, and they are not interchangeable. `clusterId` is the management
+  // id its API is addressed by (clusterBase, hostCluster, the LABEL_CLUSTER the pages read).
+  // `name` is what its Fleet Cluster object is called - the instance's own name for a Rancher
+  // provisioned in the sidebar - and Fleet targets a Bundle by that. Apps Plus places the
+  // Bundle in the Fleet workspace of the cluster whose *name* the target matches; hand it the
+  // management id and it matches no cluster, falls back to fleet-local, and deploys nowhere.
+  if (match && match.kind === 'instance' && match.phase === 'ready' && match.clusterId) {
+    return { cluster: match.clusterId, target: match.name };
+  }
+
+  return local;
 }
 
 export async function createWorkspace(store: Store, name: string, appId: string, cluster?: string, values: Record<string, unknown> = {}, title = ''): Promise<void> {
@@ -767,9 +780,12 @@ export async function createWorkspace(store: Store, name: string, appId: string,
   // a workspace pointed at this Rancher or at nothing stays local, where there is no downstream to
   // offload to. Everything else here already addresses a workspace by its own cluster, so setting
   // this is the whole of the move.
-  const target = cluster || await resolveWorkspaceCluster(store, values);
+  // `cluster` is the management id the workspace's API is addressed by; `target` is the Fleet
+  // cluster name its Bundle is aimed at. The same for local, different for a downstream - see
+  // resolveWorkspaceCluster. An explicit `cluster` argument names both (it is only ever local).
+  const resolved = cluster ? { cluster, target: cluster } : await resolveWorkspaceCluster(store, values);
 
-  setCluster(target);
+  setCluster(resolved.cluster);
 
   const app = await appById(store, appId);
 
@@ -791,7 +807,7 @@ export async function createWorkspace(store: Store, name: string, appId: string,
   // The Installation is the workspace. Apps Plus renders the App's templates into a Fleet
   // Bundle when it is saved, and Fleet makes the namespace, the Deployment and the Service on
   // the cluster - so from here on this file only reads them back.
-  await createWorkspaceInstance(store, name, appId, target, values);
+  await createWorkspaceInstance(store, name, appId, resolved.cluster, values, resolved.target);
 
   // What no App can render, because it is not the App's: the terminal scripts copied from this
   // pod's own seed, and the RoleBinding that lets the workspace read the shared claude
