@@ -9,6 +9,7 @@
 import { prDetail, DEFAULT_REPO } from './reviews';
 import { linkedPullRequest } from './github';
 import { conversationStates, ConversationState } from './conversations';
+import { setWorkspaceRunning } from './api';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -545,4 +546,109 @@ export async function workspaceStatuses(workspaces: { name: string; cluster?: st
   }
 
   return out;
+}
+
+// ── Spin down what is idle ────────────────────────────────────────────────────────────────
+//
+// A running dev server is two to three gigabytes the cluster does not get back until its pod
+// goes, and most of the time most workspaces are between conversations. This spins the idle ones
+// down; opening one starts it again (WorkspaceDetail). It runs in the browser, off the sidebar's
+// poll, on the agent states it already read - so an agent that is working or waiting on an answer
+// is never touched, and neither is a workspace on an open page. That is what makes it safe to do
+// without asking: the only thing it stops is a dev server nobody is using and no agent is in.
+
+/**
+ * How long a workspace's agent must have been idle, with nobody looking, before it is stopped.
+ * Long enough that stepping away for a coffee leaves it as you left it; short enough that a
+ * night of idle workspaces is not a cluster's memory held for nothing.
+ */
+const IDLE_STOP_MS = 45 * 60_000;
+
+const IDLE_KEY = 'dev-extension.idle-since';
+/** When each running workspace was first seen idle; cleared the instant it is busy again. */
+const idleSince = new Map<string, number>(hydrateIdle());
+/** The workspace a page is open on: never stopped from under the person reading it. */
+let viewing = '';
+/** A stop already in flight, so a slow scale is not asked for twice. */
+const stopping = new Set<string>();
+
+function hydrateIdle(): [string, number][] {
+  try {
+    return Object.entries(JSON.parse(sessionStorage.getItem(IDLE_KEY) || '{}'));
+  } catch {
+    return [];
+  }
+}
+
+function persistIdle(): void {
+  try {
+    sessionStorage.setItem(IDLE_KEY, JSON.stringify(Object.fromEntries(idleSince)));
+  } catch { /* a browser without storage forgets between polls, which only defers a stop */ }
+}
+
+/**
+ * Mark the workspace a page is open on, so the background never stops it; `''` on the way out.
+ * Called by WorkspaceDetail, because the one being watched is exactly the one a spin-down would
+ * be felt on.
+ */
+export function setViewing(name: string): void {
+  viewing = name || '';
+  if (viewing) {
+    idleSince.delete(viewing);
+    persistIdle();
+  }
+}
+
+type IdleWorkspace = { name: string; cluster?: string; preview?: boolean; state?: string; replicas?: number };
+
+/**
+ * Scale down workspaces whose agent has been idle for IDLE_STOP_MS and which nobody is looking
+ * at. Only local ones, which are the ones the agent states cover; `working` and `input` are
+ * never touched, so an autonomous agent - one running with no browser open - is safe. Errors are
+ * swallowed: a stop that does not take is asked for again next poll.
+ */
+export async function autoStopIdle(workspaces: IdleWorkspace[]): Promise<void> {
+  const now = Date.now();
+
+  // Blind is not idle. If the agent states have not been read successfully and recently - the
+  // agent pod is down, the token has expired - reading every workspace as `none` and stopping
+  // the lot would take working agents with it. So on stale state, stop nothing and wait.
+  if (!agentsAt || now - agentsAt > 2 * 60_000) {
+    return;
+  }
+
+  for (const w of workspaces) {
+    const local = (w.cluster || 'local') === 'local';
+    const running = w.state === 'running' || (w.replicas || 0) > 0;
+
+    // Not a candidate: forget any idle it had started to accrue, so a workspace that goes busy,
+    // stops, or is opened does not carry a stale clock into its next idle spell.
+    if (w.preview || !local || !running || w.name === viewing || stopping.has(w.name)) {
+      idleSince.delete(w.name);
+      continue;
+    }
+
+    const state = agents[w.name] || 'none';
+
+    // Busy or waiting on an answer. `none` on a running workspace is a dev server whose agent
+    // pane is gone - left up with no conversation - which is exactly what should spin down.
+    if (state === 'working' || state === 'input') {
+      idleSince.delete(w.name);
+      continue;
+    }
+
+    if (!idleSince.has(w.name)) {
+      idleSince.set(w.name, now);
+    }
+    if (now - (idleSince.get(w.name) as number) < IDLE_STOP_MS) {
+      continue;
+    }
+
+    stopping.add(w.name);
+    idleSince.delete(w.name);
+    setWorkspaceRunning(w.name, false, w.cluster || 'local')
+      .catch(() => { /* asked for again next poll */ })
+      .finally(() => stopping.delete(w.name));
+  }
+  persistIdle();
 }
