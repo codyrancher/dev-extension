@@ -44,6 +44,7 @@ import {
 import {
   WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB
 } from '../config/constants';
+import { setViewing } from '../workspace-status';
 
 const REFRESH_MS = 5000;
 
@@ -70,6 +71,9 @@ export default {
       error:        '',
       busy:         false,
       refreshTimer: null,
+      // Whether this open has already spun a stopped workspace back up. Once: the poll re-reads
+      // it as `starting`, and a second start would only race the first. See refresh.
+      autoStarted:  false,
       // Which tabs have been opened. Tab content is mounted on first activation and left
       // mounted afterwards: Tabbed hides an inactive tab with v-show rather than unmounting it,
       // so a terminal survives a trip to another tab, but a tab nobody opened should not have
@@ -185,12 +189,16 @@ export default {
 
   mounted() {
     rememberWorkspace(this.name);
+    // Held out of the background spin-down while this page is open: the one workspace being
+    // watched is the one a stop would be felt on. See setViewing / autoStopIdle.
+    setViewing(this.name);
     this.seen[this.tab] = true;
     this.refreshTimer = setInterval(() => this.refresh(), REFRESH_MS);
   },
 
   beforeUnmount() {
     clearInterval(this.refreshTimer);
+    setViewing('');
   },
 
   methods: {
@@ -260,6 +268,16 @@ export default {
       // it makes is about that workspace's cluster: see setCluster.
       if (this.workspace?.cluster) {
         setCluster(this.workspace.cluster);
+      }
+
+      // Opening a stopped workspace starts it: the spin-down (autoStopIdle) leaves idle ones
+      // stopped, and this is the "spin up" half - a workspace is here because someone came to
+      // use it. Once per open; the next poll reads it as `starting`.
+      if (!this.autoStarted && this.workspace?.state === 'stopped') {
+        this.autoStarted = true;
+        setWorkspaceRunning(this.name, true, this.workspace.cluster)
+          .then(() => this.refresh())
+          .catch(() => {});
       }
 
       // The sidebar is the workspace list, and this page is where someone watching one would
