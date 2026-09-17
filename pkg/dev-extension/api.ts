@@ -733,10 +733,43 @@ async function workspaceNameConflict(name: string): Promise<string> {
  * the workspace as Creating, and deleting it is one click. Tearing down half a workspace on
  * the user's behalf would be a guess about which half they wanted.
  */
-export async function createWorkspace(store: Store, name: string, appId: string, cluster?: string, values: Record<string, unknown> = {}, title = ''): Promise<void> {
-  if (cluster) {
-    setCluster(cluster);
+/**
+ * The cluster a new workspace should run on, from the Rancher it develops against.
+ *
+ * A workspace's `rancherUrl` is the Rancher it points at. When that is a downstream instance this
+ * pod provisioned - up, with a cluster of its own - the dev server belongs there, beside it. When
+ * it is this Rancher (the host) or unset, there is no downstream to move to, so it stays on the
+ * active (local) cluster, which is the behaviour every workspace had before.
+ *
+ * `ranchers` is imported lazily: it reads clusters and instances that this file's own helpers back,
+ * and a static import the other way round is a cycle. This runs once per create, so the cost is
+ * nothing.
+ */
+async function resolveWorkspaceCluster(store: Store, values: Record<string, unknown>): Promise<string> {
+  const rancherUrl = String(values.rancherUrl || '').replace(/\/$/, '');
+
+  if (!rancherUrl) {
+    return activeCluster();
   }
+
+  const { listRanchers } = await import('./ranchers');
+  const ranchers = await listRanchers(store).catch(() => []);
+  const match = ranchers.find((rancher) => (rancher.url || '').replace(/\/$/, '') === rancherUrl);
+
+  return match && match.kind === 'instance' && match.phase === 'ready' && match.clusterId ? match.clusterId : activeCluster();
+}
+
+export async function createWorkspace(store: Store, name: string, appId: string, cluster?: string, values: Record<string, unknown> = {}, title = ''): Promise<void> {
+  // Where the dev server runs: the cluster of the Rancher this workspace develops against, so the
+  // heavy pod (a dashboard checkout, its node_modules, a browser) sits next to that Rancher rather
+  // than piling onto the local cluster - which is what caps how many workspaces can run at once.
+  // An explicit `cluster` still wins; otherwise it is read from the workspace's `rancherUrl`, and
+  // a workspace pointed at this Rancher or at nothing stays local, where there is no downstream to
+  // offload to. Everything else here already addresses a workspace by its own cluster, so setting
+  // this is the whole of the move.
+  const target = cluster || await resolveWorkspaceCluster(store, values);
+
+  setCluster(target);
 
   const app = await appById(store, appId);
 
@@ -750,10 +783,15 @@ export async function createWorkspace(store: Store, name: string, appId: string,
     throw new Error(conflict);
   }
 
+  // The dev-api reconciles workspaces and tends their trees on the node they run on, so it has to
+  // exist on the cluster this one lands on, not only on local. Create-if-missing against the
+  // target; a no-op when it is already there (the local case, and any cluster used before).
+  await ensureWorkspaceApi();
+
   // The Installation is the workspace. Apps Plus renders the App's templates into a Fleet
   // Bundle when it is saved, and Fleet makes the namespace, the Deployment and the Service on
   // the cluster - so from here on this file only reads them back.
-  await createWorkspaceInstance(store, name, appId, activeCluster(), values);
+  await createWorkspaceInstance(store, name, appId, target, values);
 
   // What no App can render, because it is not the App's: the terminal scripts copied from this
   // pod's own seed, and the RoleBinding that lets the workspace read the shared claude
