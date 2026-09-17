@@ -35,6 +35,7 @@ import {
 import { GLOBAL_SECRETS } from '../secrets';
 import { listApps } from '../apps';
 import { readPrefs, savePrefs } from '../prefs';
+import { DEV_PRODUCT, BLANK_CLUSTER, SKILLS_ROUTE } from '../config/constants';
 
 export default {
   name: 'DevSettings',
@@ -77,6 +78,11 @@ export default {
   },
 
   computed: {
+    /** Where the Skills page is - a link here now, rather than its own shortcut in the rail. */
+    skillsTo() {
+      return { name: SKILLS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } };
+    },
+
     /**
      * The sections. One, now that templates are Apps Plus apps and carry their own values.
      *
@@ -308,6 +314,20 @@ export default {
         fields you changed.
       </p>
     </header>
+
+    <!-- Skills lives here now rather than as a rail shortcut of its own: it is something you set
+         up, like the secrets and the apps below it, not somewhere you go often. -->
+    <router-link
+      :to="skillsTo"
+      class="dev-settings__skills"
+    >
+      <i class="icon icon-file dev-settings__skills-glyph" />
+      <span class="dev-settings__skills-text">
+        <span class="dev-settings__skills-title">Skills</span>
+        <span class="dev-settings__skills-sub">View and edit the skills your agents run.</span>
+      </span>
+      <i class="icon icon-chevron-right dev-settings__skills-chev" />
+    </router-link>
 
     <Banner
       v-if="error"
@@ -626,6 +646,29 @@ export default {
       padding:       var(--dev-space-5);
       border:        1px solid var(--border);
       border-radius: var(--border-radius);
+    }
+
+    // The Skills link: a card you press to leave, so it reads as one of the cards but shows it
+    // goes somewhere with a chevron and lifts on hover.
+    &__skills {
+      display:         flex;
+      align-items:     center;
+      gap:             var(--dev-space-4);
+      max-width:       720px;
+      margin-bottom:   var(--dev-space-5);
+      padding:         var(--dev-space-4) var(--dev-space-5);
+      border:          1px solid var(--border);
+      border-radius:   var(--border-radius);
+      color:           var(--body-text);
+      text-decoration: none;
+
+      &:hover { background: var(--nav-hover, var(--accent-btn)); }
+
+      &-glyph { font-size: 20px; color: var(--muted); }
+      &-text  { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+      &-title { font-size: 14px; font-weight: 600; }
+      &-sub   { font-size: 12px; color: var(--muted); }
+      &-chev  { color: var(--muted); }
     }
 
     &__card-head {

@@ -898,6 +898,12 @@ export default {
       text-transform: uppercase;
 
       &:first-child { padding-top: 2px; }
+
+      // A group that sits under another - Reviewer below Developer, Other below either - wants
+      // clear air above it so the two read as separate lists rather than one run-on. A subhead
+      // right after a row is exactly that case; the first group heads the list and keeps its
+      // tight top above.
+      .dev-list__row + & { padding-top: var(--dev-space-5, 18px); }
     }
 
     &__subhead-glyph {
