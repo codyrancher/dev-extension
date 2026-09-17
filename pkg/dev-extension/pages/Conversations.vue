@@ -11,11 +11,14 @@
 // list. A workspace's stage conversations are reached from that workspace, not here.
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
-import Tabbed from '@shell/components/Tabbed';
 import Tab from '@shell/components/Tabbed/Tab';
+// Each tab carries its title, agent status and open-larger/close in its own header (the
+// `tab-header` slot), so there is no ConversationHeader bar nested under the strip - see
+// ConversationTabbed for why the shell strip had to be forked to allow that.
+import ConversationTabbed from '../components/tabbed/ConversationTabbed.vue';
+import ConversationTab from '../components/tabbed/ConversationTab.vue';
 import StudioTerminal from '../components/StudioTerminal.vue';
 import DevModal from '../components/DevModal.vue';
-import ConversationHeader from '../components/ConversationHeader.vue';
 import { listAllWorkspaces, globalBrowserUrl } from '../api';
 import {
   listConversations, endConversation, renameConversation, paneCommand, waitForStudio, reconnectConversation, reconnectEverything, conversationStates
@@ -83,7 +86,7 @@ export default {
   name: 'DevAgents',
 
   components: {
-    Banner, RcButton, Tabbed, Tab, StudioTerminal, DevModal, ConversationHeader
+    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, DevModal
   },
 
   async fetch() {
@@ -377,6 +380,11 @@ export default {
       }
     },
 
+    /** The conversation a tab is for; its `name` is the conversation uid (see the Tab loop). */
+    flatByTab(uid) {
+      return this.flatConversations.find((c) => c.uid === uid) || null;
+    },
+
     /** The group a conversation belongs to, for the header's rename and close. */
     groupOf(conversation) {
       return conversation ? this.groups.find((group) => group.workspace === conversation.workspace) : null;
@@ -454,7 +462,7 @@ export default {
         `use-hash` is off: the page keeps its place with `?c=` (see `rememberInRoute`), and a
         second writer of the route - the tab strip's own `#uid` - would only get in its way.
       -->
-      <Tabbed
+      <ConversationTabbed
         v-else
         class="dev-agents__tabs"
         :default-tab="current"
@@ -462,6 +470,22 @@ export default {
         flat
         @changed="onTab"
       >
+        <!--
+          The conversation's own controls, in its tab header: its name (renamed in place), what
+          its agent is doing, a way to open it larger and a way to close it - the bar that used to
+          sit under the strip, now in the tab itself so the tabs are not nested inside it.
+        -->
+        <template #tab-header="{ tab }">
+          <ConversationTab
+            v-if="flatByTab(tab.name)"
+            :conversation="flatByTab(tab.name)"
+            :agent="agents[flatByTab(tab.name).id] || 'none'"
+            :active="tab.active"
+            @rename="rename(groupOf(flatByTab(tab.name)), { key: tab.name, title: $event })"
+            @popout="popped = true; current = tab.name"
+            @close="end(groupOf(flatByTab(tab.name)), tab.name)"
+          />
+        </template>
         <Tab
           v-for="(c, i) in flatConversations"
           :key="c.uid"
@@ -470,18 +494,6 @@ export default {
           :tooltip="c.workspace || 'Agents drawer'"
           :weight="flatConversations.length - i"
         >
-          <!--
-            The conversation's own controls over its pane: its name (renamed in place), what its
-            agent is doing, a way to open it larger and a way to close it - the same bar the
-            stage's Conversations tab shows.
-          -->
-          <ConversationHeader
-            :conversation="c"
-            :agent="agents[c.id] || 'none'"
-            @rename="rename(groupOf(c), { key: c.uid, title: $event })"
-            @popout="popped = true; current = c.uid"
-            @close="end(groupOf(c), c.uid)"
-          />
           <StudioTerminal
             v-if="seen[c.uid] && !(popped && c.uid === current)"
             :session="c.uid"
@@ -490,7 +502,7 @@ export default {
             @state="onState(c.uid, $event)"
           />
         </Tab>
-      </Tabbed>
+      </ConversationTabbed>
       <!-- The larger view of the selected conversation, over the page. -->
       <DevModal
         v-if="popped && selected"
