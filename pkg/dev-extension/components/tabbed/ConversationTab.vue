@@ -1,12 +1,15 @@
 <script>
-// What one conversation's tab shows: its title (renamed in place), a dot for what its agent is
-// doing, and the two things the old ConversationHeader bar carried - open it larger, close it.
+// What one conversation's tab shows: a dot for what its agent is doing, its title (renamed in
+// place), and a rename and a close control. Deliberately identical to the agents panel's own tab
+// (AgentPanel, in the agents extension) - the same dot, the same two controls in the same places -
+// so the stage's conversation tabs and the drawer's read as one thing.
 //
-// It goes in ConversationTabbed's `tab-header` slot, so the conversation tabs carry all of this
-// themselves rather than nesting inside a second bar that repeated it. Purely presentational,
-// like ConversationHeader was: it emits, and the page that owns the conversation does the
-// renaming, popping and ending, because those are API calls and this is not where they live.
-import { agentIcon, agentLabel } from '../../workspace-status';
+// The larger view is not a button here: right-click a tab for it. A button for it made three
+// controls where the agents panel has two, which is what broke the match.
+//
+// It goes in ConversationTabbed's `tab-header` slot. Purely presentational: it emits, and the page
+// that owns the conversation does the renaming, popping and ending, because those are API calls.
+import { agentLabel } from '../../workspace-status';
 
 export default {
   name: 'ConversationTab',
@@ -41,10 +44,6 @@ export default {
   },
 
   computed: {
-    icon() {
-      return agentIcon(this.agent);
-    },
-
     label() {
       return agentLabel(this.agent);
     },
@@ -81,9 +80,12 @@ export default {
 </script>
 
 <template>
+  <!-- Right-click opens the conversation larger; the tab's own click (in ConversationTabbed) still
+       switches to it. -->
   <span
     class="conversation-tab"
     :class="{ 'conversation-tab--active': active }"
+    @contextmenu.prevent.stop="$emit('popout')"
   >
     <!--
       The name, double click to rename in place. The input swallows the clicks and keys it sits
@@ -104,95 +106,103 @@ export default {
       @keydown.stop
       @blur="commit"
     >
-    <span
-      v-else
-      class="conversation-tab__name"
-      :title="title"
-      @dblclick.stop.prevent="startRename"
-    >{{ title }}</span>
+    <template v-else>
+      <!-- What the agent is doing, as a dot before the title - the agents panel's dot, exactly. -->
+      <span
+        v-if="agent && agent !== 'none'"
+        class="conversation-tab__dot"
+        :class="`conversation-tab__dot--${ agent }`"
+        :title="label"
+      />
+      <span
+        class="conversation-tab__name"
+        :title="title"
+        @dblclick.stop.prevent="startRename"
+      >{{ title }}</span>
 
-    <!-- What the agent is doing, as a dot: the mark the sidebar and the rail use too. -->
-    <i
-      v-if="icon"
-      class="conversation-tab__status icon"
-      :class="[icon, `conversation-tab__status--${ agent }`]"
-      :title="label"
-    />
-
-    <!-- Rename, open larger, then close: on the tab on show, or on hover, so inactive tabs are
-         quiet. Rename is a button as well as the name's double-click, so it is findable. -->
-    <button
-      v-clean-tooltip="'Rename'"
-      type="button"
-      class="conversation-tab__control"
-      aria-label="Rename conversation"
-      @click.stop.prevent="startRename"
-    >
-      <i class="icon icon-edit" />
-    </button>
-    <button
-      v-clean-tooltip="'Open it larger'"
-      type="button"
-      class="conversation-tab__control"
-      aria-label="Open it larger"
-      @click.stop.prevent="$emit('popout')"
-    >
-      <i class="icon icon-external-link" />
-    </button>
-    <button
-      v-clean-tooltip="'Close conversation'"
-      type="button"
-      class="conversation-tab__control conversation-tab__control--close"
-      aria-label="Close conversation"
-      @click.stop.prevent="$emit('close')"
-    >
-      <i class="icon icon-close" />
-    </button>
+      <!-- Rename and close, on hover or focus, in reserved trailing space so the tab holds its
+           width. The rename pencil is left of the close, both at the tab's right edge. -->
+      <button
+        v-clean-tooltip="'Rename'"
+        type="button"
+        class="conversation-tab__control conversation-tab__control--rename"
+        aria-label="Rename conversation"
+        @click.stop.prevent="startRename"
+      >
+        <i class="icon icon-edit" />
+      </button>
+      <button
+        v-clean-tooltip="'Close conversation'"
+        type="button"
+        class="conversation-tab__control conversation-tab__control--close"
+        aria-label="Close conversation"
+        @click.stop.prevent="$emit('close')"
+      >
+        <i class="icon icon-close" />
+      </button>
+    </template>
   </span>
 </template>
 
 <style lang="scss" scoped>
   .conversation-tab {
-    display:     inline-flex;
+    position:    relative;
+    display:     flex;
     align-items: center;
-    gap:         6px;
     min-width:   0;
+    max-width:   200px;
+    // Trailing room for the two controls (close at 4px, rename at 26px, each 20px wide), reserved
+    // so they can appear on hover without moving the label - the agents panel's measure exactly.
+    padding-right: 48px;
+
+    // The agent's state as a filled dot, coloured by how much it wants a person. The same 7px
+    // circle and colours the agents panel's tabs use.
+    &__dot {
+      flex:          0 0 auto;
+      width:         7px;
+      height:        7px;
+      margin-right:  6px;
+      border-radius: 50%;
+      background:    var(--muted);
+
+      &--working {
+        background: var(--primary);
+        // Opacity-only pulse: the dot keeps its size, so the title never moves.
+        animation: conversation-tab-dot-pulse 1.4s ease-in-out infinite;
+      }
+
+      &--input    { background: var(--warning); }
+      &--finished { background: var(--success); }
+      &--idle     { background: var(--muted); }
+    }
 
     &__name {
       overflow:      hidden;
       text-overflow: ellipsis;
       white-space:   nowrap;
-      max-width:     220px;
+      min-width:     0;
     }
 
     &__rename {
-      height:    22px;
-      min-width: 0;
-      max-width: 220px;
-      padding:   0 6px;
-      font-size: 13px;
+      width:         100%;
+      min-width:     80px;
+      height:        22px;
+      padding:       0 6px;
+      border:        1px solid var(--border);
+      border-radius: 3px;
+      background:    var(--body-bg);
+      color:         var(--body-text);
+      font-size:     13px;
     }
 
-    // The agent's state, coloured by how much it wants a person - the same vocabulary as the
-    // rail's __agent and the sidebar's __agent.
-    &__status {
-      font-size: 11px;
-      color:     var(--muted);
-
-      &--working  { color: var(--primary); }
-      &--input    { color: var(--warning); }
-      &--finished { color: var(--success); }
-    }
-
-    // The controls are quiet until the tab is on show or the pointer is on it, so a strip of
-    // inactive tabs reads as titles and dots rather than a row of buttons. They hold their space
-    // the whole time (visibility, not display), so a tab does not change width when it is hovered.
-    // The same treatment the agents panel's tab controls have, which reads better than the
-    // filled square: a 20px glyph at 0.6 opacity, full and on a quiet hover surface when the
-    // pointer is on it. Held in layout (visibility) so the tab keeps its width.
+    // The controls: absolute in the reserved trailing space, hidden until the tab is on show or
+    // the pointer/focus is on it. A 20px glyph at 0.6 opacity, full on a quiet hover surface -
+    // the agents panel's tab-control, to the pixel.
     &__control {
-      display:         inline-flex;
-      visibility:      hidden;
+      display:         none;
+      position:        absolute;
+      top:             50%;
+      transform:       translateY(-50%);
       align-items:     center;
       justify-content: center;
       width:           20px;
@@ -210,10 +220,19 @@ export default {
 
       &:hover { opacity: 1; background: var(--default-hover-bg, var(--body-bg)); }
 
+      &--close { right: 4px; }
+      &--rename { right: 26px; }
+
       &--close:hover { color: var(--error); }
     }
 
     &--active .conversation-tab__control,
-    &:hover .conversation-tab__control { visibility: visible; }
+    &:hover .conversation-tab__control,
+    &:focus-within .conversation-tab__control { display: flex; }
+  }
+
+  @keyframes conversation-tab-dot-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
   }
 </style>
