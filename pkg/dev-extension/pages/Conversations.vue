@@ -1,24 +1,26 @@
 <script>
-// Agents: every conversation this person's workspaces are holding, in one place.
+// Agents: the drawer's own conversations, in one place, as a flat strip of tabs.
 //
-// A workspace's Conversations tab shows that workspace's; My Work starts them; this is where
-// they are all listed together - a review in one workspace, a fix in another, a discussion
-// under a comment - with the Studio's pane onto whichever is selected. The same pod behind all
-// of them (Extension Studio's agent), which is what makes one page of them possible: the list
-// is the pod's, by workspace, and a pane is the Studio's terminal pointed at one id.
+// A workspace's Conversations tab shows that workspace's; this page is for the free-standing
+// runs the agents drawer starts - a review, a fix, a discussion under a comment - the ones that
+// belong to no workspace. They all live in the one pod (Extension Studio's agent), which is what
+// lets one page hold them: each tab is the Studio's terminal pointed at one drawer conversation.
+//
+// It is a single Tabbed of every open drawer conversation, most-recent first - the same tab
+// strip the stage rail uses for its live agents (WorkspaceRail), rather than a per-workspace
+// list. A workspace's stage conversations are reached from that workspace, not here.
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
-import DevList from '../components/DevList.vue';
+import Tabbed from '@shell/components/Tabbed';
+import Tab from '@shell/components/Tabbed/Tab';
 import StudioTerminal from '../components/StudioTerminal.vue';
 import DevModal from '../components/DevModal.vue';
 import ConversationHeader from '../components/ConversationHeader.vue';
-import ClaudeLogo from '../components/ClaudeLogo.vue';
 import { listAllWorkspaces, globalBrowserUrl } from '../api';
 import {
   listConversations, endConversation, renameConversation, paneCommand, waitForStudio, reconnectConversation, reconnectEverything, conversationStates
 } from '../conversations';
 import { agentStateOf } from '../workspace-status';
-import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE } from '../config/constants';
 
 const REFRESH_MS = 10000;
 
@@ -56,22 +58,18 @@ function writeLastConversation(id) {
   }
 }
 
-const ROW_STATE = {
-  open: 'running', connecting: 'starting', waiting: 'starting', closed: 'stopped'
-};
-
 /**
  * A conversation's id is unique only inside its workspace: the pod each one lives in numbers its
  * own tmux sessions, so a workspace with a conversation `1` and another workspace with a
  * conversation `1` are two different conversations that share an id. Flattened into one list,
- * that id stops identifying a row - `current` matches both, both panes show, and the list picks
+ * that id stops identifying a tab - `current` matches both, both panes show, and the strip picks
  * whichever sorts first, which is how switching conversations landed on an unrelated chat.
  *
  * So the whole page tracks conversations by this composite instead: the workspace, which is
  * unique, and the id, which is unique within it. Workspace names are DNS-1123 and cannot contain
  * a slash, so the join is unambiguous and `convId` can take the id back off when a call needs
  * the bare one (the pod only knows its own numbering). The drawer's workspace is the empty
- * string, so its conversations are `/1`, `/2` - still distinct from any real workspace's.
+ * string, so its conversations are `/agent-1`, `/agent-2` - the ones this page shows.
  */
 function convUid(workspace, id) {
   return `${ workspace }/${ id }`;
@@ -85,7 +83,7 @@ export default {
   name: 'DevAgents',
 
   components: {
-    Banner, RcButton, DevList, StudioTerminal, DevModal, ConversationHeader, ClaudeLogo
+    Banner, RcButton, Tabbed, Tab, StudioTerminal, DevModal, ConversationHeader
   },
 
   async fetch() {
@@ -97,11 +95,11 @@ export default {
     // it beats the memory. The memory is what makes opening this page from the nav come back to
     // what you were reading rather than to whatever sorts first.
     //
-    // Both are checked against the conversations that actually exist: one that has ended is not
-    // one to reopen, and the list is already loaded by the time this runs.
+    // Both are checked against the drawer conversations that actually exist: one that has ended,
+    // or a workspace's stage conversation that is not shown here, is not one to reopen.
     const wanted = [this.$route.query.c, readLastConversation()]
       .map((id) => String(id || ''))
-      .find((id) => id && this.all.some((c) => c.uid === id));
+      .find((id) => id && this.flatConversations.some((c) => c.uid === id));
 
     if (wanted) {
       this.select(wanted);
@@ -124,30 +122,6 @@ export default {
       seen:    {},
       error:   '',
       timer:   null,
-      /**
-       * Whether the list of conversations is showing.
-       *
-       * It was a column that was always there, so the pane - a terminal, or a chat - never had
-       * the page, and on a phone the list and its workspace headings pushed the conversation
-       * off the bottom entirely. A conversation is a thing you read; the list is a thing you
-       * use once to choose which one. That is a menu, not furniture. Closed by default, and
-       * closed again by picking something.
-       *
-       * This accordion is the phone layout only. On a wide screen the list is a column that
-       * is always there beside the pane (see the styles), so `listOpen` and the header toggle
-       * do nothing there - `isMobile` is what gates all of it.
-       */
-      listOpen: false,
-
-      /**
-       * Whether we are at the phone width where the list is an accordion rather than a column.
-       *
-       * Read from the same `760px` breakpoint the styles use, so the two never disagree, and
-       * kept in step with a matchMedia listener rather than a resize handler that fires on
-       * every pixel. It is what turns the header from a plain title bar (wide) into the button
-       * that opens the list (narrow).
-       */
-      isMobile: false,
     };
   },
 
@@ -158,28 +132,25 @@ export default {
       })));
     },
 
-    selected() {
-      return this.all.find((c) => c.uid === this.current) || null;
-    },
-
-    /** How many there are, for the button that opens the list. */
-    total() {
-      return this.all.length;
-    },
-
     /**
-     * What the header says between the heading and the count.
+     * The tabs: the drawer's own conversations only, most-recent first.
      *
-     * On a phone the header is the control: "Pick one" while the list is open, the open
-     * conversation's name while it is closed. On a wide screen the list is always beside the
-     * pane, so there is nothing to pick from the header - it just names what is showing.
+     * `!c.workspace` is the whole filter - a drawer run carries the empty workspace, a
+     * workspace's stage conversation carries its name (see `refresh`), so this keeps the
+     * free-standing runs and drops every workspace's. There is no timestamp on a drawer
+     * session, so recency is read off its id: the drawer numbers them `agent-1`, `agent-2`, …
+     * in the order they were opened, so the larger the trailing number the newer it is.
      */
-    headerLabel() {
-      if (this.isMobile) {
-        return this.listOpen ? 'Pick one' : (this.selected ? this.selected.title : 'Pick one');
-      }
+    flatConversations() {
+      const seq = (c) => Number(String(c.id).match(/(\d+)$/)?.[1] || 0);
 
-      return this.selected ? this.selected.title : '';
+      return this.all
+        .filter((c) => !c.workspace)
+        .sort((a, b) => seq(b) - seq(a));
+    },
+
+    selected() {
+      return this.flatConversations.find((c) => c.uid === this.current) || null;
     },
   },
 
@@ -200,21 +171,11 @@ export default {
     // what each conversation's claude is doing.
     this.refreshAgents();
     this.agentsTimer = setInterval(() => this.refreshAgents(), 15000);
-
-    // The phone/desktop split, read from the one breakpoint the styles use. matchMedia rather
-    // than a resize listener: it fires only when the answer actually changes.
-    this.mediaQuery = window.matchMedia('(max-width: 760px)');
-    this.isMobile = this.mediaQuery.matches;
-    this.onMediaChange = (e) => {
-      this.isMobile = e.matches;
-    };
-    this.mediaQuery.addEventListener('change', this.onMediaChange);
   },
 
   beforeUnmount() {
     clearInterval(this.timer);
     clearInterval(this.agentsTimer);
-    this.mediaQuery?.removeEventListener('change', this.onMediaChange);
   },
 
   methods: {
@@ -240,7 +201,8 @@ export default {
         })));
 
         // The agents drawer's own conversations first: agent runs are those (agent-defs.ts),
-        // and this is where a run's output is read.
+        // and this is where a run's output is read. It is the group with the empty workspace,
+        // which is the one this page keeps (see `flatConversations`).
         const api = await waitForStudio().catch(() => null);
 
         if (api) {
@@ -259,7 +221,7 @@ export default {
         this.groups = groups.filter((group) => group.conversations.length);
         this.error = '';
 
-        if (this.current && !this.all.some((c) => c.uid === this.current)) {
+        if (this.current && !this.flatConversations.some((c) => c.uid === this.current)) {
           this.current = '';
         }
       } catch (e) {
@@ -282,39 +244,22 @@ export default {
       this.agents = next;
     },
 
-    rows(group) {
-      // Keyed by the composite uid, because `current` is one - a row highlights, and selecting
-      // it opens, the conversation the uid names rather than any other workspace's same-numbered
-      // one. The state map is keyed the same way (see `onState`).
-      return group.conversations.map((c) => {
-        const uid = convUid(group.workspace, c.id);
-
-        return {
-          key:   uid,
-          label: c.title,
-          state: ROW_STATE[this.states[uid]] || 'stopped',
-        };
-      });
-    },
-
     select(uid) {
       this.current = uid;
       this.seen = { ...this.seen, [uid]: true };
     },
 
-    /** The header is a button only on a phone; on a wide screen the list is already showing. */
-    toggleList() {
-      if (this.isMobile) {
-        this.listOpen = !this.listOpen;
-      }
+    /** Tabbed says which tab is on show; that is the conversation we track and remember. */
+    onTab({ tab }) {
+      this.select(tab.name);
     },
 
     /**
      * Make the pane that just became current actually redraw.
      *
-     * Every pane stays mounted behind `v-show` so its terminal socket survives a switch (see
-     * the `v-for` below). But a terminal that has been `display: none` can lose the canvas it
-     * had drawn, and when it reappears at the same size the terminal only re-fits - which does
+     * Every pane that has been opened stays mounted behind Tabbed's `v-show` so its terminal
+     * socket survives a switch. But a terminal that has been `display: none` can lose the canvas
+     * it had drawn, and when it reappears at the same size the terminal only re-fits - which does
      * nothing when the size has not changed - so it sits blank, still showing the frame from
      * before. The terminal itself recovers on window focus and on `visibilitychange`, which is
      * exactly why switching browser tabs and back "fixed" a stale pane. Do that recovery here
@@ -333,21 +278,9 @@ export default {
       });
     },
 
-    /** The bare, pod-local id behind a row's composite key, for the calls that reach the pod. */
+    /** The bare, pod-local id behind a tab's composite key, for the calls that reach the pod. */
     idFor(group, uid) {
       return convId(group.workspace, uid);
-    },
-
-    /**
-     * Choosing from the list, which is the only thing the list is for, so it closes.
-     *
-     * Separate from `select` because `fetch` also selects - the `?c=` a link from an agent run
-     * arrives with - and that must not leave the list hanging open over the conversation it
-     * was asked to show.
-     */
-    pick(uid) {
-      this.select(uid);
-      this.listOpen = false;
     },
 
     /**
@@ -377,12 +310,6 @@ export default {
       }
 
       this.$router.replace({ query }).catch(() => {});
-    },
-
-    workspaceTo(name) {
-      return {
-        name: WORKSPACE_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: name }, hash: '#conversations',
-      };
     },
 
     onState(uid, state) {
@@ -450,26 +377,9 @@ export default {
       }
     },
 
-    /** The group the selected conversation belongs to, for the header's rename and close. */
+    /** The group a conversation belongs to, for the header's rename and close. */
     groupOf(conversation) {
       return conversation ? this.groups.find((group) => group.workspace === conversation.workspace) : null;
-    },
-
-    /** The header renames the one showing; it emits the new title, we know which one that is. */
-    renameSelected(title) {
-      const group = this.groupOf(this.selected);
-
-      if (group) {
-        this.rename(group, { key: this.selected.uid, title });
-      }
-    },
-
-    closeSelected() {
-      const group = this.groupOf(this.selected);
-
-      if (group) {
-        this.end(group, this.selected.uid);
-      }
     },
   },
 };
@@ -477,203 +387,126 @@ export default {
 
 <template>
   <div class="dev-conversations">
-    <!-- Every conversation in every workspace, live, with a pane onto the one picked. -->
+    <!-- Every drawer conversation, live, as one flat strip of tabs. -->
     <section class="dev-live">
+      <Banner
+        v-if="error"
+        color="error"
+        :label="error"
+      />
       <!--
-        The header exists on a phone only. There, the list and the pane cannot both fit, so
-        the bar is the control - pressing it opens the list over the whole page and pressing it
-        again gives the page back to the conversation. One thing on screen at a time, which is
-        what both want on a phone: a list is for scanning and a conversation is for reading, and
-        neither is improved by having half the height. On a wide screen the list is always the
-        column on the left beside the pane, so there is nothing to toggle and no title bar to
-        spend the height on - the two columns take the whole page, edge to edge.
+        The page's own controls, above the strip: the shared GitHub browser (one Chromium every
+        agent uses for github.com - a person signs it in once here, then agents upload PR media
+        through it), and, for the conversation on show, the two restart buttons.
+
+        Restarting is a person's decision rather than a timer's: claude is stopped and started
+        again on the same conversation, which is how a pane picks up a login refreshed while it
+        was running.
       -->
-      <header
-        v-if="isMobile"
-        class="dev-live__head"
-        role="button"
-        :tabindex="0"
-        :aria-expanded="String(listOpen)"
-        @click="toggleList"
-        @keydown.enter.prevent="toggleList"
-        @keydown.space.prevent="toggleList"
-      >
-        <ClaudeLogo class="dev-live__logo" />
-        <!--
-          "Conversations" on a phone and "Live conversations" above it. Two words wrapped onto
-          two lines at 390px, and "Live" is the half that is doing the least work: the page is
-          about conversations, and that they are the live ones is what the subtitle said.
-        -->
-        <h2 class="dev-live__title">
-          <span class="dev-live__title-live">Live </span>conversations
-        </h2>
-        <!--
-          The list, behind one button, beside the title rather than after the subtitle: it is
-          the control on this page and a sentence was pushing it to the far edge. What it says
-          is which conversation is open, because that is the question somebody arriving here
-          has; the list answers a different one - which others there are - asked once.
-        -->
-        <span class="dev-agents__toggle-title">{{ headerLabel }}</span>
+      <div class="dev-agents__toolbar">
+        <RcButton
+          variant="secondary"
+          size="small"
+          @click="openBrowser"
+        >
+          Open GitHub browser
+        </RcButton>
         <span
-          v-if="total"
-          class="dev-agents__toggle-count"
-        >{{ total }}</span>
-        <i
-          v-if="isMobile"
-          class="dev-agents__toggle-chevron"
-          :class="listOpen ? 'icon icon-chevron-up' : 'icon icon-chevron-down'"
-        />
-      </header>
-      <div
-        class="dev-agents"
-        :class="{ 'dev-agents--list-open': listOpen }"
+          v-if="restartNote"
+          class="dev-agents__note text-muted"
+        >{{ restartNote }}</span>
+        <template v-if="selected">
+          <button
+            type="button"
+            class="btn role-tertiary btn-sm"
+            :disabled="restarting"
+            title="Stop claude in this conversation and start it again on the same conversation"
+            data-testid="dev-restart-one"
+            @click="restart(false)"
+          >
+            <i class="icon icon-refresh" /> Restart
+          </button>
+          <button
+            type="button"
+            class="btn role-tertiary btn-sm"
+            :disabled="restarting"
+            title="Restart every conversation in the drawer"
+            data-testid="dev-restart-all"
+            @click="restart(true)"
+          >
+            Restart all here
+          </button>
+        </template>
+      </div>
+      <p
+        v-if="!flatConversations.length"
+        class="dev-agents__empty text-muted"
       >
-        <div class="dev-agents__list">
+        No conversations are open. Start one from a workspace's Conversations tab, from My Work, or from an agent above.
+      </p>
+      <!--
+        One Tabbed of every drawer conversation - the product's own tab strip, the same one the
+        stage rail draws its live agents with. It hides an inactive tab with v-show rather than
+        unmounting it, so a terminal, once opened, keeps its socket while another tab is on show;
+        `seen` is what stops one being drawn for a tab nobody has looked at yet, and the popped
+        guard hands the session to the modal while it is up so the two do not fight over it.
+
+        `use-hash` is off: the page keeps its place with `?c=` (see `rememberInRoute`), and a
+        second writer of the route - the tab strip's own `#uid` - would only get in its way.
+      -->
+      <Tabbed
+        v-else
+        class="dev-agents__tabs"
+        :default-tab="current"
+        :use-hash="false"
+        flat
+        @changed="onTab"
+      >
+        <Tab
+          v-for="(c, i) in flatConversations"
+          :key="c.uid"
+          :name="c.uid"
+          :label="c.title || 'Conversation'"
+          :tooltip="c.workspace || 'Agents drawer'"
+          :weight="flatConversations.length - i"
+        >
           <!--
-            The shared GitHub browser: one Chromium every agent uses for github.com. A person
-            signs it into GitHub once here, and agents upload PR media through it. Opens in a new
-            tab, where signing in actually works.
-          -->
-          <div class="dev-agents__browser">
-            <RcButton
-              variant="secondary"
-              size="small"
-              @click="openBrowser"
-            >
-              Open GitHub browser
-            </RcButton>
-          </div>
-          <p
-            v-if="!groups.length"
-            class="dev-agents__empty text-muted"
-          >
-            No conversations are open. Start one from a workspace's Conversations tab, from My Work, or from an agent above.
-          </p>
-          <template
-            v-for="group in groups"
-            :key="group.workspace || '@drawer'"
-          >
-            <router-link
-              v-if="group.workspace"
-              class="dev-agents__workspace"
-              :to="workspaceTo(group.workspace)"
-            >
-              {{ group.workspace }}
-            </router-link>
-            <span
-              v-else
-              class="dev-agents__workspace dev-agents__workspace--drawer"
-              title="The agents drawer's own conversations, the strip at the bottom of every page; agent runs are these"
-            >agents</span>
-            <DevList
-              label=""
-              :rows="rows(group)"
-              :current="current"
-              deletable
-              renamable
-              empty=""
-              class="dev-agents__group"
-              @select="pick"
-              @delete="end(group, $event)"
-              @rename="rename(group, $event)"
-            />
-          </template>
-        </div>
-        <!--
-          `v-show`, never `v-if`: each of these is a live exec socket onto a pod, and unmounting
-          the pane to show the list would drop every one of them and start again on the way
-          back.
-        -->
-        <div class="dev-agents__pane">
-          <Banner
-            v-if="error"
-            color="error"
-            :label="error"
-          />
-          <!--
-            Restarting a conversation is a person's decision rather than a timer's: claude is
-            stopped and started again on the same conversation, which is how a pane picks up a
-            login that was refreshed while it was running.
-          -->
-          <div
-            v-if="selected"
-            class="dev-agents__tools"
-          >
-            <span
-              v-if="restartNote"
-              class="dev-agents__note text-muted"
-            >{{ restartNote }}</span>
-            <button
-              type="button"
-              class="btn role-tertiary btn-sm"
-              :disabled="restarting"
-              title="Stop claude in this conversation and start it again on the same conversation"
-              data-testid="dev-restart-one"
-              @click="restart(false)"
-            >
-              <i class="icon icon-refresh" /> Restart
-            </button>
-            <button
-              type="button"
-              class="btn role-tertiary btn-sm"
-              :disabled="restarting"
-              :title="selected.workspace ? `Restart every conversation in ${ selected.workspace }` : 'Restart every conversation in the drawer'"
-              data-testid="dev-restart-all"
-              @click="restart(true)"
-            >
-              Restart all here
-            </button>
-          </div>
-          <!--
-            The conversation's own controls over its pane: its name (renamed in place), what
-            its agent is doing, a way to open it larger and a way to close it - the same bar the
+            The conversation's own controls over its pane: its name (renamed in place), what its
+            agent is doing, a way to open it larger and a way to close it - the same bar the
             stage's Conversations tab shows.
           -->
           <ConversationHeader
-            v-if="selected"
-            :conversation="selected"
-            :agent="agents[selected.id] || 'none'"
-            @rename="renameSelected"
-            @popout="popped = true"
-            @close="closeSelected"
+            :conversation="c"
+            :agent="agents[c.id] || 'none'"
+            @rename="rename(groupOf(c), { key: c.uid, title: $event })"
+            @popout="popped = true; current = c.uid"
+            @close="end(groupOf(c), c.uid)"
           />
-          <p
-            v-if="!selected"
-            class="dev-agents__hint text-muted"
-          >
-            {{ isMobile ? 'Open the picker above to choose one' : 'Choose a conversation from the list' }}: the drawer's run in the agents pod, a workspace's in its own; this pane reaches either through the agents extension's terminal, chat view included.
-          </p>
-          <template
-            v-for="c in all"
-            :key="c.uid"
-          >
-            <StudioTerminal
-              v-if="seen[c.uid] && !(popped && c.uid === current)"
-              v-show="c.uid === current"
-              :session="c.uid"
-              :command="paneFor(c)"
-              class="dev-agents__terminal"
-              @state="onState(c.uid, $event)"
-            />
-          </template>
-          <!-- The larger view of the selected conversation, over the page. -->
-          <DevModal
-            v-if="popped && selected"
-            :title="selected.workspace ? `${ selected.workspace } · ${ selected.title || 'conversation' }` : (selected.title || 'conversation')"
-            @close="popped = false"
-          >
-            <div class="dev-agents__popped">
-              <StudioTerminal
-                :key="`pop-${ selected.uid }`"
-                :session="selected.uid"
-                :command="paneFor(selected)"
-                class="dev-agents__terminal"
-                @state="onState(selected.uid, $event)"
-              />
-            </div>
-          </DevModal>
+          <StudioTerminal
+            v-if="seen[c.uid] && !(popped && c.uid === current)"
+            :session="c.uid"
+            :command="paneFor(c)"
+            class="dev-agents__terminal"
+            @state="onState(c.uid, $event)"
+          />
+        </Tab>
+      </Tabbed>
+      <!-- The larger view of the selected conversation, over the page. -->
+      <DevModal
+        v-if="popped && selected"
+        :title="selected.title || 'conversation'"
+        @close="popped = false"
+      >
+        <div class="dev-agents__popped">
+          <StudioTerminal
+            :key="`pop-${ selected.uid }`"
+            :session="selected.uid"
+            :command="paneFor(selected)"
+            class="dev-agents__terminal"
+            @state="onState(selected.uid, $event)"
+          />
         </div>
-      </div>
+      </DevModal>
     </section>
   </div>
 </template>
@@ -695,159 +528,39 @@ export default {
     min-height:     0;
     min-width:      0;
     overflow:       hidden;
-    // No outer padding: on a wide screen the two columns take the whole page, and on a phone
-    // the media query below already goes edge to edge. The page is the conversation; the space
-    // belongs to it, not to a frame around it.
     padding:        0;
   }
 
   .dev-live {
     display:        flex;
     flex-direction: column;
-    // Edge to edge, no frame: no margin, border or radius boxing the conversation in. The
-    // list/pane split carries its own divider (the list's border-right), which is the only
-    // line this layout needs.
     background:     var(--body-bg);
     flex:           1 1 auto;
     min-height:     0;
     min-width:      0;
     overflow:       hidden;
-
-    /*
-     * The title bar, which is the accordion.
-     *
-     * `center`, not `baseline`: a 16px mark, a 14px heading, an 11px count and a 12px chevron
-     * on one baseline is four things at four different heights, which is what it looked like.
-     * Centred, they are a row.
-     */
-    &__head {
-      display:       flex;
-      align-items:   center;
-      gap:           var(--dev-space-3);
-      min-height:    40px;
-      padding:       var(--dev-space-2) var(--dev-space-4);
-      border-bottom: 1px solid var(--border);
-      cursor:        pointer;
-      user-select:   none;
-
-      &:hover { background: var(--tabbed-container-bg); }
-      &:focus-visible { outline: 1px solid var(--link); outline-offset: -2px; }
-    }
-
-    &__logo { flex: 0 0 auto; color: var(--dev-accent); font-size: 16px; }
-    &__title { flex: 0 0 auto; margin: 0; font-size: 14px; font-weight: 600; white-space: nowrap; }
-    &__sub { flex: 1 1 auto; min-width: 0; font-size: 12px; }
   }
 
   .dev-agents {
-
-  &__tools {
-    display:         flex;
-    align-items:     center;
-    justify-content: flex-end;
-    gap:             var(--dev-space-2);
-    padding:         var(--dev-space-2) var(--dev-space-3);
-    border-bottom:   1px solid var(--border);
-  }
-
-  &__note { font-size: 12px; margin-right: auto; }
-    display:    flex;
-    flex:       1 1 auto;
-    min-height: 0;
-    min-width:  0;
-    overflow:   hidden;
-
-    /*
-     * The conversation's name: everything between the heading and the count.
-     *
-     * `flex: 1 1 auto` is what puts the count and the chevron at the right-hand edge. Without
-     * it they sat immediately after the name, which left the bar looking like a label with
-     * punctuation after it rather than a control spanning the row.
-     */
-    &__toggle-title {
-      flex:          1 1 auto;
-      min-width:     0;
-      overflow:      hidden;
-      text-overflow: ellipsis;
-      white-space:   nowrap;
-      color:         var(--muted);
-      font-size:     13px;
-    }
-
-    // The right-hand end of the bar, always, however short the name is.
-    &__toggle-chevron {
-      flex:        0 0 auto;
-      margin-left: var(--dev-space-2);
-      color:       var(--muted);
-      font-size:   12px;
-    }
-
-    &__toggle-count {
-      // A count, not a badge: it was rendering as a wide oval taller than the text beside it.
-      min-width:     16px;
-      padding:       0 var(--dev-space-2);
-      border-radius: 8px;
-      background:    var(--tabbed-container-bg);
-      color:         var(--muted);
-      font-size:     11px;
-      line-height:   16px;
-      text-align:    center;
-    }
-
-    /*
-     * On a wide screen the list is a column that is always there, on the left of the pane -
-     * the layout a desktop app would give it, where choosing one is a click on a list you can
-     * already see rather than a click to reveal the list first. On a phone there is no room
-     * for two columns, so the title bar becomes an accordion and this turns into the half that
-     * takes the whole screen when it is open (see the `760px` media query at the end).
-     *
-     * It was once `position: absolute` with a capped width and height - a dropdown, a 300px
-     * column of names against an empty screen while most of the page sat unused behind it.
-     */
-    &__list {
-      flex:           0 0 260px;
-      min-height:     0;
-      display:        flex;
-      flex-direction: column;
-      overflow-y:     auto;
-      padding:        var(--dev-space-3) 0;
-      border-right:   1px solid var(--border);
-
-      /*
-       * Each group's DevList is given no label, because the workspace name is already rendered
-       * above it - but an empty label still draws a heading row, and at a row's height each.
-       * With five workspaces open that is five blank rows in a menu, which is most of the
-       * reason it needed scrolling at all.
-       */
-      :deep(.dev-list__head) { display: none; }
-    }
-
-    &__empty, &__hint { padding: var(--dev-space-4); margin: 0; font-size: 13px; }
-
-    // The shared GitHub browser control, at the top of the conversation list.
-    &__browser {
-      padding:       var(--dev-space-3, 8px) var(--dev-space-4, 12px);
+    // The row above the strip: the GitHub browser on the left, the restart controls pushed to
+    // the right, the restart note between them.
+    &__toolbar {
+      display:       flex;
+      align-items:   center;
+      gap:           var(--dev-space-2);
+      padding:       var(--dev-space-2) var(--dev-space-3);
       border-bottom: 1px solid var(--border);
+
+      // Everything after the browser button is a restart control; the note takes the slack so
+      // they sit at the right-hand edge.
+      .dev-agents__note { margin-left: auto; }
+      .btn:first-of-type { margin-left: auto; }
+      .dev-agents__note + .btn { margin-left: 0; }
     }
 
-    &__workspace {
-      display:     block;
-      padding:     var(--dev-space-3) var(--dev-space-4) 0;
-      font-family: monospace;
-      font-size:   12px;
-      color:       var(--muted);
-    }
+    &__note { font-size: 12px; }
 
-    &__group { flex: 0 0 auto; }
-
-    &__pane {
-      display:        flex;
-      flex-direction: column;
-      flex:           1 1 auto;
-      min-width:      0;
-      min-height:     0;
-      overflow:       hidden;
-    }
+    &__empty { padding: var(--dev-space-4); margin: 0; font-size: 13px; }
 
     &__terminal { flex: 1 1 auto; min-height: 0; }
 
@@ -857,56 +570,46 @@ export default {
       flex-direction: column;
       height:         calc(100vh - 140px);
     }
+
+    /*
+     * The flat tab strip fills the page under the toolbar. Tabbed wraps its panes in
+     * `.tab-container`, and each pane is a `[role="tabpanel"]` section it shows with `v-show`;
+     * both have to become height-filling flex columns for the terminal inside the active one to
+     * get the space, which they are not by default (the shell sizes them for forms).
+     */
+    &__tabs {
+      display:        flex;
+      flex-direction: column;
+      flex:           1 1 auto;
+      min-height:     0;
+      min-width:      0;
+
+      :deep(.tab-container) {
+        display:        flex;
+        flex-direction: column;
+        flex:           1 1 auto;
+        min-height:     0;
+        min-width:      0;
+        padding:        0;
+      }
+
+      // v-show sets `display: none` on an inactive pane, which wins over this; the active one
+      // becomes the flex column that gives its header and terminal their heights.
+      :deep(.tab-container > [role="tabpanel"]) {
+        display:        flex;
+        flex-direction: column;
+        flex:           1 1 auto;
+        min-height:     0;
+        min-width:      0;
+      }
+    }
   }
 
-/* ── Phones: the list is a short scroller above the pane, not a column beside it. ── */
+/* ── Phones: the strip scrolls sideways rather than becoming a column. Nothing else to do:
+      Tabbed's horizontal tablist already scrolls, and the pane below it takes the rest. ── */
 @media (max-width: 760px) {
   .dev-conversations { padding: 0; }
 
-  // Edge to edge: 20px of margin either side of a 390px screen is a tenth of the conversation
-  // spent on a border.
   .dev-live { margin: 0; border-left: 0; border-right: 0; border-radius: 0; }
-
-  .dev-live__head {
-    gap:        var(--dev-space-3);
-    /*
-     * The same inset as the bar above it and the conversation below it.
-     *
-     * It was 6px between a 10px top bar and a 10px chat log, so the one element between them
-     * was the one that did not line up - and it is the widest thing on the page, so the step
-     * showed on both edges at once.
-     */
-    padding:    var(--dev-space-3) var(--dev-space-4);
-    // One row: this is a control now, and one that reflows to two lines when the name is long
-    // is a control that moves under your thumb as you reach for it.
-    flex-wrap:  nowrap;
-    min-height: 44px;
-  }
-
-  // "Live conversations" wrapped to two lines beside the logo. The page is about
-  // conversations; that they are the live ones is what the subtitle was for, and the subtitle
-  // is the first thing to go when the screen is 390px and the conversation is the point of it.
-  .dev-live__title-live { display: none; }
-  .dev-live__sub { display: none; }
-
-  .dev-agents {
-    /*
-     * Phone: the list is no longer a column beside the pane, it is the accordion the header
-     * opens. Closed, the pane has the screen; open, the list does. Whichever is showing gets
-     * all of it, which on a phone is the whole point.
-     */
-    &__list {
-      display:      none;
-      flex:         1 1 auto;
-      border-right: 0;
-    }
-
-    &__pane, &__list { min-height: 0; }
-  }
-
-  .dev-agents--list-open {
-    .dev-agents__list { display: flex; }
-    .dev-agents__pane { display: none; }
-  }
 }
 </style>
