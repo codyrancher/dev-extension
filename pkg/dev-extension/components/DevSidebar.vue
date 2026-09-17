@@ -57,16 +57,6 @@ function roleOf(name) {
   return /(^|-)issue-\d+(-|$)/.test(name) ? 'developer' : 'other';
 }
 
-/**
- * The name to show in a row, with the `issue-`/`pr-` prefix dropped so the title beside it has
- * the width. The prefix said which kind of work this is, but the role grouping (Developer for
- * issues, Reviewer for PRs) already says that, so on a row it was only spending characters. The
- * number stays - it is what a workspace is called - and the full name is still on the row's hover
- * card. `roleOf` reads the untouched name, so grouping is unaffected.
- */
-function displayName(name) {
-  return name.replace(/(^|-)(?:issue|pr)-(\d+)/, '$1$2');
-}
 
 const CLUSTERS_OPEN_KEY = 'dev.sidebar.clusters.open';
 
@@ -584,18 +574,21 @@ export default {
     },
 
     /**
-     * A workspace row's label: the name with its `issue-`/`pr-` prefix dropped (see
-     * `displayName`), then the issue or PR title it was started from where there is one, so
-     * `19001` and `19078` are told apart at a glance. The cluster is appended only when it is
-     * not the local one, which is where most workspaces are. The title is trimmed to a row's
-     * worth rather than wrapped.
+     * A workspace row's label: the issue or PR title it was started from, or - for a workspace
+     * with no title yet - its `issue-`/`pr-` name. The cluster is appended only when it is not
+     * the local one, which is where most workspaces are. The title is trimmed to a row's worth
+     * rather than wrapped; the full name and title are on the row's hover card.
      */
     rowLabel(workspace) {
-      const parts = [displayName(workspace.name)];
-
-      if (workspace.title) {
-        parts.push(workspace.title.length > 42 ? `${ workspace.title.slice(0, 42).trimEnd() }…` : workspace.title);
-      }
+      // The title is the label when there is one: the row's job is to say which piece of work
+      // this is, and the title does that better than a number. The `issue-`/`pr-` name is the
+      // fallback for a workspace with no title yet - and there it keeps its prefix, because the
+      // bare number would be a mystery with nothing beside it. The full name is always on the
+      // row's hover card either way.
+      const title = workspace.title
+        ? (workspace.title.length > 42 ? `${ workspace.title.slice(0, 42).trimEnd() }…` : workspace.title)
+        : '';
+      const parts = [title || workspace.name];
 
       if (workspace.cluster && workspace.cluster !== 'local') {
         parts.push(workspace.cluster);
