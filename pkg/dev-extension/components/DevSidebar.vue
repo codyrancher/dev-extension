@@ -552,6 +552,9 @@ export default {
 
         return {
           key:    workspace.name,
+          // A workspace always ends up with a status line, so hold its space from the first
+          // paint - the status arrives a moment after the row and must not shove the title down.
+          reserveDetail: true,
           label:  this.rowLabel(workspace),
           title:  [workspace.name, title, workspace.cluster && workspace.cluster !== 'local' ? workspace.cluster : ''].filter(Boolean).join(' · '),
           state:  workspace.state,
