@@ -7,6 +7,8 @@
 // to afterwards. Nothing runs an agent any other way.
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
+import Tabbed from '@shell/components/Tabbed';
+import Tab from '@shell/components/Tabbed/Tab';
 import StudioTerminal from './StudioTerminal.vue';
 import WorkspaceReview from './WorkspaceReview.vue';
 import WorkspacePr from './WorkspacePr.vue';
@@ -53,7 +55,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments
+    Banner, RcButton, Tabbed, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments
   },
 
   props: {
@@ -1011,6 +1013,11 @@ export default {
      * asks for its own. A conversation that has just been started is not in `conversations`
      * yet, so the listing is refreshed when the set of live ids changes.
      */
+    /** Tabbed says which conversation is on show; the terminal follows it. */
+    onLiveTab({ tab }) {
+      this.liveShown = tab.name;
+    },
+
     /** The larger view, on the conversation the panel is showing rather than the select's. */
     popLive() {
       if (this.shownLive) {
@@ -1376,7 +1383,27 @@ export default {
     <template v-if="status && steps.length">
       <div class="workspace-rail__head">
         <div class="workspace-rail__title">
-          <span class="workspace-rail__name">{{ workspace.name }}</span>
+          <!--
+            The name, what the agent is doing, and the way out of this view, in that order and
+            against each other. What the agent is doing belongs to the name, not to the row: on
+            the far side of the header it read as one more link among the PR's.
+          -->
+          <div class="workspace-rail__name-row">
+            <span class="workspace-rail__name">{{ workspace.name }}</span>
+            <span
+              v-if="agentLine"
+              class="workspace-rail__agent"
+              :class="`workspace-rail__agent--${ status.agent }`"
+            >(<i
+              v-if="status.agent === 'working'"
+              class="icon icon-spinner icon-spin"
+            />{{ agentLine }})</span>
+            <a
+              class="workspace-rail__view-switch"
+              href="#"
+              @click.prevent="$emit('switch-view', 'tabs')"
+            >(Tabbed view)</a>
+          </div>
           <span
             v-if="workspace.title || status.title"
             class="workspace-rail__subject"
@@ -1390,23 +1417,6 @@ export default {
             target="_blank"
             rel="noopener noreferrer"
           >{{ link.label }}</a>
-          <span
-            v-if="agentLine"
-            class="workspace-rail__agent"
-            :class="`workspace-rail__agent--${ status.agent }`"
-          ><i
-            v-if="status.agent === 'working'"
-            class="icon icon-spinner icon-spin"
-          />{{ agentLine }}</span>
-          <!--
-            The way out of the stage view, next to what the work is and what it is doing,
-            rather than on a row of its own above the page.
-          -->
-          <a
-            class="workspace-rail__view-switch"
-            href="#"
-            @click.prevent="$emit('switch-view', 'tabs')"
-          >(Tabbed view)</a>
           <RcButton
             variant="tertiary"
             size="small"
@@ -1546,69 +1556,82 @@ export default {
 
         A conversation used to be reachable only through a button that opened it over the page,
         which meant the one thing actually happening was the one thing not on screen. While a
-        pane is up it belongs here, at every stage and for a fix and a review both: the work is
-        watched where it was asked for. More than one running agent gets a tab each; only the
-        shown one is mounted, because a terminal is not free.
+        pane is up it belongs here, at every stage and for a fix and a review both.
+
+        Tabbed is the product's own tab strip, so more than one running agent looks like every
+        other set of tabs in Rancher. It hides an inactive tab with v-show rather than
+        unmounting it, so the terminal inside each one is mounted only while that tab is the
+        shown one: a terminal per conversation is not free, and two attached to one session
+        fight over it.
       -->
       <section
         v-if="liveConversations.length"
         class="workspace-rail__live"
       >
-        <div class="workspace-rail__live-head">
-          <div
-            v-if="liveConversations.length > 1"
-            class="workspace-rail__live-tabs"
-            role="tablist"
+        <Tabbed
+          v-if="liveConversations.length > 1"
+          class="workspace-rail__live-tabs"
+          :default-tab="shownLive ? shownLive.id : ''"
+          @changed="onLiveTab"
+        >
+          <Tab
+            v-for="(c, i) in liveConversations"
+            :key="c.id"
+            :name="c.id"
+            :label="c.title || 'Conversation'"
+            :weight="liveConversations.length - i"
           >
-            <button
-              v-for="c in liveConversations"
-              :key="c.id"
-              type="button"
-              role="tab"
-              class="workspace-rail__live-tab"
-              :class="{ 'workspace-rail__live-tab--on': shownLive && c.id === shownLive.id }"
-              :aria-selected="!!shownLive && c.id === shownLive.id"
-              @click="liveShown = c.id"
-            >
-              <i
+            <div class="workspace-rail__live-head">
+              <span
+                class="workspace-rail__agent"
+                :class="`workspace-rail__agent--${ c.agent }`"
+              ><i
                 v-if="c.agent === 'working'"
                 class="icon icon-spinner icon-spin"
-              />
-              <i
-                v-else-if="c.agent === 'input'"
-                class="icon icon-info"
-              />
-              {{ c.title || 'conversation' }}
-            </button>
+              />{{ agentLabel(c.agent) }}</span>
+              <PrButton
+                size="sm"
+                variant="secondary"
+                @click="popLive"
+              >
+                Open it larger
+              </PrButton>
+            </div>
+            <StudioTerminal
+              v-if="shownLive && shownLive.id === c.id && !popped"
+              :key="c.id"
+              class="workspace-rail__live-terminal"
+              :session="c.id"
+              :command="c.attach.command"
+            />
+          </Tab>
+        </Tabbed>
+        <template v-else-if="shownLive">
+          <div class="workspace-rail__live-head">
+            <span class="workspace-rail__group-label">{{ shownLive.title || 'Conversation' }}</span>
+            <span
+              class="workspace-rail__agent"
+              :class="`workspace-rail__agent--${ shownLive.agent }`"
+            ><i
+              v-if="shownLive.agent === 'working'"
+              class="icon icon-spinner icon-spin"
+            />{{ agentLabel(shownLive.agent) }}</span>
+            <PrButton
+              size="sm"
+              variant="secondary"
+              @click="popLive"
+            >
+              Open it larger
+            </PrButton>
           </div>
-          <span
-            v-else
-            class="workspace-rail__group-label"
-          >{{ (shownLive && shownLive.title) || 'Conversation' }}</span>
-          <span
-            v-if="shownLive"
-            class="workspace-rail__agent"
-            :class="`workspace-rail__agent--${ shownLive.agent }`"
-          >{{ agentLabel(shownLive.agent) }}</span>
-          <PrButton
-            size="sm"
-            variant="secondary"
-            @click="popLive"
-          >
-            Open it larger
-          </PrButton>
-        </div>
-        <!--
-          Keyed by id so switching tabs tears the old pane down rather than re-attaching the
-          same terminal to a different session.
-        -->
-        <StudioTerminal
-          v-if="shownLive && !popped"
-          :key="shownLive.id"
-          class="workspace-rail__live-terminal"
-          :session="shownLive.id"
-          :command="shownLive.attach.command"
-        />
+          <StudioTerminal
+            v-if="!popped"
+            :key="shownLive.id"
+            class="workspace-rail__live-terminal"
+            :session="shownLive.id"
+            :command="shownLive.attach.command"
+          />
+        </template>
       </section>
 
       <div class="workspace-rail__columns">
@@ -2825,6 +2848,16 @@ export default {
 
   // The running agent under the action bar. A fixed height on purpose: it is something to
   // glance at while reading the stage below it, and left to grow it took the whole page.
+  // The name and what the agent is doing read as one thing, so the gap between them is a word
+  // space rather than the header's.
+  &__name-row {
+    display:     flex;
+    align-items: baseline;
+    gap:         6px;
+    flex-wrap:   wrap;
+    min-width:   0;
+  }
+
   &__live {
     display:       flex;
     flex-direction: column;
@@ -2840,36 +2873,6 @@ export default {
     align-items: center;
     gap:         10px;
     flex-wrap:   wrap;
-  }
-
-  &__live-tabs {
-    display:   flex;
-    gap:       2px;
-    flex-wrap: wrap;
-  }
-
-  &__live-tab {
-    display:       flex;
-    align-items:   center;
-    gap:           6px;
-    border:        1px solid transparent;
-    border-radius: var(--border-radius) var(--border-radius) 0 0;
-    background:    transparent;
-    color:         var(--muted-text, var(--body-text));
-    cursor:        pointer;
-    font-size:     13px;
-    padding:       4px 10px;
-
-    &:hover {
-      color: var(--body-text);
-    }
-
-    &--on {
-      border-color:   var(--border);
-      border-bottom-color: transparent;
-      background:     var(--body-bg);
-      color:          var(--body-text);
-    }
   }
 
   &__live-terminal {
