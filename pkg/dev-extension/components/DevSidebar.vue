@@ -33,7 +33,7 @@ import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
-  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, CONVERSATIONS_ROUTE, SKILLS_ROUTE
+  MY_WORK_ROUTE, INSIGHTS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, CONVERSATIONS_ROUTE
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
@@ -173,9 +173,6 @@ export default {
         },
         {
           label: 'Conversations', icon: 'icon-comment', route: CONVERSATIONS_ROUTE
-        },
-        {
-          label: 'Skills', icon: 'icon-file', route: SKILLS_ROUTE
         },
         {
           label: 'Settings', icon: 'icon-gear', route: SETTINGS_ROUTE
