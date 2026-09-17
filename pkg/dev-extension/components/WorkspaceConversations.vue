@@ -14,12 +14,15 @@ import { Banner } from '@components/Banner';
 import DevTerminal from './DevTerminal.vue';
 import StudioTerminal from './StudioTerminal.vue';
 import DevList from './DevList.vue';
+import DevModal from './DevModal.vue';
+import ConversationHeader from './ConversationHeader.vue';
 import {
   LABEL_WORKSPACE, WORKSPACE_CONTAINER, workspaceTerminalCommand
 } from '../api';
 import {
-  listConversations, startConversation, endConversation, renameConversation, startedConversations, STUDIO_CLUSTER, KUBECTL
+  listConversations, startConversation, endConversation, renameConversation, startedConversations, conversationStates, STUDIO_CLUSTER, KUBECTL
 } from '../conversations';
+import { agentStateOf } from '../workspace-status';
 import { prepareWorkspace } from '../reviews';
 import { ensureDefaultShare } from '../previews';
 
@@ -34,7 +37,7 @@ export default {
   name: 'WorkspaceConversations',
 
   components: {
-    Banner, DevTerminal, StudioTerminal, DevList
+    Banner, DevTerminal, StudioTerminal, DevList, DevModal, ConversationHeader
   },
 
   props: {
@@ -58,6 +61,13 @@ export default {
       conversations: [],
       current:       '',
       states:        {},
+      // The agent state of each conversation, by id, from the same poll the rail and the
+      // sidebar use (conversationStates): what the header shows over the pane. `states` above
+      // is the pane's own socket state (the row's dot); this is what claude is doing.
+      agents:        {},
+      agentsTimer:   null,
+      /** The current conversation blown up to fill the window (DevModal), when asked for. */
+      popped:        false,
       error:         '',
       // The conversations that have run at least once (conversations.ts, startedConversations),
       // read while the workspace's pod is not up: their panes are shown regardless. And whether
@@ -131,6 +141,11 @@ export default {
       return this.current === SHELL;
     },
 
+    /** The conversation the pane is on, if it is a conversation rather than the shell. */
+    currentConversation() {
+      return this.conversations.find((conversation) => conversation.id === this.current) || null;
+    },
+
     /**
      * Whether the workspace's shell can be reached through the agent pod.
      *
@@ -166,7 +181,35 @@ export default {
     },
   },
 
+  mounted() {
+    // The agents' states, on the same fifteen-second beat the rail and the sidebar use, so the
+    // header over the pane says what claude is doing without the person opening the rail.
+    this.refreshAgents();
+    this.agentsTimer = setInterval(() => this.refreshAgents(), 15000);
+  },
+
+  beforeUnmount() {
+    clearInterval(this.agentsTimer);
+  },
+
   methods: {
+    /** Which of this workspace's conversations are running, and what each agent is doing. */
+    async refreshAgents() {
+      const states = await conversationStates().catch(() => null);
+
+      if (!states) {
+        return;
+      }
+      const next = {};
+
+      for (const c of states) {
+        if (c.workspace === this.workspace.name) {
+          next[c.id] = agentStateOf(c);
+        }
+      }
+      this.agents = next;
+    },
+
     /**
      * Keep `?c=` on the URL in step with the conversation that is open.
      *
@@ -358,6 +401,19 @@ export default {
       />
     </div>
     <div class="workspace-conversations__pane">
+      <!--
+        The same controls a conversation has on the global page: its name (renamed in place),
+        what its agent is doing, a way to open it larger, and a way to close it. The shell is
+        not a conversation, so it has none of these.
+      -->
+      <ConversationHeader
+        v-if="!showingShell && currentConversation"
+        :conversation="currentConversation"
+        :agent="agents[current] || 'none'"
+        @rename="rename({ key: current, title: $event })"
+        @popout="popped = true"
+        @close="closeConversation(current)"
+      />
       <Banner
         v-if="error"
         color="error"
@@ -450,7 +506,7 @@ export default {
         :key="conversation.id"
       >
         <StudioTerminal
-          v-if="paneReady(conversation)"
+          v-if="paneReady(conversation) && !(popped && conversation.id === current)"
           v-show="conversation.id === current"
           class="workspace-conversations__terminal"
           :session="conversation.id"
@@ -479,6 +535,22 @@ export default {
         :cluster="workspace.cluster"
         @state="onState('shell', $event)"
       />
+      <!-- The larger view of the current conversation, over the page rather than instead of it. -->
+      <DevModal
+        v-if="popped && currentConversation"
+        :title="`${ workspace.name } · ${ currentConversation.title || 'conversation' }`"
+        @close="popped = false"
+      >
+        <div class="workspace-conversations__popped">
+          <StudioTerminal
+            :key="`pop-${ current }`"
+            class="workspace-conversations__terminal"
+            :session="current"
+            :command="currentConversation.attach.command"
+            @state="onState(current, $event)"
+          />
+        </div>
+      </DevModal>
     </div>
   </div>
 </template>
@@ -517,6 +589,13 @@ export default {
     &__terminal {
       flex:       1 1 auto;
       min-height: 0;
+    }
+
+    // The blown-up conversation inside DevModal fills the panel it is given.
+    &__popped {
+      display:        flex;
+      flex-direction: column;
+      height:         calc(100vh - 140px);
     }
   }
 

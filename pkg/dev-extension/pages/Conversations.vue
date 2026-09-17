@@ -10,11 +10,14 @@ import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import DevList from '../components/DevList.vue';
 import StudioTerminal from '../components/StudioTerminal.vue';
+import DevModal from '../components/DevModal.vue';
+import ConversationHeader from '../components/ConversationHeader.vue';
 import ClaudeLogo from '../components/ClaudeLogo.vue';
 import { listAllWorkspaces, globalBrowserUrl } from '../api';
 import {
-  listConversations, endConversation, renameConversation, paneCommand, waitForStudio, reconnectConversation, reconnectEverything
+  listConversations, endConversation, renameConversation, paneCommand, waitForStudio, reconnectConversation, reconnectEverything, conversationStates
 } from '../conversations';
+import { agentStateOf } from '../workspace-status';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE } from '../config/constants';
 
 const REFRESH_MS = 10000;
@@ -82,7 +85,7 @@ export default {
   name: 'DevAgents',
 
   components: {
-    Banner, RcButton, DevList, StudioTerminal, ClaudeLogo
+    Banner, RcButton, DevList, StudioTerminal, DevModal, ConversationHeader, ClaudeLogo
   },
 
   async fetch() {
@@ -112,6 +115,12 @@ export default {
       restarting: false,
       restartNote: '',
       states:  {},
+      // What each conversation's agent is doing, by its bare (pod-local) id, from the same poll
+      // the sidebar and the rail use. `states` above is the pane's socket state; this is claude's.
+      agents:  {},
+      agentsTimer: null,
+      /** The selected conversation blown up to fill the window (DevModal), when asked for. */
+      popped:  false,
       seen:    {},
       error:   '',
       timer:   null,
@@ -187,6 +196,10 @@ export default {
 
   mounted() {
     this.timer = setInterval(() => this.refresh(), REFRESH_MS);
+    // The agents' states, on their own fifteen-second beat, so the header over the pane says
+    // what each conversation's claude is doing.
+    this.refreshAgents();
+    this.agentsTimer = setInterval(() => this.refreshAgents(), 15000);
 
     // The phone/desktop split, read from the one breakpoint the styles use. matchMedia rather
     // than a resize listener: it fires only when the answer actually changes.
@@ -200,6 +213,7 @@ export default {
 
   beforeUnmount() {
     clearInterval(this.timer);
+    clearInterval(this.agentsTimer);
     this.mediaQuery?.removeEventListener('change', this.onMediaChange);
   },
 
@@ -251,6 +265,21 @@ export default {
       } catch (e) {
         this.error = e.message || String(e);
       }
+    },
+
+    /** Every conversation's agent state, by its bare id - the header reads this by `c.id`. */
+    async refreshAgents() {
+      const states = await conversationStates().catch(() => null);
+
+      if (!states) {
+        return;
+      }
+      const next = {};
+
+      for (const c of states) {
+        next[c.id] = agentStateOf(c);
+      }
+      this.agents = next;
     },
 
     rows(group) {
@@ -420,6 +449,28 @@ export default {
         this.error = e.message || String(e);
       }
     },
+
+    /** The group the selected conversation belongs to, for the header's rename and close. */
+    groupOf(conversation) {
+      return conversation ? this.groups.find((group) => group.workspace === conversation.workspace) : null;
+    },
+
+    /** The header renames the one showing; it emits the new title, we know which one that is. */
+    renameSelected(title) {
+      const group = this.groupOf(this.selected);
+
+      if (group) {
+        this.rename(group, { key: this.selected.uid, title });
+      }
+    },
+
+    closeSelected() {
+      const group = this.groupOf(this.selected);
+
+      if (group) {
+        this.end(group, this.selected.uid);
+      }
+    },
   },
 };
 </script>
@@ -573,6 +624,19 @@ export default {
               Restart all here
             </button>
           </div>
+          <!--
+            The conversation's own controls over its pane: its name (renamed in place), what
+            its agent is doing, a way to open it larger and a way to close it - the same bar the
+            stage's Conversations tab shows.
+          -->
+          <ConversationHeader
+            v-if="selected"
+            :conversation="selected"
+            :agent="agents[selected.id] || 'none'"
+            @rename="renameSelected"
+            @popout="popped = true"
+            @close="closeSelected"
+          />
           <p
             v-if="!selected"
             class="dev-agents__hint text-muted"
@@ -584,7 +648,7 @@ export default {
             :key="c.uid"
           >
             <StudioTerminal
-              v-if="seen[c.uid]"
+              v-if="seen[c.uid] && !(popped && c.uid === current)"
               v-show="c.uid === current"
               :session="c.uid"
               :command="paneFor(c)"
@@ -592,6 +656,22 @@ export default {
               @state="onState(c.uid, $event)"
             />
           </template>
+          <!-- The larger view of the selected conversation, over the page. -->
+          <DevModal
+            v-if="popped && selected"
+            :title="selected.workspace ? `${ selected.workspace } · ${ selected.title || 'conversation' }` : (selected.title || 'conversation')"
+            @close="popped = false"
+          >
+            <div class="dev-agents__popped">
+              <StudioTerminal
+                :key="`pop-${ selected.uid }`"
+                :session="selected.uid"
+                :command="paneFor(selected)"
+                class="dev-agents__terminal"
+                @state="onState(selected.uid, $event)"
+              />
+            </div>
+          </DevModal>
         </div>
       </div>
     </section>
@@ -770,6 +850,13 @@ export default {
     }
 
     &__terminal { flex: 1 1 auto; min-height: 0; }
+
+    // The blown-up conversation inside DevModal fills the panel it is given.
+    &__popped {
+      display:        flex;
+      flex-direction: column;
+      height:         calc(100vh - 140px);
+    }
   }
 
 /* ── Phones: the list is a short scroller above the pane, not a column beside it. ── */
