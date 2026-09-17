@@ -187,24 +187,28 @@ export default {
     // The controls are quiet until the tab is on show or the pointer is on it, so a strip of
     // inactive tabs reads as titles and dots rather than a row of buttons. They hold their space
     // the whole time (visibility, not display), so a tab does not change width when it is hovered.
+    // The same treatment the agents panel's tab controls have, which reads better than the
+    // filled square: a 20px glyph at 0.6 opacity, full and on a quiet hover surface when the
+    // pointer is on it. Held in layout (visibility) so the tab keeps its width.
     &__control {
       display:         inline-flex;
       visibility:      hidden;
       align-items:     center;
       justify-content: center;
-      width:           18px;
-      height:          18px;
-      min-height:      18px;
+      width:           20px;
+      height:          20px;
+      min-height:      0;
       padding:         0;
       border:          none;
-      border-radius:   var(--border-radius);
-      background:      transparent;
-      color:           var(--muted);
+      border-radius:   3px;
+      background:      none;
+      color:           var(--body-text);
       cursor:          pointer;
+      opacity:         0.6;
 
       .icon { font-size: 12px; }
 
-      &:hover { background: var(--nav-hover, var(--accent-btn)); color: var(--body-text); }
+      &:hover { opacity: 1; background: var(--default-hover-bg, var(--body-bg)); }
 
       &--close:hover { color: var(--error); }
     }
