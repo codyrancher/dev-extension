@@ -119,7 +119,17 @@ export default {
       :title="label"
     />
 
-    <!-- Open larger, then close: on the tab on show, or on hover, so inactive tabs are quiet. -->
+    <!-- Rename, open larger, then close: on the tab on show, or on hover, so inactive tabs are
+         quiet. Rename is a button as well as the name's double-click, so it is findable. -->
+    <button
+      v-clean-tooltip="'Rename'"
+      type="button"
+      class="conversation-tab__control"
+      aria-label="Rename conversation"
+      @click.stop.prevent="startRename"
+    >
+      <i class="icon icon-edit" />
+    </button>
     <button
       v-clean-tooltip="'Open it larger'"
       type="button"
