@@ -175,9 +175,11 @@ export default {
     }
 
     // The controls are quiet until the tab is on show or the pointer is on it, so a strip of
-    // inactive tabs reads as titles and dots rather than a row of buttons.
+    // inactive tabs reads as titles and dots rather than a row of buttons. They hold their space
+    // the whole time (visibility, not display), so a tab does not change width when it is hovered.
     &__control {
-      display:         none;
+      display:         inline-flex;
+      visibility:      hidden;
       align-items:     center;
       justify-content: center;
       width:           18px;
@@ -198,6 +200,6 @@ export default {
     }
 
     &--active .conversation-tab__control,
-    &:hover .conversation-tab__control { display: inline-flex; }
+    &:hover .conversation-tab__control { visibility: visible; }
   }
 </style>
