@@ -2809,14 +2809,11 @@ export default {
     min-width:   0;
   }
 
+  // No box of its own: the tabbed strip below is the box. A bordered, padded wrapper around it
+  // made two boxes nested, which is what this drops.
   &__live {
-    display:       flex;
+    display:        flex;
     flex-direction: column;
-    gap:           8px;
-    border:        1px solid var(--border);
-    border-radius: var(--border-radius);
-    background:    var(--box-bg);
-    padding:       10px 12px 12px;
   }
 
   &__live-head {
