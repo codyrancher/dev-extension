@@ -330,6 +330,13 @@ function reviewWork(d: Json, agent: AgentState): Work {
   if (pending.length) {
     return { label: 'read the agent\'s findings', tone: 'attention', stage: 'findings' };
   }
+  // The agent's pass finished and what it found is gone - read and deleted, every one of them.
+  // That is a pass made, not a review still to run: falling back to Agent review offered to
+  // review the PR again, which is the opposite of what emptying the list said. The run record
+  // is what remembers, because the findings themselves no longer exist to say so.
+  if (d.run?.state === 'complete') {
+    return { label: 'nothing left to go through', tone: 'muted', stage: 'findings' };
+  }
   if (agent === 'input') {
     return { label: '', tone: 'attention', stage: 'agent' };
   }

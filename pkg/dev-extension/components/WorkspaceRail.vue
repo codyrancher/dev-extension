@@ -312,6 +312,21 @@ export default {
           //
           // A pass after a review of yours is another round of the same step, so it says so
           // and offers the agent another look at what the developer did.
+          // Every finding went, so the two buttons that carry findings back to GitHub have
+          // nothing to carry. The pass is still yours: ship it, or send the agent round again.
+          if (s.label === 'nothing left to go through') {
+            return {
+              headline: 'Nothing left from the agent\'s pass',
+              detail:   'Its findings have all been read and cleared. Ship the PR, or ask for another look.',
+              primary:  { label: 'Ship it', run: 'openApprove' },
+              tools:    [
+                { label: 'Review this PR again', run: s.reviewed ? 'reviewAgain' : 'startReview' },
+                { label: 'Open the whole PR', run: 'openTab', arg: 'pr' },
+                { label: 'Ask the agent', run: 'focusAsk' },
+              ],
+            };
+          }
+
           return {
             headline: s.reviewed ? 'A new pass over what the agent found in the developer\'s changes' : 'The agent\'s findings are ready for your pass',
             detail:   s.reviewed ? 'The findings are on the left, under them what the agent looked at, then the commits and threads of this round.' : 'Go through them on the left: keep the ones you agree with, then send them back or approve.',
