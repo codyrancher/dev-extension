@@ -7,8 +7,11 @@
 // to afterwards. Nothing runs an agent any other way.
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
-import Tabbed from '@shell/components/Tabbed';
 import Tab from '@shell/components/Tabbed/Tab';
+// The conversation tabs carry the agent status and the open-larger/close controls in the tab
+// header itself (see ConversationTabbed), which is why there is no ConversationHeader bar below.
+import ConversationTabbed from './tabbed/ConversationTabbed.vue';
+import ConversationTab from './tabbed/ConversationTab.vue';
 import StudioTerminal from './StudioTerminal.vue';
 import WorkspaceReview from './WorkspaceReview.vue';
 import WorkspacePr from './WorkspacePr.vue';
@@ -16,7 +19,6 @@ import WorkspaceBrowser from './WorkspaceBrowser.vue';
 import WorkspaceShare from './WorkspaceShare.vue';
 import DevModal from './DevModal.vue';
 import PrButton from './pr/PrButton.vue';
-import ConversationHeader from './ConversationHeader.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
 import {
@@ -56,7 +58,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, Tabbed, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, ConversationHeader, CommentDiscussion, CommentAttachments
+    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments
   },
 
   props: {
@@ -1033,6 +1035,11 @@ export default {
       this.liveShown = tab.name;
     },
 
+    /** The live conversation a tab is for; its `name` is the conversation id (see the Tab loop). */
+    liveByTab(name) {
+      return this.liveConversations.find((c) => c.id === name) || null;
+    },
+
     /** The larger view, on the conversation the panel is showing rather than the select's. */
     popLive() {
       if (this.shownLive) {
@@ -1571,22 +1578,36 @@ export default {
         which meant the one thing actually happening was the one thing not on screen. While a
         pane is up it belongs here, at every stage and for a fix and a review both.
 
-        Tabbed is the product's own tab strip, so more than one running agent looks like every
-        other set of tabs in Rancher. It hides an inactive tab with v-show rather than
-        unmounting it, so the terminal inside each one is mounted only while that tab is the
-        shown one: a terminal per conversation is not free, and two attached to one session
-        fight over it.
+        ConversationTabbed is the product's own tab strip (a fork of the shell's), so more than
+        one running agent looks like every other set of tabs in Rancher. It hides an inactive tab
+        with v-show rather than unmounting it, so the terminal inside each one is mounted only
+        while that tab is the shown one: a terminal per conversation is not free, and two attached
+        to one session fight over it.
+
+        Each tab carries its own title, agent status and open-larger/close in its header (the
+        `tab-header` slot), so one running conversation still shows as a single tab rather than as
+        a bar of its own.
       -->
       <section
         v-if="liveConversations.length"
         class="workspace-rail__live"
       >
-        <Tabbed
-          v-if="liveConversations.length > 1"
+        <ConversationTabbed
           class="workspace-rail__live-tabs"
           :default-tab="shownLive ? shownLive.id : ''"
           @changed="onLiveTab"
         >
+          <template #tab-header="{ tab }">
+            <ConversationTab
+              v-if="liveByTab(tab.name)"
+              :conversation="liveByTab(tab.name)"
+              :agent="liveByTab(tab.name).agent"
+              :active="tab.active"
+              @rename="renameLive(liveByTab(tab.name), $event)"
+              @popout="popLive"
+              @close="closeLive(liveByTab(tab.name))"
+            />
+          </template>
           <Tab
             v-for="(c, i) in liveConversations"
             :key="c.id"
@@ -1594,13 +1615,6 @@ export default {
             :label="c.title || 'Conversation'"
             :weight="liveConversations.length - i"
           >
-            <ConversationHeader
-              :conversation="c"
-              :agent="c.agent"
-              @rename="renameLive(c, $event)"
-              @popout="popLive"
-              @close="closeLive(c)"
-            />
             <StudioTerminal
               v-if="shownLive && shownLive.id === c.id && !popped"
               :key="c.id"
@@ -1609,23 +1623,7 @@ export default {
               :command="c.attach.command"
             />
           </Tab>
-        </Tabbed>
-        <template v-else-if="shownLive">
-          <ConversationHeader
-            :conversation="shownLive"
-            :agent="shownLive.agent"
-            @rename="renameLive(shownLive, $event)"
-            @popout="popLive"
-            @close="closeLive(shownLive)"
-          />
-          <StudioTerminal
-            v-if="!popped"
-            :key="shownLive.id"
-            class="workspace-rail__live-terminal"
-            :session="shownLive.id"
-            :command="shownLive.attach.command"
-          />
-        </template>
+        </ConversationTabbed>
       </section>
 
       <div class="workspace-rail__columns">
