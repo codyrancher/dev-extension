@@ -23,6 +23,8 @@ import {
   DEV_API_IN_CLUSTER, workspaceRoot
 } from './config/constants';
 
+type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
 const GH_VERSION = '2.76.1';
 const JQ_VERSION = '1.7.1';
 // Paths inside the workspace, as the pod's shell sees them.
@@ -523,17 +525,12 @@ export async function workspaceBranches(workspace: string): Promise<WorkspaceBra
  * `base` is where a dashboard build routes and fetches its assets (previews.ts, previewBase);
  * a Storybook is a plain static site and ignores it.
  */
-/** One shell word, single-quoted; '' for nothing. */
-function shellQuote(value: string): string {
-  return value ? `'${ value.replace(/'/g, `'\\''`) }'` : "''";
-}
-
 export async function buildShare(workspace: string, kind: ShareKind, base: string, ref = ''): Promise<'started' | 'already-building'> {
   const target = await workspaceTarget(workspace);
   const script = [
     '#!/bin/bash',
-    // Its own, because this one is written to a file and run later by tmux, outside the runners
-    // below that put WS in the shell for a script they carry.
+    // Its own, because this one is written to a file and run later by the builder Job, outside
+    // the runners below that put WS in the shell for a script they carry.
     `WS=${ workspaceRoot(workspace) }`,
     'KIND=$1; BASE=$2; REF=$3',
     `cd $WS/dashboard || exit 1`,
@@ -559,12 +556,17 @@ export async function buildShare(workspace: string, kind: ShareKind, base: strin
     "for d in $(find . -maxdepth 3 -name node_modules -type d -not -path '*/node_modules/*'); do mkdir -p $WT/$(dirname $d); cp -al $d $WT/$d; rm -rf $WT/$d/.cache; done",
     'cd $WT',
     'echo "building $(date -u +%FT%TZ) $branch $sha" > $S',
-    // On half the cores and at the lowest priority: a build is background work, and one that
-    // takes the whole node has taken k3s down with it.
-    'CORES=$(nproc 2>/dev/null || echo 2); HALF=$(( CORES / 2 )); [ "$HALF" -lt 1 ] && HALF=1',
-    'RUN="nice -n 19 taskset -c 0-$((HALF - 1))"',
+    // At the lowest priority either way: a build is background work, and one that takes the whole
+    // node has taken k3s down with it. In the builder it is alone with a limit of its own, so it
+    // takes the cores and the heap it was given; anywhere else it leaves half the node alone.
+    'if [ "$SHARE_CPUS" = all ]; then',
+    '  RUN="nice -n 19"',
+    'else',
+    '  CORES=$(nproc 2>/dev/null || echo 2); HALF=$(( CORES / 2 )); [ "$HALF" -lt 1 ] && HALF=1',
+    '  RUN="nice -n 19 taskset -c 0-$((HALF - 1))"',
+    'fi',
     '{',
-    '  export NODE_OPTIONS=--max_old_space_size=4096',
+    '  export NODE_OPTIONS=--max_old_space_size=${SHARE_HEAP_MB:-4096}',
     '  rm -rf $WS/share/$KIND.next',
     '  if [ "$KIND" = storybook ]; then',
     '    $RUN yarn build-storybook && cp -r storybook/storybook-static $WS/share/$KIND.next',
@@ -599,15 +601,96 @@ export async function buildShare(workspace: string, kind: ShareKind, base: strin
     'mkdir -p $WS/.share',
     `echo ${ UNREWRITE_B64 } | base64 -d > $WS/.share/unrewrite.js`,
     `echo ${ b64(script) } | base64 -d > $WS/.share/build.sh && chmod +x $WS/.share/build.sh`,
-    `if tmux has-session -t mc-share-${ kind } 2>/dev/null; then echo ALREADY; else tmux new-session -d -s mc-share-${ kind } -c $WS/dashboard "$WS/.share/build.sh ${ kind } ${ base } ${ shellQuote(ref) }" && echo STARTED; fi`,
+    'echo SCRIPT-OK',
   ].join('\n'));
 
-  if (out.includes('ALREADY')) {
+  if (!out.includes('SCRIPT-OK')) {
+    throw new Error(`The build script could not be written into the workspace: ${ out.trim().slice(-300) }`);
+  }
+
+  return startBuilder(workspace, kind, base, ref);
+}
+
+// ── The builder ────────────────────────────────────────────────────────────────────────────
+//
+// A share is built in a Job of its own, not in the workspace's pod. The pod is capped at 5Gi and
+// already holds the dev server; a production build of the dashboard asks Node for a 4Gi heap, and
+// the two together put the container over its limit, so the kernel killed it - taking the dev
+// server, the panes and the conversation with it, and leaving the build "failed ... killed".
+//
+// The Job mounts the same node directory the workspace does, so it reads the same checkout and
+// writes the same `share/<kind>` output and `.share/<kind>.status`; nothing else about the build
+// changes. It runs as the workspace's user (1000) so what it writes stays theirs.
+const BUILDER_MEMORY = '12Gi';
+const BUILDER_CPU = '4';
+const BUILDER_HEAP_MB = '8192';
+
+/** The name the skills' share.sh uses too, so a build started either way is the same build. */
+function builderName(kind: ShareKind): string {
+  return `share-build-${ kind }`;
+}
+
+/** The builder Job for this kind, if one exists. `active` is Kubernetes' own count of running pods. */
+async function builderJob(workspace: string, kind: ShareKind): Promise<Json | null> {
+  return devFetch(`${ clusterBase('local') }/v1/batch.jobs/${ workspaceNamespace(workspace) }/${ builderName(kind) }`).catch(() => null);
+}
+
+async function startBuilder(workspace: string, kind: ShareKind, base: string, ref: string): Promise<'started' | 'already-building'> {
+  const namespace = workspaceNamespace(workspace);
+  const root = workspaceRoot(workspace);
+  const existing = await builderJob(workspace, kind);
+
+  if (existing?.status?.active) {
     return 'already-building';
   }
-  if (!out.includes('STARTED')) {
-    throw new Error(`The build could not be started in the workspace: ${ out.trim().slice(-300) }`);
+  if (existing) {
+    // Finished, and a Job's spec cannot be replaced: take the old one (and its pod) away first.
+    await devFetch(`${ clusterBase('local') }/v1/batch.jobs/${ namespace }/${ builderName(kind) }?propagationPolicy=Foreground`, { method: 'DELETE' }).catch(() => null);
+    for (let i = 0; i < 30 && await builderJob(workspace, kind); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
   }
+  await devFetch(`${ clusterBase('local') }/v1/batch.jobs`, {
+    method: 'POST',
+    body:   JSON.stringify({
+      apiVersion: 'batch/v1',
+      kind:       'Job',
+      metadata:   { name: builderName(kind), namespace, labels: { 'dev.rancher.io/workspace': workspace, 'dev.rancher.io/share': kind } },
+      spec:       {
+        backoffLimit: 0,
+        // Long enough to read the pod's own logs after a failure, short enough not to pile up.
+        ttlSecondsAfterFinished: 1800,
+        template:                {
+          metadata: { labels: { 'dev.rancher.io/workspace': workspace, 'dev.rancher.io/share': kind } },
+          spec:     {
+            restartPolicy:   'Never',
+            securityContext: { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 },
+            containers:      [{
+              name:       'build',
+              image:      'node:24',
+              command:    ['/bin/bash', `${ root }/.share/build.sh`, kind, base, ref],
+              workingDir: `${ root }/dashboard`,
+              env:        [
+                { name: 'HOME', value: `${ root }/.home` },
+                { name: 'WS', value: root },
+                // Alone in this container, so the build takes the cores and the heap it was given.
+                { name: 'SHARE_CPUS', value: 'all' },
+                { name: 'SHARE_HEAP_MB', value: BUILDER_HEAP_MB },
+                // The same caches the workspace itself installs into, so a staged build finds
+                // what `yarn install` already downloaded rather than fetching it again.
+                { name: 'YARN_CACHE_FOLDER', value: '/workspaces/.shared/yarn' },
+                { name: 'CYPRESS_CACHE_FOLDER', value: '/workspaces/.shared/cypress' },
+                { name: 'npm_config_cache', value: '/workspaces/.shared/npm' },
+              ],
+              resources:    { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: BUILDER_CPU, memory: BUILDER_MEMORY } },
+              volumeMounts: [{ name: 'work', mountPath: '/workspaces' }],
+            }],
+            volumes: [{ name: 'work', hostPath: { path: '/var/lib/rancher/dev-workspaces', type: 'DirectoryOrCreate' } }],
+          },
+        },
+      },
+    }),
+  });
 
   return 'started';
 }
@@ -619,19 +702,24 @@ export interface ShareBuild {
   sha: string;
   /** The last lines of the build's output, for a failure or a build in progress. */
   log: string;
-  /** Whether something is building it right now (a tmux session in the workspace). */
+  /** Whether something is building it right now (the builder Job for this kind). */
   running: boolean;
 }
 
 /** What each kind's build in the workspace is up to, off its status file and the tail of its log. */
 export async function shareStatus(workspace: string): Promise<Record<ShareKind, ShareBuild>> {
+  // Whether a build is still going is the builder Job's to say, as against what the status file
+  // last wrote: a build whose Job was killed leaves "building" behind for ever, and a tab that
+  // believes it is watching one is a tab that never says the thing that happened.
+  const live: Record<string, boolean> = {};
+
+  for (const kind of ['dashboard', 'storybook'] as ShareKind[]) {
+    live[kind] = !!(await builderJob(workspace, kind))?.status?.active;
+  }
   const out = await readInWorkspace(workspace, [
     'for k in dashboard storybook; do',
     '  echo "@@KIND $k"; cat $WS/.share/$k.status 2>/dev/null || echo none',
-    // Whether it is still going, as against what it last wrote: a build whose pod restarted
-    // leaves "building" behind for ever, and a tab that believes it is watching one is a tab
-    // that never says the thing that happened.
-    '  if tmux has-session -t mc-share-$k 2>/dev/null; then echo "@@ALIVE yes"; else echo "@@ALIVE no"; fi',
+
     '  echo "@@LOG"; tail -n 12 $WS/.share/$k.log 2>/dev/null | cut -c1-200',
     'done',
   ].join('\n')).catch(() => '');
@@ -648,7 +736,7 @@ export async function shareStatus(workspace: string): Promise<Record<ShareKind, 
     const [head, log = ''] = chunk.split('@@LOG');
     const lines = head.trim().split('\n');
     const kind = lines[0]?.trim() as ShareKind;
-    const alive = /@@ALIVE yes/.test(head);
+    const alive = !!live[kind];
     const [written = 'none', at = '', branch = '', sha = ''] = (lines[1] || 'none').trim().split(/\s+/);
     // "building" and nothing building it means the build died with whatever was running it -
     // the pod restarted, the node ran out of memory, somebody killed the session. Its log is
