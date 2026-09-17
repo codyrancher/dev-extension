@@ -153,7 +153,6 @@ export default {
       /** This workspace's conversations, and the one shown - the newest unless another is picked. */
       conversations: [],
       currentConversation: '',
-      startingConversation: false,
       /**
        * The conversations whose pane is up right now, by id, with the state each one is in.
        * A running agent is watched on the page rather than behind a button: the panel under
@@ -1058,20 +1057,6 @@ export default {
       this.conversations = await listConversations(this.workspace.name).catch(() => []);
       if (!this.conversations.some((c) => c.id === this.currentConversation)) {
         this.currentConversation = this.conversations[this.conversations.length - 1]?.id || '';
-      }
-    },
-
-    async newConversation() {
-      this.startingConversation = true;
-      try {
-        const c = await startConversation(this.workspace.name);
-
-        await this.loadConversations();
-        this.currentConversation = c.id;
-      } catch (e) {
-        this.error = e?.message || String(e);
-      } finally {
-        this.startingConversation = false;
       }
     },
 
@@ -2379,16 +2364,13 @@ export default {
       This workspace is not named for an issue or a PR, so it has no stages.
     </div>
     <!--
-      The conversations themselves - the standard terminal and chat, with the list of this
-      workspace's conversations - so the agent is talked to right here, whatever the status
-      reads say. The other views open over the page (DevModal) rather than instead of it.
+      The other ways to look at this work. The conversation itself used to sit here behind a
+      list and a button; it is up under the action bar now, so what is left is the views, which
+      open over the page (DevModal) rather than instead of it.
     -->
-    <section
-      ref="pane"
-      class="workspace-rail__col workspace-rail__col--pane"
-    >
+    <section class="workspace-rail__col workspace-rail__col--pane">
       <div class="workspace-rail__col-head">
-        <h3 class="workspace-rail__col-title">Conversations</h3>
+        <h3 class="workspace-rail__col-title">Other views</h3>
         <div class="workspace-rail__views">
           <button
             type="button"
@@ -2413,45 +2395,7 @@ export default {
           >Share</button>
         </div>
       </div>
-      <div class="workspace-rail__pane-bar">
-        <select
-          v-if="conversations.length"
-          v-model="currentConversation"
-          class="workspace-rail__select"
-        >
-          <option
-            v-for="c in conversations"
-            :key="c.id"
-            :value="c.id"
-          >{{ c.title }}</option>
-        </select>
-        <span
-          v-else
-          class="workspace-rail__empty"
-        >No conversation yet.</span>
-        <RcButton
-          variant="tertiary"
-          size="small"
-          :disabled="startingConversation"
-          @click="newConversation"
-        >
-          New conversation
-        </RcButton>
-        <PrButton
-          v-if="conversations.length"
-          class="workspace-rail__pop"
-          size="sm"
-          variant="primary"
-          @click="popped = true"
-        >
-          Open the conversation
-        </PrButton>
-      </div>
-      <!--
-        The conversation opens over the page rather than under the column, the way the change
-        opens in the review tool: a terminal is a place to work, not a thing to have open while
-        reading something else, and inline it took whatever room it was given.
-      -->
+      <!-- The bigger view of whichever conversation the panel above is showing. -->
       <DevModal
         v-if="popped"
         :title="`${ workspace.name } · ${ (conversations.find((c) => c.id === currentConversation) || {}).title || 'conversation' }`"
@@ -2885,31 +2829,13 @@ export default {
     padding: 0 4px 4px;
   }
 
-  &__pop {
-    margin-left: auto;
-  }
 
   &__terminal {
     height:     100%;
     min-height: 0;
   }
 
-  &__pane-bar {
-    display:     flex;
-    align-items: center;
-    gap:         10px;
-  }
 
-  &__select {
-    height:        30px;
-    max-width:     420px;
-    padding:       0 8px;
-    border:        1px solid var(--border);
-    border-radius: var(--border-radius);
-    background:    var(--input-bg);
-    color:         var(--body-text);
-    font:          inherit;
-  }
 
   &__md {
     overflow-wrap: anywhere;
