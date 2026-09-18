@@ -12,16 +12,38 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
-    appVersion: 0.3.198
-    created: "2026-09-18T15:51:30.662962056Z"
+    appVersion: 0.3.199
+    created: "2026-09-18T16:08:56.161292055Z"
     description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
       fixes, shares and agents
-    digest: 29ad02bea5aec84a3130d3f2cf46d81b7c095d87dabfb1a7ef1d9d8cbbe18bd6
+    digest: 751bd11c4b071b67edbb25c7c82992d4888fa879a704a111fd25c0cd5000cd7e
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
     type: application
     urls:
-    - assets/dev-extension/dev-extension-0.3.198.tgz
+    - assets/dev-extension/dev-extension-0.3.199.tgz
+    version: 0.3.199
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/display-name: Dev Extension
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
+    apiVersion: v2
+    appVersion: 0.3.198
+    created: "2026-09-18T15:51:57.668997011Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
+    digest: f006637218185d9140bfb94d4b5e5cf7cc8d361bd9cd70926100ccccec5f31b4
+    icon: https://codyrancher.github.io/dev-extension/icon.svg
+    name: dev-extension
+    type: application
+    urls:
+    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.198/dev-extension-0.3.198.tgz
     version: 0.3.198
   - annotations:
       catalog.cattle.io/certified: rancher
@@ -617,4 +639,4 @@ entries:
     urls:
     - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.168/dev-extension-0.3.168.tgz
     version: 0.3.168
-generated: "2026-09-18T15:51:30.661750218Z"
+generated: "2026-09-18T16:08:56.160579829Z"
