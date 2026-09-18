@@ -527,7 +527,11 @@ async function readStale(names: string[]): Promise<void> {
  * minutes old. Returns at once with what there is.
  */
 export async function workspaceStatuses(workspaces: { name: string; cluster?: string; preview?: boolean }[]): Promise<Record<string, WorkspaceStatus>> {
-  const names = workspaces.filter((w) => (w.cluster || 'local') === 'local' && !w.preview).map((w) => w.name);
+  // Every workspace, not only local ones. The status is GitHub work (read by PR/issue number, the
+  // same from any cluster) plus the agent state (read from the one agent pod, which tracks a
+  // conversation by workspace name whatever cluster it runs on) - neither is cluster-scoped, so a
+  // downstream-hosted workspace gets its status line and dot like any other. Previews have none.
+  const names = workspaces.filter((w) => !w.preview).map((w) => w.name);
 
   void refreshAgents();
   void readStale(names);
