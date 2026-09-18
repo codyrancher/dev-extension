@@ -15,7 +15,7 @@
 // and owned by the pane's user, the same three places the harness put them.
 
 import {
-  podExecOnce, workspacePod, workspaceNamespace, WORKSPACE_CONTAINER, githubToken, devFetch, secretValue, clusterBase
+  podExecOnce, workspacePod, workspaceNamespace, WORKSPACE_CONTAINER, githubToken, devFetch, secretValue, clusterBase, activeCluster
 } from './api';
 import { AGENT_SEED } from './agent-seed.generated';
 import { UNREWRITE_B64 } from './apps';
@@ -195,7 +195,10 @@ async function ensureSeed(target: WorkspaceTarget, ctx: WorkspaceContext): Promi
     'S=/tmp/dev-seed.$$.json; L=/tmp/dev-layout.$$.mjs',
     `curl -fsS ${ DEV_API_IN_CLUSTER }/agent-seed -o $S`,
     `node -e "const s=require(process.argv[1]);require('fs').writeFileSync(process.argv[2],s['layout.mjs'])" $S $L`,
-    `DEV_PROJECT=${ target.workspace } DEV_ISSUE=${ ctx.issue || '' } DEV_PR=${ ctx.pr || '' } DEV_SEED_FILE=$S DEV_ROOT=$WS DEV_WORKDIR=$WS/dashboard DEV_HOME=$WS/.home node $L`,
+    // DEV_CLUSTER lets layout.mjs write a dev-shell that reaches this workspace's pod on its own
+    // cluster: the active cluster is this workspace's, since every call reaching its pod is (see
+    // setCluster). Local is the empty/`local` case dev-shell already handles.
+    `DEV_PROJECT=${ target.workspace } DEV_ISSUE=${ ctx.issue || '' } DEV_PR=${ ctx.pr || '' } DEV_CLUSTER=${ activeCluster() } DEV_SEED_FILE=$S DEV_ROOT=$WS DEV_WORKDIR=$WS/dashboard DEV_HOME=$WS/.home node $L`,
     `echo '${ version }' > ${ SEED_MARKER }`,
     'rm -f $S $L',
     'echo SEED-OK',
