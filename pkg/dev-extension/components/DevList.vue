@@ -20,6 +20,17 @@
 import BrandImage from '@shell/components/BrandImage';
 import { colorForState, stateDisplay } from '@shell/plugins/dashboard-store/resource-class';
 
+// A status tone to the dot colour that matches its status text. The same palette the detail line
+// uses (see the `&__detail--<tone>` and `&__dot--<tone>` rules, and workspace-status Tone), so a
+// running row reads one colour top to bottom rather than the pod's green beside an amber status.
+const TONE_DOT = {
+  green:     'dev-list__dot--green',
+  attention: 'dev-list__dot--attention',
+  waiting:   'dev-list__dot--waiting',
+  working:   'dev-list__dot--working',
+  muted:     'dev-list__dot--muted',
+};
+
 export default {
   name: 'DevList',
 
@@ -193,7 +204,16 @@ export default {
         return 'text-error';
       }
 
-      return row.state === 'stopped' ? 'text-muted' : colorForState(row.state);
+      // A workspace that is not running is coloured by its lifecycle: stopped is muted (someone
+      // pressed Stop, the ordinary way to leave one), the rest are Rancher's own state colours.
+      if (row.state && row.state !== 'running') {
+        return row.state === 'stopped' ? 'text-muted' : colorForState(row.state);
+      }
+
+      // A running row - or a conversation, which has no run state of its own - is coloured by
+      // what its status is, so the dot reads the same colour as the words beneath it: one status,
+      // one colour, rather than a running pod's green beside an amber "your pass".
+      return TONE_DOT[row.tone] || colorForState(row.state);
     },
 
     stateLabel(row) {
@@ -675,6 +695,14 @@ export default {
   &__dot .icon-dot {
       color: color-mix(in srgb, currentColor, var(--body-text) 45%);
     }
+
+    // The dot coloured by a status tone, matched to the detail line beneath it. The canonical
+    // status palette (workspace-status Tone), so every status disk in the product reads the same.
+    &__dot--green     { color: var(--success); }
+    &__dot--attention { color: var(--warning); }
+    &__dot--waiting   { color: var(--info); }
+    &__dot--working   { color: var(--primary); }
+    &__dot--muted     { color: var(--muted); }
 
     // The name, truncated rather than wrapped: a row is one line and a workspace name can be
     // forty characters. It shrinks before the control does, so a long name never runs under it.
