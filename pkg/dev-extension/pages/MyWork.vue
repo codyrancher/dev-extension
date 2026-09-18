@@ -1601,12 +1601,16 @@ export default {
     background:      var(--tabbed-container-bg);
     color:           var(--muted);
 
-    &--info    { background: var(--info-banner-bg);    color: var(--info); }
-    &--success { background: var(--success-banner-bg); color: var(--success); }
-    &--warning { background: var(--warning-banner-bg); color: var(--warning); }
-    &--error   { background: var(--error-banner-bg);   color: var(--error); }
+    &--info    { background: var(--info-banner-bg);    color: var(--status-waiting); }
+    &--success { background: var(--success-banner-bg); color: var(--status-done); }
+    &--warning { background: var(--warning-banner-bg); color: var(--status-input); }
+    &--error   { background: var(--error-banner-bg);   color: var(--status-error); }
     &--accent  { background: rgba(155, 191, 253, 0.16); color: var(--dev-accent); }
   }
+
+  // The tables colour State ("Open") and Approved ("✓") with the shell's raw text-success;
+  // soften it to the status palette so the page reads in the same pastel as everywhere else.
+  .text-success { color: var(--status-done); }
 
   .dev-my-work {
     overflow-y: auto;
@@ -1665,21 +1669,21 @@ export default {
 
       &--warning {
         background: var(--warning-banner-bg, var(--warning));
-        color:      var(--warning);
+        color:      var(--status-input);
       }
 
       &--error {
         background: var(--error-banner-bg, var(--error));
-        color:      var(--error);
+        color:      var(--status-error);
       }
 
       &--success,
       &--muted {
-        color: var(--success);
+        color: var(--status-done);
       }
 
       &--muted {
-        color: var(--muted);
+        color: var(--status-idle);
       }
     }
 
