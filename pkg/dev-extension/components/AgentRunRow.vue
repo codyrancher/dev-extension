@@ -108,13 +108,13 @@ export default {
   &:first-child { border-top: 0; }
 
   &__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-  &--running &__dot, &--starting &__dot { background: var(--dev-accent); animation: agent-run-pulse 1.4s infinite ease-in-out; }
+  &--running &__dot, &--starting &__dot { background: var(--primary); animation: agent-run-pulse 1.4s infinite ease-in-out; }
   &--done &__dot { background: var(--success); }
   &--failed &__dot { background: var(--error); }
   &--requested &__dot { background: var(--warning); }
 
   &__state { text-transform: uppercase; font-weight: 600; letter-spacing: 0.04em; font-size: 10px; }
-  &--running &__state, &--starting &__state { color: var(--dev-accent); }
+  &--running &__state, &--starting &__state { color: var(--primary); }
   &--done &__state { color: var(--success); }
   &--failed &__state { color: var(--error); }
   &--requested &__state { color: var(--warning); }
