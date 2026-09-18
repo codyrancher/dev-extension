@@ -163,17 +163,17 @@ export default {
       height:        7px;
       margin-right:  6px;
       border-radius: 50%;
-      background:    var(--muted);
+      background:    var(--status-idle);
 
       &--working {
-        background: var(--primary);
+        background: var(--status-working);
         // Opacity-only pulse: the dot keeps its size, so the title never moves.
         animation: conversation-tab-dot-pulse 1.4s ease-in-out infinite;
       }
 
-      &--input    { background: var(--warning); }
-      &--finished { background: var(--success); }
-      &--idle     { background: var(--muted); }
+      &--input    { background: var(--status-input); }
+      &--finished { background: var(--status-done); }
+      &--idle     { background: var(--status-idle); }
     }
 
     &__name {
