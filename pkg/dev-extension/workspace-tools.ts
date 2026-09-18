@@ -177,6 +177,15 @@ async function ensureBase(target: WorkspaceTarget): Promise<void> {
  * did, with the workspace's name and its issue or PR number.
  */
 async function ensureSeed(target: WorkspaceTarget, ctx: WorkspaceContext): Promise<void> {
+  // A downstream workspace lays its seed out from the agent pod instead: the layout script fetches
+  // the seed from the local dev-api, and a pod on another cluster cannot resolve that service, so
+  // the fetch below would fail every time. The agent pod can reach it and has the workspace's tree
+  // mounted, so it writes the seed there - the same files, the same .dev-seed marker (agents
+  // mount-downstream.sh). Nothing to do from here for those. See downstream-conversation-mount.
+  if (activeCluster() !== 'local') {
+    return;
+  }
+
   // The API's version, which moves when a skill is edited (skills.ts); the bundle's own when
   // the API cannot be asked.
   const served = await devFetch(`${ clusterBase('local') }/api/v1/namespaces/dev-system/services/http:dev-api:8080/proxy/agent-seed/version`).catch(() => null);
