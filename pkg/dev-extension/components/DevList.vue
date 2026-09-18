@@ -707,6 +707,15 @@ export default {
     &__dot--working   { color: var(--status-working); }
     &__dot--muted     { color: var(--status-idle); }
 
+    // The lifecycle discs come from Rancher's own state colours as text-* classes (a workspace
+    // with no status yet, stopped, error, a delete in progress). Soften those to the same palette
+    // so every disc in the list is drawn in the pastel, never the raw state colour.
+    &__dot.text-success .icon-dot { color: var(--status-done); }
+    &__dot.text-warning .icon-dot { color: var(--status-input); }
+    &__dot.text-info    .icon-dot { color: var(--status-waiting); }
+    &__dot.text-error   .icon-dot { color: var(--status-error); }
+    &__dot.text-muted   .icon-dot { color: var(--status-idle); }
+
     // The name, truncated rather than wrapped: a row is one line and a workspace name can be
     // forty characters. It shrinks before the control does, so a long name never runs under it.
     &__text {
