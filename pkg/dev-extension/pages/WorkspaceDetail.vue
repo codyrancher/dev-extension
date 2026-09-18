@@ -42,7 +42,7 @@ import {
   rememberWorkspace, rememberTab, lastTab, workspaceView, rememberWorkspaceView
 } from '../recent';
 import {
-  WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB
+  WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB, LABEL_CLUSTER
 } from '../config/constants';
 import { setViewing } from '../workspace-status';
 
@@ -226,7 +226,37 @@ export default {
       rememberTab(tab.name);
     },
 
+    /**
+     * Point BASE at this workspace's own cluster before anything reads the workspace.
+     *
+     * getWorkspace reads the namespace out of BASE, but the page does not know the cluster until
+     * it has read the workspace - and a workspace hosted on a downstream cluster is not in
+     * `local`, so that first read finds nothing, the page never learns where to look, and it sits
+     * on the "restarting" banner for ever (the Installation still stands, so it is not read as
+     * deleted). The Installation is a management object, the same on every cluster, and it carries
+     * the cluster as a label; read it first and set BASE from it. Local workspaces resolve to
+     * `local` and are unaffected. See setCluster / LABEL_CLUSTER / getWorkspace.
+     */
+    async resolveCluster() {
+      try {
+        const instance = await workspaceInstance(this.$store, this.name);
+        const cluster = instance?.metadata?.labels?.[LABEL_CLUSTER];
+
+        if (cluster) {
+          setCluster(cluster);
+        }
+      } catch { /* leave BASE as it is; a local workspace is found there anyway */ }
+    },
+
     async refresh() {
+      // Until the workspace is known, BASE may be pointed at the wrong cluster - a downstream
+      // workspace is not in `local` - so resolve the cluster from the Installation first, and keep
+      // trying each poll until it is known (the first read of the Installation list can miss).
+      // Once the workspace is loaded, the setCluster below keeps BASE on its cluster.
+      if (!this.workspace?.cluster) {
+        await this.resolveCluster();
+      }
+
       const fresh = await getWorkspace(this.name);
 
       if (!fresh) {
