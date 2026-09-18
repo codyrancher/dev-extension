@@ -26,6 +26,10 @@ const ctx = {
   projectName: process.env.DEV_PROJECT || '',
   issueNumber: process.env.DEV_ISSUE || '',
   prNumber:    process.env.DEV_PR || '',
+  // The cluster this workspace runs on. Empty or `local` means this Rancher's own cluster, where
+  // the agent pod's service account can exec into the pod directly; anything else is a downstream
+  // cluster reached through the Rancher proxy - see the dev-shell tunnel below.
+  cluster:     process.env.DEV_CLUSTER || '',
   rancherUrl,
   rancherHost: rancherUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, ''),
 };
@@ -189,6 +193,7 @@ if (fs.existsSync(HOOKS)) {
 //
 // Written here rather than baked into the agent pod because a workspace knows its own name and
 // the pod does not: one wrapper per workspace, laid out with everything else it needs.
+const downstream = ctx.cluster && ctx.cluster !== 'local';
 const wrapper = [
   '#!/bin/sh',
   '# Run one command inside this workspace\'s pod. Written by the seed; see layout.mjs.',
@@ -199,13 +204,24 @@ const wrapper = [
   'PATH=/workspace/.home/.local/bin:/usr/local/bin:$PATH',
   'export PATH',
   '',
-  '# As the pod, not as the person. That home also holds the kubeconfig the person\'s Rancher',
-  '# token was written into, and when that expires - which is the thing this whole arrangement',
-  '# exists to stop mattering - every command in every conversation would start failing with',
-  '# "you must be logged in to the server". An empty KUBECONFIG sends kubectl to the pod\'s own',
-  '# service account, which is what is entitled to exec into a workspace anyway.',
-  'KUBECONFIG=/dev/null',
-  'export KUBECONFIG',
+  ...(downstream ? [
+    '# This workspace runs on a downstream cluster, whose pods this pod\'s own service account',
+    '# cannot reach. Go through the Rancher proxy with the durable token the agent pod carries',
+    '# (the downstream-exec Secret), read fresh on each command so a rotated token is picked up.',
+    'DS=/var/run/downstream-exec',
+    'DRURL=$(cat "$DS/rancherUrl" 2>/dev/null)',
+    'DTOKEN=$(cat "$DS/token" 2>/dev/null)',
+    `KARGS="--server=$DRURL/k8s/clusters/${ ctx.cluster } --token=$DTOKEN --insecure-skip-tls-verify=true"`,
+  ] : [
+    '# As the pod, not as the person. That home also holds the kubeconfig the person\'s Rancher',
+    '# token was written into, and when that expires - which is the thing this whole arrangement',
+    '# exists to stop mattering - every command in every conversation would start failing with',
+    '# "you must be logged in to the server". An empty KUBECONFIG sends kubectl to the pod\'s own',
+    '# service account, which is what is entitled to exec into a workspace anyway.',
+    'KUBECONFIG=/dev/null',
+    'export KUBECONFIG',
+    'KARGS=',
+  ]),
   '',
   '# The pane\'s own hooks stay here. claude runs its hooks through this wrapper too (they are',
   '# shell commands, and CLAUDE_CODE_SHELL_PREFIX applies to every one), but a hook is about the',
@@ -232,7 +248,7 @@ const wrapper = [
   '# PATH is spelled out rather than left to a profile: this is a non-interactive login shell,',
   '# which reads ~/.profile and not ~/.bashrc, and the workspace\'s own commands - a11y, gh,',
   '# wait-for-sidecars, rancher-login.mjs - live in its bin.',
-  'exec kubectl exec -i -n "$NS" "deploy/$NS" -c workspace -- \\',
+  'exec kubectl $KARGS exec -i -n "$NS" "deploy/$NS" -c workspace -- \\',
   '  setpriv --reuid=1000 --regid=1000 --init-groups \\',
   '  /usr/bin/env HOME="$WS/.home" WSD="$WS" DIR="$DIR" \\',
   '  /bin/bash -lc \'cd "$DIR" 2>/dev/null || cd "$WSD/dashboard" || exit 1; PATH="$WSD/bin:$WSD/.home/.local/bin:$PATH"; set -a; [ -f "$WSD/.env" ] && . "$WSD/.env"; set +a; eval "$1"\' bash "$1"',
