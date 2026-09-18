@@ -701,11 +701,11 @@ export default {
 
     // The dot coloured by a status tone, matched to the detail line beneath it. The canonical
     // status palette (workspace-status Tone), so every status disk in the product reads the same.
-    &__dot--green     { color: var(--success); }
-    &__dot--attention { color: var(--warning); }
-    &__dot--waiting   { color: var(--info); }
-    &__dot--working   { color: var(--primary); }
-    &__dot--muted     { color: var(--muted); }
+    &__dot--green     { color: var(--status-done); }
+    &__dot--attention { color: var(--status-input); }
+    &__dot--waiting   { color: var(--status-waiting); }
+    &__dot--working   { color: var(--status-working); }
+    &__dot--muted     { color: var(--status-idle); }
 
     // The name, truncated rather than wrapped: a row is one line and a workspace name can be
     // forty characters. It shrinks before the control does, so a long name never runs under it.
@@ -754,26 +754,26 @@ export default {
         font-size: 11px;
         opacity:   .75;
 
-        &--working  { color: var(--primary); opacity: 1; }
-        &--input    { color: var(--warning); opacity: 1; }
-        &--finished { color: var(--success); }
-        &--idle     { color: var(--muted); }
+        &--working  { color: var(--status-working); opacity: 1; }
+        &--input    { color: var(--status-input); opacity: 1; }
+        &--finished { color: var(--status-done); }
+        &--idle     { color: var(--status-idle); }
       }
 
       &--green {
-        color: var(--success);
+        color: var(--status-done);
       }
 
       &--attention {
-        color: var(--warning);
+        color: var(--status-input);
       }
 
       &--waiting {
-        color: var(--info);
+        color: var(--status-waiting);
       }
 
       &--working {
-        color: var(--primary);
+        color: var(--status-working);
       }
     }
 

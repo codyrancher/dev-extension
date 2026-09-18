@@ -194,9 +194,9 @@ export default {
 
       .icon { font-size: 11px; }
 
-      &--working  { color: var(--primary); }
-      &--input    { color: var(--warning); }
-      &--finished { color: var(--success); }
+      &--working  { color: var(--status-working); }
+      &--input    { color: var(--status-input); }
+      &--finished { color: var(--status-done); }
     }
 
     &__controls {
