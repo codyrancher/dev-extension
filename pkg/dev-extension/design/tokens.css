@@ -75,4 +75,19 @@
 body {
   --dev-accent:    var(--link);
   --dev-on-accent: var(--body-bg);
+
+  /*
+   * The status palette: one softened set for every status disc and the label beside it, so the
+   * two read as one soft colour rather than a bright word next to a pale dot. Each is its Rancher
+   * state colour pulled 45% toward the body text - the pastel the discs were always drawn in, now
+   * the labels' colour too. Softened on purpose, the same reason this product's accent is `--link`
+   * and not the `--primary` that shouted (see above): a sidebar of statuses should be read, not
+   * shouted from.
+   */
+  --status-working: color-mix(in srgb, var(--primary), var(--body-text) 45%);
+  --status-input:   color-mix(in srgb, var(--warning), var(--body-text) 45%);
+  --status-waiting: color-mix(in srgb, var(--info),    var(--body-text) 45%);
+  --status-done:    color-mix(in srgb, var(--success), var(--body-text) 45%);
+  --status-idle:    color-mix(in srgb, var(--muted),   var(--body-text) 45%);
+  --status-error:   color-mix(in srgb, var(--error),   var(--body-text) 45%);
 }
