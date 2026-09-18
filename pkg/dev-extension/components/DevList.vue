@@ -693,7 +693,10 @@ export default {
   }
 
   &__dot .icon-dot {
-      color: color-mix(in srgb, currentColor, var(--body-text) 45%);
+      // The disc is the exact colour of its state or status - the same token the label beside it
+      // uses - so the two read as one status. It used to be softened 45% toward the body text,
+      // which left the disc a paler shade than its label; that gap is the mismatch this removes.
+      color: inherit;
     }
 
     // The dot coloured by a status tone, matched to the detail line beneath it. The canonical
