@@ -1050,19 +1050,6 @@ export default {
               class="dev-my-work__badge"
               :class="`dev-my-work__badge--${ badge.tone }`"
             >{{ badge.label }}</span>
-            <!--
-              Only where there is something to rerun. It reruns the failed jobs of every workflow
-              that has one, which is usually a single run: see rerunFailed.
-            -->
-            <AsyncButton
-              v-if="row.runs.length"
-              mode="apply"
-              action-label="Rerun"
-              waiting-label="Asking"
-              success-label="Asked"
-              size="sm"
-              @click="(done) => rerun(row, done)"
-            />
           </div>
         </template>
         <!--
@@ -1090,14 +1077,26 @@ export default {
           />
         </template>
         <template #cell:actions="{ row }">
-          <AsyncButton
-            mode="apply"
-            action-label="Review"
-            waiting-label="Opening"
-            success-label="Opened"
-            size="sm"
-            @click="(done) => review(row, done)"
-          />
+          <div class="dev-my-work__actions">
+            <!-- Rerun the failed jobs, moved out of the CI column to sit with the row's actions. -->
+            <AsyncButton
+              v-if="row.runs.length"
+              mode="apply"
+              action-label="Rerun"
+              waiting-label="Asking"
+              success-label="Asked"
+              size="sm"
+              @click="(done) => rerun(row, done)"
+            />
+            <AsyncButton
+              mode="apply"
+              action-label="Review"
+              waiting-label="Opening"
+              success-label="Opened"
+              size="sm"
+              @click="(done) => review(row, done)"
+            />
+          </div>
         </template>
         <template #cell:reviewed="{ row }">
           <span :class="row.reviewedAt ? '' : 'text-muted'">{{ ago(row.reviewedAt) }}</span>
@@ -1154,19 +1153,6 @@ export default {
               class="dev-my-work__badge"
               :class="`dev-my-work__badge--${ badge.tone }`"
             >{{ badge.label }}</span>
-            <!--
-              Only where there is something to rerun. It reruns the failed jobs of every workflow
-              that has one, which is usually a single run: see rerunFailed.
-            -->
-            <AsyncButton
-              v-if="row.runs.length"
-              mode="apply"
-              action-label="Rerun"
-              waiting-label="Asking"
-              success-label="Asked"
-              size="sm"
-              @click="(done) => rerun(row, done)"
-            />
           </div>
         </template>
         <template #cell:updated="{ row }">
@@ -1202,6 +1188,19 @@ export default {
         -->
         <template #cell:actions="{ row }">
           <div class="dev-my-work__actions">
+            <!--
+              Rerun the failed jobs as they are, next to Fix CI which opens an agent to fix them:
+              the two CI actions sit together here rather than one in the CI column and one here.
+            -->
+            <AsyncButton
+              v-if="row.runs.length"
+              mode="apply"
+              action-label="Rerun"
+              waiting-label="Asking"
+              success-label="Asked"
+              size="sm"
+              @click="(done) => rerun(row, done)"
+            />
             <AsyncButton
               v-if="row.checks && row.checks.failing"
               mode="apply"
