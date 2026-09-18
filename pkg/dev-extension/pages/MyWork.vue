@@ -1015,10 +1015,10 @@ export default {
         :rows-per-page="5"
       >
         <template #cell:state="{ row }">
-          <span :class="row.draft ? 'text-muted' : 'text-success'">{{ row.draft ? 'Draft' : 'Open' }}</span>
+          <span :class="row.draft ? 'text-muted' : 'dev-my-work__ok'">{{ row.draft ? 'Draft' : 'Open' }}</span>
         </template>
         <template #cell:approved="{ row }">
-          <span :class="row.approved ? 'text-success' : 'text-muted'">{{ row.approved ? '✓' : '' }}</span>
+          <span :class="row.approved ? 'dev-my-work__ok' : 'text-muted'">{{ row.approved ? '✓' : '' }}</span>
         </template>
         <template #cell:pr="{ row }">
           <a
@@ -1119,10 +1119,10 @@ export default {
         :rows-per-page="5"
       >
         <template #cell:state="{ row }">
-          <span :class="row.draft ? 'text-muted' : 'text-success'">{{ row.draft ? 'Draft' : 'Open' }}</span>
+          <span :class="row.draft ? 'text-muted' : 'dev-my-work__ok'">{{ row.draft ? 'Draft' : 'Open' }}</span>
         </template>
         <template #cell:approved="{ row }">
-          <span :class="row.approved ? 'text-success' : 'text-muted'">{{ row.approved ? '✓' : '' }}</span>
+          <span :class="row.approved ? 'dev-my-work__ok' : 'text-muted'">{{ row.approved ? '✓' : '' }}</span>
         </template>
         <template #cell:pr="{ row }">
           <a
@@ -1608,9 +1608,10 @@ export default {
     &--accent  { background: rgba(155, 191, 253, 0.16); color: var(--dev-accent); }
   }
 
-  // The tables colour State ("Open") and Approved ("✓") with the shell's raw text-success;
-  // soften it to the status palette so the page reads in the same pastel as everywhere else.
-  .text-success { color: var(--status-done); }
+  // State ("Open") and Approved ("✓"). A local class rather than the shell's text-success,
+  // which carries !important and cannot be softened from here - this draws them in the status
+  // palette so the page reads in the same pastel as everywhere else.
+  .dev-my-work__ok { color: var(--status-done); }
 
   .dev-my-work {
     overflow-y: auto;
