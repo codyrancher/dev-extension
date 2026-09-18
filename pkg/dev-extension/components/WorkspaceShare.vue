@@ -631,8 +631,8 @@ export default {
   font-size: 12px;
   margin:    0 0 var(--dev-space-2);
 
-  &--failed { color: var(--error); }
-  &--ok { color: var(--success); }
+  &--failed { color: var(--status-error); }
+  &--ok { color: var(--status-done); }
 }
 
 .workspace-share__log {

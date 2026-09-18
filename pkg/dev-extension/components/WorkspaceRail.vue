@@ -3151,9 +3151,9 @@ export default {
     dd { margin: 0; overflow-wrap: anywhere; }
   }
 
-  &__tone--ok { color: var(--success); }
-  &__tone--bad { color: var(--error); }
-  &__tone--warn { color: var(--warning); }
+  &__tone--ok { color: var(--status-done); }
+  &__tone--bad { color: var(--status-error); }
+  &__tone--warn { color: var(--status-input); }
 
   &__list {
     margin:     0;

@@ -626,13 +626,13 @@ export default {
       color: var(--muted);
 
       &--set {
-        color: var(--success);
+        color: var(--status-done);
       }
     }
 
 
     &__pending {
-      color: var(--warning);
+      color: var(--status-input);
     }
 
     &__none {
