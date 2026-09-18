@@ -1210,11 +1210,11 @@ export default {
       height:        7px;
       border-radius: 50%;
       margin-right:  6px;
-      background:    var(--success);
+      background:    var(--status-done);
       vertical-align: 1px;
 
-      &--warn { background: var(--warning); }
-      &--error { background: var(--error); }
+      &--warn { background: var(--status-input); }
+      &--error { background: var(--status-error); }
 
       // The header's one dot: a little larger, on the right, with the reasons in its title.
       &--overall {
@@ -1233,8 +1233,8 @@ export default {
       text-overflow: ellipsis;
       margin:        1px 0 3px;
 
-      &--warn { color: var(--warning); }
-      &--error { color: var(--error); }
+      &--warn { color: var(--status-input); }
+      &--error { color: var(--status-error); }
     }
 
     &__cluster-row {
