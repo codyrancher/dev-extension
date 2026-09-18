@@ -14,11 +14,11 @@
   --pr-accent-hover: var(--dev-accent);
   --pr-accent-fill:  rgba(155, 191, 253, 0.16);
   --pr-on-accent:    var(--dev-on-accent);
-  --pr-success:      var(--success);
+  --pr-success:      var(--status-done);
   --pr-success-fill: var(--success-banner-bg);
-  --pr-warning:      var(--warning);
+  --pr-warning:      var(--status-input);
   --pr-warning-fill: var(--warning-banner-bg);
-  --pr-error:        var(--error);
+  --pr-error:        var(--status-error);
   --pr-error-fill:   var(--error-banner-bg);
   --pr-mono:         ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   /* Tints for the diff and the tree, faint on purpose: the colour says which kind of line it is,
