@@ -2479,8 +2479,8 @@ export default {
     gap:         6px;
     color:       var(--muted);
 
-    &--working { color: var(--primary); }
-    &--input { color: var(--warning); }
+    &--working { color: var(--status-working); }
+    &--input { color: var(--status-input); }
   }
 
   // The rail
