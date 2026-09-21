@@ -419,7 +419,10 @@ async function startDrawerPane(api: StudioBrowserApi, id: string): Promise<void>
   const last = argv.length - 1;
   const detached = ['claude', 'shell'].includes(argv[last]) ? [...argv.slice(0, last), 'start'] : argv;
 
-  await podExecOnce(api.agent.namespace, pod, api.agent.container, detached);
+  // The agent pod is on the local cluster (BASE above), not whatever workspace api.ts's BASE points
+  // at, so pin this exec to local - a drawer pane opened while a downstream workspace is on screen
+  // would otherwise start in a cluster the agent pod is not in.
+  await podExecOnce(api.agent.namespace, pod, api.agent.container, detached, BASE);
 }
 
 // ── Watching resources ────────────────────────────────────────────────────────────────────
