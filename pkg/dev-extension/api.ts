@@ -677,14 +677,40 @@ export async function listWorkspaces(cluster?: string): Promise<DevWorkspace[]> 
  * nothing rather than taking the list down with it, which is the ordinary case for somebody with
  * access to one cluster out of several.
  */
-export async function listAllWorkspaces(): Promise<DevWorkspace[]> {
-  const clusters = await listClusterIds().catch(() => [] as string[]);
-  const lists = await Promise.all(
-    (clusters.length ? clusters : [activeCluster()])
-      .map((id) => listWorkspaces(id).catch(() => [] as DevWorkspace[])),
-  );
+/**
+ * The last good list read from each cluster, so a workspace does not blink out of the sidebar when
+ * one read of its cluster fails. A downstream cluster is reached across the Rancher proxy with a
+ * token that can flap, and every such blip used to empty that cluster's workspaces from the list
+ * (listWorkspaces throws, the catch below swallowed it to nothing) until the next good read.
+ */
+const workspacesByCluster = new Map<string, DevWorkspace[]>();
 
-  return lists.flat().sort((a, b) => a.name.localeCompare(b.name));
+export async function listAllWorkspaces(): Promise<DevWorkspace[]> {
+  const ids = await listClusterIds().catch(() => [] as string[]);
+  // A blip reading /v3/clusters must not drop every downstream workspace either: fall back to the
+  // clusters seen before, plus the active one.
+  const clusters = ids.length ? ids : [...new Set([activeCluster(), ...workspacesByCluster.keys()])];
+
+  await Promise.all(clusters.map(async(id) => {
+    try {
+      workspacesByCluster.set(id, await listWorkspaces(id));
+    } catch {
+      // Keep the last good list for this cluster: a workspace is dropped only when a read succeeds
+      // and no longer has it, never because one read timed out or the token flapped.
+    }
+  }));
+
+  // Only when the cluster list itself read cleanly, forget a cluster it no longer names - a Rancher
+  // that was removed - so its workspaces do not linger. A failed cluster-list read prunes nothing.
+  if (ids.length) {
+    for (const id of [...workspacesByCluster.keys()]) {
+      if (!ids.includes(id)) {
+        workspacesByCluster.delete(id);
+      }
+    }
+  }
+
+  return [...workspacesByCluster.values()].flat().sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
