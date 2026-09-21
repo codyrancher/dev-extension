@@ -839,11 +839,14 @@ export async function combinedFiles(pr: number, shas: string[]): Promise<{ path:
  * The prompt each non-skill action sends, as a template. Keyed like the skills are, so an edit
  * is kept and shared the same way.
  */
+// Named skills are invoked in prose ("Use the <skill> skill"), never as a `/slash` command: a
+// pane's claude answers "Unknown command" to a `/<skill>` it has no command registered for, and the
+// prompt never reaches the model. See skillTemplate.
 export const ACTION_TEMPLATES: Record<string, string> = {
-  startFix:       '/my-issue-fix Fix {{ repo }} issue {{ issue }} - this project was created for it.',
-  startReview:    '/my-pr-full-review Review {{ repo }} PR {{ pr }} - harness portal context, file through {{ context }}.',
-  answerFeedback: '/my-pr-address-feedback Address the review feedback on {{ repo }} PR {{ pr }}: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.',
-  reverify:       '/my-fix-demonstrate Re-verify the fix on this branch (PR {{ pr }}) and record a fresh video of the same walk.',
+  startFix:       'Use the my-issue-fix skill to fix {{ repo }} issue {{ issue }} - this project was created for it.',
+  startReview:    'Use the my-pr-full-review skill to review {{ repo }} PR {{ pr }} - harness portal context, file through {{ context }}.',
+  answerFeedback: 'Use the my-pr-address-feedback skill to address the review feedback on {{ repo }} PR {{ pr }}: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.',
+  reverify:       'Use the my-fix-demonstrate skill to re-verify the fix on this branch (PR {{ pr }}) and record a fresh video of the same walk.',
   reviewAgain:    'The developer pushed new commits and/or replied since the review of {{ repo }} PR {{ pr }} was submitted. Review what changed against the comments that were made: say which are addressed, which are not, and anything new the changes introduce. File through {{ context }}.',
 };
 
@@ -973,7 +976,11 @@ export function expandPrompt(template: string, vars: PromptVar[]): string {
 
 /** What a skill button sends, before the variables go in. */
 export function skillTemplate(button: SkillButton): string {
-  return `/${ button.skill } {{ subject }}{{ contextClause }}`;
+  // Name the skill in prose, not as a `/slash` command. A pane's claude treats leading-`/` input
+  // as a CLI slash command and, since skills are not registered as commands, answers "Unknown
+  // command: /<skill>" without the prompt ever reaching the model - so nothing ran. Asking it to
+  // use the skill by name reaches the model, which invokes it through the Skill tool.
+  return `Use the ${ button.skill } skill. {{ subject }}{{ contextClause }}`;
 }
 
 /** The clause a PR adds; empty without one, so the sentence still ends properly. */
