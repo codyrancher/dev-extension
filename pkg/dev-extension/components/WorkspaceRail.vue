@@ -164,6 +164,8 @@ export default {
       live:     {},
       /** Which live conversation the panel is showing, when more than one is running. */
       liveShown: '',
+      /** Which conversation is being brought back up right now, by id, so its button can wait. */
+      resuming:  '',
     };
   },
 
@@ -238,6 +240,26 @@ export default {
       const live = this.liveConversations;
 
       return live.find((c) => c.id === this.liveShown) || live[live.length - 1] || null;
+    },
+
+    /**
+     * Every conversation this workspace has, running or not, newest last - so the strip is there
+     * on every stage the moment the work has a conversation, not only while a pane is up. A
+     * conversation with no pane (the agent finished, or the pod was restarted) still shows as a
+     * tab; opening it resumes it (resumeConversation), rather than a conversation that plainly
+     * exists being invisible until something happens to be running.
+     */
+    railConversations() {
+      return this.conversations.map((c) => ({
+        ...c, alive: !!this.live[c.id], agent: this.live[c.id] || 'idle',
+      }));
+    },
+
+    /** The one the panel draws, across running and not: the picked tab, else the newest. */
+    shownConversation() {
+      const all = this.railConversations;
+
+      return all.find((c) => c.id === this.liveShown) || all[all.length - 1] || null;
     },
 
     /**
@@ -1040,6 +1062,33 @@ export default {
       return this.liveConversations.find((c) => c.id === name) || null;
     },
 
+    /** A tab's conversation across running and not - what the strip's headers and bodies read. */
+    byTab(name) {
+      return this.railConversations.find((c) => c.id === name) || null;
+    },
+
+    /**
+     * Bring a conversation whose pane is gone back up, and show it. The pane is started detached
+     * in the agent pod on the same id, so the transcript, the name and the scrollback are all
+     * still there - the terminal below attaches to it once the next `refreshLive` sees it alive.
+     * Nothing is started until this is pressed: opening the workspace never revives an agent.
+     */
+    async resumeConversation(conversation) {
+      if (this.resuming) {
+        return;
+      }
+      this.resuming = conversation.id;
+      try {
+        await startPaneDetached(conversation.workspace || this.workspace.name, conversation.id);
+        this.liveShown = conversation.id;
+        await this.refreshLive();
+      } catch (e) {
+        this.noteError(e);
+      } finally {
+        this.resuming = '';
+      }
+    },
+
     /** The larger view, on the conversation the panel is showing rather than the select's. */
     popLive() {
       if (this.shownLive) {
@@ -1083,7 +1132,10 @@ export default {
         // A pane that appeared may be a conversation this page has never listed.
         await this.loadConversations();
       }
-      if (this.liveShown && !next[this.liveShown]) {
+      // Keep the picked tab even when its pane dies: a conversation that stopped stays on show as
+      // a resumable tab rather than vanishing. Only drop the selection if the conversation is gone
+      // from the workspace altogether (ended, its record removed).
+      if (this.liveShown && !next[this.liveShown] && !this.conversations.some((c) => c.id === this.liveShown)) {
         this.liveShown = '';
       }
     },
@@ -1589,39 +1641,58 @@ export default {
         a bar of its own.
       -->
       <section
-        v-if="liveConversations.length"
+        v-if="railConversations.length"
         class="workspace-rail__live"
       >
         <ConversationTabbed
           class="workspace-rail__live-tabs"
-          :default-tab="shownLive ? shownLive.id : ''"
+          :default-tab="shownConversation ? shownConversation.id : ''"
           @changed="onLiveTab"
         >
           <template #tab-header="{ tab }">
             <ConversationTab
-              v-if="liveByTab(tab.name)"
-              :conversation="liveByTab(tab.name)"
-              :agent="liveByTab(tab.name).agent"
+              v-if="byTab(tab.name)"
+              :conversation="byTab(tab.name)"
+              :agent="byTab(tab.name).agent"
               :active="tab.active"
-              @rename="renameLive(liveByTab(tab.name), $event)"
+              @rename="renameLive(byTab(tab.name), $event)"
               @popout="popLive"
-              @close="closeLive(liveByTab(tab.name))"
+              @close="closeLive(byTab(tab.name))"
             />
           </template>
           <Tab
-            v-for="(c, i) in liveConversations"
+            v-for="(c, i) in railConversations"
             :key="c.id"
             :name="c.id"
             :label="c.title || 'Conversation'"
-            :weight="liveConversations.length - i"
+            :weight="railConversations.length - i"
           >
             <StudioTerminal
-              v-if="shownLive && shownLive.id === c.id && !popped"
+              v-if="shownConversation && shownConversation.id === c.id && c.alive && !popped"
               :key="c.id"
               class="workspace-rail__live-terminal"
               :session="c.id"
               :command="c.attach.command"
             />
+            <div
+              v-else-if="shownConversation && shownConversation.id === c.id && !c.alive"
+              class="workspace-rail__resume"
+            >
+              <div class="workspace-rail__resume-text">
+                This conversation is not running right now. Its history is kept — open it to read it and carry on.
+              </div>
+              <RcButton
+                primary
+                :disabled="resuming === c.id"
+                @click="resumeConversation(c)"
+              >
+                <i
+                  v-if="resuming === c.id"
+                  class="icon icon-spinner icon-spin"
+                />
+                {{ resuming === c.id ? 'Opening…' : 'Open conversation' }}
+              </RcButton>
+            </div>
           </Tab>
         </ConversationTabbed>
       </section>
@@ -2826,6 +2897,27 @@ export default {
   &__live-terminal {
     height:     360px;
     min-height: 0;
+  }
+
+  // A conversation that is not running: shown in the terminal's place so the strip keeps its
+  // shape, with the one button that brings it back up.
+  &__resume {
+    display:         flex;
+    flex-direction:  column;
+    align-items:     flex-start;
+    gap:             12px;
+    padding:         20px;
+    min-height:      120px;
+    justify-content: center;
+    background:      var(--body-bg);
+    border:          1px solid var(--border);
+    border-top:      none;
+  }
+
+  &__resume-text {
+    color:     var(--muted);
+    font-size: 13px;
+    max-width: 52ch;
   }
 
   &__popped {
