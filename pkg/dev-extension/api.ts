@@ -1958,7 +1958,11 @@ async function secretStoreName(): Promise<string> {
 /** The store as it is, or an empty one. Values included, since the caller is the browser. */
 async function readSecretStore(): Promise<Record<string, string>> {
   const name = await secretStoreName();
-  const secret = await devFetch(`${ BASE }/v1/secrets/${ DEV_SYSTEM_NAMESPACE }/${ name }`).catch(() => null);
+  // Always the local cluster, never BASE: the store is one per-user Secret on this Rancher's own
+  // cluster, not a per-workspace thing. BASE follows whatever workspace was last opened, so a page
+  // read after a downstream workspace would look for the token on that cluster and find none - the
+  // "No GitHub token" that a refresh (which resets BASE to local) then cleared. See saveSecrets.
+  const secret = await devFetch(`${ clusterBase(DEFAULT_CLUSTER) }/v1/secrets/${ DEV_SYSTEM_NAMESPACE }/${ name }`).catch(() => null);
   const out: Record<string, string> = {};
 
   for (const [key, value] of Object.entries(secret?.data || {})) {
@@ -1998,7 +2002,10 @@ export async function saveSecrets(changes: Record<string, string>): Promise<void
   }
 
   const name = await secretStoreName();
-  const url = `${ BASE }/v1/secrets/${ DEV_SYSTEM_NAMESPACE }/${ name }`;
+  // The local cluster, never BASE - the store is one per-user Secret on this Rancher's own
+  // cluster; writing it wherever BASE happened to point would strand it. Matches readSecretStore.
+  const base = clusterBase(DEFAULT_CLUSTER);
+  const url = `${ base }/v1/secrets/${ DEV_SYSTEM_NAMESPACE }/${ name }`;
   const existing = await devFetch(url).catch(() => null);
   const data: Record<string, string> = { ...(existing?.data || {}) };
 
@@ -2025,7 +2032,7 @@ export async function saveSecrets(changes: Record<string, string>): Promise<void
   if (existing) {
     await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data: body.data, metadata: { ...existing.metadata, labels: body.metadata.labels } }) });
   } else {
-    await devFetch(`${ BASE }/v1/secrets`, { method: 'POST', body: JSON.stringify(body) });
+    await devFetch(`${ base }/v1/secrets`, { method: 'POST', body: JSON.stringify(body) });
   }
 }
 
