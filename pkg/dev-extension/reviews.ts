@@ -457,11 +457,15 @@ export async function rerunFailedJobs(pr: { repo: string; runs: Json[] }): Promi
 const API_HINT = '$CLAUDE_HARNESS_API/my-work/pr';
 
 export function reviewPrompt(pr: number, repo = DEFAULT_REPO): string {
-  return `/my-pr-full-review Review ${ repo } PR #${ pr } — harness portal context, file through ${ API_HINT }/${ pr }.`;
+  // Prose, not `/my-pr-full-review`: this works both when it is claude's launch prompt (a new
+  // conversation) and if it is ever typed into a running pane, where a leading `/` is swallowed as
+  // an unknown CLI command. See workspace-rail's skillTemplate.
+  return `Use the my-pr-full-review skill to review ${ repo } PR #${ pr } — harness portal context, file through ${ API_HINT }/${ pr }.`;
 }
 
 export function fixPrompt(num: number, repo = DEFAULT_REPO): string {
-  return `/my-issue-fix Fix ${ repo } issue #${ num } — this project was created for it.`;
+  // Prose, not `/my-issue-fix` - see reviewPrompt.
+  return `Use the my-issue-fix skill to fix ${ repo } issue #${ num } — this project was created for it.`;
 }
 
 async function ensureWorkspace(store: Store, name: string, title = ''): Promise<boolean> {
@@ -709,7 +713,10 @@ export async function startCiTriage(store: Store, pr: { number: number; title?: 
   const failures = await ciFailures(pr.number, repo).catch(() => ({ checks: [] }));
   const details = (failures.checks || []).slice(0, 6).map((c: Json) => `- ${ c.name }: ${ c.conclusion }${ c.title ? ` - ${ c.title }` : '' }${ c.summary ? `\n  ${ c.summary.slice(0, 300) }` : '' } (${ c.url })`).join('\n');
   const conversation = await openWith(workspace, `CI #${ pr.number }`,
-    `/my-ci-triage ${ repo } PR #${ pr.number } is red. The failing checks:\n\n${ details || '(read them from $CLAUDE_HARNESS_API/my-work/pr/' + pr.number + '/ci)' }\n\nDecide whether this PR's own change caused them. If they are ours, fix them with /my-ci-fix, verify, commit and push; if not, re-run the failed jobs with gh. Finish with OURS or FLAKE alone on the last line.`);
+    // Named in prose, not as `/my-ci-triage`: a pane's claude answers "Unknown command" to a
+    // `/<skill>` it has no registered command for, and the prompt never reaches the model. Same for
+    // the my-ci-fix reference below. See workspace-rail's skillTemplate.
+    `Use the my-ci-triage skill. ${ repo } PR #${ pr.number } is red. The failing checks:\n\n${ details || '(read them from $CLAUDE_HARNESS_API/my-work/pr/' + pr.number + '/ci)' }\n\nDecide whether this PR's own change caused them. If they are ours, fix them with the my-ci-fix skill, verify, commit and push; if not, re-run the failed jobs with gh. Finish with OURS or FLAKE alone on the last line.`);
 
   return { workspace, conversation, created };
 }
