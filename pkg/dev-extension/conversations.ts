@@ -19,7 +19,7 @@
 // drawn with. Nothing here holds a credential or opens a socket of its own.
 
 import {
-  workspaceNamespace, workspacePod, WORKSPACE_CONTAINER, podExecOnce
+  workspaceNamespace, workspacePod, WORKSPACE_CONTAINER, podExecOnce, clusterBase
 } from './api';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -29,6 +29,15 @@ import {
 
 /** Where the agents extension's API is. The agents extension made the agent pod, so this is its cluster. */
 export const STUDIO_CLUSTER = 'local';
+
+/**
+ * The base every exec into the agent pod must use. `podExecOnce` defaults to the module-global BASE,
+ * which follows the last-opened workspace's cluster - so on a downstream workspace (BASE = that
+ * cluster) an agent-pod exec would go to a cluster the pod is not in, and every conversation call
+ * (list, states, start a pane, reconnect) would 404 there. The agent pod is always on STUDIO_CLUSTER,
+ * so pin these to it and never to BASE. This is the same BASE-leak that bit the secret store; see api.ts.
+ */
+const AGENT_BASE = clusterBase(STUDIO_CLUSTER);
 
 /** How to open a terminal on one conversation, and what it is: the workspace and the id. */
 export interface Attachment {
@@ -107,7 +116,7 @@ export async function startedConversations(workspace: string): Promise<Set<strin
   if (!pod) {
     return new Set();
   }
-  const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', `ls ${ AGENT_WORKSPACE }/sessions 2>/dev/null`]).catch(() => '');
+  const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', `ls ${ AGENT_WORKSPACE }/sessions 2>/dev/null`], AGENT_BASE).catch(() => '');
   const prefix = `p-${ workspace }-`;
 
   return new Set(listing.split('\n')
@@ -170,7 +179,7 @@ export async function conversationStates(): Promise<ConversationState[]> {
     '  printf "%s\t%s\t%s\t%s\n" "$id" "$a" "$wrote" "$(head -c 800 "$f" | tr -d "\n\t")"',
     'done',
   ].join('\n');
-  const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script]).catch(() => '');
+  const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE).catch(() => '');
   const out: ConversationState[] = [];
 
   for (const line of listing.split('\n')) {
@@ -228,7 +237,7 @@ export async function latestAgentReport(workspace: string): Promise<AgentReport 
     `echo "@@FILE $f"`,
     `node -e '${ js.replace(/'/g, "'\\''") }' "$f"`,
   ].join('\n');
-  const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script]).catch(() => '');
+  const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE).catch(() => '');
   const file = /@@FILE (\S+)/.exec(out)?.[1] || '';
   const json = out.slice(out.lastIndexOf('\n') + 1).trim();
 
@@ -279,7 +288,7 @@ export async function sendToPane(id: string, text: string): Promise<void> {
     `rm -f ${ file }`,
     'echo SENT',
   ].join('\n');
-  const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script]);
+  const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE);
 
   if (!out.includes('SENT')) {
     throw new Error(`The message could not be typed into ${ id }: ${ out.trim().slice(-200) || 'the pane did not answer' }`);
@@ -301,7 +310,7 @@ export async function transcriptPathOf(workspace: string, id: string): Promise<s
     `[ -n "$s" ] && [ -f "${ dir }/$s.jsonl" ] && echo "${ dir }/$s.jsonl"`,
   ].join('\n');
 
-  return (await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script]).catch(() => '')).trim();
+  return (await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE).catch(() => '')).trim();
 }
 
 /**
@@ -328,7 +337,7 @@ export async function queuedNotStarted(): Promise<{ id: string; workspace: strin
     '  if [ "$(id -u)" = 0 ]; then setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/workspace/.home tmux has-session -t "mc-$id" 2>/dev/null || echo "$id"; else tmux has-session -t "mc-$id" 2>/dev/null || echo "$id"; fi',
     'done',
   ].join('\n');
-  const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script]).catch(() => '');
+  const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE).catch(() => '');
 
   return listing.split('\n')
     .map((line) => line.trim())
@@ -415,7 +424,7 @@ export async function startPaneDetached(workspace: string, id: string): Promise<
   }
   const argv = ['/bin/sh', '/seed/shell.sh', id, workspaceWorkdir(workspace), AGENT_HOME, 'start', workspaceShellWrapper(workspace)];
 
-  await podExecOnce(api.agent.namespace, pod, api.agent.container, argv);
+  await podExecOnce(api.agent.namespace, pod, api.agent.container, argv, AGENT_BASE);
 }
 
 /**
@@ -450,7 +459,7 @@ async function reconnectIn(workspace: string, id: string): Promise<void> {
   if (!pod) {
     throw new Error('The agent pod is not running, so there is nothing to reconnect.');
   }
-  await podExecOnce(api.agent.namespace, pod, api.agent.container, argv);
+  await podExecOnce(api.agent.namespace, pod, api.agent.container, argv, AGENT_BASE);
 }
 
 // ── The agents extension's browser API ──────────────────────────────────────────────────────
