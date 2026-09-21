@@ -132,26 +132,9 @@ export function agentLabel(state: AgentState): string {
   return AGENT_LABEL[state];
 }
 
-/**
- * The agent's state as a mark rather than as words.
- *
- * A list of workspaces reads down the left, and "agent idle" repeated eight times down the
- * right is eight rows of the same three words. The icon says the same thing in the space of a
- * character, and its tooltip says it in words for anyone who wants them.
- */
-const AGENT_ICON: Record<AgentState, string> = {
-  working:  'icon-spinner icon-spin',
-  input:    'icon-warning',
-  // Not an open dot: the theme's spinner is a broken ring, and at eleven pixels, still, beside
-  // one, the two were the same small circle. A pause bar cannot be mistaken for either.
-  idle:     'icon-pause',
-  finished: 'icon-checkmark',
-  none:     '',
-};
-
-export function agentIcon(state: AgentState): string {
-  return AGENT_ICON[state];
-}
+// The agent's state is shown by the status disc's colour (see displayTone), not by a glyph of its
+// own: the disc beside every row and conversation tab already says it, so a second mark said the
+// same thing twice. The words (agentLabel) remain for the card and tooltips.
 
 const GITHUB_EVERY_MS = 5 * 60_000;
 const AGENTS_EVERY_MS = 15_000;
