@@ -1,7 +1,7 @@
 {
   "name": "dev-extension",
   "description": "Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents",
-  "version": "0.3.215",
+  "version": "0.3.216",
   "private": false,
   "rancher": {
     "annotations": {
