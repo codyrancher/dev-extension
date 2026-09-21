@@ -45,15 +45,6 @@ interface ChangedFile {
   binary: boolean;
 }
 
-interface Note {
-  id: number;
-  path: string;
-  line: number | null;
-  side: 'LEFT' | 'RIGHT';
-  code: string;
-  body: string;
-}
-
 const repo = ref(DEFAULT_REPO);
 const branch = ref('');
 const base = ref('');
@@ -190,25 +181,15 @@ function parseDiff(text: string): ChangedFile[] {
   return out.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-interface RowView { row: DiffRow; notes: Note[] }
-interface FileView { file: ChangedFile; rows: RowView[]; count: number }
-
-const notes = ref<Note[]>([]);
-let nextNote = 1;
+interface RowView { row: DiffRow }
+interface FileView { file: ChangedFile; rows: RowView[] }
 
 const fileViews = computed<FileView[]>(() => files.value.map((file) => {
   const rows: DiffRow[] = parseHunks(file.patch).flatMap((h) => h.rows);
 
   highlightRows(file.path, rows);
 
-  return {
-    file,
-    rows:  rows.map((row) => ({
-      row,
-      notes: notes.value.filter((n) => n.path === file.path && n.line != null && (n.side === 'LEFT' ? row.oldN === n.line : row.newN === n.line)),
-    })),
-    count: notes.value.filter((n) => n.path === file.path).length,
-  };
+  return { file, rows: rows.map((row) => ({ row })) };
 }));
 
 const totals = computed(() => ({
@@ -261,28 +242,15 @@ function composerMatches(path: string, row: DiffRow): boolean {
   return !!c && c.path === path && (c.side === 'RIGHT' ? row.newN === c.line : row.oldN === c.line);
 }
 
-function addNote() {
-  const c = composer.value;
-  const body = composerDraft.value.trim();
-
-  if (!c || !body) {
-    return;
-  }
-  notes.value = [...notes.value, {
-    id: nextNote++, path: c.path, line: c.line, side: c.side, code: c.code, body,
-  }];
-  composer.value = null;
-  composerDraft.value = '';
-}
-
-function removeNote(id: number) {
-  notes.value = notes.value.filter((n) => n.id !== id);
-}
-
 // A question, or a remark about the whole change, with no line to hang it on.
 const general = ref('');
 
 // ── Sending it to the agent ──
+// One comment, one send. Each line's dialog (and the whole-change box) carries its own conversation
+// picker and Send: the person writes the comment against the code, chooses a new or existing
+// conversation right there, and it goes as one prompt. There is no basket of unsent notes and no
+// separate send button at the top - a comment is the next thing said to the agent, said when it is
+// written.
 const conversations = ref<ProjectConversation[]>([]);
 const target = ref('new');
 const session = ref('');
@@ -293,37 +261,26 @@ async function loadConversations() {
   conversations.value = await listConversations(props.workspace.name).catch(() => []);
 }
 
-const canSend = computed(() => notes.value.length > 0 || general.value.trim().length > 0);
-
-function prompt(): string {
-  const lines: string[] = [];
-
-  lines.push(`Review feedback on your changes on branch ${ branch.value || '(current)' } in ${ dir.value }, from the person reviewing them in the Rancher dashboard. Address each point: make the change if it asks for one, answer it here if it is a question, and say what you did for each. Do not open a pull request unless asked.`);
-  notes.value.forEach((n, i) => {
-    lines.push(`\n${ i + 1 }. ${ n.path }:${ n.line }${ n.side === 'LEFT' ? ' (the removed line)' : '' } - on \`${ n.code.trim().slice(0, 160) }\`:\n${ n.body }`);
-  });
-  if (general.value.trim()) {
-    lines.push(`\n${ notes.value.length ? `${ notes.value.length + 1 }. ` : '' }${ general.value.trim() }`);
-  }
-
-  return lines.join('\n');
+/** The standing instruction that frames whatever one comment says. */
+function intro(): string {
+  return `Review feedback on your changes on branch ${ branch.value || '(current)' } in ${ dir.value }, from the person reviewing them in the Rancher dashboard. Address it: make the change if it asks for one, answer it here if it is a question, and say what you did. Do not open a pull request unless asked.`;
 }
 
-async function send() {
-  if (!canSend.value || sending.value) {
-    return;
+/** Send one message to the chosen conversation (a new one, or an existing one), and show its pane. */
+async function sendText(text: string): Promise<boolean> {
+  if (sending.value) {
+    return false;
   }
   sending.value = true;
   error.value = '';
   try {
-    const text = prompt();
-
     if (target.value === 'new') {
       await ensureWorkspaceReady(props.workspace.name);
 
       const conversation = await startConversation(props.workspace.name, 'Review feedback', text);
 
       session.value = conversation.id;
+      // Keep sending to the conversation just made, so a second comment joins the first.
       target.value = conversation.id;
       await loadConversations();
     } else {
@@ -336,13 +293,43 @@ async function send() {
       session.value = conversation.id;
     }
     showPane.value = true;
-    notes.value = [];
-    general.value = '';
     store.dispatch('growl/success', { title: '', message: 'Sent to the agent. Its reply is the pane above the diff.', timeout: 4000 }, { root: true });
+
+    return true;
   } catch (e: Json) {
     error.value = e?.message || String(e);
+
+    return false;
   } finally {
     sending.value = false;
+  }
+}
+
+/** Send the comment written against a line, then close its dialog. */
+async function sendComposer() {
+  const c = composer.value;
+  const body = composerDraft.value.trim();
+
+  if (!c || !body) {
+    return;
+  }
+  const text = `${ intro() }\n\n${ c.path }:${ c.line }${ c.side === 'LEFT' ? ' (the removed line)' : '' } - on \`${ c.code.trim().slice(0, 160) }\`:\n${ body }`;
+
+  if (await sendText(text)) {
+    composer.value = null;
+    composerDraft.value = '';
+  }
+}
+
+/** Send the whole-change note. */
+async function sendGeneral() {
+  const body = general.value.trim();
+
+  if (!body) {
+    return;
+  }
+  if (await sendText(`${ intro() }\n\n${ body }`)) {
+    general.value = '';
   }
 }
 
@@ -426,22 +413,6 @@ defineExpose({ refresh });
           >{{ files.length }} file{{ files.length === 1 ? '' : 's' }} changed · <span class="add-count">+{{ totals.additions }}</span> <span class="del-count">−{{ totals.deletions }}</span></span>
         </div>
         <div class="prm-actions">
-          <select
-            v-model="target"
-            class="review-target"
-            title="Which conversation the feedback goes to"
-          >
-            <option value="new">
-              A new conversation
-            </option>
-            <option
-              v-for="c in conversations"
-              :key="c.id"
-              :value="c.id"
-            >
-              {{ c.title }}
-            </option>
-          </select>
           <PrButton
             v-if="session"
             size="sm"
@@ -455,15 +426,6 @@ defineExpose({ refresh });
             @click="refresh"
           >
             Refresh
-          </PrButton>
-          <PrButton
-            size="sm"
-            variant="primary"
-            :disabled="!canSend || sending"
-            data-testid="review-send"
-            @click="send"
-          >
-            {{ sending ? 'Sending…' : `Send ${ notes.length + (general.trim() ? 1 : 0) || '' } to the agent` }}
           </PrButton>
         </div>
       </div>
@@ -637,10 +599,6 @@ defineExpose({ refresh });
         >
           <span class="filenav-name">{{ fv.file.path }}</span>
           <span class="filenav-icons">
-            <span
-              v-if="fv.count"
-              class="filenav-comments pending"
-            >{{ fv.count }}</span>
             <span class="add-count">+{{ fv.file.additions }}</span>
             <span class="del-count">−{{ fv.file.deletions }}</span>
           </span>
@@ -654,16 +612,43 @@ defineExpose({ refresh });
             <PrBadge tone="accent">
               To the agent
             </PrBadge>
-            <span class="muted">A question about the change, or a note that is not about one line. Sent with the line comments below.</span>
+            <span class="muted">A question about the change, or a note that is not about one line.</span>
           </div>
           <div class="prlevel-compose">
             <textarea
               v-model="general"
               v-grow
-          class="edit-textarea"
+              class="edit-textarea"
               rows="2"
               placeholder="Why did you change the validator this way? / Please also cover the IPv6 zone-id case."
+              @keydown.enter.ctrl.prevent="sendGeneral"
             />
+            <div class="wr-send-row">
+              <select
+                v-model="target"
+                class="review-target"
+                title="Which conversation this goes to"
+              >
+                <option value="new">
+                  A new conversation
+                </option>
+                <option
+                  v-for="c in conversations"
+                  :key="c.id"
+                  :value="c.id"
+                >
+                  {{ c.title }}
+                </option>
+              </select>
+              <PrButton
+                size="sm"
+                variant="primary"
+                :disabled="!general.trim() || sending"
+                @click="sendGeneral"
+              >
+                {{ sending ? 'Sending…' : 'Send to the agent' }}
+              </PrButton>
+            </div>
           </div>
         </section>
 
@@ -738,19 +723,35 @@ defineExpose({ refresh });
                       <textarea
                         v-model="composerDraft"
                         v-grow
-          class="edit-textarea"
+                        class="edit-textarea"
                         placeholder="What should change here, or what do you want to know about it?"
                         @keydown.esc.prevent="composer = null"
-                        @keydown.enter.ctrl.prevent="addNote"
+                        @keydown.enter.ctrl.prevent="sendComposer"
                       />
-                      <div class="edit-btns">
+                      <div class="edit-btns wr-send-row">
+                        <select
+                          v-model="target"
+                          class="review-target"
+                          title="Which conversation this goes to"
+                        >
+                          <option value="new">
+                            A new conversation
+                          </option>
+                          <option
+                            v-for="c in conversations"
+                            :key="c.id"
+                            :value="c.id"
+                          >
+                            {{ c.title }}
+                          </option>
+                        </select>
                         <PrButton
                           size="mini"
                           class="approve"
-                          :disabled="!composerDraft.trim()"
-                          @click="addNote"
+                          :disabled="!composerDraft.trim() || sending"
+                          @click="sendComposer"
                         >
-                          Add
+                          {{ sending ? 'Sending…' : 'Send to the agent' }}
                         </PrButton>
                         <PrButton
                           size="mini"
@@ -758,32 +759,6 @@ defineExpose({ refresh });
                         >
                           Cancel
                         </PrButton>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-                <tr
-                  v-for="n in rv.notes"
-                  :key="n.id"
-                  class="comment-row"
-                >
-                  <td colspan="3">
-                    <div class="comment local-comment pending">
-                      <div class="comment-head">
-                        <span class="comment-author">to the agent</span>
-                        <PrBadge tone="warning">
-                          unsent
-                        </PrBadge>
-                        <span class="comment-actions">
-                          <PrButton
-                            size="mini"
-                            variant="danger"
-                            @click="removeNote(n.id)"
-                          >Remove</PrButton>
-                        </span>
-                      </div>
-                      <div class="comment-body">
-                        {{ n.body }}
                       </div>
                     </div>
                   </td>
@@ -810,6 +785,14 @@ defineExpose({ refresh });
   padding:   0 var(--dev-space-3);
   font-size: 12px;
   max-width: 220px;
+}
+
+// Where a comment chooses its conversation and is sent - in the dialog itself, not at the top.
+.wr-send-row {
+  display:     flex;
+  align-items: center;
+  gap:         var(--dev-space-3, 8px);
+  flex-wrap:   wrap;
 }
 
 // The base -> compare pickers on the meta row.
