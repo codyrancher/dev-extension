@@ -1253,7 +1253,10 @@ async function inAgentPod(script: string): Promise<string> {
     throw new Error('The agent pod is not running, so the workspaces on the node cannot be reached.');
   }
 
-  return podExecOnce(agents.agent.namespace, pod, agents.agent.container, ['/bin/sh', '-c', script]);
+  // The agent pod is on the local cluster, not whatever workspace BASE currently points at, so pin
+  // this exec to local - otherwise, opened from a downstream workspace, it would exec into a cluster
+  // the agent pod is not in.
+  return podExecOnce(agents.agent.namespace, pod, agents.agent.container, ['/bin/sh', '-c', script], clusterBase(DEFAULT_CLUSTER));
 }
 
 /** A workspace's name, or nothing: what may be interpolated into a path that gets removed. */
