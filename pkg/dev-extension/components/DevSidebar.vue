@@ -23,7 +23,7 @@ import {
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
 import {
-  workspaceStatuses, agentLabel, agentIcon, statusLine, stageName, displayTone, autoStopIdle
+  workspaceStatuses, agentLabel, statusLine, stageName, displayTone, autoStopIdle
 } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import DevList from './DevList.vue';
@@ -564,9 +564,9 @@ export default {
           state:  workspace.state,
           detail: row.join(' · '),
           tone:   status ? displayTone(status) : undefined,
+          // The agent's state is carried by the row's status disc (its colour), not a glyph; the
+          // words are on the card.
           agent:  status?.agent,
-          // The agent's own state rides as a mark at the end of the row; the words are on the card.
-          agentIcon:  agentIcon(status?.agent || 'none'),
           agentTitle: agentLabel(status?.agent || 'none'),
           card:   { title: title ? `${ workspace.name } · ${ title }` : workspace.name, lines, links: status?.links || [] },
           to:     {

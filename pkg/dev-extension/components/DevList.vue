@@ -356,7 +356,7 @@ export default {
         <li
           v-for="row in block.rows"
           :key="row.key"
-          :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail || row.agentIcon || row.reserveDetail, 'dev-list__row--grouped': !!block.label }"
+          :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail || row.reserveDetail, 'dev-list__row--grouped': !!block.label }"
           class="dev-list__row"
           @mouseenter="showCard(row, $event)"
           @mouseleave="hideCard"
@@ -394,16 +394,10 @@ export default {
                 how much it needs the person. See workspace-status.ts.
               -->
               <span
-                v-if="row.detail || row.agentIcon || row.reserveDetail"
+                v-if="row.detail || row.reserveDetail"
                 class="dev-list__detail"
                 :class="detailClass(row)"
-              >{{ row.detail }}<i
-                v-if="row.agentIcon"
-                v-clean-tooltip="row.agentTitle"
-                class="dev-list__agent icon"
-                :class="[row.agentIcon, `dev-list__agent--${ row.agent || 'none' }`]"
-                :aria-label="row.agentTitle"
-              /></span>
+              >{{ row.detail }}</span>
             </span>
             <!--
               Said in words as well as in colour: a dot going red is not a message somebody reads,
@@ -751,22 +745,6 @@ export default {
         // Centre the glyph on the text: align-items handles the box, line-height:1 drops the
         // icon font's own vertical padding that made it sit high.
         line-height: 1;
-      }
-
-      /*
-       * The agent's mark sits at the end of the line, quieter than the stage it follows - but
-       * the four states have to be told apart at a glance, so each has its own shape and its
-       * own colour rather than four grey circles.
-       */
-      .dev-list__agent {
-        flex:      0 0 auto;
-        font-size: 11px;
-        opacity:   .75;
-
-        &--working  { color: var(--status-working); opacity: 1; }
-        &--input    { color: var(--status-input); opacity: 1; }
-        &--finished { color: var(--status-done); }
-        &--idle     { color: var(--status-idle); }
       }
 
       &--green {
