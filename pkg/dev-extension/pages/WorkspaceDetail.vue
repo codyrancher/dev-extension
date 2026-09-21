@@ -36,7 +36,7 @@ import WorkspaceReview from '../components/WorkspaceReview.vue';
 import WorkspaceRail from '../components/WorkspaceRail.vue';
 import { workspaceInstance } from '../apps';
 import {
-  getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster
+  getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster, workspaceFromInstance
 } from '../api';
 import {
   rememberWorkspace, rememberTab, lastTab, workspaceView, rememberWorkspaceView
@@ -281,7 +281,21 @@ export default {
         }
 
         if (instance !== null) {
-          this.restarting = true;
+          if (!this.workspace && instance) {
+            // First open of a workspace still coming up - a downstream one whose cluster is
+            // provisioning, or whose namespace has not answered yet. The Installation is already
+            // here, so show the workspace as starting from it rather than a blank "not answering"
+            // page; the next poll fills in the real record once the namespace answers.
+            this.workspace = workspaceFromInstance(instance);
+            this.restarting = false;
+            if (this.workspace.cluster) {
+              setCluster(this.workspace.cluster);
+            }
+          } else {
+            // A workspace already on screen missed a lookup - a re-render, a flap. Keep it and say
+            // it is catching up rather than tearing it down.
+            this.restarting = true;
+          }
 
           return;
         }
