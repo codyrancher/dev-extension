@@ -2900,18 +2900,17 @@ export default {
   }
 
   // A conversation that is not running: shown in the terminal's place so the strip keeps its
-  // shape, with the one button that brings it back up.
+  // shape, with the one button that brings it back up. No box of its own - the tab panel around
+  // it is the only frame - just the text and the button, centred.
   &__resume {
     display:         flex;
     flex-direction:  column;
-    align-items:     flex-start;
+    align-items:     center;
     gap:             12px;
-    padding:         20px;
+    padding:         24px 20px;
     min-height:      120px;
     justify-content: center;
-    background:      var(--body-bg);
-    border:          1px solid var(--border);
-    border-top:      none;
+    text-align:      center;
   }
 
   &__resume-text {
