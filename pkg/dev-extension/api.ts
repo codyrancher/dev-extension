@@ -26,6 +26,7 @@ import {
   DEV_POD_NAMESPACE as POD_NAMESPACE, DEV_POD_SERVICE as POD_SERVICE,
   LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, workspaceRoot, workspaceWorkdir, workspaceHome,
   WORKSPACE_PORT_ANNOTATION, WORKSPACE_SCHEME_ANNOTATION, WORKSPACE_TITLE_ANNOTATION, DEFAULT_WORKSPACE_PORT, DEFAULT_WORKSPACE_SCHEME, PREVIEW_ANNOTATION,
+  APP_INSTANCE,
 } from './config/constants';
 
 // The labels live in config/constants now, beside the Apps Plus names that use them; re-exported
@@ -685,26 +686,89 @@ export async function listWorkspaces(cluster?: string): Promise<DevWorkspace[]> 
  */
 const workspacesByCluster = new Map<string, DevWorkspace[]>();
 
+/**
+ * Which workspaces have a live Installation, and the cluster each belongs to, read from the LOCAL
+ * management API. An Installation is a management object: it lives on `local` and is read without
+ * ever going through a downstream cluster's proxy, so this read does not flap the way a downstream
+ * Steve read does. It is the reliable answer to "does this workspace still exist", used below to
+ * keep a workspace in the sidebar when its own cluster's live read momentarily drops it - a throw,
+ * or a 200 with an empty collection while a reconnecting cluster-agent's Steve cache is still cold.
+ * Returns null when even this read fails, so the caller keeps its previous list rather than trusting
+ * an empty answer.
+ */
+async function liveInstanceClusters(): Promise<Map<string, string> | null> {
+  const response = await devFetch(`${ clusterBase(DEFAULT_CLUSTER) }/v1/${ APP_INSTANCE }`).catch(() => null);
+
+  if (!response) {
+    return null;
+  }
+
+  const byWorkspace = new Map<string, string>();
+
+  for (const instance of (response.data || []) as Json[]) {
+    const workspace = instance.metadata?.labels?.[LABEL_WORKSPACE];
+
+    if (workspace && !instance.metadata?.deletionTimestamp) {
+      byWorkspace.set(workspace, instance.metadata?.labels?.[LABEL_CLUSTER] || DEFAULT_CLUSTER);
+    }
+  }
+
+  return byWorkspace;
+}
+
 export async function listAllWorkspaces(): Promise<DevWorkspace[]> {
-  const ids = await listClusterIds().catch(() => [] as string[]);
+  // Two sets from one /v3/clusters read: the clusters worth READING now (active - a non-active one
+  // would only fail through the proxy), and every cluster that EXISTS at all (any state), which is
+  // what the prune below is allowed to key off. A downstream cluster flaps in and out of `active`
+  // routinely - its cluster-agent reconnects, Rancher marks it updating/unavailable for a beat -
+  // and it stays present in /v3/clusters throughout. Pruning on `active` (what 0.3.209 did) deleted
+  // such a cluster's workspaces on every one of those beats; that is why a downstream workspace kept
+  // popping in and out of the sidebar. Prune only a cluster that is genuinely GONE from the list.
+  const response = await devFetch('/v3/clusters').catch(() => null);
+  const known = response?.data as Json[] | undefined; // undefined => the read failed, prune nothing
+  const active = (known || []).filter((c) => c.state === 'active').map((c) => c.id as string);
+  const all = (known || []).map((c) => c.id as string);
+
   // A blip reading /v3/clusters must not drop every downstream workspace either: fall back to the
   // clusters seen before, plus the active one.
-  const clusters = ids.length ? ids : [...new Set([activeCluster(), ...workspacesByCluster.keys()])];
+  const clusters = active.length ? active : [...new Set([activeCluster(), ...workspacesByCluster.keys()])];
+
+  // The reliable answer to "does this workspace still exist" - a local read that never touches a
+  // downstream proxy. null if it failed, in which case we do not use it to second-guess anything.
+  const instances = await liveInstanceClusters();
 
   await Promise.all(clusters.map(async(id) => {
     try {
-      workspacesByCluster.set(id, await listWorkspaces(id));
+      const fresh = await listWorkspaces(id);
+
+      // A cluster's live read can come back short of the truth two ways that are not a throw: it can
+      // 200 with an empty (or partial) collection while a reconnecting cluster-agent's Steve cache is
+      // cold. So do not simply replace the cache with `fresh`: keep any workspace that WAS on this
+      // cluster and still has a live Installation but is missing from this read. Gated on the
+      // Installation, so a workspace that was genuinely deleted (its read drops it AND its Installation
+      // is gone) still leaves. If the Installation list itself failed, fall back to a plain replace.
+      if (instances) {
+        const present = new Set(fresh.map((workspace) => workspace.name));
+        const retained = (workspacesByCluster.get(id) || [])
+          .filter((workspace) => !present.has(workspace.name) && instances.get(workspace.name) === id);
+
+        workspacesByCluster.set(id, [...fresh, ...retained]);
+      } else {
+        workspacesByCluster.set(id, fresh);
+      }
     } catch {
       // Keep the last good list for this cluster: a workspace is dropped only when a read succeeds
       // and no longer has it, never because one read timed out or the token flapped.
     }
   }));
 
-  // Only when the cluster list itself read cleanly, forget a cluster it no longer names - a Rancher
-  // that was removed - so its workspaces do not linger. A failed cluster-list read prunes nothing.
-  if (ids.length) {
+  // Forget a cluster only when the cluster list read cleanly AND no longer names it at all - a
+  // Rancher that was removed - so its workspaces do not linger. A cluster that is merely not active
+  // (flapping, updating) is still in `all`, so it is kept. A failed OR empty list read (local is
+  // always present in a real one) prunes nothing.
+  if (all.length) {
     for (const id of [...workspacesByCluster.keys()]) {
-      if (!ids.includes(id)) {
+      if (!all.includes(id)) {
         workspacesByCluster.delete(id);
       }
     }
