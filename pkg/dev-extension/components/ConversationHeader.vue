@@ -8,7 +8,7 @@
 // is that surface, and it is purely presentational - it emits, and the page that owns the
 // conversation does the renaming, popping and ending, because those are API calls and this is
 // not where they live.
-import { agentIcon, agentLabel } from '../workspace-status';
+import { agentLabel } from '../workspace-status';
 
 export default {
   name: 'ConversationHeader',
@@ -37,11 +37,7 @@ export default {
   },
 
   computed: {
-    /** The agent's mark and its words, from the one place the sidebar and rail read them too. */
-    icon() {
-      return agentIcon(this.agent);
-    },
-
+    /** What the agent is doing, in words. The colour of this label is the state's mark now. */
     label() {
       return agentLabel(this.agent);
     },
@@ -106,19 +102,13 @@ export default {
       >
     </div>
 
-    <!-- What the agent is doing, said the same way the sidebar and the rail say it. -->
+    <!-- What the agent is doing, in the colour that says how much it wants a person. -->
     <span
       v-if="label"
       class="conversation-header__status"
       :class="`conversation-header__status--${ agent }`"
       :title="label"
-    >
-      <i
-        v-if="icon"
-        class="icon"
-        :class="icon"
-      />{{ label }}
-    </span>
+    >{{ label }}</span>
 
     <div class="conversation-header__controls">
       <button

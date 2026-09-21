@@ -1466,10 +1466,7 @@ export default {
               v-if="agentLine"
               class="workspace-rail__agent"
               :class="`workspace-rail__agent--${ status.agent }`"
-            >(<i
-              v-if="status.agent === 'working'"
-              class="icon icon-spinner icon-spin"
-            />{{ agentLine }})</span>
+            >({{ agentLine }})</span>
             <a
               class="workspace-rail__view-switch"
               href="#"
@@ -1489,13 +1486,6 @@ export default {
             target="_blank"
             rel="noopener noreferrer"
           >{{ link.label }}</a>
-          <RcButton
-            variant="tertiary"
-            size="small"
-            @click="openTab('conversations')"
-          >
-            Conversations
-          </RcButton>
         </div>
       </div>
 
