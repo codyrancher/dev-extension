@@ -286,6 +286,16 @@ function reviewWork(d: Json, agent: AgentState): Work {
   // PR, days after the developer had answered.
   const viewer = d.viewer || '';
   const reviews: Json[] = (d.reviews || []).filter((r: Json) => r.submittedAt && (viewer ? r.author === viewer : r.author && r.author !== m.author && !isBot(r.author)));
+  // Your own latest opinionated review. GitHub's PR-wide `approved` (m.approved) is true only when
+  // every required reviewer has approved and none is requesting changes - so another reviewer's
+  // "changes requested" from rounds ago keeps it false even after you approve today. This is your
+  // reviewer workspace and the stage is about your review: if the last opinion you left is an
+  // approval, your review is done, whatever the rest of the PR is still waiting on.
+  const myLatestOpinion = (d.reviews || [])
+    .filter((r: Json) => r.author === viewer && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state))
+    .sort((a: Json, b: Json) => (Date.parse(a.submittedAt || '') || 0) - (Date.parse(b.submittedAt || '') || 0))
+    .pop();
+  const iApproved = !!viewer && myLatestOpinion?.state === 'APPROVED';
   // How many times you have already sent this PR a review. The same review is often recorded
   // twice - once as the comments submitted here, once as GitHub's own review - so they are
   // counted by the minute they went out rather than one by one.
@@ -298,7 +308,7 @@ function reviewWork(d: Json, agent: AgentState): Work {
       label: '', tone: 'green', stage: 'approved', stageLabel: 'Merged',
     };
   }
-  if (m.approved) {
+  if (m.approved || iApproved) {
     return { label: '', tone: 'green', stage: 'approved' };
   }
   if (submitted.length || reviews.length) {
