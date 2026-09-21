@@ -541,6 +541,38 @@ function stateOf(namespace: Json, deployment: Json | undefined, pod?: Json): Wor
  * One function for both readers, so the list and the detail page cannot come to describe the
  * same workspace differently while fetching it two different ways.
  */
+/**
+ * A minimal, still-coming-up workspace built from its Installation alone.
+ *
+ * getWorkspace needs the namespace to answer, which a workspace on a downstream cluster does not
+ * do for the first minute - the cluster is provisioning, or the page has not yet been pointed at
+ * it. The Installation is a management object that is there from the moment Create is pressed, so
+ * a page can show the workspace as `starting` from that, and fill in the rest when the namespace
+ * answers, rather than sitting on a "not answering" banner while it comes up. See WorkspaceDetail.
+ */
+export function workspaceFromInstance(instance: Json): DevWorkspace {
+  const labels = instance?.metadata?.labels || {};
+  const values = instance?.spec?.values || {};
+  const name = labels[LABEL_WORKSPACE] || instance?.metadata?.name || '';
+
+  return {
+    name,
+    title:     '',
+    namespace: instance?.spec?.namespace || `dev-${ name }`,
+    cluster:   labels[LABEL_CLUSTER] || activeCluster(),
+    app:       labels[LABEL_APP] || '',
+    port:      Number(values.port) || DEFAULT_WORKSPACE_PORT,
+    scheme:    values.scheme === 'https' ? 'https' : DEFAULT_WORKSPACE_SCHEME,
+    preview:   false,
+    state:     'starting',
+    createdAt: instance?.metadata?.creationTimestamp || '',
+    image:     '',
+    replicas:  0,
+    ready:     0,
+    detail:    'coming up',
+  };
+}
+
 function workspaceFrom(namespace: Json, deployment: Json | undefined, pod?: Json, cluster?: string): DevWorkspace {
   const name = namespace.metadata.labels[LABEL_WORKSPACE];
   const annotations = namespace.metadata.annotations || {};
