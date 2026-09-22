@@ -699,8 +699,8 @@ const LINKED_PR_QUERY = `
       issue(number: $number) {
         timelineItems(itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT], last: 50) {
           nodes {
-            ... on CrossReferencedEvent { source { ... on PullRequest { number state } } }
-            ... on ConnectedEvent { subject { ... on PullRequest { number state } } }
+            ... on CrossReferencedEvent { source { ... on PullRequest { number state headRefName } } }
+            ... on ConnectedEvent { subject { ... on PullRequest { number state headRefName } } }
           }
         }
       }
@@ -785,10 +785,20 @@ export async function pullRequest(repo: string, number: number): Promise<GithubP
 export async function linkedPullRequest(repo: string, issue: number): Promise<number> {
   const data = await graphql(LINKED_PR_QUERY, { ...splitRepo(repo), number: issue });
   const nodes: Json[] = data.repository?.issue?.timelineItems?.nodes || [];
-  const prs = nodes.map((node) => node.source || node.subject).filter((pr) => pr?.number);
-  const open = prs.find((pr) => pr.state === 'OPEN');
+  // The many PRs GitHub's timeline mixes together - the one that fixes this issue, and every other
+  // PR that merely mentions it in passing - are told apart by the head branch. A fix workspace for
+  // `issue-<n>` pushes a branch named for it (`issue-<n>` or `issue-<n>-<slug>`), so the PR from
+  // that branch is this workspace's; a "related to #<n>" from a stranger's branch is not. Matching
+  // the branch is the known-correct signal, where the timeline's own reference type is not: a real
+  // fix PR shows up as a CROSS_REFERENCED_EVENT exactly like a passing mention does. Returns 0 when
+  // nothing matches, which is a fix that has no PR yet - not a fix wearing some other PR's state.
+  const branch = `issue-${ issue }`;
+  const mine = nodes
+    .map((node) => node.source || node.subject)
+    .filter((pr) => pr?.number && (pr.headRefName === branch || String(pr.headRefName || '').startsWith(`${ branch }-`)));
+  const open = mine.find((pr) => pr.state === 'OPEN');
 
-  return (open || prs[prs.length - 1])?.number || 0;
+  return (open || mine[mine.length - 1])?.number || 0;
 }
 
 /**

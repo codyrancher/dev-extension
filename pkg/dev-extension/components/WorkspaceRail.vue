@@ -22,7 +22,7 @@ import PrButton from './pr/PrButton.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
 import {
-  readStatusNow, knownStatus, provisionalStatus, agentLabel, agentStateOf, displayTone
+  readStatusNow, knownStatus, provisionalStatus, agentLabel, agentStateOf, displayTone, setManualStage, clearManualStage, isManual
 } from '../workspace-status';
 import {
   stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
@@ -88,6 +88,9 @@ export default {
       evidence:    [],
       /** The stage being looked at: the current one unless a past step was clicked. */
       viewing:     '',
+      /** Whether the person is holding this workspace's stage by hand, and whether the picker is open. */
+      manual:      false,
+      stagePicker: false,
       loading:     true,
       reading:     false,
       /** Which read of the first column is the current one; an older one landing is ignored. */
@@ -119,6 +122,8 @@ export default {
       errorTone:   'error',
       /** The second look after a change to the PR; cleared when the page goes. */
       settleTimer: null,
+      /** A GitHub read queued because the agent just stopped; cleared when the page goes. */
+      agentSettleTimer: null,
       /** Which sections are folded away: `{ [title]: true }`, seeded from the section itself. */
       shut:        {},
       /** The conversation, in its own window over the page. */
@@ -422,6 +427,7 @@ export default {
     clearTimeout(this.statusRetryTimer);
     clearTimeout(this.evidenceRetryTimer);
     clearTimeout(this.settleTimer);
+    clearTimeout(this.agentSettleTimer);
   },
 
   methods: {
@@ -470,6 +476,7 @@ export default {
       this.statusBusy = true;
       try {
         const before = this.status?.stage;
+        const beforeAgent = this.status?.agent;
         const t0 = Date.now();
         const next = await readStatusNow(this.workspace.name, github);
 
@@ -477,6 +484,15 @@ export default {
           return;
         }
         this.status = next;
+        this.manual = isManual(this.workspace.name);
+        // An agent that has just stopped working may have opened a PR or sent a review this second;
+        // rather than wait out the two-minute GitHub poll for the stage to catch up, ask now. The
+        // short wait lets GitHub reflect what the agent did, and this only fires on the agent-state
+        // tick (github=false), so it does not chase its own tail.
+        if (!github && beforeAgent === 'working' && next.agent !== 'working') {
+          clearTimeout(this.agentSettleTimer);
+          this.agentSettleTimer = setTimeout(() => this.refreshStatus(true), 2500);
+        }
         console.debug(`[rail] status ${ this.status.stage } in ${ Date.now() - t0 } ms (github=${ github })`); // eslint-disable-line no-console
         // A read that worked clears what an earlier one said: a dev-api restart is a minute.
         if (github) {
@@ -569,6 +585,36 @@ export default {
       this.evidence = [];
       this.evidenceStage = '';
       this.refreshEvidence();
+    },
+
+    /**
+     * Set the stage by hand when the heuristics have it wrong. It holds against the agent-state
+     * guesses, and is superseded only when a hard GitHub fact overtakes it (the PR merges, a real
+     * one opens, a review goes out) - so a correction sticks without freezing the work in place.
+     */
+    async chooseStage(key) {
+      this.stagePicker = false;
+      if (key === this.current && this.manual) {
+        return;
+      }
+      try {
+        await setManualStage(this.workspace.name, key);
+        this.manual = true;
+        await this.refreshStatus(true);
+      } catch (e) {
+        this.noteError(e);
+      }
+    },
+
+    /** Hand the stage back to the automatic heuristics. */
+    async stageToAuto() {
+      try {
+        await clearManualStage(this.workspace.name);
+        this.manual = false;
+        await this.refreshStatus(true);
+      } catch (e) {
+        this.noteError(e);
+      }
     },
 
     /**
@@ -1524,6 +1570,46 @@ export default {
           </button>
         </li>
       </ol>
+
+      <!--
+        Set the stage by hand when the heuristics get it wrong. A held stage stands against the
+        agent-state guesses; a hard GitHub fact (a merge, a real PR, a review) still moves it on.
+      -->
+      <div
+        v-if="steps.length && !lookingBack"
+        class="workspace-rail__manual"
+      >
+        <template v-if="manual">
+          <span class="workspace-rail__manual-note">Stage set by hand.</span>
+          <button
+            type="button"
+            class="workspace-rail__manual-btn"
+            @click="stageToAuto"
+          >Back to automatic</button>
+        </template>
+        <template v-else-if="stagePicker">
+          <span class="workspace-rail__manual-note">Set the stage to</span>
+          <button
+            v-for="s in steps"
+            :key="s.key"
+            type="button"
+            class="workspace-rail__manual-chip"
+            :class="{ 'workspace-rail__manual-chip--on': s.key === current }"
+            @click="chooseStage(s.key)"
+          >{{ s.label }}</button>
+          <button
+            type="button"
+            class="workspace-rail__manual-btn"
+            @click="stagePicker = false"
+          >cancel</button>
+        </template>
+        <button
+          v-else
+          type="button"
+          class="workspace-rail__manual-btn"
+          @click="stagePicker = true"
+        >Wrong stage?</button>
+      </div>
 
       <!-- The one thing to press. Stays on the current stage while a past one is being read. -->
       <div
@@ -2583,6 +2669,48 @@ export default {
     letter-spacing: .04em;
     text-transform: uppercase;
     white-space:    nowrap;
+  }
+
+  /* Setting the stage by hand: a quiet row under the rail, out of the way until it is wanted. */
+  &__manual {
+    display:     flex;
+    flex-wrap:   wrap;
+    align-items: center;
+    gap:         6px;
+    margin-top:  8px;
+    font-size:   11px;
+  }
+
+  &__manual-note {
+    color: var(--muted);
+  }
+
+  &__manual-btn {
+    padding:       0;
+    border:        0;
+    background:    transparent;
+    color:         var(--link);
+    font:          inherit;
+    text-decoration: underline;
+    cursor:        pointer;
+  }
+
+  &__manual-chip {
+    padding:       1px 8px;
+    border:        1px solid var(--border);
+    border-radius: 10px;
+    background:    var(--box-bg);
+    color:        var(--body-text);
+    font:         inherit;
+    font-size:    11px;
+    cursor:       pointer;
+
+    &:hover { border-color: var(--link); }
+
+    &--on {
+      border-color: var(--primary);
+      color:        var(--primary);
+    }
   }
 
   /* A step this review has already been through once, waiting ahead of you again. */
