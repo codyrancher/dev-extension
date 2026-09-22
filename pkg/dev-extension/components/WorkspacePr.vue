@@ -949,7 +949,10 @@ async function startReview() {
     showReviewPanel.value = true;
     persistUiState();
   } catch (e: Json) {
-    toast(`Failed to start the review agent: ${ e?.message || e }`, 'error');
+    // Closing the "which Rancher?" picker is a quiet abort, not a failure - no toast for it.
+    if (e?.name !== 'RancherPickCancelled') {
+      toast(`Failed to start the review agent: ${ e?.message || e }`, 'error');
+    }
   } finally {
     startingReview.value = false;
   }
