@@ -2126,6 +2126,245 @@ async function reconcileTeardown() {
   }
 }
 
+// ── Workspace registrar + finishing deletes ──────────────────────────────────
+//
+// Two jobs the browser used to own, moved here so they no longer need a tab open:
+//   - project the local AppInstances into one ConfigMap the sidebar reads, instead of the browser
+//     fanning three Steve reads out to every cluster (which flaps on a downstream one);
+//   - finish a delete - clear the cleanup finalizer once the Bundle is gone - which otherwise left
+//     a workspace Terminating forever when the tab that pressed delete went away.
+// The AppInstance stays the source of truth; the registrar is only a projection of it.
+const REGISTRAR = 'dev-workspaces';
+const DOWNSTREAM_STATE = 'dev-workspaces-downstream';
+const CLEANUP_FINALIZER = 'appsplus.io/cleanup';
+const PORT_ANNOTATION = 'dev.rancher.io/port';
+const SCHEME_ANNOTATION = 'dev.rancher.io/scheme';
+const TITLE_ANNOTATION = 'dev.rancher.io/title';
+const PREVIEW_ANNOTATION = 'dev.rancher.io/preview';
+const DEFAULT_WORKSPACE_PORT = 8005;
+const DEFAULT_WORKSPACE_SCHEME = 'http';
+// Container waiting reasons that are a failure, not a stage of starting (mirror api.ts).
+const FAILED_REASONS = ['CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'InvalidImageName', 'CreateContainerConfigError', 'CreateContainerError'];
+
+// The derivations below are ports of the browser's (api.ts stateOf/podDetail/replicaFailure/
+// workspaceFrom/workspaceFromInstance), so a workspace reads the same whether the sidebar got it
+// from the registrar or a page read it live.
+function podDetail(pod) {
+  if (!pod) return '';
+  if (pod.metadata?.deletionTimestamp) return 'Terminating';
+  const st = pod.status?.containerStatuses?.[0];
+  const waiting = st?.state?.waiting;
+
+  if (waiting?.reason) return `${ waiting.reason }${ st.restartCount ? `, restarted ${ st.restartCount } times` : '' }`;
+  if (pod.status?.phase === 'Pending') return 'Waiting to be scheduled';
+  if (st?.state?.running && !st.ready) return st.restartCount ? `Starting up, restarted ${ st.restartCount } times` : 'Starting up';
+
+  return '';
+}
+
+function replicaFailure(deployment) {
+  const c = (deployment?.status?.conditions || []).find((e) => e.type === 'ReplicaFailure' && e.status === 'True');
+
+  return c?.message || '';
+}
+
+function stateOf(namespace, deployment, pod) {
+  if (namespace?.metadata?.deletionTimestamp) return 'removing';
+  if (!deployment) return 'creating';
+  if ((deployment.spec?.replicas ?? 0) === 0) return 'stopped';
+  if ((deployment.status?.readyReplicas ?? 0) > 0) return 'running';
+  if (!pod && replicaFailure(deployment)) return 'error';
+  const reason = pod?.status?.containerStatuses?.[0]?.state?.waiting?.reason || '';
+
+  return FAILED_REASONS.some((f) => reason.includes(f)) ? 'error' : 'starting';
+}
+
+function workspaceFromLocal(ns, deployment, pod) {
+  const a = ns.metadata?.annotations || {};
+  const labels = ns.metadata?.labels || {};
+
+  return {
+    name:      labels[LABEL_WORKSPACE],
+    title:     a[TITLE_ANNOTATION] || '',
+    namespace: ns.metadata.name,
+    cluster:   labels[LABEL_CLUSTER] || 'local',
+    app:       labels[LABEL_APP] || '',
+    port:      Number(a[PORT_ANNOTATION]) || DEFAULT_WORKSPACE_PORT,
+    scheme:    a[SCHEME_ANNOTATION] === 'https' ? 'https' : DEFAULT_WORKSPACE_SCHEME,
+    preview:   a[PREVIEW_ANNOTATION] === 'true',
+    state:     stateOf(ns, deployment, pod),
+    createdAt: ns.metadata.creationTimestamp || '',
+    image:     deployment?.spec?.template?.spec?.containers?.[0]?.image || '',
+    replicas:  deployment?.spec?.replicas ?? 0,
+    ready:     deployment?.status?.readyReplicas ?? 0,
+    detail:    podDetail(pod) || (pod ? '' : replicaFailure(deployment)),
+  };
+}
+
+function workspaceFromInstance(inst) {
+  const labels = inst.metadata?.labels || {};
+  const values = inst.spec?.values || {};
+  const name = labels[LABEL_WORKSPACE] || inst.metadata?.name || '';
+
+  return {
+    name,
+    title:     '',
+    namespace: inst.spec?.namespace || `dev-${ name }`,
+    cluster:   labels[LABEL_CLUSTER] || 'local',
+    app:       labels[LABEL_APP] || '',
+    port:      Number(values.port) || DEFAULT_WORKSPACE_PORT,
+    scheme:    values.scheme === 'https' ? 'https' : DEFAULT_WORKSPACE_SCHEME,
+    preview:   inst.spec?.app === PREVIEW_APP,
+    state:     'starting',
+    createdAt: inst.metadata?.creationTimestamp || '',
+    image:     '',
+    replicas:  0,
+    ready:     0,
+    detail:    'coming up',
+  };
+}
+
+// Index labelled objects by workspace name (last wins, as listWorkspaces' own map build does).
+function byWorkspace(list) {
+  const map = new Map();
+
+  for (const item of list?.items || []) {
+    const ws = item.metadata?.labels?.[LABEL_WORKSPACE];
+
+    if (ws) map.set(ws, item);
+  }
+
+  return map;
+}
+
+async function reconcileRegistrar(instances) {
+  // Local objects only; a downstream workspace's Deployment/pod live on its own cluster and are
+  // reported into DOWNSTREAM_STATE by the agent pod instead (it alone can reach them).
+  const [deps, pods, nss] = await Promise.all([
+    k8s(`/apis/apps/v1/deployments?labelSelector=${ encodeURIComponent(LABEL_WORKSPACE) }`).catch(() => null),
+    k8s(`/api/v1/pods?labelSelector=${ encodeURIComponent(LABEL_WORKSPACE) }`).catch(() => null),
+    k8s(`/api/v1/namespaces?labelSelector=${ encodeURIComponent(LABEL_WORKSPACE) }`).catch(() => null),
+  ]);
+
+  // These three reads DECIDE each local workspace's state. If any failed, a workspace whose objects
+  // we could not read falls to workspaceFromInstance ('starting') - wrong, and written with a fresh
+  // timestamp the browser would trust over its own live path. Skip the write; the existing ConfigMap
+  // ages into staleness and the browser falls back to querying clusters. Never publish a guess.
+  if (!deps || !pods || !nss) {
+    console.error('[dev-api] reconcileRegistrar: a local list read failed, leaving registrar unchanged this tick');
+
+    return;
+  }
+  const depBy = byWorkspace(deps);
+  const podBy = byWorkspace(pods);
+  const nsBy = byWorkspace(nss);
+  const downstream = (await readDoc(DOWNSTREAM_STATE, 'state.json').catch(() => null)) || {};
+  const workspaces = [];
+
+  for (const inst of instances.items || []) {
+    const labels = inst.metadata?.labels || {};
+    const name = labels[LABEL_WORKSPACE];
+
+    if (!name) continue;
+    const cluster = labels[LABEL_CLUSTER] || 'local';
+    let ws;
+
+    if (cluster === 'local' && nsBy.has(name)) {
+      ws = workspaceFromLocal(nsBy.get(name), depBy.get(name), podBy.get(name));
+    } else {
+      ws = workspaceFromInstance(inst);
+      if (cluster !== 'local') {
+        const ds = downstream[name];
+
+        if (ds?.state) {
+          ws.state = ds.state;
+          ws.detail = ds.detail || ws.detail;
+          ws.replicas = ds.replicas ?? ws.replicas;
+          ws.ready = ds.ready ?? ws.ready;
+        }
+      }
+    }
+    if (inst.metadata?.deletionTimestamp) ws.state = 'removing';
+    workspaces.push(ws);
+  }
+  workspaces.sort((a, b) => a.name.localeCompare(b.name));
+
+  await writeDoc(REGISTRAR, 'workspaces.json', { at: new Date().toISOString(), workspaces }, { 'dev.rancher.io/kind': 'registrar' });
+}
+
+// The server-side half of releaseWhenEmpty (appinstance.js): a workspace Installation with the
+// cleanup finalizer stays Terminating until its Bundle is deleted and the finalizer cleared. Only
+// workspace Installations that provision no cluster (all of them) - a cluster-provisioning instance
+// is left to the browser, whose teardown also removes the downstream cluster.
+async function finishDeletes(instances, bundles) {
+  // A failed Bundle read arrives as null. Treating that as "no bundles" would clear a workspace's
+  // cleanup finalizer while its Bundle (and the running release) still exist - the one thing the
+  // finalizer exists to prevent. On any doubt, do nothing this tick, exactly as the instance read.
+  if (!bundles) return;
+
+  const bundlesBy = new Map();
+
+  for (const b of bundles?.items || []) {
+    const n = b.metadata?.name || '';
+
+    if (n.startsWith(APPS_PLUS_PREFIX)) {
+      const ws = n.slice(APPS_PLUS_PREFIX.length);
+
+      if (!bundlesBy.has(ws)) bundlesBy.set(ws, []);
+      bundlesBy.get(ws).push(b);
+    }
+  }
+
+  for (const inst of instances.items || []) {
+    const meta = inst.metadata || {};
+    const name = meta.labels?.[LABEL_WORKSPACE];
+
+    if (!name || !meta.deletionTimestamp) continue;
+    if (!(meta.finalizers || []).includes(CLEANUP_FINALIZER)) continue;
+    if (inst.spec?.provisionCluster?.enabled) continue;
+
+    let remaining = false;
+
+    for (const b of bundlesBy.get(name) || []) {
+      remaining = true;
+      if (!b.metadata?.deletionTimestamp) {
+        await k8s(`/apis/fleet.cattle.io/v1alpha1/namespaces/${ b.metadata.namespace }/bundles/${ b.metadata.name }`, { method: 'DELETE' })
+          .catch((e) => {
+            if (e.status !== 404) console.error(`[dev-api] finishDeletes: bundle ${ b.metadata.name }:`, e.message || e);
+          });
+      }
+    }
+    if (remaining) continue; // wait for the Bundle to be gone before releasing the finalizer
+
+    const left = (meta.finalizers || []).filter((f) => f !== CLEANUP_FINALIZER);
+
+    await k8s(`${ INSTANCES }/${ meta.name }`, { method: 'PATCH', body: JSON.stringify({ metadata: { finalizers: left } }) })
+      .then(() => console.log(`[dev-api] finished delete of ${ name } (cleanup finalizer cleared)`))
+      .catch((e) => {
+        if (e.status !== 404) console.error(`[dev-api] finishDeletes: clear finalizer ${ name }:`, e.message || e);
+      });
+  }
+}
+
+// The fast loop: finish deletes and refresh the registrar. Separate from reconcileTeardown so the
+// nav stays fresh and deletes finish promptly without running the heavier orphan sweep as often.
+async function reconcileWorkspaces() {
+  let instances;
+
+  try {
+    instances = await k8s(INSTANCES);
+  } catch (e) {
+    // An empty list would read as "everything is gone"; on any doubt do nothing this tick.
+    console.error('[dev-api] reconcileWorkspaces: could not list installations, skipping tick:', e.message || e);
+
+    return;
+  }
+  const bundles = await k8s(BUNDLES).catch(() => null);
+
+  await finishDeletes(instances, bundles).catch((e) => console.error('[dev-api] finishDeletes failed:', e.message || e));
+  await reconcileRegistrar(instances).catch((e) => console.error('[dev-api] reconcileRegistrar failed:', e.message || e));
+}
+
 // ── Workspace media (Review tab) ──────────────────────────────────────────────
 const MEDIA_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.webm', '.mp4', '.mov']);
 
@@ -2351,4 +2590,11 @@ http.createServer(async(req, res) => {
 
   setTimeout(tick, 10_000);
   setInterval(tick, 60_000);
+
+  // The fast loop: project the registrar the sidebar reads and finish deletes, more often than the
+  // heavier orphan sweep above so the nav stays fresh and a delete completes within a few seconds.
+  const fast = () => reconcileWorkspaces().catch((e) => console.error('[dev-api] reconcileWorkspaces tick failed:', e.message || e));
+
+  setTimeout(fast, 3_000);
+  setInterval(fast, 15_000);
 });
