@@ -28,6 +28,7 @@ import {
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import DevList from './DevList.vue';
 import DevDialog from './DevDialog.vue';
+import RancherPicker from './RancherPicker.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
 import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
@@ -130,7 +131,7 @@ export default {
   name: 'DevSidebar',
 
   components: {
-    DevList, Stack, Row, ClaudeLogo, DevDialog
+    DevList, Stack, Row, ClaudeLogo, DevDialog, RancherPicker
   },
 
   data() {
@@ -500,21 +501,6 @@ export default {
       return `One EC2 node running Rancher with GitHub login, provisioned through this Rancher. Once it is up, add ${ this.callbackHint(name) } to the GitHub app's callbacks.`;
     },
 
-    /** Star one Rancher: new workspaces and shares point at it. This Rancher is the default when none is starred. */
-    async star(rancher) {
-      if (rancher.kind !== 'host' && !rancher.url) {
-        return;
-      }
-      const url = rancher.kind === 'host' ? '' : rancher.url;
-
-      try {
-        await setDefaultRancher(url);
-        this.defaultRancher = url;
-        cache.defaultRancher = url;
-      } catch (e) {
-        this.error = e.message || String(e);
-      }
-    },
 
     readable(value) {
       return readableBytes(value);
@@ -665,6 +651,9 @@ export default {
 
 <template>
   <nav class="dev-sidebar">
+    <!-- Mounted once here so a workspace started anywhere can ask which Rancher to run on. Teleports
+         to body, so its place in this tree does not matter. See ranchers.ts / RancherPicker. -->
+    <RancherPicker />
     <div
       ref="scroll"
       class="dev-sidebar__scroll"
@@ -731,16 +720,20 @@ export default {
         class="dev-sidebar__rancher-row"
         :class="{ 'dev-sidebar__rancher-row--default': rancher.isDefault }"
       >
-        <button
-          type="button"
-          class="dev-sidebar__star"
-          :class="{ 'dev-sidebar__star--on': rancher.isDefault }"
-          :disabled="rancher.kind !== 'host' && rancher.phase !== 'ready'"
-          :title="rancher.isDefault ? 'New workspaces are pointed at this Rancher' : rancher.kind !== 'host' && rancher.phase !== 'ready' ? 'Not up yet' : 'Point new workspaces at this Rancher'"
-          @click="star(rancher)"
-        >{{ rancher.isDefault ? '★' : '☆' }}</button>
         <div class="dev-sidebar__rancher-text">
-          <span class="dev-sidebar__rancher-name">{{ rancher.name }}</span>
+          <span class="dev-sidebar__rancher-name">
+            {{ rancher.name }}
+            <!--
+              Which Rancher a new workspace defaults to. It is not set here any more - starting a
+              workspace asks, each time (RancherPicker) - so this is a passive marker of the last
+              choice the picker will preselect, not a button.
+            -->
+            <span
+              v-if="rancher.isDefault"
+              class="dev-sidebar__rancher-target"
+              title="New workspaces default to this Rancher; you choose each time you start one"
+            >target</span>
+          </span>
           <span
             v-if="rancher.kind === 'host' || rancher.phase === 'ready'"
             class="dev-sidebar__rancher-url"
@@ -1070,20 +1063,17 @@ export default {
       &--default .dev-sidebar__rancher-name { color: var(--dev-accent); }
     }
 
-    &__star {
-      flex:        0 0 auto;
-      background:  none;
-      border:      0;
-      padding:     0;
-      min-height:  0;
-      line-height: 1;
-      font-size:   15px;
-      color:       var(--muted);
-      cursor:      pointer;
-
-      &:hover:not(:disabled) { color: var(--dev-accent); }
-      &:disabled { cursor: default; opacity: 0.5; }
-      &--on { color: var(--dev-accent); }
+    &__rancher-target {
+      margin-left:    6px;
+      padding:        0 5px;
+      border-radius:  8px;
+      border:         1px solid var(--dev-accent);
+      color:          var(--dev-accent);
+      font-size:      9px;
+      font-weight:    700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      vertical-align: middle;
     }
 
     &__rancher-text {

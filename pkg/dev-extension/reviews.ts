@@ -472,10 +472,11 @@ async function ensureWorkspace(store: Store, name: string, title = ''): Promise<
   const existing = (await listAllWorkspaces().catch(() => [])).some((workspace) => workspace.name === name);
 
   if (!existing) {
-    // Pointed at the starred Rancher (ranchers.ts), as the Create page would be. The title -
-    // the issue or PR this was started from - rides along so the workspace list can show it
-    // beside the `pr-<n>` / `issue-<n>` name.
-    await createWorkspace(store, name, DEFAULT_APP, undefined, await defaultRancherValues(), title);
+    // Ask which Rancher to run on (ranchers.ts), defaulting to the last choice. Cancelling the
+    // picker throws RancherPickCancelled, which aborts the start before anything is created. The
+    // title - the issue or PR this was started from - rides along so the workspace list can show
+    // it beside the `pr-<n>` / `issue-<n>` name.
+    await createWorkspace(store, name, DEFAULT_APP, undefined, await defaultRancherValues(store), title);
   }
 
   return !existing;

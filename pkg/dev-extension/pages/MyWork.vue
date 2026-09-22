@@ -543,15 +543,15 @@ export default {
     /**
      * Start a workspace and nothing else: create it if it is not there, then open it. Unlike
      * Review and Start fix, it queues no conversation - it is just the environment, for when you
-     * want to work in it yourself. Pointed at the starred Rancher with the default app, the same
-     * as the two actions that do open a conversation.
+     * want to work in it yourself. Asks which Rancher to run on with the default app, the same as
+     * the two actions that do open a conversation.
      */
     async startWorkspace(name, done) {
       this.error = '';
 
       try {
         if (!this.workspaces.includes(name)) {
-          await createWorkspace(this.$store, name, DEFAULT_APP, undefined, await defaultRancherValues());
+          await createWorkspace(this.$store, name, DEFAULT_APP, undefined, await defaultRancherValues(this.$store));
           this.workspaces = [...this.workspaces, name];
         }
 
