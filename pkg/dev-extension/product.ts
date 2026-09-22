@@ -1,5 +1,5 @@
 import { IPlugin } from '@shell/core/types';
-import { ensureDevRbac, ensureWorkspaceApi } from './api';
+import { ensureDevRbac, ensureWorkspaceApi, ensureGithubBrowser } from './api';
 import { ensureDefaultApp } from './apps';
 import { BLANK_CLUSTER, DEV_PRODUCT, WORKSPACES_ROUTE } from './config/constants';
 
@@ -55,6 +55,10 @@ function devProduct($plugin: IPlugin, store: any) {
   // Rancher session can still ask for a workspace. Same rule as above - create if missing, quiet
   // if the person looking cannot create any of it. See ensureWorkspaceApi.
   ensureWorkspaceApi().catch(() => {});
+
+  // The one shared Chromium with a github.com login, which every agent's media upload goes through.
+  // This extension owns it now (it was hand-applied in extension-studio); create if missing, quiet.
+  ensureGithubBrowser().catch(() => {});
 
   // The App a fresh Rancher gets, so there is a template on day one. Templates are Apps Plus
   // apps (see apps.ts); this one is what the built-in rancher template used to be. Create if
