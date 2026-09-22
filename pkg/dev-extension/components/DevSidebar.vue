@@ -266,7 +266,6 @@ export default {
         return {
           ...rancher,
           host,
-          isDefault: rancher.kind === 'host' ? !this.defaultRancher : (!!rancher.url && rancher.url === this.defaultRancher),
           elapsed:   rancher.since ? elapsed(now - Date.parse(rancher.since)) : '',
           // Not the whole address - it is long and the node's IP is the part that says anything;
           // the address itself is a copy away.
@@ -545,7 +544,7 @@ export default {
           // A workspace always ends up with a status line, so hold its space from the first
           // paint - the status arrives a moment after the row and must not shove the title down.
           reserveDetail: true,
-          label:  this.rowLabel(workspace),
+          label:  this.rowLabel(workspace, title),
           title:  [workspace.name, title, workspace.cluster && workspace.cluster !== 'local' ? workspace.cluster : ''].filter(Boolean).join(' · '),
           state:  workspace.state,
           detail: row.join(' · '),
@@ -569,14 +568,16 @@ export default {
      * the local one, which is where most workspaces are. The title is trimmed to a row's worth
      * rather than wrapped; the full name and title are on the row's hover card.
      */
-    rowLabel(workspace) {
-      // The title is the label when there is one: the row's job is to say which piece of work
-      // this is, and the title does that better than a number. The `issue-`/`pr-` name is the
-      // fallback for a workspace with no title yet - and there it keeps its prefix, because the
-      // bare number would be a mystery with nothing beside it. The full name is always on the
-      // row's hover card either way.
-      const title = workspace.title
-        ? (workspace.title.length > 42 ? `${ workspace.title.slice(0, 42).trimEnd() }…` : workspace.title)
+    rowLabel(workspace, resolved = '') {
+      // The title is the label when there is one: the row's job is to say which piece of work this
+      // is, and the title does that better than a number. It comes from the workspace where that
+      // carries it, else from the GitHub status read for it (`resolved`) - a downstream workspace
+      // has no title of its own here, so without the status fallback its row was the bare name. The
+      // `issue-`/`pr-` name is the last resort, and there it keeps its prefix, because the bare
+      // number would be a mystery with nothing beside it. The full name is always on the hover card.
+      const full = workspace.title || resolved || '';
+      const title = full
+        ? (full.length > 42 ? `${ full.slice(0, 42).trimEnd() }…` : full)
         : '';
       const parts = [title || workspace.name];
 
@@ -718,22 +719,9 @@ export default {
         v-for="rancher in rancherRows"
         :key="rancher.id"
         class="dev-sidebar__rancher-row"
-        :class="{ 'dev-sidebar__rancher-row--default': rancher.isDefault }"
       >
         <div class="dev-sidebar__rancher-text">
-          <span class="dev-sidebar__rancher-name">
-            {{ rancher.name }}
-            <!--
-              Which Rancher a new workspace defaults to. It is not set here any more - starting a
-              workspace asks, each time (RancherPicker) - so this is a passive marker of the last
-              choice the picker will preselect, not a button.
-            -->
-            <span
-              v-if="rancher.isDefault"
-              class="dev-sidebar__rancher-target"
-              title="New workspaces default to this Rancher; you choose each time you start one"
-            >target</span>
-          </span>
+          <span class="dev-sidebar__rancher-name">{{ rancher.name }}</span>
           <span
             v-if="rancher.kind === 'host' || rancher.phase === 'ready'"
             class="dev-sidebar__rancher-url"
@@ -1059,21 +1047,6 @@ export default {
       // glyph left of the workspaces above it.
       padding:     var(--dev-space-1) $rail;
       min-width:   0;
-
-      &--default .dev-sidebar__rancher-name { color: var(--dev-accent); }
-    }
-
-    &__rancher-target {
-      margin-left:    6px;
-      padding:        0 5px;
-      border-radius:  8px;
-      border:         1px solid var(--dev-accent);
-      color:          var(--dev-accent);
-      font-size:      9px;
-      font-weight:    700;
-      letter-spacing: .05em;
-      text-transform: uppercase;
-      vertical-align: middle;
     }
 
     &__rancher-text {
