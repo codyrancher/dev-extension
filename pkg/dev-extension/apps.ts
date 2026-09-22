@@ -26,7 +26,7 @@ import {
 import { WORKSPACE_VUE_CONFIG } from './workspace-config';
 // The same-origin fetch and cluster path every other Rancher call in this product goes through.
 // Imported rather than reinvented so the CSRF header and the error shape stay in one place.
-import { devFetch, clusterBase, activeCluster } from './api';
+import { devFetch, clusterBase, activeCluster, GITHUB_BROWSER_CDP } from './api';
 
 /** The browser beside every workspace: the image the harness's browser sidecar and the dev-browser App use. */
 const BROWSER_IMAGE = 'lscr.io/linuxserver/chromium:latest';
@@ -791,8 +791,11 @@ export function rancherWorkspaceApp(): Json {
             `              value: ${ DEV_API_IN_CLUSTER }`,
             '            - name: CLAUDE_BROWSER_CDP',
             '              value: http://localhost:9222',
+            // The local-cluster address of the shared github-browser. A downstream workspace can't
+            // resolve it, but dev-shell sources $WS/.env, which ensureEnvironment writes with the
+            // tunnelled localhost value for downstream - so the agent's commands get the right one.
             '            - name: GITHUB_BROWSER_CDP',
-            '              value: http://browser.extension-studio.svc.cluster.local:9222',
+            `              value: ${ GITHUB_BROWSER_CDP }`,
             '          envFrom:',
             '            - secretRef:',
             '                name: dev-secrets',

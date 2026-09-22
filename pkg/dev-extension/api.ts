@@ -1644,12 +1644,27 @@ export const GITHUB_SECRET = 'github-token';
 /**
  * The shared GitHub browser's CDP endpoint, in cluster.
  *
- * One Chromium in extension-studio carries the github.com login a person signed in once, and it
- * is the only thing here that can upload to `user-attachments`. Workspaces get this in their env
- * (workspace-tools.ts, apps.ts, settings.json.hbs); dev-api gets it because the review panel's
- * submit asks dev-api to do the upload, from a pod with the files mounted.
+ * One Chromium (the `github-browser` this extension creates in dev-system, ensureGithubBrowser)
+ * carries the github.com login a person signed in once, and it is the only thing here that can
+ * upload to `user-attachments`. This is the LOCAL-cluster address: local workspaces and dev-api
+ * (which does the upload, from a pod with the files mounted) use it directly. A downstream
+ * workspace cannot resolve it - the agent pod tunnels the browser into that pod's localhost:9223
+ * over the same exec channel dev-shell uses, and its env gets that instead (see the env writers).
  */
-export const GITHUB_BROWSER_CDP = 'http://browser.extension-studio.svc.cluster.local:9222';
+export const GITHUB_BROWSER_CDP = 'http://github-browser.dev-system.svc.cluster.local:9222';
+
+/** The CDP endpoint a DOWNSTREAM workspace uses: the agent pod's tunnel of github-browser into it. */
+export const GITHUB_BROWSER_CDP_DOWNSTREAM = 'http://127.0.0.1:9223';
+
+const GITHUB_BROWSER_NAME = 'github-browser';
+const GITHUB_BROWSER_IMAGE = 'lscr.io/linuxserver/chromium:latest';
+// The node hostPath the extension-studio `browser` used. Reused so the github.com login a person
+// signed in once carries the move with no re-sign-in - it is node-level, so it does not matter
+// that the name still says extension-studio. Only one Chromium may use it at a time.
+const GITHUB_BROWSER_HOST_PATH = '/var/lib/rancher/extension-studio/browser-config';
+// Opens github.com on start (where a human signs in), with CDP on 127.0.0.1:9222 (cdp-proxy then
+// exposes it on the pod IP). The flags are the linuxserver/chromium container's own.
+const GITHUB_BROWSER_CHROME_CLI = 'https://github.com/ --no-first-run --start-maximized --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --allow-insecure-localhost --ignore-certificate-errors --remote-debugging-port=9222 --allow-running-insecure-content';
 
 /** The dev server config a workspace boots with, in the workspace's own namespace. */
 const WORKSPACE_CONFIG_MAP = 'dev-workspace-config';
@@ -2571,6 +2586,153 @@ export async function ensureInsights(): Promise<void> {
   });
 }
 
+// s6 service: headful Chromium binds CDP only on 127.0.0.1:9222, so forward the pod IP's 9222 to it.
+// Connect by IP, not the service name - Chrome rejects a Host header that is not localhost or an IP.
+const GITHUB_BROWSER_CDP_PROXY = `#!/usr/bin/with-contenv bash
+# s6 service (mounted into /custom-services.d/): exposes Chromium's CDP to the
+# compose network. Headful Chromium only binds 127.0.0.1:9222, so we forward
+# <container-ip>:9222 -> 127.0.0.1:9222. Connect using the IP, not the
+# service name - Chrome rejects non-localhost/non-IP Host headers.
+exec python3 - <<'PYEOF'
+import asyncio, socket
+
+def container_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(('10.255.255.255', 1))  # no traffic sent; selects default-route iface
+    ip = s.getsockname()[0]
+    s.close()
+    return ip
+
+async def pipe(reader, writer):
+    try:
+        while True:
+            data = await reader.read(65536)
+            if not data:
+                break
+            writer.write(data)
+            await writer.drain()
+    except Exception:
+        pass
+    finally:
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+async def handle(client_r, client_w):
+    try:
+        upstream_r, upstream_w = await asyncio.open_connection('127.0.0.1', 9222)
+    except Exception:
+        client_w.close()
+        return
+    await asyncio.gather(pipe(client_r, upstream_w), pipe(upstream_r, client_w))
+
+async def main():
+    ip = container_ip()
+    server = await asyncio.start_server(handle, ip, 9222)
+    print(f'cdp-proxy: {ip}:9222 -> 127.0.0.1:9222', flush=True)
+    async with server:
+        await server.serve_forever()
+
+asyncio.run(main())
+PYEOF
+`;
+
+// s6 service: deliberately inert. The real keepalive held a Selkies primary client so the display
+// never tore to 1x1, but that fought a human trying to sign in ("a new primary client connected").
+// This browser is CDP-only for uploads (which set their own viewport), so nothing needs it.
+const GITHUB_BROWSER_KEEPALIVE = `#!/usr/bin/with-contenv bash
+# Inert: see api.ts. Do not restore the real keepalive without making it yield to a human viewer.
+exec sleep infinity
+`;
+
+/**
+ * Create the shared GitHub browser this extension owns: one Chromium in dev-system that carries the
+ * github.com login and is the only thing here that can upload to user-attachments. Moved here from a
+ * hand-applied `browser` in extension-studio so a version of this extension brings it, heals it, and
+ * names it for what it is. Same shape as ensureInsights: a ConfigMap of s6 services, a Deployment,
+ * a Service. The login lives on a node hostPath, so it survives the pod and carried over the move.
+ */
+export async function ensureGithubBrowser(): Promise<void> {
+  const name = GITHUB_BROWSER_NAME;
+  const namespace = DEV_SYSTEM_NAMESPACE;
+  const labels = { app: name };
+  const cmName = `${ name }-services`;
+  const data = { 'cdp-proxy': GITHUB_BROWSER_CDP_PROXY, 'stream-keepalive': GITHUB_BROWSER_KEEPALIVE };
+  const cmUrl = `${ BASE }/v1/configmaps/${ namespace }/${ cmName }`;
+  const existing = await devFetch(cmUrl).catch(() => null);
+
+  if (!existing) {
+    await devFetch(`${ BASE }/v1/configmaps`, {
+      method: 'POST',
+      body:   JSON.stringify({
+        apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace, name: cmName, labels }, data,
+      }),
+    }).catch(() => null);
+  } else if (existing.data?.['cdp-proxy'] !== GITHUB_BROWSER_CDP_PROXY || existing.data?.['stream-keepalive'] !== GITHUB_BROWSER_KEEPALIVE) {
+    await devFetch(cmUrl, { method: 'PUT', body: JSON.stringify({ ...existing, data }) }).catch(() => null);
+  }
+
+  await ensure('apps.deployments', namespace, name, {
+    apiVersion: 'apps/v1',
+    kind:       'Deployment',
+    metadata:   { namespace, name, labels },
+    spec:       {
+      replicas: 1,
+      selector: { matchLabels: labels },
+      // Recreate: the login is one Chromium profile on a hostPath, and two Chromiums on one profile
+      // corrupt it - the same reason insights uses Recreate for its SQLite file.
+      strategy: { type: 'Recreate' },
+      template: {
+        metadata: { labels },
+        spec:     {
+          containers: [{
+            name:  name,
+            image: GITHUB_BROWSER_IMAGE,
+            ports: [
+              { name: 'http', containerPort: 3000 },
+              { name: 'cdp', containerPort: 9222 },
+            ],
+            env: [
+              { name: 'PUID', value: '1000' },
+              { name: 'PGID', value: '1000' },
+              { name: 'CUSTOM_PORT', value: '3000' },
+              { name: 'TITLE', value: 'GitHub' },
+              { name: 'NODE_IP', valueFrom: { fieldRef: { apiVersion: 'v1', fieldPath: 'status.hostIP' } } },
+              { name: 'CHROME_CLI', value: GITHUB_BROWSER_CHROME_CLI },
+            ],
+            volumeMounts: [
+              { name: 'config', mountPath: '/config' },
+              { name: 'dshm', mountPath: '/dev/shm' },
+              { name: 'services', mountPath: '/custom-services.d/cdp-proxy', subPath: 'cdp-proxy' },
+              { name: 'services', mountPath: '/custom-services.d/stream-keepalive', subPath: 'stream-keepalive' },
+            ],
+          }],
+          volumes: [
+            // The login, on the node so it survives the pod - the same path the old browser used.
+            { name: 'config', hostPath: { path: GITHUB_BROWSER_HOST_PATH, type: 'DirectoryOrCreate' } },
+            { name: 'dshm', emptyDir: { medium: 'Memory' } },
+            { name: 'services', configMap: { name: cmName, defaultMode: 0o755 } },
+          ],
+        },
+      },
+    },
+  });
+
+  await ensure('services', namespace, name, {
+    apiVersion: 'v1',
+    kind:       'Service',
+    metadata:   { namespace, name, labels },
+    spec:       {
+      selector: labels,
+      ports:    [
+        { name: 'http', port: 3000, targetPort: 'http' },
+        { name: 'cdp', port: 9222, targetPort: 'cdp' },
+      ],
+    },
+  });
+}
+
 export interface InsightsTable {
   name: string;
   columns: string[];
@@ -2655,13 +2817,14 @@ export function workspaceProxyUrl(name: string, port: number, scheme = 'http'): 
 }
 
 /**
- * The shared GitHub browser's web UI: the KasmVNC desktop on the `browser` service in
- * extension-studio, framed through the apiserver's service proxy the same way a workspace's own
- * browser is. This is the one browser with a GitHub login; opening it here is how a person signs
- * it in, after which every agent's media upload goes through it (see GITHUB_BROWSER_CDP).
+ * The shared GitHub browser's web UI: the KasmVNC desktop on the `github-browser` service in
+ * dev-system, framed through the apiserver's service proxy the same way a workspace's own browser
+ * is. This is the one browser with a GitHub login; opening it here is how a person signs it in,
+ * after which every agent's media upload goes through it (see GITHUB_BROWSER_CDP, ensureGithubBrowser).
+ * Pinned to the local cluster: the browser only ever runs there, wherever a workspace was last opened.
  */
 export function globalBrowserUrl(): string {
-  return `${ BASE }/api/v1/namespaces/${ STUDIO_NAMESPACE }/services/http:browser:3000/proxy/`;
+  return `${ clusterBase(DEFAULT_CLUSTER) }/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:${ GITHUB_BROWSER_NAME }:3000/proxy/`;
 }
 
 /**
