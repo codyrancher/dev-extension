@@ -10,6 +10,12 @@ import { prDetail, DEFAULT_REPO } from './reviews';
 import { linkedPullRequest } from './github';
 import { conversationStates, ConversationState } from './conversations';
 import { setWorkspaceRunning } from './api';
+import { reconcileStage } from './stages';
+import type { DerivedStage, StageRecord } from './stages';
+
+// The stage a workspace shows is stored and guarded, not re-guessed each read: see stages.ts. These
+// re-exports let the rail and the PR panel set or release a manual stage without knowing where it lives.
+export { setManualStage, clearManualStage, isManual } from './stages';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -39,18 +45,12 @@ export const STAGE_LABELS: Record<Stage, string> = {
   approved:  'Approved',
 };
 
-/** A work state with its stage's name already on it. */
-type Work = Pick<WorkspaceStatus, 'label' | 'tone' | 'stage'> & { stageLabel?: string; reviewed?: boolean; round?: number };
-
 /**
- * Name the stage on a state that has one. A state may name its own stage instead where the
- * rail has no step for it - a closed PR sits at the end of the rail without being merged.
+ * A work state with its stage's name already on it. `soft` marks a stage taken from the agent's
+ * busy/idle state alone rather than a hard GitHub fact - a guess the stored stage must not be undone
+ * by (see stages.ts). Everything not soft is backed by the PR, the reviews, or the comments.
  */
-function staged(work: Work): Pick<WorkspaceStatus, 'label' | 'tone' | 'stage' | 'stageLabel' | 'reviewed' | 'round'> {
-  return {
-    ...work, stageLabel: work.stageLabel ?? (work.stage ? STAGE_LABELS[work.stage] : ''), reviewed: !!work.reviewed, round: work.round || 1,
-  };
-}
+type Work = Pick<WorkspaceStatus, 'label' | 'tone' | 'stage'> & { stageLabel?: string; reviewed?: boolean; round?: number; soft?: boolean };
 
 /** What to call the stage a workspace is at: the rail's own word for it. */
 export function stageName(status: Pick<WorkspaceStatus, 'stageLabel' | 'stage'>): string {
@@ -308,18 +308,22 @@ function reviewWork(d: Json, agent: AgentState): Work {
       };
     }
 
+    // Whether this is a reply or still waiting turns on who you are (your review, your comments). If
+    // the viewer's identity came back blank - a degraded read - that distinction is not trustworthy,
+    // so it is marked soft and the store keeps whatever it already had rather than dropping, say, a
+    // stored Approved to Submitted for one bad read.
     if (pushed || replied) {
       return {
-        label: pushed ? 'new commits to review' : 'replied to your comments', tone: 'attention', stage: 'response', reviewed: true, round: rounds,
+        label: pushed ? 'new commits to review' : 'replied to your comments', tone: 'attention', stage: 'response', reviewed: true, round: rounds, soft: !viewer,
       };
     }
 
     return {
-      label: 'waiting for the developer', tone: 'waiting', stage: 'submitted', reviewed: true, round: rounds,
+      label: 'waiting for the developer', tone: 'waiting', stage: 'submitted', reviewed: true, round: rounds, soft: !viewer,
     };
   }
   if (agent === 'working') {
-    return { label: '', tone: 'working', stage: 'agent' };
+    return { label: '', tone: 'working', stage: 'agent', soft: true };
   }
   if (pending.length) {
     return { label: 'read the agent\'s findings', tone: 'attention', stage: 'findings' };
@@ -328,14 +332,17 @@ function reviewWork(d: Json, agent: AgentState): Work {
   // That is a pass made, not a review still to run: falling back to Agent review offered to
   // review the PR again, which is the opposite of what emptying the list said. The run record
   // is what remembers, because the findings themselves no longer exist to say so.
+  // Soft, unlike the pending-findings case above where findings actually exist: this is inferred
+  // from the run record with an empty list, which a degraded read can also produce. It still carries
+  // a soft 'agent' stage forward to findings (higher rank), but must not knock back a stored Approved.
   if (d.run?.state === 'complete') {
-    return { label: 'nothing left to go through', tone: 'muted', stage: 'findings' };
+    return { label: 'nothing left to go through', tone: 'muted', stage: 'findings', soft: true };
   }
   if (agent === 'input') {
-    return { label: '', tone: 'attention', stage: 'agent' };
+    return { label: '', tone: 'attention', stage: 'agent', soft: true };
   }
 
-  return { label: 'not started', tone: 'muted', stage: 'agent' };
+  return { label: 'not started', tone: 'muted', stage: 'agent', soft: true };
 }
 
 /**
@@ -352,13 +359,13 @@ function fixWork(d: Json | null, agent: AgentState, coded = false): Work {
     const stage: FixStage = coded ? 'code' : 'assess';
 
     if (agent === 'working') {
-      return { label: '', tone: 'working', stage };
+      return { label: '', tone: 'working', stage, soft: true };
     }
     if (agent === 'input') {
-      return { label: '', tone: 'attention', stage };
+      return { label: '', tone: 'attention', stage, soft: true };
     }
 
-    return { label: 'no PR yet', tone: 'muted', stage };
+    return { label: 'no PR yet', tone: 'muted', stage, soft: true };
   }
   const m = d.meta || {};
 
@@ -392,6 +399,38 @@ function fixWork(d: Json | null, agent: AgentState, coded = false): Work {
   return { label: 'waiting for a reviewer', tone: 'waiting', stage: 'review' };
 }
 
+/** A stage's own tone, for when the stored stage is not the one just derived and has no note of its own. */
+const STAGE_TONE: Record<Stage, Tone> = {
+  assess: 'muted', code: 'muted', draft: 'attention', review: 'waiting', feedback: 'attention', merged: 'green',
+  agent: 'muted', findings: 'attention', submitted: 'waiting', response: 'attention', approved: 'green',
+};
+
+/** A derived work state, packaged for the store to reconcile against what it already holds. */
+function toDerived(kind: 'fix' | 'review', w: Work, pr: number): DerivedStage {
+  return {
+    kind, stage: (w.stage || (kind === 'review' ? 'agent' : 'assess')) as Stage, stageLabel: w.stageLabel, soft: !!w.soft, round: w.round || 1, reviewed: !!w.reviewed, pr,
+  };
+}
+
+/**
+ * Turn the stored stage into what the row shows. When the stored stage is the one just derived, the
+ * derived state's own words and tone are used - they say the most. When they differ - a manual hold,
+ * or a soft guess the store would not follow - the stage's name stands alone in the stage's own tone,
+ * rather than a note that describes a different stage than the one on the rail.
+ */
+function display(rec: StageRecord, w: Work): Pick<WorkspaceStatus, 'label' | 'tone' | 'stage' | 'stageLabel' | 'reviewed' | 'round'> {
+  const match = rec.stage === w.stage;
+
+  return {
+    stage:      rec.stage,
+    stageLabel: rec.stageLabel || STAGE_LABELS[rec.stage] || '',
+    reviewed:   rec.reviewed,
+    round:      rec.round || 1,
+    label:      match ? (w.label || '') : '',
+    tone:       match ? w.tone : (STAGE_TONE[rec.stage] || 'muted'),
+  };
+}
+
 async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
   const { pr, issue } = numbers(name);
   const agent = agents[name] || 'none';
@@ -404,9 +443,11 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
     const d = await prDetail(pr);
 
     links.push({ label: `PR #${ pr }`, url: d.meta?.url || `https://github.com/${ DEFAULT_REPO }/pull/${ pr }` });
+    const w = reviewWork(d, agent);
+    const rec = await reconcileStage(name, toDerived('review', w, pr));
 
     return {
-      ...staged(reviewWork(d, agent)), title: d.meta?.title || '', links, kind: 'review', pr,
+      ...display(rec, w), title: d.meta?.title || '', links, kind: 'review', pr,
     };
   }
   if (issue) {
@@ -416,9 +457,11 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
     if (n) {
       links.push({ label: `PR #${ n }`, url: d?.meta?.url || `https://github.com/${ DEFAULT_REPO }/pull/${ n }` });
     }
+    const w = fixWork(d, agent, coded[name] || false);
+    const rec = await reconcileStage(name, toDerived('fix', w, n));
 
     return {
-      ...staged(fixWork(d, agent, coded[name] || false)), title: d?.meta?.title || '', links, kind: 'fix', pr: n,
+      ...display(rec, w), title: d?.meta?.title || '', links, kind: 'fix', pr: n,
     };
   }
 
@@ -469,8 +512,15 @@ export async function readStatusNow(name: string, github = true): Promise<Worksp
   const agent = agents[name] || 'none';
   const { pr, issue } = numbers(name);
   // A fix with no PR yet moves between Assess and Code on what the checkout says and what the
-  // agent is doing, which the tick knows without GitHub.
-  const rewrite = !github && before.readAt && !pr && issue && !before.pr ? staged(fixWork(null, agent, coded[name] || false)) : {};
+  // agent is doing, which the tick knows without GitHub - still through the store, so the move only
+  // ever goes forward and never undoes a stored stage.
+  let rewrite: Partial<WorkspaceStatus> = {};
+
+  if (!github && before.readAt && !pr && issue && !before.pr) {
+    const w = fixWork(null, agent, coded[name] || false);
+
+    rewrite = display(await reconcileStage(name, toDerived('fix', w, 0)), w);
+  }
   const next = { ...before, ...work, ...rewrite, readAt: github ? Date.now() : before.readAt, agent };
 
   statuses.set(name, next);
@@ -531,16 +581,22 @@ export async function workspaceStatuses(workspaces: { name: string; cluster?: st
 
   const out: Record<string, WorkspaceStatus> = {};
 
-  for (const name of names) {
+  await Promise.all(names.map(async(name) => {
     const known = statuses.get(name) || empty();
     const agent = agents[name] || 'none';
     // The work's wording depends on the agent too, and the agent moves more often than
-    // GitHub is read: a fix workspace whose agent has just gone idle says so now.
+    // GitHub is read: a fix workspace whose agent has just gone idle says so now. Through the store,
+    // so this soft move only carries Assess to Code and never undoes a stored stage.
     const { pr, issue } = numbers(name);
-    const rewrite = known.readAt && !pr && issue && !known.links.some((l) => l.label.startsWith('PR')) ? fixWork(null, agent, coded[name] || false) : {};
+    let rewrite: Partial<WorkspaceStatus> = {};
 
+    if (known.readAt && !pr && issue && !known.links.some((l) => l.label.startsWith('PR'))) {
+      const w = fixWork(null, agent, coded[name] || false);
+
+      rewrite = display(await reconcileStage(name, toDerived('fix', w, 0)), w);
+    }
     out[name] = { ...known, ...rewrite, agent };
-  }
+  }));
 
   return out;
 }
