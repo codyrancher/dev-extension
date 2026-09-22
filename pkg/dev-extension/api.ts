@@ -716,7 +716,58 @@ async function liveInstanceClusters(): Promise<Map<string, string> | null> {
   return byWorkspace;
 }
 
+/** dev-api's registrar: the projection it keeps of every workspace (see its reconcileWorkspaces). */
+const REGISTRAR_CONFIGMAP = 'dev-workspaces';
+/** How stale the projection may be before the browser stops trusting it and reads clusters live. */
+const REGISTRAR_STALE_MS = 90_000;
+
+/**
+ * The workspaces from dev-api's registrar ConfigMap, or null to fall back to reading the clusters.
+ *
+ * One local read replaces fanning three Steve reads out to every cluster. Null when the ConfigMap is
+ * absent (mid-rollout, reconciler not up yet) or its projection is stale (reconciler down), so the
+ * nav degrades to the live per-cluster path rather than to nothing.
+ */
+async function registrarWorkspaces(): Promise<DevWorkspace[] | null> {
+  const cm = await devFetch(`${ clusterBase(DEFAULT_CLUSTER) }/v1/configmaps/${ DEV_SYSTEM_NAMESPACE }/${ REGISTRAR_CONFIGMAP }`).catch(() => null);
+  const doc = cm?.data?.['workspaces.json'];
+
+  if (!doc) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(doc) as { at?: string; workspaces?: DevWorkspace[] };
+    const at = Date.parse(parsed.at || '');
+
+    if (!Array.isArray(parsed.workspaces) || !Number.isFinite(at) || Date.now() - at > REGISTRAR_STALE_MS) {
+      return null;
+    }
+
+    return parsed.workspaces;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every workspace this person has, for the sidebar.
+ *
+ * Reads dev-api's registrar projection first (one local ConfigMap) and only falls back to reading
+ * every cluster live when it is missing or stale - so a healthy reconciler means the nav no longer
+ * depends on a downstream cluster answering, and a dead one degrades to the old behaviour.
+ */
 export async function listAllWorkspaces(): Promise<DevWorkspace[]> {
+  const projected = await registrarWorkspaces();
+
+  if (projected) {
+    return projected;
+  }
+
+  return listAllWorkspacesLive();
+}
+
+async function listAllWorkspacesLive(): Promise<DevWorkspace[]> {
   // Two sets from one /v3/clusters read: the clusters worth READING now (active - a non-active one
   // would only fail through the proxy), and every cluster that EXISTS at all (any state), which is
   // what the prune below is allowed to key off. A downstream cluster flaps in and out of `active`
