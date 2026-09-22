@@ -40,7 +40,7 @@ import {
 } from '../skills';
 import { markReadyForReview } from '../github';
 import {
-  deleteWorkspace, devFetch, workspaceMediaListUrl
+  deleteWorkspace, devFetch, workspaceMediaListUrl, setWorkspaceRunning, workspaceProxyUrl, secretValue
 } from '../api';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE } from '../config/constants';
 
@@ -290,12 +290,26 @@ export default {
       if (s.kind === 'fix') {
         switch (stage) {
         case 'assess':
-        case 'code':
-          if (s.agent === 'none') {
+          // An issue workspace is here to be fixed, so "Fix it" is the action at this stage whatever
+          // the agent is doing: it runs the whole my-issue-fix flow - reproduce, fix, verify, open a
+          // draft PR. It is the primary while nothing is being worked, and a tool while the agent is
+          // mid-assessment so it does not cut across a conversation already going. The assessment
+          // skills (reproduce, root cause) sit beside it under "Ask the agent".
+          if (s.agent === 'input') {
             return {
-              headline: 'Nothing has started on this issue', detail: 'Starts a conversation that reproduces the issue, fixes it, verifies the fix and opens a draft PR.', primary: { label: 'Start the fix', run: 'startFix' }, tools: [],
+              headline: 'The agent is waiting for an answer', detail: 'It asked something in its conversation and stopped until it hears back.', primary: { label: 'Answer it', run: 'openTab', arg: 'conversations' }, tools: [{ label: 'Fix it', run: 'startFix' }],
             };
           }
+          if (s.agent === 'working') {
+            return {
+              headline: 'The agent is looking at the issue', detail: 'Follow along in the conversation, or tell it to go ahead and fix it.', primary: conversation, tools: [{ label: 'Fix it', run: 'startFix' }],
+            };
+          }
+
+          return {
+            headline: s.agent === 'none' ? 'Nothing has started on this issue' : 'The agent stopped before opening a PR', detail: 'Fix it starts a conversation that reproduces the issue, fixes it, verifies the fix and opens a draft PR.', primary: { label: 'Fix it', run: 'startFix' }, tools: s.agent === 'none' ? [] : [conversation],
+          };
+        case 'code':
           if (s.agent === 'input') {
             return {
               headline: 'The agent is waiting for an answer', detail: 'It asked something in its conversation and stopped until it hears back.', primary: { label: 'Answer it', run: 'openTab', arg: 'conversations' }, tools: [],
@@ -889,6 +903,73 @@ export default {
       const all = [...this.action.tools, { ...this.action.primary, isPrimary: true }];
 
       return all.filter((a) => (kind === 'agent' ? this.agentSide(a) : !this.agentSide(a)));
+    },
+
+    /**
+     * The tools for verifying the work by hand, kept apart from the decisions in their own group.
+     * They belong at the two stages where you look at a running build - Code, while the fix is
+     * being written, and Your pass, while a PR is being reviewed - and nowhere a build is not the
+     * point. A preview has no dev server of its own to drive, so it gets none of these.
+     */
+    verifyTools() {
+      const s = this.status;
+
+      if (!s || this.lookingBack || this.workspace?.preview) {
+        return [];
+      }
+      // The current stage, not the one being viewed (`shown` falls back to a middle stage before the
+      // first status read, which would flash these on a workspace that is really elsewhere). Looking
+      // back is already excluded above, so current and shown agree whenever this returns anything.
+      const here = (s.kind === 'fix' && this.current === 'code') || (s.kind === 'review' && this.current === 'findings');
+
+      if (!here) {
+        return [];
+      }
+
+      return [
+        { label: this.workspace?.state === 'stopped' ? 'Start the dev server' : 'Stop the dev server', run: 'toggleServer' },
+        { label: 'Open the app', run: 'openApp' },
+        { label: 'Copy password', run: 'copyPassword' },
+      ];
+    },
+
+    /** Start the dev server if it is stopped, else stop it; the page's own poll flips the label. */
+    async toggleServer() {
+      const start = this.workspace?.state === 'stopped';
+
+      await setWorkspaceRunning(this.workspace.name, start, this.workspace.cluster || 'local');
+      this.notice = start ? 'Starting the dev server - it is ready to open once it says Running.' : 'Stopping the dev server.';
+    },
+
+    /** Open the workspace's running app in a new tab, to look at the change for real. */
+    openApp() {
+      const w = this.workspace;
+
+      // A stopped deployment has no endpoints, so the proxy would open to an error page. Say so
+      // rather than hand back a dead tab. (Kept synchronous - window.open must run in the click.)
+      if (w?.state !== 'running') {
+        this.notice = 'Start the dev server first, then Open the app shows the running build.';
+
+        return;
+      }
+      window.open(workspaceProxyUrl(w.name, w.port, w.scheme), '_blank', 'noopener');
+    },
+
+    /** Copy the saved Rancher password so it can be pasted into the app's login page (user "admin"). */
+    async copyPassword() {
+      const password = await secretValue('RANCHER_PASSWORD').catch(() => '');
+
+      if (!password) {
+        this.notice = 'No Rancher password is saved yet. Add one in Settings (the gear, top right) and this copies it for the login page.';
+
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(password);
+        this.notice = 'Password copied. Paste it into the app\'s login page, with the user "admin".';
+      } catch {
+        this.error = 'The browser would not let this copy to the clipboard.';
+      }
     },
 
     async runSkill(button) {
@@ -1672,6 +1753,27 @@ export default {
                   class="icon icon-spinner icon-spin"
                 />
                 {{ button.label }}
+              </RcButton>
+            </div>
+          </div>
+          <div
+            v-if="verifyTools().length"
+            class="workspace-rail__group workspace-rail__group--verify"
+          >
+            <span class="workspace-rail__group-label">Verify the work</span>
+            <div class="workspace-rail__group-buttons">
+              <RcButton
+                v-for="a in verifyTools()"
+                :key="a.label"
+                variant="secondary"
+                :disabled="!!busy"
+                @click="run(a)"
+              >
+                <i
+                  v-if="busy === a.run"
+                  class="icon icon-spinner icon-spin"
+                />
+                {{ a.label }}
               </RcButton>
             </div>
           </div>
