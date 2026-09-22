@@ -7,7 +7,7 @@
 // calls per workspace, so each workspace is read every five minutes, one at a time, in the
 // background; the sidebar shows whatever was last read and never waits on it.
 import { prDetail, DEFAULT_REPO } from './reviews';
-import { linkedPullRequest } from './github';
+import { linkedPullRequest, issueBody } from './github';
 import { conversationStates, ConversationState } from './conversations';
 import { setWorkspaceRunning } from './api';
 import { reconcileStage } from './stages';
@@ -459,9 +459,13 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
     }
     const w = fixWork(d, agent, coded[name] || false);
     const rec = await reconcileStage(name, toDerived('fix', w, n));
+    // The PR's title once there is one; until then the issue's own title, so a fix reads as the work
+    // it is rather than its `issue-<n>` name. Without this a fix with no PR yet had no title at all,
+    // and the row fell back to the bare number.
+    const title = d?.meta?.title || (await issueBody(DEFAULT_REPO, issue).catch(() => ({ title: '' })).then((i) => i.title)) || '';
 
     return {
-      ...display(rec, w), title: d?.meta?.title || '', links, kind: 'fix', pr: n,
+      ...display(rec, w), title, links, kind: 'fix', pr: n,
     };
   }
 
