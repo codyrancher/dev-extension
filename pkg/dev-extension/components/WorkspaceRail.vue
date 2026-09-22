@@ -2125,8 +2125,12 @@ export default {
                       :key="c.id || n"
                       type="button"
                       class="workspace-rail__page-num"
-                      :class="{ 'workspace-rail__page-num--on': n === pageOf(section, item), 'workspace-rail__page-num--open': !c.answered }"
-                      :title="`${ c.where }${ c.answered ? '' : ' · waiting' }`"
+                      :class="{
+                        'workspace-rail__page-num--on': n === pageOf(section, item),
+                        'workspace-rail__page-num--approved': !c.answered && c.local && c.status === 'approved',
+                        'workspace-rail__page-num--open': !c.answered && !(c.local && c.status === 'approved'),
+                      }"
+                      :title="`${ c.where }${ c.answered ? '' : c.status === 'approved' ? ' · approved' : ' · waiting' }`"
                       @click="goTo(section, n)"
                     >{{ n + 1 }}</button>
                   </span>
@@ -2162,8 +2166,17 @@ export default {
                       v-if="c.thread.length > 1"
                       class="workspace-rail__tag"
                     >{{ c.thread.length }} messages</span>
+                    <!--
+                      A local finding you have marked good reads as approved, in green, here and in
+                      the pager - not "waiting on you", which is only for one you have not been
+                      through yet. A submitted comment (answered) shows neither; its state is its own.
+                    -->
                     <span
-                      v-if="!c.answered"
+                      v-if="!c.answered && c.local && c.status === 'approved'"
+                      class="workspace-rail__tag workspace-rail__tag--approved"
+                    >approved</span>
+                    <span
+                      v-else-if="!c.answered"
                       class="workspace-rail__tag workspace-rail__tag--open"
                     >{{ status.kind === 'review' && shown === 'response' ? 'no reply from the developer' : 'waiting on you' }}</span>
                     <a
@@ -3494,6 +3507,7 @@ export default {
     color:         var(--body-text);
 
     &--open { background: var(--pr-warning-fill); color: var(--pr-warning); }
+    &--approved { background: var(--pr-success-fill); color: var(--pr-success); }
     &--new { background: var(--pr-accent-fill); color: var(--pr-accent); }
   }
 
@@ -3571,6 +3585,7 @@ export default {
 
     &:hover { color: var(--pr-text); }
     &--open { color: var(--pr-warning); border-color: var(--pr-warning); }
+    &--approved { color: var(--pr-success); border-color: var(--pr-success); }
     &--on {
       background:   var(--pr-accent);
       border-color: var(--pr-accent);
