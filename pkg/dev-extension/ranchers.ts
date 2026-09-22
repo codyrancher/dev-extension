@@ -331,12 +331,62 @@ export async function ownRancherUrl(store: Store): Promise<string> {
   return own || window.location.origin;
 }
 
-/**
- * What a new workspace is made with: the starred Rancher as its `rancherUrl`, or nothing,
- * which leaves the App's own default - the Rancher this cluster belongs to, by node address.
- */
-export async function defaultRancherValues(): Promise<Record<string, string>> {
-  const url = await defaultRancher().catch(() => '');
+// ── Choosing where a workspace runs ───────────────────────────────────────────────────────────
+//
+// A workspace used to run on whichever Rancher was starred in the sidebar. Now the choice is asked
+// for each time one is started - a modal, defaulting to the last choice - so there is no hidden
+// setting that silently sends a fix to the wrong cluster. The modal is a component mounted once
+// (RancherPicker, in the sidebar) that registers itself here; a start is a plain async call deep in
+// reviews.ts, so it reaches the modal through this registration rather than through props.
 
-  return url ? { rancherUrl: url } : {};
+/** Thrown when the person closes the picker without choosing: a quiet abort, not a failure. */
+export class RancherPickCancelled extends Error {
+  constructor() {
+    super('');
+    this.name = 'RancherPickCancelled';
+  }
+
+  // Empty, so a caller that shows `e.message || String(e)` shows nothing: cancelling is not an error.
+  toString(): string {
+    return '';
+  }
+}
+
+type RancherPickFn = (opts: { store: Store; current: string }) => Promise<string | null>;
+let rancherPicker: RancherPickFn | null = null;
+
+/** The mounted picker registers itself here; `null` on unmount. See RancherPicker.vue. */
+export function registerRancherPicker(fn: RancherPickFn | null): void {
+  rancherPicker = fn;
+}
+
+/**
+ * Ask which Rancher to run on, defaulting to `current`. Returns the chosen URL ('' for this
+ * Rancher), or `null` if cancelled. With no picker mounted - a headless path, a page without the
+ * sidebar - it falls back to `current` without a modal, so nothing blocks on a missing UI.
+ */
+export async function pickRancher(store: Store, current: string): Promise<string | null> {
+  if (!rancherPicker) {
+    return current;
+  }
+
+  return rancherPicker({ store, current });
+}
+
+/**
+ * What a new workspace is made with: the Rancher the person picks as its `rancherUrl`, or nothing,
+ * which leaves the App's own default - the Rancher this cluster belongs to, by node address. The
+ * pick defaults to the last one and is remembered as the next default. Throws RancherPickCancelled
+ * if the person closes the picker, so the start that called this aborts without creating anything.
+ */
+export async function defaultRancherValues(store: Store): Promise<Record<string, string>> {
+  const previous = await defaultRancher().catch(() => '');
+  const chosen = await pickRancher(store, previous);
+
+  if (chosen === null) {
+    throw new RancherPickCancelled();
+  }
+  await setDefaultRancher(chosen).catch(() => { /* remembering the choice is best-effort */ });
+
+  return chosen ? { rancherUrl: chosen } : {};
 }
