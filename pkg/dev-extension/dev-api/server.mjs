@@ -962,7 +962,7 @@ function artifactFile(given, num = null) {
 // `my-pr-create` skill runs (codyrancher/ai-skills, rancher-dashboard/.claude/skills/my-pr-create/upload-github-assets.mjs)
 // - keep the two in step.
 
-const GITHUB_BROWSER_CDP = process.env.GITHUB_BROWSER_CDP || 'http://browser.extension-studio.svc.cluster.local:9222';
+const GITHUB_BROWSER_CDP = process.env.GITHUB_BROWSER_CDP || 'http://github-browser.dev-system.svc.cluster.local:9222';
 
 // GitHub rejects the policy request when the extension and the content type disagree, so every
 // extension we upload needs an entry here.

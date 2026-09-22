@@ -32,6 +32,11 @@ const ctx = {
   cluster:     process.env.DEV_CLUSTER || '',
   rancherUrl,
   rancherHost: rancherUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, ''),
+  // The shared github-browser's CDP: a local workspace reaches it by service name; a downstream one
+  // gets the agent pod's tunnel of it into this pod's localhost:9223 (see tunnel-browser.sh).
+  githubBrowserCdp: (process.env.DEV_CLUSTER && process.env.DEV_CLUSTER !== 'local')
+    ? 'http://127.0.0.1:9223'
+    : 'http://github-browser.dev-system.svc.cluster.local:9222',
 };
 // This workspace's tree. Everything below is under it.
 //
