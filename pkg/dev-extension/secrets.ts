@@ -20,4 +20,10 @@ export const GLOBAL_SECRETS: DevSecret[] = [
     help:     'A personal access token with repo, read:user and read:project. My Work reads your issues, pull requests and board status with it, from the browser.',
     required: false,
   },
+  {
+    key:      'RANCHER_PASSWORD',
+    label:    'Rancher login password',
+    help:     'The password for the local "admin" account. A workspace\'s app opens on a fresh Rancher login, and the Verify tools copy this into your clipboard so you can sign in without hunting for it. Kept in your own per-user Secret on the local cluster, the same place as your GitHub token above.',
+    required: false,
+  },
 ];
