@@ -21,6 +21,7 @@ import DevModal from './DevModal.vue';
 import PrButton from './pr/PrButton.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
+import ArtifactViewer from './pr/ArtifactViewer.vue';
 import {
   readStatusNow, knownStatus, provisionalStatus, agentLabel, agentStateOf, displayTone, setManualStage, clearManualStage, isManual
 } from '../workspace-status';
@@ -58,7 +59,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments
+    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer
   },
 
   props: {
@@ -88,6 +89,8 @@ export default {
       evidence:    [],
       /** The stage being looked at: the current one unless a past step was clicked. */
       viewing:     '',
+      /** The screenshot or recording open in the pan-and-zoom viewer, if any. */
+      shot:        null,
       /** Whether the person is holding this workspace's stage by hand, and whether the picker is open. */
       manual:      false,
       stagePicker: false,
@@ -636,6 +639,23 @@ export default {
      * Developer responded are behind you as well as ahead, so they keep their ticks rather than
      * going back to being plain numbers.
      */
+    /**
+     * A click on a screenshot inside a rendered body: open it in the viewer.
+     *
+     * Delegated, because the bodies are markdown rendered to HTML and their images are not
+     * this template's elements. Only images: a click anywhere else in a report is a click on
+     * text, and a link is still a link.
+     */
+    openShot(event) {
+      const img = event?.target;
+
+      if (!img || img.tagName !== 'IMG' || !img.src || img.closest('a')) {
+        return;
+      }
+      event.preventDefault();
+      this.shot = { src: img.src, name: img.alt || 'screenshot', caption: '' };
+    },
+
     /** Whether a section is folded: what was chosen for it here, else what it asked for. */
     isShut(section) {
       return this.shut[section.title] ?? !!section.collapsed;
@@ -1949,6 +1969,7 @@ export default {
                 <div
                   v-if="item.html"
                   class="md-body workspace-rail__md"
+                  @click="openShot"
                   v-html="item.html"
                 />
                 <template v-else>{{ item.text }}</template>
@@ -2081,22 +2102,40 @@ export default {
                 v-if="item.kind === 'media'"
                 class="workspace-rail__media"
               >
+                <!--
+                  Thumbnails, not the media itself. A report with eight screenshots in it is a
+                  page of screenshots you scroll past to read the report; at this size the set
+                  is legible at a glance and any one of them opens in the viewer that pans and
+                  zooms, which is where a screenshot is actually read.
+                -->
                 <figure
                   v-for="m in item.items"
                   :key="m.url"
                   class="workspace-rail__figure"
                 >
-                  <video
-                    v-if="m.video"
-                    :src="m.url"
-                    controls
-                    preload="metadata"
-                  />
-                  <img
-                    v-else
-                    :src="m.url"
-                    :alt="m.label"
+                  <button
+                    type="button"
+                    class="workspace-rail__thumb"
+                    :title="`${ m.label } · open`"
+                    @click="shot = { src: m.url, name: m.label, caption: ago(m.at) }"
                   >
+                    <video
+                      v-if="m.video"
+                      :src="m.url"
+                      preload="metadata"
+                      muted
+                    />
+                    <img
+                      v-else
+                      :src="m.url"
+                      :alt="m.label"
+                      loading="lazy"
+                    >
+                    <span
+                      v-if="m.video"
+                      class="workspace-rail__thumb-play"
+                    >▶</span>
+                  </button>
                   <figcaption>{{ m.label }} · {{ ago(m.at) }}</figcaption>
                 </figure>
               </div>
@@ -2253,6 +2292,7 @@ export default {
                       </div>
                       <div
                         class="comment-body md-body"
+                        @click="openShot"
                         v-html="t.html"
                       />
                     </div>
@@ -2360,6 +2400,17 @@ export default {
         </section>
 
       </div>
+      <!-- A screenshot or a recording, in the viewer that pans and zooms. -->
+      <Teleport to="body">
+        <ArtifactViewer
+          v-if="shot"
+          :src="shot.src"
+          :name="shot.name"
+          :caption="shot.caption"
+          @close="shot = null"
+        />
+      </Teleport>
+
       <!-- The approval: what it says, and the evidence that goes with it. -->
       <DevModal
         v-if="approving"
@@ -3509,6 +3560,61 @@ export default {
     &--open { background: var(--pr-warning-fill); color: var(--pr-warning); }
     &--approved { background: var(--pr-success-fill); color: var(--pr-success); }
     &--new { background: var(--pr-accent-fill); color: var(--pr-accent); }
+  }
+
+  /*
+   * One thumbnail: a fixed box the media is fitted into, so a set of screenshots is a row
+   * rather than a column of full-width pictures. Clicking opens the viewer that pans and
+   * zooms, which is where a screenshot is actually read.
+   */
+  &__thumb {
+    position:      relative;
+    display:       block;
+    width:         148px;
+    height:        96px;
+    padding:       0;
+    border:        1px solid var(--border);
+    border-radius: var(--border-radius);
+    background:    var(--box-bg);
+    overflow:      hidden;
+    cursor:        zoom-in;
+    min-height:    0;
+
+    img,
+    video {
+      width:      100%;
+      height:     100%;
+      object-fit: cover;
+      display:    block;
+    }
+
+    &:hover { border-color: var(--link); }
+  }
+
+  &__thumb-play {
+    position:      absolute;
+    inset:         auto 4px 4px auto;
+    padding:       0 5px;
+    border-radius: 3px;
+    background:    rgba(0, 0, 0, .55);
+    color:         #fff;
+    font-size:     10px;
+  }
+
+  /*
+   * A screenshot inside a report or a comment is the same size, and opens the same way. These
+   * are markdown images, so the rule reaches them by element rather than by class; `:deep`,
+   * because a scoped stylesheet does not stamp its attribute on v-html content.
+   */
+  :deep(.workspace-rail__md img),
+  :deep(.comment-body img) {
+    max-width:      148px;
+    max-height:     96px;
+    object-fit:     cover;
+    border:         1px solid var(--border);
+    border-radius:  var(--border-radius);
+    cursor:         zoom-in;
+    vertical-align: middle;
   }
 
   &__media {
