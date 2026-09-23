@@ -322,6 +322,11 @@ async function ensureEnvironment(target: WorkspaceTarget, github: string, browse
     'done',
     'if [ -n "$PICK" ]; then U="$PICK"; fi',
     'H=$(echo "$U" | sed -e "s|^https\\?://||" -e "s|/.*$||")',
+    // Keep the GitHub token already in .env, so a page-load where the token read came back empty
+    // (a transient secret-read failure) does not wipe a working one and leave every git push and gh
+    // call unauthenticated. The line below is written unconditionally, so without this a blank read
+    // overwrote it every time. When the read succeeds, `github` is used and this is ignored.
+    `GH_KEEP="$(grep -m1 '^GH_TOKEN=' ${ ENV_FILE } 2>/dev/null | cut -d= -f2-)"`,
     'umask 077',
     `cat > ${ ENV_FILE } <<EOF`,
     'API=$U',
@@ -338,8 +343,8 @@ async function ensureEnvironment(target: WorkspaceTarget, github: string, browse
     // workspace reaches it by service name; a downstream one cannot (different cluster), so it gets
     // the agent pod's tunnel of it into this pod's localhost. See browser-control and tunnel-browser.sh.
     `GITHUB_BROWSER_CDP=${ activeCluster() === 'local' ? GITHUB_BROWSER_CDP : GITHUB_BROWSER_CDP_DOWNSTREAM }`,
-    `GH_TOKEN=${ github }`,
-    `GITHUB_TOKEN=${ github }`,
+    `GH_TOKEN=${ github || '$GH_KEEP' }`,
+    `GITHUB_TOKEN=${ github || '$GH_KEEP' }`,
     'KUBECONFIG=$WS/.kube/config',
     'EOF',
     `chown node:node ${ ENV_FILE } && chmod 600 ${ ENV_FILE }`,
