@@ -22,6 +22,7 @@ import { AGENT_SEED } from './agent-seed.generated';
 import {
   createWorkspaceInstance, deleteWorkspaceInstance, appById
 } from './apps';
+import { endWorkspaceConversations } from './conversations';
 import {
   DEV_POD_NAMESPACE as POD_NAMESPACE, DEV_POD_SERVICE as POD_SERVICE,
   LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, workspaceRoot, workspaceWorkdir, workspaceHome,
@@ -1452,6 +1453,15 @@ export async function deleteWorkspace(store: Store, name: string): Promise<void>
   // "delete is broken". So a missing Installation is fine, and the rest of the teardown runs
   // regardless - including the namespace, which is normally the Bundle's to take but is this
   // extension's to finish when the Installation (and therefore the Bundle) is already gone.
+  // The conversations first, because they do not live in anything this is about to delete.
+  //
+  // A conversation is a tmux session and a transcript in the agent pod, named after the
+  // workspace. Deleting the workspace left every one of them running, so a workspace made for
+  // the same issue later inherited them - and inherited an agent mid-thought about a checkout
+  // that no longer existed, in a tree with no tunnel to reach it by. That is the "it doesn't
+  // fully come back up" this is: nothing asked the new workspace to set itself up, because the
+  // conversation it would have been set up for was already there.
+  await endWorkspaceConversations(name).catch(() => {});
   await deleteWorkspaceInstance(store, name, true);
   // The workspace's shares are separate installations of the dashboard-preview App, one per
   // kind, named after the workspace (see previews.ts `previewName`). Nothing else takes them

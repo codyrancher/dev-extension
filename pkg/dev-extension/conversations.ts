@@ -400,6 +400,25 @@ export async function endConversation(workspace: string, id: string): Promise<vo
 }
 
 /**
+ * End every conversation a workspace has, for a workspace that is being deleted.
+ *
+ * They are the one part of a workspace that is not in its namespace: a tmux session and a
+ * transcript in the agent pod, named after the workspace. Left running, they are inherited by
+ * the next workspace of that name - an agent mid-thought about a checkout that no longer
+ * exists. Best effort, one at a time: the delete must not fail because a session was already
+ * gone.
+ */
+export async function endWorkspaceConversations(workspace: string): Promise<number> {
+  const conversations = await listConversations(workspace).catch(() => []);
+
+  for (const conversation of conversations) {
+    await endConversation(workspace, conversation.id).catch(() => null);
+  }
+
+  return conversations.length;
+}
+
+/**
  * Queue a prompt for a conversation to open with, or say something into one that is running.
  *
  * The agents extension's, because the pane is in its pod: it writes the file the pane reads on

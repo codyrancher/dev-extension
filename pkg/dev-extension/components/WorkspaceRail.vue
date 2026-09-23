@@ -91,6 +91,8 @@ export default {
       viewing:     '',
       /** The screenshot or recording open in the pan-and-zoom viewer, if any. */
       shot:        null,
+      /** Whether this visit has already made sure the workspace can be worked in. */
+      tunnelChecked: false,
       /** Whether the person is holding this workspace's stage by hand, and whether the picker is open. */
       manual:      false,
       stagePicker: false,
@@ -459,8 +461,33 @@ export default {
       this.status = knownStatus(this.workspace.name) || provisionalStatus(this.workspace.name);
       this.loading = false;
       this.refreshEvidence();
+      this.ensureTunnel();
       await this.refreshStatus();
       await this.refreshEvidence();
+    },
+
+    /**
+     * Make sure this workspace can be worked in, once per visit, behind the page.
+     *
+     * A workspace made for an issue that had one before starts on whatever its old tree left
+     * on the node, and nothing else asks for the seed until somebody starts a conversation -
+     * so a workspace with a conversation already in it (inherited from the one before) had no
+     * `bin/dev-shell` and every command in it failed on a missing file. Asked for here
+     * instead, where opening the workspace is the thing that happens first.
+     *
+     * Cheap when everything is in place, and never in the way: it does not block the draw, and
+     * a failure is a line in the page rather than an empty page.
+     */
+    async ensureTunnel() {
+      if (this.tunnelChecked || !this.workspace?.name) {
+        return;
+      }
+      this.tunnelChecked = true;
+      try {
+        await ensureWorkspaceReady(this.workspace.name);
+      } catch (e) {
+        console.debug(`[rail] workspace setup: ${ e?.message || e }`); // eslint-disable-line no-console
+      }
     },
 
     /**
