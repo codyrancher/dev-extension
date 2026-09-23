@@ -779,16 +779,31 @@ export function rancherWorkspaceApp(): Json {
             '          image: ${image}',
             // What one workspace may take from the node. Without a limit a dev server was 2 GB
             // and every core it could find, times nine workspaces, on the node that also runs
-            // Rancher's own k3s - which is what kept starving it. The memory limit is above
-            // what webpack needs (NODE_OPTIONS below allows 4 GB of heap); the CPU limit is two
-            // cores, which a compile uses and a conversation's commands never notice.
+            // Rancher's own k3s - which is what kept starving it. The CPU limit is two cores,
+            // which a compile uses and a conversation's commands never notice.
+            //
+            // The memory limit was 5Gi, which is one node process and no room for a second.
+            // A workspace runs the supervised dev server at 4 GB of heap (NODE_OPTIONS below)
+            // and then an agent runs something else in the same container: `yarn type-check`
+            // asks for 8 GB of heap by itself in this repo's own scripts, and a production
+            // build asked for in-pod (when no builder job can be created) wants about as much.
+            // Either one took the container over the limit and the kernel killed it - which
+            // kills the dev server, the agent's shell and everything it was in the middle of,
+            // and is what "we seem to OOM a lot" was.
+            //
+            // 12Gi is the arithmetic: 4 GB of dev server and 8 GB of build or type-check in
+            // the same container, which is the pair that kept dying. It is also what the build
+            // sidecar already gets for the same work, so nothing here is more generous than
+            // this product already thought that work needed. The request stays at 1Gi, so this
+            // is headroom rather than a reservation: five idle workspaces still hold 5Gi
+            // between them, and only one actually building takes more.
             '          resources:',
             '            requests:',
             '              cpu: 250m',
             '              memory: 1Gi',
             '            limits:',
             '              cpu: "2"',
-            '              memory: 5Gi',
+            '              memory: 12Gi',
             '          command:',
             '            - /bin/sh',
             '            - -c',
