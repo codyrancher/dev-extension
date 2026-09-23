@@ -251,7 +251,19 @@ export async function deleteWorkspaceInstance(store: Store, name: string, missin
   // and takes the finalizer off. If the real model is loaded this is what it would have done
   // anyway, and adding a finalizer that is already there is a no-op.
   await ensureCleanupFinalizer(name).catch(() => null);
-  await instance.remove();
+
+  // The DELETE itself, as a plain request.
+  //
+  // It used to be `instance.remove()`, the store model's own method - which broke the moment
+  // the Installation started being read straight from the API instead of through the store
+  // (a plain object has no `remove`, and every delete failed with "a.remove is not a
+  // function"). The comment above already argued for not depending on that model; this is the
+  // rest of that argument. apps-plus-api does the teardown and takes the finalizer off.
+  if (typeof instance.remove === 'function') {
+    await instance.remove();
+  } else {
+    await devFetch(`${ clusterBase(activeCluster()) }/apis/appsplus.io/v1alpha1/appinstances/${ name }`, { method: 'DELETE' });
+  }
 
   for (let attempt = 0; attempt < 40; attempt++) {
     const current = await store.dispatch('management/find', { type: APP_INSTANCE, id: name, opt: { force: true } }).catch(() => null);
