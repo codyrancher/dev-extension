@@ -132,6 +132,34 @@ async function asNode(target: WorkspaceTarget, script: string): Promise<string> 
 }
 
 /** Read something out of the checkout, as its owner. What the Review tab is drawn from. */
+/**
+ * Whether this workspace is running a dev server, and whether one has been stopped on purpose.
+ *
+ * One exec, from the page: `pgrep` for the server and a look for the pause file the supervisor
+ * reads. Cheap enough to ask on every stage, which is the point - a webpack holding two
+ * gigabytes for a workspace nobody is looking at is the most expensive idle thing on the node,
+ * and it cannot be turned off from a page that does not know it is there.
+ */
+export async function devServerState(workspace: string): Promise<{ running: boolean; paused: boolean }> {
+  const out = await readInWorkspace(workspace, [
+    'cd $WS 2>/dev/null || exit 0',
+    'pgrep -f "^[^ ]*node .*vue-cli-service serve" >/dev/null 2>&1 && echo RUNNING',
+    '[ -f $WS/.dev-server.off ] && echo PAUSED',
+  ].join('\n')).catch(() => '');
+
+  return { running: out.includes('RUNNING'), paused: out.includes('PAUSED') };
+}
+
+/** Stop this workspace's dev server and keep it stopped, through the workspace's own command. */
+export async function stopDevServer(workspace: string): Promise<string> {
+  return readInWorkspace(workspace, 'cd $WS/dashboard 2>/dev/null || cd $WS; $WS/bin/dev-server stop 2>&1 | tail -2');
+}
+
+/** Let it run again. */
+export async function startDevServer(workspace: string): Promise<string> {
+  return readInWorkspace(workspace, 'cd $WS/dashboard 2>/dev/null || cd $WS; $WS/bin/dev-server start 2>&1 | tail -2');
+}
+
 export async function readInWorkspace(workspace: string, script: string): Promise<string> {
   return asNode(await workspaceTarget(workspace), script);
 }

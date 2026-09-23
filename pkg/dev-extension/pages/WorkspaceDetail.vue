@@ -155,6 +155,31 @@ export default {
       return !!this.workspace && this.workspace.state !== 'running' && this.workspace.state !== 'stopped';
     },
 
+    /**
+     * Whether the workspace is up enough to be worked in: a pod that reports ready.
+     *
+     * Until it is, the stages and their buttons are a page of things that cannot be pressed -
+     * an agent cannot run a command, a dev server is not serving, and the evidence is whatever
+     * the last workspace left behind. So the page shows what state it is in, what its container
+     * last said, and the two things that help: look again, or restart it. The conversations are
+     * unaffected either way; they run in the agent pod.
+     */
+    notReady() {
+      return !!this.workspace && !this.stopped && !this.clusterGone && !(this.workspace.ready > 0);
+    },
+
+    /** What to say about a workspace that is not ready yet. */
+    notReadyLabel() {
+      if (this.restarting) {
+        return `${ this.name } is restarting: its pod is not answering yet.`;
+      }
+      if (this.workspace?.state === 'starting' || this.starting) {
+        return `${ this.name } is starting up. A first boot installs the toolchain and compiles the dashboard, which takes a few minutes.`;
+      }
+
+      return `${ this.name } has no ready pod right now, so there is nothing to run commands in.`;
+    },
+
     stopped() {
       return this.workspace?.state === 'stopped';
     },
@@ -417,6 +442,20 @@ export default {
     startFromTab() {
       return this.run(() => setWorkspaceRunning(this.name, true), () => {});
     },
+
+    /**
+     * Take the pod down and let the Deployment make a new one.
+     *
+     * The one action that helps a workspace that is up but not answering - a container that
+     * OOMed mid-install, a dev server wedged before the port opened - and it is safe: the
+     * checkout, the artifacts and the conversations are all outside the pod.
+     */
+    restartWorkspace() {
+      return this.run(async() => {
+        await setWorkspaceRunning(this.name, false);
+        await setWorkspaceRunning(this.name, true);
+      }, () => {});
+    },
   },
 };
 </script>
@@ -489,12 +528,52 @@ export default {
     </Banner>
 
     <!--
+      Not ready: the state, what the container last said, and the two things that help. The
+      stages are not drawn at all - every button on them needs a pod to run in, and a page of
+      buttons that do nothing is worse than a sentence that says why.
+    -->
+    <div
+      v-if="notReady"
+      class="dev-workspace__waiting"
+    >
+      <Banner color="info">
+        <Row gap="4">
+          <span>{{ notReadyLabel }}</span>
+          <RcButton
+            variant="secondary"
+            size="small"
+            :disabled="busy"
+            @click="refresh"
+          >
+            Look again
+          </RcButton>
+          <RcButton
+            variant="secondary"
+            size="small"
+            :disabled="busy"
+            @click="restartWorkspace"
+          >
+            Restart it
+          </RcButton>
+        </Row>
+      </Banner>
+      <pre
+        v-if="logTail"
+        class="dev-workspace__log"
+      >{{ logTail }}</pre>
+      <p class="dev-workspace__waiting-note">
+        Its conversations are in the agent pod and are not affected by this; they carry on where
+        they were once the workspace answers.
+      </p>
+    </div>
+
+    <!--
       Only the tabbed view needs a row of its own to get out of. The stage view puts its own
       link in its header, beside the title and what the agent is doing, so this row would be a
       second copy of it above the page.
     -->
     <div
-      v-if="!stopped && railable && !showRail"
+      v-if="!stopped && !notReady && railable && !showRail"
       class="dev-workspace__switch"
     >
       <a
@@ -503,7 +582,7 @@ export default {
     </div>
 
     <WorkspaceRail
-      v-if="!stopped && showRail"
+      v-if="!stopped && !notReady && showRail"
       :workspace="workspace"
       :pr="prNumber"
       :issue="issueNumber"
@@ -512,7 +591,7 @@ export default {
     />
 
     <Tabbed
-      v-else-if="!stopped"
+      v-else-if="!stopped && !notReady"
       class="dev-workspace__tabs"
       :default-tab="tab"
       @changed="onTabChanged"
@@ -620,6 +699,31 @@ export default {
 </template>
 
 <style lang="scss" scoped>
+  .dev-workspace__waiting {
+    display:        flex;
+    flex-direction: column;
+    gap:            8px;
+    padding:        0 var(--dev-inset, 20px);
+  }
+
+  .dev-workspace__log {
+    max-height:    160px;
+    overflow:      auto;
+    margin:        0;
+    padding:       8px 10px;
+    border:        1px solid var(--border);
+    border-radius: var(--border-radius);
+    background:    var(--box-bg);
+    font-size:     12px;
+    white-space:   pre-wrap;
+  }
+
+  .dev-workspace__waiting-note {
+    margin:    0;
+    color:     var(--muted);
+    font-size: 12px;
+  }
+
   .dev-workspace {
     display:        flex;
     flex-direction: column;

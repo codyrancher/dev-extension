@@ -586,12 +586,21 @@ const WORKSPACE_SERVE = [
   // Only node processes, by their command line: a shell or a grep that merely mentions the
   // server would otherwise count, and stop this one for nothing. Ours is the one in the process
   // group the server was started in.
+  // Stopped on purpose, and it stays stopped. A workspace whose PR is up for review has
+  // nothing to serve, and a webpack holding two gigabytes for nobody is the most expensive
+  // idle thing on the node - so `dev-server stop` (or the button on the page, which runs it)
+  // writes this file and the supervisor stands down until it goes. Spelled as a file rather
+  // than a signal because the supervisor outlives any one command, and because the state has
+  // to survive the pod restarting.
+  'PAUSED=$WS/.dev-server.off',
   'servers() { pgrep -f "^[^ ]*node .*vue-cli-service serve" 2>/dev/null; }',
   'foreign() { local p; for p in $(servers); do [ "$(ps -o pgid= -p "$p" 2>/dev/null | tr -d " ")" = "$SERVER" ] || echo "$p"; done; }',
   'SERVER=""',
   'stop_ours() { if [ -n "$SERVER" ]; then kill -TERM -- -"$SERVER" 2>/dev/null; wait "$SERVER" 2>/dev/null; SERVER=""; fi; }',
   'trap "stop_ours; exit 0" TERM INT',
   'while :; do',
+  '  if [ -f "$PAUSED" ]; then [ -n "$SERVER" ] && stop_ours; [ -z "$SAID_OFF" ] && { echo "[workspace] the dev server is stopped ($PAUSED); remove that file or run dev-server start"; SAID_OFF=1; }; sleep 10; continue; fi',
+  '  SAID_OFF=""',
   '  if held || [ -n "$(foreign)" ]; then sleep 10; continue; fi',
   '  sleep $(( RANDOM % 20 ))',
   '  waited=0',
@@ -615,6 +624,7 @@ const WORKSPACE_SERVE = [
   // stop that waited out the sleep left the server running for the check that followed.
   '  while kill -0 "$SERVER" 2>/dev/null; do',
   '    sleep 10 & wait $!',
+  '    if [ -f "$PAUSED" ]; then echo "[workspace] the dev server was stopped; standing down"; stop_ours; continue 2; fi',
   '    if [ -n "$(foreign)" ]; then echo "[workspace] another dev server is running in this pod; stopping the supervised one until it is gone (two exceed the pod\'s memory)"; stop_ours; sleep 10; continue 2; fi',
   '    if [ "$(stat -c %Y "$RETARGET" 2>/dev/null || echo 0)" != "$STAMP" ]; then echo "[workspace] the dev server\'s target changed; restarting it"; stop_ours; continue 2; fi',
   '  done',

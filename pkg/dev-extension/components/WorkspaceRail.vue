@@ -32,7 +32,7 @@ import { prFile } from '../reviews';
 import {
   listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates, sendToPane, renameConversation, endConversation
 } from '../conversations';
-import { ensureWorkspaceReady, putArtifact } from '../workspace-tools';
+import { ensureWorkspaceReady, putArtifact, devServerState, stopDevServer} from '../workspace-tools';
 import {
   startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, DEFAULT_REPO
 } from '../reviews';
@@ -93,6 +93,13 @@ export default {
       shot:        null,
       /** Whether this visit has already made sure the workspace can be worked in. */
       tunnelChecked: false,
+      /**
+       * The workspace's dev server: whether one is up, and whether it was stopped on purpose.
+       * Read behind the page, so the button that stops it only appears when there is one.
+       */
+      devServer:     { running: false, paused: false },
+      /** Whether this visit has already stopped the server for a stage that does not need it. */
+      autoStopped:   false,
       /** Whether the person is holding this workspace's stage by hand, and whether the picker is open. */
       manual:      false,
       stagePicker: false,
@@ -464,6 +471,58 @@ export default {
       this.ensureTunnel();
       await this.refreshStatus();
       await this.refreshEvidence();
+      this.readDevServer();
+    },
+
+    /** What the workspace's dev server is doing, for the button and the automatic stop. */
+    async readDevServer() {
+      if (!this.workspace?.name) {
+        return;
+      }
+      this.devServer = await devServerState(this.workspace.name).catch(() => ({ running: false, paused: false }));
+      await this.stopForStage();
+    },
+
+    /**
+     * Stop the dev server for a stage that cannot use it.
+     *
+     * A fix whose PR is up is waiting on a person, not on a page: there is nothing to look at
+     * in a dev server until somebody comes back with a comment, and a webpack holding two
+     * gigabytes in the meantime is the most expensive idle thing on the node. The same is true
+     * once the work is merged. Done once per visit, and never for a stage where the server is
+     * the point - assessing, coding, reading a draft, answering feedback, or any review, where
+     * the reviewer may well want the app in front of them.
+     */
+    async stopForStage() {
+      const idle = ['review', 'merged'];
+
+      if (this.autoStopped || !this.devServer.running || this.status?.kind !== 'fix' || !idle.includes(this.status?.stage)) {
+        return;
+      }
+      this.autoStopped = true;
+      try {
+        await stopDevServer(this.workspace.name);
+        this.devServer = { running: false, paused: true };
+        this.notice = 'The dev server is stopped while this waits on a reviewer; start it again from the button when you need it.';
+      } catch (e) {
+        console.debug(`[rail] stopping the dev server: ${ e?.message || e }`); // eslint-disable-line no-console
+      }
+    },
+
+    /** Stop it because somebody pressed the button. */
+    async stopServer() {
+      this.busy = 'stopServer';
+      this.error = '';
+      try {
+        const said = await stopDevServer(this.workspace.name);
+
+        this.devServer = { running: false, paused: true };
+        this.notice = said.trim().split('\n').pop() || 'The dev server is stopped.';
+      } catch (e) {
+        this.noteError(e);
+      } finally {
+        this.busy = '';
+      }
     },
 
     /**
@@ -1825,11 +1884,30 @@ export default {
             </div>
           </div>
           <div
-            v-if="actionsFor('you').length"
+            v-if="actionsFor('you').length || devServer.running"
             class="workspace-rail__group workspace-rail__group--decide"
           >
             <span class="workspace-rail__group-label">Your call</span>
             <div class="workspace-rail__group-buttons">
+              <!--
+                Only while there is one to stop. A dev server costs about two gigabytes of the
+                node whether or not anybody is looking at it, and every stage of every
+                workspace can have one, so the button belongs wherever the server is - not on
+                one page somebody has to remember.
+              -->
+              <RcButton
+                v-if="devServer.running"
+                variant="secondary"
+                :disabled="!!busy"
+                title="Stop this workspace's dev server and keep it stopped, freeing about 2 GB. The agent can start it again with dev-server start."
+                @click="stopServer"
+              >
+                <i
+                  v-if="busy === 'stopServer'"
+                  class="icon icon-spinner icon-spin"
+                />
+                Stop the dev server
+              </RcButton>
               <RcButton
                 v-for="a in actionsFor('you')"
                 :key="a.label"
