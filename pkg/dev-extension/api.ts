@@ -155,6 +155,23 @@ export async function listClusterIds(): Promise<string[]> {
   return (response?.data || []).filter((cluster: Json) => cluster.state === 'active').map((cluster: Json) => cluster.id);
 }
 
+/**
+ * Whether a workspace's cluster is no longer registered in this Rancher.
+ *
+ * Asked before hunting for a pod that cannot exist. Read from /v3/clusters rather than from a
+ * pod lookup's failure, because "no cluster" and "a cluster that did not answer in time" are
+ * different things to tell somebody: the first will not pass on its own.
+ */
+export async function missingCluster(id: string): Promise<boolean> {
+  if (!id || id === 'local') {
+    return false;
+  }
+  const response = await devFetch('/v3/clusters', { timeoutMs: 8000 }).catch(() => null);
+
+  // A reply that did not arrive proves nothing; only a list that came back and lacks it does.
+  return !!response?.data && !response.data.some((cluster: Json) => cluster.id === id);
+}
+
 export async function listClusters(): Promise<DevCluster[]> {
   const response = await devFetch('/v3/clusters').catch(() => null);
   const clusters = (response?.data || []).filter((cluster: Json) => cluster.state === 'active');
@@ -379,17 +396,33 @@ function csrfHeader(): Record<string, string> {
  * Rancher rejects a write without it, and the value is the CSRF cookie the session already
  * set, so this needs nothing the page does not have.
  */
-export async function devFetch(path: string, init?: RequestInit): Promise<Json> {
-  const write = !!init?.method && init.method !== 'GET';
-  const resp = await fetch(path, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      Accept:         'application/json',
-      ...(write ? csrfHeader() : {}),
-      ...(init?.headers || {}),
-    },
-  });
+export async function devFetch(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<Json> {
+  const { timeoutMs, ...rest } = init || {};
+  const write = !!rest.method && rest.method !== 'GET';
+  // A caller that says how long it is willing to wait gets to stop waiting. Without this every
+  // request inherits the browser's own patience, which is most of a minute: a workspace whose
+  // cluster has been unregistered made this page sit for seventeen seconds before it drew
+  // anything, because the pod lookup went to a proxy with nothing behind it.
+  const stop = timeoutMs ? new AbortController() : null;
+  const timer = stop ? setTimeout(() => stop.abort(), timeoutMs) : null;
+  let resp;
+
+  try {
+    resp = await fetch(path, {
+      ...rest,
+      ...(stop ? { signal: stop.signal } : {}),
+      headers: {
+        'Content-Type': 'application/json',
+        Accept:         'application/json',
+        ...(write ? csrfHeader() : {}),
+        ...(rest.headers || {}),
+      },
+    });
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
   const data = await resp.json().catch(() => ({}));
 
   if (!resp.ok) {
@@ -1484,7 +1517,11 @@ export function workspaceScheme(workspace: DevWorkspace | null | undefined): str
  * Steve ignores labelSelector (see WORKSPACE_FILTER), so the matching is done here.
  */
 export async function findPod(namespace: string, labels: Record<string, string>, own?: string, base = BASE): Promise<string | null> {
-  const pods = await devFetch(`${ base }/v1/pods/${ namespace }`).catch(() => null);
+  // Bounded, because this is asked on the way to drawing a page and the answer can be "there is
+  // no cluster to ask". Five seconds is longer than the local answer (tens of milliseconds) and
+  // shorter than anybody waits for a page; a workspace that is simply slow to answer reads as
+  // "no pod yet", which is what the next poll corrects.
+  const pods = await devFetch(`${ base }/v1/pods/${ namespace }`, { timeoutMs: 5000 }).catch(() => null);
 
   const running = (pods?.data || []).find((pod: Json) => (
     Object.entries(labels).every(([key, value]) => pod.metadata?.labels?.[key] === value) &&

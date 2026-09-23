@@ -36,7 +36,7 @@ import WorkspaceReview from '../components/WorkspaceReview.vue';
 import WorkspaceRail from '../components/WorkspaceRail.vue';
 import { workspaceInstance } from '../apps';
 import {
-  getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster, workspaceFromInstance
+  getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster, workspaceFromInstance, missingCluster
 } from '../api';
 import {
   rememberWorkspace, rememberTab, lastTab, workspaceView, rememberWorkspaceView
@@ -64,6 +64,8 @@ export default {
     return {
       /** The namespace is gone but the Installation stands: a re-render in progress, not a deletion. */
       restarting: false,
+      /** Its cluster is not registered here any more: there is no pod to wait for. */
+      clusterGone: false,
       workspace:    null,
       pod:          '',
       // The last line the container printed, while it is still starting. See refresh.
@@ -259,6 +261,8 @@ export default {
 
       const fresh = await getWorkspace(this.name);
 
+      this.clusterGone = false;
+
       if (!fresh) {
         // No namespace is not the same as no workspace. A workspace being re-rendered onto a
         // changed App has its namespace deleted and made again, and for those seconds - or for
@@ -306,6 +310,10 @@ export default {
       }
       this.restarting = false;
       this.workspace = fresh;
+      // A workspace outlives the cluster it was made on. When that cluster is no longer
+      // registered here there is no pod to find and never will be, so the page says that
+      // rather than "its pod is not answering", which reads as something that will pass.
+      this.clusterGone = await missingCluster(fresh.cluster).catch(() => false);
 
       // Point everything that follows at the cluster this workspace is actually on. It is set
       // here rather than by the router because a page is about one workspace and every request
@@ -414,8 +422,17 @@ export default {
     v-else
     class="dev-workspace"
   >
+    <!--
+      Its cluster is gone: said plainly, because "the pod is not answering" reads as something
+      that will pass, and this will not until the workspace is made somewhere that exists.
+    -->
     <Banner
-      v-if="restarting"
+      v-if="clusterGone"
+      color="warning"
+      :label="`${ name } was made on cluster ${ workspace.cluster }, which is not registered in this Rancher any more. It has no pod and cannot get one; its conversations are in the agent pod and still open. Make it again on a cluster that is here, or delete it.`"
+    />
+    <Banner
+      v-else-if="restarting"
       color="info"
       :label="`${ name } is restarting, or this Rancher is - its pod is not answering right now. Conversations carry on.`"
     />
