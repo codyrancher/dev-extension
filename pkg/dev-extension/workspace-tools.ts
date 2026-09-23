@@ -190,9 +190,18 @@ async function ensureSeed(target: WorkspaceTarget, ctx: WorkspaceContext): Promi
   // the API cannot be asked.
   const served = await devFetch(`${ clusterBase('local') }/api/v1/namespaces/dev-system/services/http:dev-api:8080/proxy/agent-seed/version`).catch(() => null);
   const version = `${ served?.version || seedVersion() }:${ ctx.issue || '' }:${ ctx.pr || '' }:${ target.workspace }`;
-  const current = await asNode(target, `cat ${ SEED_MARKER } 2>/dev/null || true`);
+  // The marker, and one file it is supposed to have written.
+  //
+  // A workspace made for an issue that had one before inherits whatever its old tree left on
+  // the node, and a delete that only got part of the way leaves a directory with `artifacts`
+  // and `dashboard` in it and nothing else. The marker was the only check, so a stale one
+  // meant the seed was skipped and every command in that workspace failed on a missing
+  // `bin/dev-shell` - which is the tunnel, so nothing worked at all. The wrapper is what the
+  // seed exists to write; if it is not there, the seed has not run here whatever the marker
+  // says.
+  const current = await asNode(target, `cat ${ SEED_MARKER } 2>/dev/null || true; [ -x $WS/bin/dev-shell ] && echo TUNNEL-OK`);
 
-  if (current.trim() === version) {
+  if (current.includes('TUNNEL-OK') && current.split('\n')[0].trim() === version) {
     return;
   }
 

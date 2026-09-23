@@ -22,7 +22,7 @@ import {
   devFetch, clusterBase, githubToken, createWorkspace, listAllWorkspaces, workspacePod
 } from './api';
 import {
-  listConversations, startConversation, endConversation, queuePrompt, startPaneDetached, queuedNotStarted, Attachment, ProjectConversation
+  listConversations, startConversation, endConversation, queuePrompt, startPaneDetached, queuedNotStarted, conversationStates, sendToPane, Attachment, ProjectConversation
 } from './conversations';
 import {
   ensureWorkspaceReady, waitForWorkspacePod, conversationPane
@@ -490,6 +490,30 @@ async function ensureWorkspace(store: Store, name: string, title = ''): Promise<
  * button that asked for this comes back now. The pane, docked wherever it was asked for,
  * shows the pod arriving and then the prompt starting. `onNote` hears where it has got to.
  */
+/**
+ * Put a prompt into a conversation that already exists.
+ *
+ * Reattaching used to mean handing the existing conversation back and sending nothing - so the
+ * second press of Fix it, Review, or any of these reported that a conversation had started and
+ * delivered no instruction to it at all. The conversation was right there, busy or idle, and
+ * the prompt went nowhere.
+ *
+ * Which way it goes depends on whether the pane is running. A live pane is typed into, because
+ * the queue file is only read when claude starts; a pane that has finished (or never started)
+ * gets the queue and then a start, which is the same path a new conversation takes.
+ */
+async function deliverTo(workspace: string, conversation: ProjectConversation, prompt: string): Promise<void> {
+  const alive = (await conversationStates().catch(() => [])).find((c) => c.id === conversation.id)?.alive;
+
+  if (alive) {
+    await sendToPane(conversation.id, prompt);
+
+    return;
+  }
+  await queuePrompt(conversation.attach, prompt);
+  await startPaneDetached(workspace, conversation.id).catch(() => {});
+}
+
 async function openWith(workspace: string, title: string, prompt: string, ctx?: WorkspaceContext, onNote?: (note: string) => void, store?: Store): Promise<ProjectConversation> {
   const conversation = await startConversation(workspace, title);
 
@@ -629,6 +653,8 @@ export async function startPrReview(store: Store, pr: { number: number; title?: 
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
 
   if (existing) {
+    await deliverTo(workspace, existing, reviewPrompt(pr.number, repo));
+
     return { workspace, conversation: existing, created };
   }
 
@@ -656,6 +682,8 @@ export async function startIssueFix(store: Store, issue: { number: number; title
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
 
   if (existing) {
+    await deliverTo(workspace, existing, fixPrompt(issue.number, repo));
+
     return { workspace, conversation: existing, created };
   }
 
@@ -677,13 +705,16 @@ export async function startAlertFix(store: Store, group: Json, repo = DEFAULT_RE
   const title = `Fix ${ group.packages[0] || group.slug }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
 
+  const alertList = (group.alerts || []).map((a: Json) => `#${ a.number } ${ a.packageName } in ${ a.manifest }`).join('; ');
+  const alertPrompt = `/my-dependabot-fix ${ JSON.stringify(group.title) } — ${ (group.alerts || []).length } open alert(s): ${ alertList }. The advisories: $CLAUDE_HARNESS_API/my-work/dependabot.`;
+
   if (existing) {
+    await deliverTo(workspace, existing, alertPrompt);
+
     return { workspace, conversation: existing, created };
   }
 
-  const alertList = (group.alerts || []).map((a: Json) => `#${ a.number } ${ a.packageName } in ${ a.manifest }`).join('; ');
-  const conversation = await openWith(workspace, title,
-    `/my-dependabot-fix ${ JSON.stringify(group.title) } — ${ (group.alerts || []).length } open alert(s): ${ alertList }. The advisories: $CLAUDE_HARNESS_API/my-work/dependabot.`);
+  const conversation = await openWith(workspace, title, alertPrompt);
 
   return { workspace, conversation, created };
 }
@@ -694,8 +725,12 @@ export async function startDependabotReview(store: Store, pr: { number: number }
   const created = await ensureWorkspace(store, workspace);
   const title = `Dependabot review #${ pr.number }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
-  const conversation = existing || await openWith(workspace, title,
-    `/my-dependabot-review Review ${ repo } PR #${ pr.number } — a dependabot bump. Its full context: curl -s "$CLAUDE_HARNESS_API/my-work/dependabot/pr/${ pr.number }/review-context". Finish with MERGE or STOP alone on the last line.`, { pr: pr.number });
+  const reviewText = `/my-dependabot-review Review ${ repo } PR #${ pr.number } — a dependabot bump. Its full context: curl -s "$CLAUDE_HARNESS_API/my-work/dependabot/pr/${ pr.number }/review-context". Finish with MERGE or STOP alone on the last line.`;
+  const conversation = existing || await openWith(workspace, title, reviewText, { pr: pr.number });
+
+  if (existing) {
+    await deliverTo(workspace, existing, reviewText);
+  }
 
   await api(`/my-work/dependabot/reviews/${ pr.number }`, {
     method: 'PUT',
