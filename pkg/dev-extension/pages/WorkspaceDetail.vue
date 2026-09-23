@@ -239,14 +239,34 @@ export default {
      * the cluster as a label; read it first and set BASE from it. Local workspaces resolve to
      * `local` and are unaffected. See setCluster / LABEL_CLUSTER / getWorkspace.
      */
+    /**
+     * Point this page's requests at the cluster its workspace is on - unless that cluster is
+     * gone, in which case they stay local.
+     *
+     * A workspace whose cluster has been unregistered otherwise sends every lookup to a proxy
+     * that answers 500, and the page spent thirteen seconds going round that before drawing
+     * anything. There is no pod on a cluster that is not there; what the page has to show is
+     * the Installation and a sentence saying so, and both are here.
+     */
     async resolveCluster() {
       try {
         const instance = await workspaceInstance(this.$store, this.name);
         const cluster = instance?.metadata?.labels?.[LABEL_CLUSTER];
 
-        if (cluster) {
-          setCluster(cluster);
+        if (!cluster) {
+          return;
         }
+        this.clusterGone = await missingCluster(cluster).catch(() => false);
+        if (this.clusterGone) {
+          // Draw it from the Installation now rather than after three failed polls.
+          if (!this.workspace && instance) {
+            this.workspace = workspaceFromInstance(instance);
+            this.restarting = false;
+          }
+
+          return;
+        }
+        setCluster(cluster);
       } catch { /* leave BASE as it is; a local workspace is found there anyway */ }
     },
 
@@ -255,13 +275,17 @@ export default {
       // workspace is not in `local` - so resolve the cluster from the Installation first, and keep
       // trying each poll until it is known (the first read of the Installation list can miss).
       // Once the workspace is loaded, the setCluster below keeps BASE on its cluster.
-      if (!this.workspace?.cluster) {
+      if (!this.workspace?.cluster || this.clusterGone) {
         await this.resolveCluster();
       }
 
-      const fresh = await getWorkspace(this.name);
+      // Nothing to look up on a cluster that is not registered: resolveCluster has already
+      // drawn what there is to draw from the Installation.
+      if (this.clusterGone) {
+        return;
+      }
 
-      this.clusterGone = false;
+      const fresh = await getWorkspace(this.name);
 
       if (!fresh) {
         // No namespace is not the same as no workspace. A workspace being re-rendered onto a
@@ -310,10 +334,6 @@ export default {
       }
       this.restarting = false;
       this.workspace = fresh;
-      // A workspace outlives the cluster it was made on. When that cluster is no longer
-      // registered here there is no pod to find and never will be, so the page says that
-      // rather than "its pod is not answering", which reads as something that will pass.
-      this.clusterGone = await missingCluster(fresh.cluster).catch(() => false);
 
       // Point everything that follows at the cluster this workspace is actually on. It is set
       // here rather than by the router because a page is about one workspace and every request
