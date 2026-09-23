@@ -128,7 +128,26 @@ export async function listWorkspaceInstances(store: Store): Promise<Json[]> {
   return (instances || []).filter((instance: Json) => !!instance.metadata?.labels?.[LABEL_WORKSPACE]);
 }
 
+/**
+ * One workspace's Installation, asked for directly before asking the store for all of them.
+ *
+ * The store's `findAll` is a page's worth of AppInstances through the management cache, and on
+ * a cold page it is slow enough to matter: a workspace whose namespace is not there yet - one
+ * still coming up, or one whose cluster has gone - showed nothing at all until the third
+ * five-second poll, seventeen seconds in, because that is when the list finally answered. One
+ * object by name answers in tens of milliseconds, so it is asked first and the list is the
+ * fallback.
+ *
+ * Bounded, and quiet on failure: a Rancher without Apps Plus, or one that did not answer, ends
+ * up on the same path this always took.
+ */
 export async function workspaceInstance(store: Store, name: string): Promise<Json | null> {
+  const direct = await devFetch(`/v1/${ APP_INSTANCE }s/${ name }`, { timeoutMs: 4000 }).catch(() => null);
+
+  if (direct?.metadata?.labels?.[LABEL_WORKSPACE] === name) {
+    return direct;
+  }
+
   return (await listWorkspaceInstances(store)).find((instance: Json) => instance.metadata?.labels?.[LABEL_WORKSPACE] === name) || null;
 }
 
