@@ -879,10 +879,24 @@ export function rancherWorkspaceApp(): Json {
             '              port: ${port}',
             '            periodSeconds: 10',
             '            failureThreshold: 120',
+            // Ready when the dev server answers - or when there is deliberately no dev server.
+            //
+            // A TCP probe on the port alone made a stopped server mean a pod that is never
+            // ready, which is a workspace the page will not draw and an agent cannot be given
+            // work in: stopping the server to save two gigabytes broke the workspace instead.
+            // The pod is ready when it can be worked in, and a paused dev server does not
+            // change that - the tree, the toolchain and the tunnel are all there.
+            // Written without a quote in it on purpose: this is a YAML plain scalar inside a
+            // template, and every layer that would have to escape a quote is a layer that has
+            // got it wrong before. bash's /dev/tcp is the port check; `test -f` is the pause.
             '          readinessProbe:',
-            '            tcpSocket:',
-            '              port: ${port}',
+            '            exec:',
+            '              command:',
+            '                - /bin/sh',
+            '                - -c',
+            '                - test -f /workspaces/${install}/.dev-server.off || bash -c "</dev/tcp/127.0.0.1/${port}"',
             '            periodSeconds: 10',
+            '            timeoutSeconds: 5',
             // The harness's browser sidecar, as a second container: Chromium with CDP open on
             // this pod's localhost, opened on the dev server, sharing the workspace's artifacts as
             // /artifacts. Its desktop is what the Browser tab frames.
