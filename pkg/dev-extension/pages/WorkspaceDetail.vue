@@ -35,6 +35,7 @@ import WorkspaceShare from '../components/WorkspaceShare.vue';
 import WorkspaceReview from '../components/WorkspaceReview.vue';
 import WorkspaceRail from '../components/WorkspaceRail.vue';
 import { workspaceInstance } from '../apps';
+import { devServerState } from '../workspace-tools';
 import {
   getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster, workspaceFromInstance, missingCluster
 } from '../api';
@@ -66,6 +67,9 @@ export default {
       restarting: false,
       /** Its cluster is not registered here any more: there is no pod to wait for. */
       clusterGone: false,
+      /** Whether its dev server was stopped on purpose, which is not the same as not being up. */
+      devPaused:   false,
+      devPausedAt: 0,
       workspace:    null,
       pod:          '',
       // The last line the container printed, while it is still starting. See refresh.
@@ -165,7 +169,14 @@ export default {
      * unaffected either way; they run in the agent pod.
      */
     notReady() {
-      return !!this.workspace && !this.stopped && !this.clusterGone && !(this.workspace.ready > 0);
+      // A stopped dev server is not an unready workspace. The pod's readiness is a check on
+      // the dev server's port, so a server stopped on purpose - which this product does the
+      // moment a fix reaches In review - reads as "not ready" for ever. Commands still run in
+      // it (the tunnel needs a running pod, not a ready one), the tree and the toolchain are
+      // there, and the page has every reason to draw. Without this the stop button made a
+      // workspace look dead, the page hid everything behind "starting up", and revisiting it
+      // stopped it again: three of my own changes agreeing on the wrong answer.
+      return !!this.workspace && !this.stopped && !this.clusterGone && !(this.workspace.ready > 0) && !this.devPaused;
     },
 
     /** What to say about a workspace that is not ready yet. */
@@ -387,6 +398,15 @@ export default {
       // between "Starting up" and knowing it is four minutes into an install, and once the
       // workspace is running it is the terminal's job rather than this page's.
       this.logTail = this.starting && this.pod ? await workspaceLogTail(this.name, this.pod) : '';
+      // Only while it looks unready, and not on every poll: one exec answers whether the dev
+      // server was stopped on purpose, which is the difference between a workspace that cannot
+      // be used and one that simply is not serving a page.
+      if (!(this.workspace.ready > 0) && this.pod && Date.now() - this.devPausedAt > 15000) {
+        this.devPausedAt = Date.now();
+        this.devPaused = await devServerState(this.name).then((d) => d.paused).catch(() => false);
+      } else if (this.workspace.ready > 0) {
+        this.devPaused = false;
+      }
 
       this.framable = await this.canFrame();
     },

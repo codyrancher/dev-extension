@@ -874,10 +874,21 @@ export function rancherWorkspaceApp(): Json {
             '            - name: terminal',
             '              mountPath: /seed',
             '              readOnly: true',
+            // The same question as the readiness probe below, and it has to be, because a
+            // container whose startup probe is failing never has its readiness probe run at
+            // all. Fixing readiness alone left the pod unready for ever with the startup probe
+            // holding the gate - twenty minutes of "it keeps failing" hid behind that.
+            //
+            // Twenty minutes of failures allowed (120 x 10s), which is a first boot: yarn
+            // install and a cold webpack.
             '          startupProbe:',
-            '            tcpSocket:',
-            '              port: ${port}',
+            '            exec:',
+            '              command:',
+            '                - /bin/sh',
+            '                - -c',
+            '                - test -f /workspaces/${install}/.dev-server.off || bash -c "</dev/tcp/127.0.0.1/${port}"',
             '            periodSeconds: 10',
+            '            timeoutSeconds: 5',
             '            failureThreshold: 120',
             // Ready when the dev server answers - or when there is deliberately no dev server.
             //

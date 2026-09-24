@@ -32,7 +32,7 @@ import { prFile } from '../reviews';
 import {
   listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates, sendToPane, renameConversation, endConversation
 } from '../conversations';
-import { ensureWorkspaceReady, putArtifact, devServerState, stopDevServer} from '../workspace-tools';
+import { ensureWorkspaceReady, putArtifact, devServerState, stopDevServer, startDevServer} from '../workspace-tools';
 import {
   startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, DEFAULT_REPO
 } from '../reviews';
@@ -495,8 +495,14 @@ export default {
      */
     async stopForStage() {
       const idle = ['review', 'merged'];
+      let kept = false;
 
-      if (this.autoStopped || !this.devServer.running || this.status?.kind !== 'fix' || !idle.includes(this.status?.stage)) {
+      try {
+        kept = !!sessionStorage.getItem(`dev-extension.dev-server-kept.${ this.workspace.name }`);
+      } catch { /* no storage: the stop applies, which is the old behaviour */ }
+
+      // Never against a person who has just started it, and never twice in one visit.
+      if (kept || this.autoStopped || !this.devServer.running || this.status?.kind !== 'fix' || !idle.includes(this.status?.stage)) {
         return;
       }
       this.autoStopped = true;
@@ -506,6 +512,27 @@ export default {
         this.notice = 'The dev server is stopped while this waits on a reviewer; start it again from the button when you need it.';
       } catch (e) {
         console.debug(`[rail] stopping the dev server: ${ e?.message || e }`); // eslint-disable-line no-console
+      }
+    },
+
+    /** Start it again, because somebody pressed the button. */
+    async startServer() {
+      this.busy = 'startServer';
+      this.error = '';
+      try {
+        const said = await startDevServer(this.workspace.name);
+
+        // Remembered for this browser: the automatic stop must not undo a person's start the
+        // next time they open the workspace, which is what made this feel like a fight.
+        try {
+          sessionStorage.setItem(`dev-extension.dev-server-kept.${ this.workspace.name }`, '1');
+        } catch { /* a browser without storage just gets the stop again */ }
+        this.devServer = { running: true, paused: false };
+        this.notice = said.trim().split('\n').pop() || 'The dev server is starting; it takes a minute or two to compile.';
+      } catch (e) {
+        this.noteError(e);
+      } finally {
+        this.busy = '';
       }
     },
 
@@ -1899,7 +1926,7 @@ export default {
                 v-if="devServer.running"
                 variant="secondary"
                 :disabled="!!busy"
-                title="Stop this workspace's dev server and keep it stopped, freeing about 2 GB. The agent can start it again with dev-server start."
+                title="Stop this workspace's dev server and keep it stopped, freeing about 2 GB."
                 @click="stopServer"
               >
                 <i
@@ -1907,6 +1934,24 @@ export default {
                   class="icon icon-spinner icon-spin"
                 />
                 Stop the dev server
+              </RcButton>
+              <!--
+                And back again. Without this the only way to undo a stop was the agent's own
+                command line, which is a poor answer to a button that stopped it - and this
+                product stops one by itself when a fix reaches In review.
+              -->
+              <RcButton
+                v-if="devServer.paused"
+                variant="secondary"
+                :disabled="!!busy"
+                title="Let this workspace run its dev server again. It takes a minute or two to compile."
+                @click="startServer"
+              >
+                <i
+                  v-if="busy === 'startServer'"
+                  class="icon icon-spinner icon-spin"
+                />
+                Start the dev server
               </RcButton>
               <RcButton
                 v-for="a in actionsFor('you')"
