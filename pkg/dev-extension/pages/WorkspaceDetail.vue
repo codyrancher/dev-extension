@@ -168,15 +168,24 @@ export default {
      * last said, and the two things that help: look again, or restart it. The conversations are
      * unaffected either way; they run in the agent pod.
      */
+    /**
+     * Whether there is nothing to show yet: no pod to run anything in.
+     *
+     * Deliberately *not* the pod's readiness. Readiness here means the dev server's port
+     * answers, and that is the last thing to come up: a pod restart is followed by one to
+     * three minutes of webpack, during which the checkout is there, the toolchain is there,
+     * the tunnel works and an agent can do its whole job. Gating the page on readiness hid the
+     * stages, the conversations and the evidence for minutes after every restart - and for
+     * ever when the dev server had been stopped on purpose. So the gate is a running pod,
+     * which is exactly what the tunnel needs, and the dev server gets a line of its own below.
+     */
     notReady() {
-      // A stopped dev server is not an unready workspace. The pod's readiness is a check on
-      // the dev server's port, so a server stopped on purpose - which this product does the
-      // moment a fix reaches In review - reads as "not ready" for ever. Commands still run in
-      // it (the tunnel needs a running pod, not a ready one), the tree and the toolchain are
-      // there, and the page has every reason to draw. Without this the stop button made a
-      // workspace look dead, the page hid everything behind "starting up", and revisiting it
-      // stopped it again: three of my own changes agreeing on the wrong answer.
-      return !!this.workspace && !this.stopped && !this.clusterGone && !(this.workspace.ready > 0) && !this.devPaused;
+      return !!this.workspace && !this.stopped && !this.clusterGone && !this.pod;
+    },
+
+    /** Up, but not serving yet: worth a line, not worth hiding the page for. */
+    serverComing() {
+      return !!this.workspace && !!this.pod && !this.stopped && !(this.workspace.ready > 0) && !this.devPaused;
     },
 
     /** What to say about a workspace that is not ready yet. */
@@ -185,7 +194,7 @@ export default {
         return `${ this.name } is restarting: its pod is not answering yet.`;
       }
       if (this.workspace?.state === 'starting' || this.starting) {
-        return `${ this.name } is starting up. A first boot installs the toolchain and compiles the dashboard, which takes a few minutes.`;
+        return `${ this.name } is starting up: its pod is not running yet. A first boot pulls the image and lays out the tree.`;
       }
 
       return `${ this.name } has no ready pod right now, so there is nothing to run commands in.`;
@@ -546,6 +555,16 @@ export default {
         </RcButton>
       </Row>
     </Banner>
+
+    <!--
+      Up, but the dev server is not serving yet. A line, not a wall: everything on the page
+      works while webpack finishes, which takes one to three minutes after a restart.
+    -->
+    <Banner
+      v-if="serverComing"
+      color="info"
+      :label="`${ name } is up and its dev server is still compiling, so anything that opens the app in a browser will not answer for a minute or two. Everything else works now.`"
+    />
 
     <!--
       Not ready: the state, what the container last said, and the two things that help. The
