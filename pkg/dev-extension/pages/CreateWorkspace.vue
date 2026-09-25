@@ -20,6 +20,23 @@ import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, WORKSPACE_ROUTE, DEFAULT_APP, LTE_APP, lteName, isLte, APP
 } from '../config/constants';
 
+/**
+ * What the two kinds of workspace are, in the fewest words that say which to pick.
+ *
+ * Keyed by App id, so an App nobody here knows about still shows its own description. The
+ * difference that matters is not what is installed but what is running when nobody is looking.
+ */
+const KINDS = {
+  [LTE_APP]: {
+    name: 'Leased',
+    what: 'holds the work and runs nothing; a dev server, browser, storybook or Rancher is attached while it is needed',
+  },
+  [DEFAULT_APP]: {
+    name: 'All-in-one',
+    what: 'a dev server and a browser in the pod, running from the moment it starts',
+  },
+};
+
 export default {
   name: 'DevCreateWorkspace',
 
@@ -86,10 +103,19 @@ export default {
       return appsPlusAvailable(this.$store);
     },
 
+    /**
+     * The kinds of workspace, as a choice rather than as a list of App names.
+     *
+     * The nav no longer has a section per App - it has one per part you play, which is the
+     * question a day is sorted by - so this is where the two kinds are told apart, and the
+     * difference between them is worth a sentence rather than the first eighty characters of
+     * an App's description. Any other workspace App somebody makes still appears, described
+     * the way it describes itself.
+     */
     appOptions() {
       return this.apps.map((app) => ({
         value: app.id,
-        label: app.description ? `${ app.label } - ${ app.description.slice(0, 80) }` : app.label,
+        label: KINDS[app.id] ? `${ KINDS[app.id].name } - ${ KINDS[app.id].what }` : (app.description ? `${ app.label } - ${ app.description.slice(0, 80) }` : app.label),
       }));
     },
 
@@ -230,7 +256,7 @@ export default {
 
       <LabeledSelect
         v-model:value="app"
-        label="App"
+        label="Kind of workspace"
         :options="appOptions"
         option-label="label"
         option-key="value"
