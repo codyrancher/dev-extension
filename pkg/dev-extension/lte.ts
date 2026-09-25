@@ -450,14 +450,21 @@ function storybookToolApp(): Json {
             name:       'storybook',
             image:      '${image}',
             resources:  { requests: { cpu: '250m', memory: '1Gi' }, limits: { cpu: '2', memory: '6Gi' } },
-            workingDir: '/workspaces/${workspace}/dashboard',
-            command:    ['/bin/sh', '-c', [
+            // Storybook is a package of its own inside the checkout, with a lockfile of its own:
+            // `yarn storybook` at the top only cds into it, and its binary is not there until
+            // that package has been installed. So this installs it once - and unlike the dev
+            // server, which only reads before it drops privileges, the whole command runs as the
+            // tree's owner, because an install as root leaves root-owned node_modules in a
+            // workspace the agent then cannot write to.
+            command:    ['/bin/sh', '-c', `exec setpriv --reuid=1000 --regid=1000 --init-groups /bin/sh -c '${ [
               'set -e',
               'export HOME=/workspaces/${workspace}/.home',
               'export YARN_CACHE_FOLDER=/workspaces/.shared/yarn npm_config_cache=/workspaces/.shared/npm',
-              '[ -d node_modules ] || { echo "[storybook] waiting for the workspace to finish installing its dependencies"; sleep 20; exit 1; }',
-              'exec setpriv --reuid=1000 --regid=1000 --init-groups nice -n 10 yarn storybook --port ${port} --no-open --ci',
-            ].join(' && ')],
+              'cd /workspaces/${workspace}/dashboard/storybook || { echo "[storybook] this checkout has no storybook directory"; sleep 30; exit 1; }',
+              '[ -d ../node_modules ] || { echo "[storybook] waiting for the workspace to finish installing its dependencies"; sleep 20; exit 1; }',
+              '[ -d node_modules ] || yarn install --frozen-lockfile --network-timeout 600000',
+              'exec nice -n 10 yarn storybook --port ${port} --no-open --ci --host 0.0.0.0',
+            ].join(' && ') }'`],
             ports:      [{ name: 'http', containerPort: '${port}' }],
             env:        [{ name: 'NODE_OPTIONS', value: '--max_old_space_size=4096' }],
             volumeMounts:   [{ name: 'work', mountPath: '/workspaces' }],
@@ -520,7 +527,14 @@ function rancherToolApp(): Json {
             name:            'rancher',
             image:           '${image}',
             securityContext: { privileged: true },
-            resources:       { requests: { cpu: '500m', memory: '2Gi' }, limits: { cpu: '3', memory: '6Gi' } },
+            // A whole Kubernetes: etcd, an apiserver, a controller manager, a scheduler, a
+            // containerd and Rancher itself, all starting at once. Two ceilings killed it at
+            // 6Gi and at three cores - exit 137 fifty seconds in, five times over - and the
+            // manifest this is taken from (rancher-project-k8s) sets neither, for that reason.
+            // So: a request that reserves what it settles at, a memory ceiling with room for
+            // the start, and no CPU limit at all, since throttling a starting control plane is
+            // how its leases expire and the whole thing gives up.
+            resources:       { requests: { cpu: '500m', memory: '2Gi' }, limits: { memory: '10Gi' } },
             env:             [
               { name: 'CATTLE_BOOTSTRAP_PASSWORD', value: '${password}' },
               { name: 'CATTLE_PASSWORD_MIN_LENGTH', value: '8' },
