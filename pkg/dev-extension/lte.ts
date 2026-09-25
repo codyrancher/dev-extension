@@ -498,6 +498,15 @@ function storybookToolApp(): Json {
  *   4. Non-default CIDRs for the nested k3s. k3s and RKE2 both default to 10.42/10.43, so a
  *      nested cluster claims the outer pod network: Rancher answers /ping on localhost while
  *      every other pod times out, because the replies route into the nested cni0.
+ *   5. The nested kubelet must not manage cgroups. This one was found here, and it is the worst
+ *      of them: a privileged pod shares the node's cgroup namespace, so the nested kubelet reads
+ *      the *outer* cluster's cgroups - `/kubepods/besteffort/pod<uid>`, one per pod on this node -
+ *      decides they are orphaned pods of its own, and sets about killing everything in them
+ *      ("Failed to kill all the processes attached to cgroup", forty times a boot). The only one
+ *      it succeeded in killing was the cgroup it was itself in, which is why Rancher died at
+ *      forty-eight seconds, every time, whatever it was given. `cgroups-per-qos=false` takes the
+ *      kubelet off that path entirely (it uses the no-op pod cgroup manager), and
+ *      `enforce-node-allocatable=` stops it trying to write the node's own cgroup limits.
  */
 function rancherToolApp(): Json {
   return {
@@ -515,7 +524,19 @@ function rancherToolApp(): Json {
           kind:       'ConfigMap',
           metadata:   { name: 'rancher-config', namespace: '${namespace}' },
           // (2) and (4) above, as files.
-          data:       { 'nsswitch.conf': 'hosts: files dns\n', 'config.yaml': 'cluster-cidr: 10.52.0.0/16\nservice-cidr: 10.53.0.0/16\n' },
+          data:       {
+            'nsswitch.conf': 'hosts: files dns\n',
+            'config.yaml':   [
+              // (4): a nested cluster on the default CIDRs claims the outer pod network.
+              'cluster-cidr: 10.52.0.0/16',
+              'service-cidr: 10.53.0.0/16',
+              // (5): and a nested kubelet that manages cgroups goes after this node's pods.
+              'kubelet-arg:',
+              '  - cgroups-per-qos=false',
+              '  - enforce-node-allocatable=',
+              '',
+            ].join('\n'),
+          },
         }),
         toolDeployment('rancher', {
           // (1): a token is what makes Rancher try to manage the cluster it is running in.
