@@ -112,8 +112,19 @@ export default {
       return this.apps.find((app) => app.id === this.app) || null;
     },
 
+    /**
+     * The name it will actually be created under.
+     *
+     * A leased workspace wears its kind in its name, and the marker is put on here rather than
+     * being something to remember to type - so the banner below says what will be made, and
+     * typing `issue-19001` with the leased app selected creates `lte-issue-19001`.
+     */
+    finalName() {
+      return this.app && isLte(this.app) ? lteName(this.name) : this.name;
+    },
+
     namespace() {
-      return this.nameError ? '' : workspaceNamespace(this.name);
+      return this.nameError ? '' : workspaceNamespace(this.finalName);
     },
 
     /** Where Apps Plus lists its apps: the place a template is made or changed. */
@@ -151,9 +162,7 @@ export default {
         return;
       }
 
-      // A leased workspace wears its kind in its name, so the marker is put on here rather than
-      // being something to remember to type. Any other app keeps the name as given.
-      const name = isLte(this.app) || this.app === LTE_APP ? lteName(this.name) : this.name;
+      const name = this.finalName;
 
       try {
         await createWorkspace(this.$store, name, this.app, this.cluster, this.rancherUrl.trim() ? { rancherUrl: this.rancherUrl.trim().replace(/\/$/, '') } : {});
@@ -266,7 +275,7 @@ export default {
     <Banner
       v-else-if="namespace && selected && !error"
       color="info"
-      :label="`Installs ${ selected.label } as ${ name } on ${ cluster }, in the namespace ${ namespace }.`"
+      :label="`Installs ${ selected.label } as ${ finalName } on ${ cluster }, in the namespace ${ namespace }.`"
     />
 
     <div class="dev-create__actions">
