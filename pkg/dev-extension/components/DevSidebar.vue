@@ -16,7 +16,7 @@ import {
   listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp, workspaceInstance
 } from '../apps';
 import {
-  DEFAULT_APP, LEGACY_WORKSPACE_APPS, LTE_PREFIX, isLte
+  LEGACY_WORKSPACE_APPS, LTE_PREFIX, isLte
 } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
 import {
@@ -189,32 +189,32 @@ export default {
 
   computed: {
     /**
-     * One list per workspace app, the way it has always been - but the rows inside it are
-     * grouped by the part you play in them: `issue-*` is work you own and ship, so you are the
-     * developer; `pr-*` is somebody else's change you are judging, so you are the reviewer.
-     * The two ask different things of you at every stage, which is what the rail's own stages
-     * differ by, and in one heap they were the heap a day has to be sorted out of.
+     * Every workspace, grouped by the part you play in it: `issue-*` is work you own and ship,
+     * so you are the developer; `pr-*` is somebody else's change you are judging, so you are
+     * the reviewer. The two ask different things of you at every stage, which is what the
+     * rail's own stages differ by, and in one heap they were the heap a day has to be sorted
+     * out of.
+     *
+     * It used to be one list per App with the roles repeated inside each - so a fix and a
+     * review sat together only if they happened to be made of the same parts. But which App a
+     * workspace came from answers a different question from the one the nav is for: what it is
+     * made of, rather than what it wants from you. The kind is still on the row, where it
+     * belongs, since a leased workspace wears `lte-` in its name.
      *
      * The role is read from the workspace's name, so no row waits on a GitHub read to know
      * where it goes.
      */
-    sections() {
-      return this.apps.filter((app) => app.workspace && !LEGACY_WORKSPACE_APPS.includes(app.id)).map((app) => ({
-        id:     app.id,
-        label:  app.label,
-        groups: this.rolesIn(this.workspaces.filter((workspace) => workspace.app === app.id || (app.id === DEFAULT_APP && LEGACY_WORKSPACE_APPS.includes(workspace.app)))),
+    roleGroups() {
+      const known = new Map(this.apps.map((app) => [app.id, app]));
+
+      // Workspaces, not previews and not the other things Apps Plus installs: an App this
+      // product calls a workspace app, one of the names it used to go by, or one whose App is
+      // hidden in Settings or gone altogether (which is still a workspace, and still yours).
+      return this.rolesIn(this.workspaces.filter((workspace) => {
+        const app = known.get(workspace.app);
+
+        return LEGACY_WORKSPACE_APPS.includes(workspace.app) || !app || app.workspace;
       }));
-    },
-
-    /**
-     * Workspaces whose app is hidden in Settings, or gone. Listed, since they exist, and
-     * grouped by role like the rest.
-     */
-    orphans() {
-      const known = new Set(this.apps.map((app) => app.id));
-      const listed = new Set(this.sections.map((section) => section.id).concat(LEGACY_WORKSPACE_APPS));
-
-      return this.rolesIn(this.workspaces.filter((workspace) => !listed.has(workspace.app) && (!known.has(workspace.app) || this.apps.find((app) => app.id === workspace.app)?.workspace)));
     },
 
     /** The clusters, with how many workspaces each holds. */
@@ -516,12 +516,15 @@ export default {
       };
     },
 
-    /** The create page, with this cluster already chosen. */
-    createIn(app) {
+    /**
+     * The create page. No App in the link any more: which kind of workspace it is - a leased
+     * one, or the all-in-one - is chosen there, beside the name and the Rancher, rather than
+     * by which heading the + was pressed under.
+     */
+    createTo() {
       return {
         name:   CREATE_ROUTE,
         params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER },
-        query:  { app },
       };
     },
 
@@ -666,30 +669,18 @@ export default {
       class="dev-sidebar__scroll"
     >
       <!--
-        One list per app; the + on its heading makes a new workspace of that app. Inside it,
-        a heading for each part you play - Developer, Reviewer, Other - so the work you own and
-        the work you are judging are not in one heap.
+        One list, with a heading for each part you play - Developer, Reviewer, Other - so the
+        work you own and the work you are judging are not in one heap. The + makes a workspace,
+        and which kind it is is chosen there rather than by which heading you pressed.
       -->
       <DevList
-        v-for="section in sections"
-        :key="section.id"
         class="dev-sidebar__app"
-        :label="section.label"
-        icon="icon-apps"
-        :groups="section.groups"
+        label="Workspaces"
+        icon="icon-folder"
+        :groups="roleGroups"
         :current="currentWorkspace"
-        :create-to="createIn(section.id)"
-        :create-label="`New ${ section.label } workspace`"
-        deletable
-        @delete="remove"
-      />
-      <DevList
-        v-if="orphans.some((role) => role.rows.length)"
-        class="dev-sidebar__app"
-        label="Other apps"
-        icon="icon-apps"
-        :groups="orphans"
-        :current="currentWorkspace"
+        :create-to="createTo()"
+        create-label="New workspace"
         deletable
         @delete="remove"
       />
