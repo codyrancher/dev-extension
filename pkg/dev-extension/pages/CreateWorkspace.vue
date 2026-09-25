@@ -17,7 +17,7 @@ import { listApps, appsPlusAvailable } from '../apps';
 import { defaultRancher } from '../ranchers';
 import { readPrefs, shownApps } from '../prefs';
 import {
-  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, WORKSPACE_ROUTE, DEFAULT_APP, APP
+  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, WORKSPACE_ROUTE, DEFAULT_APP, LTE_APP, lteName, isLte, APP
 } from '../config/constants';
 
 export default {
@@ -54,7 +54,11 @@ export default {
     const askedApp = this.$route.query.app || this.$route.query.template;
     const knownApp = (id) => this.apps.some((app) => app.id === id) && id;
 
-    this.app = knownApp(askedApp) || knownApp(DEFAULT_APP) || this.apps[0]?.id || '';
+    // New workspaces are leased ones unless a link says otherwise: the checkout and the
+    // command-line tools, with a dev server, a storybook, a Rancher or a browser attached only
+    // while the work needs it. The old all-in-one App is still in the picker, and a workspace
+    // already made from it is untouched.
+    this.app = knownApp(askedApp) || knownApp(LTE_APP) || knownApp(DEFAULT_APP) || this.apps[0]?.id || '';
 
     // The starred Rancher (the sidebar's Ranchers list), unless the link said which.
     if (!this.rancherUrl) {
@@ -147,11 +151,15 @@ export default {
         return;
       }
 
+      // A leased workspace wears its kind in its name, so the marker is put on here rather than
+      // being something to remember to type. Any other app keeps the name as given.
+      const name = isLte(this.app) || this.app === LTE_APP ? lteName(this.name) : this.name;
+
       try {
-        await createWorkspace(this.$store, this.name, this.app, this.cluster, this.rancherUrl.trim() ? { rancherUrl: this.rancherUrl.trim().replace(/\/$/, '') } : {});
+        await createWorkspace(this.$store, name, this.app, this.cluster, this.rancherUrl.trim() ? { rancherUrl: this.rancherUrl.trim().replace(/\/$/, '') } : {});
         this.$router.push({
           name:   WORKSPACE_ROUTE,
-          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: this.name },
+          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: name },
         });
         done(true);
       } catch (e) {

@@ -30,6 +30,11 @@ const ctx = {
   // the agent pod's service account can exec into the pod directly; anything else is a downstream
   // cluster reached through the Rancher proxy - see the dev-shell tunnel below.
   cluster:     process.env.DEV_CLUSTER || '',
+  // A leased workspace (`lte-`) holds the tree and the command-line tools and runs nothing:
+  // a dev server, a storybook, a Rancher or a browser is attached to it while the work needs
+  // one and released when it does not. The rules and CLAUDE.md say different things about the
+  // environment depending on which kind this is, so they are rendered with this.
+  leased:      /^lte-/.test(process.env.DEV_PROJECT || process.env.PROJECT_NAME || '') ? '1' : '',
   rancherUrl,
   rancherHost: rancherUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, ''),
   // The shared github-browser's CDP: a local workspace reaches it by service name; a downstream one
@@ -152,6 +157,14 @@ for (const [rel, raw] of Object.entries(seed)) {
   }
 
   const body = rewriteRoot(text);
+
+  // A rule or skill whose whole body is inside an `{{#if}}` that did not apply renders to
+  // nothing. Writing the empty file would put a heading-less rule in front of the agent that
+  // says nothing at all, so it is simply not laid out - which is how a rule can be written for
+  // one kind of workspace and be absent from the other.
+  if ((rel.startsWith('rules/') || rel.startsWith('skills/')) && !body.trim()) {
+    continue;
+  }
 
   for (const dest of dests) {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -286,6 +299,24 @@ const devServer = [
   '# Never start a second dev server: two of them exceed the pod\'s memory and the container is',
   '# killed under both, along with every command you are running in it.',
   `WS=\${WSD:-${ ROOT }}`,
+  '# In a leased workspace the dev server is not in this pod at all: it is a tool with a pod and',
+  '# a lease of its own, so there is no process here to look for and no pause file to write. Every',
+  '# verb hands over to `tools`, which means a skill written for the all-in-one workspace still',
+  '# does the right thing here without knowing which kind it is in.',
+  'case "${WS##*/}" in lte-*)',
+  '  T="$(dirname "$0")/tools"',
+  '  [ -x "$T" ] || T=tools',
+  '  case "${1:-status}" in',
+  '    status|"") exec "$T" list ;;',
+  '    stop) exec "$T" stop dev-server ;;',
+  '    start) exec "$T" start dev-server ;;',
+  '    restart) "$T" stop dev-server >/dev/null 2>&1; exec "$T" start dev-server ;;',
+  '    logs) exec "$T" logs dev-server "${2:-60}" ;;',
+  '    --api|api) exec "$T" target dev-server "$2" ;;',
+  '    reset) exec "$T" start dev-server ;;',
+  '    *) exec "$T" list ;;',
+  '  esac ;;',
+  'esac',
   'PORT=$(cat "$WS/.dev-server.port" 2>/dev/null || echo 8005)',
   'RETARGET=$WS/.dev-server.env',
   'PAUSED=$WS/.dev-server.off',
@@ -357,6 +388,86 @@ const devServer = [
 
 fs.writeFileSync(path.join(BIN, 'dev-server'), devServer);
 fs.chmodSync(path.join(BIN, 'dev-server'), 0o755);
+written++;
+
+// The tools a leased workspace attaches, as a command.
+//
+// A leased workspace (`lte-`) holds the work and the command-line tools and runs nothing: a dev
+// server, a storybook, a Rancher to test against and a browser are each a thing with a pod (or,
+// for the browser, a context on the shared one) that is started when the work needs it and
+// released when it does not. Every verb here is one call to dev-api, which is also what the
+// button on the workspace page calls - so a tool attached from a conversation shows up on the
+// page, and one released on the page is gone here.
+//
+// The lease is the part that matters. Nothing here has to be released by hand for the node to
+// get its memory back: dev-api sweeps a tool whose lease has run out, and takes every tool with
+// the workspace when the workspace goes. Releasing is simply the polite version, and it is
+// worth doing, because the sweep's patience is an hour and a half.
+const tools = [
+  '#!/bin/bash',
+  '# The tools this workspace can attach. Written by the seed; see layout.mjs.',
+  '#',
+  '#   tools                    what is attached, and how long each lease has left',
+  '#   tools start <kind>       attach one: dev-server, browser, storybook, rancher',
+  '#   tools stop <kind>        give it back now (everything it holds goes with it)',
+  '#   tools renew <kind>       another lease, for work that is not finished',
+  '#   tools url <kind>         where it answers, for curl or the browser',
+  '#   tools logs <kind> [N]    the last N lines from its pod (default 60)',
+  '#',
+  '# Attach a tool when you need it and release it when you are done. A dev server is two',
+  '# gigabytes and every core it can get; a Rancher is another two. They are leased, so nothing',
+  '# is lost if you forget - but until the lease runs out, the node is carrying it for nobody.',
+  'set -o pipefail',
+  'API=${CLAUDE_HARNESS_API:-${HARNESS_API:-http://dev-api.dev-system.svc:8080}}',
+  `WS=\${PROJECT_NAME:-\${HARNESS_PROJECT:-$(basename "\${WSD:-${ ROOT }}")}}`,
+  'KIND=$2',
+  'case "$KIND" in devserver|dev|server) KIND=dev-server ;; esac',
+  // node rather than jq: jq arrives with the toolbelt a minute or two into the pod's life, node
+  // is the image. One formatter, fed the API's own JSON.
+  'fmt() {',
+  '  node -e \'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{',
+  '    let j; try { j = JSON.parse(s); } catch { console.error(s.slice(0,400)); process.exit(1); }',
+  '    if (j.error) { console.error(j.error); process.exit(1); }',
+  '    const rows = j.tools || [j];',
+  '    const left = (t) => { const ms = Date.parse(t.expires||"") - Date.now(); return Number.isFinite(ms) ? (ms<=0?"lease over":(ms<3600000?`${Math.round(ms/60000)}m left`:`${Math.round(ms/3600000)}h left`)) : ""; };',
+  '    for (const t of rows.sort((a,b)=>a.kind.localeCompare(b.kind))) {',
+  '      if (!t.running) { console.log(`${t.kind.padEnd(11)} not attached`); continue; }',
+  '      const what = t.kind === "browser" ? "attached" : (t.ready ? "ready" : (t.detail || "starting"));',
+  '      console.log(`${t.kind.padEnd(11)} ${what}${left(t)?`, ${left(t)}`:""}${t.url?`  ${t.url}`:""}`);',
+  '    }',
+  '  })\'',
+  '}',
+  'req() { curl -fsS -m 120 -X "$1" -H "content-type: application/json" ${3:+-d "$3"} "$API$2"; }',
+  'need_kind() { case "$KIND" in dev-server|browser|storybook|rancher) ;; *) echo "which tool? dev-server, browser, storybook or rancher" >&2; exit 2 ;; esac; }',
+  'case "${1:-list}" in',
+  '  list|status|ls) req GET "/tools/$WS" | fmt ;;',
+  '  start|attach|up)',
+  '    need_kind',
+  '    req POST "/tools/$WS/$KIND" "{\\"minutes\\":${3:-90}}" | fmt || exit 1',
+  '    [ "$KIND" = dev-server ] && echo "it compiles for a minute or two before it answers; tools list says when it is ready"',
+  '    exit 0 ;;',
+  '  stop|release|down) need_kind; req DELETE "/tools/$WS/$KIND" >/dev/null && echo "$KIND released" ;;',
+  '  renew|extend) need_kind; req POST "/tools/$WS/$KIND/renew" "{\\"minutes\\":${3:-90}}" | fmt ;;',
+  // Re-attaching with a value is how a tool is changed: dev-api renders the App again, the
+  // Deployment takes the new env and the pod comes back on it. Same call, one more field.
+  '  target|--api)',
+  '    need_kind',
+  '    U=${3%/}',
+  '    case "$U" in http://*|https://*) ;; *) echo "usage: tools target dev-server https://rancher.example.com" >&2; exit 2 ;; esac',
+  '    req POST "/tools/$WS/$KIND" "{\\"minutes\\":90,\\"values\\":{\\"rancherUrl\\":\\"$U\\"}}" | fmt || exit 1',
+  '    echo "pointed at $U; it restarts and compiles again (1-3 minutes)"',
+  '    exit 0 ;;',
+  '  url) need_kind; req GET "/tools/$WS/$KIND" | node -e \'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=JSON.parse(s);if(!t.running){console.error(`the ${t.kind} tool is not attached (tools start ${t.kind})`);process.exit(1);}console.log(t.url||t.cdp||"");})\' ;;',
+  '  logs)',
+  '    need_kind',
+  '    kubectl logs -n "dev-$WS-$KIND" "deploy/dev-$WS-$KIND" --tail="${3:-60}" 2>&1 | sed "s/\\x1b\\[[0-9;]*[A-Za-z]//g" ;;',
+  '  *) sed -n "2,12p" "$0" ;;',
+  'esac',
+  '',
+].join('\n');
+
+fs.writeFileSync(path.join(BIN, 'tools'), tools);
+fs.chmodSync(path.join(BIN, 'tools'), 0o755);
 written++;
 
 // The same commands in the pane's own bin, which is the one on every pane's PATH.

@@ -24,6 +24,9 @@ import {
   DEV_API_IN_CLUSTER,
 } from './config/constants';
 import { WORKSPACE_VUE_CONFIG } from './workspace-config';
+// The leased-tooling Apps: the slim workspace and the tools it attaches. Seeded here with the
+// rest, so one pass over Apps Plus writes every definition this product owns.
+import { lteApps } from './lte';
 // The same-origin fetch and cluster path every other Rancher call in this product goes through.
 // Imported rather than reinvented so the CSRF header and the error shape stay in one place.
 import { devFetch, clusterBase, activeCluster, GITHUB_BROWSER_CDP } from './api';
@@ -1456,7 +1459,7 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
 
   const byName = new Map(apps.map((app: Json) => [app.metadata?.name, app]));
 
-  for (const body of [rancherWorkspaceApp(), dashboardPreviewApp(), devBrowserApp()]) {
+  for (const body of [rancherWorkspaceApp(), dashboardPreviewApp(), devBrowserApp(), ...lteApps()]) {
     // The definition's fingerprint rides on the App, so a definition that changed in this bundle
     // reaches a cluster that already has the App - the templates lesson: an App seeded once and
     // never touched again strands every workspace made after the definition moved on. Existing

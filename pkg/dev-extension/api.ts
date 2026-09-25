@@ -27,7 +27,7 @@ import {
   DEV_POD_NAMESPACE as POD_NAMESPACE, DEV_POD_SERVICE as POD_SERVICE,
   LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, workspaceRoot, workspaceWorkdir, workspaceHome,
   WORKSPACE_PORT_ANNOTATION, WORKSPACE_SCHEME_ANNOTATION, WORKSPACE_TITLE_ANNOTATION, DEFAULT_WORKSPACE_PORT, DEFAULT_WORKSPACE_SCHEME, PREVIEW_ANNOTATION,
-  APP_INSTANCE,
+  APP_INSTANCE, lteName,
 } from './config/constants';
 
 // The labels live in config/constants now, beside the Apps Plus names that use them; re-exported
@@ -979,6 +979,20 @@ async function resolveWorkspaceCluster(store: Store, values: Record<string, unkn
   return local;
 }
 
+/**
+ * The name a piece of work's workspace has, given what is already there.
+ *
+ * New work goes into a leased workspace, which is marked in the name - `lte-issue-18062` - so
+ * that every list, namespace and tree says which kind it is without reading the App off the
+ * Installation. Work that already has a workspace keeps it, whichever kind it is: nothing
+ * existing changes, and pressing Review twice does not end up with two of them.
+ */
+export async function workspaceFor(base: string): Promise<string> {
+  const names = new Set((await listAllWorkspaces().catch(() => [])).map((workspace) => workspace.name));
+
+  return names.has(base) ? base : lteName(base);
+}
+
 export async function createWorkspace(store: Store, name: string, appId: string, cluster?: string, values: Record<string, unknown> = {}, title = ''): Promise<void> {
   // Where the dev server runs: the cluster of the Rancher this workspace develops against, so the
   // heavy pod (a dashboard checkout, its node_modules, a browser) sits next to that Rancher rather
@@ -1462,6 +1476,12 @@ export async function deleteWorkspace(store: Store, name: string): Promise<void>
   // fully come back up" this is: nothing asked the new workspace to set itself up, because the
   // conversation it would have been set up for was already there.
   await endWorkspaceConversations(name).catch(() => {});
+  // And the tools it has attached, which are namespaces of their own rather than anything the
+  // Bundle owns. dev-api's sweep takes them within the minute once the Installation is gone;
+  // this is so the expensive one - a dev server holding two gigabytes - stops now rather than
+  // compiling through the teardown. Imported here rather than at the top because tools.ts
+  // reaches back into this module for the API call it makes.
+  await import('./tools').then(({ releaseTools }) => releaseTools(name)).catch(() => {});
   await deleteWorkspaceInstance(store, name, true);
   // The workspace's shares are separate installations of the dashboard-preview App, one per
   // kind, named after the workspace (see previews.ts `previewName`). Nothing else takes them
@@ -1825,6 +1845,31 @@ export const GLOBAL_SERVICE_ACCOUNT = 'dev-global-terminal';
 export const WORKSPACE_SERVICE_ACCOUNT = 'dev-workspace';
 
 /** Create if it is not there; leave it alone if it is. */
+/**
+ * Create it, and keep one field of it current if it is already there.
+ *
+ * `ensure` below is create-if-missing, which is right for almost everything here: rewriting an
+ * object every time a dashboard loads is how this product once replaced running pods for
+ * nothing. A ClusterRole is the exception. It is this extension's own, nobody else edits it,
+ * and a version that needs a verb the deployed role does not grant fails at the moment it is
+ * used - quietly, in a pod, in a sweep nobody is watching. So its rules are compared and
+ * written when they differ, and nothing else about it is touched.
+ */
+async function ensureRules(type: string, name: string, body: Json): Promise<void> {
+  const path = `${ BASE }/v1/${ type }/${ name }`;
+  const existing = await devFetch(path).catch(() => null);
+
+  if (!existing) {
+    await devFetch(`${ BASE }/v1/${ type }`, { method: 'POST', body: JSON.stringify(body) }).catch(() => null);
+
+    return;
+  }
+
+  if (JSON.stringify(existing.rules) !== JSON.stringify(body.rules)) {
+    await devFetch(path, { method: 'PUT', body: JSON.stringify({ ...existing, rules: body.rules }) }).catch(() => null);
+  }
+}
+
 async function ensure(type: string, namespace: string | null, name: string, body: Json): Promise<void> {
   const path = namespace ? `${ BASE }/v1/${ type }/${ namespace }/${ name }` : `${ BASE }/v1/${ type }/${ name }`;
   const existing = await devFetch(path).catch(() => null);
@@ -2457,7 +2502,7 @@ export async function ensureWorkspaceApi(): Promise<void> {
   // reconciler in server.mjs - so it may delete the namespace of a workspace whose Installation
   // is already gone, and the credentials binding that went with it; deleting the Installation
   // itself, the act that starts a teardown, stays a thing a person does from the page.
-  await ensure('rbac.authorization.k8s.io.clusterroles', null, API_NAME, {
+  await ensureRules('rbac.authorization.k8s.io.clusterroles', API_NAME, {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind:       'ClusterRole',
     metadata:   { name: API_NAME },
@@ -2482,10 +2527,19 @@ export async function ensureWorkspaceApi(): Promise<void> {
       // Installation is gone, and strips a workspace label stranded on a shared namespace.
       { apiGroups: [''], resources: ['namespaces'], verbs: ['get', 'list', 'create', 'delete', 'patch'] },
       {
-        apiGroups: [''], resources: ['serviceaccounts', 'configmaps', 'secrets', 'services'], verbs: ['get', 'create']
+        apiGroups: [''], resources: ['serviceaccounts', 'configmaps', 'secrets'], verbs: ['get', 'create']
       },
+      // A leased workspace's tools are rendered by this API rather than by Fleet, because an
+      // agent starts one while nobody has a dashboard open and Apps Plus's renderer lives in a
+      // browser. So it creates and updates the objects a tool is made of - a namespace, a
+      // Deployment, a Service, a ConfigMap - and reads the pods back to say whether the tool is
+      // answering yet. Deleting is by namespace (above), which takes the rest with it.
       {
-        apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'create']
+        apiGroups: [''], resources: ['services'], verbs: ['get', 'list', 'create', 'patch']
+      },
+      { apiGroups: [''], resources: ['pods'], verbs: ['get', 'list'] },
+      {
+        apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list', 'create', 'patch']
       },
       // list + delete: the teardown reconciler finds and removes the credentials binding a
       // deleted workspace leaves in dev-system.

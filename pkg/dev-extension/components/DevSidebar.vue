@@ -15,7 +15,9 @@ import {
 import {
   listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp, workspaceInstance
 } from '../apps';
-import { DEFAULT_APP, LEGACY_WORKSPACE_APPS } from '../config/constants';
+import {
+  DEFAULT_APP, LEGACY_WORKSPACE_APPS, LTE_PREFIX, isLte
+} from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
 import {
   listRanchers, setDefaultRancher, createRancherInstance, deleteRancherInstance, nextRancherName, rancherAddress, RANCHER_STEPS
@@ -579,7 +581,11 @@ export default {
       const title = full
         ? (full.length > 42 ? `${ full.slice(0, 42).trimEnd() }…` : full)
         : '';
-      const parts = [title || workspace.name];
+      // A leased workspace says so in the nav, whatever its row happens to be labelled with.
+      // The marker is in the name, so a row that falls back to the name already carries it; a
+      // row showing a title would otherwise look exactly like an all-in-one workspace, and the
+      // two are worth telling apart at a glance - one is holding a dev server, the other is not.
+      const parts = [title && isLte(workspace.name) ? `${ LTE_PREFIX }${ title }` : (title || workspace.name)];
 
       if (workspace.cluster && workspace.cluster !== 'local') {
         parts.push(workspace.cluster);

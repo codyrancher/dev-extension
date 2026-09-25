@@ -19,7 +19,7 @@
 // the local store is the in-cluster API's ConfigMaps rather than the harness's sqlite.
 
 import {
-  devFetch, clusterBase, githubToken, createWorkspace, listAllWorkspaces, workspacePod
+  devFetch, clusterBase, githubToken, createWorkspace, listAllWorkspaces, workspacePod, workspaceFor
 } from './api';
 import {
   listConversations, startConversation, endConversation, queuePrompt, startPaneDetached, queuedNotStarted, conversationStates, sendToPane, Attachment, ProjectConversation
@@ -29,7 +29,9 @@ import {
 } from './workspace-tools';
 import type { WorkspaceContext } from './workspace-tools';
 import { rerunFailed } from './github';
-import { DEFAULT_APP, DEV_API_IN_CLUSTER } from './config/constants';
+import {
+  DEFAULT_APP, DEV_API_IN_CLUSTER, LTE_APP, isLte
+} from './config/constants';
 import { defaultRancherValues } from './ranchers';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -476,7 +478,9 @@ async function ensureWorkspace(store: Store, name: string, title = ''): Promise<
     // picker throws RancherPickCancelled, which aborts the start before anything is created. The
     // title - the issue or PR this was started from - rides along so the workspace list can show
     // it beside the `pr-<n>` / `issue-<n>` name.
-    await createWorkspace(store, name, DEFAULT_APP, undefined, await defaultRancherValues(store), title);
+    // Which kind of workspace the name says it is. `workspaceFor` decides that above: work that
+    // already has a workspace keeps whichever kind it is, and new work is leased.
+    await createWorkspace(store, name, isLte(name) ? LTE_APP : DEFAULT_APP, undefined, await defaultRancherValues(store), title);
   }
 
   return !existing;
@@ -647,7 +651,7 @@ export function prWorkspaceName(pr: { number: number; issue?: { number: number }
 
 /** Review a PR: the harness's "Review" button. Reattaches to a review already running. */
 export async function startPrReview(store: Store, pr: { number: number; title?: string; issue?: { number: number } | null }, repo = DEFAULT_REPO, inWorkspace = ''): Promise<Started> {
-  const workspace = inWorkspace || prWorkspaceName(pr);
+  const workspace = inWorkspace || await workspaceFor(prWorkspaceName(pr));
   const created = await ensureWorkspace(store, workspace, pr.title || '');
   const title = `Review #${ pr.number }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
@@ -676,7 +680,7 @@ export async function startPrReview(store: Store, pr: { number: number; title?: 
  * panes, both queued with the same prompt, racing each other over one checkout.
  */
 export async function startIssueFix(store: Store, issue: { number: number; title: string }, repo = DEFAULT_REPO): Promise<Started> {
-  const workspace = `issue-${ issue.number }`;
+  const workspace = await workspaceFor(`issue-${ issue.number }`);
   const created = await ensureWorkspace(store, workspace, issue.title || '');
   const title = `Fix #${ issue.number }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
@@ -700,7 +704,7 @@ export function alertWorkspaceName(group: { packages: string[]; slug: string }):
 
 /** Fix a Dependabot advisory: the harness's "Start fix" on an alert group. */
 export async function startAlertFix(store: Store, group: Json, repo = DEFAULT_REPO): Promise<Started> {
-  const workspace = alertWorkspaceName(group);
+  const workspace = await workspaceFor(alertWorkspaceName(group));
   const created = await ensureWorkspace(store, workspace);
   const title = `Fix ${ group.packages[0] || group.slug }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
@@ -721,7 +725,7 @@ export async function startAlertFix(store: Store, group: Json, repo = DEFAULT_RE
 
 /** Review a Dependabot PR: the harness's merge checklist, ending in MERGE or STOP. */
 export async function startDependabotReview(store: Store, pr: { number: number }, repo = DEFAULT_REPO): Promise<Started> {
-  const workspace = `pr-${ pr.number }`;
+  const workspace = await workspaceFor(`pr-${ pr.number }`);
   const created = await ensureWorkspace(store, workspace);
   const title = `Dependabot review #${ pr.number }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
@@ -744,7 +748,7 @@ export async function startDependabotReview(store: Store, pr: { number: number }
 
 /** Triage red CI: the first step of the harness's smart rerun, as a conversation. */
 export async function startCiTriage(store: Store, pr: { number: number; title?: string; issue?: { number: number } | null }, repo = DEFAULT_REPO, inWorkspace = ''): Promise<Started> {
-  const workspace = inWorkspace || prWorkspaceName(pr);
+  const workspace = inWorkspace || await workspaceFor(prWorkspaceName(pr));
   const created = await ensureWorkspace(store, workspace, pr.title || '');
   const failures = await ciFailures(pr.number, repo).catch(() => ({ checks: [] }));
   const details = (failures.checks || []).slice(0, 6).map((c: Json) => `- ${ c.name }: ${ c.conclusion }${ c.title ? ` - ${ c.title }` : '' }${ c.summary ? `\n  ${ c.summary.slice(0, 300) }` : '' } (${ c.url })`).join('\n');
