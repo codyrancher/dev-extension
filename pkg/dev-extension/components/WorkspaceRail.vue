@@ -33,10 +33,8 @@ import {
   listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates, sendToPane, renameConversation, endConversation
 } from '../conversations';
 import { ensureWorkspaceReady, putArtifact, devServerState, stopDevServer, startDevServer} from '../workspace-tools';
-import {
-  workspaceTools, startTool, stopTool, renewTool, toolHref, toolState as toolStateText, TOOLS, TOOL_ORDER, Tool, ToolKind
-} from '../tools';
-import { isLte, DEFAULT_LEASE_MINUTES } from '../config/constants';
+import WorkspaceTools from './WorkspaceTools.vue';
+import { isLte } from '../config/constants';
 import {
   startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, DEFAULT_REPO
 } from '../reviews';
@@ -63,7 +61,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer
+    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceTools,
   },
 
   props: {
@@ -102,16 +100,6 @@ export default {
        * Read behind the page, so the button that stops it only appears when there is one.
        */
       devServer:     { running: false, paused: false },
-      /**
-       * A leased workspace's tools: what is attached, and how long each one has left.
-       *
-       * The counterpart to `devServer` above, for the workspaces that hold nothing. There the
-       * dev server is a process in the workspace's own pod and is stopped by writing a file
-       * into the tree; here every tool is a pod of its own with a lease on it, and both the
-       * start and the stop are one call to dev-api - the same call the agent's `tools` command
-       * makes, so the button and the command cannot drift apart.
-       */
-      tools:         [],
       /** Whether this visit has already stopped the server for a stage that does not need it. */
       autoStopped:   false,
       /** Whether the person is holding this workspace's stage by hand, and whether the picker is open. */
@@ -201,26 +189,18 @@ export default {
   },
 
   computed: {
+    /**
+     * Whether this stage has nothing to serve: a fix whose PR is up and waiting on a person, or
+     * one already merged. The dev server is released once when it does - a webpack compiling
+     * for somebody who is not coming back is the most expensive idle thing on this node.
+     */
+    idleStage() {
+      return this.status?.kind === 'fix' && ['review', 'merged'].includes(this.status?.stage);
+    },
+
     /** Whether this is a leased workspace: tools outside the pod, each on a lease. */
     leased() {
       return isLte(this.workspace?.name || '');
-    },
-
-    /**
-     * The tools, in the order they are offered, with what each row needs to say.
-     *
-     * Every kind is listed whether or not it is running, because the list's job is as much to
-     * say what *can* be attached as what is - an agent knows the four; the person looking at
-     * the page should not have to.
-     */
-    toolRows() {
-      return TOOL_ORDER.map((kind) => {
-        const tool = this.tools.find((t) => t.kind === kind) || { kind, workspace: this.workspace?.name, running: false };
-
-        return {
-          ...TOOLS[kind], kind, tool, state: toolStateText(tool), href: toolHref(tool),
-        };
-      });
     },
 
     /** Which time round the work is at this step: 1 unless a review of yours has already gone. */
@@ -515,106 +495,13 @@ export default {
       if (!this.workspace?.name) {
         return;
       }
-      // A leased workspace has no server of its own to ask about: what it has is tools.
+      // A leased workspace has no server of its own to ask about: what it has is tools, and
+      // WorkspaceTools reads and releases those on its own.
       if (this.leased) {
-        await this.readTools();
-
         return;
       }
       this.devServer = await devServerState(this.workspace.name).catch(() => ({ running: false, paused: false }));
       await this.stopForStage();
-    },
-
-    /** What is attached to this workspace, and for how much longer. */
-    async readTools() {
-      this.tools = await workspaceTools(this.workspace.name).catch(() => []);
-      await this.releaseForStage();
-    },
-
-    /**
-     * Attach a tool, or renew the lease on one that is already up.
-     *
-     * The lease is the point: a tool that nobody releases goes by itself, so the cost of
-     * forgetting is the rest of an hour and a half rather than the rest of the week.
-     */
-    async attachTool(kind) {
-      this.busy = `tool-${ kind }`;
-      this.error = '';
-      try {
-        const tool = await startTool(this.workspace.name, kind, DEFAULT_LEASE_MINUTES);
-
-        this.tools = [...this.tools.filter((t) => t.kind !== kind), tool];
-        this.notice = kind === 'browser'
-          ? 'The browser tool is attached: a window and a session of its own on the shared browser.'
-          : `The ${ TOOLS[kind].label.toLowerCase() } is starting, and is leased for ${ DEFAULT_LEASE_MINUTES } minutes.`;
-        // It takes a moment to have a pod; read it back so the row stops saying "starting" by
-        // itself rather than on the next visit.
-        setTimeout(() => this.readTools().catch(() => {}), 4000);
-      } catch (e) {
-        this.noteError(e);
-      } finally {
-        this.busy = '';
-      }
-    },
-
-    /** Give it back. Everything it was holding goes with the namespace. */
-    async releaseTool(kind) {
-      this.busy = `tool-${ kind }`;
-      this.error = '';
-      try {
-        await stopTool(this.workspace.name, kind);
-        this.tools = [...this.tools.filter((t) => t.kind !== kind), { kind, workspace: this.workspace.name, running: false }];
-        this.notice = `The ${ TOOLS[kind].label.toLowerCase() } is released.`;
-      } catch (e) {
-        this.noteError(e);
-      } finally {
-        this.busy = '';
-      }
-    },
-
-    /** Another lease's worth, for work that is not finished. */
-    async extendTool(kind) {
-      this.busy = `tool-${ kind }`;
-      this.error = '';
-      try {
-        const tool = await renewTool(this.workspace.name, kind, DEFAULT_LEASE_MINUTES);
-
-        this.tools = [...this.tools.filter((t) => t.kind !== kind), tool];
-      } catch (e) {
-        this.noteError(e);
-      } finally {
-        this.busy = '';
-      }
-    },
-
-    /**
-     * Release what a stage cannot use, once per visit.
-     *
-     * The same policy as stopForStage below, which it replaces for a leased workspace: a fix
-     * whose PR is up is waiting on a person, and a dev server compiling for nobody in the
-     * meantime is the most expensive idle thing on the node. Here it is a whole pod rather than
-     * a process, so the saving is the whole pod.
-     */
-    async releaseForStage() {
-      const idle = ['review', 'merged'];
-      const server = this.tools.find((tool) => tool.kind === 'dev-server');
-      let kept = false;
-
-      try {
-        kept = !!sessionStorage.getItem(`dev-extension.dev-server-kept.${ this.workspace.name }`);
-      } catch { /* no storage: the release applies, which is the cheaper default */ }
-
-      if (kept || this.autoStopped || !server?.running || this.status?.kind !== 'fix' || !idle.includes(this.status?.stage)) {
-        return;
-      }
-      this.autoStopped = true;
-      try {
-        await stopTool(this.workspace.name, 'dev-server');
-        this.tools = this.tools.map((tool) => (tool.kind === 'dev-server' ? { ...tool, running: false } : tool));
-        this.notice = 'The dev server is released while this waits on a reviewer; attach it again when you need it.';
-      } catch (e) {
-        console.debug(`[rail] releasing the dev server: ${ e?.message || e }`); // eslint-disable-line no-console
-      }
     },
 
     /**
@@ -2045,74 +1932,17 @@ export default {
             </div>
           </div>
           <!--
-            What this workspace has attached, and for how long.
-
-            A leased workspace holds the work and runs nothing; everything that costs something
-            while it is up is here, with the lease that ends it. The same four the agent sees
-            from `tools list`, doing the same thing through the same API - so a dev server
-            attached from the conversation appears on this row, and one released here is gone
-            for the agent too.
+            What this workspace has attached, and for how long. The same component the tabbed
+            view uses, so a workspace with no pull request or issue in its name - which has no
+            rail at all - still has its tools.
           -->
-          <div
+          <WorkspaceTools
             v-if="leased"
-            class="workspace-rail__group workspace-rail__tools"
-          >
-            <span class="workspace-rail__group-label">Tools</span>
-            <div class="workspace-rail__tool-rows">
-              <div
-                v-for="row in toolRows"
-                :key="row.kind"
-                class="workspace-rail__tool"
-                :class="{ 'workspace-rail__tool--up': row.tool.running }"
-                :title="row.what"
-              >
-                <i
-                  class="icon workspace-rail__tool-icon"
-                  :class="row.icon"
-                />
-                <span class="workspace-rail__tool-name">{{ row.label }}</span>
-                <span class="workspace-rail__tool-state">{{ row.state }}</span>
-                <a
-                  v-if="row.href && row.tool.ready"
-                  :href="row.href"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="workspace-rail__tool-link"
-                >Open</a>
-                <button
-                  v-if="row.tool.running"
-                  class="workspace-rail__tool-link"
-                  :disabled="!!busy"
-                  title="Another lease's worth, for work that is not finished."
-                  @click="extendTool(row.kind)"
-                >
-                  Renew
-                </button>
-                <button
-                  v-if="row.tool.running"
-                  class="workspace-rail__tool-link"
-                  :disabled="!!busy"
-                  title="Give it back now. Everything it was holding goes with it."
-                  @click="releaseTool(row.kind)"
-                >
-                  Release
-                </button>
-                <button
-                  v-else
-                  class="workspace-rail__tool-link"
-                  :disabled="!!busy"
-                  :title="row.what"
-                  @click="attachTool(row.kind)"
-                >
-                  Attach
-                </button>
-                <i
-                  v-if="busy === `tool-${ row.kind }`"
-                  class="icon icon-spinner icon-spin"
-                />
-              </div>
-            </div>
-          </div>
+            :workspace="workspace.name"
+            :idle-stage="idleStage"
+            @notice="notice = $event"
+            @error="noteError"
+          />
           <div
             v-if="actionsFor('you').length || (!leased && devServer.running)"
             class="workspace-rail__group workspace-rail__group--decide"
@@ -3384,66 +3214,6 @@ export default {
     display:   flex;
     gap:       8px;
     flex-wrap: wrap;
-  }
-
-  &__tools {
-    align-self: stretch;
-  }
-
-  &__tool-rows {
-    display:        flex;
-    flex-direction: column;
-    gap:            2px;
-    width:          100%;
-  }
-
-  &__tool {
-    display:     flex;
-    align-items: center;
-    gap:         8px;
-    padding:     3px 0;
-    font-size:   12px;
-    color:       var(--pr-muted);
-
-    // Running is the state worth reading off the column at a glance, since it is the one that
-    // is costing something.
-    &--up {
-      color: var(--body-text);
-
-      .workspace-rail__tool-name { font-weight: 600; }
-    }
-  }
-
-  &__tool-icon {
-    font-size: 14px;
-    width:     16px;
-    text-align: center;
-  }
-
-  &__tool-name { min-width: 76px; }
-
-  &__tool-state {
-    flex:          1;
-    overflow:      hidden;
-    text-overflow: ellipsis;
-    white-space:   nowrap;
-    opacity:       .8;
-  }
-
-  &__tool-link {
-    background: none;
-    border:     none;
-    padding:    0;
-    font-size:  12px;
-    color:      var(--link);
-    cursor:     pointer;
-
-    &:hover { text-decoration: underline; }
-
-    &:disabled {
-      opacity: .5;
-      cursor:  default;
-    }
   }
 
   &__inspect {
