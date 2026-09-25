@@ -34,6 +34,7 @@ import WorkspacePr from '../components/WorkspacePr.vue';
 import WorkspaceShare from '../components/WorkspaceShare.vue';
 import WorkspaceReview from '../components/WorkspaceReview.vue';
 import WorkspaceRail from '../components/WorkspaceRail.vue';
+import WorkspaceTools from '../components/WorkspaceTools.vue';
 import { workspaceInstance } from '../apps';
 import { devServerState } from '../workspace-tools';
 import {
@@ -43,7 +44,7 @@ import {
   rememberWorkspace, rememberTab, lastTab, workspaceView, rememberWorkspaceView
 } from '../recent';
 import {
-  WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB, LABEL_CLUSTER
+  WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB, LABEL_CLUSTER, isLte
 } from '../config/constants';
 import { setViewing } from '../workspace-status';
 
@@ -54,7 +55,7 @@ export default {
 
   components: {
     Loading, Tabbed, Tab, Banner, RcButton, Row,
-    WorkspaceConversations, WorkspaceBrowser, WorkspacePreview, WorkspacePr, WorkspaceShare, WorkspaceReview, WorkspaceRail
+    WorkspaceConversations, WorkspaceBrowser, WorkspacePreview, WorkspacePr, WorkspaceShare, WorkspaceReview, WorkspaceRail, WorkspaceTools
   },
 
   async fetch() {
@@ -205,6 +206,11 @@ export default {
     },
 
     /** The rail is for a workspace named for an issue or a PR; anything else opens on its tabs. */
+    /** Whether this is a leased workspace: it runs nothing, and its tools are attached to it. */
+    leased() {
+      return isLte(this.name || '');
+    },
+
     railable() {
       return !!this.workspace && !this.workspace.preview && (this.prNumber > 0 || this.issueNumber > 0);
     },
@@ -629,8 +635,22 @@ export default {
       @switch-view="setView"
     />
 
+    <!--
+      A leased workspace's tools, above the tabs.
+
+      The stage rail shows the same list, but a rail only exists for a workspace named after an
+      issue or a pull request - and a leased workspace with neither still has a dev server to
+      attach and release, which is the whole point of it.
+    -->
+    <WorkspaceTools
+      v-if="!stopped && !notReady && !showRail && leased"
+      class="dev-workspace__tools"
+      :workspace="name"
+      @error="error = $event.message || String($event)"
+    />
+
     <Tabbed
-      v-else-if="!stopped && !notReady"
+      v-if="!stopped && !notReady && !showRail"
       class="dev-workspace__tabs"
       :default-tab="tab"
       @changed="onTabChanged"
@@ -787,6 +807,13 @@ export default {
         font-size: 12px;
         cursor:    pointer;
       }
+    }
+
+    // The tools strip sits above the tabs, full width and out of their flex.
+    &__tools {
+      flex:          0 0 auto;
+      margin-bottom: 10px;
+      max-width:     100%;
     }
 
     // The sentence and the button on one line, since the button is what the sentence is about.
