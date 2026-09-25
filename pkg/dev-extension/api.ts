@@ -2537,7 +2537,7 @@ export async function ensureWorkspaceApi(): Promise<void> {
       {
         apiGroups: [''], resources: ['services'], verbs: ['get', 'list', 'create', 'patch']
       },
-      { apiGroups: [''], resources: ['pods'], verbs: ['get', 'list'] },
+      { apiGroups: [''], resources: ['pods', 'pods/log'], verbs: ['get', 'list'] },
       {
         apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list', 'create', 'patch']
       },
