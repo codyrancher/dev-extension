@@ -460,7 +460,9 @@ const tools = [
   '  url) need_kind; req GET "/tools/$WS/$KIND" | node -e \'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=JSON.parse(s);if(!t.running){console.error(`the ${t.kind} tool is not attached (tools start ${t.kind})`);process.exit(1);}console.log(t.url||t.cdp||"");})\' ;;',
   '  logs)',
   '    need_kind',
-  '    kubectl logs -n "dev-$WS-$KIND" "deploy/dev-$WS-$KIND" --tail="${3:-60}" 2>&1 | sed "s/\\x1b\\[[0-9;]*[A-Za-z]//g" ;;',
+  // Through the API, not kubectl: a tool has a namespace of its own and this pod has no rights
+  // in it - deliberately, since the alternative is handing every workspace rights everywhere.
+  '    req GET "/tools/$WS/$KIND/logs?tail=${3:-60}" | node -e \'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);process.stdout.write((j.log||j.error||"").replace(/\\x1b\\[[0-9;]*[A-Za-z]/g,""));})\' ;;',
   '  *) sed -n "2,12p" "$0" ;;',
   'esac',
   '',

@@ -58,6 +58,21 @@ async function k8s(path, init = {}) {
   return body;
 }
 
+/** The same call, for a response that is not JSON: a pod's log. */
+async function k8sText(path) {
+  const response = await fetch(`${ ROOT }${ path }`, { headers: { authorization: `Bearer ${ TOKEN }` } });
+  const text = await response.text();
+
+  if (!response.ok) {
+    const error = new Error(`${ response.status } from ${ path }`);
+
+    error.status = response.status;
+    throw error;
+  }
+
+  return text;
+}
+
 async function create(path, body) {
   try {
     return await k8s(path, { method: 'POST', body: JSON.stringify(body) });
@@ -100,6 +115,24 @@ async function writeDoc(name, key, value, labels = {}) {
       }),
     });
   }
+}
+
+/**
+ * Take a key out of one of those documents.
+ *
+ * `writeDoc(name, key, null)` would store the four characters `null`, which reads back as
+ * nothing but leaves a key behind for every sweep to find, decide is expired and act on again.
+ * A merge patch with a null value removes the key, which is what "it is gone" should mean.
+ */
+async function dropDoc(name, key) {
+  await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ name }`, {
+    method: 'PATCH',
+    body:   JSON.stringify({ data: { [key]: null } }),
+  }).catch((e) => {
+    if (e.status !== 404) {
+      throw e;
+    }
+  });
 }
 
 // -- GitHub ----------------------------------------------------------------------------------
@@ -1773,20 +1806,28 @@ async function browserSession() {
 async function startBrowserTool(workspace, minutes) {
   const existing = await browserTool(workspace);
   const lease = leaseUntil(minutes);
-
-  if (existing.running) {
-    await writeDoc(BROWSER_LEASES, workspace, JSON.stringify({ ...existing.record, ...lease }));
-
-    return { ...existing, ...lease };
-  }
-
   const session = await browserSession();
 
   try {
+    // A context outlives the connection that made it, but not the browser: when the shared
+    // Chromium restarts, every context goes with it while the records of them stay. So the
+    // record is believed only as far as the browser agrees with it, and attaching to a context
+    // that is no longer there makes a new one instead of handing back an id that fails on first
+    // use, somewhere else, minutes later.
+    const live = existing.browserContextId
+      && (await session.send('Target.getBrowserContexts').catch(() => ({ browserContextIds: [] })))
+        .browserContextIds.includes(existing.browserContextId);
+
+    if (live) {
+      await writeDoc(BROWSER_LEASES, workspace, { ...existing.record, ...lease });
+
+      return { ...existing, ...lease };
+    }
+
     const { browserContextId } = await session.send('Target.createBrowserContext', { disposeOnDetach: false });
     const record = { browserContextId, ...lease };
 
-    await writeDoc(BROWSER_LEASES, workspace, JSON.stringify(record));
+    await writeDoc(BROWSER_LEASES, workspace, record);
 
     return {
       kind: 'browser', workspace, running: true, record, ...lease, cdp: GITHUB_BROWSER_CDP, browserContextId,
@@ -1797,8 +1838,10 @@ async function startBrowserTool(workspace, minutes) {
 }
 
 async function browserTool(workspace) {
-  const raw = await readDoc(BROWSER_LEASES, workspace).catch(() => null);
-  const record = raw ? JSON.parse(raw) : null;
+  // readDoc parses what writeDoc encoded; the record is an object on both sides. It was written
+  // pre-encoded once, which read back correctly here and as a *string* in the sweep below - so
+  // every context looked leaseless and was released within the minute of being handed out.
+  const record = await readDoc(BROWSER_LEASES, workspace).catch(() => null);
 
   return {
     kind:    'browser',
@@ -1826,7 +1869,7 @@ async function stopBrowserTool(workspace) {
       session.close();
     }
   }
-  await writeDoc(BROWSER_LEASES, workspace, null).catch(() => {});
+  await dropDoc(BROWSER_LEASES, workspace).catch(() => {});
 
   return { kind: 'browser', workspace, running: false };
 }
@@ -1899,6 +1942,32 @@ function podTrouble(pod, deployment, ready) {
   }
 
   return pod.status?.phase === 'Running' ? 'starting up' : (pod.status?.phase || 'starting');
+}
+
+/**
+ * The tail of a tool's log.
+ *
+ * Read here rather than by the workspace's own `kubectl`: a tool has a namespace of its own, and
+ * the workspace's ServiceAccount is bound to `edit` in *its* namespace and nowhere else. Giving
+ * it rights in every tool namespace would mean this API granting privileges it would then have
+ * to hold, for a read it can simply do itself.
+ */
+async function toolLogs(workspace, kind, tail = 60) {
+  if (kind === 'browser') {
+    return { kind, workspace, log: 'The browser tool is a context on the shared browser; it has no pod and no log of its own.' };
+  }
+  const namespace = toolNs(workspace, kind);
+  const pods = await k8s(`/api/v1/namespaces/${ namespace }/pods`).catch(() => ({ items: [] }));
+  const pod = (pods.items || [])[0];
+
+  if (!pod) {
+    return { kind, workspace, log: `The ${ kind } tool is not attached to ${ workspace }.` };
+  }
+
+  const lines = Math.min(Math.max(Number(tail) || 60, 1), 2000);
+  const log = await k8sText(`/api/v1/namespaces/${ namespace }/pods/${ pod.metadata.name }/log?tailLines=${ lines }`).catch((e) => `could not read the log: ${ e.message }`);
+
+  return { kind, workspace, pod: pod.metadata.name, log };
 }
 
 async function toolState(workspace, kind) {
@@ -2069,6 +2138,7 @@ async function reapTools() {
     } catch {
       record = null;
     }
+    // The same shape `readDoc` hands back: one JSON parse, one object.
     const expires = Date.parse(record?.expires || '');
 
     if (live.has(workspace) && Number.isFinite(expires) && expires >= now) {
@@ -2231,6 +2301,7 @@ const routes = [
   ['GET', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)$/, async(m) => toolState(m[1], m[2])],
   ['POST', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)$/, async(m, url, body) => startTool(m[1], m[2], body)],
   ['POST', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)\/renew$/, async(m, url, body) => renewTool(m[1], m[2], body?.minutes)],
+  ['GET', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)\/logs$/, async(m, url) => toolLogs(m[1], m[2], url.searchParams.get('tail'))],
   ['DELETE', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)$/, async(m) => stopTool(m[1], m[2])],
 
   // The harness's /my-work API, as far as its skills need it.
