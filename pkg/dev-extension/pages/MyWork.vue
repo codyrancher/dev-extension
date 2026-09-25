@@ -24,7 +24,7 @@ import { listApps } from '../apps';
 import { defaultRancherValues } from '../ranchers';
 import { readPrefs, shownApps } from '../prefs';
 import {
-  DEV_PRODUCT, BLANK_CLUSTER, SETTINGS_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_APP
+  DEV_PRODUCT, BLANK_CLUSTER, SETTINGS_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_APP, LTE_APP, lteName, isLte
 } from '../config/constants';
 import { NarrowMixin } from '../design/narrow';
 
@@ -515,7 +515,24 @@ export default {
      * no issue falls back to its own number, which is the only other stable thing about it.
      */
     workspaceName(pr) {
-      return pr.issue ? `issue-${ pr.issue.number }` : `pr-${ pr.number }`;
+      return this.nameFor(pr.issue ? `issue-${ pr.issue.number }` : `pr-${ pr.number }`);
+    },
+
+    /**
+     * That name, given what is already there.
+     *
+     * New work goes into a leased workspace, which is marked in the name (`lte-issue-18536`):
+     * it holds the checkout and the command-line tools and runs nothing, and a dev server, a
+     * storybook, a Rancher or a browser is attached to it while the work needs one. Work that
+     * already has a workspace keeps it exactly as it is, whichever kind it is.
+     */
+    nameFor(base) {
+      return this.workspaces.includes(base) ? base : lteName(base);
+    },
+
+    /** The App a workspace of that name is made from. */
+    appFor(name) {
+      return isLte(name) ? LTE_APP : DEFAULT_APP;
     },
 
     /** Where its workspace is, when it has one, and where one would be made when it does not. */
@@ -532,7 +549,7 @@ export default {
       return {
         name:   CREATE_ROUTE,
         params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER },
-        query:  { app: DEFAULT_APP, name },
+        query:  { app: this.appFor(name), name },
       };
     },
 
@@ -551,7 +568,7 @@ export default {
 
       try {
         if (!this.workspaces.includes(name)) {
-          await createWorkspace(this.$store, name, DEFAULT_APP, undefined, await defaultRancherValues(this.$store));
+          await createWorkspace(this.$store, name, this.appFor(name), undefined, await defaultRancherValues(this.$store));
           this.workspaces = [...this.workspaces, name];
         }
 
@@ -568,11 +585,11 @@ export default {
 
     /** The same two, for an issue, whose workspace is named for the issue rather than the PR. */
     hasIssueWorkspace(issue) {
-      return this.workspaces.includes(`issue-${ issue.number }`);
+      return this.workspaces.includes(this.nameFor(`issue-${ issue.number }`));
     },
 
     issueWorkspaceTo(issue) {
-      const name = `issue-${ issue.number }`;
+      const name = this.nameFor(`issue-${ issue.number }`);
 
       if (this.workspaces.includes(name)) {
         return {
@@ -584,7 +601,7 @@ export default {
       return {
         name:   CREATE_ROUTE,
         params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER },
-        query:  { app: DEFAULT_APP, name },
+        query:  { app: this.appFor(name), name },
       };
     },
 

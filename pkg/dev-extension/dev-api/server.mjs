@@ -1642,6 +1642,445 @@ async function makeWorkspace(name, appId, cluster = 'local') {
   return { name, namespace, app: appId, rendered: false };
 }
 
+// -- Tools: leased, rendered here, swept here ------------------------------------------------
+//
+// A leased (`lte-`) workspace runs nothing. Everything that costs something while it is up is a
+// tool with a pod of its own: a dev server, a storybook, a Rancher to test against. A tool is
+// started when it is wanted, carries a lease, and goes when the lease runs out, when whoever
+// asked for it releases it, or when the workspace it belongs to is deleted.
+//
+// Rendering happens *here* rather than in the browser, and that is the reason this code is in
+// dev-api at all. Apps Plus renders an Installation from a model that only exists in a loaded
+// dashboard; agents start tools while nobody has a dashboard open, so an AppInstance would be a
+// record with nothing behind it until somebody happened to look. The App is still the
+// definition - these read it out of Apps Plus and substitute its values - but the objects are
+// applied by the one process that is always running, which is also the one that can sweep them.
+
+const LABEL_TOOL = 'dev.rancher.io/tool';
+const LABEL_TOOL_OF = 'dev.rancher.io/tool-of';
+const LEASE_ANNOTATION = 'dev.rancher.io/lease-expires';
+const LEASE_MINUTES_ANNOTATION = 'dev.rancher.io/lease-minutes';
+const DEFAULT_LEASE_MINUTES = 90;
+// Nothing gets a lease longer than a working day in one go. A tool that is genuinely needed for
+// longer is renewed, which costs one command and means somebody said so twice.
+const MAX_LEASE_MINUTES = 8 * 60;
+
+/** The Apps the pod-backed tools are rendered from. `browser` has no pod; see below. */
+const TOOL_APPS = { 'dev-server': 'lte-dev-server', storybook: 'lte-storybook', rancher: 'lte-rancher' };
+const TOOL_KINDS = [...Object.keys(TOOL_APPS), 'browser'];
+/** Where each tool answers, which is also what its Service publishes. */
+const TOOL_PORTS = { 'dev-server': 8005, storybook: 6006, rancher: 443 };
+const TOOL_SCHEMES = { 'dev-server': 'https', storybook: 'http', rancher: 'https' };
+/** Where the browser tool's leases are kept, since it has no namespace to annotate. */
+const BROWSER_LEASES = 'dev-tool-browser';
+
+function toolNs(workspace, kind) {
+  return `dev-${ workspace }-${ kind }`;
+}
+
+/** Every Kubernetes kind a tool template may hold, and where it lives. */
+const RESOURCES = {
+  Namespace:  '/api/v1/namespaces',
+  ConfigMap:  '/api/v1/namespaces/{ns}/configmaps',
+  Secret:     '/api/v1/namespaces/{ns}/secrets',
+  Service:    '/api/v1/namespaces/{ns}/services',
+  Deployment: '/apis/apps/v1/namespaces/{ns}/deployments',
+};
+
+/**
+ * Apps Plus's substitution, over an object rather than over text.
+ *
+ * The rule it follows is Apps Plus's own: `${name}` is replaced for the exact names the App
+ * declares plus the built-ins, and anything else is left as written (which is what the Apps
+ * Plus UI warns about, and it is right to). One addition: a string that is *nothing but* a
+ * placeholder takes the value's own type, so a port declared as a number stays a number - the
+ * apiserver refuses a Service port that arrives as "8005".
+ */
+function substitute(node, values) {
+  if (typeof node === 'string') {
+    const whole = /^\$\{([A-Za-z0-9_]+)\}$/.exec(node);
+
+    if (whole && whole[1] in values) {
+      return values[whole[1]];
+    }
+
+    return node.replace(/\$\{([A-Za-z0-9_]+)\}/g, (all, key) => (key in values ? String(values[key]) : all));
+  }
+  if (Array.isArray(node)) {
+    return node.map((item) => substitute(item, values));
+  }
+  if (node && typeof node === 'object') {
+    const out = {};
+
+    for (const [key, value] of Object.entries(node)) {
+      out[String(substitute(key, values))] = substitute(value, values);
+    }
+
+    return out;
+  }
+
+  return node;
+}
+
+/** Create it, or bring what is there up to what was asked for. */
+async function applyObject(object) {
+  const base = RESOURCES[object.kind];
+
+  if (!base) {
+    throw failure(500, `A tool template holds a ${ object.kind }, which this renderer does not apply.`);
+  }
+  const namespace = object.metadata?.namespace || '';
+  const path = base.replace('{ns}', namespace);
+  const made = await create(path, object);
+
+  if (made) {
+    return made;
+  }
+
+  // 409: it is already there. A merge patch rather than a replace, so a field somebody else
+  // owns on it (a nodePort the apiserver chose, say) is not taken away.
+  return k8s(`${ path }/${ object.metadata.name }`, { method: 'PATCH', body: JSON.stringify(object) });
+}
+
+/** When a lease of this many minutes runs out. */
+function leaseUntil(minutes) {
+  const span = Math.min(Math.max(Number(minutes) || DEFAULT_LEASE_MINUTES, 5), MAX_LEASE_MINUTES);
+
+  return { minutes: span, expires: new Date(Date.now() + span * 60_000).toISOString() };
+}
+
+/** The shared browser's own CDP session - the browser endpoint, not a page's. */
+async function browserSession() {
+  const base = await cdpBase();
+  const version = await fetch(`${ base }/json/version`).then((r) => r.json());
+
+  if (!version?.webSocketDebuggerUrl) {
+    throw failure(502, 'The shared browser did not offer a CDP endpoint.');
+  }
+
+  return cdpSession(version.webSocketDebuggerUrl);
+}
+
+/**
+ * The browser tool: a context on the shared Chromium rather than a Chromium of its own.
+ *
+ * One browser serves every workspace - it is the one that already carries the github.com login,
+ * and a second Chromium per workspace is 400 MB that mostly sits there. What keeps two agents
+ * out of each other's tabs is a *browser context*: its own cookies, its own storage, its own
+ * window. Starting the tool makes one and remembers its id; releasing the tool disposes it,
+ * which closes every page in it.
+ */
+async function startBrowserTool(workspace, minutes) {
+  const existing = await browserTool(workspace);
+  const lease = leaseUntil(minutes);
+
+  if (existing.running) {
+    await writeDoc(BROWSER_LEASES, workspace, JSON.stringify({ ...existing.record, ...lease }));
+
+    return { ...existing, ...lease };
+  }
+
+  const session = await browserSession();
+
+  try {
+    const { browserContextId } = await session.send('Target.createBrowserContext', { disposeOnDetach: false });
+    const record = { browserContextId, ...lease };
+
+    await writeDoc(BROWSER_LEASES, workspace, JSON.stringify(record));
+
+    return {
+      kind: 'browser', workspace, running: true, record, ...lease, cdp: GITHUB_BROWSER_CDP, browserContextId,
+    };
+  } finally {
+    session.close();
+  }
+}
+
+async function browserTool(workspace) {
+  const raw = await readDoc(BROWSER_LEASES, workspace).catch(() => null);
+  const record = raw ? JSON.parse(raw) : null;
+
+  return {
+    kind:    'browser',
+    workspace,
+    running: !!record?.browserContextId,
+    record,
+    expires: record?.expires || '',
+    minutes: record?.minutes || 0,
+    cdp:     GITHUB_BROWSER_CDP,
+    browserContextId: record?.browserContextId || '',
+    detail:  record?.browserContextId ? 'a context of its own on the shared browser' : '',
+  };
+}
+
+async function stopBrowserTool(workspace) {
+  const current = await browserTool(workspace);
+
+  if (current.browserContextId) {
+    const session = await browserSession().catch(() => null);
+
+    if (session) {
+      // A context that is already gone is not a failure: the browser may have restarted, which
+      // takes every context with it, and the record is what is being cleared either way.
+      await session.send('Target.disposeBrowserContext', { browserContextId: current.browserContextId }).catch(() => {});
+      session.close();
+    }
+  }
+  await writeDoc(BROWSER_LEASES, workspace, null).catch(() => {});
+
+  return { kind: 'browser', workspace, running: false };
+}
+
+/** What a pod-backed tool is doing, and where it answers. */
+async function podTool(workspace, kind) {
+  const namespace = toolNs(workspace, kind);
+  const ns = await k8s(`/api/v1/namespaces/${ namespace }`).catch((e) => {
+    if (e.status === 404) {
+      return null;
+    }
+    throw e;
+  });
+
+  if (!ns) {
+    return { kind, workspace, running: false };
+  }
+
+  const [deployment, service, pods] = await Promise.all([
+    k8s(`/apis/apps/v1/namespaces/${ namespace }/deployments/${ namespace }`).catch(() => null),
+    k8s(`/api/v1/namespaces/${ namespace }/services/${ namespace }`).catch(() => null),
+    k8s(`/api/v1/namespaces/${ namespace }/pods`).catch(() => ({ items: [] })),
+  ]);
+
+  const pod = (pods.items || [])[0] || null;
+  const port = TOOL_PORTS[kind];
+  const scheme = TOOL_SCHEMES[kind];
+  const ready = (deployment?.status?.readyReplicas || 0) > 0;
+
+  return {
+    kind,
+    workspace,
+    running:  true,
+    ready,
+    expires:  ns.metadata?.annotations?.[LEASE_ANNOTATION] || '',
+    minutes:  Number(ns.metadata?.annotations?.[LEASE_MINUTES_ANNOTATION] || 0),
+    since:    ns.metadata?.creationTimestamp || '',
+    removing: !!ns.metadata?.deletionTimestamp,
+    namespace,
+    port,
+    scheme,
+    nodePort: service?.spec?.ports?.[0]?.nodePort || 0,
+    // How something inside the cluster reaches it - an agent's curl, the shared browser. The
+    // Service and the namespace have the same name, which is what makes this predictable.
+    url:      `${ scheme }://${ namespace }.${ namespace }.svc:${ port }`,
+    // And how a person reaches it: this Rancher's service proxy, which is the only way in to
+    // the host cluster from outside. The page puts the Rancher's own address in front.
+    proxy:    `/k8s/clusters/local/api/v1/namespaces/${ namespace }/services/${ scheme }:${ namespace }:${ port }/proxy/`,
+    detail:   podTrouble(pod, deployment, ready),
+  };
+}
+
+/** Why a tool is not answering yet, in a few words, or ''. */
+function podTrouble(pod, deployment, ready) {
+  if (ready) {
+    return '';
+  }
+  if (!pod) {
+    return deployment ? 'no pod yet' : 'starting';
+  }
+  for (const status of pod.status?.containerStatuses || []) {
+    const waiting = status.state?.waiting;
+
+    if (waiting?.reason && FAILED_REASONS.includes(waiting.reason)) {
+      return `${ waiting.reason }: ${ waiting.message || 'the container will not start' }`;
+    }
+    if (waiting?.reason) {
+      return waiting.reason;
+    }
+  }
+
+  return pod.status?.phase === 'Running' ? 'starting up' : (pod.status?.phase || 'starting');
+}
+
+async function toolState(workspace, kind) {
+  return kind === 'browser' ? browserTool(workspace) : podTool(workspace, kind);
+}
+
+async function toolsOf(workspace) {
+  return Promise.all(TOOL_KINDS.map((kind) => toolState(workspace, kind).catch((e) => ({ kind, workspace, error: e.message }))));
+}
+
+/**
+ * Start a tool, or renew the one that is already there.
+ *
+ * Idempotent on purpose: an agent that asks twice, or a page whose button was pressed twice,
+ * should get the tool and a fresh lease rather than an error about a namespace that exists.
+ */
+async function startTool(workspace, kind, body = {}) {
+  if (!TOOL_KINDS.includes(kind)) {
+    throw failure(400, `There is no ${ kind } tool. There is ${ TOOL_KINDS.join(', ') }.`);
+  }
+
+  const instance = await k8s(`${ INSTANCES }/${ workspace }`).catch(() => null);
+
+  if (!instance) {
+    throw failure(404, `There is no workspace called ${ workspace } to attach a tool to.`);
+  }
+
+  if (kind === 'browser') {
+    return startBrowserTool(workspace, body.minutes);
+  }
+
+  const appId = TOOL_APPS[kind];
+  const app = await k8s(`${ APPS }/${ appId }`).catch(() => null);
+
+  if (!app) {
+    throw failure(503, `The ${ appId } App is not in Apps Plus yet. Open the Dev pages once and it will be created.`);
+  }
+
+  const namespace = toolNs(workspace, kind);
+  const lease = leaseUntil(body.minutes);
+  const values = {
+    ...(app.spec?.values || {}),
+    ...(body.values || {}),
+    workspace,
+    namespace,
+    install:  `${ workspace }-${ kind }`,
+    app:      appId,
+    instance: `${ workspace }-${ kind }`,
+  };
+
+  for (const t of app.spec?.templates || []) {
+    let object;
+
+    try {
+      object = JSON.parse(t.content);
+    } catch {
+      throw failure(500, `The ${ appId } App's ${ t.name } is not JSON, so dev-api cannot render it. Tool templates are written as JSON for exactly this reason.`);
+    }
+
+    const rendered = substitute(object, values);
+
+    // The lease rides on the namespace, because the namespace is the object the sweep reads and
+    // the one whose deletion takes the whole tool with it.
+    if (rendered.kind === 'Namespace') {
+      rendered.metadata.annotations = {
+        ...(rendered.metadata.annotations || {}),
+        [LEASE_ANNOTATION]:         lease.expires,
+        [LEASE_MINUTES_ANNOTATION]: String(lease.minutes),
+      };
+    }
+
+    await applyObject(rendered);
+  }
+
+  console.log(`[dev-api] started the ${ kind } tool for ${ workspace }, leased for ${ lease.minutes } minutes`);
+
+  return { ...(await podTool(workspace, kind)), ...lease };
+}
+
+async function renewTool(workspace, kind, minutes) {
+  const lease = leaseUntil(minutes);
+
+  if (kind === 'browser') {
+    return startBrowserTool(workspace, minutes);
+  }
+
+  await k8s(`/api/v1/namespaces/${ toolNs(workspace, kind) }`, {
+    method: 'PATCH',
+    body:   JSON.stringify({ metadata: { annotations: { [LEASE_ANNOTATION]: lease.expires, [LEASE_MINUTES_ANNOTATION]: String(lease.minutes) } } }),
+  });
+
+  return { ...(await podTool(workspace, kind)), ...lease };
+}
+
+async function stopTool(workspace, kind) {
+  if (kind === 'browser') {
+    return stopBrowserTool(workspace);
+  }
+
+  await k8s(`/api/v1/namespaces/${ toolNs(workspace, kind) }`, { method: 'DELETE' }).catch((e) => {
+    if (e.status !== 404) {
+      throw e;
+    }
+  });
+  console.log(`[dev-api] released the ${ kind } tool for ${ workspace }`);
+
+  return { kind, workspace, running: false };
+}
+
+/**
+ * The sweep: expired leases, and tools whose workspace has gone.
+ *
+ * This is what makes the arrangement worth having. An agent is told to release a tool when it
+ * is done and mostly does, but a conversation that ended mid-task, a pane that was closed or a
+ * person who walked away all leave a dev server compiling for nobody - which is the single most
+ * expensive idle thing on this node. The lease means the worst case is the rest of an hour and
+ * a half rather than the rest of the week.
+ */
+async function reapTools() {
+  let live;
+
+  try {
+    const instances = await k8s(INSTANCES);
+
+    live = new Set((instances.items || []).map((i) => i.metadata?.name).filter(Boolean));
+  } catch (e) {
+    // The same rule as the teardown sweep: an empty set would read as "every workspace is gone".
+    console.error('[dev-api] tools: could not list installations, skipping tick:', e.message || e);
+
+    return;
+  }
+
+  const namespaces = await k8s(`/api/v1/namespaces?labelSelector=${ encodeURIComponent(LABEL_TOOL) }`).catch(() => null);
+  const now = Date.now();
+
+  for (const ns of namespaces?.items || []) {
+    if (ns.metadata?.deletionTimestamp) {
+      continue;
+    }
+    const kind = ns.metadata?.labels?.[LABEL_TOOL];
+    const owner = ns.metadata?.labels?.[LABEL_TOOL_OF] || '';
+    const expires = Date.parse(ns.metadata?.annotations?.[LEASE_ANNOTATION] || '');
+    const orphaned = !!owner && !live.has(owner);
+    const expired = Number.isFinite(expires) && expires < now;
+
+    if (!orphaned && !expired) {
+      continue;
+    }
+
+    await k8s(`/api/v1/namespaces/${ ns.metadata.name }`, { method: 'DELETE' })
+      .then(() => console.log(`[dev-api] released the ${ kind } tool for ${ owner }: ${ orphaned ? 'its workspace is gone' : 'its lease ran out' }`))
+      .catch((e) => {
+        if (e.status !== 404) {
+          console.error(`[dev-api] tools: namespace ${ ns.metadata.name }:`, e.message || e);
+        }
+      });
+  }
+
+  // The browser tool keeps its leases in a ConfigMap rather than a namespace, since it has no
+  // pod of its own. Same two rules.
+  const leases = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ BROWSER_LEASES }`).catch(() => null);
+
+  for (const [workspace, raw] of Object.entries(leases?.data || {})) {
+    let record;
+
+    try {
+      record = JSON.parse(raw);
+    } catch {
+      record = null;
+    }
+    const expires = Date.parse(record?.expires || '');
+
+    if (live.has(workspace) && Number.isFinite(expires) && expires >= now) {
+      continue;
+    }
+
+    await stopBrowserTool(workspace)
+      .then(() => console.log(`[dev-api] released the browser context for ${ workspace }`))
+      .catch((e) => console.error(`[dev-api] tools: browser context for ${ workspace }:`, e.message || e));
+  }
+}
+
 // -- HTTP ------------------------------------------------------------------------------------
 
 function send(res, status, body) {
@@ -1762,6 +2201,37 @@ const routes = [
 
     return makeWorkspace(body.name, body.app || body.template || 'rancher-dev', body.cluster || 'local');
   }],
+
+  // -- Tools ---------------------------------------------------------------------------------
+  //
+  // What a leased workspace attaches when it needs it. Reachable by an agent from inside the
+  // cluster (`$CLAUDE_HARNESS_API/tools/...`, which is what `bin/tools` calls) and by the page.
+  ['GET', /^\/tools$/, async() => {
+    const namespaces = await k8s(`/api/v1/namespaces?labelSelector=${ encodeURIComponent(LABEL_TOOL) }`).catch(() => ({ items: [] }));
+    const tools = [];
+
+    for (const ns of namespaces.items || []) {
+      const kind = ns.metadata?.labels?.[LABEL_TOOL];
+      const owner = ns.metadata?.labels?.[LABEL_TOOL_OF];
+
+      if (kind && owner) {
+        tools.push(await podTool(owner, kind).catch(() => ({ kind, workspace: owner, running: true })));
+      }
+    }
+
+    const leases = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ BROWSER_LEASES }`).catch(() => null);
+
+    for (const workspace of Object.keys(leases?.data || {})) {
+      tools.push(await browserTool(workspace).catch(() => ({ kind: 'browser', workspace })));
+    }
+
+    return { tools };
+  }],
+  ['GET', /^\/tools\/([a-z0-9-]+)$/, async(m) => ({ workspace: m[1], tools: await toolsOf(m[1]) })],
+  ['GET', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)$/, async(m) => toolState(m[1], m[2])],
+  ['POST', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)$/, async(m, url, body) => startTool(m[1], m[2], body)],
+  ['POST', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)\/renew$/, async(m, url, body) => renewTool(m[1], m[2], body?.minutes)],
+  ['DELETE', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)$/, async(m) => stopTool(m[1], m[2])],
 
   // The harness's /my-work API, as far as its skills need it.
   ['GET', /^\/my-work\/pr\/(\d+)$/, (m, url) => prDetail(repoOf(url), Number(m[1]))],
@@ -2597,4 +3067,12 @@ http.createServer(async(req, res) => {
 
   setTimeout(fast, 3_000);
   setInterval(fast, 15_000);
+
+  // Leases. A minute is the resolution a lease is worth: the tools it ends have been running
+  // for an hour and a half, and a sweep that ran more often would only read the same namespaces
+  // more often.
+  const tools = () => reapTools().catch((e) => console.error('[dev-api] tool sweep failed:', e.message || e));
+
+  setTimeout(tools, 20_000);
+  setInterval(tools, 60_000);
 });

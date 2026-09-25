@@ -203,3 +203,77 @@ export const AGENT_HOME = `${ AGENT_WORKSPACE }/.home`;
 
 /** The in-cluster API, as pods reach it. The harness's skills read it as $CLAUDE_HARNESS_API. */
 export const DEV_API_IN_CLUSTER = 'http://dev-api.dev-system.svc:8080';
+
+// ── Leased tooling: the lte- workspaces ─────────────────────────────────────────────────────
+//
+// A workspace made this way holds only what a unit of work manipulates - the checkout, the
+// artifacts, the CLI tools an agent uses on them - and runs nothing. Everything that costs
+// something while it is up is a *tool*: a dev server, a storybook, a Rancher to test against,
+// a browser. A tool is started when it is needed, carries a lease, and is torn down when the
+// lease runs out, when the agent releases it, or when the workspace goes.
+//
+// They are marked in the name rather than only in the nav, so that every list, every namespace
+// and every tree says which kind of workspace it is without having to read the App off the
+// Installation. Existing workspaces are untouched: they keep the `rancher-dev` App and their
+// unprefixed names, and nothing here changes how they run.
+export const LTE_PREFIX = 'lte-';
+
+/** The slim workspace App: a checkout and a toolbelt, with no server in the pod. */
+export const LTE_APP = 'lte-workspace';
+
+/** Whether a workspace is one of the leased-tooling kind, by its name. */
+export function isLte(name: string): boolean {
+  return String(name || '').startsWith(LTE_PREFIX);
+}
+
+/** A name with the marker on it, exactly once. */
+export function lteName(name: string): string {
+  return isLte(name) ? name : `${ LTE_PREFIX }${ name }`;
+}
+
+/** A name without it, for reading the issue or PR number out of it. */
+export function bareName(name: string): string {
+  return isLte(name) ? name.slice(LTE_PREFIX.length) : name;
+}
+
+/**
+ * The tools a workspace can attach, and what each one is.
+ *
+ * `browser` is not a pod: the shared github-browser in dev-system serves every workspace, and
+ * starting the browser tool opens a CDP browser context of its own on it (its own cookies,
+ * storage and window), which is what keeps two agents out of each other's tabs. The rest are
+ * Apps: `lte-<kind>` in Apps Plus, rendered into a namespace of their own.
+ */
+export const TOOL_KINDS = ['dev-server', 'storybook', 'rancher', 'browser'] as const;
+export type ToolKind = typeof TOOL_KINDS[number];
+
+/** The Apps the pod-backed tools are rendered from, by kind. */
+export const TOOL_APPS: Record<string, string> = {
+  'dev-server': 'lte-dev-server',
+  storybook:    'lte-storybook',
+  rancher:      'lte-rancher',
+};
+
+/** What a tool's own namespace is called: one per workspace and kind. */
+export function toolNamespace(workspace: string, kind: string): string {
+  return `dev-${ workspace }-${ kind }`;
+}
+
+/** On a tool's namespace and objects: which tool it is, and whose. */
+export const LABEL_TOOL = 'dev.rancher.io/tool';
+export const LABEL_TOOL_OF = 'dev.rancher.io/tool-of';
+
+/**
+ * When the lease runs out (ISO), on the tool's namespace.
+ *
+ * The lease is the point of the whole arrangement. An agent is told to release a tool when it
+ * is done with it and mostly does; the lease is what covers the times it does not - a
+ * conversation that ended mid-task, a pane that was closed, a person who walked away. dev-api
+ * sweeps expired tools every minute, so the worst case for a forgotten dev server is the rest
+ * of its lease rather than the rest of the week.
+ */
+export const LEASE_ANNOTATION = 'dev.rancher.io/lease-expires';
+/** What was asked for, in minutes, so a renewal knows how long to add. */
+export const LEASE_MINUTES_ANNOTATION = 'dev.rancher.io/lease-minutes';
+/** How long a tool gets when nobody says: long enough for a real piece of work, short enough to forget. */
+export const DEFAULT_LEASE_MINUTES = 90;
