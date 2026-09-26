@@ -553,7 +553,7 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
   // runs the prompt the checkout it acts on is there. Queuing it in `prepare` instead - after the
   // minutes a first `ensureWorkspaceReady` takes - is what let a pane start first and sit at an
   // empty prompt. Queued through the agents extension because that is where every pane runs.
-  await queuePrompt(conversation.attach, prompt).catch((e: Json) => {
+  await (prompt ? queuePrompt(conversation.attach, prompt) : Promise.resolve()).catch((e: Json) => {
     onNote?.(`the prompt could not be queued: ${ e?.message || e }`);
     console.error('[dev] queuing the opening prompt failed', e); // eslint-disable-line no-console
   });
@@ -611,6 +611,21 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
   })();
 
   return conversation;
+}
+
+/**
+ * A conversation to talk in, for a workspace that has none.
+ *
+ * "Ask the agent" opened the conversation window and stopped there, which is right when there
+ * is a conversation in it and an empty black rectangle when there is not - and a workspace made
+ * for a pull request that already exists has a stage, a rail, and no agent that has ever run in
+ * it. So the window it opens is given something to show: the same start every other action
+ * makes, with nothing queued, so whoever pressed it can type.
+ */
+export async function openConversation(workspace: string, title = 'Conversation', onNote?: (note: string) => void): Promise<ProjectConversation> {
+  const existing = await listConversations(workspace).catch(() => [] as ProjectConversation[]);
+
+  return existing[0] || openWith(workspace, title, '', undefined, onNote);
 }
 
 export interface Started {

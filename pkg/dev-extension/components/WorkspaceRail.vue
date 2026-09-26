@@ -28,7 +28,7 @@ import {
 import {
   stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
 } from '../workspace-rail';
-import { prFile } from '../reviews';
+import { prFile, openConversation } from '../reviews';
 import {
   listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates, sendToPane, renameConversation, endConversation
 } from '../conversations';
@@ -841,7 +841,34 @@ export default {
       this.modal = name;
     },
 
-    focusAsk() {
+    /**
+     * Open the conversation to talk in - and make one if this workspace has never had one.
+     *
+     * The window shows the conversations the workspace has, so on a workspace with none it
+     * used to open empty and stay that way: no pane, no prompt, nothing to type into, which is
+     * what "the modal pops up and nothing starts" was. A workspace made for a pull request that
+     * already exists is exactly that case - it has a stage and a rail on its first morning, and
+     * no agent has ever run in it.
+     */
+    async focusAsk() {
+      if (!this.conversations.length) {
+        this.busy = 'focusAsk';
+        this.error = '';
+        try {
+          const conversation = await openConversation(this.workspace.name, 'Conversation', (note) => {
+            this.notice = note;
+          });
+
+          this.conversations = [...this.conversations, conversation];
+          this.currentConversation = conversation.id;
+        } catch (e) {
+          this.noteError(e);
+          this.busy = '';
+
+          return;
+        }
+        this.busy = '';
+      }
       this.openTab('conversations');
     },
 
