@@ -19,7 +19,7 @@
 // the local store is the in-cluster API's ConfigMaps rather than the harness's sqlite.
 
 import {
-  devFetch, clusterBase, githubToken, createWorkspace, listAllWorkspaces, workspacePod, workspaceFor
+  devFetch, clusterBase, githubToken, createWorkspace, listAllWorkspaces, workspacePod, workspaceFor, getWorkspace, setWorkspaceRunning
 } from './api';
 import {
   listConversations, startConversation, endConversation, queuePrompt, startPaneDetached, queuedNotStarted, conversationStates, sendToPane, Attachment, ProjectConversation
@@ -518,6 +518,30 @@ async function deliverTo(workspace: string, conversation: ProjectConversation, p
   await startPaneDetached(workspace, conversation.id).catch(() => {});
 }
 
+/**
+ * Start the workspace, if an action has been pressed on one that is stopped.
+ *
+ * A workspace with nothing going on in it is spun down after a while (workspace-status.ts), and
+ * one can be stopped by hand as well. Nothing then creates its pod, so the wait below was a wait
+ * for something that was never coming: the conversation existed, the prompt sat in its queue,
+ * and the pane never started - which reads exactly like a button that did nothing.
+ *
+ * Quiet on failure, like everything else on this path: the conversation is already made, and a
+ * workspace that cannot be started says so through the pod that never arrives.
+ */
+async function wakeWorkspace(workspace: string, onNote?: (note: string) => void): Promise<void> {
+  const known = await getWorkspace(workspace).catch(() => null);
+
+  if (!known || known.replicas > 0) {
+    return;
+  }
+
+  onNote?.('the workspace was stopped; starting it');
+  await setWorkspaceRunning(workspace, true, known.cluster || undefined).catch((e: Json) => {
+    onNote?.(`the workspace could not be started: ${ e?.message || e }`);
+  });
+}
+
 async function openWith(workspace: string, title: string, prompt: string, ctx?: WorkspaceContext, onNote?: (note: string) => void, store?: Store): Promise<ProjectConversation> {
   const conversation = await startConversation(workspace, title);
 
@@ -576,6 +600,7 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
 
   (async() => {
     try {
+      await wakeWorkspace(workspace, onNote);
       onNote?.('waiting for the workspace pod');
       await waitForWorkspacePod(workspace);
       await prepare();

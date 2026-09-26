@@ -10,6 +10,7 @@ import { prDetail, DEFAULT_REPO } from './reviews';
 import { linkedPullRequest, issueBody } from './github';
 import { conversationStates, ConversationState } from './conversations';
 import { setWorkspaceRunning } from './api';
+import { isLte } from './config/constants';
 import { reconcileStage } from './stages';
 import type { DerivedStage, StageRecord } from './stages';
 
@@ -680,7 +681,16 @@ export async function autoStopIdle(workspaces: IdleWorkspace[]): Promise<void> {
 
     // Not a candidate: forget any idle it had started to accrue, so a workspace that goes busy,
     // stops, or is opened does not carry a stale clock into its next idle spell.
-    if (w.preview || !local || !running || w.name === viewing || stopping.has(w.name)) {
+    //
+    // A leased workspace is never a candidate, and that is not an exemption - it is that there
+    // is nothing here to spin down. Its pod holds the tree and runs nothing (single digits of
+    // megabytes), and the thing this was written to reclaim - a dev server compiling for
+    // nobody, two to three gigabytes of it - is a tool with a lease of its own now, which
+    // dev-api ends whether or not anybody has a dashboard open. Stopping the pod would save
+    // nothing, leave the tools running, and take away the one thing a conversation needs: the
+    // pod its commands are forwarded into. It is also how a pressed button ended in a
+    // conversation with a prompt queued and no pane.
+    if (w.preview || !local || !running || isLte(w.name) || w.name === viewing || stopping.has(w.name)) {
       idleSince.delete(w.name);
       continue;
     }
