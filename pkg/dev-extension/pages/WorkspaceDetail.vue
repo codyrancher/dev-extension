@@ -439,6 +439,14 @@ export default {
       if (!this.workspace || this.stopped) {
         return false;
       }
+      // A leased workspace serves nothing and has no Service: its dev server is a tool with a
+      // pod and an address of its own, and its browser is a session on the shared one. Asking
+      // anyway is a 404 through the proxy every few seconds, each logged as a failed request,
+      // for a tab that can never have anything in it.
+      if (this.leased) {
+        return false;
+      }
+
       // Nothing listening yet is what the Deployment's readiness says (the workspace container
       // has a TCP probe on its port): asking the service proxy instead answered 503 every few
       // seconds, and the browser logs each one as an error. The proxy is only asked once a pod
