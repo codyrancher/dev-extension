@@ -1456,16 +1456,26 @@ export default {
     },
 
     /**
-     * The newest conversation of the workspace, or a new one: where a prompt goes. A newest
-     * whose pane is gone is started again to read it - a prompt queued to nobody sat there.
+     * Where a prompt goes: the conversation that is already there, or a new one.
+     *
+     * The one on the page comes first. An action pressed while a conversation is open belongs
+     * in that conversation - that is what "ask the agent" means when there is already an agent
+     * to ask - and the rail used to answer it by opening a window over itself instead, which
+     * is a second place to look at work that was already in front of you. Now the prompt is
+     * injected and the rail says where it went; the conversation is one button away, and stays
+     * put if it was open already.
+     *
+     * After the one on the page: the conversation about this work - the fix's, the review's,
+     * the feedback's - before a scratch one somebody opened from the pane bar. A conversation
+     * whose pane is gone is started again to read what was queued for it, since a prompt
+     * queued to nobody just sat there.
      */
     async say(title, text, reuse = !title) {
       await ensureWorkspaceReady(this.workspace.name);
       const conversations = await listConversations(this.workspace.name).catch(() => []);
-      // The conversation about this work - the fix's, the review's, the feedback's - before a
-      // scratch one somebody opened from the pane bar; the newest of those.
+      const shown = conversations.find((c) => c.id === this.currentConversation);
       const about = conversations.filter((c) => /^(Fix|Review|Feedback|Improve|CI) /.test(c.title || '') || (this.status?.pr && (c.title || '').includes(`#${ this.status.pr }`)));
-      const newest = about[about.length - 1] || conversations[conversations.length - 1];
+      const newest = shown || about[about.length - 1] || conversations[conversations.length - 1];
 
       if (newest && reuse) {
         const alive = (await conversationStates().catch(() => [])).find((c) => c.id === newest.id)?.alive;
@@ -1480,7 +1490,9 @@ export default {
         }
         await this.loadConversations();
         this.currentConversation = newest.id;
-        this.openTab('conversations');
+        this.notice = alive
+          ? `Sent to ${ newest.title || 'the conversation' }.`
+          : `Sent to ${ newest.title || 'the conversation' }; it had stopped, so it is starting again to read it.`;
 
         return newest;
       }
@@ -1489,6 +1501,7 @@ export default {
 
       await this.loadConversations();
       this.currentConversation = started.id;
+      this.notice = `${ title || 'A conversation' } has started; open the conversation to watch it.`;
 
       return started;
     },
@@ -1500,7 +1513,7 @@ export default {
       const edited = this.prompts.startFix;
 
       if (edited) {
-        await this.say(`Fix #${ this.issue }`, expandPrompt(edited, this.varsNow()));
+        await this.say(`Fix #${ this.issue }`, expandPrompt(edited, this.varsNow()), true);
       } else {
         await startIssueFix(this.$store, { number: this.issue, title: this.workspace.title || '' });
       }
@@ -1518,7 +1531,7 @@ export default {
       const editedReview = this.prompts.startReview;
 
       if (editedReview) {
-        await this.say(`Review #${ this.pr }`, expandPrompt(editedReview, this.varsNow()));
+        await this.say(`Review #${ this.pr }`, expandPrompt(editedReview, this.varsNow()), true);
       } else {
         await startPrReview(this.$store, { number: this.pr, title: this.workspace.title || '' }, DEFAULT_REPO, this.workspace.name);
       }
