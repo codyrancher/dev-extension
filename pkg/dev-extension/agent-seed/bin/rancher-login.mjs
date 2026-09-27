@@ -12,6 +12,7 @@
 import { chromium } from 'playwright-core';
 
 import fs from 'node:fs';
+import { cdpEndpoint } from './cdp.mjs';
 
 // The secrets live in /workspace/.env rather than in the process environment (see
 // .claude/rules/environment.md); read them from there when the shell did not.
@@ -29,7 +30,7 @@ try {
 
 const token = env.RANCHER_TOKEN || '';
 const rancher = env.RANCHER_URL || env.API || '';
-const cdp = env.CLAUDE_BROWSER_CDP || 'http://localhost:9222';
+const cdp = await cdpEndpoint(env.CLAUDE_BROWSER_CDP);
 
 if (!token || !rancher) {
   console.error('rancher-login: RANCHER_TOKEN and RANCHER_URL are needed; source /workspace/.env first (set -a; . /workspace/.env; set +a)');

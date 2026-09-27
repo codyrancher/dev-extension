@@ -16,13 +16,15 @@
 // so the resulting webm shows the URL, the pointer, and input actions even
 // though CDP screencast only captures the viewport.
 //
-// CDP endpoint comes from $CLAUDE_BROWSER_CDP (set in .bashrc by init.sh).
+// CDP endpoint comes from $CLAUDE_BROWSER_CDP (set in .bashrc by init.sh), with any
+// hostname in it resolved to an IP first - see cdp.mjs for why that is not optional.
 
 import { chromium } from 'playwright-core'
 import { promises as fs } from 'node:fs'
 import { spawn } from 'node:child_process'
+import { cdpEndpoint } from './cdp.mjs'
 
-const CDP = process.env.CLAUDE_BROWSER_CDP || 'http://localhost:9222'
+const CDP = await cdpEndpoint()
 
 // Overlay installed into the page for `record`. Idempotent - safe to run on
 // every navigation. Positions the URL bar at the bottom (semi-transparent,

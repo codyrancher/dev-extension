@@ -117,24 +117,6 @@ async function writeDoc(name, key, value, labels = {}) {
   }
 }
 
-/**
- * Take a key out of one of those documents.
- *
- * `writeDoc(name, key, null)` would store the four characters `null`, which reads back as
- * nothing but leaves a key behind for every sweep to find, decide is expired and act on again.
- * A merge patch with a null value removes the key, which is what "it is gone" should mean.
- */
-async function dropDoc(name, key) {
-  await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ name }`, {
-    method: 'PATCH',
-    body:   JSON.stringify({ data: { [key]: null } }),
-  }).catch((e) => {
-    if (e.status !== 404) {
-      throw e;
-    }
-  });
-}
-
 // -- GitHub ----------------------------------------------------------------------------------
 
 let tokenCache = { at: 0, token: '' };
@@ -1704,8 +1686,18 @@ const TOOL_KINDS = [...Object.keys(TOOL_APPS), 'browser'];
 /** Where each tool answers, which is also what its Service publishes. */
 const TOOL_PORTS = { 'dev-server': 8005, storybook: 6006, rancher: 443 };
 const TOOL_SCHEMES = { 'dev-server': 'https', storybook: 'http', rancher: 'https' };
-/** Where the browser tool's leases are kept, since it has no namespace to annotate. */
-const BROWSER_LEASES = 'dev-tool-browser';
+/**
+ * The browser tool is the shared Chromium, and it is not leased.
+ *
+ * It was a CDP *browser context* per workspace - its own cookies, its own window - which is a
+ * real thing in Chromium and a thing no client here can use: Playwright's `connectOverCDP`
+ * surfaces only the default context, and a page opened in any other one turns up inside that
+ * same default context's `pages()`. So the isolation was invisible to the tooling that was
+ * supposed to benefit from it, while the contexts accumulated and their pages appeared in every
+ * other workspace's list. One shared browser, one shared set of logins - which is what the
+ * GitHub and Rancher sessions want anyway - and no lease, because a browser nobody is driving
+ * costs nothing to leave running.
+ */
 
 function toolNs(workspace, kind) {
   return `dev-${ workspace }-${ kind }`;
@@ -1782,96 +1774,27 @@ function leaseUntil(minutes) {
   return { minutes: span, expires: new Date(Date.now() + span * 60_000).toISOString() };
 }
 
-/** The shared browser's own CDP session - the browser endpoint, not a page's. */
-async function browserSession() {
-  const base = await cdpBase();
-  const version = await fetch(`${ base }/json/version`).then((r) => r.json());
-
-  if (!version?.webSocketDebuggerUrl) {
-    throw failure(502, 'The shared browser did not offer a CDP endpoint.');
-  }
-
-  return cdpSession(version.webSocketDebuggerUrl);
-}
-
 /**
- * The browser tool: a context on the shared Chromium rather than a Chromium of its own.
+ * The shared browser, as a tool: where it is, in a form that can be connected to.
  *
- * One browser serves every workspace - it is the one that already carries the github.com login,
- * and a second Chromium per workspace is 400 MB that mostly sits there. What keeps two agents
- * out of each other's tabs is a *browser context*: its own cookies, its own storage, its own
- * window. Starting the tool makes one and remembers its id; releasing the tool disposes it,
- * which closes every page in it.
+ * `cdpBase()` resolves the service name to its address, and that is the whole value of this
+ * answer. Chromium refuses a CDP request whose Host header is neither localhost nor an IP - its
+ * guard against DNS rebinding - so the service name every other part of this product passes
+ * around is the one string a client cannot use. An agent handed it got a 500 from every call.
  */
-async function startBrowserTool(workspace, minutes) {
-  const existing = await browserTool(workspace);
-  const lease = leaseUntil(minutes);
-  const session = await browserSession();
-
-  try {
-    // A context outlives the connection that made it, but not the browser: when the shared
-    // Chromium restarts, every context goes with it while the records of them stay. So the
-    // record is believed only as far as the browser agrees with it, and attaching to a context
-    // that is no longer there makes a new one instead of handing back an id that fails on first
-    // use, somewhere else, minutes later.
-    const live = existing.browserContextId
-      && (await session.send('Target.getBrowserContexts').catch(() => ({ browserContextIds: [] })))
-        .browserContextIds.includes(existing.browserContextId);
-
-    if (live) {
-      await writeDoc(BROWSER_LEASES, workspace, { ...existing.record, ...lease });
-
-      return { ...existing, ...lease };
-    }
-
-    const { browserContextId } = await session.send('Target.createBrowserContext', { disposeOnDetach: false });
-    const record = { browserContextId, ...lease };
-
-    await writeDoc(BROWSER_LEASES, workspace, record);
-
-    return {
-      kind: 'browser', workspace, running: true, record, ...lease, cdp: GITHUB_BROWSER_CDP, browserContextId,
-    };
-  } finally {
-    session.close();
-  }
-}
-
 async function browserTool(workspace) {
-  // readDoc parses what writeDoc encoded; the record is an object on both sides. It was written
-  // pre-encoded once, which read back correctly here and as a *string* in the sweep below - so
-  // every context looked leaseless and was released within the minute of being handed out.
-  const record = await readDoc(BROWSER_LEASES, workspace).catch(() => null);
+  const url = await cdpBase().catch(() => GITHUB_BROWSER_CDP);
 
   return {
     kind:    'browser',
     workspace,
-    running: !!record?.browserContextId,
-    record,
-    expires: record?.expires || '',
-    minutes: record?.minutes || 0,
-    cdp:     GITHUB_BROWSER_CDP,
-    browserContextId: record?.browserContextId || '',
-    detail:  record?.browserContextId ? 'a context of its own on the shared browser' : '',
+    running: true,
+    ready:   true,
+    shared:  true,
+    url,
+    cdp:     url,
+    detail:  'the shared browser, always available',
   };
-}
-
-async function stopBrowserTool(workspace) {
-  const current = await browserTool(workspace);
-
-  if (current.browserContextId) {
-    const session = await browserSession().catch(() => null);
-
-    if (session) {
-      // A context that is already gone is not a failure: the browser may have restarted, which
-      // takes every context with it, and the record is what is being cleared either way.
-      await session.send('Target.disposeBrowserContext', { browserContextId: current.browserContextId }).catch(() => {});
-      session.close();
-    }
-  }
-  await dropDoc(BROWSER_LEASES, workspace).catch(() => {});
-
-  return { kind: 'browser', workspace, running: false };
 }
 
 /** What a pod-backed tool is doing, and where it answers. */
@@ -1996,7 +1919,9 @@ async function startTool(workspace, kind, body = {}) {
   }
 
   if (kind === 'browser') {
-    return startBrowserTool(workspace, body.minutes);
+    // Nothing to create: the shared browser is already there, and saying where it is is the
+    // whole of "starting" it.
+    return browserTool(workspace);
   }
 
   const appId = TOOL_APPS[kind];
@@ -2051,7 +1976,7 @@ async function renewTool(workspace, kind, minutes) {
   const lease = leaseUntil(minutes);
 
   if (kind === 'browser') {
-    return startBrowserTool(workspace, minutes);
+    return browserTool(workspace);
   }
 
   await k8s(`/api/v1/namespaces/${ toolNs(workspace, kind) }`, {
@@ -2064,7 +1989,10 @@ async function renewTool(workspace, kind, minutes) {
 
 async function stopTool(workspace, kind) {
   if (kind === 'browser') {
-    return stopBrowserTool(workspace);
+    // It is shared and it is not leased, so there is nothing here that releasing could free.
+    // Answered rather than refused, so a skill that tidies up after itself is not made to
+    // special-case one of the four.
+    return { ...(await browserTool(workspace)), detail: 'the shared browser is not released; it costs nothing when nobody is driving it' };
   }
 
   await k8s(`/api/v1/namespaces/${ toolNs(workspace, kind) }`, { method: 'DELETE' }).catch((e) => {
@@ -2126,29 +2054,6 @@ async function reapTools() {
       });
   }
 
-  // The browser tool keeps its leases in a ConfigMap rather than a namespace, since it has no
-  // pod of its own. Same two rules.
-  const leases = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ BROWSER_LEASES }`).catch(() => null);
-
-  for (const [workspace, raw] of Object.entries(leases?.data || {})) {
-    let record;
-
-    try {
-      record = JSON.parse(raw);
-    } catch {
-      record = null;
-    }
-    // The same shape `readDoc` hands back: one JSON parse, one object.
-    const expires = Date.parse(record?.expires || '');
-
-    if (live.has(workspace) && Number.isFinite(expires) && expires >= now) {
-      continue;
-    }
-
-    await stopBrowserTool(workspace)
-      .then(() => console.log(`[dev-api] released the browser context for ${ workspace }`))
-      .catch((e) => console.error(`[dev-api] tools: browser context for ${ workspace }:`, e.message || e));
-  }
 }
 
 // -- HTTP ------------------------------------------------------------------------------------
@@ -2289,12 +2194,8 @@ const routes = [
       }
     }
 
-    const leases = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ BROWSER_LEASES }`).catch(() => null);
-
-    for (const workspace of Object.keys(leases?.data || {})) {
-      tools.push(await browserTool(workspace).catch(() => ({ kind: 'browser', workspace })));
-    }
-
+    // The shared browser belongs to every workspace at once, so it is not listed here: there is
+    // nothing per-workspace about it to report. `GET /tools/<workspace>` includes it.
     return { tools };
   }],
   ['GET', /^\/tools\/([a-z0-9-]+)$/, async(m) => ({ workspace: m[1], tools: await toolsOf(m[1]) })],

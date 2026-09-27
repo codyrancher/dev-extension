@@ -194,6 +194,11 @@ export default {
         />
         <span class="workspace-tools__name">{{ row.label }}</span>
         <span class="workspace-tools__state">{{ row.state }}</span>
+        <!--
+          The shared browser has nothing to attach or release: it is one Chromium for every
+          workspace, and it costs nothing when nobody is driving it. The row is still here,
+          because "what can this workspace use" is the question the list answers.
+        -->
         <a
           v-if="row.href && row.tool.ready"
           :href="row.href"
@@ -202,7 +207,7 @@ export default {
           class="workspace-tools__link"
         >Open</a>
         <button
-          v-if="row.tool.running"
+          v-if="row.tool.running && !row.tool.shared"
           class="workspace-tools__link"
           :disabled="!!busy"
           title="Another lease's worth, for work that is not finished."
@@ -211,7 +216,7 @@ export default {
           Renew
         </button>
         <button
-          v-if="row.tool.running"
+          v-if="row.tool.running && !row.tool.shared"
           class="workspace-tools__link"
           :disabled="!!busy"
           title="Give it back now. Everything it was holding goes with it."
@@ -220,7 +225,7 @@ export default {
           Release
         </button>
         <button
-          v-else
+          v-else-if="!row.tool.running"
           class="workspace-tools__link"
           :disabled="!!busy"
           :title="row.what"

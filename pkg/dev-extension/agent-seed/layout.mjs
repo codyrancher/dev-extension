@@ -148,6 +148,11 @@ for (const [rel, raw] of Object.entries(seed)) {
     // and the tree is re-cloned more often than the seed is laid out. It lives beside the
     // workspace's other seeded files and git is pointed at it below.
     dests = [path.join(ROOT, '.githooks', path.basename(rel))];
+  } else if (rel === 'bin/cdp.mjs') {
+    // Both places, because the scripts that import it ended up in two: browser.mjs and
+    // axtree.mjs at the tree's root, the rest in bin/. A relative import then works from either
+    // without anything having to know where it was put.
+    dests = [path.join(ROOT, 'cdp.mjs'), path.join(ROOT, 'bin', 'cdp.mjs')];
   } else if (rel === 'bin/browser.mjs' || rel === 'bin/axtree.mjs') {
     dests = [path.join(ROOT, path.basename(rel))];
   } else if (rel.startsWith('bin/')) {

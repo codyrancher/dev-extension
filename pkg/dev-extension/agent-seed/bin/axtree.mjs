@@ -24,6 +24,7 @@
 //   --save FILE  also write the output to FILE
 import fs from 'fs'
 import { chromium } from 'playwright-core'
+import { cdpEndpoint } from './cdp.mjs';
 
 const argv = process.argv.slice(2)
 const flag = (name, fallback = null) => {
@@ -49,7 +50,7 @@ const RELATIONS = ['controls', 'labelledby', 'describedby', 'owns', 'flowto', 'a
 // State-ish properties that change what gets announced.
 const STATES = ['selected', 'checked', 'expanded', 'pressed', 'disabled', 'focused', 'level', 'hasPopup', 'invalid', 'live'];
 
-const cdp = process.env.CLAUDE_BROWSER_CDP || 'http://localhost:9222';
+const cdp = await cdpEndpoint();
 const browser = await chromium.connectOverCDP(cdp);
 const pages = browser.contexts().flatMap(c => c.pages());
 

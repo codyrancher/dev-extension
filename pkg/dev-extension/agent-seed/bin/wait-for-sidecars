@@ -2,9 +2,10 @@
 # Block until this workspace's browser (CDP) and its Rancher answer, then exit 0.
 #
 # The harness's version of this starts the sidecars first. Here there is nothing to start: the
-# browser is a container in this pod and the Rancher is the one this workspace was pointed at,
-# both of which are up whenever the workspace is. What is left is the wait, which is the part a
-# skill actually needs - Chromium takes a few seconds after the pod starts to answer on 9222.
+# browser is either a container in this pod (an all-in-one workspace) or the shared one every
+# leased workspace drives, and the Rancher is the one this workspace was pointed at - all of
+# which are up whenever the workspace is. What is left is the wait, which is the part a skill
+# actually needs.
 #
 # Usage:
 #   wait-for-sidecars              # wait for browser (CDP) + rancher
@@ -15,6 +16,19 @@ set -e
 TIMEOUT="${TIMEOUT:-180}"
 TARGETS="${*:-browser rancher}"
 CDP="${CLAUDE_BROWSER_CDP:-http://localhost:9222}"
+# Chromium refuses a CDP request whose Host is neither localhost nor an IP - its guard against
+# DNS rebinding - and the shared browser is a Service, so the name it is reached by is the one
+# thing that cannot be used. Resolve it here, as cdp.mjs does for the node scripts; without this
+# the wait below timed out against a browser that was up the whole time.
+CDP_HOST=$(printf '%s' "$CDP" | sed -e 's|^[a-z][a-z]*://||' -e 's|[:/].*$||')
+case "$CDP_HOST" in
+  localhost) ;;
+  # Anything that is not made only of digits and dots is a name, and a name has to be resolved.
+  *[!0-9.]*)
+    CDP_IP=$(getent hosts "$CDP_HOST" 2>/dev/null | awk '{ print $1; exit }')
+    [ -n "$CDP_IP" ] && CDP=$(printf '%s' "$CDP" | sed "s|$CDP_HOST|$CDP_IP|")
+    ;;
+esac
 RANCHER="${RANCHER_URL:-${API:-}}"
 
 check_browser() { curl -sf --max-time 2 "$CDP/json/version" >/dev/null 2>&1; }
