@@ -31,8 +31,8 @@ export interface Tool {
   /** Being removed, or why it is not answering yet. */
   removing?: boolean;
   detail?: string;
-  /** The shared browser's context, for the browser tool. */
-  browserContextId?: string;
+  /** The browser tool: the one Chromium every workspace shares, rather than a pod of its own. */
+  shared?: boolean;
   error?: string;
 }
 
@@ -56,7 +56,7 @@ export const TOOLS: Record<ToolKind, { label: string; icon: string; what: string
   browser: {
     label: 'Browser',
     icon:  'icon-globe',
-    what:  'A window and a session on the shared browser - its own cookies and storage, so no other agent is in the way.',
+    what:  'The shared Chromium every workspace drives, with the GitHub and Rancher logins already in it. Always there, nothing to attach.',
   },
 };
 
@@ -135,8 +135,8 @@ export function toolState(tool: Tool): string {
   if (tool.removing) {
     return 'being released';
   }
-  if (tool.kind === 'browser') {
-    return tool.detail || 'a window of its own';
+  if (tool.shared) {
+    return tool.detail || 'shared, always available';
   }
 
   return tool.ready ? (leaseLeft(tool) || 'running') : (tool.detail || 'starting');

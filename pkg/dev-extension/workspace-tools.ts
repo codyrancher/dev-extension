@@ -15,12 +15,12 @@
 // and owned by the pane's user, the same three places the harness put them.
 
 import {
-  podExecOnce, workspacePod, workspaceNamespace, WORKSPACE_CONTAINER, githubToken, devFetch, secretValue, clusterBase, activeCluster, GITHUB_BROWSER_CDP, GITHUB_BROWSER_CDP_DOWNSTREAM
+  podExecOnce, workspacePod, workspaceNamespace, WORKSPACE_CONTAINER, githubToken, devFetch, secretValue, clusterBase, activeCluster, GITHUB_BROWSER_CDP, GITHUB_BROWSER_CDP_DOWNSTREAM, sharedBrowserCdp
 } from './api';
 import { AGENT_SEED } from './agent-seed.generated';
 import { UNREWRITE_B64 } from './apps';
 import {
-  DEV_API_IN_CLUSTER, workspaceRoot
+  DEV_API_IN_CLUSTER, workspaceRoot, isLte
 } from './config/constants';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -340,6 +340,8 @@ async function ensureEnvironment(target: WorkspaceTarget, github: string, browse
   const rancher = await rancherToken(target, browserRancher);
   const login = github ? (await ghLogin(github)).login : '';
   const browser = /^https?:\/\/[^'\s]+$/.test(browserRancher) ? browserRancher.replace(/\/+$/, '') : '';
+  // A leased workspace has no Chromium of its own; it drives the shared one, by IP.
+  const browserCdp = isLte(target.workspace) ? await sharedBrowserCdp() : 'http://localhost:9222';
 
   const out = await asRoot(target, [
     'set -e',
@@ -374,7 +376,19 @@ async function ensureEnvironment(target: WorkspaceTarget, github: string, browse
     `CLAUDE_HARNESS_API=${ DEV_API_IN_CLUSTER }`,
     `HARNESS_PROJECT=${ target.workspace }`,
     `PROJECT_NAME=${ target.workspace }`,
-    'CLAUDE_BROWSER_CDP=http://localhost:9222',
+    // The browser an agent here drives.
+    //
+    // An all-in-one workspace has Chromium as a second container in its own pod, so localhost is
+    // right. A leased workspace has no browser of its own and uses the shared one - and this line
+    // was `localhost:9222` for both, which is the whole of the browser trouble an agent in a
+    // leased workspace ran into: `.env` is sourced *after* the container's env, so the correct
+    // value the App sets was overwritten with an address where nothing listens. Every CDP call
+    // then failed with ECONNREFUSED on ::1:9222, and the agent had to work the endpoint out for
+    // itself.
+    //
+    // By IP, not by name: see sharedBrowserCdp. Chromium answers 500 to a request whose Host is a
+    // service name, so the name is not a value any client can use.
+    `CLAUDE_BROWSER_CDP=${ browserCdp }`,
     // The shared github-browser every agent uses for GitHub - it holds the one GitHub login, so
     // media uploads go through it rather than a workspace's own signed-out browser. A local
     // workspace reaches it by service name; a downstream one cannot (different cluster), so it gets

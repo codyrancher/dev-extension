@@ -1774,6 +1774,26 @@ export const GITHUB_BROWSER_CDP = 'http://github-browser.dev-system.svc.cluster.
 /** The CDP endpoint a DOWNSTREAM workspace uses: the agent pod's tunnel of github-browser into it. */
 export const GITHUB_BROWSER_CDP_DOWNSTREAM = 'http://127.0.0.1:9223';
 
+/**
+ * The shared browser's CDP endpoint as something that can actually be connected to: by IP.
+ *
+ * Chromium refuses a Host header that is not localhost or an IP - its guard against DNS
+ * rebinding - so `http://github-browser.dev-system.svc.cluster.local:9222` answers 500 to every
+ * client, while the same request to the Service's ClusterIP answers 200. dev-api has always
+ * resolved it before use (cdpBase); nothing wrote the resolved form down for the *agents*, so an
+ * agent handed the service name got a 500 from every CDP call and had to discover the guard, run
+ * `getent hosts` itself, and thread `CDP=http://<ip>:9222` through every command afterwards.
+ *
+ * The ClusterIP rather than a pod IP: it is stable for the life of the Service, and this is read
+ * again on every action, so a Service that was recreated corrects itself on the next one.
+ */
+export async function sharedBrowserCdp(): Promise<string> {
+  const service = await devFetch(`${ clusterBase(DEFAULT_CLUSTER) }/v1/services/${ DEV_SYSTEM_NAMESPACE }/${ GITHUB_BROWSER_NAME }`, { timeoutMs: 5000 }).catch(() => null);
+  const ip = service?.spec?.clusterIP;
+
+  return ip && ip !== 'None' ? `http://${ ip }:9222` : GITHUB_BROWSER_CDP;
+}
+
 const GITHUB_BROWSER_NAME = 'github-browser';
 const GITHUB_BROWSER_IMAGE = 'lscr.io/linuxserver/chromium:latest';
 // The node hostPath the extension-studio `browser` used. Reused so the github.com login a person
