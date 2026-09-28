@@ -1517,9 +1517,8 @@ export default {
       } else {
         await startIssueFix(this.$store, { number: this.issue, title: this.workspace.title || '' });
       }
-      this.notice = 'The fix conversation has started; it opens the PR when it is done.';
+      this.notice = 'The fix is running; it opens the PR when it is done.';
       await this.loadConversations();
-      this.openTab('conversations');
       await this.refreshStatus();
     },
 
@@ -1537,7 +1536,6 @@ export default {
       }
       this.notice = 'The review has started; its findings land on the left as it goes.';
       await this.loadConversations();
-      this.openTab('conversations');
       await this.refreshStatus();
     },
 
@@ -1559,8 +1557,7 @@ export default {
       // Into the fix's own conversation when there is one - it has the context of every round -
       // and a new one named for the PR otherwise.
       await this.say(`Feedback on #${ pr }`, this.promptOf('answerFeedback'), true);
-      this.notice = 'The agent is answering the feedback in a new conversation.';
-      this.openTab('conversations');
+      this.notice = 'The agent is answering the feedback.';
     },
 
     async reverify() {
@@ -1577,7 +1574,6 @@ export default {
       void pr;
       await this.say('', this.promptOf('reviewAgain'));
       this.notice = 'The agent is reviewing the new commits in the review conversation.';
-      this.openTab('conversations');
     },
 
     /** The approval, written rather than fired: a message, and the evidence for it. */
