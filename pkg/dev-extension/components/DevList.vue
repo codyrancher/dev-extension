@@ -397,7 +397,21 @@ export default {
                 v-if="row.detail || row.reserveDetail"
                 class="dev-list__detail"
                 :class="detailClass(row)"
-              >{{ row.detail }}</span>
+              >
+                <span class="dev-list__detail-text">{{ row.detail }}</span>
+                <!--
+                  The PR's checks, in their own colour rather than the row's: the row's colour
+                  says how much the work wants a person, and a red check is a fact about the PR
+                  whatever the work is waiting on. The counts are on the title, since the line
+                  is a column's width and "2 of 14 failing" is a sentence.
+                -->
+                <span
+                  v-if="row.ci"
+                  class="dev-list__ci"
+                  :class="`dev-list__ci--${ row.ci.tone }`"
+                  :title="row.ci.title"
+                >{{ row.ci.label }}</span>
+              </span>
             </span>
             <!--
               Said in words as well as in colour: a dot going red is not a message somebody reads,
@@ -746,6 +760,15 @@ export default {
         // icon font's own vertical padding that made it sit high.
         line-height: 1;
       }
+    }
+
+    // The stage's own words. It is the part that gives way when the line is too narrow, so that
+    // a long stage name never pushes the checks off the end - which is the half a glance is for.
+    &__detail-text {
+      overflow:      hidden;
+      text-overflow: ellipsis;
+      white-space:   nowrap;
+      min-width:     0;
 
       &--green {
         color: var(--status-done);
@@ -758,6 +781,24 @@ export default {
       &--waiting {
         color: var(--status-waiting);
       }
+    }
+
+    // The checks, said briefly and in their own three colours. Separated from the stage by a
+    // middle dot drawn here rather than typed into the text, so the line reads as one thing
+    // when there is no chip and as two when there is.
+    &__ci {
+      flex:        0 0 auto;
+      white-space: nowrap;
+
+      &::before {
+        content: '·';
+        margin-right: 4px;
+        color:        var(--muted);
+      }
+
+      &--green     { color: var(--status-done); }
+      &--attention { color: var(--status-input); }
+      &--error     { color: var(--status-error); }
 
       &--working {
         color: var(--status-working);

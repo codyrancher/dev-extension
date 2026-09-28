@@ -102,8 +102,73 @@ export interface WorkspaceStatus {
    */
   round: number;
   pr: number;
+  /**
+   * What the PR's checks are doing, once there is a PR to have any: passing, still running, or
+   * failing. '' before GitHub has been read, and for work that has no PR yet.
+   */
+  ci: CiState;
+  /** The same in words, with the counts, for the row's hover card and its title. */
+  ciNote: string;
   /** When GitHub was last read for it; 0 when it never has been. */
   readAt: number;
+}
+
+/** A PR's checks, as one word. */
+export type CiState = '' | 'passing' | 'pending' | 'failing';
+
+/**
+ * The three colours the checks are said in. Its own scale rather than the row's `Tone`: the
+ * row's colour says how much the work wants a person, and a red check is a fact about the PR
+ * whatever the work is waiting on.
+ */
+export type CiTone = 'green' | 'attention' | 'error';
+
+/**
+ * The checks on a PR, from what prDetail already read.
+ *
+ * Failing first, then pending: a run with one failure and six still going needs a person
+ * whatever the six turn into, and saying "pending" until they finish is how a red PR sits in a
+ * list looking fine all afternoon.
+ */
+function ciOf(detail: Json): { ci: CiState; ciNote: string } {
+  const ci = detail?.meta?.ci;
+
+  if (!ci || !ci.total) {
+    return { ci: '', ciNote: '' };
+  }
+  if (ci.failing) {
+    return { ci: 'failing', ciNote: `${ ci.failing } of ${ ci.total } checks failing` };
+  }
+  if (ci.pending) {
+    return { ci: 'pending', ciNote: `${ ci.pending } of ${ ci.total } checks still running` };
+  }
+
+  return { ci: 'passing', ciNote: `${ ci.total } checks passing` };
+}
+
+/**
+ * The stages at which a PR's checks are worth a word in a list: every stage from the draft PR
+ * on, which is every stage at which there is a PR being checked. Before that a fix is being
+ * assessed or written and there is nothing to check; a review workspace is about somebody
+ * else's PR and so has checks from the first moment.
+ */
+const CI_STAGES: Stage[] = ['draft', 'review', 'feedback', 'merged', 'agent', 'findings', 'submitted', 'response', 'approved'];
+
+/**
+ * The CI chip for a row: its word, its colour, and the counts behind it.
+ *
+ * One definition, so the sidebar and anything else that shows it agree on when it appears and
+ * what it says. `null` when there is nothing to say - no PR, no checks, or work that has not
+ * reached a PR yet.
+ */
+export function ciChip(status: Pick<WorkspaceStatus, 'ci' | 'ciNote' | 'stage' | 'pr'>): { label: string; tone: CiTone; title: string } | null {
+  if (!status.ci || !status.pr || !CI_STAGES.includes(status.stage as Stage)) {
+    return null;
+  }
+
+  const tone: CiTone = status.ci === 'failing' ? 'error' : status.ci === 'pending' ? 'attention' : 'green';
+
+  return { label: `CI ${ status.ci }`, tone, title: status.ciNote };
 }
 
 const AGENT_LABEL: Record<AgentState, string> = {
@@ -170,7 +235,7 @@ let reading = false;
 
 function empty(): WorkspaceStatus {
   return {
-    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0, kind: 'other', stage: '', stageLabel: '', reviewed: false, round: 1, pr: 0,
+    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0, kind: 'other', stage: '', stageLabel: '', reviewed: false, round: 1, pr: 0, ci: '', ciNote: '',
   };
 }
 
@@ -448,7 +513,7 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
     const rec = await reconcileStage(name, toDerived('review', w, pr));
 
     return {
-      ...display(rec, w), title: d.meta?.title || '', links, kind: 'review', pr,
+      ...display(rec, w), ...ciOf(d), title: d.meta?.title || '', links, kind: 'review', pr,
     };
   }
   if (issue) {
@@ -466,7 +531,7 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
     const title = d?.meta?.title || (await issueBody(DEFAULT_REPO, issue).catch(() => ({ title: '' })).then((i) => i.title)) || '';
 
     return {
-      ...display(rec, w), title, links, kind: 'fix', pr: n,
+      ...display(rec, w), ...ciOf(d), title, links, kind: 'fix', pr: n,
     };
   }
 

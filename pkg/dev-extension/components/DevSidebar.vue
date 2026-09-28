@@ -25,7 +25,7 @@ import {
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
 import {
-  workspaceStatuses, agentLabel, statusLine, stageName, displayTone, autoStopIdle
+  workspaceStatuses, agentLabel, statusLine, stageName, displayTone, autoStopIdle, ciChip
 } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import DevList from './DevList.vue';
@@ -553,6 +553,9 @@ export default {
           title:  [workspace.name, title, workspace.cluster && workspace.cluster !== 'local' ? workspace.cluster : ''].filter(Boolean).join(' · '),
           state:  workspace.state,
           detail: row.join(' · '),
+          // The PR's checks, from the draft PR on: which of these needs attention is a question
+          // about the checks, and reading the rows was the only way to answer it.
+          ci:     status ? ciChip(status) : null,
           tone:   status ? displayTone(status) : undefined,
           // The agent's state is carried by the row's status disc (its colour), not a glyph; the
           // words are on the card.
