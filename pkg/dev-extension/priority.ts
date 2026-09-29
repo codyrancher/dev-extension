@@ -107,6 +107,20 @@ const STALLED = {
   score: 45,
 };
 
+/**
+ * The one stall that is not a stall: code written, no pull request.
+ *
+ * A fix at `code` has commits on its branch - that is what the stage means - so a stopped agent
+ * there has not run out of road, it has arrived at the one step it does not take on its own.
+ * Nothing can review it until the PR exists, which makes it worth more than a nudge and less
+ * than the things a person is already being waited on for.
+ */
+const NO_PR = {
+  needs: 'Open the pull request',
+  why:   'the branch has commits and no PR is open',
+  score: 62,
+};
+
 /** What a workspace is called in the queue, and where its work is. */
 function label(status: WorkspaceStatus, name: string): { what: string; url: string } {
   if (status.pr) {
@@ -166,7 +180,9 @@ function fromWorkspaces(statuses: Record<string, WorkspaceStatus>): PriorityItem
     const working = ['assess', 'code', 'agent'].includes(status.stage);
 
     if (working && ['idle', 'finished', 'none'].includes(status.agent)) {
-      out.push({ ...base, ...STALLED });
+      const coded = status.kind === 'fix' && status.stage === 'code' && !status.pr;
+
+      out.push({ ...base, ...(coded ? NO_PR : STALLED) });
     }
   }
 
