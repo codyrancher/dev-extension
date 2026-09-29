@@ -29,6 +29,9 @@ const INSTANCES = '/apis/appsplus.io/v1alpha1/appinstances';
 // The App whose installations are per-workspace shares (dashboard-preview), named
 // `preview-<ws>` / `storybook-<ws>`. The reconciler removes one whose workspace is gone.
 const PREVIEW_APP = 'dashboard-preview';
+/** The App new workspaces are made from, and the marker their names carry. See lte.ts. */
+const LTE_APP = 'lte-workspace';
+const LTE_PREFIX = 'lte-';
 const LABEL_WORKSPACE = 'dev.rancher.io/workspace';
 const LABEL_APP = 'dev.rancher.io/app';
 const LABEL_CLUSTER = 'dev.rancher.io/cluster';
@@ -1640,6 +1643,14 @@ async function makeWorkspace(name, appId, cluster = 'local') {
     throw failure(400, `No Apps Plus app called ${ appId }. There is ${ known.map((app) => app.id).join(', ') || 'none' }.`);
   }
 
+  // A leased workspace wears its kind in its name, the same way the create page puts it there:
+  // every list, namespace and tree then says which kind it is without reading the App off the
+  // Installation, and `isLte` in the extension is a question about a name. The caller is told
+  // the name it ended up with, in the answer below.
+  if (appId.startsWith(LTE_PREFIX) && !name.startsWith(LTE_PREFIX)) {
+    name = `${ LTE_PREFIX }${ name }`;
+  }
+
   const namespace = `dev-${ name }`;
   const created = await create(INSTANCES, {
     apiVersion: 'appsplus.io/v1alpha1',
@@ -2174,7 +2185,10 @@ const routes = [
       throw failure(400, problem);
     }
 
-    return makeWorkspace(body.name, body.app || body.template || 'rancher-dev', body.cluster || 'local');
+    // The leased App by default, which is what new work gets everywhere else: this is the path
+    // with no browser behind it - an agent, a script - and it used to be the one place that
+    // still made an all-in-one workspace without being asked to.
+    return makeWorkspace(body.name, body.app || body.template || LTE_APP, body.cluster || 'local');
   }],
 
   // -- Tools ---------------------------------------------------------------------------------
