@@ -24,7 +24,7 @@ import {
 } from '../api';
 import { listApps } from '../apps';
 import { priorityQueue } from '../priority';
-import { workspaceStatuses } from '../workspace-status';
+import { workspaceStatuses, readStatusNow } from '../workspace-status';
 import { defaultRancherValues } from '../ranchers';
 import { readPrefs, shownApps } from '../prefs';
 import {
@@ -547,11 +547,24 @@ export default {
 
       try {
         const workspaces = await listAllWorkspaces().catch(() => []);
-        const [work, dependabot, statuses] = await Promise.all([
+        const [work, dependabot, cached] = await Promise.all([
           this.work ? Promise.resolve(this.work) : myWork().catch(() => null),
           this.alertsLoaded ? Promise.resolve(null) : dependabotData(this.repo).catch(() => null),
           workspaceStatuses(workspaces).catch(() => ({})),
         ]);
+
+        // The stages are the best signal this list has, and `workspaceStatuses` hands back
+        // whatever has been read so far - it starts a read for the rest and returns. On a cold
+        // tab that is nothing, so the queue would rank a review workspace by what GitHub alone
+        // can see and miss that its agent has already finished and left findings waiting. So the
+        // ones with no read yet are read now, in parallel: a handful of memoised PR reads, on the
+        // one tab that is explicitly the expensive one.
+        const statuses = { ...cached };
+        const unread = Object.entries(statuses).filter(([, status]) => !status.readAt).map(([name]) => name);
+
+        await Promise.all(unread.map(async(name) => {
+          statuses[name] = await readStatusNow(name).catch(() => statuses[name]);
+        }));
 
         if (work) {
           this.work = work;

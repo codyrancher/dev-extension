@@ -21,7 +21,7 @@
 // that everything in the 90s genuinely cannot move without this person and everything in the
 // 10s could wait until Friday.
 
-import type { GithubWork, GithubPr, GithubIssue, GithubAlert } from './github';
+import type { GithubWork, GithubPr, GithubIssue } from './github';
 import type { WorkspaceStatus } from './workspace-status';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -283,23 +283,35 @@ function fromIssues(issues: GithubIssue[], workspaces: Set<string>): PriorityIte
   return out;
 }
 
-/** The advisories: ranked by what GitHub calls them, and only while there is a fix to take. */
-function fromAlerts(alerts: GithubAlert[], workspaces: Set<string>): PriorityItem[] {
+/**
+ * The advisories.
+ *
+ * Ranked by what GitHub calls their severity, and dropped entirely once Dependabot has opened a
+ * pull request for one: the work is then the bump, which is already in this list a few rows
+ * down, and having both is the same job twice under two names.
+ *
+ * The shape is dev-api's grouped one (`/my-work/dependabot`), where one advisory carries every
+ * alert it raised - `ghsaId`, `patchedVersion`, `packages`, `prs` - and not github.ts's.
+ */
+function fromAlerts(alerts: Json[], workspaces: Set<string>): PriorityItem[] {
   const severity: Record<string, number> = {
     critical: 38, high: 35, medium: 30, low: 25,
   };
 
   return (alerts || [])
-    .filter((alert) => !workspaces.has(`dependabot-${ (alert.packages?.[0] || '').replace(/^@/, '').replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase() }`))
+    .filter((alert) => !alert.prs?.length)
+    .filter((alert) => !workspaces.has(`dependabot-${ (alert.packages?.[0] || alert.slug || '').replace(/^@/, '').replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase() }`))
     .map((alert) => ({
-      key:       `alert:${ alert.key }`,
-      what:      `Advisory ${ alert.ghsa }`,
-      title:     alert.summary,
+      key:       `alert:${ alert.slug || alert.ghsaId }`,
+      what:      `Advisory ${ alert.ghsaId || alert.slug || '' }`,
+      title:     alert.title || '',
       workspace: '',
-      url:       alert.url,
-      needs:     alert.patched ? 'Take the patch' : 'Decide what to do',
-      why:       `${ alert.severity } severity in ${ alert.packages.join(', ') || 'a dependency' }${ alert.patched ? `, fixed in ${ alert.patched }` : ', no patch yet' }`,
-      score:     (severity[String(alert.severity).toLowerCase()] || 25) + (alert.patched ? 0 : -3),
+      url:       alert.url || '',
+      needs:     alert.patchedVersion ? 'Take the patch' : 'Decide what to do',
+      why:       `${ alert.severity } severity in ${ (alert.packages || []).join(', ') || 'a dependency' }${ alert.patchedVersion ? `, fixed in ${ alert.patchedVersion }` : ', no patch yet' }`,
+      // No patch is worse to be told about and less to do about it, so it sits just below one
+      // that can simply be taken.
+      score:     (severity[String(alert.severity).toLowerCase()] || 25) + (alert.patchedVersion ? 0 : -3),
     }));
 }
 
@@ -356,7 +368,7 @@ export function priorityQueue(input: {
   work: GithubWork | null;
   statuses: Record<string, WorkspaceStatus>;
   workspaces: string[];
-  alerts: GithubAlert[];
+  alerts: Json[];
   botPrs: Json[];
   botReviews: Json;
 }): PriorityItem[] {
