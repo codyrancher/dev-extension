@@ -23,6 +23,8 @@ import {
   listAllWorkspaces, createWorkspace
 } from '../api';
 import { listApps } from '../apps';
+import { priorityQueue } from '../priority';
+import { workspaceStatuses } from '../workspace-status';
 import { defaultRancherValues } from '../ranchers';
 import { readPrefs, shownApps } from '../prefs';
 import {
@@ -206,7 +208,7 @@ const STATUS_HUE = {
  * ever arrived, still waits.
  */
 const cache = {
-  work: null, apps: [], workspaces: [], alerts: [], botPrs: [], botReviews: {}, alertError: '', alertsLoaded: false,
+  work: null, apps: [], workspaces: [], alerts: [], botPrs: [], botReviews: {}, alertError: '', alertsLoaded: false, queue: [], queueLoaded: false,
 };
 
 // How often the open page re-reads GitHub. Slower than the sidebar's five seconds: My Work is a
@@ -222,7 +224,7 @@ const REFRESH_MS = 30000;
  * somebody goes through when it is their turn. They are named here because the name is in the
  * address, so a link to one is a link somebody can send.
  */
-const TABS = ['daily', 'interrupt-duty'];
+const TABS = ['daily', 'interrupt-duty', 'priority'];
 
 /** The tab an address names, or the default when it names none or one that does not exist. */
 function tabFromHash(hash) {
@@ -317,6 +319,10 @@ export default {
        * `data` so the first fetch already knows which half of GitHub to read.
        */
       tab:        tabFromHash(this.$route?.hash),
+      /** The one queue: everything waiting on this person, most pressing first. See priority.ts. */
+      queue:        cache.queue,
+      loadingQueue: false,
+      queueLoaded:  cache.queueLoaded,
       // This person's own prompts, which is what a queued conversation opens on.
       // The repository's open Dependabot advisories, and why they could not be read when they
       // could not be. A token without the security tab is an ordinary thing, not a page error.
@@ -332,7 +338,7 @@ export default {
   computed: {
     /** Whether the tab on screen is reading: what Refresh says and whether it can be pressed. */
     busy() {
-      return this.tab === 'interrupt-duty' ? this.loadingAlerts : this.loading;
+      return { 'interrupt-duty': this.loadingAlerts, priority: this.loadingQueue }[this.tab] ?? this.loading;
     },
 
     // The two tables' own last columns: when you last reviewed something that is waiting on
@@ -347,6 +353,38 @@ export default {
           name: 'updated', label: 'Updated', value: 'updatedAt', sort: ['updatedAt:desc'], width: 110
         },
       ], this.narrow, true);
+    },
+
+    /**
+     * The queue's columns: where it is in the order, what it is, what it wants, and why.
+     *
+     * `rank` is sortable and sorted by default so the table keeps the order the heuristic put
+     * the rows in - a SortableTable with no sort of its own sorts by its first column, which
+     * would throw the whole point away. Sorting by another column is still allowed: "show me
+     * everything that wants a review" is a fair question to ask of it.
+     */
+    queueHeaders() {
+      const all = [
+        {
+          name: 'rank', label: '#', value: 'rank', sort: ['rank'], width: 44
+        },
+        {
+          name: 'what', label: 'Work', value: 'what', sort: ['what'], width: 150
+        },
+        {
+          name: 'title', label: 'What it is', value: 'title', sort: ['title']
+        },
+        {
+          name: 'needs', label: 'What it needs from you', value: 'needs', sort: ['needs'], width: 250
+        },
+        {
+          name: 'why', label: 'Why', value: 'why', sort: ['why'], width: 300
+        },
+      ];
+
+      // A phone keeps the three that answer the only question it is held to: how urgent, what,
+      // and what to do. The widths go with the dropped columns, for the reason `narrowed` gives.
+      return this.narrow ? narrowed(all, ['rank', 'what', 'needs']) : all;
     },
 
     mineHeaders() {
@@ -487,7 +525,70 @@ export default {
      * Refresh button means "this tab".
      */
     async refresh() {
+      if (this.tab === 'priority') {
+        await this.refreshPriority();
+
+        return;
+      }
       await (this.tab === 'interrupt-duty' ? this.refreshInterrupt() : this.refreshDaily());
+    },
+
+    /**
+     * The queue: every source, because it is the one view that is about all of them.
+     *
+     * It is the heaviest read on the page and it is the only one that has to be - the point of
+     * it is the comparison. It reuses whatever the other tabs have already read this visit, so
+     * arriving here after looking at either of them costs only the half that is missing, and the
+     * workspace stages come from the same cache the sidebar fills.
+     */
+    async refreshPriority() {
+      this.loadingQueue = true;
+      this.error = '';
+
+      try {
+        const workspaces = await listAllWorkspaces().catch(() => []);
+        const [work, dependabot, statuses] = await Promise.all([
+          this.work ? Promise.resolve(this.work) : myWork().catch(() => null),
+          this.alertsLoaded ? Promise.resolve(null) : dependabotData(this.repo).catch(() => null),
+          workspaceStatuses(workspaces).catch(() => ({})),
+        ]);
+
+        if (work) {
+          this.work = work;
+          cache.work = work;
+        }
+        if (dependabot) {
+          this.alerts = (dependabot.groups || []).map((group) => ({ ...group, key: group.slug }));
+          this.botPrs = (dependabot.prs || []).map((pr) => ({ ...pr, key: pr.number, repo: this.repo }));
+          this.alertsLoaded = true;
+          cache.alerts = this.alerts;
+          cache.botPrs = this.botPrs;
+          cache.alertsLoaded = true;
+        }
+        if (!Object.keys(this.botReviews || {}).length) {
+          this.botReviews = await dependabotReviews().catch(() => ({}));
+          cache.botReviews = this.botReviews;
+        }
+
+        this.workspaces = workspaces.map((workspace) => workspace.name);
+        cache.workspaces = this.workspaces;
+
+        this.queue = priorityQueue({
+          work:        this.work,
+          statuses,
+          workspaces:  this.workspaces,
+          alerts:      this.alerts,
+          botPrs:      this.botPrs,
+          botReviews:  this.botReviews,
+        }).map((item, index) => ({ ...item, rank: index + 1 }));
+        cache.queue = this.queue;
+        cache.queueLoaded = true;
+        this.queueLoaded = true;
+      } catch (e) {
+        this.error = e.message || String(e);
+      } finally {
+        this.loadingQueue = false;
+      }
     },
 
     /** What you wrote and what is waiting on you: one GraphQL request, plus the workspace names. */
@@ -572,7 +673,10 @@ export default {
       const name = tab?.selectedName || tab || 'daily';
 
       this.tab = tabFromHash(name);
-      if (this.tab === 'interrupt-duty' ? !this.alertsLoaded : !this.work) {
+
+      const loaded = { daily: !!this.work, 'interrupt-duty': this.alertsLoaded, priority: this.queueLoaded }[this.tab];
+
+      if (!loaded) {
         await this.refresh();
       }
     },
@@ -603,6 +707,14 @@ export default {
     /** The App a workspace of that name is made from. */
     appFor(name) {
       return isLte(name) ? LTE_APP : DEFAULT_APP;
+    },
+
+    /** A workspace by name, for the queue's second line. */
+    workspaceRouteFor(name) {
+      return {
+        name:   WORKSPACE_ROUTE,
+        params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: name },
+      };
     },
 
     /** Where its workspace is, when it has one, and where one would be made when it does not. */
@@ -1661,11 +1773,108 @@ export default {
             </template>
           </SortableTable>
       </Tab>
+
+      <!--
+        The queue, and the one thing worth saying about it: it is a reading of the other views
+        rather than a source of its own, so anything wrong with it is wrong in the heuristic
+        (priority.ts) and not in GitHub.
+      -->
+      <Tab
+        name="priority"
+        label="Priority"
+        :weight="0"
+      >
+        <h3>
+          What needs you <span class="dev-my-work__count">{{ queue.length }}</span>
+          <span class="dev-my-work__experimental">experimental</span>
+        </h3>
+        <p class="dev-my-work__note">
+          Everything waiting on you, most pressing first, read from the same places the other
+          tabs read: a workspace's stage, your pull requests, the reviews you owe, the
+          advisories and the bumps. Work that is running, waiting on somebody else, or finished
+          is not here - that is what makes it a queue rather than a list.
+        </p>
+        <div
+          v-if="loadingQueue && !queueLoaded"
+          class="dev-my-work__loading"
+        >
+          <i class="icon icon-spinner icon-spin" />
+          <span>Working out what is waiting on you&hellip;</span>
+        </div>
+        <SortableTable
+          v-else
+          :headers="queueHeaders"
+          :rows="queue"
+          key-field="key"
+          :table-actions="false"
+          :row-actions="false"
+          :search="false"
+          :paging="true"
+          :rows-per-page="25"
+          default-sort-by="rank"
+        >
+          <template #cell:rank="{ row }">
+            <span class="text-muted">{{ row.rank }}</span>
+          </template>
+          <template #cell:what="{ row }">
+            <a
+              v-if="row.url"
+              :href="row.url"
+              target="_blank"
+              rel="noopener noreferrer"
+            >{{ row.what }}</a>
+            <span v-else>{{ row.what }}</span>
+            <router-link
+              v-if="row.workspace"
+              :to="workspaceRouteFor(row.workspace)"
+              class="dev-my-work__ids"
+            >{{ row.workspace }}</router-link>
+          </template>
+          <template #cell:needs="{ row }">
+            <span class="dev-my-work__needs">{{ row.needs }}</span>
+          </template>
+          <template #cell:why="{ row }">
+            <span class="text-muted">{{ row.why }}</span>
+          </template>
+          <template #no-rows>
+            <td :colspan="queueHeaders.length">
+              <span class="text-muted">Nothing is waiting on you.</span>
+            </td>
+          </template>
+        </SortableTable>
+      </Tab>
     </Tabbed>
   </div>
 </template>
 
 <style lang="scss" scoped>
+  // Said quietly, next to the heading: the numbers are a guess and the page should say so
+  // where the guess is, not in a banner somebody dismisses once.
+  .dev-my-work__experimental {
+    margin-left:    var(--dev-space-2);
+    padding:        1px 6px;
+    border:         1px solid var(--border);
+    border-radius:  var(--dev-space-3);
+    font-size:      10px;
+    font-weight:    400;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color:          var(--muted);
+    vertical-align: middle;
+  }
+
+  .dev-my-work__note {
+    max-width:     70ch;
+    margin-bottom: var(--dev-space-4);
+    color:         var(--muted);
+    font-size:     12px;
+  }
+
+  // The one column somebody reads down, so it is the one that is not grey.
+  .dev-my-work__needs {
+    color: var(--body-text);
+  }
+
   .dev-my-work__actions {
     display:         flex;
     justify-content: flex-end;
