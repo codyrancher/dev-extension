@@ -43,6 +43,14 @@ export interface PriorityItem {
   /** Where to look: the PR, the issue, the advisory. */
   url: string;
   score: number;
+  /**
+   * When it started waiting (ISO), or '' where nothing says.
+   *
+   * Only ever a tiebreak. Two pull requests that both want a first review want it equally by
+   * every rule above, and then the one that has been waiting three weeks wants it more than the
+   * one opened this morning - which is the whole of what this is for.
+   */
+  since: string;
 }
 
 /**
@@ -126,7 +134,7 @@ function fromWorkspaces(statuses: Record<string, WorkspaceStatus>): PriorityItem
 
     const { what, url } = label(status, name);
     const base = {
-      key: `ws:${ name }`, what, title: status.title || '', workspace: name, url,
+      key: `ws:${ name }`, what, title: status.title || '', workspace: name, url, since: '',
     };
 
     if (status.agent === 'input') {
@@ -181,7 +189,7 @@ function fromReviewing(prs: GithubPr[], seen: Set<number>): PriorityItem[] {
     }
 
     const base = {
-      key: `pr:${ pr.key }`, what: `PR #${ pr.number }`, title: pr.title, workspace: '', url: pr.url,
+      key: `pr:${ pr.key }`, what: `PR #${ pr.number }`, title: pr.title, workspace: '', url: pr.url, since: pr.pushedAt || pr.createdAt || '',
     };
     const pushedSince = pr.reviewedAt && pr.pushedAt && Date.parse(pr.pushedAt) > Date.parse(pr.reviewedAt);
 
@@ -222,7 +230,7 @@ function fromMine(prs: GithubPr[], seen: Set<number>): PriorityItem[] {
     }
 
     const base = {
-      key: `mine:${ pr.key }`, what: `PR #${ pr.number }`, title: pr.title, workspace: '', url: pr.url,
+      key: `mine:${ pr.key }`, what: `PR #${ pr.number }`, title: pr.title, workspace: '', url: pr.url, since: pr.pushedAt || pr.createdAt || '',
     };
 
     if (pr.approved && !pr.draft) {
@@ -277,6 +285,7 @@ function fromIssues(issues: GithubIssue[], workspaces: Set<string>): PriorityIte
       needs:     'Start the fix',
       why:       `its board says ${ name } and nothing is running`,
       score:     48,
+      since:     issue.createdAt || '',
     });
   }
 
@@ -307,6 +316,7 @@ function fromAlerts(alerts: Json[], workspaces: Set<string>): PriorityItem[] {
       title:     alert.title || '',
       workspace: '',
       url:       alert.url || '',
+      since:     '',
       needs:     alert.patchedVersion ? 'Take the patch' : 'Decide what to do',
       why:       `${ alert.severity } severity in ${ (alert.packages || []).join(', ') || 'a dependency' }${ alert.patchedVersion ? `, fixed in ${ alert.patchedVersion }` : ', no patch yet' }`,
       // No patch is worse to be told about and less to do about it, so it sits just below one
@@ -331,6 +341,7 @@ function fromBotPrs(prs: Json[], reviews: Json): PriorityItem[] {
       title:     `${ pr.packageName || pr.title }${ pr.fromVersion ? ` ${ pr.fromVersion } → ${ pr.toVersion }` : '' }`,
       workspace: review?.workspace || '',
       url:       pr.url,
+      since:     pr.updatedAt || '',
     };
 
     if (review?.verdict === 'MERGE') {
@@ -364,6 +375,13 @@ function fromBotPrs(prs: Json[], reviews: Json): PriorityItem[] {
  * stage knows more than GitHub does - it knows whether the agent is mid-thought, whether a
  * review of yours has already gone, and which round this is.
  */
+/** How long something has been waiting, in milliseconds; 0 where nothing says. */
+function waiting(item: PriorityItem): number {
+  const at = Date.parse(item.since || '');
+
+  return Number.isFinite(at) ? Date.now() - at : 0;
+}
+
 export function priorityQueue(input: {
   work: GithubWork | null;
   statuses: Record<string, WorkspaceStatus>;
@@ -385,5 +403,5 @@ export function priorityQueue(input: {
     ...fromIssues(input.work?.issues || [], names),
     ...fromAlerts(input.alerts || [], names),
     ...fromBotPrs(input.botPrs || [], input.botReviews || {}),
-  ].sort((a, b) => b.score - a.score || a.what.localeCompare(b.what));
+  ].sort((a, b) => b.score - a.score || waiting(b) - waiting(a) || a.what.localeCompare(b.what));
 }
