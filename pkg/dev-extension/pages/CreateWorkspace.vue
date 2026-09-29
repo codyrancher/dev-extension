@@ -93,6 +93,8 @@ export default {
       app:       '',
       appsError: '',
       error:     '',
+      /** The last workspace this page made, so the banner can say so and link to it. */
+      made:      '',
       touched:   false,
       cancelTo:  { name: WORKSPACES_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } },
     };
@@ -149,6 +151,14 @@ export default {
       return this.app && isLte(this.app) ? lteName(this.name) : this.name;
     },
 
+    /** The workspace this page just made, for the banner's button. */
+    madeTo() {
+      return {
+        name:   WORKSPACE_ROUTE,
+        params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: this.made },
+      };
+    },
+
     namespace() {
       return this.nameError ? '' : workspaceNamespace(this.finalName);
     },
@@ -192,10 +202,12 @@ export default {
 
       try {
         await createWorkspace(this.$store, name, this.app, this.cluster, this.rancherUrl.trim() ? { rancherUrl: this.rancherUrl.trim().replace(/\/$/, '') } : {});
-        this.$router.push({
-          name:   WORKSPACE_ROUTE,
-          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: name },
-        });
+        // Stays here rather than opening what it made: several workspaces at once is a normal
+        // thing to want, and being taken to the first one means coming back for the second. The
+        // banner is the way in, the name is cleared for the next one, and the sidebar has it.
+        this.made = name;
+        this.name = '';
+        this.touched = false;
         done(true);
       } catch (e) {
         this.error = e.message || String(e);
@@ -219,6 +231,23 @@ export default {
       </p>
     </header>
 
+    <Banner
+      v-if="made"
+      color="success"
+      :closable="true"
+      @close="made = ''"
+    >
+      <div class="dev-create__made">
+        <span>{{ made }} is starting. It is in the sidebar; this page stayed here so you can make another.</span>
+        <RcButton
+          variant="secondary"
+          size="small"
+          :to="madeTo"
+        >
+          Open it
+        </RcButton>
+      </div>
+    </Banner>
     <Banner
       v-if="error"
       color="error"
@@ -330,6 +359,16 @@ export default {
 
     .subheader {
       color: var(--muted);
+    }
+
+    // The banner's sentence and its button on one line, the button at the end: the sentence is
+    // what happened and the button is the only thing to do about it.
+    &__made {
+      display:         flex;
+      align-items:     center;
+      justify-content: space-between;
+      gap:             var(--dev-space-3);
+      flex-wrap:       wrap;
     }
 
     &__form {
