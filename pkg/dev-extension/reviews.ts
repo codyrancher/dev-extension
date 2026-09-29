@@ -327,9 +327,11 @@ async function uploadedEmbed(num: number, item: LocalAttachment, repo: string): 
     throw new Error(`${ item.name } could not be uploaded to GitHub, so nothing was submitted.`);
   }
 
-  const caption = item.caption ? `_${ item.caption }_\n\n` : '';
-
-  return item.kind === 'image' ? `${ caption }![${ item.name }](${ href })` : `${ caption }${ href }`;
+  // The caption is not posted. It is how the person and the agent tell two screenshots apart
+  // while they are going through them here - "before", "after in edit mode" - and on GitHub it
+  // reads as a line of our own commentary above somebody else's evidence, in italics, saying
+  // what the two pictures underneath already show. The images go up bare.
+  return item.kind === 'image' ? `![${ item.name }](${ href })` : href;
 }
 
 async function bodyWithEvidence(num: number, c: LocalComment, repo: string): Promise<string> {
@@ -350,7 +352,7 @@ async function bodyWithEvidence(num: number, c: LocalComment, repo: string): Pro
       const text = await fetch(artifactUrl(num, item.path), { credentials: 'same-origin' }).then((r) => (r.ok ? r.text() : '')).catch(() => '');
 
       if (text && text.length <= MAX_INLINE) {
-        embed = `${ item.caption ? `${ item.caption }\n\n` : '' }\`\`\`${ CODE_LANG[ext] }\n${ text.replace(/\`\`\`/g, '\u0060\u0060\u0060') }\n\`\`\``;
+        embed = `\`\`\`${ CODE_LANG[ext] }\n${ text.replace(/\`\`\`/g, '\u0060\u0060\u0060') }\n\`\`\``;
       }
     }
 
@@ -359,7 +361,9 @@ async function bodyWithEvidence(num: number, c: LocalComment, repo: string): Pro
     }
 
     if (!embed) {
-      embed = `_${ item.caption ? `${ item.caption } - ` : '' }${ item.kind } \`${ item.name }\`, recorded in the workspace at \`${ item.path }\`_`;
+      // Not a caption but a stand-in: this is evidence that could not be embedded, and a
+      // comment that silently dropped it would read as an assertion with nothing behind it.
+      embed = `_${ item.kind } \`${ item.name }\`, recorded in the workspace at \`${ item.path }\`_`;
     }
 
     let used = false;
