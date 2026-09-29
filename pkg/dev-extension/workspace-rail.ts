@@ -875,7 +875,7 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage): SkillBut
     switch (stage) {
     case 'agent':
       return [
-        { label: 'Full review', skill: 'my-pr-full-review', note: 'Demo the change, demo the issue, review the diff, verify every comment', fresh: true },
+        { label: 'Full review', skill: 'my-pr-full-review', note: 'Demo the change, demo the issue, review the diff, verify, refine and final-pass every comment', fresh: true },
         { label: 'Comments only', skill: 'my-pr-review', note: 'Short pending inline comments, nothing submitted' },
         { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes, against its own build' },
       ];
@@ -883,6 +883,7 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage): SkillBut
       return [
         { label: 'Verify the findings', skill: 'my-pr-comment-verify', note: 'Prove each comment with a recording or a screenshot attached to it' },
         { label: 'Sharpen the wording', skill: 'my-pr-comment-refinement', note: 'Rewrite each pending comment into impact, why it matters, and evidence' },
+        { label: 'Final pass', skill: 'my-pr-comment-final-pass', note: 'Cut each pending comment to 1-3 sentences: the problem and why to fix it' },
         { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes, against its own build' },
       ];
     case 'submitted':
@@ -895,6 +896,7 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage): SkillBut
       return [
         { label: 'Verify the answers', skill: 'my-pr-comment-verify', note: 'Check what the developer says they fixed' },
         { label: 'Sharpen the wording', skill: 'my-pr-comment-refinement', note: 'Rewrite each pending comment into impact, why it matters, and evidence' },
+        { label: 'Final pass', skill: 'my-pr-comment-final-pass', note: 'Cut each pending comment to 1-3 sentences: the problem and why to fix it' },
         { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes now' },
       ];
     default:
