@@ -9,6 +9,8 @@
 // looking at this page are looking at their own work, without either of them configuring
 // anything here.
 import SortableTable from '@shell/components/SortableTable';
+import Tabbed from '@shell/components/Tabbed';
+import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import AsyncButton from '@shell/components/AsyncButton';
@@ -212,6 +214,23 @@ const cache = {
 // on the order of a person glancing back at it rather than continuously.
 const REFRESH_MS = 30000;
 
+/**
+ * The two tabs, and the two questions they answer.
+ *
+ * `daily` is your own work: what you wrote, what is waiting on you, what you were assigned.
+ * `interrupt-duty` is the rota - advisories to fix and Dependabot bumps to wave through - which
+ * somebody goes through when it is their turn. They are named here because the name is in the
+ * address, so a link to one is a link somebody can send.
+ */
+const TABS = ['daily', 'interrupt-duty'];
+
+/** The tab an address names, or the default when it names none or one that does not exist. */
+function tabFromHash(hash) {
+  const asked = String(hash || '').replace(/^#/, '');
+
+  return TABS.includes(asked) ? asked : 'daily';
+}
+
 export default {
   name: 'DevMyWork',
 
@@ -244,7 +263,7 @@ export default {
   },
 
   components: {
-    SortableTable, Banner, RcButton, AsyncButton
+    SortableTable, Tabbed, Tab, Banner, RcButton, AsyncButton
   },
 
   async fetch() {
@@ -293,6 +312,11 @@ export default {
       // The workspaces that exist, so a row can say whether it already has one. Names only:
       // this page is about pull requests and the sidebar is about workspaces.
       workspaces: cache.workspaces,
+      /**
+       * Which tab is showing, from the address so that a link opens on it - and read here in
+       * `data` so the first fetch already knows which half of GitHub to read.
+       */
+      tab:        tabFromHash(this.$route?.hash),
       // This person's own prompts, which is what a queued conversation opens on.
       // The repository's open Dependabot advisories, and why they could not be read when they
       // could not be. A token without the security tab is an ordinary thing, not a page error.
@@ -306,6 +330,11 @@ export default {
   },
 
   computed: {
+    /** Whether the tab on screen is reading: what Refresh says and whether it can be pressed. */
+    busy() {
+      return this.tab === 'interrupt-duty' ? this.loadingAlerts : this.loading;
+    },
+
     // The two tables' own last columns: when you last reviewed something that is waiting on
     // you, and when anyone last said anything on something you wrote. Computed rather than
     // fixed, because which columns there are depends on how wide the window is.
@@ -448,7 +477,21 @@ export default {
   },
 
   methods: {
+    /**
+     * Read what the tab on screen shows, and nothing else.
+     *
+     * It used to read both halves on every load and every poll: the person's own pull requests
+     * and issues in one GraphQL round trip, and the repository's advisories and Dependabot pull
+     * requests in another - the second needing a token scope the first does not. Most visits are
+     * to one half. So each tab reads its own, the poll refreshes whichever is showing, and the
+     * Refresh button means "this tab".
+     */
     async refresh() {
+      await (this.tab === 'interrupt-duty' ? this.refreshInterrupt() : this.refreshDaily());
+    },
+
+    /** What you wrote and what is waiting on you: one GraphQL request, plus the workspace names. */
+    async refreshDaily() {
       this.error = '';
       this.loading = true;
 
@@ -469,34 +512,6 @@ export default {
         cache.apps = this.apps;
         cache.work = this.work;
         cache.workspaces = this.workspaces;
-
-        // Separately, and allowed to fail on its own: the alerts belong to a repository and need
-        // a permission the rest of this page does not, so a token without it should cost that
-        // section and nothing else.
-        this.alertError = '';
-        this.loadingAlerts = true;
-
-        try {
-          const dependabot = await dependabotData(this.repo);
-
-          this.alerts = (dependabot.groups || []).map((group) => ({ ...group, key: group.slug }));
-          this.botPrs = (dependabot.prs || []).map((pr) => ({ ...pr, key: pr.number, repo: this.repo }));
-          this.botReviews = await dependabotReviews().catch(() => ({}));
-          this.refreshBotReviews().catch(() => {});
-        } catch (e) {
-          this.alerts = [];
-          this.botPrs = [];
-          this.alertError = e.message || String(e);
-        } finally {
-          this.loadingAlerts = false;
-          this.alertsLoaded = true;
-        }
-
-        cache.alertsLoaded = true;
-        cache.alerts = this.alerts;
-        cache.botPrs = this.botPrs;
-        cache.botReviews = this.botReviews;
-        cache.alertError = this.alertError;
       } catch (e) {
         // Keep the last-good results on screen rather than blanking the page: a poll that fails,
         // or a token that flapped, should show the error beside the cached tables, not instead of
@@ -504,6 +519,61 @@ export default {
         this.error = e.message || String(e);
       } finally {
         this.loading = false;
+      }
+    },
+
+    /**
+     * The rota: advisories and Dependabot pull requests.
+     *
+     * Its own error, because the alerts belong to a repository and need a permission the rest of
+     * this page does not - so a token without it costs this tab and nothing else. It also reads
+     * the workspace names, since its rows say whether a fix already has one and this tab can be
+     * the first thing opened.
+     */
+    async refreshInterrupt() {
+      this.alertError = '';
+      this.loadingAlerts = true;
+
+      try {
+        const [dependabot, workspaces] = await Promise.all([
+          dependabotData(this.repo),
+          listAllWorkspaces().catch(() => []),
+        ]);
+
+        this.alerts = (dependabot.groups || []).map((group) => ({ ...group, key: group.slug }));
+        this.botPrs = (dependabot.prs || []).map((pr) => ({ ...pr, key: pr.number, repo: this.repo }));
+        this.workspaces = workspaces.map((workspace) => workspace.name);
+        this.botReviews = await dependabotReviews().catch(() => ({}));
+        this.refreshBotReviews().catch(() => {});
+        cache.workspaces = this.workspaces;
+      } catch (e) {
+        this.alerts = [];
+        this.botPrs = [];
+        this.alertError = e.message || String(e);
+      } finally {
+        this.loadingAlerts = false;
+        this.alertsLoaded = true;
+        cache.alertsLoaded = true;
+        cache.alerts = this.alerts;
+        cache.botPrs = this.botPrs;
+        cache.botReviews = this.botReviews;
+        cache.alertError = this.alertError;
+      }
+    },
+
+    /**
+     * The tab changed: remember it, and read its half if this visit has not.
+     *
+     * Tabbed puts the name in the address itself, so nothing here touches the route - which is
+     * also why a link to `#interrupt-duty` lands on that tab with that tab's data and never
+     * reads the other half at all.
+     */
+    async onTab(tab) {
+      const name = tab?.selectedName || tab || 'daily';
+
+      this.tab = tabFromHash(name);
+      if (this.tab === 'interrupt-duty' ? !this.alertsLoaded : !this.work) {
+        await this.refresh();
       }
     },
 
@@ -558,6 +628,23 @@ export default {
     },
 
     /**
+     * What every action here says when it has started something.
+     *
+     * None of them navigate any more. They used to open the workspace they had just made, which
+     * is one press per visit: the second row you wanted was on the page you had just left, and
+     * getting back to it meant the sidebar and a scroll. Launching four reviews is a normal
+     * thing to want to do from this page, so the page stays put and says what it started; the
+     * row itself becomes a link to it, and the sidebar lists it.
+     */
+    started(name, what) {
+      this.notice = `${ what } in ${ name }. It is in the sidebar; this page stays where it is so you can start another.`;
+      if (!this.workspaces.includes(name)) {
+        this.workspaces = [...this.workspaces, name];
+        cache.workspaces = this.workspaces;
+      }
+    },
+
+    /**
      * Start a workspace and nothing else: create it if it is not there, then open it. Unlike
      * Review and Start fix, it queues no conversation - it is just the environment, for when you
      * want to work in it yourself. Asks which Rancher to run on with the default app, the same as
@@ -569,14 +656,10 @@ export default {
       try {
         if (!this.workspaces.includes(name)) {
           await createWorkspace(this.$store, name, this.appFor(name), undefined, await defaultRancherValues(this.$store));
-          this.workspaces = [...this.workspaces, name];
         }
 
+        this.started(name, 'Workspace ready');
         done(true);
-        this.$router.push({
-          name:   WORKSPACE_ROUTE,
-          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: name },
-        });
       } catch (e) {
         this.error = e.message || String(e);
         done(false);
@@ -624,12 +707,8 @@ export default {
       try {
         const started = await startPrReview(this.$store, pr, pr.repo || this.repo);
 
+        this.started(started.workspace, `Reviewing #${ pr.number }`);
         done(true);
-        this.$router.push({
-          name:   WORKSPACE_ROUTE,
-          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: started.workspace },
-          hash:   '#pr',
-        });
       } catch (e) {
         this.error = e.message || String(e);
         done(false);
@@ -672,12 +751,8 @@ export default {
           .then((status) => status && this.applyIssueStatus(issue.key, status))
           .catch(() => {});
 
+        this.started(started.workspace, `Fixing #${ issue.number }`);
         done(true);
-        this.$router.push({
-          name:   WORKSPACE_ROUTE,
-          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: started.workspace },
-          hash:   '#conversations',
-        });
       } catch (e) {
         this.error = e.message || String(e);
         done(false);
@@ -709,12 +784,8 @@ export default {
       try {
         const started = await startAlertFix(this.$store, group, this.repo);
 
+        this.started(started.workspace, `Fixing ${ group.slug || 'the advisory' }`);
         done(true);
-        this.$router.push({
-          name:   WORKSPACE_ROUTE,
-          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: started.workspace },
-          hash:   '#conversations',
-        });
       } catch (e) {
         this.error = e.message || String(e);
         done(false);
@@ -766,12 +837,8 @@ export default {
       try {
         const started = await startCiTriage(this.$store, pr, pr.repo || this.repo);
 
+        this.started(started.workspace, `Triaging CI on #${ pr.number }`);
         done(true);
-        this.$router.push({
-          name:   WORKSPACE_ROUTE,
-          params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: started.workspace },
-          hash:   '#conversations',
-        });
       } catch (e) {
         this.error = e.message || String(e);
         done(false);
@@ -974,11 +1041,11 @@ export default {
       <RcButton
         variant="tertiary"
         size="small"
-        :left-icon="loading ? 'spinner' : 'refresh'"
-        :disabled="loading"
+        :left-icon="busy ? 'spinner' : 'refresh'"
+        :disabled="busy"
         @click="refresh"
       >
-        {{ loading ? 'Refreshing' : 'Refresh' }}
+        {{ busy ? 'Refreshing' : 'Refresh' }}
       </RcButton>
     </header>
 
@@ -1010,558 +1077,591 @@ export default {
       </div>
     </Banner>
 
-    <!-- Before anything has arrived: this used to be a blank page for several seconds. -->
-    <div
-      v-if="loading && !work"
-      class="dev-my-work__loading"
+    <!--
+      Two tabs, because the page answers two different questions on two different rhythms.
+      Daily is your own work - what you wrote and what is waiting on you. Interrupt duty is
+      the rota: advisories to fix and bot bumps to wave through, which somebody looks at when
+      it is their turn and nobody looks at otherwise.
+
+      Tabbed keeps the chosen tab in the address (`#interrupt-duty`), so a link goes straight
+      to it and a reload comes back to it - and each tab reads only what it shows, so opening
+      the page no longer waits on the half of GitHub you are not looking at.
+    -->
+    <Tabbed
+      :default-tab="tab"
+      class="dev-my-work__tabs"
+      @changed="onTab"
     >
-      <i class="icon icon-spinner icon-spin" />
-      <span>Reading your pull requests, issues and advisories from GitHub&hellip;</span>
-    </div>
-
-    <template v-if="work">
-      <h3>PRs with me as a reviewer <span class="dev-my-work__count">{{ reviewing.length }}</span></h3>
-      <SortableTable
-        :headers="reviewHeaders"
-        :rows="reviewing"
-        key-field="key"
-        :table-actions="false"
-        :row-actions="false"
-        :search="false"
-        :paging="true"
-        :rows-per-page="5"
+      <Tab
+        name="daily"
+        label="Daily"
+        :weight="2"
       >
-        <template #cell:state="{ row }">
-          <span :class="row.draft ? 'text-muted' : 'dev-my-work__ok'">{{ row.draft ? 'Draft' : 'Open' }}</span>
-        </template>
-        <template #cell:approved="{ row }">
-          <span :class="row.approved ? 'dev-my-work__ok' : 'text-muted'">{{ row.approved ? '✓' : '' }}</span>
-        </template>
-        <template #cell:pr="{ row }">
-          <a
-            :href="row.url"
-            target="_blank"
-            rel="noopener noreferrer"
-          >#{{ row.number }}</a>
-        </template>
-        <template #cell:repo="{ row }">
-          <span class="dev-my-work__repo">{{ row.repo }}</span>
-        </template>
-        <template #cell:issue="{ row }">
-          <a
-            v-if="row.issue"
-            :href="row.issue.url"
-            target="_blank"
-            rel="noopener noreferrer"
-          >#{{ row.issue.number }}</a>
-          <span
-            v-else
-            class="text-muted"
-          >&ndash;</span>
-        </template>
-        <template #cell:ci="{ row }">
-          <div class="dev-my-work__ci">
-            <span
-              v-for="badge in badges(row.checks)"
-              :key="badge.label"
-              class="dev-my-work__badge"
-              :class="`dev-my-work__badge--${ badge.tone }`"
-            >{{ badge.label }}</span>
-          </div>
-        </template>
-        <!--
-          The workspace for this pull request. One that exists is a link to it; one that does not
-          is a link to the create page with the name already filled in, which is the harness's
-          "Start project" under the word this product uses.
-        -->
-        <template #cell:workspace="{ row }">
-          <RcButton
-            v-if="hasWorkspace(row)"
-            variant="tertiary"
-            size="small"
-            :to="workspaceTo(row)"
+        <div
+          v-if="loading && !work"
+          class="dev-my-work__loading"
+        >
+          <i class="icon icon-spinner icon-spin" />
+          <span>Reading your pull requests and issues from GitHub&hellip;</span>
+        </div>
+        <template v-if="work">
+          <h3>PRs with me as a reviewer <span class="dev-my-work__count">{{ reviewing.length }}</span></h3>
+          <SortableTable
+            :headers="reviewHeaders"
+            :rows="reviewing"
+            key-field="key"
+            :table-actions="false"
+            :row-actions="false"
+            :search="false"
+            :paging="true"
+            :rows-per-page="5"
           >
-            Workspace
-          </RcButton>
-          <AsyncButton
-            v-else
-            mode="apply"
-            action-label="Start workspace"
-            waiting-label="Starting"
-            success-label="Started"
-            size="sm"
-            @click="(done) => startWorkspace(workspaceName(row), done)"
-          />
-        </template>
-        <template #cell:actions="{ row }">
-          <div class="dev-my-work__actions">
-            <!-- Rerun the failed jobs, moved out of the CI column to sit with the row's actions. -->
-            <AsyncButton
-              v-if="row.runs.length"
-              mode="apply"
-              action-label="Rerun"
-              waiting-label="Asking"
-              success-label="Asked"
-              size="sm"
-              @click="(done) => rerun(row, done)"
-            />
-            <AsyncButton
-              mode="apply"
-              action-label="Review"
-              waiting-label="Opening"
-              success-label="Opened"
-              size="sm"
-              @click="(done) => review(row, done)"
-            />
-          </div>
-        </template>
-        <template #cell:reviewed="{ row }">
-          <span :class="row.reviewedAt ? '' : 'text-muted'">{{ ago(row.reviewedAt) }}</span>
-        </template>
-        <template #cell:updated="{ row }">
-          {{ ago(row.updatedAt) }}
-        </template>
-      </SortableTable>
-
-      <h3>My PRs <span class="dev-my-work__count">{{ mine.length }}</span></h3>
-      <SortableTable
-        :headers="mineHeaders"
-        :rows="mine"
-        key-field="key"
-        :table-actions="false"
-        :row-actions="false"
-        :search="false"
-        :paging="true"
-        :rows-per-page="5"
-      >
-        <template #cell:state="{ row }">
-          <span :class="row.draft ? 'text-muted' : 'dev-my-work__ok'">{{ row.draft ? 'Draft' : 'Open' }}</span>
-        </template>
-        <template #cell:approved="{ row }">
-          <span :class="row.approved ? 'dev-my-work__ok' : 'text-muted'">{{ row.approved ? '✓' : '' }}</span>
-        </template>
-        <template #cell:pr="{ row }">
-          <a
-            :href="row.url"
-            target="_blank"
-            rel="noopener noreferrer"
-          >#{{ row.number }}</a>
-        </template>
-        <template #cell:repo="{ row }">
-          <span class="dev-my-work__repo">{{ row.repo }}</span>
-        </template>
-        <template #cell:issue="{ row }">
-          <a
-            v-if="row.issue"
-            :href="row.issue.url"
-            target="_blank"
-            rel="noopener noreferrer"
-          >#{{ row.issue.number }}</a>
-          <span
-            v-else
-            class="text-muted"
-          >&ndash;</span>
-        </template>
-        <template #cell:ci="{ row }">
-          <div class="dev-my-work__ci">
-            <span
-              v-for="badge in badges(row.checks)"
-              :key="badge.label"
-              class="dev-my-work__badge"
-              :class="`dev-my-work__badge--${ badge.tone }`"
-            >{{ badge.label }}</span>
-          </div>
-        </template>
-        <template #cell:updated="{ row }">
-          {{ ago(row.updatedAt) }}
-        </template>
-        <!--
-          The workspace for this pull request. One that exists is a link to it; one that does not
-          is a link to the create page with the name already filled in, which is the harness's
-          "Start project" under the word this product uses.
-        -->
-        <template #cell:workspace="{ row }">
-          <RcButton
-            v-if="hasWorkspace(row)"
-            variant="tertiary"
-            size="small"
-            :to="workspaceTo(row)"
-          >
-            Workspace
-          </RcButton>
-          <AsyncButton
-            v-else
-            mode="apply"
-            action-label="Start workspace"
-            waiting-label="Starting"
-            success-label="Started"
-            size="sm"
-            @click="(done) => startWorkspace(workspaceName(row), done)"
-          />
-        </template>
-        <!--
-          Nothing to do to your own pull request from here that GitHub does not do better, and the
-          harness's own row says the same by leaving it empty.
-        -->
-        <template #cell:actions="{ row }">
-          <div class="dev-my-work__actions">
+            <template #cell:state="{ row }">
+              <span :class="row.draft ? 'text-muted' : 'dev-my-work__ok'">{{ row.draft ? 'Draft' : 'Open' }}</span>
+            </template>
+            <template #cell:approved="{ row }">
+              <span :class="row.approved ? 'dev-my-work__ok' : 'text-muted'">{{ row.approved ? '✓' : '' }}</span>
+            </template>
+            <template #cell:pr="{ row }">
+              <a
+                :href="row.url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >#{{ row.number }}</a>
+            </template>
+            <template #cell:repo="{ row }">
+              <span class="dev-my-work__repo">{{ row.repo }}</span>
+            </template>
+            <template #cell:issue="{ row }">
+              <a
+                v-if="row.issue"
+                :href="row.issue.url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >#{{ row.issue.number }}</a>
+              <span
+                v-else
+                class="text-muted"
+              >&ndash;</span>
+            </template>
+            <template #cell:ci="{ row }">
+              <div class="dev-my-work__ci">
+                <span
+                  v-for="badge in badges(row.checks)"
+                  :key="badge.label"
+                  class="dev-my-work__badge"
+                  :class="`dev-my-work__badge--${ badge.tone }`"
+                >{{ badge.label }}</span>
+              </div>
+            </template>
             <!--
-              Rerun the failed jobs as they are, next to Fix CI which opens an agent to fix them:
-              the two CI actions sit together here rather than one in the CI column and one here.
+              The workspace for this pull request. One that exists is a link to it; one that does not
+              is a link to the create page with the name already filled in, which is the harness's
+              "Start project" under the word this product uses.
             -->
-            <AsyncButton
-              v-if="row.runs.length"
-              mode="apply"
-              action-label="Rerun"
-              waiting-label="Asking"
-              success-label="Asked"
-              size="sm"
-              @click="(done) => rerun(row, done)"
-            />
-            <AsyncButton
-              v-if="row.checks && row.checks.failing"
-              mode="apply"
-              action-label="Fix CI"
-              waiting-label="Opening"
-              success-label="Opened"
-              size="sm"
-              @click="(done) => fixCi(row, done)"
-            />
-            <AsyncButton
-              mode="apply"
-              action-label="Merge"
-              waiting-label="Merging"
-              success-label="Merged"
-              size="sm"
-              :disabled="!!(row.draft || (row.checks && (row.checks.failing || row.checks.pending)))"
-              @click="(done) => merge(row, done)"
-            />
-          </div>
-        </template>
-        <template #cell:commented="{ row }">
-          <span :class="row.commentedAt ? '' : 'text-muted'">{{ ago(row.commentedAt) }}</span>
-        </template>
-      </SortableTable>
-      <h3>Issues assigned to me <span class="dev-my-work__count">{{ work.issues.length }}</span></h3>
-      <!--
-        A blank Status column is almost always a missing scope rather than an untriaged board,
-        and a tooltip on a dash is not where anyone looks for that. Said once, above the table.
-      -->
-      <Banner
-        v-if="projectStatusError"
-        color="warning"
-      >
-        {{ projectStatusError }}
-        <a
-          href="https://github.com/settings/tokens"
-          target="_blank"
-          rel="noopener noreferrer"
-        >Edit the token</a>
-      </Banner>
-      <SortableTable
-        :headers="issueHeaders"
-        :rows="issueRows"
-        key-field="key"
-        :default-sort-by="issueSort"
-        :table-actions="false"
-        :row-actions="false"
-        :search="false"
-        :paging="true"
-        :rows-per-page="5"
-      >
-        <template #cell:number="{ row }">
-          <a
-            :href="row.url"
-            target="_blank"
-            rel="noopener noreferrer"
-          >#{{ row.number }}</a>
-        </template>
-        <template #cell:repo="{ row }">
-          <span class="dev-my-work__repo">{{ row.repo }}</span>
-        </template>
-        <!-- The labels, as the chips the harness draws them as. -->
-        <template #cell:area="{ row }">
-          <span
-            v-for="label in row.labels"
-            :key="label"
-            class="dev-my-work__area"
-          >{{ label }}</span>
-        </template>
-        <template #cell:status="{ row }">
-          <a
-            v-if="row.projectStatus && row.projectStatus.url"
-            :href="row.projectStatus.url"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="dev-my-work__status"
-            :class="`dev-my-work__status--${ statusHue(row.projectStatus) }`"
-            :title="row.projectStatus.project"
-          >{{ row.projectStatus.name }}</a>
-          <span
-            v-else-if="row.projectStatus"
-            class="dev-my-work__status"
-            :class="`dev-my-work__status--${ statusHue(row.projectStatus) }`"
-            :title="row.projectStatus.project"
-          >{{ row.projectStatus.name }}</span>
-          <span
-            v-else
-            class="text-muted"
-            :title="projectStatusError || 'Not on a project board'"
-          >—</span>
-        </template>
-        <template #cell:age="{ row }">
-          {{ ago(row.createdAt) }}
-        </template>
-        <template #cell:workspace="{ row }">
-          <RcButton
-            v-if="hasIssueWorkspace(row)"
-            variant="tertiary"
-            size="small"
-            :to="issueWorkspaceTo(row)"
-          >
-            Workspace
-          </RcButton>
-          <AsyncButton
-            v-else
-            mode="apply"
-            action-label="Start workspace"
-            waiting-label="Starting"
-            success-label="Started"
-            size="sm"
-            @click="(done) => startWorkspace('issue-' + row.number, done)"
-          />
-        </template>
-        <template #cell:actions="{ row }">
-          <AsyncButton
-            mode="apply"
-            action-label="Start fix"
-            waiting-label="Opening"
-            success-label="Opened"
-            size="sm"
-            @click="(done) => startFix(row, done)"
-          />
-        </template>
-      </SortableTable>
-
-      <h3>
-        Dependabot alerts <span class="dev-my-work__count">{{ alerts.length }}</span>
-        <a
-          v-if="repo"
-          class="dev-my-work__link"
-          :href="`https://github.com/${ repo }/security/dependabot`"
-          target="_blank"
-          rel="noopener noreferrer"
-        >on GitHub</a>
-      </h3>
-      <!--
-        One row per advisory rather than per alert: GitHub raises one alert per package per
-        manifest, so a transitive dependency in three lockfiles is three alerts about one thing to
-        do. The count says how many, and how many files they are in.
-      -->
-      <Banner
-        v-if="alertError"
-        color="info"
-        :label="alertError"
-      />
-      <!--
-        A second request, made after the page has already drawn: an empty table here means "not
-        read yet" for a few seconds and "nothing to fix" afterwards, which are opposite things.
-      -->
-      <div
-        v-else-if="loadingAlerts && !alertsLoaded"
-        class="dev-my-work__loading"
-      >
-        <i class="icon icon-spinner icon-spin" />
-        <span>Reading the repository&rsquo;s advisories&hellip;</span>
-      </div>
-      <SortableTable
-        v-else
-        :headers="alertHeaders"
-        :rows="alerts"
-        key-field="key"
-        default-sort-by="severity"
-        :table-actions="false"
-        :row-actions="false"
-        :search="false"
-        :paging="true"
-        :rows-per-page="5"
-      >
-        <template #cell:severity="{ row }">
-          <span
-            class="dev-my-work__badge"
-            :class="`dev-my-work__badge--${ severityTone(row.severity) }`"
-          >{{ row.severity }}</span>
-        </template>
-        <template #cell:advisory="{ row }">
-          <a
-            :href="row.url"
-            target="_blank"
-            rel="noopener noreferrer"
-          >{{ row.title }}</a>
-          <span class="dev-my-work__ids">{{ row.ghsaId }}<template v-if="row.cveId"> &middot; {{ row.cveId }}</template></span>
-        </template>
-        <template #cell:package="{ row }">
-          <span class="dev-my-work__repo">{{ row.packages.join(', ') }}</span>
-        </template>
-        <template #cell:alerts="{ row }">
-          {{ row.alerts.length }} in {{ row.manifests.length }} file{{ row.manifests.length === 1 ? '' : 's' }}
-          <template v-if="row.prs.length"> &middot; <a
-            v-for="pr in row.prs"
-            :key="pr.number"
-            :href="pr.url"
-            target="_blank"
-            rel="noopener noreferrer"
-          >#{{ pr.number }}</a></template>
-        </template>
-        <template #cell:fix="{ row }">
-          <span :class="row.patchedVersion ? '' : 'text-muted'">{{ row.patchedVersion || 'no patch yet' }}</span>
-        </template>
-        <template #cell:actions="{ row }">
-          <AsyncButton
-            mode="apply"
-            action-label="Start fix"
-            waiting-label="Opening"
-            success-label="Opened"
-            size="sm"
-            @click="(done) => startAlertFix(row, done)"
-          />
-        </template>
-      </SortableTable>
-
-      <h3>
-        Dependabot PRs <span class="dev-my-work__count">{{ botPrs.length }}</span>
-      </h3>
-      <!--
-        The bot's open bumps as a merge queue, as the harness had them. Review runs the merge
-        checklist in a conversation and reads its verdict off the pane; a MERGE verdict is what
-        the Approve & merge button is for, so it lives on that verdict rather than on every row.
-      -->
-      <div
-        v-if="loadingAlerts && !alertsLoaded"
-        class="dev-my-work__loading"
-      >
-        <i class="icon icon-spinner icon-spin" />
-        <span>Reading Dependabot&rsquo;s open pull requests&hellip;</span>
-      </div>
-      <SortableTable
-        v-else
-        :headers="botHeaders"
-        :rows="botPrs"
-        key-field="key"
-        :default-sort-by="botSort"
-        :table-actions="false"
-        :row-actions="false"
-        :search="false"
-        :paging="true"
-        :rows-per-page="8"
-      >
-        <template #cell:pr="{ row }">
-          <a
-            :href="row.url"
-            target="_blank"
-            rel="noopener noreferrer"
-            :title="row.title"
-          >#{{ row.number }}</a>
-        </template>
-        <template #cell:ci="{ row }">
-          <span
-            v-for="badge in badges(row.ci)"
-            :key="badge.label"
-            class="dev-my-work__badge"
-            :class="`dev-my-work__badge--${ badge.tone }`"
-          >{{ badge.label }}</span>
-          <span
-            v-if="row.ci && !row.ci.pending && !row.ci.failing"
-            class="dev-my-work__badge dev-my-work__badge--success"
-          >green</span>
-        </template>
-        <template #cell:package="{ row }">
-          <span class="dev-my-work__repo">{{ row.packageName || row.title }}</span>
-          <span
-            v-if="row.fromVersion"
-            class="dev-my-work__ids"
-          >{{ row.fromVersion }} → {{ row.toVersion }}</span>
-        </template>
-        <template #cell:updated="{ row }">
-          {{ ago(row.updatedAt) }}
-        </template>
-        <template #cell:review="{ row }">
-          <template v-if="botReview(row)">
-            <span
-              class="dev-my-work__badge"
-              :class="`dev-my-work__badge--${ botVerdictTone(row) }`"
-            >{{ botVerdictLabel(row) }}</span>
-            <span
-              v-if="botReview(row).reason"
-              class="dev-my-work__reason"
-              :title="botReview(row).reason"
-            >{{ botReview(row).reason }}</span>
-            <router-link
-              v-if="botConversationTo(row)"
-              :to="botConversationTo(row)"
-              class="dev-my-work__ids"
-            >conversation</router-link>
-          </template>
-          <span
-            v-else
-            class="text-muted"
-          >not reviewed</span>
-        </template>
-        <!--
-          A split button on a phone: the action you came for, and a caret for the rest.
-
-          Opened downwards inside the cell rather than as a floating menu, because the cell is
-          in a table with its own overflow and a popover positioned out of one is a popover
-          that gets clipped by it.
-        -->
-        <template #cell:actions="{ row }">
-          <div
-            class="dev-my-work__actions"
-            :class="{ 'dev-my-work__actions--split': narrow && hasMoreActions(row) }"
-          >
-            <AsyncButton
-              mode="apply"
-              :action-label="botReview(row) ? 'Review again' : 'Review'"
-              waiting-label="Opening"
-              success-label="Opened"
-              size="sm"
-              @click="(done) => reviewBotPr(row, done)"
-            />
-            <button
-              v-if="narrow && hasMoreActions(row)"
-              type="button"
-              class="dev-my-work__more"
-              :aria-expanded="String(openActions === row.key)"
-              :title="openActions === row.key ? 'Fewer actions' : 'More actions'"
-              @click="openActions = openActions === row.key ? '' : row.key"
-            >
-              <i :class="openActions === row.key ? 'icon icon-chevron-up' : 'icon icon-chevron-down'" />
-            </button>
-            <template v-if="!narrow || openActions === row.key">
-              <AsyncButton
-                v-if="botReview(row) && botReview(row).verdict === 'merge'"
-                mode="apply"
-                action-label="Approve & merge"
-                waiting-label="Merging"
-                success-label="Merged"
-                size="sm"
-                :disabled="!!(row.ci && (row.ci.failing || row.ci.pending))"
-                @click="(done) => mergeBotPr(row, done)"
-              />
+            <template #cell:workspace="{ row }">
               <RcButton
-                v-if="botReview(row)"
+                v-if="hasWorkspace(row)"
                 variant="tertiary"
                 size="small"
-                title="Forget this review"
-                @click="closeBotReview(row)"
+                :to="workspaceTo(row)"
               >
-                ×
+                Workspace
               </RcButton>
+              <AsyncButton
+                v-else
+                mode="apply"
+                action-label="Start workspace"
+                waiting-label="Starting"
+                success-label="Started"
+                size="sm"
+                @click="(done) => startWorkspace(workspaceName(row), done)"
+              />
             </template>
-          </div>
+            <template #cell:actions="{ row }">
+              <div class="dev-my-work__actions">
+                <!-- Rerun the failed jobs, moved out of the CI column to sit with the row's actions. -->
+                <AsyncButton
+                  v-if="row.runs.length"
+                  mode="apply"
+                  action-label="Rerun"
+                  waiting-label="Asking"
+                  success-label="Asked"
+                  size="sm"
+                  @click="(done) => rerun(row, done)"
+                />
+                <AsyncButton
+                  mode="apply"
+                  action-label="Review"
+                  waiting-label="Opening"
+                  success-label="Opened"
+                  size="sm"
+                  @click="(done) => review(row, done)"
+                />
+              </div>
+            </template>
+            <template #cell:reviewed="{ row }">
+              <span :class="row.reviewedAt ? '' : 'text-muted'">{{ ago(row.reviewedAt) }}</span>
+            </template>
+            <template #cell:updated="{ row }">
+              {{ ago(row.updatedAt) }}
+            </template>
+          </SortableTable>
+
+          <h3>My PRs <span class="dev-my-work__count">{{ mine.length }}</span></h3>
+          <SortableTable
+            :headers="mineHeaders"
+            :rows="mine"
+            key-field="key"
+            :table-actions="false"
+            :row-actions="false"
+            :search="false"
+            :paging="true"
+            :rows-per-page="5"
+          >
+            <template #cell:state="{ row }">
+              <span :class="row.draft ? 'text-muted' : 'dev-my-work__ok'">{{ row.draft ? 'Draft' : 'Open' }}</span>
+            </template>
+            <template #cell:approved="{ row }">
+              <span :class="row.approved ? 'dev-my-work__ok' : 'text-muted'">{{ row.approved ? '✓' : '' }}</span>
+            </template>
+            <template #cell:pr="{ row }">
+              <a
+                :href="row.url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >#{{ row.number }}</a>
+            </template>
+            <template #cell:repo="{ row }">
+              <span class="dev-my-work__repo">{{ row.repo }}</span>
+            </template>
+            <template #cell:issue="{ row }">
+              <a
+                v-if="row.issue"
+                :href="row.issue.url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >#{{ row.issue.number }}</a>
+              <span
+                v-else
+                class="text-muted"
+              >&ndash;</span>
+            </template>
+            <template #cell:ci="{ row }">
+              <div class="dev-my-work__ci">
+                <span
+                  v-for="badge in badges(row.checks)"
+                  :key="badge.label"
+                  class="dev-my-work__badge"
+                  :class="`dev-my-work__badge--${ badge.tone }`"
+                >{{ badge.label }}</span>
+              </div>
+            </template>
+            <template #cell:updated="{ row }">
+              {{ ago(row.updatedAt) }}
+            </template>
+            <!--
+              The workspace for this pull request. One that exists is a link to it; one that does not
+              is a link to the create page with the name already filled in, which is the harness's
+              "Start project" under the word this product uses.
+            -->
+            <template #cell:workspace="{ row }">
+              <RcButton
+                v-if="hasWorkspace(row)"
+                variant="tertiary"
+                size="small"
+                :to="workspaceTo(row)"
+              >
+                Workspace
+              </RcButton>
+              <AsyncButton
+                v-else
+                mode="apply"
+                action-label="Start workspace"
+                waiting-label="Starting"
+                success-label="Started"
+                size="sm"
+                @click="(done) => startWorkspace(workspaceName(row), done)"
+              />
+            </template>
+            <!--
+              Nothing to do to your own pull request from here that GitHub does not do better, and the
+              harness's own row says the same by leaving it empty.
+            -->
+            <template #cell:actions="{ row }">
+              <div class="dev-my-work__actions">
+                <!--
+                  Rerun the failed jobs as they are, next to Fix CI which opens an agent to fix them:
+                  the two CI actions sit together here rather than one in the CI column and one here.
+                -->
+                <AsyncButton
+                  v-if="row.runs.length"
+                  mode="apply"
+                  action-label="Rerun"
+                  waiting-label="Asking"
+                  success-label="Asked"
+                  size="sm"
+                  @click="(done) => rerun(row, done)"
+                />
+                <AsyncButton
+                  v-if="row.checks && row.checks.failing"
+                  mode="apply"
+                  action-label="Fix CI"
+                  waiting-label="Opening"
+                  success-label="Opened"
+                  size="sm"
+                  @click="(done) => fixCi(row, done)"
+                />
+                <AsyncButton
+                  mode="apply"
+                  action-label="Merge"
+                  waiting-label="Merging"
+                  success-label="Merged"
+                  size="sm"
+                  :disabled="!!(row.draft || (row.checks && (row.checks.failing || row.checks.pending)))"
+                  @click="(done) => merge(row, done)"
+                />
+              </div>
+            </template>
+            <template #cell:commented="{ row }">
+              <span :class="row.commentedAt ? '' : 'text-muted'">{{ ago(row.commentedAt) }}</span>
+            </template>
+          </SortableTable>
+          <h3>Issues assigned to me <span class="dev-my-work__count">{{ work.issues.length }}</span></h3>
+          <!--
+            A blank Status column is almost always a missing scope rather than an untriaged board,
+            and a tooltip on a dash is not where anyone looks for that. Said once, above the table.
+          -->
+          <Banner
+            v-if="projectStatusError"
+            color="warning"
+          >
+            {{ projectStatusError }}
+            <a
+              href="https://github.com/settings/tokens"
+              target="_blank"
+              rel="noopener noreferrer"
+            >Edit the token</a>
+          </Banner>
+          <SortableTable
+            :headers="issueHeaders"
+            :rows="issueRows"
+            key-field="key"
+            :default-sort-by="issueSort"
+            :table-actions="false"
+            :row-actions="false"
+            :search="false"
+            :paging="true"
+            :rows-per-page="5"
+          >
+            <template #cell:number="{ row }">
+              <a
+                :href="row.url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >#{{ row.number }}</a>
+            </template>
+            <template #cell:repo="{ row }">
+              <span class="dev-my-work__repo">{{ row.repo }}</span>
+            </template>
+            <!-- The labels, as the chips the harness draws them as. -->
+            <template #cell:area="{ row }">
+              <span
+                v-for="label in row.labels"
+                :key="label"
+                class="dev-my-work__area"
+              >{{ label }}</span>
+            </template>
+            <template #cell:status="{ row }">
+              <a
+                v-if="row.projectStatus && row.projectStatus.url"
+                :href="row.projectStatus.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="dev-my-work__status"
+                :class="`dev-my-work__status--${ statusHue(row.projectStatus) }`"
+                :title="row.projectStatus.project"
+              >{{ row.projectStatus.name }}</a>
+              <span
+                v-else-if="row.projectStatus"
+                class="dev-my-work__status"
+                :class="`dev-my-work__status--${ statusHue(row.projectStatus) }`"
+                :title="row.projectStatus.project"
+              >{{ row.projectStatus.name }}</span>
+              <span
+                v-else
+                class="text-muted"
+                :title="projectStatusError || 'Not on a project board'"
+              >—</span>
+            </template>
+            <template #cell:age="{ row }">
+              {{ ago(row.createdAt) }}
+            </template>
+            <template #cell:workspace="{ row }">
+              <RcButton
+                v-if="hasIssueWorkspace(row)"
+                variant="tertiary"
+                size="small"
+                :to="issueWorkspaceTo(row)"
+              >
+                Workspace
+              </RcButton>
+              <AsyncButton
+                v-else
+                mode="apply"
+                action-label="Start workspace"
+                waiting-label="Starting"
+                success-label="Started"
+                size="sm"
+                @click="(done) => startWorkspace('issue-' + row.number, done)"
+              />
+            </template>
+            <template #cell:actions="{ row }">
+              <AsyncButton
+                mode="apply"
+                action-label="Start fix"
+                waiting-label="Opening"
+                success-label="Opened"
+                size="sm"
+                @click="(done) => startFix(row, done)"
+              />
+            </template>
+          </SortableTable>
         </template>
-      </SortableTable>
-    </template>
+      </Tab>
+
+      <Tab
+        name="interrupt-duty"
+        label="Interrupt duty"
+        :weight="1"
+      >
+        <div
+          v-if="loadingAlerts && !alertsLoaded"
+          class="dev-my-work__loading"
+        >
+          <i class="icon icon-spinner icon-spin" />
+          <span>Reading advisories and Dependabot pull requests from GitHub&hellip;</span>
+        </div>
+          <h3>
+            Dependabot alerts <span class="dev-my-work__count">{{ alerts.length }}</span>
+            <a
+              v-if="repo"
+              class="dev-my-work__link"
+              :href="`https://github.com/${ repo }/security/dependabot`"
+              target="_blank"
+              rel="noopener noreferrer"
+            >on GitHub</a>
+          </h3>
+          <!--
+            One row per advisory rather than per alert: GitHub raises one alert per package per
+            manifest, so a transitive dependency in three lockfiles is three alerts about one thing to
+            do. The count says how many, and how many files they are in.
+          -->
+          <Banner
+            v-if="alertError"
+            color="info"
+            :label="alertError"
+          />
+          <!--
+            A second request, made after the page has already drawn: an empty table here means "not
+            read yet" for a few seconds and "nothing to fix" afterwards, which are opposite things.
+          -->
+          <div
+            v-else-if="loadingAlerts && !alertsLoaded"
+            class="dev-my-work__loading"
+          >
+            <i class="icon icon-spinner icon-spin" />
+            <span>Reading the repository&rsquo;s advisories&hellip;</span>
+          </div>
+          <SortableTable
+            v-else
+            :headers="alertHeaders"
+            :rows="alerts"
+            key-field="key"
+            default-sort-by="severity"
+            :table-actions="false"
+            :row-actions="false"
+            :search="false"
+            :paging="true"
+            :rows-per-page="5"
+          >
+            <template #cell:severity="{ row }">
+              <span
+                class="dev-my-work__badge"
+                :class="`dev-my-work__badge--${ severityTone(row.severity) }`"
+              >{{ row.severity }}</span>
+            </template>
+            <template #cell:advisory="{ row }">
+              <a
+                :href="row.url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >{{ row.title }}</a>
+              <span class="dev-my-work__ids">{{ row.ghsaId }}<template v-if="row.cveId"> &middot; {{ row.cveId }}</template></span>
+            </template>
+            <template #cell:package="{ row }">
+              <span class="dev-my-work__repo">{{ row.packages.join(', ') }}</span>
+            </template>
+            <template #cell:alerts="{ row }">
+              {{ row.alerts.length }} in {{ row.manifests.length }} file{{ row.manifests.length === 1 ? '' : 's' }}
+              <template v-if="row.prs.length"> &middot; <a
+                v-for="pr in row.prs"
+                :key="pr.number"
+                :href="pr.url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >#{{ pr.number }}</a></template>
+            </template>
+            <template #cell:fix="{ row }">
+              <span :class="row.patchedVersion ? '' : 'text-muted'">{{ row.patchedVersion || 'no patch yet' }}</span>
+            </template>
+            <template #cell:actions="{ row }">
+              <AsyncButton
+                mode="apply"
+                action-label="Start fix"
+                waiting-label="Opening"
+                success-label="Opened"
+                size="sm"
+                @click="(done) => startAlertFix(row, done)"
+              />
+            </template>
+          </SortableTable>
+
+          <h3>
+            Dependabot PRs <span class="dev-my-work__count">{{ botPrs.length }}</span>
+          </h3>
+          <!--
+            The bot's open bumps as a merge queue, as the harness had them. Review runs the merge
+            checklist in a conversation and reads its verdict off the pane; a MERGE verdict is what
+            the Approve & merge button is for, so it lives on that verdict rather than on every row.
+          -->
+          <div
+            v-if="loadingAlerts && !alertsLoaded"
+            class="dev-my-work__loading"
+          >
+            <i class="icon icon-spinner icon-spin" />
+            <span>Reading Dependabot&rsquo;s open pull requests&hellip;</span>
+          </div>
+          <SortableTable
+            v-else
+            :headers="botHeaders"
+            :rows="botPrs"
+            key-field="key"
+            :default-sort-by="botSort"
+            :table-actions="false"
+            :row-actions="false"
+            :search="false"
+            :paging="true"
+            :rows-per-page="8"
+          >
+            <template #cell:pr="{ row }">
+              <a
+                :href="row.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                :title="row.title"
+              >#{{ row.number }}</a>
+            </template>
+            <template #cell:ci="{ row }">
+              <span
+                v-for="badge in badges(row.ci)"
+                :key="badge.label"
+                class="dev-my-work__badge"
+                :class="`dev-my-work__badge--${ badge.tone }`"
+              >{{ badge.label }}</span>
+              <span
+                v-if="row.ci && !row.ci.pending && !row.ci.failing"
+                class="dev-my-work__badge dev-my-work__badge--success"
+              >green</span>
+            </template>
+            <template #cell:package="{ row }">
+              <span class="dev-my-work__repo">{{ row.packageName || row.title }}</span>
+              <span
+                v-if="row.fromVersion"
+                class="dev-my-work__ids"
+              >{{ row.fromVersion }} → {{ row.toVersion }}</span>
+            </template>
+            <template #cell:updated="{ row }">
+              {{ ago(row.updatedAt) }}
+            </template>
+            <template #cell:review="{ row }">
+              <template v-if="botReview(row)">
+                <span
+                  class="dev-my-work__badge"
+                  :class="`dev-my-work__badge--${ botVerdictTone(row) }`"
+                >{{ botVerdictLabel(row) }}</span>
+                <span
+                  v-if="botReview(row).reason"
+                  class="dev-my-work__reason"
+                  :title="botReview(row).reason"
+                >{{ botReview(row).reason }}</span>
+                <router-link
+                  v-if="botConversationTo(row)"
+                  :to="botConversationTo(row)"
+                  class="dev-my-work__ids"
+                >conversation</router-link>
+              </template>
+              <span
+                v-else
+                class="text-muted"
+              >not reviewed</span>
+            </template>
+            <!--
+              A split button on a phone: the action you came for, and a caret for the rest.
+
+              Opened downwards inside the cell rather than as a floating menu, because the cell is
+              in a table with its own overflow and a popover positioned out of one is a popover
+              that gets clipped by it.
+            -->
+            <template #cell:actions="{ row }">
+              <div
+                class="dev-my-work__actions"
+                :class="{ 'dev-my-work__actions--split': narrow && hasMoreActions(row) }"
+              >
+                <AsyncButton
+                  mode="apply"
+                  :action-label="botReview(row) ? 'Review again' : 'Review'"
+                  waiting-label="Opening"
+                  success-label="Opened"
+                  size="sm"
+                  @click="(done) => reviewBotPr(row, done)"
+                />
+                <button
+                  v-if="narrow && hasMoreActions(row)"
+                  type="button"
+                  class="dev-my-work__more"
+                  :aria-expanded="String(openActions === row.key)"
+                  :title="openActions === row.key ? 'Fewer actions' : 'More actions'"
+                  @click="openActions = openActions === row.key ? '' : row.key"
+                >
+                  <i :class="openActions === row.key ? 'icon icon-chevron-up' : 'icon icon-chevron-down'" />
+                </button>
+                <template v-if="!narrow || openActions === row.key">
+                  <AsyncButton
+                    v-if="botReview(row) && botReview(row).verdict === 'merge'"
+                    mode="apply"
+                    action-label="Approve & merge"
+                    waiting-label="Merging"
+                    success-label="Merged"
+                    size="sm"
+                    :disabled="!!(row.ci && (row.ci.failing || row.ci.pending))"
+                    @click="(done) => mergeBotPr(row, done)"
+                  />
+                  <RcButton
+                    v-if="botReview(row)"
+                    variant="tertiary"
+                    size="small"
+                    title="Forget this review"
+                    @click="closeBotReview(row)"
+                  >
+                    ×
+                  </RcButton>
+                </template>
+              </div>
+            </template>
+          </SortableTable>
+      </Tab>
+    </Tabbed>
   </div>
 </template>
 
