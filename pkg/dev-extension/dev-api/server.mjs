@@ -1942,6 +1942,35 @@ async function startTool(workspace, kind, body = {}) {
     throw failure(503, `The ${ appId } App is not in Apps Plus yet. Open the Dev pages once and it will be created.`);
   }
 
+  // What makes a tool impossible to orphan, and it is not a sweep.
+  //
+  // The tool's namespace is *owned* by the workspace's Installation: an ownerReference from one
+  // cluster-scoped object to another, which Kubernetes' garbage collector enforces. Delete the
+  // workspace by any means - this API, the page, `kubectl`, a Fleet teardown, a cascade nobody
+  // wrote - and the apiserver removes the namespace and everything in it. No code of ours has to
+  // remember, which is the point: the sweep below is now a backstop for leases rather than the
+  // thing standing between a deleted workspace and a dev server that runs all weekend.
+  //
+  // It is also why a tool cannot be created without one. The uid is the workspace that exists
+  // *now*: a workspace deleted and made again under the same name is a different uid, so any
+  // namespace still carrying the old one is collected rather than adopted - which is the other
+  // half of the orphan problem, the one that used to leave a new workspace sharing a tool with
+  // the ghost of the last.
+  if (!instance.metadata?.uid) {
+    throw failure(409, `The workspace ${ workspace } has no uid yet, so a tool made now could not be owned by it. Try again in a moment.`);
+  }
+
+  const owner = {
+    apiVersion:         'appsplus.io/v1alpha1',
+    kind:               'AppInstance',
+    name:               workspace,
+    uid:                instance.metadata.uid,
+    // Not a controller and not blocking: this API does not manage the Installation, and a
+    // workspace's own teardown must not wait on a namespace draining.
+    controller:         false,
+    blockOwnerDeletion: false,
+  };
+
   const namespace = toolNs(workspace, kind);
   const lease = leaseUntil(body.minutes);
   const values = {
@@ -1965,14 +1994,23 @@ async function startTool(workspace, kind, body = {}) {
 
     const rendered = substitute(object, values);
 
-    // The lease rides on the namespace, because the namespace is the object the sweep reads and
-    // the one whose deletion takes the whole tool with it.
+    // The lease and the owner both ride on the namespace: it is the object the sweep reads, the
+    // one the garbage collector follows, and the one whose deletion takes the whole tool with it.
     if (rendered.kind === 'Namespace') {
       rendered.metadata.annotations = {
         ...(rendered.metadata.annotations || {}),
         [LEASE_ANNOTATION]:         lease.expires,
         [LEASE_MINUTES_ANNOTATION]: String(lease.minutes),
       };
+      rendered.metadata.ownerReferences = [owner];
+    }
+
+    // The guard that keeps the guarantee true as this grows: a tool is a namespace and things
+    // inside it, and a namespace with no owner is a tool nothing will ever collect. A template
+    // that produced one would be a leak that only showed up as a node running out of memory a
+    // week later, so it is refused here instead.
+    if (rendered.kind === 'Namespace' && !rendered.metadata.ownerReferences?.length) {
+      throw failure(500, `The ${ appId } App's ${ t.name } would create a namespace owned by nothing, which is a tool that could outlive its workspace. Refusing.`);
     }
 
     await applyObject(rendered);
