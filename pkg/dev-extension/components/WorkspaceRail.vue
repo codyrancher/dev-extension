@@ -360,8 +360,13 @@ export default {
             headline: 'Reviewers left comments after your last push', detail: 'The agent reads each comment, answers or changes the code, re-verifies and pushes. You read its report before anything else happens.', primary: { label: 'Answer the feedback', run: 'answerFeedback' }, tools: [{ label: 'Re-verify the fix', run: 'reverify' }, { label: 'Ask the agent', run: 'focusAsk' }],
           };
         case 'merged':
+          // Merged is not the end of the conversation. The agent that did the work is the one
+          // that knows how it was done, and the questions that follow a merge - why this way,
+          // what about the other call site, can you write the follow-up issue - are worth more
+          // here than anywhere else. So the way in stays on the page; only deleting the
+          // workspace takes it away.
           return {
-            headline: s.label === 'Approved' ? 'Approved' : 'Merged', detail: 'The workspace can go; the PR and the conversation history stay on GitHub and in the agent pod.', primary: { label: 'Delete the workspace', run: 'remove' }, tools: s.label === 'Approved' ? [{ label: 'Merge', run: 'merge' }] : [],
+            headline: s.label === 'Approved' ? 'Approved' : 'Merged', detail: 'Nothing is waiting on you. The agent is still here for follow-up questions; deleting the workspace is what ends it (the PR and the transcript stay).', primary: { label: 'Open the conversation', run: 'focusAsk' }, tools: [...(s.label === 'Approved' ? [{ label: 'Merge', run: 'merge' }] : []), { label: 'Delete the workspace', run: 'remove' }],
           };
         }
       }
@@ -425,7 +430,7 @@ export default {
           return {
             // Your part is over either way: merging is the author's, so what is left here is
             // to let the workspace go. The conversations and the PR outlive it.
-            headline: s.label === 'Merged' ? 'Merged' : 'Approved', detail: s.label === 'Merged' ? 'Nothing left to do; the workspace can go.' : 'Your review is done. The author merges; the workspace can go whenever you are finished with it.', primary: { label: 'Delete the workspace', run: 'remove' }, tools: [],
+            headline: s.label === 'Merged' ? 'Merged' : 'Approved', detail: s.label === 'Merged' ? 'Nothing is waiting on you. The agent is still here if you want to ask it something about what it found.' : 'Your review is done and the author merges. The agent is still here for anything you want to ask about it.', primary: { label: 'Open the conversation', run: 'focusAsk' }, tools: [{ label: 'Delete the workspace', run: 'remove' }],
           };
         }
       }
