@@ -2976,13 +2976,16 @@ http.createServer(async(req, res) => {
 
   // A workspace's built site, as a tarball: what a preview hosted on another cluster fetches
   // (previews.ts, shareWorkspace) through this Rancher's proxy with a token of the person's,
-  // because nothing on that cluster can reach this node's disk any other way.
-  const share = /^\/share\/([a-z0-9][a-z0-9-]*)\/(dashboard|storybook)\.tar\.gz$/.exec(url.pathname);
+  // because nothing on that cluster can reach this node's disk any other way. Any directory
+  // under `share/` is served, not only the Share tab's dashboard and storybook: a rancher-share
+  // (the my-rancher-share skill) packs a shell build and extension builds under a name of its
+  // own, and one workspace may hold several. It is a build once it has a page or a plugin list.
+  const share = /^\/share\/([a-z0-9][a-z0-9-]*)\/([a-z0-9][a-z0-9-]*)\.tar\.gz$/.exec(url.pathname);
 
   if (share && req.method === 'GET') {
     const dir = path.join(WORKSPACES_ROOT, share[1], 'share', share[2]);
 
-    if (!fs.existsSync(path.join(dir, 'index.html'))) {
+    if (!['index.html', 'uiplugins.json', 'dashboard/index.html'].some((f) => fs.existsSync(path.join(dir, f)))) {
       return send(res, 404, { error: 'No build there yet.' });
     }
     res.writeHead(200, { 'content-type': 'application/gzip', 'access-control-allow-origin': '*', 'cache-control': 'no-store' });
