@@ -11,27 +11,29 @@
 // tab. Use this for any transient/automated work (e.g. scraping, uploading,
 // background checks) so the user's open tabs aren't navigated away from.
 //
-// `record` injects a visual overlay into the page (URL bar at the bottom,
-// cursor dot that tracks mouse movement, click ripples, and keystroke badges)
-// so the resulting webm shows the URL, the pointer, and input actions even
-// though CDP screencast only captures the viewport.
+// `record` injects a visual overlay into the page (cursor dot that tracks mouse
+// movement, click ripples, and keystroke badges) so the resulting webm shows
+// the pointer and input actions even though CDP screencast only captures the
+// viewport. The URL is drawn as a strip *below* the captured viewport, so it
+// never covers page content: the video is the viewport plus 28px.
 //
 // CDP endpoint comes from $CLAUDE_BROWSER_CDP (set in .bashrc by init.sh), with any
 // hostname in it resolved to an IP first - see cdp.mjs for why that is not optional.
 
 import { chromium } from 'playwright-core'
-import { promises as fs } from 'node:fs'
+import { promises as fs, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { cdpEndpoint } from './cdp.mjs'
 
 const CDP = await cdpEndpoint()
 
 // Overlay installed into the page for `record`. Idempotent - safe to run on
-// every navigation. Positions the URL bar at the bottom (semi-transparent,
-// 32px) so it minimally covers the page; cursor + ripples + key badges
-// float above.
+// every navigation. The URL bar is not part of it: the recorder draws that as
+// a strip below the captured frame (see `urlStrip`), so nothing in the page's
+// viewport is covered. Cursor, ripples, key badges, highlights and banners
+// float above the page.
 const OVERLAY_SCRIPT = () => {
-  if (document.getElementById('__hn_urlbar')) return
+  if (document.getElementById('__hn_cursor')) return
 
   const style = document.createElement('style')
   style.textContent = `
@@ -44,44 +46,6 @@ const OVERLAY_SCRIPT = () => {
     }
   `
   document.documentElement.appendChild(style)
-
-  // --- URL bar (bottom) ---------------------------------------------------
-  const bar = document.createElement('div')
-  bar.id = '__hn_urlbar'
-  bar.style.cssText = [
-    'position:fixed', 'left:0', 'right:0', 'bottom:0', 'height:28px',
-    'background:rgba(18,18,22,0.82)', 'color:#eaeaea',
-    'font:12px/28px ui-monospace,SFMono-Regular,Menlo,monospace',
-    'padding:0 10px', 'z-index:2147483647', 'pointer-events:none',
-    'border-top:1px solid rgba(255,255,255,0.1)',
-    'white-space:nowrap', 'overflow:hidden', 'text-overflow:ellipsis',
-    'display:flex', 'align-items:center', 'gap:8px',
-    'backdrop-filter:blur(6px)',
-  ].join(';')
-  bar.innerHTML = '<span style="opacity:0.55;font-size:11px">URL</span><span id="__hn_url"></span>'
-  document.documentElement.appendChild(bar)
-
-  const updateUrl = () => {
-    const el = document.getElementById('__hn_url')
-    if (!el) return
-    el.textContent = location.href
-    const b = document.getElementById('__hn_urlbar')
-    if (b) {
-      b.style.transition = 'none'
-      b.style.background = 'rgba(220,60,100,0.6)'
-      requestAnimationFrame(() => {
-        b.style.transition = 'background 3s ease-out'
-        b.style.background = 'rgba(18,18,22,0.82)'
-      })
-    }
-  }
-  updateUrl()
-  const origPush = history.pushState
-  const origReplace = history.replaceState
-  history.pushState = function () { origPush.apply(this, arguments); updateUrl() }
-  history.replaceState = function () { origReplace.apply(this, arguments); updateUrl() }
-  window.addEventListener('popstate', updateUrl)
-  window.addEventListener('hashchange', updateUrl)
 
   // --- Cursor dot ---------------------------------------------------------
   // No CSS transition on top/left. The recorder interpolates pointer position
@@ -153,7 +117,7 @@ const OVERLAY_SCRIPT = () => {
   const tray = document.createElement('div')
   tray.id = '__hn_keys'
   tray.style.cssText = [
-    'position:fixed', 'right:12px', 'bottom:40px',
+    'position:fixed', 'right:12px', 'bottom:12px',
     'display:flex', 'flex-direction:column', 'align-items:flex-end',
     'gap:4px', 'pointer-events:none', 'z-index:2147483646',
   ].join(';')
@@ -1362,6 +1326,79 @@ async function recordScript(scriptPath, out, opts) {
   })
 }
 
+// --- URL strip ---------------------------------------------------------------
+//
+// The URL bar used to be a fixed element inside the page, which covered the
+// bottom 28px of whatever was being recorded. It now lives outside the
+// viewport: the recorder notes the frame index at every main-frame navigation
+// (Playwright reports pushState, replaceState and hash changes as
+// `framenavigated` too), renders one bar image per URL in the browser itself so
+// the font matches, and ffmpeg stacks that strip under the captured frames.
+// A navigation during capture flashes the strip pink and fades it back over 3s,
+// as the in-page bar did.
+const STRIP_H = 28
+const STRIP_BASE = [18, 18, 22]
+const STRIP_FLASH = [139, 43, 69]
+const STRIP_FLASH_MS = 3000
+const STRIP_FLASH_STEPS = 10
+
+function stripColour(step) {
+  if (step === null) return STRIP_BASE
+  const t = step / STRIP_FLASH_STEPS
+  const ease = 1 - (1 - t) * (1 - t)
+  return STRIP_FLASH.map((c, i) => Math.round(c + (STRIP_BASE[i] - c) * ease))
+}
+
+async function renderStripImages(ctx, marks, width, dir) {
+  const page = await ctx.newPage()
+  const files = new Map()
+  try {
+    await page.setViewportSize({ width, height: STRIP_H })
+    const urls = [...new Set(marks.map(m => m.url))]
+    for (const [u, url] of urls.entries()) {
+      const flashes = marks.some(m => m.url === url && m.flash)
+      const steps = flashes ? [null, ...Array.from({ length: STRIP_FLASH_STEPS }, (_, k) => k)] : [null]
+      for (const step of steps) {
+        const [r, g, b] = stripColour(step)
+        await page.setContent(`<!doctype html><html><body style="margin:0"><div id="bar" style="box-sizing:border-box;width:${ width }px;height:${ STRIP_H }px;background:rgb(${ r },${ g },${ b });color:#eaeaea;font:12px/${ STRIP_H }px ui-monospace,SFMono-Regular,Menlo,monospace;padding:0 10px;border-top:1px solid rgba(255,255,255,0.1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:8px"><span style="opacity:0.55;font-size:11px">URL</span><span></span></div></body></html>`)
+        await page.locator('#bar span').nth(1).evaluate((el, text) => { el.textContent = text }, url)
+        const file = `${ dir }/strip-${ u }-${ step === null ? 'base' : step }.png`
+        await page.locator('#bar').screenshot({ path: file, scale: 'css' })
+        files.set(`${ url }\u0000${ step }`, file)
+      }
+    }
+  } finally {
+    await page.close().catch(() => {})
+  }
+  return files
+}
+
+// ffmpeg concat-demuxer list that plays the right strip image for every frame.
+function stripConcatList(marks, files, totalFrames, fps) {
+  const lines = []
+  let last = null
+  const add = (file, frames) => {
+    if (frames <= 0) return
+    lines.push(`file '${ file }'`, `duration ${ (frames / fps).toFixed(6) }`)
+    last = file
+  }
+  const flashFrames = Math.max(1, Math.round(STRIP_FLASH_MS / 1000 * fps / STRIP_FLASH_STEPS))
+  marks.forEach((m, i) => {
+    const end = i + 1 < marks.length ? marks[i + 1].frame : totalFrames
+    let at = m.frame
+    if (m.flash) {
+      for (let k = 0; k < STRIP_FLASH_STEPS && at < end; k++) {
+        const n = Math.min(flashFrames, end - at)
+        add(files.get(`${ m.url }\u0000${ k }`), n)
+        at += n
+      }
+    }
+    add(files.get(`${ m.url }\u0000null`), end - at)
+  })
+  if (last) lines.push(`file '${ last }'`)
+  return lines.join('\n') + '\n'
+}
+
 // Shared recording machinery - sets up overlay + screencast, runs the body,
 // then stops + ffmpeg-assembles. `body` controls what happens during capture
 // (fixed duration for `record`, scripted actions for `recordScript`).
@@ -1393,6 +1430,21 @@ async function runRecording(out, opts, body) {
   await fs.mkdir(tmpDir, { recursive: true })
   let frame = 0
   let capturing = !opts.deferCapture
+  // One mark per URL the strip shows, keyed by the frame it starts on. Changes
+  // before capture starts all collapse onto frame 0 and do not flash.
+  const urlMarks = []
+  const markUrl = (url) => {
+    if (!url || url === 'about:blank') return
+    const at = capturing ? frame : 0
+    const prev = urlMarks[urlMarks.length - 1]
+    if (prev && prev.url === url) return
+    if (prev && prev.frame === at) urlMarks.pop()
+    const before = urlMarks[urlMarks.length - 1]
+    if (before && before.url === url) return
+    urlMarks.push({ frame: at, url, flash: capturing && at > 0 })
+  }
+  markUrl(conn.page.url())
+  conn.page.on('framenavigated', (f) => { if (f === conn.page.mainFrame()) markUrl(f.url()) })
   let t0 = capturing ? Date.now() : 0
   let t1 = 0
   // Everything in here is best-effort: a frame can arrive while the page is
@@ -1419,6 +1471,7 @@ async function runRecording(out, opts, body) {
   // is the most expensive possible way to report the error. Encode first, then
   // re-throw, so the exit code and the message are unchanged.
   let bodyError = null
+  let stripFiles = null
   try {
     await body(conn.page, conn.ctx, startRecording)
   } catch (err) {
@@ -1426,6 +1479,13 @@ async function runRecording(out, opts, body) {
   } finally {
     capturing = false
     try { await client.send('Page.stopScreencast') } catch { /* page may be closed */ }
+    if (frame > 0 && urlMarks.length) {
+      try {
+        stripFiles = await renderStripImages(conn.ctx, urlMarks, Math.floor((capSize?.width || 1280) / 2) * 2, tmpDir)
+      } catch (err) {
+        console.error(`url strip: could not render (${ err.message || err }); encoding without it`)
+      }
+    }
     await disconnect(conn)
   }
 
@@ -1449,11 +1509,20 @@ async function runRecording(out, opts, body) {
   const fps = (frame > 2 && elapsed > 0.5) ? clamp(frame / elapsed, 4, 240) : 15
   console.log(`captured ${frame} frames over ${elapsed.toFixed(1)}s -> encoding at ${fps.toFixed(2)} fps`)
   await new Promise((resolve, reject) => {
+    // yuv420p needs even dimensions and a viewport can be an odd number of
+    // pixels tall, so round down rather than fail the encode.
+    const even = 'scale=trunc(iw/2)*2:trunc(ih/2)*2'
+    const input = ['-y', '-framerate', fps.toFixed(3), '-i', `${tmpDir}/f%06d.jpg`]
+    let video = ['-vf', even]
+    if (stripFiles) {
+      const list = `${ tmpDir }/strip.txt`
+      writeFileSync(list, stripConcatList(urlMarks, stripFiles, frame, fps))
+      input.push('-f', 'concat', '-safe', '0', '-i', list)
+      video = ['-filter_complex', `[0:v]${ even }[m];[1:v]fps=${ fps.toFixed(3) },format=yuv420p[s];[m]format=yuv420p[m2];[m2][s]vstack=inputs=2:shortest=1`]
+    }
     const ff = spawn('ffmpeg', [
-      '-y', '-framerate', fps.toFixed(3), '-i', `${tmpDir}/f%06d.jpg`,
-      // yuv420p needs even dimensions and a viewport can be an odd number of
-      // pixels tall, so round down rather than fail the encode.
-      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+      ...input,
+      ...video,
       '-c:v', 'libvpx-vp9', '-b:v', '1M', '-pix_fmt', 'yuv420p',
       '-deadline', 'good', '-cpu-used', '4', '-row-mt', '1',
       out,
