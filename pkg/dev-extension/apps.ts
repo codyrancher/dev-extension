@@ -27,6 +27,7 @@ import { WORKSPACE_VUE_CONFIG } from './workspace-config';
 // The leased-tooling Apps: the slim workspace and the tools it attaches. Seeded here with the
 // rest, so one pass over Apps Plus writes every definition this product owns.
 import { lteApps } from './lte';
+import { ensureAppsPlusCrds } from './apps-plus';
 // The same-origin fetch and cluster path every other Rancher call in this product goes through.
 // Imported rather than reinvented so the CSRF header and the error shape stay in one place.
 import { devFetch, clusterBase, activeCluster, GITHUB_BROWSER_CDP } from './api';
@@ -56,9 +57,18 @@ export interface DevApp {
   workspace: boolean;
 }
 
+/**
+ * What to say when `appsplus.io` is not there.
+ *
+ * It used to say "install the apps-plus extension", which was true while that was a second
+ * extension. Apps Plus is part of this one now, so the only way to be here is that the CRDs
+ * could not be created - which needs rights this Rancher gives an administrator - or that Steve
+ * has not seen them yet, which one reload fixes.
+ */
 function missingAppsPlus(): Error {
   return new Error(
-    'Apps Plus is not installed in this Rancher, and it is what holds workspace templates. Install the apps-plus extension and reload.',
+    'The appsplus.io types are not in this Rancher yet, and they are what holds workspace templates. '
+    + 'This extension creates them on load if you can create a CRD here; reload once, and ask an administrator if it says this again.',
   );
 }
 
@@ -1447,7 +1457,14 @@ export function devBrowserApp(): Json {
 
 /** Create the built-in Apps that are missing. Quiet: this runs for everyone on every load. */
 export async function ensureDefaultApp(store: Store): Promise<void> {
+  // The types first, then the Apps in them: installing this extension has to be enough (see
+  // apps-plus.ts). A Rancher that already has them does one read and moves on.
   if (!appsPlusAvailable(store)) {
+    await ensureAppsPlusCrds().catch(() => false);
+
+    // Steve learns about a new type on its next schema refresh, not on this tick, so the Apps
+    // below wait for the reload that follows. Nothing is lost: the CRDs are the part that had
+    // to be done out of band, and it is done now.
     return;
   }
 
