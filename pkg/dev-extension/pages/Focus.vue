@@ -24,7 +24,7 @@
  * change it. What is personal - pins, snoozes, what you have dealt with - lives in your prefs.
  */
 import {
-  computed, nextTick, onMounted, onBeforeUnmount, ref
+  computed, nextTick, onMounted, onBeforeUnmount, ref, watch
 } from 'vue';
 import FocusDeck from '../components/focus/FocusDeck.vue';
 import DeckSkeleton from '../components/focus/DeckSkeleton.vue';
@@ -51,6 +51,9 @@ import { myWork } from '../github';
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
 import { askTheAgent, panelConversation } from '../focus-agent';
+import { reviewNotes } from '../focus-review';
+import type { ReviewNote } from '../focus-review';
+import { updateComment, deleteComment, discussPrompt } from '../reviews';
 import '../design/focus.css';
 
 const loading = ref(true);
@@ -65,6 +68,32 @@ const state = ref<FocusState>({ pinned: [], snoozed: {}, done: {} });
 const index = ref(0);
 const direction = ref<1 | -1>(1);
 const deckRef = ref<{ enterFrom(rect: DOMRect): void } | null>(null);
+
+/**
+ * The agent's comments for the card on top, when there are any.
+ *
+ * Read for the top card and nothing else: a pass is a dozen comments and each one carries a
+ * hunk, so reading them for a deck of thirty would be thirty pull requests fetched to draw one.
+ */
+const notes = ref<ReviewNote[]>([]);
+const notesFor = ref('');
+
+async function readNotes() {
+  const task = current.value;
+  const pr = Number(/#(\d+)/.exec(task?.what || '')?.[1] || 0);
+
+  if (!task || !pr || task.rule !== 'review-findings') {
+    notes.value = [];
+    notesFor.value = '';
+
+    return;
+  }
+  if (notesFor.value === task.key) {
+    return;
+  }
+  notesFor.value = task.key;
+  notes.value = await reviewNotes(pr).catch(() => []);
+}
 
 /**
  * One sheet, four sections.
@@ -163,6 +192,8 @@ async function load() {
 onMounted(load);
 
 /* ── Turning the deck ─────────────────────────────────────────────────────────────────────── */
+
+watch(current, readNotes, { immediate: true });
 
 function go(step: 1 | -1) {
   if (!deck.value.length) {
@@ -291,6 +322,45 @@ async function ask(task: FocusTask) {
     error.value = (e as Error)?.message || String(e);
   } finally {
     busy.value = false;
+  }
+}
+
+/* ── The pass over the agent's comments ───────────────────────────────────────────────────── */
+
+/**
+ * What you decided about one of the agent's comments, written back to the comment.
+ *
+ * Keeping one approves it - which is what makes it go out when the review is submitted -
+ * rewording it writes the new text, and dropping it deletes it. The card is where the
+ * judgement happens; this is where it lands.
+ */
+async function resolveNote({ note, verdict, body }: { note: ReviewNote; verdict: string; body?: string }) {
+  try {
+    if (verdict === 'dropped') {
+      await deleteComment(note.pr, note.commentId);
+      notes.value = notes.value.filter((entry) => entry.id !== note.id);
+    } else if (verdict === 'edited' && body) {
+      await updateComment(note.pr, note.commentId, { body, status: 'approved' });
+    } else if (verdict === 'good') {
+      await updateComment(note.pr, note.commentId, { status: 'approved' });
+    }
+  } catch (e) {
+    error.value = (e as Error)?.message || String(e);
+  }
+}
+
+/** Arguing with the agent about one of its own comments, in the conversation. */
+async function discussNote({ note, text }: { note: ReviewNote; text: string }) {
+  const task = current.value;
+
+  try {
+    await askTheAgent(task, discussPrompt(
+      { id: note.commentId, path: note.path, line: note.line, body: note.body } as never,
+      note.pr,
+      text,
+    ));
+  } catch (e) {
+    error.value = (e as Error)?.message || String(e);
   }
 }
 
@@ -566,11 +636,14 @@ onBeforeUnmount(closeSettings);
           :index="index"
           :direction="direction"
           :busy="busy"
+          :notes="notes"
           @go="go"
           @jump="jumpTo"
           @act="act"
           @ask="ask"
           @pin="pin"
+          @resolve="resolveNote"
+          @discuss="discussNote"
         />
       </main>
     </div>

@@ -23,6 +23,8 @@ const props = defineProps<{
   index: number;
   direction: 1 | -1;
   busy?: boolean;
+  /** The agent's comments for the card on top, when its work is a review. See focus-review.ts. */
+  notes?: unknown[];
 }>();
 
 const emit = defineEmits<{
@@ -31,6 +33,10 @@ const emit = defineEmits<{
   (e: 'act', payload: { task: FocusTask; action: CardAction }): void;
   (e: 'ask', task: FocusTask): void;
   (e: 'pin', task: FocusTask): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: 'resolve', value: any): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: 'discuss', value: any): void;
 }>();
 
 const current = computed(() => props.cards[props.index] || null);
@@ -467,9 +473,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           interactive
           :busy="busy"
           :pinned="current.pinned"
+          :notes="(notes as any)"
           @act="(action) => emit('act', { task: current!, action })"
           @ask="emit('ask', current!)"
           @pin="emit('pin', current!)"
+          @resolve="emit('resolve', $event)"
+          @discuss="emit('discuss', $event)"
         />
       </div>
 

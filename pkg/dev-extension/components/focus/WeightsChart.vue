@@ -256,18 +256,28 @@ function nudge(row: WeightRow, by: number) {
 
 .rule__track {
   position: relative;
-  height: 10px;
-  margin: 8px 0 6px;
-  border-radius: var(--r-pill);
-  background: var(--surface-raised);
+  display: flex;
+  align-items: center;
+  /* The row is the control, not the bar in it: 30px is the smallest thing this view asks
+     anybody to hit, and a 10px bar is a 10px target. */
+  height: 30px;
+  margin: 2px 0;
   cursor: ew-resize;
 }
 
-.rule__track:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.rule__track::before {
+  content: '';
+  position: absolute;
+  inset: 10px 0;
+  border-radius: var(--r-pill);
+  background: var(--surface-raised);
+}
+
+.rule__track:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm); }
 
 .rule__fill {
   position: absolute;
-  inset: 0 auto 0 0;
+  inset: 10px auto 10px 0;
   border-radius: var(--r-pill);
   background: linear-gradient(90deg, color-mix(in srgb, var(--kind-c) 45%, transparent), var(--kind-c));
 }
@@ -287,8 +297,8 @@ function nudge(row: WeightRow, by: number) {
 /* What it shipped as, left on the bar: the only place "what did I change" can be read. */
 .rule__shipped {
   position: absolute;
-  top: -3px;
-  bottom: -3px;
+  top: 7px;
+  bottom: 7px;
   width: 2px;
   background: var(--text-faint);
   transform: translateX(-50%);
