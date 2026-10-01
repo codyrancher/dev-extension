@@ -13,7 +13,9 @@
  * holding right now. That is the question somebody opens this panel with, because a card
  * claiming nothing is a card they will never see.
  */
-import { computed } from 'vue';
+import {
+  computed, onBeforeUnmount, onMounted, ref
+} from 'vue';
 import FocusCard from './FocusCard.vue';
 import AppIcon from './AppIcon.vue';
 import type { CardDef, FocusTask } from '../../focus';
@@ -67,10 +69,50 @@ function sample(card: CardDef): FocusTask {
 }
 
 const shown = computed(() => props.cards.map((card) => ({ card, task: sample(card) })));
+
+/**
+ * The size a card is drawn at before it is shrunk into its frame.
+ *
+ * A card lays itself out for most of a screen - its type is clamped against the viewport, its
+ * footer is a row of full-size buttons - so a miniature is that card at that size, scaled. Draw
+ * it at the frame's own width instead and it is not a miniature of anything: it is a different
+ * card, with different wrapping, that happens to be small.
+ */
+const DRAWN = { w: 840, h: 520 };
+
+const gallery = ref<HTMLElement | null>(null);
+
+/**
+ * The scale, measured rather than assumed.
+ *
+ * It was a constant, which is only right at one frame width - and the frames are in a grid that
+ * is two columns in a dialog and one on a phone. Every card was drawn at 0.44 whatever the room
+ * was, so a third of each row was empty.
+ */
+function fit() {
+  const el = gallery.value?.querySelector('.mini__frame');
+
+  if (!el || !gallery.value) {
+    return;
+  }
+  gallery.value.style.setProperty('--mini-scale', String(el.clientWidth / DRAWN.w));
+}
+
+let watching: ResizeObserver | null = null;
+
+onMounted(() => {
+  fit();
+  watching = new ResizeObserver(fit);
+  if (gallery.value) {
+    watching.observe(gallery.value);
+  }
+});
+
+onBeforeUnmount(() => watching?.disconnect());
 </script>
 
 <template>
-  <div class="gallery">
+  <div ref="gallery" class="gallery">
     <article
       v-for="entry in shown"
       :key="entry.card.id"
@@ -143,9 +185,24 @@ const shown = computed(() => props.cards.map((card) => ({ card, task: sample(car
 </template>
 
 <style scoped>
-.gallery { display: flex; flex-direction: column; gap: var(--s5); }
+/*
+ * A grid of miniatures rather than a column of them: a card drawn small is about 350px wide, so
+ * a column of them in a dialog twice that wide is half a dialog of nothing.
+ */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--s5) var(--s4);
+  /* Set by `fit` on mount and on every resize; the stage reads it. */
+  --mini-w: 840px;
+  --mini-h: 520px;
+  /* `aspect-ratio` takes a ratio, not two lengths: `840px / 520px` is invalid and is dropped,
+     which left every frame as tall as the card it was meant to be shrinking. */
+  --mini-ar: 840 / 520;
+  --mini-scale: 0.42;
+}
 
-.mini { display: flex; flex-direction: column; gap: var(--s2); }
+.mini { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
 
 .mini__head { display: flex; align-items: center; gap: var(--s2); }
 .mini__id { color: var(--text-faint); font-family: var(--mono); font-size: var(--t-xs); }
@@ -176,17 +233,17 @@ const shown = computed(() => props.cards.map((card) => ({ card, task: sample(car
  */
 .mini__frame {
   position: relative;
-  height: 212px;
+  width: 100%;
+  /* The drawn card's proportions, so the frame is the card rather than a window onto part of
+     it. Its height follows its width, and the scale follows both. */
+  aspect-ratio: var(--mini-ar);
   border-radius: var(--r-md);
   overflow: hidden;
-  /* The scale, and the size the card is drawn at before it. */
-  --mini-w: 840px;
-  --mini-scale: 0.44;
 }
 
 .mini__stage {
   width: var(--mini-w);
-  height: calc(212px / var(--mini-scale));
+  height: var(--mini-h);
   transform: scale(var(--mini-scale));
   transform-origin: 0 0;
   pointer-events: none;
