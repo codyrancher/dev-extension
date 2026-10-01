@@ -71,10 +71,20 @@ const shown = computed(() => props.cards.map((card) => ({ card, task: sample(car
 
 <template>
   <div class="gallery">
-    <article v-for="entry in shown" :key="entry.card.id" class="mini" :class="`mini--${ entry.card.kind }`">
+    <article
+      v-for="entry in shown"
+      :key="entry.card.id"
+      class="mini"
+      :class="`mini--${ entry.card.kind }`"
+    >
       <header class="mini__head">
         <span class="mini__id">{{ entry.card.id }}</span>
-        <button type="button" class="mini__edit" :title="`Change ${ entry.card.label }`" @click="emit('edit', entry.card.id)">
+        <button
+          type="button"
+          class="mini__edit"
+          :title="`Change ${ entry.card.label }`"
+          @click="emit('edit', entry.card.id)"
+        >
           <AppIcon name="pencil" :size="14" />
         </button>
       </header>
@@ -97,32 +107,34 @@ const shown = computed(() => props.cards.map((card) => ({ card, task: sample(car
           class="mini__rule"
           :class="{ 'mini__rule--idle': !counts[rule] }"
         >
-          {{ rule }}<span v-if="counts[rule]" class="mini__rule-count">{{ counts[rule] }}</span>
+          {{ rule }}<span
+            v-if="counts[rule]"
+            class="mini__rule-count"
+          >{{ counts[rule] }}</span>
         </li>
-        <li v-if="!entry.card.rules.length" class="mini__rule mini__rule--any">anything with no card of its own</li>
+        <li
+          v-if="!entry.card.rules.length"
+          class="mini__rule mini__rule--any"
+        >anything with no card of its own</li>
       </ul>
 
       <p class="mini__verbs">
-        <span v-for="action in entry.card.actions" :key="action.label" class="mini__verb">
+        <span
+          v-for="action in entry.card.actions"
+          :key="action.label"
+          class="mini__verb"
+        >
           <strong>{{ action.label }}</strong> {{ VERBS[action.verb] || action.verb }}<template v-if="action.verb === 'snooze' && action.hours"> {{ action.hours }}h</template>
         </span>
       </p>
     </article>
 
     <!-- The way to another one, drawn as the gap in the set rather than as a button elsewhere. -->
-    <button type="button" class="mini mini--new" @click="emit('add')">
-      <AppIcon name="sparkle" :size="20" />
-      <span class="mini__new-label">Make a new card</span>
-      <span class="mini__new-about">Describe it to the agent and it writes the definition.</span>
-    </button>
-  </div>
-</template>
-        </span>
-      </p>
-    </article>
-
-    <!-- The way to another one, drawn as the gap in the set rather than as a button elsewhere. -->
-    <button type="button" class="mini mini--new" @click="emit('add')">
+    <button
+      type="button"
+      class="mini mini--new"
+      @click="emit('add')"
+    >
       <AppIcon name="sparkle" :size="20" />
       <span class="mini__new-label">Make a new card</span>
       <span class="mini__new-about">Describe it to the agent and it writes the definition.</span>
