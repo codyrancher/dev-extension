@@ -63,6 +63,23 @@ const waited = computed(() => (props.task.waitingHours >= 48
         along the line.
       -->
       <div class="card__head-line">
+        <!--
+          First in the line, which is the card's top-left corner: what it does is to the whole
+          card. In the line rather than floated over it, so nothing underneath has to be
+          indented past it by a number nobody can derive.
+        -->
+        <button
+          v-if="interactive"
+          type="button"
+          class="card__pin"
+          :class="{ 'card__pin--on': pinned }"
+          :title="pinned ? 'Put it back in the deck' : 'Keep it beside the deck'"
+          :aria-pressed="pinned ? 'true' : 'false'"
+          @click="emit('pin')"
+        >
+          <AppIcon name="pin" :size="15" />
+          <span class="card__pin-word">{{ pinned ? 'Pinned' : 'Pin' }}</span>
+        </button>
         <KindChip :kind="task.card.kind" />
         <span class="card__where">{{ task.what }}</span>
         <span v-if="task.workspace" class="card__ws">{{ task.workspace }}</span>
@@ -70,16 +87,6 @@ const waited = computed(() => (props.task.waitingHours >= 48
           <AppIcon name="clock" :size="13" />
           waiting {{ waited }}
         </span>
-        <button
-          v-if="interactive"
-          type="button"
-          class="card__pin"
-          :class="{ 'card__pin--on': pinned }"
-          :title="pinned ? 'Put it back in the deck' : 'Pin it beside the deck'"
-          @click="emit('pin')"
-        >
-          <AppIcon name="pin" :size="14" />
-        </button>
       </div>
 
       <h2 class="card__title">{{ task.title || task.what }}</h2>
@@ -251,34 +258,53 @@ const waited = computed(() => (props.task.waitingHours >= 48
   white-space: nowrap;
 }
 
+/*
+ * The pin: a control the size the rest of them are (the smallest button here is 30px), in the
+ * card's top-left corner. It shows its glyph alone until the pointer is on the card, and then
+ * says what it does - a corner icon with no word is a thing people press to find out.
+ */
 .card__pin {
-  display: grid;
-  place-items: center;
+  display: inline-flex;
   flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
-  /* The header's right edge. See the note on the markup. */
-  margin-left: auto;
+  align-items: center;
+  gap: var(--s2);
+  height: 32px;
+  padding: 0 var(--s3);
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  transition: color var(--fast), border-color var(--fast);
+  transition: color var(--fast), border-color var(--fast), background var(--fast);
 }
 
 .card__pin:hover { color: var(--text); border-color: var(--border-strong); }
 
 .card__pin--on {
-  color: var(--kind);
-  border-color: color-mix(in srgb, var(--kind) 50%, transparent);
+  border-color: color-mix(in srgb, var(--kind) 55%, transparent);
   background: var(--kind-wash);
+  color: var(--kind);
 }
+
+/* The word, which only appears when the pointer is on the card it belongs to. */
+.card__pin-word {
+  max-width: 0;
+  overflow: hidden;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  transition: max-width var(--base) var(--ease-out);
+}
+
+.card:hover .card__pin-word,
+.card__pin:focus-visible .card__pin-word,
+.card__pin--on .card__pin-word { max-width: 72px; }
 
 .card__overdue {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
+  margin-left: auto;
   gap: 5px;
   padding: 3px 10px;
   border-radius: var(--r-pill);
