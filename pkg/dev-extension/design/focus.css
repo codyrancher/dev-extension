@@ -1,0 +1,137 @@
+/*
+ * Focus: the deck's own palette, kept to itself.
+ *
+ * The deck came from a prototype that owned its whole page, so its tokens were on `:root` and
+ * named `--text`, `--surface`, `--s4`. In here that would be a product-wide rename of things
+ * Rancher already names, so they are declared on `.dev-focus` instead: inside the Focus view
+ * they resolve, and one element away they do not exist. The components are the prototype's,
+ * unchanged, which is the point - this is the file that makes that possible.
+ *
+ * The palette itself is the prototype's, and the note it was written with still holds: a deep
+ * blue-black ground, one panel step above it, a hairline border that is a lightened ground
+ * rather than grey, and a single blue that means "this is the thing to press". The card hues
+ * are a second, softer system - one per kind of work, pastel at rest, saturated for accents -
+ * so a deck read at a glance says what is coming before a word of it is read.
+ */
+.dev-focus {
+  /* ── Ground and surfaces ─────────────────────────────────────────────── */
+  --ground:        #0d0f16;
+  --ground-deep:   #080a10;
+  --surface:       #151925;
+  --surface-raised:#1c2130;
+  --surface-sunk:  #10141f;
+  --border:        #262c3d;
+  --border-strong: #38405a;
+
+  /* ── Type ────────────────────────────────────────────────────────────── */
+  --text:          #e8eaf2;
+  --text-dim:      #a6adc2;
+  --text-muted:    #6f7897;
+  --text-faint:    #4d5572;
+
+  /* ── The one accent, and the states ──────────────────────────────────── */
+  --accent:        #5b8cff;
+  --accent-hover:  #7aa2ff;
+  --accent-sunk:   #3c68d8;
+  --accent-wash:   rgba(91, 140, 255, 0.14);
+  --success:       #48c78e;
+  --warning:       #f0b429;
+  --danger:        #f2555a;
+  --success-wash:  rgba(72, 199, 142, 0.14);
+  --warning-wash:  rgba(240, 180, 41, 0.14);
+  --danger-wash:   rgba(242, 85, 90, 0.14);
+
+  /* ── The deck: one hue per kind of task ──────────────────────────────── */
+  /* review: a pull request waiting on your eyes */
+  --kind-review:        #b8a6ff;
+  --kind-review-deep:   #8d74ff;
+  --kind-review-wash:   rgba(184, 166, 255, 0.13);
+  /* issue: work that has not started */
+  --kind-issue:         #7fd7c4;
+  --kind-issue-deep:    #3fb9a0;
+  --kind-issue-wash:    rgba(127, 215, 196, 0.13);
+  /* agent: something an agent made, for you to judge */
+  --kind-agent:         #ffc98a;
+  --kind-agent-deep:    #f0a33f;
+  --kind-agent-wash:    rgba(255, 201, 138, 0.13);
+  /* question: an agent is stuck and waiting on an answer */
+  --kind-question:      #ff9fb2;
+  --kind-question-deep: #f26d8a;
+  --kind-question-wash: rgba(255, 159, 178, 0.13);
+  /* signal: CI, a failing build, something the machine noticed */
+  --kind-signal:        #8fc7ff;
+  --kind-signal-deep:   #4d9cf0;
+  --kind-signal-wash:   rgba(143, 199, 255, 0.13);
+
+  /* ── Space, on a scale rather than by eye ────────────────────────────── */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 64px;
+
+  /* ── Shape ───────────────────────────────────────────────────────────── */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 18px;
+  --r-xl: 28px;
+  --r-pill: 999px;
+
+  /* ── Type scale ──────────────────────────────────────────────────────── */
+  --font: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  --t-xs: 11px;
+  --t-sm: 13px;
+  --t-md: 15px;
+  --t-lg: 19px;
+  --t-xl: 26px;
+  --t-2xl: 36px;
+  --t-3xl: 48px;
+
+  /* ── Depth. Long, soft and cool: a warm shadow on this ground reads as dirt. */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 24px -8px rgba(0, 0, 0, 0.6);
+  --shadow-3: 0 24px 60px -18px rgba(0, 0, 0, 0.75);
+  --shadow-card: 0 32px 80px -24px rgba(0, 0, 0, 0.8), 0 2px 0 rgba(255, 255, 255, 0.03) inset;
+
+  /* ── Motion. One curve for entrances, one for anything that settles. ─── */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --fast: 140ms;
+  --base: 260ms;
+  --slow: 420ms;
+}
+
+/*
+ * A light ground, for the same tokens, on Rancher's own switch rather than one of ours: this
+ * view follows the dashboard it is in. The deck hues stay in place and lose their glow - on
+ * white a pastel is already legible, and the washes have to come down or every card looks
+ * selected.
+ */
+body.theme-light .dev-focus {
+  --ground:        #f4f6fb;
+  --ground-deep:   #e9edf6;
+  --surface:       #ffffff;
+  --surface-raised:#ffffff;
+  --surface-sunk:  #f0f3fa;
+  --border:        #dfe4f0;
+  --border-strong: #c3cbdf;
+
+  --text:          #131826;
+  --text-dim:      #3f485f;
+  --text-muted:    #6b7590;
+  --text-faint:    #98a1b8;
+
+  --accent-wash:   rgba(91, 140, 255, 0.12);
+  --kind-review-wash:   rgba(141, 116, 255, 0.10);
+  --kind-issue-wash:    rgba(63, 185, 160, 0.10);
+  --kind-agent-wash:    rgba(240, 163, 63, 0.10);
+  --kind-question-wash: rgba(242, 109, 138, 0.10);
+  --kind-signal-wash:   rgba(77, 156, 240, 0.10);
+
+  --shadow-card: 0 32px 80px -28px rgba(20, 30, 60, 0.28), 0 1px 0 rgba(255, 255, 255, 0.8) inset;
+}
