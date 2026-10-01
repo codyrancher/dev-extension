@@ -18,6 +18,9 @@ import {
   buildShare, workspaceBranch, readInWorkspace, workspaceTarget
 } from './workspace-tools';
 import { defaultRancher, talksToDefault, ownRancherUrl, listRanchers } from './ranchers';
+import {
+  acmeConfig, acmeRefusal, certState, EMPTY_ACME, CertState
+} from './acme';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -52,6 +55,10 @@ export interface PreviewState {
   host: string;
   /** The management id of the cluster it runs on: this one, or a Rancher's from the sidebar. */
   hostedOn: string;
+  /** What certificate the public name is served on; see acme.ts. */
+  cert: CertState;
+  /** Why it has no Let's Encrypt certificate, or '' when it has or is getting one. */
+  certRefusal: string;
 }
 
 /** Where a share is served from: this cluster (behind this Rancher's login), or a Rancher of the sidebar's, on the open internet. */
@@ -101,7 +108,14 @@ export function pickShareHost(ranchers: Json[], starred = ''): ShareHost {
   return { id: pick.clusterId as string, fleet: pick.name, ip: pick.nodeIp as string };
 }
 
-/** The public name a share gets on a Rancher's cluster: the same shape as the Rancher's own. */
+/**
+ * The public name a share gets on a Rancher's cluster: the same shape as the Rancher's own.
+ *
+ * sslip.io resolves a name with an address in it straight back to that address, so this needs
+ * no DNS anywhere and no record to keep in step. It is also what makes the certificate simple:
+ * the name resolves to the share's own public node, so Let's Encrypt can be asked for it with
+ * nothing but an email address. See acme.ts.
+ */
 export function shareHostname(workspace: string, kind: ShareKind, host: ShareHost): string {
   return host.ip ? `${ previewName(workspace, kind) }.dev-extension.${ host.ip }.sslip.io` : '';
 }
@@ -162,6 +176,12 @@ export function previewName(workspace: string, kind: ShareKind = 'dashboard'): s
 export async function deployPreview(store: Store, workspace: string, values: { repo: string; ref: string; rancherUrl: string; kind?: ShareKind; sourceDir?: string; sourceUrl?: string; sourceToken?: string; host?: string }, cluster = 'local', target = cluster): Promise<string> {
   const kind: ShareKind = values.kind || 'dashboard';
   const name = previewName(workspace, kind);
+  // What certificate this share will be served on. Decided here rather than in the pod, since
+  // it is a question about what is configured, and the pod is given the answer. A name nothing
+  // can certify - too long, or no public name at all - simply does not ask; acmeRefusal says
+  // why, and the Share tab shows it.
+  const acme = await acmeConfig().catch(() => EMPTY_ACME);
+  const certWanted = !acmeRefusal(values.host || '', acme);
 
   refuseSelf(values.rancherUrl, values.host || '');
 
@@ -176,7 +196,14 @@ export async function deployPreview(store: Store, workspace: string, values: { r
   const base = values.host ? '/dashboard/' : `${ proxyBase(workspaceNamespace(name), cluster, 8080) }dashboard/`;
 
   await createWorkspaceInstance(store, name, PREVIEW_APP, cluster, {
-    ...values, kind, base, sourceDir: values.sourceDir || 'none', sourceUrl: values.sourceUrl || 'none', sourceToken: values.sourceToken || 'none', host: values.host || 'none',
+    ...values,
+    kind,
+    base,
+    sourceDir:     values.sourceDir || 'none',
+    sourceUrl:     values.sourceUrl || 'none',
+    sourceToken:   values.sourceToken || 'none',
+    host:          values.host || 'none',
+    acmeEmail:     certWanted ? acme.email : 'none',
   }, target);
 
   return name;
@@ -310,7 +337,20 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
   const name = previewName(workspace, kind);
   const instance = await workspaceInstance(store, name).catch(() => null);
   const empty: PreviewState = {
-    name, exists: false, state: 'absent', detail: '', url: '', direct: '', ref: '', rancherUrl: '', kind, sourceDir: '', host: '', hostedOn: '',
+    name,
+    exists:      false,
+    state:       'absent',
+    detail:      '',
+    url:         '',
+    direct:      '',
+    ref:         '',
+    rancherUrl:  '',
+    kind,
+    sourceDir:   '',
+    host:        '',
+    hostedOn:    '',
+    cert:        { state: 'none', expires: '', host: '' },
+    certRefusal: '',
   };
 
   if (!instance) {
@@ -323,17 +363,19 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
   const host = String(instance.spec?.values?.host || '') === 'none' ? '' : String(instance.spec?.values?.host || '');
   const namespace = workspaceNamespace(name);
   const base = clusterBase(hostedOn);
-  const [pods, services, address] = await Promise.all([
+  const [pods, services, address, acme, cert] = await Promise.all([
     devFetch(`${ base }/v1/pods/${ namespace }`).catch(() => null),
     devFetch(`${ base }/v1/services/${ namespace }`).catch(() => null),
     nodeAddress(),
+    acmeConfig().catch(() => EMPTY_ACME),
+    certState(hostedOn, namespace, host).catch(() => ({ state: 'none', expires: '', host: '' } as CertState)),
   ]);
   const pod: Json = (pods?.data || []).find((candidate: Json) => !candidate.metadata?.deletionTimestamp) || null;
   const service: Json = (services?.data || []).find((svc: Json) => svc.metadata?.name === namespace) || null;
   const nodePort = service?.spec?.ports?.[0]?.nodePort || 0;
   const port = service?.spec?.ports?.[0]?.port || 8080;
   const init: Json = pod?.status?.initContainerStatuses?.[0] || null;
-  const main: Json = pod?.status?.containerStatuses?.[0] || null;
+  const main: Json = (pod?.status?.containerStatuses || []).find((status: Json) => status.name === 'workspace') || null;
   let state: PreviewState['state'] = 'building';
   let detail = 'Waiting for a pod';
 
@@ -362,5 +404,7 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
     host,
     hostedOn,
     kind,
+    cert,
+    certRefusal: acmeRefusal(host, acme),
   };
 }

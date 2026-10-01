@@ -29,11 +29,21 @@ import ChatPane from './ChatPane.vue';
 /** Which face of a pane somebody last chose, per conversation. */
 const VIEW_KEY = (session) => `agents.view.${ session }`;
 
+/**
+ * Chat, unless this conversation was explicitly put in the terminal.
+ *
+ * The default used to be the other way round, from when the terminal was the only face this
+ * had and the chat was the new thing to opt into. It is the other way round now: what a
+ * conversation is for is reading what the agent said and answering it, and the terminal is for
+ * the times you want to see the raw session. So the remembered choice still wins - somebody who
+ * chose the terminal for a conversation gets the terminal back - and everything that has no
+ * choice remembered opens as chat.
+ */
 function rememberedView(session) {
   try {
-    return localStorage.getItem(VIEW_KEY(session)) === 'chat' ? 'chat' : 'terminal';
+    return localStorage.getItem(VIEW_KEY(session)) === 'terminal' ? 'terminal' : 'chat';
   } catch {
-    return 'terminal';
+    return 'chat';
   }
 }
 import PodFileViewer from './PodFileViewer';

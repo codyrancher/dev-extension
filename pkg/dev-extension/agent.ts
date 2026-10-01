@@ -567,6 +567,77 @@ export async function agentSessions(): Promise<AgentSession[]> {
     .sort((a, b) => Number(a.id.slice(6)) - Number(b.id.slice(6)));
 }
 
+/** Where a conversation's directory and the files beside it live in the pod. */
+const AGENT_SESSIONS = `${ AGENT_WORKSPACE }/sessions`;
+
+/**
+ * Who started a conversation.
+ *
+ * `agent-<n>` is the panel's own namespace - the panel is what the + button is on - but any
+ * extension can reach `start` through the browser API, and a conversation some machinery made
+ * then turned up in the panel as a tab nobody opened. So every conversation says who made it,
+ * in a file beside it, and the panel lists its own.
+ *
+ * 'panel' is the default for exactly one caller: the panel, which calls this directly. Every
+ * other route in is the public API, which supplies 'api' - so the way to end up in the panel is
+ * to be the panel, rather than to remember to say you are not.
+ */
+export type SessionOrigin = 'panel' | 'api';
+
+/**
+ * Write who made a conversation, beside it in the pod.
+ *
+ * In the pod rather than in localStorage, because the question is about the conversation and not
+ * about this browser: a second tab, and a colleague, have to get the same answer. Best-effort by
+ * design - a marker that could not be written leaves the conversation looking like the panel's,
+ * which is what every conversation looked like before this existed.
+ */
+async function markSessionOrigin(id: string, by: SessionOrigin): Promise<void> {
+  const pod = await agentPod();
+
+  if (!pod || !SESSION_ID_RE.test(id)) {
+    return;
+  }
+  await podExecResult(pod, ['/bin/sh', '-c', `mkdir -p ${ AGENT_SESSIONS } && printf %s ${ by } > ${ AGENT_SESSIONS }/${ id }.by`], 15000, AGENT_CONTAINER);
+}
+
+/** Every marker the pod holds, as id to who made it. A conversation with none is the panel's. */
+async function sessionOrigins(): Promise<Map<string, SessionOrigin>> {
+  const pod = await agentPod();
+  const out = new Map<string, SessionOrigin>();
+
+  if (!pod) {
+    return out;
+  }
+  const script = `cd ${ AGENT_SESSIONS } 2>/dev/null || exit 0; for f in *.by; do [ -f "$f" ] && printf "%s\t%s\n" "\${f%.by}" "$(cat "$f")"; done`;
+  const result = await podExecResult(pod, ['/bin/sh', '-c', script], 15000, AGENT_CONTAINER).catch(() => null);
+
+  for (const line of (result?.stdout || '').split('\n')) {
+    const [id, by] = line.replace(/\r$/, '').split('\t');
+
+    if (id && by) {
+      out.set(id, by.trim() === 'panel' ? 'panel' : 'api');
+    }
+  }
+
+  return out;
+}
+
+/**
+ * The conversations the panel shows: the ones started on it.
+ *
+ * Not every `agent-<n>`, which is what this used to be. A run an agent definition started, or
+ * anything else that came in through the browser API, lives in the same namespace and used to
+ * appear here as a tab nobody had opened - and ending it from the panel ended somebody's work.
+ * A conversation with no marker at all counts as the panel's: it predates the markers, and the
+ * panel is where it was shown.
+ */
+export async function panelSessions(): Promise<AgentSession[]> {
+  const [sessions, origins] = await Promise.all([agentSessions(), sessionOrigins().catch(() => new Map<string, SessionOrigin>())]);
+
+  return sessions.filter((session) => (origins.get(session.id) || 'panel') === 'panel');
+}
+
 /**
  * Start another conversation, and let the pod choose its name.
  *
@@ -577,12 +648,13 @@ export async function agentSessions(): Promise<AgentSession[]> {
  * whatever is there, so + would reopen a finished conversation instead of starting one. The pod
  * answers both with a mkdir. See the `new` verb in pod/agent/sessions.sh.
  */
-export async function startAgentSession(): Promise<string> {
+export async function startAgentSession(by: SessionOrigin = 'panel'): Promise<string> {
   const id = (await sessionScript(['new'], 'start a conversation')).trim();
 
   if (!/^agent-\d+$/.test(id)) {
     throw new Error(`The agent pod answered "${ id }", which is not a conversation name.`);
   }
+  await markSessionOrigin(id, by).catch(() => {});
 
   return id;
 }
