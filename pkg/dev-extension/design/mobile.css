@@ -67,7 +67,6 @@
    * explicitly and are not in this list.
    */
   .dev-root .dev-my-work,
-  .dev-root .dev-insights,
   .dev-root .dev-settings,
   .dev-root .dev-create {
     overflow-y: visible;
@@ -76,7 +75,6 @@
 
   .dev-root .dev-page,
   .dev-root .dev-my-work,
-  .dev-root .dev-insights,
   .dev-root .dev-settings,
   .dev-root .dev-create,
   .dev-root .agent-cards,

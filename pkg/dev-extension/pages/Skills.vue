@@ -1,14 +1,17 @@
 <script>
-// The skills the agents run on: read here, edited here, or improved by an agent from a
-// conversation that showed where a skill fell short. A save reaches every running workspace
-// at once and, when asked, the repository the skills are kept in. See skills.ts.
+// The skills the agents run on: read here and edited here. A save reaches every running
+// workspace at once and, when asked, the repository the skills are kept in. See skills.ts.
+//
+// There is no agent on this page. Asking an agent to improve a skill used to be a panel at the
+// bottom of the editor with a conversation picker of its own, which is a second way to start a
+// conversation on a page whose subject is a file - and the product already has one that is
+// always to hand. So: this page is the file, and the conversation is the global one.
 import Loading from '@shell/components/Loading';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import {
-  listSkills, readSkill, saveSkill, resetSkill, refreshSkillsEverywhere, allConversations, improveSkillWith
+  listSkills, readSkill, saveSkill, resetSkill, refreshSkillsEverywhere
 } from '../skills';
-import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE } from '../config/constants';
 
 export default {
   name: 'DevSkills',
@@ -32,9 +35,6 @@ export default {
       error:         '',
       notice:        '',
       commitMessage: '',
-      conversations: [],
-      fromId:        '',
-      notes:         '',
     };
   },
 
@@ -49,8 +49,9 @@ export default {
       return !!this.skill && this.draft !== this.skill.content;
     },
 
-    from() {
-      return this.conversations.find((c) => `${ c.workspace }/${ c.id }` === this.fromId) || null;
+    /** How many are edited here, which is the one thing worth counting in the list's header. */
+    edited() {
+      return this.skills.filter((s) => s.overridden).length;
     },
   },
 
@@ -75,9 +76,6 @@ export default {
       } catch (e) {
         this.error = e?.message || String(e);
       }
-      allConversations().then((list) => {
-        this.conversations = list;
-      }).catch(() => {});
       if (!this.selected && this.skills.length && !this.$route.query.skill) {
         this.open(this.skills[0].name);
       }
@@ -154,23 +152,6 @@ export default {
         this.notice = `Back to the shipped skill in ${ spread.done.length } workspaces.`;
       });
     },
-
-    improve() {
-      if (!this.from) {
-        this.error = 'Pick the conversation the skill should learn from.';
-
-        return;
-      }
-
-      return this.run('improve', async() => {
-        const conversation = await improveSkillWith(this.selected, this.from, this.notes.trim());
-
-        this.notice = `The agent is improving ${ this.selected } in ${ this.from.workspace }; it saves and commits when done.`;
-        this.$router.push({
-          name: WORKSPACE_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: this.from.workspace }, query: { c: conversation.id },
-        });
-      });
-    },
   },
 };
 </script>
@@ -192,29 +173,56 @@ export default {
       :label="notice"
     />
     <div class="dev-skills__columns">
-      <aside class="dev-skills__list">
-        <input
-          v-model="filter"
-          type="text"
-          class="dev-skills__filter"
-          placeholder="Filter skills"
-        >
-        <button
-          v-for="s in shown"
-          :key="s.name"
-          type="button"
-          class="dev-skills__item"
-          :class="{ 'dev-skills__item--current': s.name === selected }"
-          :title="s.description"
-          @click="open(s.name)"
-        >
-          <span class="dev-skills__item-name">{{ s.name }}<span
-            v-if="s.overridden"
-            class="dev-skills__edited"
-            title="Edited here; differs from what shipped"
-          >edited</span></span>
-          <span class="dev-skills__item-desc">{{ s.description }}</span>
-        </button>
+      <aside class="dev-skills__side">
+        <!--
+          The filter sits above the scrolling list rather than inside it: it is how you find a
+          skill in a list of sixty, and it used to scroll away the moment you started looking.
+        -->
+        <div class="dev-skills__side-head">
+          <input
+            v-model="filter"
+            type="text"
+            class="dev-skills__filter"
+            placeholder="Filter skills"
+          >
+          <p class="dev-skills__count">
+            {{ shown.length }} of {{ skills.length }}<template v-if="edited"> &middot; {{ edited }} edited here</template>
+          </p>
+        </div>
+
+        <div class="dev-skills__list">
+          <button
+            v-for="s in shown"
+            :key="s.name"
+            type="button"
+            class="dev-skills__item"
+            :class="{ 'dev-skills__item--current': s.name === selected }"
+            :title="`${ s.name } - ${ s.description }`"
+            @click="open(s.name)"
+          >
+            <span class="dev-skills__item-name">
+              <span class="dev-skills__item-text">{{ s.name }}</span>
+              <span
+                v-if="s.overridden"
+                class="dev-skills__edited"
+                title="Edited here; differs from what shipped"
+              >edited</span>
+            </span>
+            <!--
+              One line, clipped with an ellipsis. Every one of these descriptions is a sentence
+              or two, and a 300px column cannot shrink below its content unless it is told it
+              can: `min-width: 0` on the button and on this span is what makes the ellipsis
+              happen instead of the whole column growing to the width of the longest one.
+            -->
+            <span class="dev-skills__item-desc">{{ s.description }}</span>
+          </button>
+          <p
+            v-if="!shown.length"
+            class="dev-skills__count"
+          >
+            Nothing matches that.
+          </p>
+        </div>
       </aside>
 
       <section
@@ -222,9 +230,17 @@ export default {
         class="dev-skills__editor"
       >
         <div class="dev-skills__head">
-          <div>
-            <h1 class="dev-skills__title">{{ skill.name }}</h1>
-            <div class="dev-skills__sub">{{ skill.overridden ? 'Edited here - every workspace has this version.' : 'As shipped.' }} <span v-if="dirty">Unsaved changes.</span></div>
+          <div class="dev-skills__head-text">
+            <h1 class="dev-skills__title">
+              {{ skill.name }}
+            </h1>
+            <p class="dev-skills__sub">
+              {{ skill.overridden ? 'Edited here - every workspace has this version.' : 'As shipped.' }}
+              <span
+                v-if="dirty"
+                class="dev-skills__dirty"
+              >Unsaved changes</span>
+            </p>
           </div>
           <div class="dev-skills__actions">
             <RcButton
@@ -255,60 +271,30 @@ export default {
                 v-if="busy === 'commit'"
                 class="icon icon-spinner icon-spin"
               />
-              Save and commit to the repo
+              Save and commit
             </RcButton>
           </div>
         </div>
-        <input
-          v-model="commitMessage"
-          type="text"
-          class="dev-skills__filter"
-          placeholder="Commit message"
-        >
+
+        <!-- Labelled, because an unlabelled box above a file is read as part of the file. -->
+        <label class="dev-skills__field">
+          <span class="dev-skills__field-label">Commit message</span>
+          <input
+            v-model="commitMessage"
+            type="text"
+            class="dev-skills__filter"
+          >
+        </label>
+
         <textarea
           v-model="draft"
           class="dev-skills__text"
           spellcheck="false"
         />
-
-        <div class="dev-skills__improve">
-          <h2 class="dev-skills__h2">Improve it with an agent</h2>
-          <p class="dev-skills__sub">Pick a conversation that showed where this skill fell short. An agent reads that transcript, rewrites the skill, saves it for every workspace and commits it. It runs as a conversation in that workspace, so it can be watched and talked to.</p>
-          <div class="dev-skills__improve-row">
-            <select
-              v-model="fromId"
-              class="dev-skills__select"
-            >
-              <option value="">Conversation…</option>
-              <option
-                v-for="c in conversations"
-                :key="`${ c.workspace }/${ c.id }`"
-                :value="`${ c.workspace }/${ c.id }`"
-              >{{ c.workspace }} · {{ c.title }}</option>
-            </select>
-            <input
-              v-model="notes"
-              type="text"
-              class="dev-skills__filter"
-              placeholder="What to look at (optional)"
-            >
-            <RcButton
-              variant="secondary"
-              :disabled="!!busy || !fromId"
-              @click="improve"
-            >
-              <i
-                v-if="busy === 'improve'"
-                class="icon icon-spinner icon-spin"
-              />
-              Improve from this conversation
-            </RcButton>
-          </div>
-        </div>
       </section>
       <section
         v-else
-        class="dev-skills__editor dev-skills__sub"
+        class="dev-skills__editor dev-skills__empty"
       >
         {{ loadingSkill ? 'Reading…' : 'Pick a skill.' }}
       </section>
@@ -322,93 +308,212 @@ export default {
   flex-direction: column;
   height:         100%;
   min-height:     0;
-  padding:        16px 24px;
-  gap:            12px;
+  padding:        var(--dev-inset);
+  gap:            var(--dev-space-3);
 
   &__columns {
     display:               grid;
-    grid-template-columns: 300px minmax(0, 1fr);
-    gap:                   16px;
+    grid-template-columns: 280px minmax(0, 1fr);
+    gap:                   var(--dev-space-5);
     flex:                  1 1 auto;
     min-height:            0;
+  }
+
+  // ── The list ──────────────────────────────────────────────────────────────────────────────
+  //
+  // Two parts: a head that stays, and a list that scrolls. `min-width: 0` all the way down is
+  // what keeps the column 280px wide - a grid item's automatic minimum is its content, and the
+  // content here is sixty one-line descriptions, the longest of which was setting the width of
+  // the column and pushing the names out of sight.
+  &__side {
+    display:        flex;
+    flex-direction: column;
+    gap:            var(--dev-space-2);
+    min-width:      0;
+    min-height:     0;
+  }
+
+  &__side-head {
+    display:        flex;
+    flex-direction: column;
+    gap:            var(--dev-space-1);
+    min-width:      0;
   }
 
   &__list {
     display:        flex;
     flex-direction: column;
-    gap:            2px;
-    overflow:       auto;
+    gap:            1px;
+    min-width:      0;
     min-height:     0;
-    padding-right:  4px;
+    overflow-x:     hidden;
+    overflow-y:     auto;
+    padding-right:  var(--dev-space-1);
   }
 
-  &__filter, &__select {
+  &__count {
+    margin:    0;
+    color:     var(--muted);
+    font-size: 11px;
+  }
+
+  &__filter {
     box-sizing:    border-box;
     width:         100%;
     height:        32px;
-    padding:       0 10px;
+    padding:       0 var(--dev-space-3);
     border:        1px solid var(--border);
     border-radius: var(--border-radius);
     background:    var(--input-bg);
     color:         var(--body-text);
     font:          inherit;
-    margin-bottom: 6px;
   }
 
   &__item {
     display:        flex;
     flex-direction: column;
-    gap:            2px;
-    text-align:     left;
-    padding:        6px 10px;
+    gap:            1px;
+    align-items:    stretch;
+    width:          100%;
+    min-width:      0;
+    overflow:       hidden;
+    padding:        var(--dev-space-2) var(--dev-space-3);
     border:         0;
+    border-left:    2px solid transparent;
     border-radius:  var(--border-radius);
     background:     transparent;
     color:          var(--body-text);
     font:           inherit;
+    text-align:     left;
     cursor:         pointer;
 
     &:hover { background: var(--box-bg); }
-    &--current { background: var(--box-bg); box-shadow: inset 2px 0 0 var(--primary); }
+
+    // The mark for the current one is a left edge rather than an inset shadow, so it cannot
+    // sit over the first character of the name.
+    &--current {
+      background:  var(--box-bg);
+      border-left: 2px solid var(--primary);
+    }
   }
 
-  &__item-name { font-weight: 700; display: flex; gap: 8px; align-items: center; }
-  &__item-desc { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  &__item-name {
+    display:     flex;
+    align-items: center;
+    gap:         var(--dev-space-2);
+    min-width:   0;
+    font-weight: 600;
+  }
+
+  // The name is the part that must stay readable, so it is what gets the ellipsis.
+  &__item-text,
+  &__item-desc {
+    min-width:     0;
+    overflow:      hidden;
+    white-space:   nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__item-desc {
+    color:     var(--muted);
+    font-size: 11px;
+  }
 
   &__edited {
-    font-size:     10px;
-    font-weight:   700;
+    flex:          0 0 auto;
     padding:       0 6px;
     border-radius: 8px;
     background:    rgba(255, 228, 122, .18);
     color:         var(--warning);
+    font-size:     10px;
+    font-weight:   700;
   }
 
+  // ── The editor ────────────────────────────────────────────────────────────────────────────
   &__editor {
     display:        flex;
     flex-direction: column;
-    gap:            10px;
-    min-height:     0;
+    gap:            var(--dev-space-3);
     min-width:      0;
+    min-height:     0;
+  }
+
+  // Nothing picked, or still reading: centred in the space the file would have filled, rather
+  // than one line of grey text in the top-left corner of an empty panel.
+  &__empty {
+    display:         flex;
+    align-items:     center;
+    justify-content: center;
+    border:          1px dashed var(--border);
+    border-radius:   var(--border-radius);
+    color:           var(--muted);
   }
 
   &__head {
     display:         flex;
     align-items:     flex-start;
     justify-content: space-between;
-    gap:             16px;
+    gap:             var(--dev-space-4);
   }
 
-  &__title { margin: 0; font-size: 20px; }
-  &__sub { color: var(--muted); font-size: 13px; margin: 0; }
-  &__actions { display: flex; gap: 8px; flex: 0 0 auto; }
+  &__head-text { min-width: 0; }
 
+  &__title {
+    margin:      0;
+    font-size:   20px;
+    line-height: 1.2;
+    overflow:    hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__sub {
+    display:     flex;
+    align-items: center;
+    gap:         var(--dev-space-2);
+    margin:      var(--dev-space-1) 0 0 0;
+    color:       var(--muted);
+    font-size:   12px;
+  }
+
+  &__dirty {
+    padding:       0 6px;
+    border-radius: 8px;
+    background:    rgba(255, 228, 122, .18);
+    color:         var(--warning);
+    font-size:     10px;
+    font-weight:   700;
+  }
+
+  &__actions {
+    display: flex;
+    gap:     var(--dev-space-2);
+    flex:    0 0 auto;
+  }
+
+  &__field {
+    display:        flex;
+    flex-direction: column;
+    gap:            var(--dev-space-1);
+    min-width:      0;
+  }
+
+  &__field-label {
+    color:          var(--muted);
+    font-size:      11px;
+    font-weight:    600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  // The file. It takes what is left of the column rather than a minimum of 420px: with a
+  // minimum it pushed itself past the bottom of a short window, and the page scrolled.
   &__text {
     flex:          1 1 auto;
-    min-height:    420px;
     width:         100%;
+    min-height:    0;
     box-sizing:    border-box;
-    padding:       10px 12px;
+    padding:       var(--dev-space-3) var(--dev-space-4);
     border:        1px solid var(--border);
     border-radius: var(--border-radius);
     background:    var(--input-bg);
@@ -416,26 +521,7 @@ export default {
     font-family:   ui-monospace, 'SFMono-Regular', Menlo, monospace;
     font-size:     12.5px;
     line-height:   1.5;
-    resize:        vertical;
-  }
-
-  &__improve {
-    display:        flex;
-    flex-direction: column;
-    gap:            8px;
-    padding:        12px 14px;
-    border:         1px solid var(--border);
-    border-radius:  var(--border-radius);
-    background:     var(--box-bg);
-  }
-
-  &__h2 { margin: 0; font-size: 14px; }
-
-  &__improve-row {
-    display:               grid;
-    grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) auto;
-    gap:                   8px;
-    align-items:           start;
+    resize:        none;
   }
 }
 </style>
