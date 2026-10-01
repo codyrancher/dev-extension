@@ -40,6 +40,13 @@ export async function askTheAgent(task: FocusTask | null, prompt: string): Promi
   await panelAsk(prompt);
 }
 
+/** The panel's conversation, made if there is none: what the Focus bar shows. */
+export async function panelConversation(): Promise<string> {
+  const sessions = await agentSessions().catch(() => []);
+
+  return sessions.length ? sessions[sessions.length - 1].id : startAgentSession('panel');
+}
+
 /**
  * The panel's conversation: the most recent one it owns, or a new one.
  *
@@ -49,8 +56,7 @@ export async function askTheAgent(task: FocusTask | null, prompt: string): Promi
  * seen there. See agent.ts.
  */
 async function panelAsk(prompt: string): Promise<void> {
-  const sessions = await agentSessions().catch(() => []);
-  const id = sessions.length ? sessions[sessions.length - 1].id : await startAgentSession('panel');
+  const id = await panelConversation();
 
   await queueSessionPrompt(id, prompt);
   await openAgentPanel(id).catch(() => {});

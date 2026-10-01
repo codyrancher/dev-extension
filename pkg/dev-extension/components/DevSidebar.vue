@@ -30,6 +30,7 @@ import {
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import { ensureCertControllers } from '../certs';
 import DevList from './DevList.vue';
+import FocusMark from './FocusMark.vue';
 import DevDialog from './DevDialog.vue';
 import NavRow from './NavRow.vue';
 import NavHead from './NavHead.vue';
@@ -128,7 +129,7 @@ export default {
   name: 'DevSidebar',
 
   components: {
-    DevList, Stack, Row, ClaudeLogo, DevDialog, RancherPicker, NavRow, NavHead, HoverCard
+    DevList, Stack, Row, ClaudeLogo, FocusMark, DevDialog, RancherPicker, NavRow, NavHead, HoverCard
   },
 
   mixins: [hoverCard],
@@ -169,7 +170,7 @@ export default {
         },
         // The same queue, dealt out: one card at a time rather than a table of everything.
         {
-          label: 'Focus', icon: 'icon-compass', route: FOCUS_ROUTE
+          label: 'Focus', mark: true, route: FOCUS_ROUTE
         },
         {
           label: 'Conversations', icon: 'icon-comment', route: CONVERSATIONS_ROUTE
@@ -892,6 +893,10 @@ export default {
             v-if="global.logo"
             class="icon"
           />
+          <FocusMark
+            v-else-if="global.mark"
+            class="icon dev-sidebar__globals-mark"
+          />
           <i
             v-else
             class="icon"
@@ -1133,6 +1138,10 @@ export default {
       color:         var(--error);
       font-size:     12px;
     }
+
+    // The sparkle is a drawing rather than a glyph, so it takes its size from here rather than
+    // from the icon font.
+    &__globals-mark { font-size: 17px; }
 
     &__globals-label { display: none; }
 

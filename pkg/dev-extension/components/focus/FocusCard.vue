@@ -55,10 +55,17 @@ const waited = computed(() => (props.task.waitingHours >= 48
     <div class="card__band" aria-hidden="true" />
 
     <header class="card__head">
+      <!--
+        One line: what this is on the left, and the one control the header owns on the right.
+        Nothing in the middle claims the space between them - the pin does, which is what keeps
+        the right edge of the header the right edge of the card whether or not the badge is
+        there. It was the badge claiming it, so a card with nothing overdue drew its pin halfway
+        along the line.
+      -->
       <div class="card__head-line">
         <KindChip :kind="task.card.kind" />
         <span class="card__where">{{ task.what }}</span>
-        <span v-if="task.workspace" class="card__hash">{{ task.workspace }}</span>
+        <span v-if="task.workspace" class="card__ws">{{ task.workspace }}</span>
         <span v-if="overdue" class="card__overdue">
           <AppIcon name="clock" :size="13" />
           waiting {{ waited }}
@@ -216,18 +223,42 @@ const waited = computed(() => (props.task.waitingHours >= 48
   display: flex;
   align-items: center;
   gap: var(--s3);
-  flex-wrap: wrap;
+  /* One line that truncates, rather than a line that wraps: the title under it is the thing
+     allowed to take two lines, and a header that grows pushes it down by a row. */
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
-.card__where { color: var(--text-muted); font-size: var(--t-sm); font-family: var(--mono); }
-.card__hash { color: var(--text-faint); }
+.card__where {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+  white-space: nowrap;
+}
+
+/* Where the work lives, which is a name of arbitrary length: it is the part that gives way. */
+.card__ws {
+  min-width: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .card__pin {
   display: grid;
   place-items: center;
+  flex: 0 0 auto;
   width: 26px;
   height: 26px;
-  margin-left: var(--s2);
+  /* The header's right edge. See the note on the markup. */
+  margin-left: auto;
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   background: transparent;
@@ -247,8 +278,8 @@ const waited = computed(() => (props.task.waitingHours >= 48
 .card__overdue {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 5px;
-  margin-left: auto;
   padding: 3px 10px;
   border-radius: var(--r-pill);
   background: var(--warning-wash);
