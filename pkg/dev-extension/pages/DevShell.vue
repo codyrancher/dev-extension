@@ -21,7 +21,9 @@ import GrowlManager from '@shell/components/GrowlManager';
 import DevSidebar from '../components/DevSidebar.vue';
 import ClaudeLogo from '../components/ClaudeLogo.vue';
 import { socketsWork, rancherOwnAddress } from '../sockets';
-import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE } from '../config/constants';
+import {
+  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, FOCUS_ROUTE
+} from '../config/constants';
 
 export default {
   name: 'DevShell',
@@ -37,6 +39,18 @@ export default {
   },
 
   computed: {
+    /**
+     * Whether the page in this shell wants the whole window.
+     *
+     * One page does: the deck. It is a single card meant to be the only thing you are looking
+     * at, and a sidebar of everything else beside it is the argument against reading it. So on
+     * that route the bar and the nav go, and the page gets the window - its own header carries
+     * the way back.
+     */
+    bare() {
+      return this.$route.name === FOCUS_ROUTE;
+    },
+
     /** Who is signed in, the way the shell's own header reads it. */
     principal() {
       return this.$store.getters['rancher/byId']('principal', this.$store.getters['auth/principalId']) || {};
@@ -113,9 +127,15 @@ export default {
 </script>
 
 <template>
-  <div class="dashboard-root dev-root">
+  <div
+    class="dashboard-root dev-root"
+    :class="{ 'dev-root--bare': bare }"
+  >
     <div class="dashboard-content">
-      <header class="dev-top">
+      <header
+        v-if="!bare"
+        class="dev-top"
+      >
         <button
           type="button"
           class="dev-top__burger"
@@ -187,6 +207,7 @@ export default {
       </header>
 
       <DevSidebar
+        v-if="!bare"
         class="default-side-nav dev-nav"
         :class="{ 'dev-nav--open': drawer }"
       />
@@ -403,6 +424,24 @@ export default {
     color:       var(--muted);
     font-size:   18px;
     cursor:      pointer;
+  }
+}
+
+/*
+ * A page with the window to itself.
+ *
+ * The shell's grid still runs - the terminal drawer is a row of it, and taking that away would
+ * cost the drawer on the one page somebody is most likely to want it from - so the nav column
+ * is closed rather than removed, and the header row is given no height.
+ */
+.dev-root--bare {
+  .dashboard-content { --nav-width: 0px; }
+
+  .main-layout {
+    grid-area: main;
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
   }
 }
 

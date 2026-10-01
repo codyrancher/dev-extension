@@ -32,6 +32,10 @@ import SidePanel from '../components/focus/SidePanel.vue';
 import KindChip from '../components/focus/KindChip.vue';
 import AppIcon from '../components/focus/AppIcon.vue';
 import AppButton from '../components/focus/AppButton.vue';
+import WeightsChart from '../components/focus/WeightsChart.vue';
+import CardGallery from '../components/focus/CardGallery.vue';
+import FocusChatBar from '../components/focus/FocusChatBar.vue';
+import StudioTerminal from '../components/StudioTerminal.vue';
 import { holdOverlay, releaseOverlay } from '../components/focus/overlay';
 import {
   readFocusConfig, saveFocusConfig, readFocusState, saveFocusState, focusDeck, manualItem,
@@ -46,7 +50,7 @@ import { listAllWorkspaces } from '../api';
 import { myWork } from '../github';
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
-import { askTheAgent } from '../focus-agent';
+import { askTheAgent, panelConversation } from '../focus-agent';
 import '../design/focus.css';
 
 const loading = ref(true);
@@ -61,7 +65,27 @@ const state = ref<FocusState>({ pinned: [], snoozed: {}, done: {} });
 const index = ref(0);
 const direction = ref<1 | -1>(1);
 
-const panel = ref<'' | 'queue' | 'weights' | 'cards' | 'new'>('');
+/**
+ * One sheet, four sections.
+ *
+ * It was four buttons in the header opening four sheets, which is four things to learn about a
+ * page whose whole claim is that it shows you one thing at a time. Everything that is not the
+ * deck is behind the one control the bar already had.
+ */
+const settings = ref(false);
+const section = ref<'queue' | 'weights' | 'cards' | 'new'>('queue');
+
+const SECTIONS = [
+  { id: 'queue', label: 'Waiting' },
+  { id: 'weights', label: 'Order' },
+  { id: 'cards', label: 'Cards' },
+  { id: 'new', label: 'Yours' },
+] as const;
+
+/** The conversation the bar shows, made the first time somebody opens or asks. */
+const chatOpen = ref(false);
+const conversation = ref('');
+const sending = ref(false);
 
 /** Everything the queue has, drawn: pinned ones are marked and then held back from the deck. */
 const all = computed<FocusTask[]>(() => focusDeck(items.value, config.value, state.value));
@@ -71,6 +95,22 @@ const current = computed(() => deck.value[index.value] || null);
 
 const rows = computed<WeightRow[]>(() => weightRows(items.value, config.value.weights));
 const snoozedCount = computed(() => Object.keys(state.value.snoozed).length);
+
+/** Rule id to how many things it is holding, which is what makes a card definition legible. */
+const counts = computed<Record<string, number>>(() => {
+  const out: Record<string, number> = {};
+
+  for (const row of rows.value) {
+    out[row.id] = row.count;
+  }
+
+  return out;
+});
+
+/** The first few of the deck, for the weights panel to show what the ranking is doing. */
+const top = computed(() => deck.value.slice(0, 5).map((task) => ({
+  what: task.what, title: task.title, needs: task.needs, score: task.score, kind: task.card.kind,
+})));
 
 /* ── Loading ──────────────────────────────────────────────────────────────────────────────── */
 
@@ -380,23 +420,55 @@ async function resetCards() {
   say('Back to the cards that shipped.');
 }
 
-/* ── Panels hold the deck's keys while they are open ──────────────────────────────────────── */
+/* ── The sheet holds the deck's keys while it is open ─────────────────────────────────────── */
 
-function open(which: typeof panel.value) {
-  if (panel.value) {
-    releaseOverlay();
-  }
-  panel.value = which;
-  if (which) {
+function openSettings(which: typeof section.value = 'queue') {
+  section.value = which;
+  if (!settings.value) {
+    settings.value = true;
     holdOverlay();
   }
 }
 
-onBeforeUnmount(() => {
-  if (panel.value) {
+function closeSettings() {
+  if (settings.value) {
+    settings.value = false;
     releaseOverlay();
   }
-});
+}
+
+/* ── The conversation along the bottom ────────────────────────────────────────────────────── */
+
+/**
+ * Made on the way in, not on load: arriving at this page should not start a conversation, and
+ * the first thing anybody does with the bar is open it or type in it.
+ */
+async function wakeChat() {
+  if (!conversation.value) {
+    conversation.value = await panelConversation().catch(() => '');
+  }
+}
+
+async function onChatOpen(open: boolean) {
+  chatOpen.value = open;
+  if (open) {
+    await wakeChat();
+  }
+}
+
+async function sendToChat(text: string) {
+  sending.value = true;
+  try {
+    await wakeChat();
+    await askTheAgent(null, text);
+  } catch (e) {
+    error.value = (e as Error)?.message || String(e);
+  } finally {
+    sending.value = false;
+  }
+}
+
+onBeforeUnmount(closeSettings);
 </script>
 
 <template>
@@ -416,20 +488,14 @@ onBeforeUnmount(() => {
         <template v-else>Nothing in the deck</template>
       </p>
 
-      <div class="focus__tools">
-        <button type="button" class="focus__tool" title="Everything waiting, as a list" @click="open('queue')">
-          <AppIcon name="tasks" :size="14" /> Queue
-        </button>
-        <button type="button" class="focus__tool" title="What decides the order" @click="open('weights')">
-          <AppIcon name="scales" :size="14" /> Weights
-        </button>
-        <button type="button" class="focus__tool" title="What a card looks like" @click="open('cards')">
-          <AppIcon name="pencil" :size="14" /> Cards
-        </button>
-        <button type="button" class="focus__tool focus__tool--on" title="Add something of your own" @click="open('new')">
-          <AppIcon name="plus" :size="14" /> Task
-        </button>
-      </div>
+      <!--
+        One control for everything that is not the deck. The four it replaced each opened a
+        sheet of their own, which is four things to learn about a page whose claim is that it
+        shows you one thing at a time.
+      -->
+      <button type="button" class="focus__tool" title="The queue, the order, the cards" @click="openSettings('queue')">
+        <AppIcon name="settings" :size="14" /> Settings
+      </button>
     </header>
 
     <div class="focus__main">
@@ -477,156 +543,169 @@ onBeforeUnmount(() => {
       <p v-if="notice" class="focus__notice">{{ notice }}</p>
     </Transition>
 
-    <!-- ── Everything waiting, as a list ────────────────────────────────────────────────── -->
-    <SidePanel :open="panel === 'queue'" title="Everything waiting" @close="open('')">
-      <ol class="list">
-        <li v-for="(task, n) in deck" :key="task.key">
-          <button
-            type="button"
-            class="list__row"
-            :class="{ 'list__row--on': n === index }"
-            @click="jumpTo(n); open('')"
-          >
-            <KindChip :kind="task.card.kind" size="sm" />
-            <span class="list__title">{{ task.title || task.what }}</span>
-            <span class="list__meta">{{ task.score }}</span>
-          </button>
-        </li>
-      </ol>
-      <p v-if="!deck.length" class="list__empty">Nothing is waiting on you.</p>
+    <!--
+      The conversation. The bar is the prototype's; what is inside it when it opens is this
+      product's own conversation pane, so what you ask here is where everything else you have
+      asked is. See components/focus/FocusChatBar.vue.
+    -->
+    <FocusChatBar
+      :open="chatOpen"
+      :about="current?.title"
+      :live="!!conversation"
+      :busy="sending"
+      @update:open="onChatOpen"
+      @send="sendToChat"
+      @settings="openSettings('queue')"
+      @queue="openSettings('queue')"
+    >
+      <template #history>
+        <StudioTerminal
+          v-if="conversation"
+          :key="conversation"
+          :session="conversation"
+        />
+        <p v-else class="focus__chat-empty">Starting a conversation…</p>
+      </template>
+    </FocusChatBar>
 
-      <template v-if="snoozedCount">
-        <h3 class="list__head">Put off</h3>
-        <ul class="list">
-          <li v-for="(until, key) in state.snoozed" :key="key" class="list__snoozed">
-            <span class="list__title">{{ key }}</span>
-            <button type="button" class="list__undo" @click="remember({ ...state, snoozed: Object.fromEntries(Object.entries(state.snoozed).filter(([k]) => k !== key)) })">
-              bring it back
+    <SidePanel :open="settings" title="Focus" @close="closeSettings">
+      <nav class="tabs">
+        <button
+          v-for="tab in SECTIONS"
+          :key="tab.id"
+          type="button"
+          class="tabs__tab"
+          :class="{ 'tabs__tab--on': section === tab.id }"
+          @click="section = tab.id"
+        >{{ tab.label }}</button>
+      </nav>
+
+      <!-- ── Everything waiting ───────────────────────────────────────────────────────────── -->
+      <template v-if="section === 'queue'">
+        <p class="panel__note">
+          The deck in order. Picking one deals it to the top; pinned ones are beside the deck
+          already.
+        </p>
+        <ol class="list">
+          <li v-for="(task, n) in deck" :key="task.key">
+            <button
+              type="button"
+              class="list__row"
+              :class="{ 'list__row--on': n === index }"
+              @click="jumpTo(n); closeSettings()"
+            >
+              <KindChip :kind="task.card.kind" size="sm" />
+              <span class="list__title">{{ task.title || task.what }}</span>
+              <span class="list__meta">{{ task.score }}</span>
             </button>
           </li>
-        </ul>
+        </ol>
+        <p v-if="!deck.length" class="list__empty">Nothing is waiting on you.</p>
+
+        <template v-if="snoozedCount">
+          <h3 class="list__head">Put off</h3>
+          <ul class="list">
+            <li v-for="(until, key) in state.snoozed" :key="key" class="list__snoozed">
+              <span class="list__title">{{ key }}</span>
+              <button type="button" class="list__undo" @click="remember({ ...state, snoozed: Object.fromEntries(Object.entries(state.snoozed).filter(([k]) => k !== key)) })">
+                bring it back
+              </button>
+            </li>
+          </ul>
+        </template>
       </template>
-    </SidePanel>
 
-    <!-- ── The weights ──────────────────────────────────────────────────────────────────── -->
-    <SidePanel :open="panel === 'weights'" title="What decides the order" side="left" @close="open('')">
-      <p class="panel__note">
-        Every rule that can put something in the queue, what it is worth, and how many things it
-        is holding right now. Drag one and the deck beside it re-orders; Save keeps it.
-      </p>
-
-      <ul class="weights">
-        <li v-for="row in rows" :key="row.id" class="weight" :class="{ 'weight--idle': !row.count }">
-          <div class="weight__line">
-            <span class="weight__label">{{ row.label }}</span>
-            <span v-if="row.count" class="weight__count">{{ row.count }}</span>
-            <span class="weight__score" :class="{ 'weight__score--moved': row.score !== row.shipped }">{{ row.score }}</span>
-          </div>
-          <input
-            class="weight__slider"
-            type="range"
-            min="0"
-            max="100"
-            :value="row.score"
-            :style="{ '--fill': `${ (row.score / widest) * 100 }%` }"
-            @input="setWeight(row.id, Number(($event.target as HTMLInputElement).value))"
-          >
-          <p class="weight__about">{{ row.about }}</p>
-        </li>
-      </ul>
-
-      <div class="panel__actions">
-        <AppButton variant="kind" :busy="busy" @click="saveWeights">Save the weights</AppButton>
-        <AppButton variant="ghost" @click="resetWeights">Back to shipped</AppButton>
-      </div>
-    </SidePanel>
-
-    <!-- ── The cards ────────────────────────────────────────────────────────────────────── -->
-    <SidePanel :open="panel === 'cards'" title="What a card looks like" side="left" @close="open('')">
-      <p class="panel__note">
-        One card per kind of waiting work: which rules it draws, and what its buttons do. Editing
-        one is a conversation - the agent is handed the definition and writes it back.
-      </p>
-
-      <ul class="cards">
-        <li v-for="card in config.cards" :key="card.id" class="cardrow">
-          <div class="cardrow__line">
-            <KindChip :kind="card.kind" size="sm" />
-            <span class="cardrow__label">{{ card.label }}</span>
-            <button type="button" class="cardrow__edit" @click="editCard(card.id)">Change it</button>
-          </div>
-          <p class="cardrow__rules">
-            <span v-for="rule in card.rules" :key="rule" class="cardrow__rule">{{ rule }}</span>
-            <span v-if="!card.rules.length" class="cardrow__rule">anything with no card of its own</span>
-          </p>
-          <p class="cardrow__actions">{{ card.actions.map((a) => a.label).join(' · ') }}</p>
-        </li>
-      </ul>
-
-      <div class="panel__actions">
-        <AppButton variant="kind" icon="sparkle" :busy="busy" @click="newCard">Make a new card</AppButton>
-        <AppButton variant="ghost" @click="resetCards">Back to shipped</AppButton>
-      </div>
-    </SidePanel>
-
-    <!-- ── A task of your own ───────────────────────────────────────────────────────────── -->
-    <SidePanel :open="panel === 'new'" title="Something of your own" @close="open('')">
-      <p class="panel__note">
-        Anything no system knows about. It goes into the same queue as everything else and is
-        ranked with it, which is the point: a queue you keep things out of is a queue you stop
-        believing.
-      </p>
-
-      <label class="field">
-        <span class="field__label">What it is</span>
-        <input v-model="draft.title" class="field__input" type="text" placeholder="Write the release notes">
-      </label>
-      <label class="field">
-        <span class="field__label">What it wants from you</span>
-        <input v-model="draft.needs" class="field__input" type="text" placeholder="Draft them and send them round">
-      </label>
-      <label class="field">
-        <span class="field__label">Why it matters</span>
-        <input v-model="draft.why" class="field__input" type="text" placeholder="the release is on Thursday">
-      </label>
-      <label class="field">
-        <span class="field__label">Where to look (optional)</span>
-        <input v-model="draft.url" class="field__input" type="text" placeholder="https://…">
-      </label>
-      <label class="field">
-        <span class="field__label">How much it matters: {{ draft.score }}</span>
-        <input v-model.number="draft.score" class="weight__slider" type="range" min="0" max="100">
-      </label>
-      <div class="field">
-        <span class="field__label">What it looks like</span>
-        <div class="field__kinds">
-          <button
-            v-for="kind in KINDS"
-            :key="kind"
-            type="button"
-            class="field__kind"
-            :class="{ 'field__kind--on': draft.kind === kind }"
-            @click="draft.kind = kind as FocusKind"
-          >
-            <KindChip :kind="kind" size="sm" />
-          </button>
+      <!-- ── What decides the order ───────────────────────────────────────────────────────── -->
+      <template v-else-if="section === 'weights'">
+        <WeightsChart
+          :rows="rows"
+          :cards="config.cards"
+          :top="top"
+          @set="({ id, score }) => setWeight(id, score)"
+        />
+        <div class="panel__actions">
+          <AppButton variant="kind" :busy="busy" @click="saveWeights">Save the order</AppButton>
+          <AppButton variant="ghost" @click="resetWeights">Back to shipped</AppButton>
         </div>
-      </div>
+      </template>
 
-      <div class="panel__actions">
-        <AppButton variant="kind" :busy="busy" :disabled="!draft.title.trim()" @click="addTask">Add it</AppButton>
-      </div>
+      <!-- ── What a card looks like ───────────────────────────────────────────────────────── -->
+      <template v-else-if="section === 'cards'">
+        <p class="panel__note">
+          One card per kind of waiting work, drawn as the card it makes. Changing one is a
+          conversation: the agent is handed the definition and writes it back.
+        </p>
+        <CardGallery
+          :cards="config.cards"
+          :counts="counts"
+          @edit="editCard"
+          @add="newCard"
+        />
+        <div class="panel__actions">
+          <AppButton variant="ghost" @click="resetCards">Back to the cards that shipped</AppButton>
+        </div>
+      </template>
 
-      <template v-if="config.tasks?.length">
-        <h3 class="list__head">Yours</h3>
-        <ul class="list">
-          <li v-for="task in config.tasks" :key="task.id" class="list__snoozed">
-            <span class="list__title">{{ task.title }}</span>
-            <button type="button" class="list__undo" @click="dropTask(task.id)">remove</button>
-          </li>
-        </ul>
+      <!-- ── Something of your own ────────────────────────────────────────────────────────── -->
+      <template v-else>
+        <p class="panel__note">
+          Anything no system knows about. It goes into the same queue as everything else and is
+          ranked with it, which is the point: a queue you keep things out of is a queue you stop
+          believing.
+        </p>
+
+        <label class="field">
+          <span class="field__label">What it is</span>
+          <input v-model="draft.title" class="field__input" type="text" placeholder="Write the release notes">
+        </label>
+        <label class="field">
+          <span class="field__label">What it wants from you</span>
+          <input v-model="draft.needs" class="field__input" type="text" placeholder="Draft them and send them round">
+        </label>
+        <label class="field">
+          <span class="field__label">Why it matters</span>
+          <input v-model="draft.why" class="field__input" type="text" placeholder="the release is on Thursday">
+        </label>
+        <label class="field">
+          <span class="field__label">Where to look (optional)</span>
+          <input v-model="draft.url" class="field__input" type="text" placeholder="https://…">
+        </label>
+        <label class="field">
+          <span class="field__label">How much it matters: {{ draft.score }}</span>
+          <input v-model.number="draft.score" class="field__range" type="range" min="0" max="100">
+        </label>
+        <div class="field">
+          <span class="field__label">What it looks like</span>
+          <div class="field__kinds">
+            <button
+              v-for="kind in KINDS"
+              :key="kind"
+              type="button"
+              class="field__kind"
+              :class="{ 'field__kind--on': draft.kind === kind }"
+              @click="draft.kind = kind as FocusKind"
+            >
+              <KindChip :kind="kind" size="sm" />
+            </button>
+          </div>
+        </div>
+
+        <div class="panel__actions">
+          <AppButton variant="kind" :busy="busy" :disabled="!draft.title.trim()" @click="addTask">Add it</AppButton>
+        </div>
+
+        <template v-if="config.tasks?.length">
+          <h3 class="list__head">Yours</h3>
+          <ul class="list">
+            <li v-for="task in config.tasks" :key="task.id" class="list__snoozed">
+              <span class="list__title">{{ task.title }}</span>
+              <button type="button" class="list__undo" @click="dropTask(task.id)">remove</button>
+            </li>
+          </ul>
+        </template>
       </template>
     </SidePanel>
+
   </div>
 </template>
 
@@ -642,7 +721,17 @@ onBeforeUnmount(() => {
   grid-template-rows: auto 1fr;
   height: 100%;
   min-height: 0;
+  /*
+   * Nothing here scrolls the page. A card on its way out travels past the bottom edge, and a
+   * container that grows to fit it hands the window a scrollbar for the length of the
+   * animation - which shifts everything sideways as it appears and again as it goes. The
+   * prototype made the document itself `overflow: hidden`; in here the page is a pane of a
+   * dashboard, so it is this element and the shell's main area (see DevShell, dev-root--bare).
+   */
   overflow: hidden;
+  /* Room for the bar, which floats over the deck: its height, the gap it sits in, and a hair
+     so a card's last row of actions is never under it. */
+  padding-bottom: clamp(96px, 11vh, 118px);
   background:
     radial-gradient(1200px 680px at 12% -8%, rgba(91, 140, 255, 0.10), transparent 62%),
     radial-gradient(900px 560px at 92% 4%, rgba(184, 166, 255, 0.07), transparent 58%),
@@ -774,6 +863,34 @@ onBeforeUnmount(() => {
 .notice-enter-from,
 .notice-leave-to { opacity: 0; transform: translate(-50%, 10px); }
 
+/* The four things that are not the deck, as one strip at the top of the sheet. */
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: var(--s4);
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface-sunk);
+}
+
+.tabs__tab {
+  flex: 1 1 auto;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  cursor: pointer;
+  transition: background var(--fast), color var(--fast);
+}
+
+.tabs__tab:hover { color: var(--text); }
+.tabs__tab--on { background: var(--accent-wash); color: var(--accent); }
+
+.focus__chat-empty { padding: var(--s4); color: var(--text-muted); font-size: var(--t-sm); }
+
 /* ── The panels ───────────────────────────────────────────────────────────────────────────── */
 .panel__note { margin: 0 0 var(--s4); color: var(--text-muted); font-size: var(--t-sm); }
 
@@ -825,88 +942,6 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-/* ── The weights ──────────────────────────────────────────────────────────────────────────── */
-.weights { display: flex; flex-direction: column; gap: var(--s4); margin: 0; padding: 0; list-style: none; }
-.weight--idle { opacity: 0.55; }
-.weight__line { display: flex; align-items: baseline; gap: var(--s2); }
-.weight__label { color: var(--text); font-size: var(--t-sm); }
-
-.weight__count {
-  padding: 0 6px;
-  border-radius: var(--r-pill);
-  background: var(--accent-wash);
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.weight__score { margin-left: auto; color: var(--text-muted); font-size: var(--t-sm); font-variant-numeric: tabular-nums; }
-.weight__score--moved { color: var(--accent); }
-.weight__about { margin: 2px 0 0; color: var(--text-faint); font-size: var(--t-xs); }
-
-/* A bar you can drag: the track carries the value as a fill, so the list reads as a chart. */
-.weight__slider {
-  width: 100%;
-  height: 6px;
-  margin: 6px 0 0;
-  appearance: none;
-  border-radius: var(--r-pill);
-  background: linear-gradient(to right, var(--accent) var(--fill, 50%), var(--border) var(--fill, 50%));
-  cursor: pointer;
-}
-
-.weight__slider::-webkit-slider-thumb {
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border: 2px solid var(--ground);
-  border-radius: var(--r-pill);
-  background: var(--accent);
-}
-
-.weight__slider::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border: 2px solid var(--ground);
-  border-radius: var(--r-pill);
-  background: var(--accent);
-}
-
-/* ── The cards ────────────────────────────────────────────────────────────────────────────── */
-.cards { display: flex; flex-direction: column; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
-
-.cardrow {
-  padding: var(--s3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface-sunk);
-}
-
-.cardrow__line { display: flex; align-items: center; gap: var(--s2); }
-.cardrow__label { color: var(--text); font-size: var(--t-sm); }
-
-.cardrow__edit {
-  margin-left: auto;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font-size: var(--t-xs);
-  cursor: pointer;
-}
-
-.cardrow__rules { display: flex; flex-wrap: wrap; gap: 4px; margin: var(--s2) 0 0; }
-
-.cardrow__rule {
-  padding: 1px 6px;
-  border-radius: var(--r-pill);
-  background: var(--surface-raised);
-  color: var(--text-muted);
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.cardrow__actions { margin: var(--s2) 0 0; color: var(--text-faint); font-size: var(--t-xs); }
-
 /* ── The form ─────────────────────────────────────────────────────────────────────────────── */
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: var(--s4); }
 .field__label { color: var(--text-muted); font-size: var(--t-xs); letter-spacing: 0.04em; text-transform: uppercase; }
@@ -938,6 +973,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 900px) {
   .focus__main { grid-template-columns: minmax(0, 1fr); }
+  .dev-focus { padding-bottom: 96px; }
   .focus__pins { display: none; }
   .focus__name { display: none; }
 }
