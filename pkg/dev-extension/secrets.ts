@@ -35,9 +35,7 @@ export const SECRET_GROUPS: SecretGroup[] = [
   {
     id:    'letsencrypt',
     title: 'Let\'s Encrypt',
-    help:  'A share is a link you send to somebody without an account here, so it should not open on a certificate warning. '
-      + 'Fill this in and every share asks Let\'s Encrypt for a real certificate for its own sslip.io name. '
-      + 'That is all it takes: the name resolves to the share\'s node, the node is public, and the challenge is a file served over port 80 - no token, no DNS, nothing to keep in step.',
+    help:  'A share is a link you send to somebody with no account here, so it should not open on a certificate warning. Fill this in and every share gets a real certificate for its own sslip.io name.',
   },
 ];
 
@@ -45,21 +43,21 @@ export const GLOBAL_SECRETS: DevSecret[] = [
   {
     key:      'GH_TOKEN',
     label:    'GitHub token',
-    help:     'A personal access token with repo, read:user and read:project. My Work reads your issues, pull requests and board status with it, from the browser.',
+    help:     'A personal access token with repo, read:user and read:project. My Work reads your issues, pull requests and board status with it.',
     required: false,
     group:    'access',
   },
   {
     key:      'RANCHER_PASSWORD',
     label:    'Rancher login password',
-    help:     'The password for the local "admin" account. A workspace\'s app opens on a fresh Rancher login, and the Verify tools copy this into your clipboard so you can sign in without hunting for it. Kept in your own per-user Secret on the local cluster, the same place as your GitHub token above.',
+    help:     'The password for the local "admin" account. A workspace opens on a fresh Rancher login, and the Verify tools copy this to your clipboard so you can sign in.',
     required: false,
     group:    'access',
   },
   {
     key:      'LETSENCRYPT_EMAIL',
     label:    'Account email',
-    help:     'The contact address for the ACME account. Let\'s Encrypt warns this address before a certificate expires, and will not issue without it.',
+    help:     'The contact address for the ACME account; no registration needed, just an address you own. Empty means no share asks for a certificate.',
     required: false,
     group:    'letsencrypt',
   },
