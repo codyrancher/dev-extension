@@ -12,16 +12,38 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
-    appVersion: 0.3.280
-    created: "2026-10-01T20:18:19.373676277Z"
+    appVersion: 0.3.281
+    created: "2026-10-01T20:37:03.244941479Z"
     description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
       fixes, shares and agents
-    digest: 4ff7c5552283f7c20a3922dcaf6d80383272b79067a8517d1470e1d78afab2fd
+    digest: 540418251a677a33564d7fbd913ee88dd087e959f6372e8582aecb139d9e1e71
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
     type: application
     urls:
-    - assets/dev-extension/dev-extension-0.3.280.tgz
+    - assets/dev-extension/dev-extension-0.3.281.tgz
+    version: 0.3.281
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/display-name: Dev Extension
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
+    apiVersion: v2
+    appVersion: 0.3.280
+    created: "2026-10-01T20:19:04.193454825Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
+    digest: 8f61359461f860665f753e8d5cad10ee3cdf175482f7c0b22a67718b3522138e
+    icon: https://codyrancher.github.io/dev-extension/icon.svg
+    name: dev-extension
+    type: application
+    urls:
+    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.280/dev-extension-0.3.280.tgz
     version: 0.3.280
   - annotations:
       catalog.cattle.io/certified: rancher
@@ -2421,4 +2443,4 @@ entries:
     urls:
     - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.168/dev-extension-0.3.168.tgz
     version: 0.3.168
-generated: "2026-10-01T20:18:19.37282175Z"
+generated: "2026-10-01T20:37:03.244142862Z"
