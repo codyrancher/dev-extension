@@ -30,6 +30,9 @@ import {
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import DevList from './DevList.vue';
 import DevDialog from './DevDialog.vue';
+import NavRow from './NavRow.vue';
+import HoverCard from './HoverCard.vue';
+import hoverCard from './hover-card';
 import RancherPicker from './RancherPicker.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
 import Stack from '../design/Stack.vue';
@@ -123,8 +126,10 @@ export default {
   name: 'DevSidebar',
 
   components: {
-    DevList, Stack, Row, ClaudeLogo, DevDialog, RancherPicker
+    DevList, Stack, Row, ClaudeLogo, DevDialog, RancherPicker, NavRow, HoverCard
   },
+
+  mixins: [hoverCard],
 
   data() {
     return {
@@ -364,6 +369,22 @@ export default {
      * total rather than against the largest cluster's: the tracks are one width, the fill is that
      * cluster's own utilisation, and the bar moves with the number beside it.
      */
+    /**
+     * Open the card for a Rancher row.
+     *
+     * The lines are the address and whatever is tight about the cluster's room; the meters and
+     * the actions are the card's slots (see the markup). Every row gets one, including a
+     * Rancher still being made - its card is where its actions are.
+     */
+    showRancher(rancher, event) {
+      const lines = [rancher.url || rancher.detail].filter(Boolean);
+
+      if (rancher.room?.summary) {
+        lines.push(rancher.room.summary);
+      }
+      this.openCard(rancher, event, { title: rancher.name, lines, links: [] });
+    },
+
     bar(free, total) {
       if (!total) {
         return '0%';
@@ -679,72 +700,39 @@ export default {
           +
         </button>
       </div>
-      <div
+      <NavRow
         v-for="rancher in rancherRows"
         :key="rancher.id"
+        tall
         class="dev-sidebar__rancher-row"
+        @mouseenter="showRancher(rancher, $event)"
+        @mouseleave="hideCard"
       >
         <!--
           The room on the cluster this Rancher runs on: one dot for the worse of memory and
-          disk, and both figures when the pointer is on it. The same arrangement the workspace
-          rows use for their status, and for the same reason - the answer at a glance, the
-          detail when you ask for it.
+          disk. No title attribute - the card says it, and a native tooltip over a card is two
+          answers to one question.
         -->
-        <span
-          v-if="rancher.room"
-          class="dev-sidebar__rancher-room"
-          data-testid="dev-rancher-room"
-        >
+        <template #glyph>
           <i
+            v-if="rancher.room"
             class="dev-sidebar__dot"
             :class="`dev-sidebar__dot--${ rancher.room.health }`"
-            :title="rancher.room.summary || 'Room for another workspace'"
+            data-testid="dev-rancher-room"
           />
-          <div class="dev-sidebar__popover">
-            <div class="dev-sidebar__popover-title">{{ rancher.room.name }}</div>
-            <Stack gap="1">
-              <Row
-                class="dev-sidebar__meter"
-                gap="3"
-              >
-                <span class="dev-sidebar__meter-label">MEM</span>
-                <span class="dev-sidebar__meter-track"><span
-                  class="dev-sidebar__meter-fill"
-                  :style="{ width: bar(rancher.room.memoryFree, rancher.room.memoryTotal) }"
-                /></span>
-                <span class="dev-sidebar__meter-value">{{ amount(rancher.room.memoryFree, rancher.room.memoryTotal) }}</span>
-              </Row>
-              <Row
-                class="dev-sidebar__meter"
-                gap="3"
-              >
-                <span class="dev-sidebar__meter-label">DISK</span>
-                <span class="dev-sidebar__meter-track"><span
-                  class="dev-sidebar__meter-fill"
-                  :style="{ width: bar(rancher.room.diskFree, rancher.room.diskTotal) }"
-                /></span>
-                <span class="dev-sidebar__meter-value">{{ amount(rancher.room.diskFree, rancher.room.diskTotal) }}</span>
-              </Row>
-            </Stack>
-            <div
-              v-if="rancher.room.summary"
-              class="dev-sidebar__popover-issue"
-              :class="`dev-sidebar__cluster-issue--${ rancher.room.health }`"
-            >{{ rancher.room.summary }}</div>
-          </div>
-        </span>
-        <div class="dev-sidebar__rancher-text">
-          <span class="dev-sidebar__rancher-name">{{ rancher.name }}</span>
+        </template>
+        <template #name>
+          {{ rancher.name }}
+        </template>
+        <template #detail>
           <span
             v-if="rancher.kind === 'host' || rancher.phase === 'ready'"
             class="dev-sidebar__rancher-url"
-            :title="rancher.url"
           >{{ rancher.where }}</span>
           <template v-else>
             <span
               class="dev-sidebar__rancher-progress"
               :class="{ 'dev-sidebar__rancher-progress--error': rancher.phase === 'error' }"
-              :title="rancher.detail"
               data-testid="dev-rancher-progress"
             >
               <i
@@ -764,7 +752,6 @@ export default {
             <span
               v-if="rancher.phase !== 'removing'"
               class="dev-sidebar__steps"
-              :title="rancher.stepTitle"
             >
               <i
                 v-for="n in 4"
@@ -778,45 +765,86 @@ export default {
               />
             </span>
           </template>
-        </div>
-        <span class="dev-sidebar__rancher-tools">
-          <button
-            v-if="rancher.url"
-            type="button"
-            class="dev-sidebar__tool"
-            :class="{ 'dev-sidebar__tool--done': copied[rancher.id] }"
-            :title="copied[rancher.id] ? 'Copied' : 'Copy the address'"
-            data-testid="dev-rancher-copy"
-            @click="copyRancher(rancher)"
-          >
-            <i
-              class="icon"
-              :class="copied[rancher.id] ? 'icon-checkmark' : 'icon-copy'"
-            />
-          </button>
-          <a
-            v-if="rancher.url && rancher.kind !== 'host'"
-            class="dev-sidebar__tool"
-            :href="rancher.url"
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Open it"
-          >
-            <i class="icon icon-external-link" />
-          </a>
-          <button
-            v-if="rancher.kind !== 'host' && rancher.phase !== 'removing'"
-            type="button"
-            class="dev-sidebar__tool dev-sidebar__tool--danger"
-            title="Delete this Rancher, with its cluster and node"
-            data-testid="dev-rancher-delete"
-            @click="askDeleteRancher(rancher)"
-          >
-            <i class="icon icon-delete" />
-          </button>
-        </span>
-      </div>
+        </template>
+      </NavRow>
     </div>
+    <!--
+      The card for whichever Rancher the pointer is on: the same card the workspace rows use
+      (HoverCard), so both read the same. The row's actions are in it rather than on the row -
+      a control that is only there while the pointer is on the row is a control you chase.
+    -->
+    <HoverCard
+      v-if="card"
+      :card="card"
+      @keep="keepCard"
+      @hide="hideCard"
+    >
+      <template
+        v-if="card.item.room"
+        #body
+      >
+        <Stack gap="1">
+          <Row
+            class="dev-sidebar__meter"
+            gap="3"
+          >
+            <span class="dev-sidebar__meter-label">MEM</span>
+            <span class="dev-sidebar__meter-track"><span
+              class="dev-sidebar__meter-fill"
+              :style="{ width: bar(card.item.room.memoryFree, card.item.room.memoryTotal) }"
+            /></span>
+            <span class="dev-sidebar__meter-value">{{ amount(card.item.room.memoryFree, card.item.room.memoryTotal) }}</span>
+          </Row>
+          <Row
+            class="dev-sidebar__meter"
+            gap="3"
+          >
+            <span class="dev-sidebar__meter-label">DISK</span>
+            <span class="dev-sidebar__meter-track"><span
+              class="dev-sidebar__meter-fill"
+              :style="{ width: bar(card.item.room.diskFree, card.item.room.diskTotal) }"
+            /></span>
+            <span class="dev-sidebar__meter-value">{{ amount(card.item.room.diskFree, card.item.room.diskTotal) }}</span>
+          </Row>
+        </Stack>
+      </template>
+      <template #actions>
+        <button
+          v-if="card.item.url"
+          type="button"
+          class="dev-sidebar__tool"
+          :class="{ 'dev-sidebar__tool--done': copied[card.item.id] }"
+          :title="copied[card.item.id] ? 'Copied' : 'Copy the address'"
+          data-testid="dev-rancher-copy"
+          @click="copyRancher(card.item)"
+        >
+          <i
+            class="icon"
+            :class="copied[card.item.id] ? 'icon-checkmark' : 'icon-copy'"
+          />
+        </button>
+        <a
+          v-if="card.item.url && card.item.kind !== 'host'"
+          class="dev-sidebar__tool"
+          :href="card.item.url"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open it"
+        >
+          <i class="icon icon-external-link" />
+        </a>
+        <button
+          v-if="card.item.kind !== 'host' && card.item.phase !== 'removing'"
+          type="button"
+          class="dev-sidebar__tool dev-sidebar__tool--danger"
+          title="Delete this Rancher, with its cluster and node"
+          data-testid="dev-rancher-delete"
+          @click="askDeleteRancher(card.item)"
+        >
+          <i class="icon icon-delete" />
+        </button>
+      </template>
+    </HoverCard>
     <DevDialog
       v-if="deletingRancher"
       :title="`Delete the Rancher ${ deletingRancher.name }?`"
@@ -976,78 +1004,14 @@ export default {
       &:hover { color: var(--dev-accent); border-color: var(--dev-accent); }
     }
 
+    // The row's box, its insets and its two lines are NavRow's (see NavRow.vue and the
+    // --dev-row tokens): a Rancher row and a workspace row are the same row, which is the whole
+    // point of that component. What is left here is what is particular to a Rancher.
     &__rancher-row {
-      display:     flex;
-      align-items: center;
-      gap:         var(--dev-space-2);
-      // The rail, like every other row in this panel: this one was on 10px and started half a
-      // glyph left of the workspaces above it.
-      padding:     var(--dev-space-1) $rail;
-      min-width:   0;
+      &:hover { background: var(--nav-hover, var(--accent-btn)); }
     }
 
-    &__rancher-text {
-      display:        flex;
-      flex-direction: column;
-      flex:           1 1 auto;
-      min-width:      0;
-    }
 
-    // The dot and the card it opens. Relative, so the card is placed on the row rather than on
-    // the panel; the card itself is absolute so the rows under it do not move when it appears.
-    &__rancher-room {
-      position:    relative;
-      flex:        0 0 auto;
-      display:     inline-flex;
-      align-items: center;
-
-      .dev-sidebar__dot { margin-right: 0; }
-
-      &:hover .dev-sidebar__popover,
-      &:focus-within .dev-sidebar__popover { display: block; }
-    }
-
-    &__popover {
-      position:      absolute;
-      top:           calc(100% + 4px);
-      left:          0;
-      z-index:       20;
-      display:       none;
-      width:         max-content;
-      max-width:     220px;
-      padding:       var(--dev-space-3) var(--dev-space-4);
-      border:        1px solid var(--border);
-      border-radius: var(--border-radius);
-      background:    var(--body-bg);
-      box-shadow:    0 2px 8px rgba(0, 0, 0, 0.2);
-    }
-
-    &__popover-title {
-      margin-bottom:  var(--dev-space-2);
-      font-size:      11px;
-      font-weight:    600;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      color:          var(--muted);
-    }
-
-    &__popover-issue {
-      margin-top: var(--dev-space-2);
-      font-size:  11px;
-      color:      var(--muted);
-    }
-
-    &__rancher-tools {
-      display:     flex;
-      align-items: center;
-      flex:        0 0 auto;
-      gap:         2px;
-      opacity:     0;
-      transition:  opacity 0.15s;
-    }
-
-    &__rancher-row:hover &__rancher-tools,
-    &__rancher-row:focus-within &__rancher-tools { opacity: 1; }
 
     &__tool {
       display:         inline-flex;
@@ -1336,8 +1300,6 @@ export default {
     // A row a thumb can hit, in the lists as well.
     &__row, &__rancher-row { padding-top: var(--dev-space-3); padding-bottom: var(--dev-space-3); }
 
-    // The tools on a Rancher row are hover-only on a laptop; there is no hover here.
-    &__rancher-tools { opacity: 1; }
   }
 }
 </style>

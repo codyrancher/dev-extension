@@ -2081,65 +2081,6 @@ export default {
       {{ notice }}
     </div>
 
-    <!--
-      Getting around: the caret, your messages one by one, and the bottom.
-
-      The caret keys are here rather than on the composer's own row because this is the row of
-      things that move you around, and they are two more of those. The terminal's key bar -
-      Esc, Tab, Ctrl, home, end, word-delete - is for driving a TUI and is hidden in this view
-      (see PodTerminal); what a text box actually wants on a phone is a way to put the caret
-      back one character to fix a typo, which is these two and nothing else.
-
-      `@mousedown.prevent` is what makes them work at all: without it the box loses focus on
-      the press, the selection collapses, and the arrow moves a caret that is no longer there.
-    -->
-    <div class="mc-chat__nav">
-      <template v-if="coarse">
-        <button
-          type="button"
-          class="mc-chat__navbtn mc-chat__navbtn--caret"
-          title="Move the cursor left"
-          @mousedown.prevent
-          @click="moveCaret(-1)"
-        >
-          &#8592;
-        </button>
-        <button
-          type="button"
-          class="mc-chat__navbtn mc-chat__navbtn--caret"
-          title="Move the cursor right"
-          @mousedown.prevent
-          @click="moveCaret(1)"
-        >
-          &#8594;
-        </button>
-      </template>
-      <button
-        type="button"
-        class="mc-chat__navbtn"
-        title="Your previous message"
-        @click="stepMine(-1)"
-      >
-        &#8593; mine
-      </button>
-      <button
-        type="button"
-        class="mc-chat__navbtn"
-        title="Your next message"
-        @click="stepMine(1)"
-      >
-        &#8595; mine
-      </button>
-      <button
-        v-if="!atBottom"
-        type="button"
-        class="mc-chat__navbtn mc-chat__navbtn--bottom"
-        title="Jump to the bottom"
-        @click="scrollToEnd(true)"
-      >
-        &#8681; bottom
-      </button>
-    </div>
 
     <Teleport to="body">
       <PodFileViewer
@@ -2251,33 +2192,104 @@ export default {
       </div>
     </div>
 
-    <div class="mc-chat__status">
-      <span v-if="error" class="mc-chat__error">{{ error }}</span>
-      <template v-else-if="pasting">{{ pasting }}</template>
-      <template v-else-if="working" />
-      <template v-else-if="!attached">Not running</template>
-      <template v-else-if="pane.gone">
-        Claude is not running in this pane.
+    <!--
+      One row between the conversation and the box: what the pane is doing on the left, the ways
+      of getting around it on the right.
+
+      These were two full-width rows stacked, each with its own padding and - because one was
+      inset 18px and the other by the gutter - neither lined up with the box under them or the
+      conversation above. The two say different kinds of thing but neither fills a row, and the
+      space they took between the transcript and the box was most of what made this view feel
+      loose at the bottom.
+    -->
+    <div class="mc-chat__footer">
+      <div class="mc-chat__status">
+        <span v-if="error" class="mc-chat__error">{{ error }}</span>
+        <template v-else-if="pasting">{{ pasting }}</template>
+        <template v-else-if="working" />
+        <template v-else-if="!attached">Not running</template>
+        <template v-else-if="pane.gone">
+          Claude is not running in this pane.
+          <button
+            type="button"
+            class="mc-chat__link"
+            @click="login"
+          >
+            /login
+          </button>
+        </template>
+        <template v-else-if="state.phase === 'waiting'">
+          {{ pane.status || 'Claude is waiting for you' }}
+          <button
+            type="button"
+            class="mc-chat__link"
+            title="Answer it in the terminal"
+            @click="$emit('view', 'terminal')"
+          >
+            open the terminal
+          </button>
+        </template>
+        <template v-else>{{ pane.status || 'Ready' }}<template v-if="state.cost && state.cost.totalCostUSD"> · ${{ state.cost.totalCostUSD.toFixed(2) }} this session</template></template>
+      </div>
+      <!--
+        Getting around: the caret, your messages one by one, and the bottom.
+
+        The caret keys are here rather than on the composer's own row because this is the row of
+        things that move you around, and they are two more of those. The terminal's key bar -
+        Esc, Tab, Ctrl, home, end, word-delete - is for driving a TUI and is hidden in this view
+        (see PodTerminal); what a text box actually wants on a phone is a way to put the caret
+        back one character to fix a typo, which is these two and nothing else.
+
+        `@mousedown.prevent` is what makes them work at all: without it the box loses focus on
+        the press, the selection collapses, and the arrow moves a caret that is no longer there.
+      -->
+      <div class="mc-chat__nav">
+        <template v-if="coarse">
+          <button
+            type="button"
+            class="mc-chat__navbtn mc-chat__navbtn--caret"
+            title="Move the cursor left"
+            @mousedown.prevent
+            @click="moveCaret(-1)"
+          >
+            &#8592;
+          </button>
+          <button
+            type="button"
+            class="mc-chat__navbtn mc-chat__navbtn--caret"
+            title="Move the cursor right"
+            @mousedown.prevent
+            @click="moveCaret(1)"
+          >
+            &#8594;
+          </button>
+        </template>
         <button
           type="button"
-          class="mc-chat__link"
-          @click="login"
+          class="mc-chat__navbtn"
+          title="Your previous message"
+          @click="stepMine(-1)"
         >
-          /login
+          &#8593; mine
         </button>
-      </template>
-      <template v-else-if="state.phase === 'waiting'">
-        {{ pane.status || 'Claude is waiting for you' }}
         <button
           type="button"
-          class="mc-chat__link"
-          title="Answer it in the terminal"
-          @click="$emit('view', 'terminal')"
+          class="mc-chat__navbtn"
+          title="Your next message"
+          @click="stepMine(1)"
         >
-          open the terminal
+          &#8595; mine
         </button>
-      </template>
-      <template v-else>{{ pane.status || 'Ready' }}<template v-if="state.cost && state.cost.totalCostUSD"> · ${{ state.cost.totalCostUSD.toFixed(2) }} this session</template></template>
+        <button
+          v-if="!atBottom"
+          type="button"
+          class="mc-chat__navbtn mc-chat__navbtn--bottom"
+          title="Jump to the bottom"
+          @click="scrollToEnd(true)"
+        >
+          &#8681; bottom
+        </button>
+      </div>
     </div>
 
     <!--
@@ -3292,15 +3304,26 @@ export default {
   // there.
   &__status:empty { display: none; padding: 0; }
 
+  // One row under the conversation: the status on the left, the ways of getting around on the
+  // right, both inset to the gutter so they line up with the box below and the log above.
+  &__footer {
+    flex:            0 0 auto;
+    display:         flex;
+    align-items:     center;
+    gap:             8px;
+    padding:         0 var(--mc-chat-gutter) 6px;
+    min-height:      26px;
+  }
+
   &__status {
-    flex:        0 0 auto;
-    padding:     4px 18px;
+    flex:        1 1 auto;
+    min-width:   0;
+    padding:     0;
     font-size:   11px;
     color:       var(--muted);
     display:     flex;
     gap:         8px;
     align-items: center;
-    min-height:  22px;
   }
 
   &__error { color: var(--error); }
@@ -3880,13 +3903,10 @@ export default {
     // Enough to read as two pairs rather than four buttons, and the same step the prompt box's
     // own controls use.
     gap:             5px;
-    // Flush with the box below: the arrows sit over its left edge and the log controls over
-    // its right, so the row reads as belonging to it rather than hovering near it. The bottom
-    // padding is the gap between the two, which there was none of.
-    // The gap under the row is the gutter beside it: the buttons sit the same distance from
-    // the box as they do from the edges of the page, which is the only spacing here that does
-    // not need a reason.
-    padding:         2px var(--mc-chat-gutter) var(--mc-chat-gutter);
+    // No padding of its own: it is the right-hand half of __footer, which owns the inset and
+    // the gap to the box. It had both, which is how it ended up on a different column from the
+    // status line it was sitting above.
+    padding:         0;
   }
 
   // Everything after the caret keys goes to the right; they stay at the left.
@@ -3992,7 +4012,7 @@ export default {
 
     &__textarea { min-height: 44px; padding: 8px 10px 2px; }
 
-    &__status { padding: 4px 10px; }
+    &__footer { padding: 0 var(--mc-chat-gutter) 4px; }
 
     /* The subagent list: name, last words and time on one row is three columns in 370px. */
     &__agents { padding: 0 10px; }
