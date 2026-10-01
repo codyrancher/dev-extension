@@ -11,12 +11,14 @@
  * of work needs a definition (focus.ts) and not a new component. What a button does is the
  * definition's too - the card only says which one was pressed.
  */
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import type { FocusTask, CardAction } from '../../focus';
 import AppButton from './AppButton.vue';
 import KindChip from './KindChip.vue';
 import StatPill from './StatPill.vue';
 import AppIcon from './AppIcon.vue';
+import ReviewPass from './ReviewPass.vue';
+import type { ReviewNote } from '../../focus-review';
 
 const props = defineProps<{
   task: FocusTask;
@@ -24,12 +26,22 @@ const props = defineProps<{
   busy?: boolean;
   /** Pinned tasks sit beside the deck rather than in it; the card says so and offers the way back. */
   pinned?: boolean;
+  /**
+   * The agent's comments, when this card's work is a review waiting for a pass.
+   *
+   * The card is where the pass happens rather than somewhere the card sends you: a comment
+   * carries the lines it is about, so the judgement can be made here. See focus-review.ts; the
+   * page loads them for the card on top and nothing else.
+   */
+  notes?: ReviewNote[];
 }>();
 
 const emit = defineEmits<{
   (e: 'act', action: CardAction): void;
   (e: 'ask'): void;
   (e: 'pin'): void;
+  (e: 'resolve', value: { note: ReviewNote; verdict: string; body?: string }): void;
+  (e: 'discuss', value: { note: ReviewNote; text: string }): void;
 }>();
 
 /** Waiting long enough that somebody is being held up by it. */
@@ -38,6 +50,18 @@ const overdue = computed(() => props.task.waitingHours >= 48);
 /** The first action is the one the card is built around; the rest are quieter. */
 const primary = computed(() => props.task.card.actions[0] || null);
 const rest = computed(() => props.task.card.actions.slice(1));
+
+/**
+ * A card with a review on it is laid out differently.
+ *
+ * The pass needs most of the card's height to be worth having, so everything above it gives
+ * some up: a smaller title, and the line of prose about why this is here dropped - the line
+ * under the title already says what it is.
+ */
+const hasPass = computed(() => !!props.notes?.length);
+
+/** How far through the agent's comments you are, shown beside the card's own button. */
+const pass = ref<{ settled: number; total: number; keeping: number } | null>(null);
 
 /** Days, where hours stop being a number anybody reads. */
 const waited = computed(() => (props.task.waitingHours >= 48
@@ -48,7 +72,7 @@ const waited = computed(() => (props.task.waitingHours >= 48
 <template>
   <article
     class="card"
-    :class="[`card--${ task.card.kind }`, { 'card--flat': !interactive }]"
+    :class="[`card--${ task.card.kind }`, { 'card--flat': !interactive, 'card--pass': hasPass }]"
   >
     <div class="card__glow" aria-hidden="true" />
     <div class="card__glow card__glow--foot" aria-hidden="true" />
@@ -99,9 +123,18 @@ const waited = computed(() => (props.task.waitingHours >= 48
 
     <div class="card__body">
       <!-- Why this is in front of you at all, in the ranking's own words. -->
-      <p v-if="task.about" class="card__prose">{{ task.about }}</p>
+      <p v-if="task.about && !hasPass" class="card__prose">{{ task.about }}</p>
 
-      <div class="card__stats">
+      <!-- The agent's review, when there is one waiting: the substance of a review card. -->
+      <ReviewPass
+        v-if="hasPass"
+        :notes="notes || []"
+        @progress="pass = $event"
+        @resolve="emit('resolve', $event)"
+        @ask="emit('discuss', $event)"
+      />
+
+      <div v-if="!hasPass" class="card__stats">
         <StatPill label="priority" :value="String(task.score)" />
         <StatPill v-if="task.waitingHours" label="waiting" :value="waited" />
         <StatPill v-if="task.workspace" label="workspace" :value="task.workspace" />
@@ -125,6 +158,11 @@ const waited = computed(() => (props.task.waitingHours >= 48
         size="lg"
         @click="emit('act', action)"
       >{{ action.label }}</AppButton>
+
+      <span v-if="pass" class="card__pass">
+        <strong>{{ pass.keeping }}</strong> of {{ pass.total }} kept
+        <span v-if="pass.settled < pass.total" class="card__pass-left">· {{ pass.total - pass.settled }} still to decide</span>
+      </span>
 
       <AppButton variant="quiet" size="lg" icon="sparkle" class="card__ask" @click="emit('ask')">
         Ask about this
@@ -160,6 +198,15 @@ const waited = computed(() => (props.task.waitingHours >= 48
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
+
+/* A card with the pass on it gives the header's room to the comments. */
+.card--pass .card__title { font-size: clamp(var(--t-lg), 2vw, var(--t-xl)); }
+.card--pass .card__summary { font-size: var(--t-sm); }
+.card--pass .card__body { gap: var(--s3); }
+
+.card__pass { margin-left: auto; color: var(--text-muted); font-size: var(--t-sm); }
+.card__pass strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.card__pass-left { color: var(--text-faint); }
 
 /* The hue, once, at the top of the component that owns it. */
 .card--review   { --kind: var(--kind-review);   --kind-deep: var(--kind-review-deep);   --kind-wash: var(--kind-review-wash); }

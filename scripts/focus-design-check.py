@@ -38,7 +38,8 @@ for rel in MINE:
                 if int(px) not in OK_PX and 'clamp(' not in hit.group(1):
                     issues.append((rel, line, sel, f'{px}px off the scale in "{hit.group(0).strip()}"'))
         # 3. Something you press that is too small to press.
-        if CONTROL_RE.match(sel) and 'cursor: pointer' in body:
+        pressable = 'cursor: pointer' in body or 'cursor: ew-resize' in body or 'cursor: grab' in body
+        if CONTROL_RE.match(sel) and pressable:
             h = re.search(r'(?:^|\s)height:\s*(\d+)px', body)
             mh = re.search(r'min-height:\s*(\d+)px', body)
             pad = re.search(r'padding:\s*(\d+)px', body)
