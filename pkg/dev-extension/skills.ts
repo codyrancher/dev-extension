@@ -11,6 +11,16 @@ export interface SkillSummary {
   name: string;
   description: string;
   overridden: boolean;
+  /** How many files the skill carries beside its prose. */
+  files: number;
+}
+
+/** One file of a skill: its SKILL.md, or a script or manifest beside it. */
+export interface SkillFile {
+  path: string;
+  content: string;
+  baked: string;
+  overridden: boolean;
 }
 
 export interface Skill {
@@ -18,6 +28,8 @@ export interface Skill {
   content: string;
   baked: string;
   overridden: boolean;
+  /** Everything in the skill's directory except SKILL.md. See the API's readSkill. */
+  files: SkillFile[];
 }
 
 export async function listSkills(): Promise<{ skills: SkillSummary[]; version: string }> {
@@ -28,14 +40,19 @@ export async function readSkill(name: string): Promise<Skill> {
   return devApi(`/skills/${ encodeURIComponent(name) }`);
 }
 
-export async function saveSkill(name: string, content: string, commit = false, message = ''): Promise<{ overridden: boolean; commit: { committed: boolean; url: string } | null; version: string }> {
+/** Save one file of a skill; `path` is its SKILL.md unless something says otherwise. */
+export async function saveSkill(name: string, content: string, commit = false, message = '', path = 'SKILL.md'): Promise<{ overridden: boolean; commit: { committed: boolean; url: string } | null; version: string }> {
   return devApi(`/skills/${ encodeURIComponent(name) }`, {
-    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content, commit, message }),
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      content, commit, message, path,
+    }),
   });
 }
 
-export async function resetSkill(name: string): Promise<void> {
-  await devApi(`/skills/${ encodeURIComponent(name) }/reset`, { method: 'POST', body: '{}' });
+export async function resetSkill(name: string, path = 'SKILL.md'): Promise<void> {
+  await devApi(`/skills/${ encodeURIComponent(name) }/reset`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }),
+  });
 }
 
 export async function seedVersion(): Promise<string> {

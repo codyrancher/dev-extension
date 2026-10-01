@@ -2,21 +2,40 @@
 // The skills the agents run on: read here and edited here. A save reaches every running
 // workspace at once and, when asked, the repository the skills are kept in. See skills.ts.
 //
+// A skill is a directory, not a file. A third of them carry something beside the prose - a
+// `share.sh`, an `a11y-probe.mjs`, a manifest - that the SKILL.md tells the agent to run, and
+// editing the prose while the script it names stays as it was is editing half the skill. So the
+// editor is a file picker over the skill's directory, and every file in it saves and commits the
+// same way.
+//
+// The list is the same row and the same hover card the navigation uses (NavRow, HoverCard), so
+// a list of skills reads like a list of workspaces rather than like a different product.
+//
 // There is no agent on this page. Asking an agent to improve a skill used to be a panel at the
-// bottom of the editor with a conversation picker of its own, which is a second way to start a
-// conversation on a page whose subject is a file - and the product already has one that is
-// always to hand. So: this page is the file, and the conversation is the global one.
+// bottom with a conversation picker of its own, which is a second way to start a conversation on
+// a page whose subject is a file - and the product already has one that is always to hand.
 import Loading from '@shell/components/Loading';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
+import NavRow from '../components/NavRow.vue';
+import NavHead from '../components/NavHead.vue';
+import HoverCard from '../components/HoverCard.vue';
+import hoverCard from '../components/hover-card';
 import {
   listSkills, readSkill, saveSkill, resetSkill, refreshSkillsEverywhere
 } from '../skills';
 
+/** The prose, which every skill has and which is what the page opens on. */
+const PROSE = 'SKILL.md';
+
 export default {
   name: 'DevSkills',
 
-  components: { Loading, Banner, RcButton },
+  components: {
+    Loading, Banner, RcButton, NavRow, NavHead, HoverCard
+  },
+
+  mixins: [hoverCard],
 
   async fetch() {
     await this.load();
@@ -29,6 +48,8 @@ export default {
       filter:        '',
       selected:      '',
       skill:         null,
+      /** Which file of the skill is open, by path. Always a file the skill has. */
+      path:          PROSE,
       draft:         '',
       loadingSkill:  false,
       busy:          '',
@@ -45,11 +66,30 @@ export default {
       return f ? this.skills.filter((s) => s.name.includes(f) || s.description.toLowerCase().includes(f)) : this.skills;
     },
 
-    dirty() {
-      return !!this.skill && this.draft !== this.skill.content;
+    /** Every file of the open skill, its prose first. */
+    files() {
+      if (!this.skill) {
+        return [];
+      }
+
+      return [
+        {
+          path: PROSE, content: this.skill.content, baked: this.skill.baked, overridden: this.skill.overridden,
+        },
+        ...(this.skill.files || []),
+      ];
     },
 
-    /** How many are edited here, which is the one thing worth counting in the list's header. */
+    /** The file being edited. */
+    file() {
+      return this.files.find((f) => f.path === this.path) || this.files[0] || null;
+    },
+
+    dirty() {
+      return !!this.file && this.draft !== this.file.content;
+    },
+
+    /** How many are edited here, counting a skill once however many of its files differ. */
     edited() {
       return this.skills.filter((s) => s.overridden).length;
     },
@@ -82,7 +122,7 @@ export default {
     },
 
     async open(name) {
-      if (this.dirty && !window.confirm('Drop the unsaved change to this skill?')) {
+      if (this.dirty && !window.confirm('Drop the unsaved change to this file?')) {
         return;
       }
       this.selected = name;
@@ -91,8 +131,7 @@ export default {
       this.notice = '';
       try {
         this.skill = await readSkill(name);
-        this.draft = this.skill.content;
-        this.commitMessage = `Skill ${ name }: `;
+        this.show(PROSE, true);
         if (this.$route.query.skill !== name) {
           this.$router.replace({ query: { ...this.$route.query, skill: name } }).catch(() => {});
         }
@@ -101,6 +140,37 @@ export default {
       } finally {
         this.loadingSkill = false;
       }
+    },
+
+    /**
+     * Open one file of the skill. The draft follows it; an unsaved one is asked about first.
+     *
+     * `force` is for arriving at a skill rather than moving within one: the question was asked
+     * when the skill was opened, and asking it again - against a draft that belongs to a file
+     * of the skill being left - is asking about something that is no longer on screen.
+     */
+    show(path, force = false) {
+      if (!force && path !== this.path && this.dirty && !window.confirm('Drop the unsaved change to this file?')) {
+        return;
+      }
+      this.path = path;
+      const file = this.files.find((f) => f.path === path) || this.files[0];
+
+      this.draft = file?.content || '';
+      this.commitMessage = `Skill ${ this.selected }: `;
+    },
+
+    /** What a row's card says: the whole description, and what the skill carries. */
+    showSkill(skill, event) {
+      const lines = [skill.description].filter(Boolean);
+
+      if (skill.files) {
+        lines.push(`${ skill.files } file${ skill.files === 1 ? '' : 's' } beside SKILL.md`);
+      }
+      if (skill.overridden) {
+        lines.push('Edited here; differs from what shipped.');
+      }
+      this.openCard(skill, event, { title: skill.name, lines, links: [] });
     },
 
     async run(what, action) {
@@ -119,12 +189,13 @@ export default {
       }
     },
 
-    /** Save for every workspace; the commit to the repository when asked. */
+    /** Save the open file for every workspace; the commit to the repository when asked. */
     save(commit) {
       return this.run(commit ? 'commit' : 'save', async() => {
-        const result = await saveSkill(this.selected, this.draft, commit, this.commitMessage.trim());
+        const path = this.path;
+        const result = await saveSkill(this.selected, this.draft, commit, this.commitMessage.trim(), path);
 
-        this.skill = { ...this.skill, content: this.draft, overridden: result.overridden };
+        this.skill = await readSkill(this.selected);
         this.version = result.version;
         await this.load();
         const spread = await refreshSkillsEverywhere((note) => {
@@ -132,24 +203,27 @@ export default {
         });
         const committed = result.commit ? (result.commit.committed ? `committed (${ result.commit.url })` : 'already in the repository') : 'not committed';
 
-        this.notice = `Saved: ${ spread.done.length } workspace${ spread.done.length === 1 ? '' : 's' } updated${ spread.failed.length ? `, ${ spread.failed.length } could not be (${ spread.failed.map((f) => f.name).join(', ') })` : '' }; ${ committed }.`;
+        this.notice = `Saved ${ path }: ${ spread.done.length } workspace${ spread.done.length === 1 ? '' : 's' } updated${ spread.failed.length ? `, ${ spread.failed.length } could not be (${ spread.failed.map((f) => f.name).join(', ') })` : '' }; ${ committed }.`;
       });
     },
 
     reset() {
-      if (!window.confirm(`Drop the edit and go back to the shipped ${ this.selected }?`)) {
+      if (!window.confirm(`Drop the edit and go back to the shipped ${ this.path }?`)) {
         return;
       }
 
       return this.run('reset', async() => {
-        await resetSkill(this.selected);
-        await this.open(this.selected);
+        const path = this.path;
+
+        await resetSkill(this.selected, path);
+        this.skill = await readSkill(this.selected);
+        this.show(path, true);
         await this.load();
         const spread = await refreshSkillsEverywhere((note) => {
           this.notice = note;
         });
 
-        this.notice = `Back to the shipped skill in ${ spread.done.length } workspaces.`;
+        this.notice = `${ path } is back to what shipped, in ${ spread.done.length } workspaces.`;
       });
     },
   },
@@ -174,6 +248,10 @@ export default {
     />
     <div class="dev-skills__columns">
       <aside class="dev-skills__side">
+        <NavHead
+          label="Skills"
+          icon="icon-file"
+        />
         <!--
           The filter sits above the scrolling list rather than inside it: it is how you find a
           skill in a list of sixty, and it used to scroll away the moment you started looking.
@@ -191,31 +269,36 @@ export default {
         </div>
 
         <div class="dev-skills__list">
-          <button
+          <NavRow
             v-for="s in shown"
             :key="s.name"
-            type="button"
+            tag="button"
+            tall
+            :current="s.name === selected"
             class="dev-skills__item"
             :class="{ 'dev-skills__item--current': s.name === selected }"
-            :title="`${ s.name } - ${ s.description }`"
             @click="open(s.name)"
+            @mouseenter="showSkill(s, $event)"
+            @mouseleave="hideCard"
           >
-            <span class="dev-skills__item-name">
-              <span class="dev-skills__item-text">{{ s.name }}</span>
+            <template #glyph>
+              <i
+                class="dev-skills__dot"
+                :class="{ 'dev-skills__dot--edited': s.overridden }"
+              />
+            </template>
+            <template #name>
+              {{ s.name }}
+            </template>
+            <template #detail>
+              <span class="dev-skills__item-desc">{{ s.description }}</span>
               <span
-                v-if="s.overridden"
-                class="dev-skills__edited"
-                title="Edited here; differs from what shipped"
-              >edited</span>
-            </span>
-            <!--
-              One line, clipped with an ellipsis. Every one of these descriptions is a sentence
-              or two, and a 300px column cannot shrink below its content unless it is told it
-              can: `min-width: 0` on the button and on this span is what makes the ellipsis
-              happen instead of the whole column growing to the width of the longest one.
-            -->
-            <span class="dev-skills__item-desc">{{ s.description }}</span>
-          </button>
+                v-if="s.files"
+                class="dev-skills__files"
+                :title="`${ s.files } file${ s.files === 1 ? '' : 's' } beside SKILL.md`"
+              >+{{ s.files }}</span>
+            </template>
+          </NavRow>
           <p
             v-if="!shown.length"
             class="dev-skills__count"
@@ -235,7 +318,7 @@ export default {
               {{ skill.name }}
             </h1>
             <p class="dev-skills__sub">
-              {{ skill.overridden ? 'Edited here - every workspace has this version.' : 'As shipped.' }}
+              {{ file && file.overridden ? 'Edited here - every workspace has this version.' : 'As shipped.' }}
               <span
                 v-if="dirty"
                 class="dev-skills__dirty"
@@ -244,7 +327,7 @@ export default {
           </div>
           <div class="dev-skills__actions">
             <RcButton
-              v-if="skill.overridden"
+              v-if="file && file.overridden"
               variant="tertiary"
               :disabled="!!busy"
               @click="reset"
@@ -264,7 +347,7 @@ export default {
             </RcButton>
             <RcButton
               variant="primary"
-              :disabled="!!busy || (!dirty && !skill.overridden)"
+              :disabled="!!busy || (!dirty && !(file && file.overridden))"
               @click="save(true)"
             >
               <i
@@ -274,6 +357,26 @@ export default {
               Save and commit
             </RcButton>
           </div>
+        </div>
+
+        <!--
+          The skill's directory. One file always - its prose - and for the skills that carry a
+          script or a manifest, that too: the SKILL.md tells the agent to run it, so it is part
+          of the skill and belongs where the skill is edited.
+        -->
+        <div
+          v-if="files.length > 1"
+          class="dev-skills__files-row"
+        >
+          <button
+            v-for="f in files"
+            :key="f.path"
+            type="button"
+            class="dev-skills__file"
+            :class="{ 'dev-skills__file--current': f.path === path, 'dev-skills__file--edited': f.overridden }"
+            :title="f.overridden ? `${ f.path } - edited here` : f.path"
+            @click="show(f.path)"
+          >{{ f.path }}</button>
         </div>
 
         <!-- Labelled, because an unlabelled box above a file is read as part of the file. -->
@@ -299,6 +402,13 @@ export default {
         {{ loadingSkill ? 'Reading…' : 'Pick a skill.' }}
       </section>
     </div>
+
+    <HoverCard
+      v-if="card"
+      :card="card"
+      @keep="keepCard"
+      @hide="hideCard"
+    />
   </div>
 </template>
 
@@ -321,10 +431,10 @@ export default {
 
   // ── The list ──────────────────────────────────────────────────────────────────────────────
   //
-  // Two parts: a head that stays, and a list that scrolls. `min-width: 0` all the way down is
-  // what keeps the column 280px wide - a grid item's automatic minimum is its content, and the
-  // content here is sixty one-line descriptions, the longest of which was setting the width of
-  // the column and pushing the names out of sight.
+  // The rows are the navigation's rows (NavRow) and the card is the navigation's card
+  // (HoverCard): same height, same rail, same dot slot, same delay. `min-width: 0` all the way
+  // down is what keeps the column 280px wide - a grid item's automatic minimum is its content,
+  // and the content here is sixty one-line descriptions.
   &__side {
     display:        flex;
     flex-direction: column;
@@ -338,17 +448,16 @@ export default {
     flex-direction: column;
     gap:            var(--dev-space-1);
     min-width:      0;
+    padding:        0 var(--dev-space-3) 0 var(--dev-inset);
   }
 
   &__list {
     display:        flex;
     flex-direction: column;
-    gap:            1px;
     min-width:      0;
     min-height:     0;
     overflow-x:     hidden;
     overflow-y:     auto;
-    padding-right:  var(--dev-space-1);
   }
 
   &__count {
@@ -370,43 +479,24 @@ export default {
   }
 
   &__item {
-    display:        flex;
-    flex-direction: column;
-    gap:            1px;
-    align-items:    stretch;
-    width:          100%;
-    min-width:      0;
-    overflow:       hidden;
-    padding:        var(--dev-space-2) var(--dev-space-3);
-    border:         0;
-    border-left:    2px solid transparent;
-    border-radius:  var(--border-radius);
-    background:     transparent;
-    color:          var(--body-text);
-    font:           inherit;
-    text-align:     left;
-    cursor:         pointer;
+    cursor: pointer;
 
-    &:hover { background: var(--box-bg); }
-
-    // The mark for the current one is a left edge rather than an inset shadow, so it cannot
-    // sit over the first character of the name.
-    &--current {
-      background:  var(--box-bg);
-      border-left: 2px solid var(--primary);
-    }
+    &:hover { background: var(--nav-hover, var(--accent-btn)); }
+    &--current { background: var(--nav-hover, var(--accent-btn)); }
   }
 
-  &__item-name {
-    display:     flex;
-    align-items: center;
-    gap:         var(--dev-space-2);
-    min-width:   0;
-    font-weight: 600;
+  // A skill's dot says one thing - whether it still matches what shipped - so it is drawn
+  // rather than coloured by a state it does not have.
+  &__dot {
+    display:       inline-block;
+    width:         7px;
+    height:        7px;
+    border-radius: 50%;
+    background:    var(--border);
+
+    &--edited { background: var(--warning); }
   }
 
-  // The name is the part that must stay readable, so it is what gets the ellipsis.
-  &__item-text,
   &__item-desc {
     min-width:     0;
     overflow:      hidden;
@@ -414,19 +504,16 @@ export default {
     text-overflow: ellipsis;
   }
 
-  &__item-desc {
-    color:     var(--muted);
-    font-size: 11px;
-  }
-
-  &__edited {
+  // How many files the skill carries beside its prose, which is what makes it more than a
+  // document: it tells the agent to run them.
+  &__files {
     flex:          0 0 auto;
-    padding:       0 6px;
-    border-radius: 8px;
-    background:    rgba(255, 228, 122, .18);
-    color:         var(--warning);
+    padding:       0 5px;
+    border-radius: 7px;
+    background:    var(--box-bg);
+    color:         var(--muted);
     font-size:     10px;
-    font-weight:   700;
+    font-weight:   600;
   }
 
   // ── The editor ────────────────────────────────────────────────────────────────────────────
@@ -459,11 +546,11 @@ export default {
   &__head-text { min-width: 0; }
 
   &__title {
-    margin:      0;
-    font-size:   20px;
-    line-height: 1.2;
-    overflow:    hidden;
-    white-space: nowrap;
+    margin:        0;
+    font-size:     20px;
+    line-height:   1.2;
+    overflow:      hidden;
+    white-space:   nowrap;
     text-overflow: ellipsis;
   }
 
@@ -489,6 +576,35 @@ export default {
     display: flex;
     gap:     var(--dev-space-2);
     flex:    0 0 auto;
+  }
+
+  // The skill's files, as a strip of tabs over the box they open into.
+  &__files-row {
+    display:   flex;
+    flex-wrap: wrap;
+    gap:       var(--dev-space-2);
+  }
+
+  &__file {
+    min-height:    0;
+    padding:       3px var(--dev-space-3);
+    border:        1px solid var(--border);
+    border-radius: var(--border-radius);
+    background:    transparent;
+    color:         var(--muted);
+    font-family:   ui-monospace, 'SFMono-Regular', Menlo, monospace;
+    font-size:     11px;
+    cursor:        pointer;
+
+    &:hover { color: var(--body-text); }
+
+    &--current {
+      border-color: var(--dev-accent);
+      color:        var(--body-text);
+    }
+
+    // Edited here, the same amber the list's dot uses for the same fact.
+    &--edited { color: var(--warning); }
   }
 
   &__field {
