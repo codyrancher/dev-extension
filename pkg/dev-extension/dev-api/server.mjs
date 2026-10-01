@@ -810,6 +810,76 @@ async function readSkill(name) {
   };
 }
 
+// ── Focus ───────────────────────────────────────────────────────────────────────────────────
+//
+// One ConfigMap, three keys. Written whole rather than merged key by key, because the three are
+// edited one at a time by whoever is editing them - the weights panel writes weights, the card
+// editor writes cards - and a PUT carrying one of them must not drop the other two.
+
+const FOCUS_MAP = process.env.DEV_FOCUS_MAP || 'dev-focus';
+
+async function readFocus() {
+  try {
+    const map = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ FOCUS_MAP }`);
+    const read = (key) => {
+      try {
+        return JSON.parse(map.data?.[key] || 'null');
+      } catch {
+        return null;
+      }
+    };
+
+    return {
+      cards:   read('cards.json'),
+      weights: read('weights.json'),
+      tasks:   read('tasks.json'),
+      version: map.metadata?.resourceVersion || '',
+    };
+  } catch (e) {
+    if (e.status === 404) {
+      return {
+        cards: null, weights: null, tasks: null, version: '',
+      };
+    }
+    throw e;
+  }
+}
+
+async function writeFocus(body) {
+  const data = {};
+
+  if (Array.isArray(body?.cards)) {
+    data['cards.json'] = JSON.stringify(body.cards, null, 2);
+  }
+  if (body?.weights && typeof body.weights === 'object') {
+    data['weights.json'] = JSON.stringify(body.weights, null, 2);
+  }
+  if (Array.isArray(body?.tasks)) {
+    data['tasks.json'] = JSON.stringify(body.tasks, null, 2);
+  }
+  if (!Object.keys(data).length) {
+    throw failure(400, 'Nothing to write: send cards, weights or tasks.');
+  }
+
+  const p = `/api/v1/namespaces/${ NAMESPACE }/configmaps/${ FOCUS_MAP }`;
+
+  try {
+    await k8s(p, { method: 'PATCH', body: JSON.stringify({ data }) });
+  } catch (e) {
+    if (e.status !== 404) {
+      throw e;
+    }
+    await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps`, {
+      method: 'POST',
+      body:   JSON.stringify({
+        apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace: NAMESPACE, name: FOCUS_MAP, labels: { 'dev.rancher.io/kind': 'focus' } }, data,
+      }),
+    });
+  }
+
+  return { ok: true, ...(await readFocus()) };
+}
+
 /** The edited prompt templates, by the action's key: what a button sends before the variables go in. */
 async function promptOverrides() {
   try {
@@ -2236,6 +2306,18 @@ const routes = [
 
     return { ok: true };
   }],
+  // ── The Focus view's own document ─────────────────────────────────────────────────────────
+  //
+  // Three things, in one ConfigMap: the cards (what a kind of work looks like when it is in
+  // front of you), the weights (what each rule in the priority queue is worth) and the tasks
+  // somebody wrote by hand. All three are data rather than code so they can be changed from the
+  // page - and, more to the point, by an agent: "make a card for X" is a thing to ask for, and
+  // what comes back is a PUT here rather than a pull request.
+  //
+  // Defaults live in the browser (focus.ts), the way the skills' do: an empty document means
+  // the shipped cards, not an empty page.
+  ['GET', /^\/focus$/, async() => readFocus()],
+  ['PUT', /^\/focus$/, async(m, url, body) => writeFocus(body)],
   ['GET', /^\/skills\/([a-z0-9-]+)$/, async(m) => readSkill(m[1])],
   ['PUT', /^\/skills\/([a-z0-9-]+)$/, async(m, url, body) => saveSkill(m[1], body)],
   ['POST', /^\/skills\/([a-z0-9-]+)\/reset$/, async(m, url, body) => {

@@ -248,6 +248,27 @@ function onKeyDown(event: KeyboardEvent): void {
 }
 
 /**
+ * Open the panel, and put one conversation on top of it.
+ *
+ * The chord toggles; this does not. It is for a page that has just put something into a
+ * conversation and wants the person to see it happen - the Focus view does exactly that - and a
+ * toggle there would close the panel for anyone who already had it open.
+ *
+ * The id is a request rather than an instruction: the panel lists the conversations it owns
+ * (see panelSessions), and one it has not caught up with yet is selected on its next refresh.
+ */
+export async function openAgentPanel(session = ''): Promise<void> {
+  const instance = panelInstance();
+
+  instance.setOpen?.(true);
+  await instance.refresh?.().catch?.(() => {});
+
+  if (session) {
+    instance.select?.(session);
+  }
+}
+
+/**
  * Listen for the chord, and hand back the way to stop.
  *
  * Guarded against a second call: a bundle evaluated twice would otherwise leave two listeners on

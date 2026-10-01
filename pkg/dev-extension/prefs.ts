@@ -8,14 +8,43 @@
 
 import { devFetch, currentOwner, DEV_SYSTEM_NAMESPACE, clusterBase } from './api';
 
+/**
+ * What the Focus view keeps per person: what has been pulled out of the deck, what has been put
+ * off, and what has been dealt with.
+ *
+ * Here rather than in focus.ts so that file can import it without this one importing that one -
+ * and because it is a preference in exactly the sense the rest of this file means: one person's
+ * arrangement of a thing everybody can see.
+ */
+export interface FocusPrefs {
+  /** Queue keys pinned beside the deck. */
+  pinned: string[];
+  /** Queue key to the ISO time it comes back. */
+  snoozed: Record<string, string>;
+  /** Queue key to when it was dealt with, so it does not come straight back. */
+  done: Record<string, string>;
+}
+
 export interface DevPrefs {
   /** App ids the person has hidden. Everything not listed is shown; a new App shows up on its own. */
   hiddenApps: string[];
   /** The Rancher new workspaces point at, by URL; '' is the one this dashboard is on. See ranchers.ts. */
   defaultRancher: string;
+  focus: FocusPrefs;
 }
 
-const EMPTY: DevPrefs = { hiddenApps: [], defaultRancher: '' };
+const EMPTY_FOCUS: FocusPrefs = { pinned: [], snoozed: {}, done: {} };
+const EMPTY: DevPrefs = { hiddenApps: [], defaultRancher: '', focus: EMPTY_FOCUS };
+
+/** A record of strings, or an empty one: what came out of JSON is whatever was written. */
+function strings(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([, at]) => typeof at === 'string')) as Record<string, string>;
+}
 const KIND_LABEL = 'dev.rancher.io/kind';
 const OWNER_LABEL = 'dev.rancher.io/owner';
 
@@ -37,6 +66,11 @@ export async function readPrefs(): Promise<DevPrefs> {
       ...EMPTY,
       hiddenApps:     Array.isArray(parsed.hiddenApps) ? parsed.hiddenApps.filter((id: unknown) => typeof id === 'string') : [],
       defaultRancher: typeof parsed.defaultRancher === 'string' ? parsed.defaultRancher : '',
+      focus:          {
+        pinned:  Array.isArray(parsed.focus?.pinned) ? parsed.focus.pinned.filter((key: unknown) => typeof key === 'string') : [],
+        snoozed: strings(parsed.focus?.snoozed),
+        done:    strings(parsed.focus?.done),
+      },
     };
   } catch {
     return { ...EMPTY };

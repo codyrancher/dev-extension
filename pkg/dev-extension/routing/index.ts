@@ -1,9 +1,9 @@
 import { PluginRouteRecordRaw } from '@shell/core/types';
 import {
   BLANK_CLUSTER,
-  DEV_PRODUCT, WORKSPACES_PAGE, CREATE_PAGE, MY_WORK_PAGE, SETTINGS_PAGE, AGENTS_PAGE,
+  DEV_PRODUCT, WORKSPACES_PAGE, CREATE_PAGE, MY_WORK_PAGE, FOCUS_PAGE, SETTINGS_PAGE, AGENTS_PAGE,
   DEV_SHELL_ROUTE, WORKSPACES_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE,
-  MY_WORK_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, AGENT_EDIT_PAGE, AGENT_EDIT_ROUTE,
+  MY_WORK_ROUTE, FOCUS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, AGENT_EDIT_PAGE, AGENT_EDIT_ROUTE,
   CONVERSATIONS_PAGE, CONVERSATIONS_ROUTE, SKILLS_PAGE, SKILLS_ROUTE
 } from '../config/constants';
 import Skills from '../pages/Skills.vue';
@@ -14,6 +14,7 @@ import Workspaces from '../pages/Workspaces.vue';
 import CreateWorkspace from '../pages/CreateWorkspace.vue';
 import WorkspaceDetail from '../pages/WorkspaceDetail.vue';
 import MyWork from '../pages/MyWork.vue';
+import Focus from '../pages/Focus.vue';
 import Settings from '../pages/Settings.vue';
 import Agents from '../pages/Agents.vue';
 
@@ -69,6 +70,10 @@ const devRoutes: PluginRouteRecordRaw[] = [
         // screen is the thing that was wrong with having one.
         {
           name: MY_WORK_ROUTE, path: MY_WORK_PAGE, component: MyWork, meta: devMeta
+        },
+        // The deck: the same queue My Work ranks, one card at a time. See pages/Focus.vue.
+        {
+          name: FOCUS_ROUTE, path: FOCUS_PAGE, component: Focus, meta: devMeta
         },
         {
           name: SETTINGS_ROUTE, path: SETTINGS_PAGE, component: Settings, meta: devMeta

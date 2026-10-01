@@ -43,6 +43,8 @@ export interface PriorityItem {
   /** Where to look: the PR, the issue, the advisory. */
   url: string;
   score: number;
+  /** Which rule put it here, so a reader can ask why and a weight can be changed. See RULES. */
+  rule: string;
   /**
    * When it started waiting (ISO), or '' where nothing says.
    *
@@ -54,6 +56,146 @@ export interface PriorityItem {
 }
 
 /**
+ * Every rule that can put something in this queue, with what it is worth.
+ *
+ * One table, named, because the weights are the whole of the ranking and they used to be
+ * twenty numbers written into the middle of twenty expressions. Named, they can be shown - the
+ * Focus view draws them, with how many things each one is holding right now - and they can be
+ * changed without changing this file: `priorityQueue` takes a map of overrides, which is what
+ * the weights panel writes.
+ *
+ * The scores are bands rather than a scale. Nothing is calibrated between them; what matters is
+ * that everything in the 90s genuinely cannot move without this person and everything in the
+ * 10s could wait until Friday.
+ */
+export interface PriorityRule {
+  /** What it is about, as a line somebody can read in a list of twenty. */
+  label: string;
+  /** Why it is worth what it is worth. */
+  about: string;
+  score: number;
+}
+
+export const RULES: Record<string, PriorityRule> = {
+  'agent-question': {
+    label: 'An agent asked you something',
+    about: 'It has stopped until it hears back, so nothing else about that work can move.',
+    score: 100,
+  },
+  'review-findings': {
+    label: 'Findings waiting for your pass',
+    about: 'The agent finished a review and its comments cannot go out until you have been through them.',
+    score: 90,
+  },
+  'fix-feedback': {
+    label: 'Review comments to answer',
+    about: 'Reviewers asked for changes and nothing has gone back yet.',
+    score: 85,
+  },
+  'review-response': {
+    label: 'New commits since your review',
+    about: 'The developer answered and pushed; the second look is yours and nobody else\'s.',
+    score: 80,
+  },
+  'fix-draft': {
+    label: 'A draft PR to read',
+    about: 'The agent finished and the draft is waiting to be read and marked ready.',
+    score: 75,
+  },
+  'mine-approved': {
+    label: 'Your PR is approved and open',
+    about: 'The cheapest thing in the queue and the most annoying to leave.',
+    score: 70,
+  },
+  'bot-cleared': {
+    label: 'A bump your review cleared',
+    about: 'Reviewed and cleared; it only wants the button pressed.',
+    score: 68,
+  },
+  'mine-red': {
+    label: 'Your PR has a red build',
+    about: 'It is blocking a review somebody may already be waiting to give.',
+    score: 65,
+  },
+  'fix-no-pr': {
+    label: 'Commits with no pull request',
+    about: 'The branch has the work on it and nothing can review it until the PR exists.',
+    score: 62,
+  },
+  'reviewing-pushed': {
+    label: 'A PR you reviewed was pushed to',
+    about: 'The follow-up look, which nobody else can give.',
+    score: 58,
+  },
+  'reviewing-asked': {
+    label: 'You were asked for a review',
+    about: 'GitHub asking for you by name.',
+    score: 56,
+  },
+  'review-agent': {
+    label: 'A review of yours has not started',
+    about: 'The PR is yours to review and no review has run.',
+    score: 55,
+  },
+  'reviewing-open': {
+    label: 'A PR waiting on a review of yours',
+    about: 'Nobody asked for you by name, but it is yours.',
+    score: 50,
+  },
+  'issue-started': {
+    label: 'An issue the board says is in progress',
+    about: 'You moved it and then nothing happened, which is the thing that gets forgotten.',
+    score: 48,
+  },
+  'stalled': {
+    label: 'An agent stopped mid-stage',
+    about: 'Nothing is waiting on an opinion; something has simply stopped.',
+    score: 45,
+  },
+  'bot-stopped': {
+    label: 'A bump review said stop',
+    about: 'Worth reading why before anything else happens to it.',
+    score: 42,
+  },
+  'mine-draft-green': {
+    label: 'Your draft is green',
+    about: 'Yours to finish whenever, so it sits under everything somebody else is waiting on.',
+    score: 40,
+  },
+  'advisory-critical': { label: 'A critical advisory', about: 'Ranked by GitHub\'s severity; a patch available is worth more than one that is not.', score: 38 },
+  'advisory-high':     { label: 'A high advisory', about: 'As above, one band down.', score: 35 },
+  'advisory-medium':   { label: 'A medium advisory', about: 'As above, one band down.', score: 30 },
+  'advisory-low':      { label: 'A low advisory', about: 'As above, the bottom band.', score: 25 },
+  'bot-green': {
+    label: 'A green bump, unreviewed',
+    about: 'The bottom of the queue: it can wait, and it is one press when you get there.',
+    score: 15,
+  },
+  'bot-red': {
+    label: 'A red bump, unreviewed',
+    about: 'Below a green one: it needs looking at before it needs deciding.',
+    score: 10,
+  },
+  manual: {
+    label: 'Something you added yourself',
+    about: 'A task written in the Focus view rather than read off GitHub; its own weight wins.',
+    score: 60,
+  },
+};
+
+/** The weights in play: what the table says, with anything the person has changed on top. */
+export type Weights = Record<string, number>;
+
+let weights: Weights = {};
+
+/** What one rule is worth right now. */
+export function weightOf(rule: string): number {
+  const over = weights[rule];
+
+  return Number.isFinite(over) ? Number(over) : RULES[rule]?.score ?? 0;
+}
+
+/**
  * The stages at which a *fix* wants its person, and what it wants.
  *
  * Read from the rail's own vocabulary (workspace-status.ts): `draft` is a PR written and waiting
@@ -61,35 +203,35 @@ export interface PriorityItem {
  * agent's to get on with, and `merged` is over - neither appears here, which is how they stay
  * out of the queue.
  */
-const FIX_NEEDS: Record<string, { needs: string; why: string; score: number }> = {
+const FIX_NEEDS: Record<string, { needs: string; why: string; rule: string }> = {
   feedback: {
     needs: 'Answer the review comments',
     why:   'reviewers asked for changes and nothing has gone back yet',
-    score: 85,
+    rule:  'fix-feedback',
   },
   draft: {
     needs: 'Read the draft PR and mark it ready',
     why:   'the agent finished and the draft is waiting to be read',
-    score: 75,
+    rule:  'fix-draft',
   },
 };
 
 /** The same for a *review*: the stages where the reviewer is the one holding things up. */
-const REVIEW_NEEDS: Record<string, { needs: string; why: string; score: number }> = {
+const REVIEW_NEEDS: Record<string, { needs: string; why: string; rule: string }> = {
   findings: {
     needs: 'Go through the agent\'s findings',
     why:   'the agent has finished and its findings are waiting for your pass',
-    score: 90,
+    rule:  'review-findings',
   },
   response: {
     needs: 'Review the new commits',
     why:   'the developer answered your review and pushed',
-    score: 80,
+    rule:  'review-response',
   },
   agent: {
     needs: 'Start the review',
     why:   'the PR is yours to review and no review has run',
-    score: 55,
+    rule:  'review-agent',
   },
 };
 
@@ -104,7 +246,7 @@ const REVIEW_NEEDS: Record<string, { needs: string; why: string; score: number }
 const STALLED = {
   needs: 'Pick it up again',
   why:   'the agent stopped here and nothing is running',
-  score: 45,
+  rule:  'stalled',
 };
 
 /**
@@ -118,7 +260,7 @@ const STALLED = {
 const NO_PR = {
   needs: 'Open the pull request',
   why:   'the branch has commits and no PR is open',
-  score: 62,
+  rule:  'fix-no-pr',
 };
 
 /** What a workspace is called in the queue, and where its work is. */
@@ -156,7 +298,8 @@ function fromWorkspaces(statuses: Record<string, WorkspaceStatus>): PriorityItem
         ...base,
         needs: 'Answer the agent',
         why:   'the agent asked something and stopped until it hears back',
-        score: 100,
+        rule:  'agent-question',
+        score: weightOf('agent-question'),
       });
       continue;
     }
@@ -169,7 +312,7 @@ function fromWorkspaces(statuses: Record<string, WorkspaceStatus>): PriorityItem
       const round = status.round > 1 ? ` (round ${ status.round })` : '';
 
       out.push({
-        ...base, needs: `${ rule.needs }${ round }`, why: rule.why, score: rule.score,
+        ...base, needs: `${ rule.needs }${ round }`, why: rule.why, rule: rule.rule, score: weightOf(rule.rule),
       });
       continue;
     }
@@ -182,7 +325,11 @@ function fromWorkspaces(statuses: Record<string, WorkspaceStatus>): PriorityItem
     if (working && ['idle', 'finished', 'none'].includes(status.agent)) {
       const coded = status.kind === 'fix' && status.stage === 'code' && !status.pr;
 
-      out.push({ ...base, ...(coded ? NO_PR : STALLED) });
+      const which = coded ? NO_PR : STALLED;
+
+      out.push({
+        ...base, ...which, score: weightOf(which.rule),
+      });
     }
   }
 
@@ -214,14 +361,16 @@ function fromReviewing(prs: GithubPr[], seen: Set<number>): PriorityItem[] {
         ...base,
         needs: 'Review the new commits',
         why:   `${ pr.author } pushed after your review`,
-        score: 58,
+        rule:  'reviewing-pushed',
+        score: weightOf('reviewing-pushed'),
       });
     } else if (!pr.reviewedAt) {
       out.push({
         ...base,
         needs: 'Review it',
         why:   pr.reviewRequested ? 'you were asked for a review and have not given one' : 'it is waiting on a review of yours',
-        score: pr.reviewRequested ? 56 : 50,
+        rule:  pr.reviewRequested ? 'reviewing-asked' : 'reviewing-open',
+        score: weightOf(pr.reviewRequested ? 'reviewing-asked' : 'reviewing-open'),
       });
     }
     // A review given, nothing pushed since: it is the author's move, not yours.
@@ -251,21 +400,23 @@ function fromMine(prs: GithubPr[], seen: Set<number>): PriorityItem[] {
 
     if (pr.approved && !pr.draft) {
       out.push({
-        ...base, needs: 'Merge it', why: 'approved and still open', score: 70,
+        ...base, needs: 'Merge it', why: 'approved and still open', rule: 'mine-approved', score: weightOf('mine-approved'),
       });
     } else if (pr.checks?.failing) {
       out.push({
         ...base,
         needs: 'Fix the build',
         why:   `${ pr.checks.failing } of ${ pr.checks.total } checks failing`,
-        score: 65,
+        rule:  'mine-red',
+        score: weightOf('mine-red'),
       });
     } else if (pr.draft && pr.checks && !pr.checks.pending && !pr.checks.failing) {
       out.push({
         ...base,
         needs: 'Mark it ready for review',
         why:   'still a draft with a green build',
-        score: 40,
+        rule:  'mine-draft-green',
+        score: weightOf('mine-draft-green'),
       });
     }
   }
@@ -300,7 +451,8 @@ function fromIssues(issues: GithubIssue[], workspaces: Set<string>): PriorityIte
       url:       issue.url,
       needs:     'Start the fix',
       why:       `its board says ${ name } and nothing is running`,
-      score:     48,
+      rule:      'issue-started',
+      score:     weightOf('issue-started'),
       since:     issue.createdAt || '',
     });
   }
@@ -319,9 +471,7 @@ function fromIssues(issues: GithubIssue[], workspaces: Set<string>): PriorityIte
  * alert it raised - `ghsaId`, `patchedVersion`, `packages`, `prs` - and not github.ts's.
  */
 function fromAlerts(alerts: Json[], workspaces: Set<string>): PriorityItem[] {
-  const severity: Record<string, number> = {
-    critical: 38, high: 35, medium: 30, low: 25,
-  };
+  const band = (severity: string) => `advisory-${ ['critical', 'high', 'medium', 'low'].includes(severity) ? severity : 'low' }`;
 
   return (alerts || [])
     .filter((alert) => !alert.prs?.length)
@@ -335,9 +485,10 @@ function fromAlerts(alerts: Json[], workspaces: Set<string>): PriorityItem[] {
       since:     '',
       needs:     alert.patchedVersion ? 'Take the patch' : 'Decide what to do',
       why:       `${ alert.severity } severity in ${ (alert.packages || []).join(', ') || 'a dependency' }${ alert.patchedVersion ? `, fixed in ${ alert.patchedVersion }` : ', no patch yet' }`,
+      rule:      band(String(alert.severity).toLowerCase()),
       // No patch is worse to be told about and less to do about it, so it sits just below one
       // that can simply be taken.
-      score:     (severity[String(alert.severity).toLowerCase()] || 25) + (alert.patchedVersion ? 0 : -3),
+      score:     weightOf(band(String(alert.severity).toLowerCase())) + (alert.patchedVersion ? 0 : -3),
     }));
 }
 
@@ -362,12 +513,12 @@ function fromBotPrs(prs: Json[], reviews: Json): PriorityItem[] {
 
     if (review?.verdict === 'MERGE') {
       return {
-        ...base, needs: 'Approve and merge', why: 'reviewed and cleared', score: 68,
+        ...base, needs: 'Approve and merge', why: 'reviewed and cleared', rule: 'bot-cleared', score: weightOf('bot-cleared'),
       };
     }
     if (review?.verdict === 'STOP') {
       return {
-        ...base, needs: 'Read why it was stopped', why: review.reason || 'the review said stop', score: 42,
+        ...base, needs: 'Read why it was stopped', why: review.reason || 'the review said stop', rule: 'bot-stopped', score: weightOf('bot-stopped'),
       };
     }
     if (review) {
@@ -379,7 +530,8 @@ function fromBotPrs(prs: Json[], reviews: Json): PriorityItem[] {
       ...base,
       needs: 'Review the bump',
       why:   green ? 'green build, not reviewed' : (pr.ci?.failing ? `${ pr.ci.failing } checks failing` : 'not reviewed'),
-      score: green ? 15 : 10,
+      rule:  green ? 'bot-green' : 'bot-red',
+      score: weightOf(green ? 'bot-green' : 'bot-red'),
     };
   }).filter(Boolean) as PriorityItem[];
 }
@@ -405,7 +557,14 @@ export function priorityQueue(input: {
   alerts: Json[];
   botPrs: Json[];
   botReviews: Json;
+  /** What the person has changed a rule to be worth; see RULES. */
+  weights?: Weights;
+  /** Tasks written by hand rather than read off anything. See focus.ts. */
+  extra?: PriorityItem[];
 }): PriorityItem[] {
+  // Set for the length of this call: every rule reads it through weightOf, and passing a map
+  // down eight functions to be consulted once each is noise in all eight.
+  weights = input.weights || {};
   const fromWs = fromWorkspaces(input.statuses);
   // The PR numbers a workspace already speaks for, so GitHub does not say it again in other
   // words. A workspace that wants nothing still counts: it means the work is in hand.
@@ -419,5 +578,6 @@ export function priorityQueue(input: {
     ...fromIssues(input.work?.issues || [], names),
     ...fromAlerts(input.alerts || [], names),
     ...fromBotPrs(input.botPrs || [], input.botReviews || {}),
+    ...(input.extra || []),
   ].sort((a, b) => b.score - a.score || waiting(b) - waiting(a) || a.what.localeCompare(b.what));
 }

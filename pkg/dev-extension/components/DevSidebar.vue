@@ -41,7 +41,7 @@ import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
-  MY_WORK_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, CONVERSATIONS_ROUTE
+  MY_WORK_ROUTE, FOCUS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, CONVERSATIONS_ROUTE
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
@@ -166,6 +166,10 @@ export default {
       globals: [
         {
           label: 'My Work', icon: 'icon-list-flat', route: MY_WORK_ROUTE
+        },
+        // The same queue, dealt out: one card at a time rather than a table of everything.
+        {
+          label: 'Focus', icon: 'icon-compass', route: FOCUS_ROUTE
         },
         {
           label: 'Conversations', icon: 'icon-comment', route: CONVERSATIONS_ROUTE
