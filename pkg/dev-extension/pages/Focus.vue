@@ -923,7 +923,10 @@ onBeforeUnmount(closeSettings);
   display: flex;
   flex-direction: column;
   gap: var(--s2);
-  width: 212px;
+  /* Narrow: it is a column of reminders beside the thing you are reading, and every pixel it
+     takes is a pixel off the card. The prototype's card is 90% of the window; this keeps it
+     near that. */
+  width: 168px;
   padding: var(--s2) var(--s4) var(--s5);
   overflow-y: auto;
 }
@@ -1019,7 +1022,7 @@ onBeforeUnmount(closeSettings);
  */
 .queue {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: var(--s2);
   margin: 0;
   padding: 0;
@@ -1042,6 +1045,7 @@ onBeforeUnmount(closeSettings);
   width: 100%;
   min-height: 52px;
   padding: var(--s2) var(--s3);
+  overflow: hidden;
   border: 1px solid var(--border);
   border-left: 3px solid color-mix(in srgb, var(--kind-c) 70%, transparent);
   border-radius: var(--r-md);
