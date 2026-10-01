@@ -221,6 +221,37 @@ export function rancherAddress(name: string, nodeIp: string): string {
 }
 
 /**
+ * Tell a Rancher what it is called, once there is an address to work it out from.
+ *
+ * Its Ingress carries no host - that is what makes the node's address a working address with no
+ * DNS to arrange - and a rule with no host is a rule with nothing to put on a certificate. So a
+ * second rule names it, and the name can only be filled in here: the node does not exist when
+ * the instance is created, so nothing knew the address to make it from.
+ *
+ * Written once. Thereafter the value is there, the Ingress has the name, and the cluster's
+ * certificate controller does the rest (see certs.ts).
+ */
+export async function ensureRancherHosts(store: Store, ranchers: RancherTarget[]): Promise<void> {
+  const wanted = ranchers.filter((rancher) => rancher.kind === 'instance' && rancher.phase === 'ready' && rancher.nodeIp);
+
+  if (!wanted.length) {
+    return;
+  }
+  const instances: Json[] = await store.dispatch('management/findAll', { type: APP_INSTANCE }).catch(() => []);
+
+  for (const rancher of wanted) {
+    const instance = instances.find((i) => i.metadata?.name === rancher.name && [RANCHER_HA_APP, RANCHER_SINGLE_APP].includes(i.spec?.app));
+    const host = rancherAddress(rancher.name, rancher.nodeIp || '').replace(/^https?:\/\//, '');
+
+    if (!instance || String(instance.spec?.values?.host || '') === host) {
+      continue;
+    }
+    instance.spec.values = { ...(instance.spec.values || {}), host };
+    await instance.save().catch(() => null);
+  }
+}
+
+/**
  * Names for new Ranchers, handed out in order: short, pronounceable, DNS-safe, and easy to
  * tell apart in a callback list. Nobody types one; the next unused is taken.
  */

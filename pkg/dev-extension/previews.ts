@@ -176,12 +176,6 @@ export function previewName(workspace: string, kind: ShareKind = 'dashboard'): s
 export async function deployPreview(store: Store, workspace: string, values: { repo: string; ref: string; rancherUrl: string; kind?: ShareKind; sourceDir?: string; sourceUrl?: string; sourceToken?: string; host?: string }, cluster = 'local', target = cluster): Promise<string> {
   const kind: ShareKind = values.kind || 'dashboard';
   const name = previewName(workspace, kind);
-  // What certificate this share will be served on. Decided here rather than in the pod, since
-  // it is a question about what is configured, and the pod is given the answer. A name nothing
-  // can certify - too long, or no public name at all - simply does not ask; acmeRefusal says
-  // why, and the Share tab shows it.
-  const acme = await acmeConfig().catch(() => EMPTY_ACME);
-  const certWanted = !acmeRefusal(values.host || '', acme);
 
   refuseSelf(values.rancherUrl, values.host || '');
 
@@ -203,7 +197,6 @@ export async function deployPreview(store: Store, workspace: string, values: { r
     sourceUrl:     values.sourceUrl || 'none',
     sourceToken:   values.sourceToken || 'none',
     host:          values.host || 'none',
-    acmeEmail:     certWanted ? acme.email : 'none',
   }, target);
 
   return name;
@@ -368,7 +361,7 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
     devFetch(`${ base }/v1/services/${ namespace }`).catch(() => null),
     nodeAddress(),
     acmeConfig().catch(() => EMPTY_ACME),
-    certState(hostedOn, namespace, host).catch(() => ({ state: 'none', expires: '', host: '' } as CertState)),
+    certState(hostedOn, namespace, host, namespace).catch(() => ({ state: 'none', expires: '', host: '' } as CertState)),
   ]);
   const pod: Json = (pods?.data || []).find((candidate: Json) => !candidate.metadata?.deletionTimestamp) || null;
   const service: Json = (services?.data || []).find((svc: Json) => svc.metadata?.name === namespace) || null;
