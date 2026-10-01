@@ -766,51 +766,6 @@ export function rancherWorkspaceApp(): Json {
           ].join('\n'),
         },
         {
-          // What the certificate sidecar needs, and nothing else: one Secret, in this namespace,
-          // which is where the Ingress reads the share's certificate from. It exists whether or
-          // not a certificate is wanted, because a template that is there only sometimes is a
-          // template that is wrong the first time somebody turns the feature on.
-          name:    'acme-rbac.yaml',
-          content: [
-            'apiVersion: v1',
-            'kind: ServiceAccount',
-            'metadata:',
-            '  namespace: ${namespace}',
-            '  name: acme',
-            '  labels:',
-            labels,
-            '---',
-            'apiVersion: rbac.authorization.k8s.io/v1',
-            'kind: Role',
-            'metadata:',
-            '  namespace: ${namespace}',
-            '  name: acme',
-            '  labels:',
-            labels,
-            'rules:',
-            '  - apiGroups: [""]',
-            '    resources: [secrets]',
-            '    verbs: [get, create, update, patch]',
-            '---',
-            'apiVersion: rbac.authorization.k8s.io/v1',
-            'kind: RoleBinding',
-            'metadata:',
-            '  namespace: ${namespace}',
-            '  name: acme',
-            '  labels:',
-            labels,
-            'roleRef:',
-            '  apiGroup: rbac.authorization.k8s.io',
-            '  kind: Role',
-            '  name: acme',
-            'subjects:',
-            '  - kind: ServiceAccount',
-            '    name: acme',
-            '    namespace: ${namespace}',
-            '',
-          ].join('\n'),
-        },
-        {
           name:    'deployment.yaml',
           content: [
             'apiVersion: apps/v1',
@@ -1142,14 +1097,10 @@ const PREVIEW_BUILD = [
   `    echo ${ UNREWRITE_B64 } | base64 -d > /tmp/unrewrite.js && node /tmp/unrewrite.js /site/dist/index.html`,
   '  fi',
   'fi',
-  // The ACME challenge directory is served by both kinds, ahead of everything else: `^~` beats
-  // the regex location below it and the `location /` that proxies to the Rancher, so Let's
-  // Encrypt's fetch is answered here instead of forwarded. See ACME_SIDECAR.
   'if [ "${kind}" = storybook ]; then',
-  '  printf "%s\\n" "server {" "  listen ${port};" "  root $SITE;" "  location ^~ /.well-known/acme-challenge/ { root /acme; default_type text/plain; }" "  location / { try_files \\$uri \\$uri/ /index.html; }" "}" > /site/nginx/default.conf',
+  '  printf "%s\\n" "server {" "  listen ${port};" "  root $SITE;" "  location / { try_files \\$uri \\$uri/ /index.html; }" "}" > /site/nginx/default.conf',
   'else',
   '  printf "%s\\n" "server {" "  listen ${port};" "  client_max_body_size 50m;" "  absolute_redirect off;" "  location = / { return 302 /dashboard/; }" \\',
-  '    "  location ^~ /.well-known/acme-challenge/ { root /acme; default_type text/plain; }" \\',
   // Where an auth provider sends the browser back. The dashboard asks for
   // `<origin>/verify-auth` whatever path it is served at, and its own server redirects that to
   // the `auth/verify` route (shell/server/server-middleware.js); served here by nginx, nothing
@@ -1181,90 +1132,6 @@ const PREVIEW_BUILD = [
   '    "}" > /site/nginx/default.conf',
   'fi',
   'echo built',
-].join('\n');
-
-// ── The certificate a share is served on ────────────────────────────────────────────────────
-//
-// acme.sh in a sidecar of the share's own pod, writing a TLS Secret into the share's namespace
-// that the Ingress names. See acme.ts for why it is here and not in a cert-manager.
-//
-// Two things in this script are worth knowing before changing it:
-//
-//   - the Secret is the source of truth, not acme.sh's own state directory. A pod restart gets
-//     a fresh emptyDir, and re-issuing on every restart would spend Let's Encrypt's duplicate
-//     certificate allowance (five a week) in an afternoon. So: read the Secret first, and only
-//     ask for a certificate when what is in there is missing, for another name, or inside a
-//     month of expiry.
-//   - the challenge is HTTP-01, always. The share's name is an sslip.io name that resolves to
-//     its own public node, so a file served over port 80 is all Let's Encrypt needs - which is
-//     why there is no credential anywhere in this.
-//   - a failure sleeps for an hour, not for the usual half a day. Let's Encrypt rate-limits
-//     failed validations much harder than successful ones, and the usual cause of a failure
-//     here is a configuration that will fail again immediately.
-const ACME_SIDECAR = [
-  'set -u',
-  'SA=/var/run/secrets/kubernetes.io/serviceaccount',
-  'API=https://kubernetes.default.svc',
-  'NS=$(cat $SA/namespace)',
-  'SECRET="${namespace}-tls"',
-  'HOST="${host}"',
-  'api() { curl -sS --cacert $SA/ca.crt -H "Authorization: Bearer $(cat $SA/token)" "$@"; }',
-  // What is already in the Secret, and whether it is still the right certificate for this name.
-  'good() {',
-  '  api "$API/api/v1/namespaces/$NS/secrets/$SECRET" > /tmp/s.json 2>/dev/null || return 1',
-  '  grep -q \'"tls.crt"\' /tmp/s.json || return 1',
-  '  sed -n \'s/.*"tls\\.crt": *"\\([^"]*\\)".*/\\1/p\' /tmp/s.json | base64 -d > /tmp/tls.crt 2>/dev/null || return 1',
-  '  openssl x509 -in /tmp/tls.crt -noout -checkend 2592000 >/dev/null 2>&1 || return 1',
-  '  openssl x509 -in /tmp/tls.crt -noout -text 2>/dev/null | grep -q "DNS:$HOST" || return 1',
-  '}',
-  // Written with the name and the expiry on it, so the Share tab can say what the link has
-  // without parsing a certificate in a browser. See acme.ts, certState.
-  'push() {',
-  '  C=$(base64 -w0 /certs/fullchain.pem) || return 1',
-  '  K=$(base64 -w0 /certs/key.pem) || return 1',
-  '  E=$(openssl x509 -in /certs/fullchain.pem -noout -enddate | cut -d= -f2)',
-  '  printf \'{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/tls","metadata":{"name":"%s","annotations":{"dev.rancher.io/acme-host":"%s","dev.rancher.io/acme-expires":"%s"}},"data":{"tls.crt":"%s","tls.key":"%s"}}\' "$SECRET" "$HOST" "$E" "$C" "$K" > /tmp/body.json',
-  '  if api -o /dev/null -w "%{http_code}" "$API/api/v1/namespaces/$NS/secrets/$SECRET" | grep -q 200; then',
-  '    api -X PUT -H "content-type: application/json" --data-binary @/tmp/body.json -o /tmp/out.json -w "%{http_code}\\n" "$API/api/v1/namespaces/$NS/secrets/$SECRET" | grep -q 200',
-  '  else',
-  '    api -X POST -H "content-type: application/json" --data-binary @/tmp/body.json -o /tmp/out.json -w "%{http_code}\\n" "$API/api/v1/namespaces/$NS/secrets" | grep -q 201',
-  '  fi',
-  '}',
-  // The challenge is answered out of the directory nginx serves /.well-known/acme-challenge/
-  // from: acme.sh writes the file, Let's Encrypt fetches it over port 80 from the name it is
-  // certifying, and that name resolves to this node. `--force` because the decision about
-  // whether a certificate is needed was already made above, against the Secret.
-  'issue() {',
-  '  mkdir -p /acme',
-  '  acme.sh --issue -d "$HOST" -w /acme --server letsencrypt --keylength ec-256 \\',
-  '    --accountemail "${acmeEmail}" --log /dev/stdout --force || return 1',
-  '  acme.sh --install-cert -d "$HOST" --ecc --fullchain-file /certs/fullchain.pem --key-file /certs/key.pem',
-  '}',
-  'if [ "${acmeEmail}" = none ] || [ "$HOST" = none ]; then',
-  '  echo "no certificate wanted for this share"; exec sleep infinity',
-  'fi',
-  'mkdir -p /certs',
-  // A certificate already on disk is pushed again rather than asked for again: when the issue
-  // worked and only the write to the Secret failed, re-issuing would spend one of five
-  // duplicate certificates a week on a problem that has nothing to do with Let's Encrypt.
-  'have() { [ -s /certs/fullchain.pem ] \\',
-  '  && openssl x509 -in /certs/fullchain.pem -noout -checkend 2592000 >/dev/null 2>&1 \\',
-  '  && openssl x509 -in /certs/fullchain.pem -noout -text 2>/dev/null | grep -q "DNS:$HOST"; }',
-  'while :; do',
-  '  if good; then',
-  '    echo "the certificate in $SECRET is for $HOST and is not near expiry"',
-  '    sleep 43200',
-  '  elif have && push; then',
-  '    echo "stored the certificate this pod already holds for $HOST"',
-  '    sleep 43200',
-  '  elif issue && push; then',
-  '    echo "issued and stored a certificate for $HOST"',
-  '    sleep 43200',
-  '  else',
-  '    echo "could not get a certificate for $HOST; trying again in an hour"',
-  '    sleep 3600',
-  '  fi',
-  'done',
 ].join('\n');
 
 export const PREVIEW_APP = 'dashboard-preview';
@@ -1307,10 +1174,6 @@ export function dashboardPreviewApp(): Json {
         // sidebar run traefik and nothing else, and an Ingress naming a class no controller
         // claims is served by nobody at all.
         ingressClass: 'traefik',
-        // The Let's Encrypt account this share's certificate is asked for with, or `none` for
-        // the ingress controller's own certificate. Written by the browser from Settings >
-        // Tokens; see acme.ts. The challenge is HTTP-01 and needs nothing else.
-        acmeEmail:    'none',
       },
       valueLabels: {
         repo:        'GitHub repository',
@@ -1322,7 +1185,6 @@ export function dashboardPreviewApp(): Json {
         sourceToken: 'The Rancher API token the fetch is made with',
         host:          'Hostname the cluster\'s ingress serves the preview on; none for no public name',
         ingressClass: 'Ingress class of the cluster the share runs on (traefik on the sidebar\'s Ranchers)',
-        acmeEmail:    'The Let\'s Encrypt account\'s contact address, or none for no certificate',
         rancherUrl:  'Rancher a dashboard build talks to',
         port:        'Port nginx listens on',
         hostCluster: 'Cluster the preview runs on',
@@ -1368,7 +1230,6 @@ export function dashboardPreviewApp(): Json {
             '        app: ${namespace}',
             yamlBlock(labels, 4),
             '    spec:',
-            '      serviceAccountName: acme',
             '      initContainers:',
             '        - name: build',
             '          image: node:24',
@@ -1405,43 +1266,11 @@ export function dashboardPreviewApp(): Json {
             '            - name: work',
             '              mountPath: /work',
             '              readOnly: true',
-            // Where the HTTP-01 challenge is answered from; the sidecar writes into it.
-            '            - name: acme',
-            '              mountPath: /acme',
             '          readinessProbe:',
             '            tcpSocket:',
             '              port: ${port}',
             '            periodSeconds: 10',
-            // The certificate, beside what it certifies. It shares `acme` with nginx, which
-            // serves the challenge out of it, and writes the result into the namespace's TLS
-            // Secret - so the Ingress picks it up without this pod restarting.
-            '        - name: acme',
-            '          image: neilpang/acme.sh:3.1.6',
-            '          command:',
-            '            - /bin/sh',
-            '            - -c',
-            `            - ${ JSON.stringify(ACME_SIDECAR) }`,
-            '          env:',
-            '            - name: LE_CONFIG_HOME',
-            '              value: /acme-state',
-            '          volumeMounts:',
-            '            - name: acme',
-            '              mountPath: /acme',
-            '            - name: acme-state',
-            '              mountPath: /acme-state',
-            '            - name: certs',
-            '              mountPath: /certs',
-            '          resources:',
-            '            requests:',
-            '              cpu: 10m',
-            '              memory: 32Mi',
             '      volumes:',
-            '        - name: acme',
-            '          emptyDir: {}',
-            '        - name: acme-state',
-            '          emptyDir: {}',
-            '        - name: certs',
-            '          emptyDir: {}',
             '        - name: work',
             '          hostPath:',
             '            path: /var/lib/rancher/dev-previews/${install}',
@@ -1492,13 +1321,6 @@ export function dashboardPreviewApp(): Json {
             '    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"',
             'spec:',
             '  ingressClassName: ${ingressClass}',
-            // Named whether or not it exists yet. An Ingress whose TLS Secret is missing is
-            // served on the controller's own certificate, which is what a share had before any
-            // of this; the moment the sidecar writes the Secret the controller picks it up.
-            '  tls:',
-            '    - hosts:',
-            '        - ${host}',
-            '      secretName: ${namespace}-tls',
             '  rules:',
             '    - host: ${host}',
             '      http:',

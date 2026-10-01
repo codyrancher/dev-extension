@@ -20,7 +20,7 @@ import {
 } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
 import {
-  listRanchers, setDefaultRancher, createRancherInstance, deleteRancherInstance, nextRancherName, rancherAddress, RANCHER_STEPS
+  listRanchers, setDefaultRancher, createRancherInstance, deleteRancherInstance, nextRancherName, rancherAddress, ensureRancherHosts, RANCHER_STEPS
 } from '../ranchers';
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
@@ -28,6 +28,7 @@ import {
   workspaceStatuses, agentLabel, statusLine, stageName, displayTone, autoStopIdle, ciChip
 } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
+import { ensureCertControllers } from '../certs';
 import DevList from './DevList.vue';
 import DevDialog from './DevDialog.vue';
 import NavRow from './NavRow.vue';
@@ -299,6 +300,13 @@ export default {
         }).catch(() => {});
         this.clusters = clusters;
         this.ranchers = ranchers;
+        // Every cluster that serves a share on a public name keeps a certificate controller, so
+        // a share made by anything at all is certified without being told to be. Once per
+        // cluster per page load; see certs.ts.
+        ensureCertControllers(ranchers.filter((r) => r.kind === 'instance' && r.phase === 'ready' && r.clusterId).map((r) => r.clusterId)).catch(() => {});
+        // And a Rancher that is up learns its own public name, which is the one thing its
+        // Ingress could not be given when it was made. See ranchers.ts.
+        ensureRancherHosts(this.$store, ranchers).catch(() => {});
         this.defaultRancher = prefs.defaultRancher || '';
         cache.ranchers = ranchers;
         cache.defaultRancher = this.defaultRancher;

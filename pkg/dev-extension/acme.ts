@@ -11,11 +11,11 @@
 // node, the node is public, and so Let's Encrypt can do the simplest thing there is: ask for a
 // file over port 80 from the name it is certifying. HTTP-01, no credentials anywhere.
 //
-// Where the work happens: in the share's own pod, as a sidecar running acme.sh, writing the
-// certificate into a TLS Secret of the share's namespace that the Ingress names. Nothing is
-// installed in the cluster for it - no cert-manager, no CRDs, no controller - because a share
-// is a pod that exists for a few days and its certificate has the same lifetime as its Ingress.
-// It is cleaned up when the share is, by living in the share's namespace.
+// Where the work happens: one small controller per cluster, which watches Ingresses and
+// certifies any public name it finds (see certs.ts). It started as a sidecar inside the Share
+// tab's app, which certified the shares that app made and silently left every share made by an
+// agent, a skill or a person with kubectl on a self-signed certificate. This file is now only
+// what the browser needs to know about it: what is configured, and what a share ended up with.
 
 import { clusterBase, devFetch, readSecretStore } from './api';
 
@@ -68,9 +68,14 @@ export function acmeRefusal(host: string, config: AcmeConfig): string {
   return '';
 }
 
-/** The TLS Secret the Ingress names, in the share's own namespace. */
-export function certSecretName(namespace: string): string {
-  return `${ namespace }-tls`.slice(0, 63);
+/**
+ * The TLS Secret the controller writes, in the share's own namespace.
+ *
+ * Named after the Ingress rather than the namespace, because one namespace can hold more than
+ * one Ingress and each public name gets its own certificate. See certs/control.mjs.
+ */
+export function certSecretName(ingress: string): string {
+  return `${ ingress }-tls`.slice(0, 63);
 }
 
 /** What a share's certificate is, read off the Secret the sidecar writes. */
@@ -90,8 +95,8 @@ export interface CertState {
  * because reading that back out of the certificate means parsing X.509 in a browser for two
  * fields that whatever wrote it already knew.
  */
-export async function certState(cluster: string, namespace: string, host: string): Promise<CertState> {
-  const secret: Json = await devFetch(`${ clusterBase(cluster) }/v1/secrets/${ namespace }/${ certSecretName(namespace) }`).catch(() => null);
+export async function certState(cluster: string, namespace: string, host: string, ingress = namespace): Promise<CertState> {
+  const secret: Json = await devFetch(`${ clusterBase(cluster) }/v1/secrets/${ namespace }/${ certSecretName(ingress) }`).catch(() => null);
 
   if (!secret?.data?.['tls.crt']) {
     return { state: 'none', expires: '', host: '' };
