@@ -210,9 +210,17 @@ export default {
       }
     },
 
+    /**
+     * What an empty box shows.
+     *
+     * A key that is set shows a row of dots, which is what a filled password field looks like
+     * everywhere else: the box is empty because the value is not in the page until the eye
+     * fetches it, and a sentence saying so read as a field nobody had filled in. What it is and
+     * how to replace it are on the line under the field, where the key and its state are.
+     */
     placeholder(secret) {
       if (secret.set) {
-        return 'Set. Type to replace it.';
+        return '••••••••••••';
       }
 
       return secret.generated ? 'Generated when it is first needed' : 'Not set';
@@ -454,6 +462,7 @@ export default {
             v-for="secret in group.secrets"
             :key="secret.storeKey"
             class="dev-settings__field"
+            :class="{ 'dev-settings__field--set': secret.set && !shown[secret.storeKey] }"
           >
             <!--
               Bound through a handler rather than with v-model, so a key is in `edits` only
@@ -786,6 +795,13 @@ export default {
       margin:    var(--dev-space-2) 0 0 0;
       color:     var(--muted);
       font-size: 12px;
+    }
+
+    // A set key's placeholder is a row of dots standing in for its value, so it is drawn in
+    // the body colour rather than the muted one a hint would use. An unset one stays a hint.
+    &__field--set :deep(input::placeholder) {
+      color:   var(--body-text);
+      opacity: 1;
     }
 
     // ── One field ─────────────────────────────────────────────────────────────────────────────
