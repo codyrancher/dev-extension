@@ -31,6 +31,7 @@ import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import DevList from './DevList.vue';
 import DevDialog from './DevDialog.vue';
 import NavRow from './NavRow.vue';
+import NavHead from './NavHead.vue';
 import HoverCard from './HoverCard.vue';
 import hoverCard from './hover-card';
 import RancherPicker from './RancherPicker.vue';
@@ -126,7 +127,7 @@ export default {
   name: 'DevSidebar',
 
   components: {
-    DevList, Stack, Row, ClaudeLogo, DevDialog, RancherPicker, NavRow, HoverCard
+    DevList, Stack, Row, ClaudeLogo, DevDialog, RancherPicker, NavRow, NavHead, HoverCard
   },
 
   mixins: [hoverCard],
@@ -687,19 +688,13 @@ export default {
       class="dev-sidebar__ranchers"
       data-testid="dev-ranchers"
     >
-      <div class="dev-sidebar__template-head">
-        <i class="dev-sidebar__template-icon icon icon-globe" />
-        <span class="dev-sidebar__template-label">Ranchers</span>
-        <button
-          type="button"
-          class="dev-sidebar__add"
-          title="A new Rancher: one EC2 node, GitHub login, an sslip address"
-          data-testid="dev-new-rancher"
-          @click="newRancher"
-        >
-          +
-        </button>
-      </div>
+      <NavHead
+        class="dev-sidebar__ranchers-head"
+        label="Ranchers"
+        icon="icon-globe"
+        create-label="A new Rancher: one EC2 node, GitHub login, an sslip address"
+        @create="newRancher"
+      />
       <NavRow
         v-for="rancher in rancherRows"
         :key="rancher.id"
@@ -927,37 +922,10 @@ export default {
 
     // The template, above the clusters its workspaces are on. Same metrics as a DevList heading,
     // because it is the same kind of line one level up.
-    &__template-head {
-      display:         flex;
-      align-items:     center;
-      height:          33px;
-      padding:         0 $gap 0 $rail;
-      border-top:      1px solid var(--nav-border, var(--border));
-      text-decoration: none;
-
-      &:hover {
-        background:      var(--nav-hover, var(--accent-btn));
-        text-decoration: none;
-      }
-    }
-
-    &__template-icon {
-      flex:         0 0 $rail;
-      width:        $rail;
-      margin-right: $gap;
-      color:        var(--dev-accent);
-      font-size:    14px;
-    }
-
-    &__template-label {
-      overflow:        hidden;
-      color:           var(--body-text);
-      font-size:       12px;
-      font-weight:     600;
-      letter-spacing:  0.05em;
-      text-transform:  uppercase;
-      text-overflow:   ellipsis;
-      white-space:     nowrap;
+    // The heading itself is NavHead's. The rule above it is not: it is about this section
+    // sitting under the list, which is something only this file knows.
+    &__ranchers-head {
+      border-top: 1px solid var(--nav-border, var(--border));
     }
 
     // The clusters under it, indented by one rail so the nesting is visible without a line.
@@ -983,27 +951,6 @@ export default {
       border-top:  1px solid var(--border);
       padding-top: var(--dev-space-2);
       background:  var(--nav-bg, var(--body-bg));
-    }
-
-    &__add {
-      margin-left:     auto;
-      min-height:      0;
-      width:           20px;
-      height:          20px;
-      padding:         0;
-      display:         inline-flex;
-      align-items:     center;
-      justify-content: center;
-      line-height:     1;
-      border-radius:   4px;
-      border:          1px solid var(--border);
-      background:      transparent;
-      color:           var(--muted);
-      font-size:       15px;
-      font-weight:     400;
-      cursor:          pointer;
-
-      &:hover { color: var(--dev-accent); border-color: var(--dev-accent); }
     }
 
     // The row's box, its insets and its two lines are NavRow's (see NavRow.vue and the
