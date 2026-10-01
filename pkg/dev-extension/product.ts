@@ -1,7 +1,6 @@
 import { IPlugin } from '@shell/core/types';
 import { ensureDevRbac, ensureWorkspaceApi, ensureGithubBrowser } from './api';
 import { ensureDefaultApp } from './apps';
-import { ensureAgentsExtension } from './agents-extension';
 import { BLANK_CLUSTER, DEV_PRODUCT, WORKSPACES_ROUTE } from './config/constants';
 
 // `store` is the raw Vuex store the extension manager hands to every product init, and
@@ -66,8 +65,4 @@ function devProduct($plugin: IPlugin, store: any) {
   // missing and never overwrite, so an edit made in Apps Plus is kept.
   ensureDefaultApp(store).catch(() => {});
 
-  // And the extension this one cannot hold a conversation without. Separate on purpose, since it
-  // is useful on its own and other things are built on it - installed from here so that
-  // installing this is enough. Install only, never upgrade; see agents-extension.ts.
-  ensureAgentsExtension().catch(() => {});
 }

@@ -4,15 +4,31 @@
 // a comment with its HTML escaped.
 // @ts-ignore - marked ships its own module without a declaration this build can see
 import { marked } from 'marked';
+// highlight.js declares its root entry and not the pieces of it, so each of these resolves to
+// untyped JavaScript - the same situation as `marked` above, ignored the same way. It became an
+// error only when the agents half of this bundle arrived with its own `lib/common` import: that
+// pulls highlight.js's declarations into the program, and once the package is typed at all, an
+// undeclared piece of it is TS7016 rather than silence. An ambient `declare module` does not
+// help, because these do resolve - to a .js file with nothing in it for the compiler.
+// @ts-ignore
 import hljs from 'highlight.js/lib/core';
+// @ts-ignore
 import hlTypescript from 'highlight.js/lib/languages/typescript';
+// @ts-ignore
 import hlJavascript from 'highlight.js/lib/languages/javascript';
+// @ts-ignore
 import hlXml from 'highlight.js/lib/languages/xml';
+// @ts-ignore
 import hlJson from 'highlight.js/lib/languages/json';
+// @ts-ignore
 import hlYaml from 'highlight.js/lib/languages/yaml';
+// @ts-ignore
 import hlBash from 'highlight.js/lib/languages/bash';
+// @ts-ignore
 import hlCss from 'highlight.js/lib/languages/css';
+// @ts-ignore
 import hlScss from 'highlight.js/lib/languages/scss';
+// @ts-ignore
 import hlMarkdown from 'highlight.js/lib/languages/markdown';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
