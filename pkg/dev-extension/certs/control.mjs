@@ -68,7 +68,11 @@ async function k8s(url, options = {}) {
 async function ingresses() {
   const list = await k8s('/apis/networking.k8s.io/v1/ingresses');
 
-  return (list.items || []).filter((ing) => !(ing.metadata?.annotations || {})[SKIP]);
+  // Not this controller's own namespace. The Ingress it puts up to answer a challenge carries
+  // the very host it is answering for, so a sweep that looked at everything found its own
+  // solver, decided that host needed a certificate, and raced the request that made it - two
+  // orders for one name, which is a duplicate certificate spent on nothing.
+  return (list.items || []).filter((ing) => ing.metadata?.namespace !== NAMESPACE && !(ing.metadata?.annotations || {})[SKIP]);
 }
 
 /** The names one Ingress serves that are worth a certificate. */

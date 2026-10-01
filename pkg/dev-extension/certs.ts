@@ -44,17 +44,48 @@ const CERTS_PORT = 8080;
 const RUNNER = [
   'set -u',
   'mkdir -p /work/acme /work/certs /work/requests /work/failed',
+  // Read from the mounted Secret every time rather than copied once at start: the Secret is
+  // written by the browser and can arrive, or change, after this container is running.
+  'email() { cat /secret/email 2>/dev/null; }',
+  'if [ -z "$(email)" ]; then echo "[acme] no account email yet; waiting"; fi',
+  // Registered once, explicitly, and said out loud. Left to happen inside the first issue it
+  // failed silently with a message about an EAB key - the image ships an account.conf with
+  // ZeroSSL credentials in it, and acme.sh reads that unless it is pointed somewhere else
+  // (ACCOUNT_CONF_PATH, in the container's environment). An unregistered account then takes
+  // every issue down with it, which is what it looked like from the outside.
+  'registered=no',
+  'register() {',
+  '  [ "$registered" = yes ] && return 0',
+  '  [ -n "$(email)" ] || return 1',
+  '  if acme.sh --register-account -m "$(email)" --server letsencrypt; then',
+  '    registered=yes',
+  '    echo "[acme] account registered for $(email)"',
+  '    return 0',
+  '  fi',
+  '  echo "[acme] the account could not be registered"',
+  '  return 1',
+  '}',
   'while :; do',
   '  for f in /work/requests/*; do',
   '    [ -f "$f" ] || continue',
   '    h=$(basename "$f")',
   '    rm -f "$f"',
+  '    if ! register; then date +%s > "/work/failed/$h"; continue; fi',
   '    echo "[acme] asking for $h"',
-  '    if acme.sh --issue -d "$h" -w /work/acme --server letsencrypt --keylength ec-256 \\',
-  '         --accountemail "$(cat /work/email 2>/dev/null)" --log /dev/stdout; then',
+  // No `--log /dev/stdout`, which is not the harmless thing it looks like: acme.sh builds the
+  // CSR's subjectAltName through a command substitution, and with the log pointed at stdout its
+  // own debug lines are captured into the value. The CSR config then has a log line where the
+  // domain should be, and openssl refuses it - "missing close square bracket" - for every name,
+  // every time. Its ordinary output already goes to the container log.
+  '    if acme.sh --issue -d "$h" -w /work/acme --server letsencrypt --keylength ec-256; then',
   '      acme.sh --install-cert -d "$h" --ecc --fullchain-file "/work/certs/$h.crt" --key-file "/work/certs/$h.key"',
   '      echo "[acme] $h done"',
   '    else',
+  // Clear what the failed attempt left. acme.sh appends to the CSR config it wrote last time
+  // and the file it writes has no trailing newline, so a second attempt for the same name
+  // produces a config openssl refuses to parse - "missing close square bracket" - and the name
+  // can then never be issued again until the directory goes.
+  '      rm -rf "/acme-state/${h}_ecc" "/acme-state/${h}"',
   '      date +%s > "/work/failed/$h"',
   '      echo "[acme] $h failed"',
   '    fi',
@@ -185,7 +216,13 @@ export async function ensureCertController(cluster: string): Promise<void> {
               image:        'node:24-alpine',
               command:      ['node', '/scripts/control.mjs'],
               ports:        [{ name: 'http', containerPort: CERTS_PORT }],
-              env:          [{ name: 'PORT', value: String(CERTS_PORT) }],
+              env:          [
+                { name: 'PORT', value: String(CERTS_PORT) },
+                // Every call this makes is to the apiserver over TLS, and node's fetch trusts
+                // the system store alone: without this each one fails as "fetch failed", with
+                // nothing to say it was the certificate.
+                { name: 'NODE_EXTRA_CA_CERTS', value: '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt' },
+              ],
               volumeMounts: [
                 { name: 'scripts', mountPath: '/scripts' },
                 { name: 'work', mountPath: '/work' },
@@ -195,8 +232,13 @@ export async function ensureCertController(cluster: string): Promise<void> {
             {
               name:    'acme',
               image:   'neilpang/acme.sh:3.1.6',
-              command: ['/bin/sh', '-c', 'cp /secret/email /work/email 2>/dev/null; exec /bin/sh /scripts/runner.sh'],
-              env:     [{ name: 'LE_CONFIG_HOME', value: '/acme-state' }],
+              command: ['/bin/sh', '/scripts/runner.sh'],
+              env:     [
+                { name: 'LE_CONFIG_HOME', value: '/acme-state' },
+                // Away from the image's own, which carries ZeroSSL EAB credentials that make
+                // registering a Let's Encrypt account fail. See RUNNER.
+                { name: 'ACCOUNT_CONF_PATH', value: '/acme-state/account.conf' },
+              ],
               volumeMounts: [
                 { name: 'scripts', mountPath: '/scripts' },
                 { name: 'work', mountPath: '/work' },
