@@ -298,6 +298,7 @@ function pickedRun(note: ReviewNote): [number, number] | null {
   grid-template-rows: auto minmax(0, 1fr);
   gap: var(--s3) var(--s5);
   min-height: 0;
+  min-width: 0;
 }
 
 /* ── The header: how far through the pass you are ────────────────────────── */
@@ -348,6 +349,7 @@ function pickedRun(note: ReviewNote): [number, number] | null {
   flex-direction: column;
   gap: var(--s2);
   min-height: 0;
+  min-width: 0;
   margin: 0;
   padding: 0 var(--s2) var(--s2) 0;
   list-style: none;
@@ -356,10 +358,20 @@ function pickedRun(note: ReviewNote): [number, number] | null {
   touch-action: pan-y;
 }
 
+/*
+ * A grid column that may be narrower than what is in it.
+ *
+ * The prototype's comments pointed at `src/components/Button.vue`; a real one points at
+ * `pkg/rancher-components/src/components/Form/LabeledSelect/LabeledSelect.vue`, in mono, with no
+ * space in it to break at. A grid item's automatic minimum is its content, so that one string
+ * made the whole list 555px wider than the card it was in.
+ */
 .note {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 5px;
   width: 100%;
+  min-width: 0;
   padding: var(--s3);
   border: 1px solid var(--border);
   border-left: 3px solid var(--sev, var(--border-strong));
@@ -384,7 +396,7 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 .note--question { --sev: var(--warning); }
 .note--praise   { --sev: var(--success); }
 
-.note__top { display: flex; align-items: center; gap: var(--s2); }
+.note__top { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
 
 .note__sev {
   color: var(--sev);
@@ -406,13 +418,26 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 .note--is-dropped .note__title { text-decoration: line-through; color: var(--text-faint); }
 
 .note__title {
+  min-width: 0;
   color: var(--text);
   font-size: var(--t-sm);
   font-weight: 560;
   line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
-.note__where { color: var(--text-faint); font-family: var(--mono); font-size: var(--t-xs); }
+/* A path is read from its end - the file - so it keeps that end when it has to give way. */
+.note__where {
+  min-width: 0;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
 
 /* ── The comment itself ──────────────────────────────────────────────────── */
 .pass__detail {
@@ -474,11 +499,14 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 }
 
 .detail__body {
+  min-width: 0;
   color: var(--text);
   font-size: var(--t-md);
   line-height: 1.55;
   max-width: 78ch;
   white-space: pre-wrap;
+  /* A comment quotes code, and a line of code has nowhere to break. */
+  overflow-wrap: anywhere;
 }
 
 .detail__because {

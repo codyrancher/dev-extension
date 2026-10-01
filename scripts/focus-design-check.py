@@ -47,7 +47,8 @@ for rel in MINE:
                        (int(pad.group(1)) * 2 + 16) if pad else 0)
             if tall and tall < MIN_HIT:
                 issues.append((rel, line, sel, f'{tall}px tall; the smallest control in the POC is {MIN_HIT}px'))
-            if not tall and 'place-items: center' in body and not h:
+            square = re.search(r'(?:^|\s)width:\s*var\(--head-h\)', body) or re.search(r'aspect-ratio', body)
+            if not tall and not square and 'place-items: center' in body and not h:
                 issues.append((rel, line, sel, 'pressable with no height set'))
 
 for rel, line, sel, what in issues:

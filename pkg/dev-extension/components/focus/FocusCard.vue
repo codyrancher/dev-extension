@@ -101,12 +101,10 @@ const waited = computed(() => (props.task.waitingHours >= 48
           :aria-pressed="pinned ? 'true' : 'false'"
           @click="emit('pin')"
         >
-          <AppIcon name="pin" :size="15" />
-          <span class="card__pin-word">{{ pinned ? 'Pinned' : 'Pin' }}</span>
+          <AppIcon name="pin" :size="13" />
         </button>
         <KindChip :kind="task.card.kind" />
-        <span class="card__where">{{ task.what }}</span>
-        <span v-if="task.workspace" class="card__ws">{{ task.workspace }}</span>
+        <span class="card__where">{{ task.what }}<span v-if="task.workspace" class="card__ws"> · {{ task.workspace }}</span></span>
         <span v-if="overdue" class="card__overdue">
           <AppIcon name="clock" :size="13" />
           waiting {{ waited }}
@@ -164,7 +162,18 @@ const waited = computed(() => (props.task.waitingHours >= 48
         <span v-if="pass.settled < pass.total" class="card__pass-left">· {{ pass.total - pass.settled }} still to decide</span>
       </span>
 
-      <AppButton variant="quiet" size="lg" icon="sparkle" class="card__ask" @click="emit('ask')">
+      <!--
+        Only where the card does not already offer one: every definition's second action is an
+        ask of its own, and two of them is a fourth button on a row that then wraps.
+      -->
+      <AppButton
+        v-if="!task.card.actions.some((a) => a.verb === 'ask')"
+        variant="quiet"
+        size="lg"
+        icon="sparkle"
+        class="card__ask"
+        @click="emit('ask')"
+      >
         Ask about this
       </AppButton>
     </footer>
@@ -282,7 +291,7 @@ const waited = computed(() => (props.task.waitingHours >= 48
  * weight and colour, which is what was supposed to be doing the work.
  */
 .card__head-line {
-  --head-h: 26px;
+  --head-h: 24px;
   display: flex;
   align-items: center;
   gap: var(--s2);
@@ -293,7 +302,10 @@ const waited = computed(() => (props.task.waitingHours >= 48
   overflow: hidden;
 }
 
-.card__head-line > * { height: var(--head-h); }
+/* The boxes on the line are one size; the text on it is text, as it is in the prototype. */
+.card__head-line > .chip,
+.card__head-line > .card__pin,
+.card__head-line > .card__overdue { height: var(--head-h); }
 
 /* The chip is the prototype's; only its box is told to match the row. */
 .card__head-line :deep(.chip) {
@@ -305,31 +317,18 @@ const waited = computed(() => (props.task.waitingHours >= 48
 }
 
 .card__where {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--text-muted);
   font-family: var(--mono);
   font-size: var(--t-sm);
-  white-space: nowrap;
-}
-
-/* Where the work lives, which is a name of arbitrary length: it is the part that gives way. */
-.card__ws {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 1 auto;
-  min-width: 0;
-  padding: 0 var(--s2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  color: var(--text-faint);
-  font-family: var(--mono);
-  font-size: var(--t-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Where the work lives, said in the same breath as what it is. */
+.card__ws { color: var(--text-faint); }
 
 /*
  * The pin: a control the size the rest of them are (the smallest button here is 30px), in the
@@ -337,18 +336,18 @@ const waited = computed(() => (props.task.waitingHours >= 48
  * says what it does - a corner icon with no word is a thing people press to find out.
  */
 /*
- * The pin reads as part of the row and is pressable as a control: 26px of ink to match
- * everything beside it, and a hit area four pixels bigger all round, which is the difference
- * between a line that looks right and a button you can hit.
+ * The pin is drawn at the chip's size, because it is on the chip's row: a 24px disc of ink with
+ * a hit area six pixels bigger all round. Visual size and target size are different numbers and
+ * this is the one place in the view where they have to be - a control sized to be hit would be
+ * the largest thing on a line of 24px boxes.
  */
 .card__pin {
   position: relative;
-  display: inline-flex;
+  display: grid;
+  place-items: center;
   flex: 0 0 auto;
-  align-items: center;
-  gap: 5px;
+  width: var(--head-h);
   height: var(--head-h);
-  padding: 0 var(--s2);
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   background: transparent;
@@ -357,10 +356,16 @@ const waited = computed(() => (props.task.waitingHours >= 48
   transition: color var(--fast), border-color var(--fast), background var(--fast);
 }
 
+/*
+ * The hit area, taller than the ink rather than wider: the row clips horizontally - it has to,
+ * or a long workspace name pushes the line out - so a target that reached sideways was six
+ * pixels of nothing being clipped. Vertically there is room, and vertically is where a 24px
+ * target is actually missed.
+ */
 .card__pin::after {
   content: '';
   position: absolute;
-  inset: -5px -4px;
+  inset: -8px 0;
 }
 
 .card__pin:hover { color: var(--text); border-color: var(--border-strong); }
@@ -371,19 +376,7 @@ const waited = computed(() => (props.task.waitingHours >= 48
   color: var(--kind);
 }
 
-/* The word, which only appears when the pointer is on the card it belongs to. */
-.card__pin-word {
-  max-width: 0;
-  overflow: hidden;
-  font-size: var(--t-xs);
-  font-weight: 600;
-  white-space: nowrap;
-  transition: max-width var(--base) var(--ease-out);
-}
 
-.card:hover .card__pin-word,
-.card__pin:focus-visible .card__pin-word,
-.card__pin--on .card__pin-word { max-width: 72px; }
 
 .card__overdue {
   display: inline-flex;

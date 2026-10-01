@@ -47,7 +47,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
 </script>
 
 <template>
+  <!--
+    Teleported to the body, and carrying the view's own class with it.
+
+    `.dev-focus` is where this view's tokens are declared - its palette, its spacing scale, its
+    type - and a dialog moved to the end of the document is outside that element. Without the
+    class every `var(--s3)` in here resolves to nothing: the padding collapses, the colours fall
+    back to the dashboard's, and the dialog renders as the shell's idea of a form. Measured
+    rather than guessed - the rows came back with `padding: 0px` and 44px chips.
+  -->
   <Teleport to="body">
+    <div class="dev-focus dev-focus--overlay">
     <Transition name="veil">
       <div
         v-if="open"
@@ -114,10 +124,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
         </div>
       </div>
     </Transition>
+    </div>
   </Teleport>
 </template>
 
 <style scoped>
+/* A box of nothing: it exists to carry the class, and the two things in it are fixed. */
+.dev-focus--overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+}
+
+.dev-focus--overlay > * { pointer-events: auto; }
+
 .veil {
   position: fixed;
   inset: 0;
