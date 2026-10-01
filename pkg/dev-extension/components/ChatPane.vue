@@ -603,16 +603,23 @@ export default {
 
     // A new name being typed starts the menu at the top again, and un-dismisses it: Escape
     // hides the menu for the command being typed, not for the rest of the session.
+    //
+    // The box is also sized from here rather than from the input handler, so a message put in
+    // from somewhere else - a queued prompt, a paste, the box cleared after a send - sizes it
+    // too. See autoGrow.
     draft(now, before) {
       this.slashIndex = 0;
       if (!now.startsWith('/') || now.slice(0, 1) !== before.slice(0, 1)) {
         this.slashDismissed = false;
       }
+      this.$nextTick(this.autoGrow);
     },
   },
 
   mounted() {
-    // Anything typed into this pane and not yet recorded, from a previous visit.
+    // Anything typed into this pane and not yet recorded, from a previous visit - which the
+    // box has to be sized for before it is seen.
+    this.$nextTick(this.autoGrow);
     this.poll();
     this.readCommands();
     this.readOptions();
@@ -1259,6 +1266,24 @@ export default {
     },
 
     /** Where the cursor is, after anything that could have moved it. */
+    /**
+     * Size the box to what is in it, up to the maximum the stylesheet sets.
+     *
+     * Height to `auto` first, or scrollHeight only ever reports the height it already has and
+     * the box grows and never shrinks. Driven by a watcher on the draft rather than by the
+     * input handler, so a message put in from somewhere else - a queued prompt, a paste, the
+     * box being cleared after a send - sizes it too.
+     */
+    autoGrow() {
+      const el = this.$refs.box;
+
+      if (!el) {
+        return;
+      }
+      el.style.height = 'auto';
+      el.style.height = `${ el.scrollHeight }px`;
+    },
+
     syncCaret(event) {
       const box = event?.target || this.$refs.box;
 
@@ -2646,7 +2671,7 @@ export default {
         ref="box"
         v-model="draft"
         class="mc-chat__textarea"
-        rows="3"
+        rows="1"
         :placeholder="working ? 'Queue the next message…' : 'Message Claude — / for commands'"
         :title="'Enter to send, Shift+Enter for a new line, / for commands, paste an image to attach it'"
         @keydown="onKeydown"
@@ -3372,10 +3397,22 @@ export default {
     overflow-wrap: break-word;
   }
 
+  // One line to start with, and as many as three once there is something to show.
+  //
+  // It was three lines whatever was in it, which is two lines of empty box between the
+  // conversation and what you are typing for as long as you are typing one line - and this view
+  // is mostly read, so those lines cost you history. The height is set from the content in
+  // script (autoGrow); the maximum is here, because it is a layout decision, and past it the
+  // box scrolls rather than taking the page.
+  //
+  // `flex: 0 0 auto` so the height that script sets is the height it gets: with `1 1 auto` the
+  // box's own flex stretched it back out.
   &__textarea {
-    flex:       1 1 auto;
-    resize:     vertical;
-    min-height: 52px;
+    flex:       0 0 auto;
+    resize:     none;
+    overflow-y: auto;
+    min-height: calc(1.45em + 13px);
+    max-height: calc(4.35em + 13px);
     border:     0;
     background: transparent;
     color:      var(--body-text);
@@ -4010,7 +4047,7 @@ export default {
     &__pill--icon { font-size: 15px; }
     &__navbtn { padding: 0 12px; }
 
-    &__textarea { min-height: 44px; padding: 8px 10px 2px; }
+    &__textarea { min-height: calc(1.45em + 10px); padding: 8px 10px 2px; }
 
     &__footer { padding: 0 var(--mc-chat-gutter) 4px; }
 

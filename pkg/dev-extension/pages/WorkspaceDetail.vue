@@ -809,18 +809,25 @@ export default {
       display:         flex;
       justify-content: flex-end;
       flex:            0 0 auto;
-      padding:         8px 24px 0;
+      // No height of its own: it is laid over the tab strip's row, which is already there. A
+      // row of the page for one 12px link is a row the conversation under it does not get.
+      height:          0;
+      padding:         0 24px;
+      overflow:        visible;
 
       a {
-        font-size: 12px;
-        cursor:    pointer;
+        position:   relative;
+        z-index:    2;
+        top:        10px;
+        font-size:  12px;
+        cursor:     pointer;
       }
     }
 
     // The tools strip sits above the tabs, full width and out of their flex.
     &__tools {
       flex:          0 0 auto;
-      margin-bottom: 10px;
+      margin-bottom: var(--dev-space-3);
       max-width:     100%;
     }
 

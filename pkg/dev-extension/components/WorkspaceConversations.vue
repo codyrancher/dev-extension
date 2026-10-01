@@ -579,7 +579,7 @@ export default {
 
     &__log {
       overflow:      hidden;
-      margin:        var(--dev-space-3) 0 0 0;
+      margin:        var(--dev-space-1) 0 0 0;
       font-family:   monospace;
       font-size:     12px;
       white-space:   nowrap;
@@ -591,11 +591,12 @@ export default {
       min-height: 0;
     }
 
-    // The blown-up conversation inside DevModal fills the panel it is given.
+    // The blown-up conversation inside DevModal fills the panel it is given, and the panel is
+    // nearly the window: the reason to blow a conversation up is to read more of it.
     &__popped {
       display:        flex;
       flex-direction: column;
-      height:         calc(100vh - 140px);
+      height:         calc(100vh - 90px);
     }
   }
 
