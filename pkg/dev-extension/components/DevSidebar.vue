@@ -965,7 +965,9 @@ export default {
       padding-left: $rail;
     }
 
-    // The two bars in a Rancher's popover: a label, a track, and the number, on one line each.
+    // The two bars in a Rancher's card: a label, a track, and the number, on one line each.
+    &__meter { min-width: 230px; }
+
 
     /*
      * The pinned block under the scrolling list.
@@ -1128,6 +1130,10 @@ export default {
 
     &__meter-track {
       flex:          1 1 auto;
+      // A bar needs a length to mean anything: in the card the label and the figure took what
+      // they needed and left the bar a sliver, which reads as a bar at nearly nothing whatever
+      // the number beside it says.
+      min-width:     90px;
       overflow:      hidden;
       height:        6px;
       border-radius: 3px;
