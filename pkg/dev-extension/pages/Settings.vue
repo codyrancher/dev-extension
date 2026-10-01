@@ -8,17 +8,15 @@
 //
 // Three rules the store's shape imposes on this page:
 //
-//   - a stored value is never rendered back into its field. The field shows whether the key is
-//     set and offers to replace or clear it, so a page someone left open cannot leak a token to
-//     whoever walks past.
+//   - a stored value is not in the page until it is asked for. A field shows whether its key is
+//     set, and the eye beside it fetches the value and shows it; pressing the eye again both
+//     hides it and forgets it. So a page someone left open shows nothing to whoever walks past,
+//     and the one thing a token is for - reading it, to paste it somewhere else - does not mean
+//     clearing the key and finding it again elsewhere.
 //   - saving writes only the fields that were touched, so opening this page and pressing Save
 //     cannot blank a key nobody could see.
-//   - a generated secret is different in kind, and this is the deliberate exception to the rule
-//     above rather than an oversight in it. The rule exists so that a value someone entrusted to
-//     this page cannot be read back out of it; a value the product invented was never anyone's
-//     secret, and a password you cannot read is a password you cannot log in with. So: never
-//     render back what a person typed, always allow reading what the product generated. Those
-//     fields say they are generated rather than pretending someone chose them.
+//   - the eye is a toggle on the box rather than a second copy of the value: once something has
+//     been typed it is what the eye shows, because it is what Save will write.
 //
 // The claude login is on this page too, as an identity rather than a secret: who it is and
 // whether it is still valid, never the token.
@@ -32,7 +30,7 @@ import {
   setSecretKeys, saveSecrets, secretValue, migrateGithubToken,
   listCloudCredentials, setCloudCredentialPropagate
 } from '../api';
-import { GLOBAL_SECRETS } from '../secrets';
+import { GLOBAL_SECRETS, SECRET_GROUPS } from '../secrets';
 import { listApps } from '../apps';
 import { readPrefs, savePrefs } from '../prefs';
 import { DEV_PRODUCT, BLANK_CLUSTER, SKILLS_ROUTE } from '../config/constants';
@@ -70,8 +68,12 @@ export default {
       // Key to the string typed into its field. A key that is not in here was not touched, and
       // is not written on Save. An empty field is never in here: clearing is what Clear is for.
       edits:    {},
-      // Key to the value of a generated secret, once Show has been pressed for it.
+      // Key to the stored value, for the keys whose eye has been pressed. Fetched then, not on
+      // load, and dropped again when the eye closes.
       revealed: {},
+      // Key to whether its box is showing plain text. Separate from `revealed` because a key
+      // being typed into has nothing to fetch and still has something to show.
+      shown:    {},
       error:    '',
       saved:    false,
     };
@@ -91,12 +93,19 @@ export default {
      * this product can do, and a gap in it reads as something being broken.
      */
     sections() {
+      const secrets = GLOBAL_SECRETS.map((secret) => this.field(secret, secret.key));
+
       return [
         {
-          id:      'global',
-          title:   'Global',
-          help:    'Secrets that belong to the product. What a workspace needs is in its Apps Plus app\'s values.',
-          secrets: GLOBAL_SECRETS.map((secret) => this.field(secret, secret.key)),
+          id:     'tokens',
+          title:  'Tokens',
+          help:   'Every token this product uses on your behalf, in one Secret of your own.',
+          secrets,
+          // A heading per group, in the order secrets.ts declares them, and only for the groups
+          // that have a field: a heading over nothing reads as something having failed to load.
+          groups: SECRET_GROUPS
+            .map((group) => ({ ...group, secrets: secrets.filter((secret) => (secret.group || SECRET_GROUPS[0].id) === group.id) }))
+            .filter((group) => group.secrets.length),
         },
       ];
     },
@@ -210,24 +219,43 @@ export default {
     },
 
     /**
-     * What is in the box: what was typed, or the revealed value, or nothing.
+     * What is in the box: what was typed, or the value the eye fetched, or nothing.
      *
-     * A secret that has not been revealed shows its placeholder rather than a row of dots for a
-     * value the page does not have. Typing wins over both, because it is what will be saved.
+     * A key whose eye is shut shows its placeholder rather than a row of dots standing in for a
+     * value the page has not got. Typing wins over both, because it is what Save will write.
      */
     fieldValue(secret) {
-      return this.edits[secret.storeKey] ?? this.revealed[secret.storeKey] ?? '';
+      return this.edits[secret.storeKey] ?? (this.shown[secret.storeKey] ? this.revealed[secret.storeKey] ?? '' : '');
     },
 
-    async toggleReveal(secret) {
-      if (this.revealed[secret.storeKey]) {
+    /** Whether there is anything to look at: a stored value, or something typed. */
+    canReveal(secret) {
+      return secret.set || !!this.edits[secret.storeKey];
+    },
+
+    /**
+     * The eye.
+     *
+     * Opening it fetches the stored value, unless something has been typed - then the box
+     * already holds what matters and there is nothing to fetch. Shutting it forgets the value
+     * again, so a page left open on this tab is not a page holding a token.
+     */
+    async toggleShow(secret) {
+      const key = secret.storeKey;
+
+      if (this.shown[key]) {
         this.hide(secret);
 
         return;
       }
 
+      this.error = '';
+
       try {
-        this.revealed = { ...this.revealed, [secret.storeKey]: await secretValue(secret.storeKey) };
+        if (!(key in this.edits)) {
+          this.revealed = { ...this.revealed, [key]: await secretValue(key) };
+        }
+        this.shown = { ...this.shown, [key]: true };
       } catch (e) {
         this.error = e.message || String(e);
       }
@@ -235,9 +263,12 @@ export default {
 
     hide(secret) {
       const revealed = { ...this.revealed };
+      const shown = { ...this.shown };
 
       delete revealed[secret.storeKey];
+      delete shown[secret.storeKey];
       this.revealed = revealed;
+      this.shown = shown;
     },
 
     /**
@@ -288,6 +319,7 @@ export default {
         // Only this card's, so an edit sitting in another card is not lost by saving this one.
         this.edits = Object.fromEntries(Object.entries(this.edits).filter(([key]) => !keys.includes(key)));
         this.revealed = {};
+        this.shown = {};
         await this.refresh();
         this.saved = true;
         done(true);
@@ -306,14 +338,14 @@ export default {
     v-else
     class="dev-settings"
   >
-    <header>
+    <div class="dev-settings__intro">
       <h1>Settings</h1>
-      <p class="subheader">
-        Every secret this product uses, in one Kubernetes Secret of your own in the dev-system
-        namespace. A value is never shown again after it is saved, and saving writes only the
-        fields you changed.
+      <p class="dev-settings__intro-sub">
+        Every token this product uses, in one Kubernetes Secret of your own in the dev-system
+        namespace. A stored value is fetched only when you press the eye beside it, and saving
+        writes only the fields you changed.
       </p>
-    </header>
+    </div>
 
     <!-- Skills lives here now rather than as a rail shortcut of its own: it is something you set
          up, like the secrets and the apps below it, not somewhere you go often. -->
@@ -390,7 +422,7 @@ export default {
       </button>
 
       <template v-if="open[section.id]">
-        <p class="subheader">
+        <p class="dev-settings__card-help">
           {{ section.help }}
         </p>
 
@@ -401,67 +433,91 @@ export default {
           This template declares no secrets.
         </p>
 
-        <div
-        v-for="secret in section.secrets"
-        :key="secret.storeKey"
-        class="dev-settings__field"
-      >
         <!--
-          Bound through a handler rather than with v-model, so a key is in `edits` only because
-          something was typed into it. With v-model an input that emitted once on mount would put
-          every key in there as an empty string, and an empty string is a deliberate clear.
+          A heading per group, because these are not all the same kind of thing: the tokens that
+          reach a service as you, and the ones that get a share a certificate. One Save writes
+          them all, so they are headings in this card rather than cards of their own.
         -->
-        <!--
-          The value lives in the box, revealed or not, which is where Rancher puts a password:
-          its own Password component is a LabeledInput whose type flips between password and text
-          from a link in the suffix slot, and this is that arrangement with one difference. The
-          value of a generated secret is not in the page until Show is pressed, because it is
-          fetched then; a typed one is never offered back at all.
-        -->
-        <LabeledInput
-          :type="revealed[secret.storeKey] ? 'text' : 'password'"
-          :value="fieldValue(secret)"
-          :label="secret.label"
-          :placeholder="placeholder(secret)"
-          @update:value="(value) => edit(secret, value)"
+        <section
+          v-for="group in section.groups"
+          :key="group.id"
+          class="dev-settings__group"
         >
-          <template
-            v-if="secret.generated && secret.set"
-            #suffix
+          <h4 class="dev-settings__group-title">
+            {{ group.title }}
+          </h4>
+          <p class="dev-settings__group-help">
+            {{ group.help }}
+          </p>
+
+          <div
+            v-for="secret in group.secrets"
+            :key="secret.storeKey"
+            class="dev-settings__field"
           >
-            <div class="addon">
-              <a
-                href="#"
-                @click.prevent.stop="toggleReveal(secret)"
-              >{{ revealed[secret.storeKey] ? 'Hide' : 'Show' }}</a>
+            <!--
+              Bound through a handler rather than with v-model, so a key is in `edits` only
+              because something was typed into it. With v-model an input that emitted once on
+              mount would put every key in there as an empty string, and an empty string is a
+              deliberate clear.
+            -->
+            <LabeledInput
+              :type="shown[secret.storeKey] ? 'text' : 'password'"
+              :value="fieldValue(secret)"
+              :label="secret.label"
+              :placeholder="placeholder(secret)"
+              @update:value="(value) => edit(secret, value)"
+            >
+              <!--
+                The eye, where Rancher's own Password component puts it: in the field's suffix,
+                flipping the input between password and text. A button rather than the link that
+                used to be here, so it keeps the suffix's width whatever state it is in and the
+                fields below it do not shift when one is opened.
+              -->
+              <template
+                v-if="canReveal(secret)"
+                #suffix
+              >
+                <button
+                  type="button"
+                  class="dev-settings__eye"
+                  :title="shown[secret.storeKey] ? 'Hide' : 'Show'"
+                  :aria-label="shown[secret.storeKey] ? `Hide ${ secret.label }` : `Show ${ secret.label }`"
+                  @click.prevent.stop="toggleShow(secret)"
+                >
+                  <i
+                    class="icon"
+                    :class="shown[secret.storeKey] ? 'icon-hide' : 'icon-show'"
+                  />
+                </button>
+              </template>
+            </LabeledInput>
+            <!--
+              The help is a paragraph rather than LabeledInput's `sub-label`, because that slot
+              is `position: absolute; top: 100%` with pointer events, so it hangs over whatever
+              follows the field - and what follows is the line with the key on it. In flow it
+              takes its own height and nothing sits underneath anything.
+            -->
+            <p class="dev-settings__help">
+              {{ secret.help }}
+            </p>
+            <div class="dev-settings__row">
+              <span class="dev-settings__key">{{ secret.storeKey }}</span>
+              <span
+                class="dev-settings__state"
+                :class="{ 'dev-settings__state--set': secret.set }"
+              >{{ secret.set ? 'Set' : 'Not set' }}</span>
+              <span
+                v-if="secret.required && !secret.set"
+                class="dev-settings__pending"
+              >Required</span>
+              <span
+                v-if="secret.generated"
+                class="dev-settings__state"
+              >Generated</span>
             </div>
-          </template>
-        </LabeledInput>
-        <!--
-          The help is a paragraph rather than LabeledInput's `sub-label`, because that slot is
-          `position: absolute; top: 100%` with pointer events, so it hangs over whatever follows
-          the field. Here that is the row of controls, and Clear and Show were unclickable behind
-          it. In flow it takes its own height and nothing sits underneath anything.
-        -->
-        <p class="dev-settings__help">
-          {{ secret.help }}
-        </p>
-        <div class="dev-settings__row">
-          <span class="dev-settings__key">{{ secret.storeKey }}</span>
-          <span
-            class="dev-settings__state"
-            :class="{ 'dev-settings__state--set': secret.set }"
-          >{{ secret.set ? 'Set' : 'Not set' }}</span>
-          <span
-            v-if="secret.required && !secret.set"
-            class="dev-settings__pending"
-          >Required</span>
-          <span
-            v-if="secret.generated"
-            class="dev-settings__state"
-          >Generated</span>
           </div>
-        </div>
+        </section>
 
         <div class="dev-settings__actions">
           <AsyncButton
@@ -483,7 +539,7 @@ export default {
     -->
     <section class="dev-settings__card">
       <div class="dev-settings__card-head">
-        <i class="dev-settings__card-icon icon icon-cloud" />
+        <i class="dev-settings__card-icon icon icon-globe" />
         <div class="dev-settings__card-title">
           <h3>Cloud credentials</h3>
           <p>Which cloud credentials new Rancher instances are given, so they can provision clusters.</p>
@@ -498,20 +554,25 @@ export default {
       >
         This Rancher has no cloud credentials yet. Add them in Cluster Management &rsaquo; Cloud Credentials, then choose here which new instances receive.
       </p>
-      <label
-        v-for="cred in credentials"
-        :key="cred.id"
-        class="dev-settings__app"
+      <div
+        v-if="credentials.length"
+        class="dev-settings__list"
       >
-        <input
-          type="checkbox"
-          :checked="cred.propagate"
-          @change="(event) => setCredPropagate(cred.id, event.target.checked)"
+        <label
+          v-for="cred in credentials"
+          :key="cred.id"
+          class="dev-settings__app"
         >
-        <span class="dev-settings__app-name">{{ cred.name }}</span>
-        <span class="dev-settings__app-desc">{{ cred.driver }}</span>
-        <span class="dev-settings__card-meta">{{ cred.id }}</span>
-      </label>
+          <input
+            type="checkbox"
+            :checked="cred.propagate"
+            @change="(event) => setCredPropagate(cred.id, event.target.checked)"
+          >
+          <span class="dev-settings__app-name">{{ cred.name }}</span>
+          <span class="dev-settings__app-desc">{{ cred.driver }}</span>
+          <span class="dev-settings__card-meta">{{ cred.id }}</span>
+        </label>
+      </div>
       <div
         v-if="credentials.length"
         class="dev-settings__actions"
@@ -547,20 +608,25 @@ export default {
       >
         There are no Apps Plus apps in this Rancher yet.
       </p>
-      <label
-        v-for="app in apps"
-        :key="app.id"
-        class="dev-settings__app"
+      <div
+        v-if="apps.length"
+        class="dev-settings__list"
       >
-        <input
-          type="checkbox"
-          :checked="appShown(app)"
-          @change="(event) => setAppShown(app, event.target.checked)"
+        <label
+          v-for="app in apps"
+          :key="app.id"
+          class="dev-settings__app"
         >
-        <span class="dev-settings__app-name">{{ app.label }}</span>
-        <span class="dev-settings__app-desc">{{ app.description }}</span>
-        <span class="dev-settings__card-meta">{{ app.installations }} workspace{{ app.installations === 1 ? '' : 's' }}</span>
-      </label>
+          <input
+            type="checkbox"
+            :checked="appShown(app)"
+            @change="(event) => setAppShown(app, event.target.checked)"
+          >
+          <span class="dev-settings__app-name">{{ app.label }}</span>
+          <span class="dev-settings__app-desc">{{ app.description }}</span>
+          <span class="dev-settings__card-meta">{{ app.installations }} workspace{{ app.installations === 1 ? '' : 's' }}</span>
+        </label>
+      </div>
       <div class="dev-settings__actions">
         <AsyncButton
           mode="apply"
@@ -574,11 +640,25 @@ export default {
 </template>
 
 <style lang="scss" scoped>
+  // One column, and everything on the page is that wide.
+  //
+  // The page used to measure its prose in `ch` and its cards in pixels, so the paragraphs ran
+  // past the right edge of the cards under them and nothing on the page shared an edge with
+  // anything else. A column the page keeps to is most of what makes a settings page look
+  // deliberate: every card, every banner and every line of prose starts and ends in the same
+  // two places.
+  $col: 760px;
+
   .dev-settings {
-    padding:   var(--dev-inset);
+    padding:    var(--dev-inset);
     overflow-y: auto;
 
-    header {
+    // Declared `block` on purpose: as a bare <header> this was laid out as a row by something
+    // further up, which put the page's one line of prose beside the title instead of under it,
+    // starting a long way right of the cards it describes.
+    &__intro {
+      display:       block;
+      max-width:     $col;
       margin-bottom: var(--dev-space-5);
 
       h1 {
@@ -586,111 +666,56 @@ export default {
       }
     }
 
-    .subheader {
-      max-width: 90ch;
-      margin:    var(--dev-space-2) 0 var(--dev-space-4) 0;
-      color:     var(--muted);
-    }
-
-    &__section {
-      margin-top: var(--dev-space-6);
-      max-width:  90ch;
-    }
-
-    &__field {
-      margin-top: var(--dev-space-5);
-    }
-
-    // The key, its state and its controls on one line under the field, so the field itself is
-    // just a field and everything about it is in one place.
-    &__row {
-      display:     flex;
-      align-items: center;
-      gap:         var(--dev-space-4);
-      margin-top:  var(--dev-space-2);
-      font-size:   12px;
-    }
-
-    &__help {
+    // The page's own line under the title. Inside a card the prose is `__card-help`, which has
+    // its own spacing; this one only ever sits under the h1.
+    &__intro-sub {
+      max-width: $col;
       margin:    var(--dev-space-2) 0 0 0;
       color:     var(--muted);
-      font-size: 12px;
     }
 
-    &__key {
-      color:       var(--muted);
-      font-family: monospace;
+    .banner {
+      max-width: $col;
     }
 
-    &__state {
-      color: var(--muted);
-
-      &--set {
-        color: var(--status-done);
-      }
-    }
-
-
-    &__pending {
-      color: var(--status-input);
-    }
-
-    &__none {
-      color: var(--muted);
-    }
-
-    // The card, which is the harness's: a mark, a name, a line, and a summary that opens it.
+    // ── A card ────────────────────────────────────────────────────────────────────────────────
+    //
+    // The harness's shape: a mark, a name, a line about it, and a summary that opens it. A page
+    // of forty fields is one nobody reads; a page of three cards saying "5 keys configured"
+    // answers the usual question without being opened at all.
     &__card {
-      max-width:     720px;
+      max-width:     $col;
       margin-bottom: var(--dev-space-5);
       padding:       var(--dev-space-5);
       border:        1px solid var(--border);
       border-radius: var(--border-radius);
     }
 
-    // The Skills link: a card you press to leave, so it reads as one of the cards but shows it
-    // goes somewhere with a chevron and lifts on hover.
-    &__skills {
-      display:         flex;
-      align-items:     center;
-      gap:             var(--dev-space-4);
-      max-width:       720px;
-      margin-bottom:   var(--dev-space-5);
-      padding:         var(--dev-space-4) var(--dev-space-5);
-      border:          1px solid var(--border);
-      border-radius:   var(--border-radius);
-      color:           var(--body-text);
-      text-decoration: none;
-
-      &:hover { background: var(--nav-hover, var(--accent-btn)); }
-
-      &-glyph { font-size: 20px; color: var(--muted); }
-      &-text  { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
-      &-title { font-size: 14px; font-weight: 600; }
-      &-sub   { font-size: 12px; color: var(--muted); }
-      &-chev  { color: var(--muted); }
-    }
-
     &__card-head {
-      display:     flex;
+      display:     grid;
+      // The glyph's column is the glyph's width, so every card's title starts at the same x.
+      grid-template-columns: 28px 1fr;
       gap:         var(--dev-space-4);
-      align-items: flex-start;
+      align-items: start;
     }
 
     &__card-icon {
-      flex:      0 0 32px;
-      width:     32px;
-      height:    32px;
-      color:     var(--dev-accent);
-      font-size: 28px;
+      // Sized and centred in its column, and given the title's line box so the two share a
+      // baseline rather than the glyph floating above a heading that is shorter than it.
+      width:       28px;
+      height:      28px;
+      color:       var(--dev-accent);
+      font-size:   24px;
+      line-height: 28px;
+      text-align:  center;
     }
 
     &__card-title {
-      flex:      1 1 auto;
       min-width: 0;
 
       h3 {
-        margin: 0;
+        margin:      0;
+        line-height: 28px;
       }
 
       p {
@@ -702,6 +727,15 @@ export default {
     &__card-meta {
       font-family: monospace;
       font-size:   12px;
+      color:       var(--muted);
+    }
+
+    // The line inside an opened card, under the summary. Aligned with the fields below it
+    // rather than indented to the title above, because what it describes is the fields.
+    &__card-help {
+      margin:    var(--dev-space-4) 0 0 0;
+      color:     var(--muted);
+      font-size: 13px;
     }
 
     // The summary line, which is a control rather than a heading: pressing it is what shows the
@@ -727,23 +761,155 @@ export default {
       }
     }
 
+    // ── A group of fields inside a card ───────────────────────────────────────────────────────
+    &__group {
+      margin-top: var(--dev-space-5);
+
+      // The rule sits above the heading rather than below it, so a group is visibly a division
+      // of the card and not a label floating over the first field.
+      & + & {
+        padding-top: var(--dev-space-5);
+        border-top:  1px solid var(--border);
+      }
+    }
+
+    &__group-title {
+      margin:         0;
+      font-size:      12px;
+      font-weight:    600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color:          var(--muted);
+    }
+
+    &__group-help {
+      margin:    var(--dev-space-2) 0 0 0;
+      color:     var(--muted);
+      font-size: 12px;
+    }
+
+    // ── One field ─────────────────────────────────────────────────────────────────────────────
+    &__field {
+      margin-top: var(--dev-space-4);
+    }
+
+    // The key and its state on one line under the field, so the field itself is just a field
+    // and everything about it is in one place. Baselines rather than centres: the key is
+    // monospace and the words beside it are not, and centring two different fonts on their
+    // boxes leaves them visibly off one another.
+    &__row {
+      display:         flex;
+      align-items:     baseline;
+      gap:             var(--dev-space-4);
+      margin-top:      var(--dev-space-2);
+      font-size:       12px;
+    }
+
+    &__help {
+      max-width: 80ch;
+      margin:    var(--dev-space-2) 0 0 0;
+      color:     var(--muted);
+      font-size: 12px;
+    }
+
+    &__key {
+      color:       var(--muted);
+      font-family: monospace;
+    }
+
+    &__state {
+      color: var(--muted);
+
+      &--set {
+        color: var(--status-done);
+      }
+    }
+
+    &__pending {
+      color: var(--status-input);
+    }
+
+    &__none {
+      margin: var(--dev-space-4) 0 0 0;
+      color:  var(--muted);
+    }
+
+    // The eye in a field's suffix. Rancher's suffix slot is a flex cell of the input's own
+    // frame, so this is a bare button that fills it and keeps the input's height.
+    &__eye {
+      display:         flex;
+      align-items:     center;
+      justify-content: center;
+      width:           34px;
+      align-self:      stretch;
+      padding:         0;
+      border:          none;
+      background:      transparent;
+      color:           var(--muted);
+      cursor:          pointer;
+
+      &:hover { color: var(--body-text); }
+
+      &:focus-visible {
+        outline:        2px solid var(--outline);
+        outline-offset: -2px;
+      }
+
+      .icon { font-size: 16px; }
+    }
+
+    // ── The two checkbox lists ────────────────────────────────────────────────────────────────
+    //
+    // One grid for the whole list, with each row `display: contents`, so the four columns are
+    // worked out once over every row. A grid per row - which is what this was - lets every row
+    // choose its own column widths, and a list whose second column starts in a different place
+    // on every line is the thing that reads as broken.
+    &__list {
+      display:               grid;
+      grid-template-columns: max-content max-content 1fr max-content;
+      align-items:           center;
+      gap:                   var(--dev-space-2) var(--dev-space-4);
+      margin-top:            var(--dev-space-4);
+    }
 
     &__app {
-      display:               grid;
-      grid-template-columns: auto max-content 1fr max-content;
-      align-items:           center;
-      gap:                   var(--dev-space-3);
-      padding:               var(--dev-space-2) 0;
-      cursor:                pointer;
+      display: contents;
+      cursor:  pointer;
     }
 
     &__app-name { font-weight: 600; }
 
     &__app-desc {
+      min-width:     0;
       color:         var(--muted);
       overflow:      hidden;
       white-space:   nowrap;
       text-overflow: ellipsis;
+    }
+
+    // ── The Skills link ───────────────────────────────────────────────────────────────────────
+    //
+    // A card you press to leave, so it reads as one of the cards but shows it goes somewhere
+    // with a chevron and lifts on hover.
+    &__skills {
+      display:         flex;
+      align-items:     center;
+      gap:             var(--dev-space-4);
+      max-width:       $col;
+      margin:          var(--dev-space-5) 0;
+      padding:         var(--dev-space-4) var(--dev-space-5);
+      border:          1px solid var(--border);
+      border-radius:   var(--border-radius);
+      color:           var(--body-text);
+      text-decoration: none;
+
+      &:hover { background: var(--nav-hover, var(--accent-btn)); }
+
+      &-glyph { font-size: 20px; color: var(--muted); }
+      &-text  { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+      &-title { font-size: 14px; font-weight: 600; }
+      &-sub   { font-size: 12px; color: var(--muted); }
+      &-chev  { color: var(--muted); }
     }
 
     &__actions {

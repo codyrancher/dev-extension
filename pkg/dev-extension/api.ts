@@ -16,7 +16,6 @@
  * is no controller and no credential anywhere in here.
  */
 import { WORKSPACE_VUE_CONFIG, WORKSPACE_CONFIG_MOUNT } from './workspace-config';
-import { INSIGHTS_SERVER } from './insights-server';
 import { WORKSPACE_API_SERVER } from './workspace-api';
 import { AGENT_SEED } from './agent-seed.generated';
 import {
@@ -2649,115 +2648,6 @@ export async function ensureWorkspaceApi(): Promise<void> {
   });
 }
 
-/**
- * The Insights database, which is one per person rather than one per workspace.
- *
- * That is the whole shape of the feature: what someone wants to ask is "what have my agents been
- * doing", and the answer spans every workspace they have. So it lives in dev-system beside the
- * secret store, named after the same owner, and every workspace is told where it is.
- *
- * It is a plain node:24 with a script from a ConfigMap and a hostPath for the file. There is no
- * image to build and nothing to install: node has carried a SQLite driver in core since 22.5.
- * See INSIGHTS_SERVER.
- */
-const INSIGHTS_PORT = 8080;
-const INSIGHTS_HOST_PATH = '/var/lib/rancher/dev-insights';
-
-/** The Deployment, Service and ConfigMap are all called this. */
-export async function insightsName(): Promise<string> {
-  return `dev-insights-${ await currentOwner() }`;
-}
-
-/**
- * Where a pod reaches it, which is what a workspace's agents are given.
- *
- * A cluster-internal address, so it is reachable from any namespace and from nowhere outside the
- * cluster. Nothing authenticates it beyond that: it holds what this person's own agents chose to
- * record, in a cluster they already have a workspace in.
- */
-export async function insightsServiceUrl(): Promise<string> {
-  return `http://${ await insightsName() }.${ DEV_SYSTEM_NAMESPACE }.svc:${ INSIGHTS_PORT }`;
-}
-
-/** Where the browser reaches it: the same door every other in-cluster address uses. */
-export async function insightsProxyUrl(): Promise<string> {
-  const name = await insightsName();
-
-  return `${ BASE }/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:${ name }:${ INSIGHTS_PORT }/proxy`;
-}
-
-/**
- * Create it if it is not there, and bring its script up to date if it is.
- *
- * Idempotent and quiet, the way everything else this extension puts in the cluster is: it runs
- * when the Insights page loads, for every user, including ones who cannot create anything in
- * dev-system, and a page that threw here would be a page that never rendered.
- */
-export async function ensureInsights(): Promise<void> {
-  const name = await insightsName();
-  const namespace = DEV_SYSTEM_NAMESPACE;
-  const labels = { app: name };
-  const url = `${ BASE }/v1/configmaps/${ namespace }/${ name }`;
-  const existing = await devFetch(url).catch(() => null);
-  const data = { 'server.mjs': INSIGHTS_SERVER };
-
-  if (!existing) {
-    await devFetch(`${ BASE }/v1/configmaps`, {
-      method: 'POST',
-      body:   JSON.stringify({
-        apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace, name, labels }, data,
-      }),
-    }).catch(() => null);
-  } else if (existing.data?.['server.mjs'] !== INSIGHTS_SERVER) {
-    await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data }) }).catch(() => null);
-  }
-
-  await ensure('apps.deployments', namespace, name, {
-    apiVersion: 'apps/v1',
-    kind:       'Deployment',
-    metadata:   { namespace, name, labels },
-    spec:       {
-      replicas: 1,
-      selector: { matchLabels: labels },
-      // Recreate: the database is one file on a hostPath, and two writers of one SQLite file is
-      // the one arrangement it is not built for.
-      strategy: { type: 'Recreate' },
-      template: {
-        metadata: { labels },
-        spec:     {
-          containers: [{
-            name:         'insights',
-            image:        'node:24',
-            command:      ['node', '/seed/server.mjs'],
-            ports:        [{ name: 'http', containerPort: INSIGHTS_PORT }],
-            env:          [{ name: 'PORT', value: String(INSIGHTS_PORT) }],
-            volumeMounts: [
-              { name: 'seed', mountPath: '/seed', readOnly: true },
-              { name: 'data', mountPath: '/data' },
-            ],
-            readinessProbe: { tcpSocket: { port: INSIGHTS_PORT }, periodSeconds: 10 },
-          }],
-          volumes: [
-            { name: 'seed', configMap: { name } },
-            // Per owner, so two people's databases are two files, and on the node so a restart
-            // is not the end of what was recorded.
-            {
-              name: 'data', hostPath: { path: `${ INSIGHTS_HOST_PATH }/${ name }`, type: 'DirectoryOrCreate' }
-            },
-          ],
-        },
-      },
-    },
-  });
-
-  await ensure('services', namespace, name, {
-    apiVersion: 'v1',
-    kind:       'Service',
-    metadata:   { namespace, name, labels },
-    spec:       { selector: labels, ports: [{ name: 'http', port: INSIGHTS_PORT, targetPort: 'http' }] },
-  });
-}
-
 // s6 service: headful Chromium binds CDP only on 127.0.0.1:9222, so forward the pod IP's 9222 to it.
 // Connect by IP, not the service name - Chrome rejects a Host header that is not localhost or an IP.
 const GITHUB_BROWSER_CDP_PROXY = `#!/usr/bin/with-contenv bash
@@ -2822,7 +2712,7 @@ exec sleep infinity
  * Create the shared GitHub browser this extension owns: one Chromium in dev-system that carries the
  * github.com login and is the only thing here that can upload to user-attachments. Moved here from a
  * hand-applied `browser` in extension-studio so a version of this extension brings it, heals it, and
- * names it for what it is. Same shape as ensureInsights: a ConfigMap of s6 services, a Deployment,
+ * names it for what it is. Same shape as ensureWorkspaceApi: a ConfigMap of s6 services, a Deployment,
  * a Service. The login lives on a node hostPath, so it survives the pod and carried over the move.
  */
 export async function ensureGithubBrowser(): Promise<void> {
@@ -2853,7 +2743,7 @@ export async function ensureGithubBrowser(): Promise<void> {
       replicas: 1,
       selector: { matchLabels: labels },
       // Recreate: the login is one Chromium profile on a hostPath, and two Chromiums on one profile
-      // corrupt it - the same reason insights uses Recreate for its SQLite file.
+      // corrupt it, which is why nothing here rolls a second pod alongside the first.
       strategy: { type: 'Recreate' },
       template: {
         metadata: { labels },
@@ -2905,38 +2795,6 @@ export async function ensureGithubBrowser(): Promise<void> {
   });
 }
 
-export interface InsightsTable {
-  name: string;
-  columns: string[];
-  rows: number;
-}
-
-/** The tables, with their row counts, which is what the page's tabs are. */
-export async function insightsTables(): Promise<InsightsTable[]> {
-  const response = await fetch(`${ await insightsProxyUrl() }/api/tables`, { cache: 'no-store' });
-
-  if (!response.ok) {
-    throw new Error('The insights database is not answering yet.');
-  }
-
-  return (await response.json()).tables || [];
-}
-
-/** One query, run in the pod. See the server: it refuses anything that is not a SELECT. */
-export async function insightsQuery(sql: string): Promise<{ columns: string[]; rows: Json[] }> {
-  const response = await fetch(`${ await insightsProxyUrl() }/api/query`, {
-    method:  'POST',
-    headers: { 'content-type': 'application/json' },
-    body:    JSON.stringify({ sql }),
-  });
-  const body = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(body.error || `The query failed: ${ response.status }.`);
-  }
-
-  return body;
-}
 
 
 
