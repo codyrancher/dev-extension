@@ -273,17 +273,40 @@ const waited = computed(() => (props.task.waitingHours >= 48
 
 .card__head { position: relative; }
 
+/*
+ * One line, and everything on it the same height.
+ *
+ * It had four things on it at three different heights - a chip, a monospace string, a pill and
+ * a button - which reads as four things that happen to be near each other rather than as a
+ * line. They all take the row's height now and sit on its centre; what differs between them is
+ * weight and colour, which is what was supposed to be doing the work.
+ */
 .card__head-line {
+  --head-h: 26px;
   display: flex;
   align-items: center;
-  gap: var(--s3);
+  gap: var(--s2);
   /* One line that truncates, rather than a line that wraps: the title under it is the thing
      allowed to take two lines, and a header that grows pushes it down by a row. */
   flex-wrap: nowrap;
   min-width: 0;
+  overflow: hidden;
+}
+
+.card__head-line > * { height: var(--head-h); }
+
+/* The chip is the prototype's; only its box is told to match the row. */
+.card__head-line :deep(.chip) {
+  display: inline-flex;
+  align-items: center;
+  height: var(--head-h);
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .card__where {
+  display: inline-flex;
+  align-items: center;
   flex: 0 0 auto;
   color: var(--text-muted);
   font-family: var(--mono);
@@ -293,8 +316,11 @@ const waited = computed(() => (props.task.waitingHours >= 48
 
 /* Where the work lives, which is a name of arbitrary length: it is the part that gives way. */
 .card__ws {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
   min-width: 0;
-  padding: 2px 8px;
+  padding: 0 var(--s2);
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   color: var(--text-faint);
@@ -310,19 +336,31 @@ const waited = computed(() => (props.task.waitingHours >= 48
  * card's top-left corner. It shows its glyph alone until the pointer is on the card, and then
  * says what it does - a corner icon with no word is a thing people press to find out.
  */
+/*
+ * The pin reads as part of the row and is pressable as a control: 26px of ink to match
+ * everything beside it, and a hit area four pixels bigger all round, which is the difference
+ * between a line that looks right and a button you can hit.
+ */
 .card__pin {
+  position: relative;
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: var(--s2);
-  height: 32px;
-  padding: 0 var(--s3);
+  gap: 5px;
+  height: var(--head-h);
+  padding: 0 var(--s2);
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   transition: color var(--fast), border-color var(--fast), background var(--fast);
+}
+
+.card__pin::after {
+  content: '';
+  position: absolute;
+  inset: -5px -4px;
 }
 
 .card__pin:hover { color: var(--text); border-color: var(--border-strong); }
@@ -353,7 +391,7 @@ const waited = computed(() => (props.task.waitingHours >= 48
   flex: 0 0 auto;
   margin-left: auto;
   gap: 5px;
-  padding: 3px 10px;
+  padding: 0 var(--s3);
   border-radius: var(--r-pill);
   background: var(--warning-wash);
   color: var(--warning);

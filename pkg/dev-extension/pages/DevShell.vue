@@ -435,7 +435,15 @@ export default {
  * is closed rather than removed, and the header row is given no height.
  */
 .dev-root--bare {
-  .dashboard-content { --nav-width: 0px; }
+  /*
+   * The nav column closed and the header row given no height. Hiding the header element was
+   * not enough: the shell's grid reserves `--header-height` for that row whether or not
+   * anything is in it, which is a blank bar across the top of a page that asked for the window.
+   */
+  .dashboard-content {
+    --nav-width: 0px;
+    --header-height: 0px;
+  }
 
   .main-layout {
     grid-area: main;

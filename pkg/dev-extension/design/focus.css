@@ -135,3 +135,52 @@ body.theme-light .dev-focus {
 
   --shadow-card: 0 32px 80px -28px rgba(20, 30, 60, 0.28), 0 1px 0 rgba(255, 255, 255, 0.8) inset;
 }
+
+/*
+ * The dashboard's opinions about controls, undone inside this view.
+ *
+ * The prototype these components came from was a page of its own, with a reset and nothing
+ * else. The dashboard is not: `@rancher/shell` styles every bare `button` - a 40px minimum
+ * height, its own padding, radius, border, letter-spacing and font - and an `input` and a
+ * `textarea` besides. Dropped in here that is invisible as a rule and loud as a result: a chip
+ * 22px tall beside a pin 40px tall beside a text button 40px tall, on one row, none of which
+ * any stylesheet in this repository asked for.
+ *
+ * So: the controls start from nothing again, and every component's own styles land on top. The
+ * specificity works out because a scoped component rule carries its own attribute selector and
+ * beats this, while this beats the shell's bare element rules.
+ */
+.dev-focus button,
+.dev-focus input,
+.dev-focus textarea,
+.dev-focus select {
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline-offset: 2px;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+  text-transform: none;
+}
+
+.dev-focus button { cursor: pointer; }
+
+/* The shell draws its own focus ring on buttons; this view uses the prototype's. */
+.dev-focus :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* Nothing in here scrolls the page, and nothing in it hands the window a scrollbar. */
+.dev-focus,
+.dev-focus * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.dev-focus *::-webkit-scrollbar { width: 8px; height: 8px; }
+.dev-focus *::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--r-pill); }
+.dev-focus *::-webkit-scrollbar-track { background: transparent; }
