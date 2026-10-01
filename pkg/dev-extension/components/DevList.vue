@@ -18,6 +18,7 @@
 // inside an `<li>`; Group renders its children through Type with no slot between them, so
 // neither a dot nor a delete can reach a row at all.
 import BrandImage from '@shell/components/BrandImage';
+import NavHead from './NavHead.vue';
 import { colorForState, stateDisplay } from '@shell/plugins/dashboard-store/resource-class';
 import HoverCard from './HoverCard.vue';
 import hoverCard from './hover-card';
@@ -36,7 +37,7 @@ const TONE_DOT = {
 export default {
   name: 'DevList',
 
-  components: { BrandImage, HoverCard },
+  components: { BrandImage, HoverCard, NavHead },
 
   mixins: [hoverCard],
 
@@ -283,55 +284,15 @@ export default {
 
 <template>
   <section class="dev-list">
-    <div class="dev-list__head">
-      <BrandImage
-        v-if="logo"
-        class="dev-list__glyph dev-list__logo"
-        :file-name="logo"
-      />
-      <i
-        v-else
-        class="dev-list__glyph icon"
-        :class="icon"
-      />
-      <span
-        class="dev-list__label"
-        :class="tone ? `text-${ tone }` : ''"
-      >{{ label }}</span>
-
-      <!-- Whatever the heading has to say when the pointer is on it. See the sidebar's clusters. -->
-      <div
-        v-if="$slots.popover"
-        class="dev-list__popover"
-      >
-        <slot name="popover" />
-      </div>
-      <!--
-        Quiet until the pointer is in the section, or until it is focused, which is the same rule
-        the row's delete follows. It keeps its place in the layout either way, so the label does
-        not move when it appears, and it stays in the tab order, because hidden-until-hover is
-        unusable from a keyboard if it is the only way to create something.
-      -->
-      <router-link
-        v-if="createLabel && createTo"
-        v-clean-tooltip="createLabel"
-        class="dev-list__control dev-list__control--bordered dev-list__reveal"
-        :aria-label="createLabel"
-        :to="createTo"
-      >
-        <i class="icon icon-plus" />
-      </router-link>
-      <button
-        v-else-if="createLabel"
-        v-clean-tooltip="createLabel"
-        type="button"
-        class="dev-list__control dev-list__control--bordered dev-list__reveal"
-        :aria-label="createLabel"
-        @click="$emit('create')"
-      >
-        <i class="icon icon-plus" />
-      </button>
-    </div>
+    <NavHead
+      :label="label"
+      :icon="icon"
+      :logo="logo"
+      :tone="tone"
+      :create-label="createLabel"
+      :create-to="createTo"
+      @create="$emit('create')"
+    />
 
     <ul>
       <!--
@@ -522,10 +483,8 @@ export default {
       list-style: none;
     }
 
-    // The two kinds of row are the same box: same height, same insets, same three columns.
-    // A div rather than a <header> element, because the shell styles bare HEADERs globally and
-    // one of those rules is a 48px height.
-    &__head,
+    // The heading is NavHead's now (same box, same insets, same three columns); what is left
+    // here is the row.
     &__row {
       display:       flex;
       align-items:   center;
@@ -556,19 +515,6 @@ export default {
       }
     }
 
-    &__head {
-      // The mark, boxed to the same rail everything else in the column lines up on.
-      .dev-list__logo {
-        height:     14px;
-        object-fit: contain;
-      }
-
-      .dev-list__glyph {
-        color:     var(--dev-accent);
-        font-size: 14px;
-      }
-    }
-
     // The left rail: the section's icon and a row's state dot are the same box, so they share
     // one vertical line, and the labels after them share another.
     &__glyph {
@@ -576,21 +522,6 @@ export default {
       width:        $rail;
       margin-right: $gap;
       text-align:   left;
-    }
-
-    &__label {
-      flex:            1 1 auto;
-      min-width:       0;
-      overflow:        hidden;
-      color:           var(--muted);
-      font-size:       12px;
-      font-weight:     600;
-      letter-spacing:  0.05em;
-      text-transform:  uppercase;
-      text-overflow:   ellipsis;
-      white-space:     nowrap;
-      // A section heading is not a link and must not pick one's underline up from anywhere.
-      text-decoration: none;
     }
 
     // One colour for every name, whatever state it is in: a stopped workspace is still one whose
@@ -851,15 +782,10 @@ export default {
       }
     }
 
-    // The heading for the create control, the row for that row's delete: each control appears
-    // when the pointer is on the thing it acts on.
-    //
-    // Hovering the whole list is what this used to be, and it read differently in the two places
-    // this component is used. In the sidebar a list is as tall as its rows, so "the list" and
-    // "near the heading" are the same place; in the conversations column it fills a 210px column,
-    // so the create control was showing whenever the pointer was anywhere in that column, which
-    // is to say always.
-    &__head:hover &__reveal,
+    // On the row the control acts on, rather than anywhere in the list: in the sidebar a list
+    // is as tall as its rows, so "the list" and "this row" are nearly the same place, but in
+    // the conversations column it fills a 210px column and the control showed whenever the
+    // pointer was anywhere in it.
     &__row:hover &__reveal {
       opacity: 1;
     }
@@ -902,34 +828,6 @@ export default {
     // is always visible (no reveal-on-hover) because it only exists for the moment between the
     // trash icon being pressed and the delete happening, and a confirm you have to hover to
     // find is a confirm nobody completes.
-// A panel under the heading, shown while the pointer is on it. Absolute, so it does not
-    // move the rows underneath, and above them, so it is not clipped by the next section.
-    &__popover {
-      position:      absolute;
-      top:           100%;
-      left:          0;
-      z-index:       10;
-      display:       none;
-      // As wide as it needs and no wider than the column: absolutely positioned or not, a panel
-      // wider than its scroll container gives that container a horizontal scrollbar, which in a
-      // sidebar is a bar under the workspaces that scrolls nothing anybody wants.
-      width:         max-content;
-      max-width:     100%;
-      padding:       var(--dev-space-3) var(--dev-space-4);
-      border:        1px solid var(--border);
-      border-radius: var(--border-radius);
-      background:    var(--body-bg);
-      box-shadow:    0 2px 8px rgba(0, 0, 0, 0.2);
-    }
-
-    &__head {
-      position: relative;
-
-      &:hover .dev-list__popover {
-        display: block;
-      }
-    }
-
     /*
      * A heading inside the list. Quieter than the list's own heading - smaller, no rail of its
      * own - because it divides a list rather than starting one, and a sidebar of headings that
