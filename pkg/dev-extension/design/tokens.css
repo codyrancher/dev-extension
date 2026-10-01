@@ -50,6 +50,19 @@
   --dev-control-sm:  28px;
   --dev-control:     32px;
 
+  /*
+   * A row in the nav: its height, the height it takes when it carries a second line, and the
+   * width of the slot the status dot sits in.
+   *
+   * Here rather than in the components, because two of them draw these rows - the workspace
+   * list and the Rancher list - and a row that is two pixels shorter than the row above it is
+   * the kind of difference nobody can name and everybody sees. NavRow.vue is the markup; these
+   * are the numbers, and DevList's own rows read the same ones.
+   */
+  --dev-row:       33px;
+  --dev-row-tall:  45px;
+  --dev-row-glyph: var(--dev-inset);
+
   /* Dialog widths, and the one fixed column this product has. */
   --dev-modal-sm: 560px;
   --dev-modal:    720px;

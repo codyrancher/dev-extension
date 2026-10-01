@@ -19,6 +19,8 @@
 // neither a dot nor a delete can reach a row at all.
 import BrandImage from '@shell/components/BrandImage';
 import { colorForState, stateDisplay } from '@shell/plugins/dashboard-store/resource-class';
+import HoverCard from './HoverCard.vue';
+import hoverCard from './hover-card';
 
 // A status tone to the dot colour that matches its status text. The same palette the detail line
 // uses (see the `&__detail--<tone>` and `&__dot--<tone>` rules, and workspace-status Tone), so a
@@ -34,7 +36,9 @@ const TONE_DOT = {
 export default {
   name: 'DevList',
 
-  components: { BrandImage },
+  components: { BrandImage, HoverCard },
+
+  mixins: [hoverCard],
 
   emits: ['select', 'create', 'delete', 'rename'],
 
@@ -165,14 +169,6 @@ export default {
       renaming: '',
       draft:    '',
       /**
-       * The row the pointer is resting on, and where its card goes. A row with a `card` - the
-       * sidebar's workspaces - shows it after a moment, to the right of the row, fixed so the
-       * column's own scrolling does not clip it; it stays while the pointer is on the card,
-       * which is what makes the links in it usable.
-       */
-      card:      null,
-      cardTimer: 0,
-      /**
        * Rows whose delete has been asked for and not yet finished.
        *
        * A delete is not instant - the Installation has to tear down what it deployed before it
@@ -220,29 +216,34 @@ export default {
       return this.isDeleting(row) ? 'Deleting' : stateDisplay(row.state);
     },
 
+    /**
+     * Open a row's card: what it has to say, and what can be done to it.
+     *
+     * Every row that can be deleted gets one even with nothing to say, because the delete is in
+     * the card now - a control that is only there while the pointer is on the row is a control
+     * you have to chase, and one that appears and disappears under the pointer is one you press
+     * by accident. A row that can neither say anything nor be acted on has no card at all.
+     */
     showCard(row, event) {
-      if (!row.card) {
+      if (!row.card && !this.canDelete(row)) {
         return;
       }
-      const rect = event.currentTarget.getBoundingClientRect();
+      const card = row.card || {};
 
-      clearTimeout(this.cardTimer);
-      this.cardTimer = setTimeout(() => {
-        this.card = {
-          row, top: Math.min(rect.top, window.innerHeight - 220), left: rect.right + 6,
-        };
-      }, 350);
+      this.openCard(row, event, {
+        title: card.title || row.label, lines: card.lines || [], links: card.links || [],
+      });
     },
 
-    keepCard() {
-      clearTimeout(this.cardTimer);
+    /** Delete from the card: the card goes at once, since what it was about is on its way out. */
+    removeFromCard(row) {
+      this.dropCard();
+      this.remove(row);
     },
 
-    hideCard() {
-      clearTimeout(this.cardTimer);
-      this.cardTimer = setTimeout(() => {
-        this.card = null;
-      }, 250);
+    /** Whether this row's delete is offered, which is also what gives a plain row a card. */
+    canDelete(row) {
+      return this.deletable && !row.fixed && !this.isDeleting(row);
     },
 
     detailClass(row) {
@@ -445,26 +446,6 @@ export default {
           >
             <i class="icon icon-edit" />
           </button>
-          <!--
-            One control: the trash icon, which deletes on click.
-          
-            There is no confirm step and no second button. The two-button dance (trash, then a
-            tick or a word) was answering "are you sure" with another thing to press, when the row
-            itself can answer it: the moment it is clicked the row goes red and says it is
-            deleting (see isDeleting and the row classes above), which is both the acknowledgement
-            and the progress. A delete that has visibly started and is visibly working does not
-            need to have been confirmed first.
-          -->
-          <button
-            v-if="deletable && !row.fixed && !isDeleting(row)"
-            v-clean-tooltip="`Delete ${ row.label }`"
-            type="button"
-            class="dev-list__control dev-list__reveal dev-list__delete"
-            :aria-label="`Delete ${ row.label }`"
-            @click="remove(row)"
-          >
-            <i class="icon icon-trash" />
-          </button>
         </li>
       </template>
 
@@ -475,34 +456,34 @@ export default {
         {{ empty }}
       </li>
     </ul>
-    <Teleport to="body">
-      <div
-        v-if="card"
-        class="dev-list__card"
-        :style="{ top: `${ card.top }px`, left: `${ card.left }px` }"
-        @mouseenter="keepCard"
-        @mouseleave="hideCard"
+    <!--
+      The row the pointer is on, in the card every list in this product uses (HoverCard).
+
+      The delete is in here rather than on the row, and there is still no confirm step: the
+      moment it is pressed the row goes red and says it is deleting (see isDeleting and the row
+      classes above), which is both the acknowledgement and the progress. A delete that has
+      visibly started and is visibly working does not need to have been confirmed first.
+    -->
+    <HoverCard
+      v-if="card"
+      :card="card"
+      @keep="keepCard"
+      @hide="hideCard"
+    >
+      <template
+        v-if="canDelete(card.item)"
+        #actions
       >
-        <div class="dev-list__card-title">{{ card.row.card.title || card.row.label }}</div>
-        <div
-          v-for="(line, i) in card.row.card.lines"
-          :key="i"
-          class="dev-list__card-line"
-        >{{ line }}</div>
-        <div
-          v-if="card.row.card.links.length"
-          class="dev-list__card-links"
+        <button
+          type="button"
+          class="dev-list__control dev-list__delete"
+          :aria-label="`Delete ${ card.item.label }`"
+          @click="removeFromCard(card.item)"
         >
-          <a
-            v-for="link in card.row.card.links"
-            :key="link.url"
-            :href="link.url"
-            target="_blank"
-            rel="noopener noreferrer"
-          ><i class="icon icon-external-link" /> {{ link.label }}</a>
-        </div>
-      </div>
-    </Teleport>
+          <i class="icon icon-trash" /> Delete
+        </button>
+      </template>
+    </HoverCard>
   </section>
 </template>
 
@@ -901,7 +882,15 @@ export default {
       }
     }
 
+    // The delete, which lives in the row's card (see HoverCard): wide enough for the word
+    // beside the glyph, since in a card there is room to say what the button does.
     &__delete {
+      width:       auto;
+      gap:         var(--dev-space-2);
+      padding:     0 var(--dev-space-2);
+      opacity:     1;
+      white-space: nowrap;
+
       &:hover,
       &:focus-visible {
         opacity: 1;
@@ -1000,40 +989,3 @@ export default {
 }
 </style>
 
-<style lang="scss">
-// The hover card is teleported to the body, so it is styled unscoped.
-.dev-list__card {
-  position:      fixed;
-  z-index:       1000;
-  max-width:     340px;
-  padding:       10px 12px;
-  border:        1px solid var(--border);
-  border-radius: var(--border-radius);
-  background:    var(--body-bg);
-  box-shadow:    0 4px 16px rgba(0, 0, 0, 0.25);
-  font-size:     12px;
-  line-height:   1.4;
-  color:         var(--body-text);
-
-  &-title {
-    font-weight:   600;
-    margin-bottom: 4px;
-  }
-
-  &-line {
-    color: var(--muted);
-  }
-
-  &-links {
-    display:    flex;
-    gap:        12px;
-    margin-top: 8px;
-
-    a {
-      display:     inline-flex;
-      align-items: center;
-      gap:         4px;
-    }
-  }
-}
-</style>
