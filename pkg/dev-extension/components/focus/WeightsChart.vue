@@ -45,16 +45,23 @@ const BANDS = [
 /** Which card draws a rule, and therefore which hue the rule is drawn in. */
 const kindOf = (id: string): FocusKind => props.cards.find((card) => (card.rules || []).includes(id))?.kind || 'signal';
 
-const banded = computed(() => BANDS.map((band, n) => {
-  const under = BANDS[n + 1]?.from ?? -1;
+/**
+ * The rules, in their bands.
+ *
+ * A band owns the scores from its own floor up to the next band's, so every rule lands in
+ * exactly one and nothing is lost between two. Written as a pass down the list rather than as a
+ * filter per band, because the "is it in this one" test needs to know about the band above it
+ * and a filter that has to look at its neighbours is a filter that is wrong in one direction.
+ */
+const banded = computed(() => {
+  const bands = BANDS.map((band) => ({ ...band, rows: [] as WeightRow[] }));
 
-  return {
-    ...band,
-    rows: props.rows.filter((row) => row.score >= band.from && (under < 0 || row.score > under || n === BANDS.length - 1)
-      ? row.score >= band.from && (n === 0 || row.score < BANDS[n - 1].from)
-      : false),
-  };
-}).filter((band) => band.rows.length));
+  for (const row of props.rows) {
+    (bands.find((band) => row.score >= band.from) || bands[bands.length - 1]).rows.push(row);
+  }
+
+  return bands.filter((band) => band.rows.length);
+});
 
 /** How many things the ranking is actually holding, which is the one number worth a headline. */
 const holding = computed(() => props.rows.reduce((total, row) => total + row.count, 0));
