@@ -61,16 +61,6 @@ function roleOf(name) {
 }
 
 
-const CLUSTERS_OPEN_KEY = 'dev.sidebar.clusters.open';
-
-function readClustersOpen() {
-  try {
-    return localStorage.getItem(CLUSTERS_OPEN_KEY) === 'true';
-  } catch {
-    return false;
-  }
-}
-
 /** The node's IP out of `<name>.dev-extension.<ip>.sslip.io`, or ''. */
 function nodeIpOf(url) {
   return (url.match(/\.(\d+\.\d+\.\d+\.\d+)\.sslip\.io/) || [])[1] || '';
@@ -145,7 +135,6 @@ export default {
       askingRancher: false,
       proposedRancher: '',
       /** The Clusters block is a header until it is opened; the choice is kept per browser. */
-      clustersOpen: readClustersOpen(),
       /** The Rancher a delete is being confirmed for, or null. */
       deletingRancher: null,
       /** Rancher id -> true for the moment after its address was copied. */
@@ -175,10 +164,12 @@ export default {
           label: 'Conversations', icon: 'icon-comment', route: CONVERSATIONS_ROUTE
         },
         {
-          label: 'Settings', icon: 'icon-gear', route: SETTINGS_ROUTE
-        },
-        {
           label: 'Agents', logo: true, route: AGENTS_ROUTE
+        },
+        // Last, and on the end of the row on purpose: it is the one entry you go to to change
+        // something rather than to work, and that is where a settings control belongs.
+        {
+          label: 'Settings', icon: 'icon-gear', route: SETTINGS_ROUTE
         },
       ],
     };
@@ -214,57 +205,41 @@ export default {
       }));
     },
 
-    /** The clusters, with how many workspaces each holds. */
-    clusterRows() {
-      const clusters = this.clusters.length ? this.clusters : [{ id: 'local', name: 'local', memoryFree: 0, diskFree: 0 }];
-      const known = new Set(clusters.map((cluster) => cluster.id));
-      const strays = [...new Set(this.workspaces.map((workspace) => workspace.cluster))]
-        .filter((id) => id && !known.has(id))
-        .map((id) => ({
-          id, name: id, memoryFree: 0, diskFree: 0
-        }));
-
-      return [...clusters, ...strays].map((cluster) => {
-        const issues = cluster.issues || [];
-
-        return {
-          ...cluster,
-          health:     cluster.health || 'ok',
-          issues,
-          summary:    issues.join(' · '),
-          workspaces: this.workspaces.filter((workspace) => workspace.cluster === cluster.id).length,
-        };
-      });
-    },
-
-    /** The worst of the clusters, for the collapsed header's one dot. Room, not health. */
-    clustersHealth() {
-      const levels = this.clusterRows.map((c) => c.health);
-
-      return levels.includes('error') ? 'error' : levels.includes('warn') ? 'warn' : 'ok';
-    },
-
-    /** What the dot means, cluster by cluster, for its tooltip. */
-    clustersSummary() {
-      const trouble = this.clusterRows.filter((c) => c.health !== 'ok').map((c) => `${ c.name }: ${ c.summary }`);
-
-      return trouble.length ? trouble.join('\n') : 'Every cluster has room for another workspace';
-    },
-
     currentWorkspace() {
       return this.$route.params.workspace || '';
     },
 
-    /** The Ranchers a workspace can point at, with the starred one marked. See ranchers.ts. */
+    /**
+     * The Ranchers a workspace can point at, with the starred one marked, and the room on the
+     * cluster each of them runs on.
+     *
+     * The clusters used to be a list of their own under this one, which meant reading two
+     * sections and joining them by eye to answer one question: has the Rancher I am about to
+     * put a workspace on got room. A Rancher is the thing somebody thinks in, so the room is
+     * on its row - one dot for the worse of memory and disk (roomHealth in api.ts already
+     * decides which is worse), and both figures when the pointer is on it. A cluster that no
+     * Rancher here runs on is not shown at all: it is not something this product puts anything
+     * on.
+     */
     rancherRows() {
       const now = Date.now();
+      const byCluster = new Map(this.clusters.map((cluster) => [cluster.id, cluster]));
 
       return this.ranchers.map((rancher) => {
         const host = rancher.url.replace(/^https?:\/\//, '');
+        // This Rancher is the local cluster; an instance is the cluster it provisioned, which
+        // it only has once it is up.
+        const cluster = byCluster.get(rancher.kind === 'host' ? 'local' : rancher.clusterId) || null;
 
         return {
           ...rancher,
           host,
+          room:      cluster ? {
+            health:  cluster.health || 'ok',
+            issues:  cluster.issues || [],
+            summary: (cluster.issues || []).join(' · '),
+            ...cluster,
+          } : null,
           elapsed:   rancher.since ? elapsed(now - Date.parse(rancher.since)) : '',
           // Not the whole address - it is long and the node's IP is the part that says anything;
           // the address itself is a copy away.
@@ -379,14 +354,6 @@ export default {
      * number: a checkout, an install and a compile of rancher/dashboard want a few gigabytes of
      * each, and a cluster under that will take one and then fail in the middle of yarn.
      */
-    toggleClusters() {
-      this.clustersOpen = !this.clustersOpen;
-      try {
-        localStorage.setItem(CLUSTERS_OPEN_KEY, String(this.clustersOpen));
-      } catch {
-        // A browser that keeps nothing keeps the default, which is closed.
-      }
-    },
 
 
     /**
@@ -717,6 +684,55 @@ export default {
         :key="rancher.id"
         class="dev-sidebar__rancher-row"
       >
+        <!--
+          The room on the cluster this Rancher runs on: one dot for the worse of memory and
+          disk, and both figures when the pointer is on it. The same arrangement the workspace
+          rows use for their status, and for the same reason - the answer at a glance, the
+          detail when you ask for it.
+        -->
+        <span
+          v-if="rancher.room"
+          class="dev-sidebar__rancher-room"
+          data-testid="dev-rancher-room"
+        >
+          <i
+            class="dev-sidebar__dot"
+            :class="`dev-sidebar__dot--${ rancher.room.health }`"
+            :title="rancher.room.summary || 'Room for another workspace'"
+          />
+          <div class="dev-sidebar__popover">
+            <div class="dev-sidebar__popover-title">{{ rancher.room.name }}</div>
+            <Stack gap="1">
+              <Row
+                class="dev-sidebar__meter"
+                gap="3"
+              >
+                <span class="dev-sidebar__meter-label">MEM</span>
+                <span class="dev-sidebar__meter-track"><span
+                  class="dev-sidebar__meter-fill"
+                  :style="{ width: bar(rancher.room.memoryFree, rancher.room.memoryTotal) }"
+                /></span>
+                <span class="dev-sidebar__meter-value">{{ amount(rancher.room.memoryFree, rancher.room.memoryTotal) }}</span>
+              </Row>
+              <Row
+                class="dev-sidebar__meter"
+                gap="3"
+              >
+                <span class="dev-sidebar__meter-label">DISK</span>
+                <span class="dev-sidebar__meter-track"><span
+                  class="dev-sidebar__meter-fill"
+                  :style="{ width: bar(rancher.room.diskFree, rancher.room.diskTotal) }"
+                /></span>
+                <span class="dev-sidebar__meter-value">{{ amount(rancher.room.diskFree, rancher.room.diskTotal) }}</span>
+              </Row>
+            </Stack>
+            <div
+              v-if="rancher.room.summary"
+              class="dev-sidebar__popover-issue"
+              :class="`dev-sidebar__cluster-issue--${ rancher.room.health }`"
+            >{{ rancher.room.summary }}</div>
+          </div>
+        </span>
         <div class="dev-sidebar__rancher-text">
           <span class="dev-sidebar__rancher-name">{{ rancher.name }}</span>
           <span
@@ -818,79 +834,6 @@ export default {
       @confirm="makeRancher"
       @cancel="askingRancher = false"
     />
-    <div
-      class="dev-sidebar__clusters"
-      :class="{ 'dev-sidebar__clusters--open': clustersOpen }"
-    >
-      <button
-        type="button"
-        class="dev-sidebar__template-head dev-sidebar__clusters-head"
-        :aria-expanded="clustersOpen ? 'true' : 'false'"
-        :title="clustersOpen ? 'Hide the clusters' : 'Show the clusters'"
-        data-testid="dev-clusters-toggle"
-        @click="toggleClusters"
-      >
-        <i class="dev-sidebar__template-icon icon icon-cluster" />
-        <span class="dev-sidebar__template-label">Clusters</span>
-        <i
-          class="dev-sidebar__dot dev-sidebar__dot--overall"
-          :class="`dev-sidebar__dot--${ clustersHealth }`"
-          :title="clustersSummary"
-          data-testid="dev-clusters-summary"
-        />
-        <i
-          class="dev-sidebar__chevron icon"
-          :class="clustersOpen ? 'icon-chevron-down' : 'icon-chevron-right'"
-        />
-      </button>
-      <div
-        v-for="cluster in clusterRows"
-        v-show="clustersOpen"
-        :key="cluster.id"
-        class="dev-sidebar__cluster-row"
-        :class="`dev-sidebar__cluster-row--${ cluster.health }`"
-      >
-        <div class="dev-sidebar__cluster-name">
-          <span class="dev-sidebar__cluster-title">
-            <i
-              class="dev-sidebar__dot"
-              :class="`dev-sidebar__dot--${ cluster.health }`"
-            />{{ cluster.name }}
-          </span>
-          <span class="dev-sidebar__cluster-count">{{ cluster.workspaces }}</span>
-        </div>
-        <div
-          v-if="cluster.summary"
-          class="dev-sidebar__cluster-issue"
-          :class="`dev-sidebar__cluster-issue--${ cluster.health }`"
-          :title="cluster.issues.join('\n')"
-        >{{ cluster.summary }}</div>
-        <Stack gap="1">
-          <Row
-            class="dev-sidebar__meter"
-            gap="3"
-          >
-            <span class="dev-sidebar__meter-label">MEM</span>
-            <span class="dev-sidebar__meter-track"><span
-              class="dev-sidebar__meter-fill"
-              :style="{ width: bar(cluster.memoryFree, cluster.memoryTotal) }"
-            /></span>
-            <span class="dev-sidebar__meter-value">{{ amount(cluster.memoryFree, cluster.memoryTotal) }}</span>
-          </Row>
-          <Row
-            class="dev-sidebar__meter"
-            gap="3"
-          >
-            <span class="dev-sidebar__meter-label">DISK</span>
-            <span class="dev-sidebar__meter-track"><span
-              class="dev-sidebar__meter-fill"
-              :style="{ width: bar(cluster.diskFree, cluster.diskTotal) }"
-            /></span>
-            <span class="dev-sidebar__meter-value">{{ amount(cluster.diskFree, cluster.diskTotal) }}</span>
-          </Row>
-        </Stack>
-      </div>
-    </div>
     <div
       v-if="error"
       class="dev-sidebar__error"
@@ -994,18 +937,15 @@ export default {
       padding-left: $rail;
     }
 
-    // The two bars in a cluster's popover: a label, a track, and the number, on one line each.
+    // The two bars in a Rancher's popover: a label, a track, and the number, on one line each.
 
     /*
-     * The two pinned blocks under the scrolling list.
+     * The pinned block under the scrolling list.
      *
-     * `0 1 auto` rather than `0 0 auto`, and each able to scroll itself. The root is
+     * `0 1 auto` rather than `0 0 auto`, and able to scroll itself. The root is
      * `overflow: hidden`, so a block that cannot shrink and does not fit is not scrolled to -
-     * it is cut off, and there is no way to reach it. Clusters is the last child, so in a short
-     * window it was clusters that silently went, which is not a thing a person can tell from a
-     * thing that is switched off.
+     * it is cut off, and there is no way to reach it.
      */
-    &__clusters,
     &__ranchers {
       flex:        0 1 auto;
       min-height:  0;
@@ -1051,6 +991,50 @@ export default {
       flex-direction: column;
       flex:           1 1 auto;
       min-width:      0;
+    }
+
+    // The dot and the card it opens. Relative, so the card is placed on the row rather than on
+    // the panel; the card itself is absolute so the rows under it do not move when it appears.
+    &__rancher-room {
+      position:    relative;
+      flex:        0 0 auto;
+      display:     inline-flex;
+      align-items: center;
+
+      .dev-sidebar__dot { margin-right: 0; }
+
+      &:hover .dev-sidebar__popover,
+      &:focus-within .dev-sidebar__popover { display: block; }
+    }
+
+    &__popover {
+      position:      absolute;
+      top:           calc(100% + 4px);
+      left:          0;
+      z-index:       20;
+      display:       none;
+      width:         max-content;
+      max-width:     220px;
+      padding:       var(--dev-space-3) var(--dev-space-4);
+      border:        1px solid var(--border);
+      border-radius: var(--border-radius);
+      background:    var(--body-bg);
+      box-shadow:    0 2px 8px rgba(0, 0, 0, 0.2);
+    }
+
+    &__popover-title {
+      margin-bottom:  var(--dev-space-2);
+      font-size:      11px;
+      font-weight:    600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color:          var(--muted);
+    }
+
+    &__popover-issue {
+      margin-top: var(--dev-space-2);
+      font-size:  11px;
+      color:      var(--muted);
     }
 
     &__rancher-tools {
@@ -1146,24 +1130,6 @@ export default {
       text-overflow: ellipsis;
     }
 
-    &__clusters-head {
-      width:      100%;
-      border:     0;
-      background: none;
-      color:      inherit;
-      cursor:     pointer;
-      text-align: left;
-      gap:        var(--dev-space-2);
-
-      &:hover { color: var(--body-text); }
-    }
-
-    &__chevron {
-      flex:      0 0 auto;
-      font-size: 12px;
-      color:     var(--muted);
-    }
-
     &__dot {
       display:       inline-block;
       width:         7px;
@@ -1175,14 +1141,6 @@ export default {
 
       &--warn { background: var(--status-input); }
       &--error { background: var(--status-error); }
-
-      // The header's one dot: a little larger, on the right, with the reasons in its title.
-      &--overall {
-        width:       9px;
-        height:      9px;
-        margin:      0 var(--dev-space-2) 0 auto;
-        box-shadow:  0 0 0 2px color-mix(in srgb, currentColor 0%, var(--nav-bg, var(--body-bg)));
-      }
     }
 
     &__cluster-issue {
@@ -1195,25 +1153,6 @@ export default {
 
       &--warn { color: var(--status-input); }
       &--error { color: var(--status-error); }
-    }
-
-    &__cluster-row {
-      padding: var(--dev-space-2) var(--dev-space-4);
-    }
-
-    &__cluster-name {
-      display:         flex;
-      justify-content: space-between;
-      font-size:       12px;
-      font-weight:     600;
-      text-transform:  uppercase;
-      letter-spacing:  0.04em;
-      margin-bottom:   var(--dev-space-1);
-    }
-
-    &__cluster-count {
-      color:       var(--muted);
-      font-weight: 400;
     }
 
     &__meter-label {
@@ -1336,16 +1275,15 @@ export default {
     /*
      * One scroll container, not three.
      *
-     * On a laptop this is a column with a scrolling middle and two blocks pinned under it. In
-     * the drawer there is not the height for that: the globals move to the top (`order: -1`
-     * below), which leaves Clusters as the last child of a box that hides its overflow, and
-     * Clusters was simply cut off the bottom - present, and unreachable. So the drawer scrolls
-     * as one column and every section is reachable by scrolling to it.
+     * On a laptop this is a column with a scrolling middle and a block pinned under it. In the
+     * drawer there is not the height for that: the globals move to the top (`order: -1` below),
+     * which leaves the last section as the last child of a box that hides its overflow, and it
+     * was simply cut off the bottom - present, and unreachable. So the drawer scrolls as one
+     * column and every section is reachable by scrolling to it.
      */
     overflow-y: auto;
 
     &__scroll,
-    &__clusters,
     &__ranchers {
       flex:       0 0 auto;
       overflow-y: visible;
@@ -1396,7 +1334,7 @@ export default {
     }
 
     // A row a thumb can hit, in the lists as well.
-    &__row, &__rancher-row, &__cluster-row { padding-top: var(--dev-space-3); padding-bottom: var(--dev-space-3); }
+    &__row, &__rancher-row { padding-top: var(--dev-space-3); padding-bottom: var(--dev-space-3); }
 
     // The tools on a Rancher row are hover-only on a laptop; there is no hover here.
     &__rancher-tools { opacity: 1; }

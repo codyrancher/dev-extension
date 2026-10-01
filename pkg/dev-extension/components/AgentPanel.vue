@@ -44,7 +44,7 @@ import PodTerminal from './PodTerminal';
 import SIcon from './ui/SIcon.vue';
 import SMenu from './ui/SMenu.vue';
 import {
-  agentSessions, startAgentSession, renameAgentSession, endAgentSession,
+  panelSessions, startAgentSession, renameAgentSession, endAgentSession,
 } from '../agent';
 import { ensureAgentCredential } from '../credential';
 import {
@@ -467,7 +467,7 @@ export default {
           return '';
         });
 
-        this.sessions = arrange(await agentSessions(), this.order);
+        this.sessions = arrange(await panelSessions(), this.order);
       } finally {
         this.loading = false;
       }
@@ -984,7 +984,7 @@ export default {
 
       try {
         await renameAgentSession(pending.id, title);
-        this.sessions = this.withRename(await agentSessions(), pending.id, title);
+        this.sessions = this.withRename(await panelSessions(), pending.id, title);
       } catch (e) {
         this.error = e?.message || String(e);
       }

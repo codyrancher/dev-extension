@@ -53,10 +53,19 @@ export interface AgentsBrowserApi {
     pod(): Promise<string | null>;
     /** The argv a pane runs for one conversation: what the component's `command` prop takes. */
     command(id: string, mode?: 'claude' | 'shell'): string[];
-    /** The drawer's own conversations. */
+    /** Every `agent-<n>` conversation, whoever started it. The panel lists only its own. */
     sessions(): Promise<{ id: string; title: string }[]>;
     /** One project's conversations - `p-<project>-<n>`, which the drawer never lists. */
     projectSessions(project: string): Promise<{ id: string; title: string }[]>;
+    /**
+     * Start a free-standing conversation.
+     *
+     * It is marked as started through this API, which is what keeps it out of the agent panel's
+     * tabs: the panel is for the conversations somebody opened on it, and a conversation some
+     * machinery started turning up there as a tab nobody opened - closable, and closing it
+     * ended the work - is what this is for. Reach it by its id, with the terminal component or
+     * `pane`, which is how whatever started it knows about it in the first place.
+     */
     start(): Promise<string>;
     startInProject(project: string, title?: string, prompt?: string): Promise<string>;
     /** Queue what a conversation opens with; read the first time a pane attaches. */
@@ -79,7 +88,9 @@ export function installBrowserApi(version: string): AgentsBrowserApi {
       command:        sessionCommand,
       sessions:       agentSessions,
       projectSessions,
-      start:          startAgentSession,
+      // 'api' and not the default: see `start` above. Everything that is not the panel itself
+      // comes through here, so this is the one place it has to be said.
+      start:          () => startAgentSession('api'),
       startInProject: startProjectSession,
       queue:          queueSessionPrompt,
       rename:         renameAgentSession,

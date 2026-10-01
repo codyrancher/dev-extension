@@ -2258,7 +2258,7 @@ async function secretStoreName(): Promise<string> {
 }
 
 /** The store as it is, or an empty one. Values included, since the caller is the browser. */
-async function readSecretStore(): Promise<Record<string, string>> {
+export async function readSecretStore(): Promise<Record<string, string>> {
   const name = await secretStoreName();
   // Always the local cluster, never BASE: the store is one per-user Secret on this Rancher's own
   // cluster, not a per-workspace thing. BASE follows whatever workspace was last opened, so a page

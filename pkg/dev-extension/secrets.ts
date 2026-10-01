@@ -36,9 +36,8 @@ export const SECRET_GROUPS: SecretGroup[] = [
     id:    'letsencrypt',
     title: 'Let\'s Encrypt',
     help:  'A share is a link you send to somebody without an account here, so it should not open on a certificate warning. '
-      + 'Filled in, these get the dashboard and Storybook shares a real certificate: the name is made under your own domain '
-      + 'instead of sslip.io, and the challenge is answered in your DNS - which is the only kind that works here, because a '
-      + 'share runs on a node the internet cannot reach.',
+      + 'Fill this in and every share asks Let\'s Encrypt for a real certificate for its own sslip.io name. '
+      + 'That is all it takes: the name resolves to the share\'s node, the node is public, and the challenge is a file served over port 80 - no token, no DNS, nothing to keep in step.',
   },
 ];
 
@@ -61,35 +60,6 @@ export const GLOBAL_SECRETS: DevSecret[] = [
     key:      'LETSENCRYPT_EMAIL',
     label:    'Account email',
     help:     'The contact address for the ACME account. Let\'s Encrypt warns this address before a certificate expires, and will not issue without it.',
-    required: false,
-    group:    'letsencrypt',
-  },
-  {
-    key:      'LETSENCRYPT_DOMAIN',
-    label:    'Share domain',
-    help:     'The domain a share\'s name is made under, such as dev.example.com - a share then answers at <name>.dev.example.com instead of its sslip.io name. '
-      + 'Leave it empty to keep the sslip.io names, which cannot be certified: nothing here controls sslip.io\'s DNS.',
-    required: false,
-    group:    'letsencrypt',
-  },
-  {
-    key:      'LETSENCRYPT_DNS_PROVIDER',
-    label:    'DNS provider',
-    help:     'Which DNS the challenge record is written in, as lego names them: namecheap, cloudflare, route53, digitalocean, gcloud and so on. The one that serves the share domain above.',
-    required: false,
-    group:    'letsencrypt',
-  },
-  {
-    key:      'LETSENCRYPT_DNS_TOKEN',
-    label:    'DNS API token',
-    help:     'The token the provider was given, with permission to write TXT records in that domain. It is used to answer one challenge and is never sent anywhere but the provider.',
-    required: false,
-    group:    'letsencrypt',
-  },
-  {
-    key:      'LETSENCRYPT_DNS_USER',
-    label:    'DNS API user',
-    help:     'Only for the providers whose API wants a name or account id beside the token - Namecheap wants its API user, Route 53 its access key id. Leave it empty for a provider that takes a token alone.',
     required: false,
     group:    'letsencrypt',
   },

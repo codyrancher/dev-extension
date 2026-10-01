@@ -318,6 +318,27 @@ export default {
       return rows;
     },
 
+    /** green when the link has a real certificate, grey while it is being got, none otherwise. */
+    certTone(state) {
+      if (state.cert?.state === 'ok') {
+        return 'ok';
+      }
+
+      return state.certRefusal ? 'none' : 'waiting';
+    },
+
+    certLabel(state) {
+      return { ok: 'certificate', waiting: 'getting a certificate', none: 'self-signed' }[this.certTone(state)];
+    },
+
+    certTitle(state) {
+      if (state.cert?.state === 'ok') {
+        return state.cert.expires ? `A Let's Encrypt certificate for this name, until ${ state.cert.expires }.` : 'A Let\'s Encrypt certificate for this name.';
+      }
+
+      return state.certRefusal || 'The share is asking Let\'s Encrypt for a certificate; until it has one the ingress controller answers with its own.';
+    },
+
     host(url) {
       try {
         return new URL(url).host;
@@ -519,6 +540,18 @@ export default {
                   {{ copiedUrl === stateOf(k.kind).url ? 'Copied' : 'Copy link' }}
                 </button>
                 <span class="text-muted workspace-share__hint">{{ stateOf(k.kind).host ? 'public' : 'needs a login here' }}</span>
+                <!--
+                  Whether the person you send this to will be stopped by a certificate warning.
+                  Worth a word here and nowhere else: this is the row where the link is handed
+                  over, and a warning on a page that asks for a login is the thing that makes a
+                  share look broken. See acme.ts.
+                -->
+                <span
+                  v-if="stateOf(k.kind).host"
+                  class="workspace-share__cert"
+                  :class="`workspace-share__cert--${ certTone(stateOf(k.kind)) }`"
+                  :title="certTitle(stateOf(k.kind))"
+                >{{ certLabel(stateOf(k.kind)) }}</span>
               </p>
               <p
                 v-if="stateOf(k.kind).direct && stateOf(k.kind).state === 'serving'"
@@ -698,6 +731,18 @@ export default {
     }
 
     &__link { font-size: 15px; font-weight: 600; word-break: break-all; }
+
+    &__cert {
+      padding:       1px 8px;
+      border-radius: 10px;
+      font-size:     11px;
+      font-weight:   600;
+      background:    var(--box-bg);
+      color:         var(--muted);
+
+      &--ok      { color: var(--success); }
+      &--waiting { color: var(--warning); }
+    }
     &__linkrow--direct { font-size: 12px; a { word-break: break-all; } }
 
     &__facts {
