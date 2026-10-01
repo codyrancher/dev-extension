@@ -662,24 +662,45 @@ function fnv(text) {
 
 let bakedVersion = '';
 
-/** The overrides: skill name -> SKILL.md text, and the ConfigMap's resourceVersion for the seed's version. */
+/**
+ * A file of a skill that is not its SKILL.md: a script, a template, a manifest.
+ *
+ * A skill is a directory, and a third of them carry something beside the prose - `share.sh`,
+ * `a11y-probe.mjs`, `rancher-share-app.yaml` - that the SKILL.md tells the agent to run. Editing
+ * the prose and not the script it names is editing half the skill.
+ *
+ * Flat names only: no directory separators, and nothing that could climb out of the skill's own
+ * folder. Everything in the repository is flat, and a ConfigMap key cannot hold a slash anyway.
+ */
+const SKILL_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** Where one file's override is kept. SKILL.md keeps the key it has always had. */
+function overrideKey(name, path) {
+  return path === 'SKILL.md' ? `skill__${ name }` : `file__${ name }__${ path }`;
+}
+
+/** The overrides: SKILL.md text by skill, other files by `<skill>/<file>`, and the ConfigMap's version. */
 async function skillOverrides() {
   try {
     const map = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ SKILLS_MAP }`);
     const skills = {};
+    const files = {};
 
     for (const [key, value] of Object.entries(map.data || {})) {
-      const m = /^skill__([a-z0-9-]+)$/.exec(key);
+      const skill = /^skill__([a-z0-9-]+)$/.exec(key);
+      const file = /^file__([a-z0-9-]+)__(.+)$/.exec(key);
 
-      if (m) {
-        skills[m[1]] = value;
+      if (skill) {
+        skills[skill[1]] = value;
+      } else if (file && SKILL_FILE.test(file[2])) {
+        files[`${ file[1] }/${ file[2] }`] = value;
       }
     }
 
-    return { skills, version: map.metadata?.resourceVersion || '' };
+    return { skills, files, version: map.metadata?.resourceVersion || '' };
   } catch (e) {
     if (e.status === 404) {
-      return { skills: {}, version: '' };
+      return { skills: {}, files: {}, version: '' };
     }
     throw e;
   }
@@ -688,10 +709,13 @@ async function skillOverrides() {
 /** The seed the workspaces are laid out from: what shipped, the repository's files, then the edited skills. */
 async function agentSeed() {
   const seed = { ...shippedSeed(), ...(await aiSkillsFiles()).files };
-  const { skills } = await skillOverrides();
+  const { skills, files } = await skillOverrides();
 
   for (const [name, content] of Object.entries(skills)) {
     seed[`skills/${ name }/SKILL.md`] = content;
+  }
+  for (const [path, content] of Object.entries(files)) {
+    seed[`skills/${ path }`] = content;
   }
 
   return seed;
@@ -717,7 +741,7 @@ function skillDescription(text) {
 
 async function listSkills() {
   const seed = (await aiSkillsFiles()).files;
-  const { skills } = await skillOverrides();
+  const { skills, files } = await skillOverrides();
   const names = Object.keys(seed).map((key) => /^skills\/([a-z0-9-]+)\/SKILL\.md$/.exec(key)?.[1]).filter(Boolean);
 
   for (const name of Object.keys(skills)) {
@@ -727,23 +751,62 @@ async function listSkills() {
   }
 
   return names.sort().map((name) => ({
-    name, description: skillDescription(skills[name] ?? seed[`skills/${ name }/SKILL.md`]), overridden: name in skills,
+    name,
+    description: skillDescription(skills[name] ?? seed[`skills/${ name }/SKILL.md`]),
+    overridden:  name in skills || Object.keys(files).some((path) => path.startsWith(`${ name }/`)),
+    // How many files the skill carries beside its prose, so the list can say so without
+    // reading every skill.
+    files:       skillFileNames(name, seed, files).length,
   }));
+}
+
+/** The names of one skill's supporting files: what the repository ships, plus anything edited here. */
+function skillFileNames(name, seed, overrides) {
+  const found = new Set();
+
+  for (const key of Object.keys(seed)) {
+    const m = new RegExp(`^skills/${ name }/(.+)$`).exec(key);
+
+    if (m && m[1] !== 'SKILL.md' && SKILL_FILE.test(m[1])) {
+      found.add(m[1]);
+    }
+  }
+  for (const key of Object.keys(overrides)) {
+    const m = new RegExp(`^${ name }/(.+)$`).exec(key);
+
+    if (m && m[1] !== 'SKILL.md') {
+      found.add(m[1]);
+    }
+  }
+
+  return [...found].sort();
 }
 
 async function readSkill(name) {
   if (!SKILL_NAME.test(name)) {
     throw failure(400, 'Not a skill name.');
   }
-  const baked = (await aiSkillsFiles()).files[`skills/${ name }/SKILL.md`] || '';
-  const { skills } = await skillOverrides();
+  const seed = (await aiSkillsFiles()).files;
+  const baked = seed[`skills/${ name }/SKILL.md`] || '';
+  const { skills, files } = await skillOverrides();
 
   if (!baked && !(name in skills)) {
     throw failure(404, `There is no skill called ${ name }.`);
   }
 
   return {
-    name, content: skills[name] ?? baked, baked, overridden: name in skills,
+    name,
+    content:    skills[name] ?? baked,
+    baked,
+    overridden: name in skills,
+    // The scripts and manifests the prose tells the agent to run, each with the same three
+    // facts as the prose itself: what it is now, what shipped, and whether those differ.
+    files:      skillFileNames(name, seed, files).map((path) => ({
+      path,
+      content:    files[`${ name }/${ path }`] ?? seed[`skills/${ name }/${ path }`] ?? '',
+      baked:      seed[`skills/${ name }/${ path }`] || '',
+      overridden: `${ name }/${ path }` in files,
+    })),
   };
 }
 
@@ -788,9 +851,9 @@ async function writeConfigValue(key, value) {
   }
 }
 
-async function writeSkillOverride(name, content) {
+async function writeSkillOverride(name, content, path = 'SKILL.md') {
   const p = `/api/v1/namespaces/${ NAMESPACE }/configmaps/${ SKILLS_MAP }`;
-  const data = { [`skill__${ name }`]: content };
+  const data = { [overrideKey(name, path)]: content };
 
   try {
     await k8s(p, { method: 'PATCH', body: JSON.stringify({ data }) });
@@ -807,9 +870,9 @@ async function writeSkillOverride(name, content) {
   }
 }
 
-/** The skill committed to the skills repository, on the branch every workspace is laid out from. */
-async function commitSkill(name, content, message) {
-  const filePath = `${ AI_SKILLS_ROOT }/.claude/skills/${ name }/SKILL.md`;
+/** The file committed to the skills repository, on the branch every workspace is laid out from. */
+async function commitSkill(name, content, message, path = 'SKILL.md') {
+  const filePath = `${ AI_SKILLS_ROOT }/.claude/skills/${ name }/${ path }`;
   let sha = '';
 
   try {
@@ -825,7 +888,7 @@ async function commitSkill(name, content, message) {
     }
   }
   const result = await ghRest('PUT', `/repos/${ AI_SKILLS_REPO }/contents/${ filePath }`, {
-    message: message || `Skill ${ name }: updated from the Dev extension`,
+    message: message || `Skill ${ name }: ${ path === 'SKILL.md' ? 'updated' : `${ path } updated` } from the Dev extension`,
     content: Buffer.from(content, 'utf8').toString('base64'),
     branch:  AI_SKILLS_REF,
     ...(sha ? { sha } : {}),
@@ -835,45 +898,59 @@ async function commitSkill(name, content, message) {
 }
 
 /**
- * Save a skill: the override for every workspace, and - when asked - the commit to the repo.
- * Saving the shipped text back drops the override rather than keeping a copy of it.
+ * Save one file of a skill: the override for every workspace, and - when asked - the commit to
+ * the repo. Saving the shipped text back drops the override rather than keeping a copy of it.
+ *
+ * `path` is SKILL.md unless something says otherwise, which is what keeps every caller written
+ * before a skill had more than prose in it working unchanged.
  */
 async function saveSkill(name, body) {
   if (!SKILL_NAME.test(name)) {
     throw failure(400, 'Not a skill name.');
   }
+  const path = String(body?.path || 'SKILL.md');
+
+  if (path !== 'SKILL.md' && !SKILL_FILE.test(path)) {
+    throw failure(400, `${ path } is not a file of a skill.`);
+  }
   const content = String(body?.content || '');
 
   if (!content.trim()) {
-    throw failure(400, 'The skill is empty.');
+    throw failure(400, `${ path === 'SKILL.md' ? 'The skill' : path } is empty.`);
   }
-  const baked = (await aiSkillsFiles()).files[`skills/${ name }/SKILL.md`] || '';
+  const key = `skills/${ name }/${ path }`;
+  const baked = (await aiSkillsFiles()).files[key] || '';
 
   if (content === baked) {
-    await dropSkillOverride(name);
+    await dropSkillOverride(name, path);
   } else {
-    await writeSkillOverride(name, content);
+    await writeSkillOverride(name, content, path);
   }
-  const commit = body?.commit ? await commitSkill(name, content, String(body?.message || '')) : null;
+  const commit = body?.commit ? await commitSkill(name, content, String(body?.message || ''), path) : null;
 
   // Committed, the repository has the text, so the override is a copy of it: pull the new commit
   // and let the override go, or the page keeps calling a committed skill "edited".
   if (commit) {
     const fresh = await aiSkillsFiles(true).catch(() => null);
 
-    if (fresh?.files[`skills/${ name }/SKILL.md`] === content) {
-      await dropSkillOverride(name);
+    if (fresh?.files[key] === content) {
+      await dropSkillOverride(name, path);
     }
   }
 
-  const { skills } = await skillOverrides();
+  const { skills, files } = await skillOverrides();
 
-  return { ok: true, overridden: name in skills, commit, version: await seedVersion() };
+  return {
+    ok:         true,
+    overridden: path === 'SKILL.md' ? name in skills : `${ name }/${ path }` in files,
+    commit,
+    version:    await seedVersion(),
+  };
 }
 
-async function dropSkillOverride(name) {
+async function dropSkillOverride(name, path = 'SKILL.md') {
   try {
-    await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ SKILLS_MAP }`, { method: 'PATCH', body: JSON.stringify({ data: { [`skill__${ name }`]: null } }) });
+    await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ SKILLS_MAP }`, { method: 'PATCH', body: JSON.stringify({ data: { [overrideKey(name, path)]: null } }) });
   } catch (e) {
     if (e.status !== 404) {
       throw e;
@@ -2161,11 +2238,16 @@ const routes = [
   }],
   ['GET', /^\/skills\/([a-z0-9-]+)$/, async(m) => readSkill(m[1])],
   ['PUT', /^\/skills\/([a-z0-9-]+)$/, async(m, url, body) => saveSkill(m[1], body)],
-  ['POST', /^\/skills\/([a-z0-9-]+)\/reset$/, async(m) => {
+  ['POST', /^\/skills\/([a-z0-9-]+)\/reset$/, async(m, url, body) => {
     if (!SKILL_NAME.test(m[1])) {
       throw failure(400, 'Not a skill name.');
     }
-    await dropSkillOverride(m[1]);
+    const path = String(body?.path || url.searchParams.get('path') || 'SKILL.md');
+
+    if (path !== 'SKILL.md' && !SKILL_FILE.test(path)) {
+      throw failure(400, `${ path } is not a file of a skill.`);
+    }
+    await dropSkillOverride(m[1], path);
 
     return { ok: true, version: await seedVersion() };
   }],
