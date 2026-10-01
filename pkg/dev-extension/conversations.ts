@@ -494,8 +494,15 @@ export const STUDIO_GLOBAL = '__extensionStudio';
 export const AGENTS_READY_EVENT = 'agents:ready';
 export const STUDIO_READY_EVENT = 'extension-studio:ready';
 
-/** What has to be installed for any of this to work, for the message when it is not. */
-export const STUDIO_API_SINCE = 'the agents extension (or Extension Studio 0.5.92 to 0.5.93)';
+/**
+ * What to say when the conversation API is not on `window`.
+ *
+ * It used to name an extension to go and install. There is nothing to install now - the agents
+ * half is part of this bundle (see index.ts) - so the only way to be here is that this page
+ * rendered before its own entry point finished, or that something in it threw. A reload is the
+ * honest advice, and the console has the rest.
+ */
+export const STUDIO_API_SINCE = 'this extension\'s own agent API, which did not load; reload the page';
 
 export interface StudioBrowserApi {
   version: string;
@@ -531,7 +538,7 @@ async function requireAgents(): Promise<StudioBrowserApi> {
   const api = await waitForStudio();
 
   if (!api) {
-    throw new Error(`Nothing here can hold a conversation: install ${ STUDIO_API_SINCE }, which brings the agent pod and its terminal.`);
+    throw new Error(`Nothing here can hold a conversation: ${ STUDIO_API_SINCE }.`);
   }
 
   return api;
