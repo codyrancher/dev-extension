@@ -133,6 +133,33 @@ function carry(out: string | null, into: string | null, dim: string | null) {
 
 const clearCarry = () => carry(null, null, null);
 
+/**
+ * Start the next turn from somewhere on the screen rather than from the stack.
+ *
+ * The deck already knows how to pick a turn up part-way through - that is what `--carry-in` is
+ * for, and it exists because a card let go of halfway down should not snap back to the top
+ * before it falls. A card coming out of the pinned rail is the same problem seen from the other
+ * side: it is already on the screen, at that size, in that place, and the honest animation is
+ * the one that grows it from there into the deck rather than fading a new card in over it.
+ *
+ * The caller hands over where the thing is now; this works out the transform that would put the
+ * deck's card there, and the turn plays from it.
+ */
+function enterFrom(rect: { top: number; left: number; width: number; height: number }): void {
+  const card = deck.value?.querySelector('.deck__top')?.getBoundingClientRect();
+
+  if (!card || !card.width || !rect.width) {
+    return;
+  }
+  const scale = Math.max(0.05, rect.width / card.width);
+  const dx = Math.round((rect.left + rect.width / 2) - (card.left + card.width / 2));
+  const dy = Math.round((rect.top + rect.height / 2) - (card.top + card.height / 2));
+
+  carry(null, `translate3d(${ dx }px, ${ dy }px, 0) scale(${ scale.toFixed(3) })`, 'brightness(1)');
+}
+
+defineExpose({ enterFrom });
+
 /** Every input ends here: the deck only carries a start state when a hand chose one. */
 function go(step: 1 | -1) {
   clearCarry();

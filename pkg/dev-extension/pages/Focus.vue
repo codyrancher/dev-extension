@@ -24,7 +24,7 @@
  * change it. What is personal - pins, snoozes, what you have dealt with - lives in your prefs.
  */
 import {
-  computed, onMounted, onBeforeUnmount, ref
+  computed, nextTick, onMounted, onBeforeUnmount, ref
 } from 'vue';
 import FocusDeck from '../components/focus/FocusDeck.vue';
 import DeckSkeleton from '../components/focus/DeckSkeleton.vue';
@@ -64,6 +64,7 @@ const state = ref<FocusState>({ pinned: [], snoozed: {}, done: {} });
 
 const index = ref(0);
 const direction = ref<1 | -1>(1);
+const deckRef = ref<{ enterFrom(rect: DOMRect): void } | null>(null);
 
 /**
  * One sheet, four sections.
@@ -204,7 +205,15 @@ function say(message: string) {
   }, 3200);
 }
 
-async function pin(task: FocusTask) {
+/**
+ * Pin, or put it back.
+ *
+ * Putting it back is the half worth the trouble: the card is already on the screen, in the rail,
+ * at that size - so it grows from there into the top of the deck rather than appearing in it
+ * while the thing you pressed disappears. `from` is where it was when you pressed it, measured
+ * before anything moves; the deck plays its own turn from that transform. See FocusDeck.
+ */
+async function pin(task: FocusTask, from?: DOMRect) {
   const on = state.value.pinned.includes(task.key);
 
   await remember({
@@ -212,7 +221,27 @@ async function pin(task: FocusTask) {
     pinned: on ? state.value.pinned.filter((key) => key !== task.key) : [...state.value.pinned, task.key],
   });
   settle();
+
+  if (on) {
+    await nextTick();
+    const to = deck.value.findIndex((entry) => entry.key === task.key);
+
+    if (to >= 0) {
+      if (from) {
+        deckRef.value?.enterFrom(from);
+      }
+      direction.value = to >= index.value ? 1 : -1;
+      index.value = to;
+    }
+  }
   say(on ? `${ task.what } is back in the deck.` : `${ task.what } is pinned.`);
+}
+
+/** From the rail: the same act, with where it was on the way in. */
+function unpin(task: FocusTask, event: MouseEvent) {
+  const rect = (event.currentTarget as HTMLElement)?.getBoundingClientRect();
+
+  return pin(task, rect);
 }
 
 async function snooze(task: FocusTask, hours: number) {
@@ -503,8 +532,12 @@ onBeforeUnmount(closeSettings);
         Pinned, down the side: taken out of the queue because you are dealing with them. They
         keep their hue and their title and nothing else - a pinned thing is a reminder, and a
         reminder that needs reading is a card, which is what the deck is for.
+
+        The lane is always here, empty or not. It used to appear with the first pin, which moved
+        the deck sideways - and, because nothing is pinned while the queue is still being read,
+        moved it again the moment the page finished loading.
       -->
-      <aside v-if="pinned.length" class="focus__pins">
+      <aside class="focus__pins">
         <h2 class="focus__pins-head">Pinned</h2>
         <button
           v-for="task in pinned"
@@ -513,18 +546,22 @@ onBeforeUnmount(closeSettings);
           class="pin"
           :class="`pin--${ task.card.kind }`"
           :title="`${ task.needs } — click to put it back in the deck`"
-          @click="pin(task)"
+          @click="unpin(task, $event)"
         >
           <span class="pin__what">{{ task.what }}</span>
           <span class="pin__title">{{ task.title || task.needs }}</span>
           <span class="pin__needs">{{ task.needs }}</span>
         </button>
+        <p v-if="!pinned.length" class="focus__pins-empty">
+          Nothing pinned. Pin a card to keep it here while you work on it.
+        </p>
       </aside>
 
       <main class="focus__deck">
         <DeckSkeleton v-if="loading" />
         <FocusDeck
           v-else
+          ref="deckRef"
           :cards="deck"
           :index="index"
           :direction="direction"
@@ -772,8 +809,10 @@ onBeforeUnmount(closeSettings);
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* The smallest control in this view is 30px; see AppButton's own sizes. */
+  height: 30px;
   min-height: 0;
-  padding: 5px 12px;
+  padding: 0 var(--s4);
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   background: transparent;
@@ -802,6 +841,12 @@ onBeforeUnmount(closeSettings);
   width: 212px;
   padding: var(--s2) var(--s4) var(--s5);
   overflow-y: auto;
+}
+
+.focus__pins-empty {
+  color: var(--text-faint);
+  font-size: var(--t-xs);
+  line-height: 1.4;
 }
 
 .focus__pins-head {
@@ -876,7 +921,8 @@ onBeforeUnmount(closeSettings);
 
 .tabs__tab {
   flex: 1 1 auto;
-  padding: 5px 10px;
+  height: 30px;
+  padding: 0 var(--s3);
   border: 0;
   border-radius: var(--r-pill);
   background: transparent;
@@ -961,12 +1007,16 @@ onBeforeUnmount(closeSettings);
 .field__kinds { display: flex; flex-wrap: wrap; gap: var(--s2); }
 
 .field__kind {
-  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 var(--s2);
   border: 1px solid transparent;
   border-radius: var(--r-pill);
   background: none;
   cursor: pointer;
   opacity: 0.5;
+  transition: opacity var(--fast), border-color var(--fast);
 }
 
 .field__kind--on { opacity: 1; border-color: var(--border-strong); }
