@@ -34,6 +34,7 @@ import AppIcon from '../components/focus/AppIcon.vue';
 import AppButton from '../components/focus/AppButton.vue';
 import WeightsChart from '../components/focus/WeightsChart.vue';
 import MiniCard from '../components/focus/MiniCard.vue';
+import CardFlight from '../components/focus/CardFlight.vue';
 import CardGallery from '../components/focus/CardGallery.vue';
 import FocusChatBar from '../components/focus/FocusChatBar.vue';
 import StudioTerminal from '../components/StudioTerminal.vue';
@@ -58,6 +59,9 @@ import { updateComment, deleteComment, discussPrompt } from '../reviews';
 import '../design/focus.css';
 import '../design/focus-chat.css';
 
+/** How long the deck will wait for the top card's detail before drawing it without. See load. */
+const FIRST_PAINT_WAIT = 3000;
+
 const loading = ref(true);
 const busy = ref(false);
 const notice = ref('');
@@ -69,7 +73,48 @@ const state = ref<FocusState>({ pinned: [], snoozed: {}, done: {} });
 
 const index = ref(0);
 const direction = ref<1 | -1>(1);
-const deckRef = ref<{ enterFrom(rect: DOMRect): void } | null>(null);
+const deckRef = ref<{ topRect(): DOMRect | null } | null>(null);
+
+/** A rectangle, kept rather than held: a DOMRect read now is not a DOMRect read after a render. */
+interface Box { top: number; left: number; width: number; height: number }
+
+function boxOf(rect: DOMRect | null | undefined): Box | null {
+  return rect && rect.width ? {
+    top: rect.top, left: rect.left, width: rect.width, height: rect.height,
+  } : null;
+}
+
+/**
+ * The card in the air between the deck and the rail, if one is. See CardFlight.
+ *
+ * Both ends hide their own copy while this is set - `flyingPin` for the rail, `dropping` for the
+ * deck - so the flying one is the only card on the screen.
+ */
+const flight = ref<{ task: FocusTask; from: Box; to: Box; mode: 'drop' | 'dock' } | null>(null);
+const flyingPin = ref('');
+const dropping = ref(false);
+
+/**
+ * Set before the state changes, not after: the deck re-renders on the assignment, and if it is
+ * still allowed to turn at that moment it animates its own half of a movement the flight is
+ * already drawing - the pinned card thrown off the bottom of the screen while its copy flies to
+ * the dock.
+ */
+const quiet = ref(false);
+
+function flightDone() {
+  flight.value = null;
+  flyingPin.value = '';
+  dropping.value = false;
+  quiet.value = false;
+}
+
+/** Where a pin sits in the rail, once it is there to measure. */
+function slotOf(key: string): Box | null {
+  const found = document.querySelector(`.focus__pins .pin[data-key="${ CSS.escape(key) }"]`);
+
+  return boxOf(found?.getBoundingClientRect());
+}
 
 /**
  * The agent's comments for the card on top, when there are any.
@@ -80,21 +125,44 @@ const deckRef = ref<{ enterFrom(rect: DOMRect): void } | null>(null);
 const notes = ref<ReviewNote[]>([]);
 const notesFor = ref('');
 
-async function readNotes() {
+/**
+ * The read in flight, handed back to every caller.
+ *
+ * Two things ask for the top card's comments: the watcher below, when the card on top changes,
+ * and the first load, which will not draw anything until they are in. Returning the same promise
+ * means the second of those waits on the fetch the first started rather than racing it.
+ */
+let reading: Promise<void> = Promise.resolve();
+
+function readNotes(): Promise<void> {
   const task = current.value;
   const pr = Number(/#(\d+)/.exec(task?.what || '')?.[1] || 0);
 
   if (!task || !pr || task.rule !== 'review-findings') {
     notes.value = [];
     notesFor.value = '';
+    reading = Promise.resolve();
 
-    return;
+    return reading;
   }
+
   if (notesFor.value === task.key) {
-    return;
+    return reading;
   }
+
   notesFor.value = task.key;
-  notes.value = await reviewNotes(pr).catch(() => []);
+  reading = reviewNotes(pr)
+    .catch(() => [] as ReviewNote[])
+    .then((found) => {
+      // Turned again while this was in the air. A pull request with a lot of comments can take
+      // long enough that two cards are in flight at once, and the slower one landing last would
+      // put its comments on whatever card is now on top.
+      if (notesFor.value === task.key) {
+        notes.value = found;
+      }
+    });
+
+  return reading;
 }
 
 /**
@@ -193,6 +261,19 @@ async function load() {
       weights:    cfg.weights,
       extra:      (cfg.tasks || []).map(manualItem),
     });
+
+    // Nothing is drawn until the top card is the card it is going to stay as.
+    //
+    // The first card is usually a review pass, and a review pass is a different card once its
+    // comments are in - a column of findings with the code around each one, rather than a title
+    // and a line. Flipping `loading` here would draw the plain one, hold it for as long as that
+    // fetch takes, and then replace it under somebody who had started reading. Cards change
+    // because you turned the deck, not because the page is still catching up.
+    //
+    // Capped, because this is a pull request being read over the network and the deck is the
+    // page. Waiting is better than flickering; waiting forever is not, and a card that fills in
+    // three seconds late is a card nobody had started reading yet.
+    await Promise.race([readNotes(), new Promise((done) => setTimeout(done, FIRST_PAINT_WAIT))]);
   } catch (e) {
     error.value = (e as Error)?.message || String(e);
   } finally {
@@ -231,9 +312,17 @@ function settle() {
 
 /* ── What a card's buttons do ─────────────────────────────────────────────────────────────── */
 
-async function remember(next: FocusState) {
+/**
+ * Take the change now; write it down in the background.
+ *
+ * The assignment is synchronous, so the deck and the rail have already re-rendered by the time
+ * this returns a promise - which is what lets an animation start on the frame after the click
+ * rather than after a round trip to the API server.
+ */
+function remember(next: FocusState): Promise<void> {
   state.value = next;
-  await saveFocusState(next).catch((e) => {
+
+  return saveFocusState(next).catch((e) => {
     error.value = (e as Error)?.message || String(e);
   });
 }
@@ -250,33 +339,84 @@ function say(message: string) {
 /**
  * Pin, or put it back.
  *
- * Putting it back is the half worth the trouble: the card is already on the screen, in the rail,
- * at that size - so it grows from there into the top of the deck rather than appearing in it
- * while the thing you pressed disappears. `from` is where it was when you pressed it, measured
- * before anything moves; the deck plays its own turn from that transform. See FocusDeck.
+ * One movement with two directions, and in both of them the card travels: it is the same card
+ * before and after, in a different place, and the only honest way to draw that is to move it.
+ * Neither direction is a turn of the deck - nothing is being dealt - so neither is drawn by the
+ * deck's transition. See CardFlight for what replaced it and why.
  */
-async function pin(task: FocusTask, from?: DOMRect) {
+function pin(task: FocusTask, from?: DOMRect) {
   const on = state.value.pinned.includes(task.key);
 
-  await remember({
-    ...state.value,
-    pinned: on ? state.value.pinned.filter((key) => key !== task.key) : [...state.value.pinned, task.key],
-  });
-  settle();
-
-  if (on) {
-    await nextTick();
-    const to = deck.value.findIndex((entry) => entry.key === task.key);
-
-    if (to >= 0) {
-      if (from) {
-        deckRef.value?.enterFrom(from);
-      }
-      direction.value = to >= index.value ? 1 : -1;
-      index.value = to;
-    }
-  }
   say(on ? `${ task.what } is back in the deck.` : `${ task.what } is pinned.`);
+
+  return on ? putBack(task, from) : putAway(task);
+}
+
+/**
+ * Off the deck and into the rail: it shrinks along the way into the miniature it becomes.
+ *
+ * Measured before anything moves, because the card is about to stop being the card on top. The
+ * rail's own copy is held back until it lands, so the dock does not fill before the card
+ * arrives in it.
+ */
+async function putAway(task: FocusTask) {
+  const from = boxOf(deckRef.value?.topRect());
+
+  quiet.value = true;
+  flyingPin.value = task.key;
+  void remember({ ...state.value, pinned: [...state.value.pinned, task.key] });
+  settle();
+  await nextTick();
+
+  const to = slotOf(task.key);
+
+  if (from && to) {
+    flight.value = {
+      task, from, to, mode: 'dock',
+    };
+  } else {
+    flyingPin.value = '';
+    quiet.value = false;
+  }
+}
+
+/**
+ * Out of the rail and back onto the deck: it grows from the dock and is laid on top.
+ *
+ * `from` is the pin's own rectangle, measured in the click before any of this runs. The deck is
+ * put on the card first, silently - `dropping` suppresses its turn and hides the card it would
+ * have drawn - so that what lands is the only one there was.
+ */
+async function putBack(task: FocusTask, from?: DOMRect) {
+  const start = boxOf(from);
+
+  quiet.value = true;
+  void remember({ ...state.value, pinned: state.value.pinned.filter((key) => key !== task.key) });
+  settle();
+  await nextTick();
+
+  const at = deck.value.findIndex((entry) => entry.key === task.key);
+
+  if (at < 0) {
+    quiet.value = false;
+
+    return;
+  }
+
+  dropping.value = true;
+  index.value = at;
+  await nextTick();
+
+  const to = boxOf(deckRef.value?.topRect());
+
+  if (start && to) {
+    flight.value = {
+      task, from: start, to, mode: 'drop',
+    };
+  } else {
+    dropping.value = false;
+    quiet.value = false;
+  }
 }
 
 /** From the rail: the same act, with where it was on the way in. */
@@ -617,6 +757,8 @@ onBeforeUnmount(closeSettings);
           :key="task.key"
           type="button"
           class="pin"
+          :class="{ 'pin--flying': task.key === flyingPin }"
+          :data-key="task.key"
           :title="`${ task.needs } — click to put it back in the deck`"
           @click="unpin(task, $event)"
         >
@@ -636,6 +778,8 @@ onBeforeUnmount(closeSettings);
           :index="index"
           :direction="direction"
           :busy="busy"
+          :quiet="quiet"
+          :landing="dropping"
           :notes="notes"
           @go="go"
           @jump="jumpTo"
@@ -647,6 +791,21 @@ onBeforeUnmount(closeSettings);
         />
       </main>
     </div>
+
+    <!--
+      The card between the two places, while it is between them. Keyed on the flight so every one
+      of them is a new component with its own animation - the old version reused one mechanism and
+      depended on it being reset afterwards, which is why it played once and then stopped.
+    -->
+    <CardFlight
+      v-if="flight"
+      :key="`${ flight.task.key }:${ flight.mode }`"
+      :task="flight.task"
+      :from="flight.from"
+      :to="flight.to"
+      :mode="flight.mode"
+      @done="flightDone"
+    />
 
     <p v-if="error" class="focus__error">{{ error }}</p>
     <Transition name="notice">
@@ -964,6 +1123,9 @@ onBeforeUnmount(closeSettings);
   cursor: pointer;
   transition: transform var(--fast) var(--ease-spring);
 }
+
+/* Its place is held, but the card is still in the air on its way here. See CardFlight. */
+.pin--flying { visibility: hidden; }
 
 .pin:hover { transform: translateX(2px) scale(1.015); }
 

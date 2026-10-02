@@ -25,6 +25,20 @@ const props = defineProps<{
   busy?: boolean;
   /** The agent's comments for the card on top, when its work is a review. See focus-review.ts. */
   notes?: unknown[];
+  /**
+   * A card is in the air between this deck and the pinned rail - see CardFlight.
+   *
+   * The deck does not turn while that is true, in either direction. Nothing is being dealt: the
+   * card is going to the rail or coming back from it, and the flight is the whole of the
+   * movement. Left to itself the deck would animate its own half as well, so pinning threw the
+   * card off the bottom of the screen at the same time as the copy of it flew to the dock.
+   */
+  quiet?: boolean;
+  /**
+   * ...and that card is landing on top of this deck, so the top card is not drawn at all. The one
+   * flying in is the same card, and two of it is one too many.
+   */
+  landing?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -140,31 +154,21 @@ function carry(out: string | null, into: string | null, dim: string | null) {
 const clearCarry = () => carry(null, null, null);
 
 /**
- * Start the next turn from somewhere on the screen rather than from the stack.
+ * Where the card on top is, for something outside the deck that has to fly to or from it.
  *
- * The deck already knows how to pick a turn up part-way through - that is what `--carry-in` is
- * for, and it exists because a card let go of halfway down should not snap back to the top
- * before it falls. A card coming out of the pinned rail is the same problem seen from the other
- * side: it is already on the screen, at that size, in that place, and the honest animation is
- * the one that grows it from there into the deck rather than fading a new card in over it.
- *
- * The caller hands over where the thing is now; this works out the transform that would put the
- * deck's card there, and the turn plays from it.
+ * This replaces `enterFrom`, which tried to start the deck's own turn from the pinned rail by
+ * setting `--carry-in`. Two things were wrong with that and neither was fixable from here. The
+ * forward reading uncovers the arriving card from *underneath* the one leaving - on purpose, it
+ * is the whole of what dealing a card looks like - so a card coming back from the rail arrived
+ * behind the card on top. And the custom property was cleared by a transition end, so when the
+ * card landed on the index that was already showing, no transition ran, nothing cleared, and the
+ * animation played once and never again. A flight is not a turn; it is drawn as its own thing.
  */
-function enterFrom(rect: { top: number; left: number; width: number; height: number }): void {
-  const card = deck.value?.querySelector('.deck__top')?.getBoundingClientRect();
-
-  if (!card || !card.width || !rect.width) {
-    return;
-  }
-  const scale = Math.max(0.05, rect.width / card.width);
-  const dx = Math.round((rect.left + rect.width / 2) - (card.left + card.width / 2));
-  const dy = Math.round((rect.top + rect.height / 2) - (card.top + card.height / 2));
-
-  carry(null, `translate3d(${ dx }px, ${ dy }px, 0) scale(${ scale.toFixed(3) })`, 'brightness(1)');
+function topRect(): DOMRect | null {
+  return (deck.value?.querySelector('.deck__top') as HTMLElement | null)?.getBoundingClientRect() || null;
 }
 
-defineExpose({ enterFrom });
+defineExpose({ topRect });
 
 /** Every input ends here: the deck only carries a start state when a hand chose one. */
 function go(step: 1 | -1) {
@@ -452,7 +456,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
     </div>
 
     <Transition
-      :name="direction === 1 ? 'turn-fwd' : 'turn-back'"
+      :name="quiet ? 'turn-none' : (direction === 1 ? 'turn-fwd' : 'turn-back')"
       @before-leave="onBeforeLeave"
       @after-leave="clearCarry"
       @after-enter="clearCarry"
@@ -461,7 +465,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         v-if="current"
         :key="current.id"
         class="deck__top"
-        :class="{ 'deck__top--dragging': dragging }"
+        :class="{ 'deck__top--dragging': dragging, 'deck__top--landing': landing }"
         :style="topStyle"
         @pointerdown="onDown"
         @pointermove="onMove"
@@ -489,7 +493,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
       </div>
     </Transition>
 
-    <!-- The rail: where you are in the deck, and what is coming, in the colours of the kinds. -->
+    <!--
+      The rail: where you are in the deck, and what is coming, in the colours of the kinds.
+
+      The hue comes off `task.card.kind` and not `task.kind`: a FocusTask is a queue item with a
+      card attached, and the kind belongs to the card. `task.kind` is undefined, which is not an
+      error anywhere - the class is just `deck__dot--undefined`, `--dot` goes unset, and every
+      dot quietly falls back to grey.
+    -->
     <nav v-if="cards.length" class="deck__rail" aria-label="Deck position">
       <button
         class="deck__step"
@@ -504,7 +515,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           <button
             type="button"
             class="deck__dot"
-            :class="[`deck__dot--${ task.kind }`, { 'deck__dot--on': n === index }]"
+            :class="[`deck__dot--${ task.card.kind }`, { 'deck__dot--on': n === index }]"
             :title="task.title"
             :aria-label="`Card ${ n + 1 }: ${ task.title }`"
             :aria-current="n === index"
@@ -795,6 +806,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 }
 
 .deck__step:hover { color: var(--text); border-color: var(--border-strong); transform: scale(1.06); }
+
+/*
+ * Not drawn, but still laid out: the card flying in needs to know where it is going, and
+ * `visibility` keeps the box measurable where `display: none` would not. See CardFlight.
+ */
+.deck__top--landing { visibility: hidden; }
 
 .deck__dots { display: flex; flex-direction: column; gap: 6px; margin: var(--s2) 0; padding: 0; list-style: none; }
 
