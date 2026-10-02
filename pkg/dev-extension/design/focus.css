@@ -257,3 +257,41 @@ body.theme-light .dev-focus {
   border: 0;
   background: none;
 }
+
+/*
+ * A badge, once.
+ *
+ * Five things in this view are a small round label with a number or a word in it - the count on
+ * a rule, the count on a card's rule, the score on a queue row, the tag on a miniature - and
+ * they had five paddings and three heights between them, which is what makes a panel look
+ * assembled rather than designed. They are one thing here, and the places that draw them say
+ * `u-badge` instead of inventing it again.
+ *
+ * 18px: it sits on a line of 13px text without pushing the line taller, and the prototype's
+ * own small chip measures the same.
+ */
+.dev-focus .u-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* In the hue of whatever it is counting, where there is one. */
+.dev-focus .u-badge--kind {
+  background: color-mix(in srgb, var(--kind-c, var(--accent)) 18%, transparent);
+  color: var(--kind-c, var(--accent));
+}
+
+.dev-focus .u-badge--solid {
+  background: var(--kind-c, var(--accent));
+  color: var(--ground);
+}

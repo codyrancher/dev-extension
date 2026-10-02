@@ -134,7 +134,7 @@ function nudge(row: WeightRow, by: number) {
       >
         <div class="rule__line">
           <span class="rule__label">{{ row.label }}</span>
-          <span v-if="row.count" class="rule__count">{{ row.count }} waiting</span>
+          <span v-if="row.count" class="u-badge u-badge--kind">{{ row.count }} waiting</span>
           <span class="rule__score" :class="{ 'rule__score--moved': row.score !== row.shipped }">{{ row.score }}</span>
         </div>
 
@@ -220,8 +220,11 @@ function nudge(row: WeightRow, by: number) {
 .wc__item--signal   { --kind-c: var(--kind-signal); }
 
 /* ── A band of rules ──────────────────────────────────────────────────────────────────────── */
-.wc__band { display: flex; flex-direction: column; gap: var(--s2); }
-.wc__band-head { display: flex; align-items: baseline; gap: var(--s2); }
+/* No gap: each rule carries its own space and its own rule-off, so every division between two
+   of them measures the same. With a gap as well, the first one after the band's heading sat
+   8px further down than the rest. */
+.wc__band { display: flex; flex-direction: column; }
+.wc__band-head { display: flex; align-items: baseline; gap: var(--s2); margin-bottom: 2px; }
 
 .wc__band-range {
   margin-left: auto;
@@ -234,7 +237,7 @@ function nudge(row: WeightRow, by: number) {
 
 /* ── One rule ─────────────────────────────────────────────────────────────────────────────── */
 .rule {
-  padding: var(--s3) 0 var(--s2);
+  padding: var(--s3) 0;
   border-top: 1px solid var(--border);
 }
 
@@ -242,15 +245,6 @@ function nudge(row: WeightRow, by: number) {
 .rule__line { display: flex; align-items: baseline; gap: var(--s2); }
 .rule__label { color: var(--text); font-size: var(--t-sm); }
 
-.rule__count {
-  padding: 0 6px;
-  border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--kind-c) 18%, transparent);
-  color: var(--kind-c);
-  font-size: 10px;
-  font-weight: 700;
-  white-space: nowrap;
-}
 
 .rule__score {
   margin-left: auto;

@@ -165,6 +165,12 @@ export default {
   components: { PodFileViewer, ChatPane },
 
   props: {
+    /** Handed to the chat: a name for a different look. See ChatPane's `skin`. */
+    skin: {
+      type:    String,
+      default: '',
+    },
+
     // Which conversation to attach to, when it is one of the agent pod's. One pane, one
     // session; it is a prop so a second pane would be a second conversation rather than a fight
     // over one.
@@ -1133,6 +1139,7 @@ export default {
       </button>
     </div>
     <ChatPane
+        :skin="skin"
       v-if="view === 'chat'"
       class="mc-terminal__chat"
       :session="session"

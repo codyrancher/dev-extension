@@ -35,6 +35,12 @@ export default {
       default: null,
     },
 
+    /** Handed to the chat: a name for a different look. See ChatPane's `skin`. */
+    skin: {
+      type:    String,
+      default: '',
+    },
+
     /** claude, or a plain shell. Only read when `command` is not given. */
     mode: {
       type:    String,
@@ -106,6 +112,7 @@ export default {
       :session="session || 'agent-1'"
       :command="argv"
       :mode="mode"
+      :skin="skin"
       class="studio-terminal__pane"
       @state="onState"
     />
