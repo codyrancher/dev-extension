@@ -25,6 +25,8 @@ const props = defineProps<{
   busy?: boolean;
   /** The agent's comments for the card on top, when its work is a review. See focus-review.ts. */
   notes?: unknown[];
+  /** Everything else the card on top has to show. See focus-artifacts.ts; opaque here. */
+  artifacts?: unknown;
   /**
    * A card is in the air between this deck and the pinned rail - see CardFlight.
    *
@@ -51,6 +53,10 @@ const emit = defineEmits<{
   (e: 'resolve', value: any): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: 'discuss', value: any): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: 'ask-code', value: any): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: 'reply', value: any): void;
 }>();
 
 const current = computed(() => props.cards[props.index] || null);
@@ -478,11 +484,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           :busy="busy"
           :pinned="current.pinned"
           :notes="(notes as any)"
+          :artifacts="(artifacts as any)"
           @act="(action) => emit('act', { task: current!, action })"
           @ask="emit('ask', current!)"
           @pin="emit('pin', current!)"
           @resolve="emit('resolve', $event)"
           @discuss="emit('discuss', $event)"
+          @ask-code="emit('ask-code', $event)"
+          @reply="emit('reply', $event)"
         />
       </div>
 

@@ -10,14 +10,25 @@
  * The body is composed rather than switched: a card draws the parts its task has, so a new kind
  * of work needs a definition (focus.ts) and not a new component. What a button does is the
  * definition's too - the card only says which one was pressed.
+ *
+ * What it has is `artifacts` - the things somebody would have gone and looked up before deciding
+ * (see focus-artifacts.ts). A band of evidence across the top, and under it the one surface this
+ * kind of work is actually about: the agent's review to pass over, the change to read, the
+ * comments to answer, or the issue's own words. A card with none of them is still a card; it just
+ * says less, which is honest for work that has nothing to show yet.
  */
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { FocusTask, CardAction } from '../../focus';
 import AppButton from './AppButton.vue';
 import KindChip from './KindChip.vue';
 import StatPill from './StatPill.vue';
 import AppIcon from './AppIcon.vue';
 import ReviewPass from './ReviewPass.vue';
+import ChangeSet from './ChangeSet.vue';
+import CardComments from './CardComments.vue';
+import CardEvidence from './CardEvidence.vue';
+import { NO_ARTIFACTS } from '../../focus-artifacts';
+import type { CardArtifacts, CardComment } from '../../focus-artifacts';
 import type { ReviewNote } from '../../focus-review';
 
 const props = defineProps<{
@@ -34,6 +45,14 @@ const props = defineProps<{
    * page loads them for the card on top and nothing else.
    */
   notes?: ReviewNote[];
+  /**
+   * Everything else this card's work has to show, read for the card on top and nothing else.
+   *
+   * Empty is the normal state for all but one card at a time, and an empty one draws nothing
+   * rather than drawing a frame around nothing. See focus-artifacts.ts for what a card asks for
+   * and Focus.vue for the one place that asks.
+   */
+  artifacts?: CardArtifacts;
 }>();
 
 const emit = defineEmits<{
@@ -42,7 +61,11 @@ const emit = defineEmits<{
   (e: 'pin'): void;
   (e: 'resolve', value: { note: ReviewNote; verdict: string; body?: string }): void;
   (e: 'discuss', value: { note: ReviewNote; text: string }): void;
+  (e: 'ask-code', value: { path: string; label: string; code: string; text: string }): void;
+  (e: 'reply', value: { comment: CardComment }): void;
 }>();
+
+const art = computed<CardArtifacts>(() => props.artifacts || NO_ARTIFACTS);
 
 /** Waiting long enough that somebody is being held up by it. */
 const overdue = computed(() => props.task.waitingHours >= 48);
@@ -52,13 +75,57 @@ const primary = computed(() => props.task.card.actions[0] || null);
 const rest = computed(() => props.task.card.actions.slice(1));
 
 /**
- * A card with a review on it is laid out differently.
+ * Which of the four surfaces this card is built around, or none.
  *
- * The pass needs most of the card's height to be worth having, so everything above it gives
+ * In the order a card is worth reading in: an agent's review waiting for a pass beats the change
+ * it is about, the change beats the talk about it, and an issue with none of those has its own
+ * words. One at a time, because each of them wants most of the card.
+ */
+const surface = computed<'pass' | 'files' | 'talk' | 'prose' | ''>(() => {
+  if (props.notes?.length) {
+    return 'pass';
+  }
+  if (art.value.files.length) {
+    return 'files';
+  }
+  if (art.value.comments.length) {
+    return 'talk';
+  }
+
+  return art.value.body ? 'prose' : '';
+});
+
+/**
+ * A card with a surface on it is laid out differently.
+ *
+ * The surface needs most of the card's height to be worth having, so everything above it gives
  * some up: a smaller title, and the line of prose about why this is here dropped - the line
  * under the title already says what it is.
  */
-const hasPass = computed(() => !!props.notes?.length);
+const hasPass = computed(() => surface.value !== '');
+
+/**
+ * The action that has been pressed once and is waiting to be meant.
+ *
+ * Posting a review and merging leave this cluster, and the whole motion of this view is pressing
+ * the big button and moving on - so those two take two presses. Cleared when the card changes,
+ * because a half-pressed button that survives the deck turning is a trap.
+ */
+const confirming = ref('');
+
+watch(() => props.task.key, () => { confirming.value = ''; });
+
+function press(action: CardAction) {
+  if (action.confirm && confirming.value !== action.label) {
+    confirming.value = action.label;
+
+    return;
+  }
+  confirming.value = '';
+  emit('act', action);
+}
+
+const labelOf = (action: CardAction) => (confirming.value === action.label ? `${ action.label } — sure?` : action.label);
 
 /** How far through the agent's comments you are, shown beside the card's own button. */
 const pass = ref<{ settled: number; total: number; keeping: number } | null>(null);
@@ -120,17 +187,45 @@ const waited = computed(() => (props.task.waitingHours >= 48
     </header>
 
     <div class="card__body">
+      <!--
+        The things you would have gone and looked up: the size of the change, what CI says, what
+        is running on a link, what the agent recorded. Above the surface rather than inside it,
+        because all four are true of the work whichever surface it has.
+      -->
+      <CardEvidence :artifacts="art" />
+
       <!-- Why this is in front of you at all, in the ranking's own words. -->
       <p v-if="task.about && !hasPass" class="card__prose">{{ task.about }}</p>
 
       <!-- The agent's review, when there is one waiting: the substance of a review card. -->
       <ReviewPass
-        v-if="hasPass"
+        v-if="surface === 'pass'"
         :notes="notes || []"
         @progress="pass = $event"
         @resolve="emit('resolve', $event)"
         @ask="emit('discuss', $event)"
       />
+
+      <!-- Or the change itself, file by file, when reading it is the job. -->
+      <ChangeSet
+        v-else-if="surface === 'files'"
+        :files="art.files"
+        :busy="busy"
+        @ask="emit('ask-code', $event)"
+      />
+
+      <!-- Or what people said about it, when answering them is the job. -->
+      <CardComments
+        v-else-if="surface === 'talk'"
+        :comments="art.comments"
+        :busy="busy"
+        @reply="emit('reply', $event)"
+      />
+
+      <!-- Or its own words: an issue, an advisory, a question the agent asked. -->
+      <div v-else-if="surface === 'prose'" class="card__read">
+        <p class="card__text">{{ art.body }}</p>
+      </div>
 
       <div v-if="!hasPass" class="card__stats">
         <StatPill label="priority" :value="String(task.score)" />
@@ -146,16 +241,18 @@ const waited = computed(() => (props.task.waitingHours >= 48
         size="lg"
         icon-after="arrow-right"
         :busy="busy"
-        @click="emit('act', primary)"
-      >{{ primary.label }}</AppButton>
+        :class="{ 'card__sure': confirming === primary.label }"
+        @click="press(primary)"
+      >{{ labelOf(primary) }}</AppButton>
 
       <AppButton
         v-for="action in rest"
         :key="action.label"
         variant="ghost"
         size="lg"
-        @click="emit('act', action)"
-      >{{ action.label }}</AppButton>
+        :class="{ 'card__sure': confirming === action.label }"
+        @click="press(action)"
+      >{{ labelOf(action) }}</AppButton>
 
       <span v-if="pass" class="card__pass">
         <strong>{{ pass.keeping }}</strong> of {{ pass.total }} kept
@@ -440,6 +537,30 @@ const waited = computed(() => (props.task.waitingHours >= 48
   color: var(--text-dim);
   font-size: var(--t-md);
   line-height: 1.6;
+}
+
+/* An issue's own words: as much as fits, scrolled, rather than a paragraph cut off mid-sentence. */
+.card__read {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-right: var(--s2);
+  overflow-y: auto;
+}
+
+.card__text {
+  margin: 0;
+  max-width: 82ch;
+  color: var(--text-dim);
+  font-size: var(--t-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Pressed once: it is about to do something outside this cluster, and says so. */
+.card__sure {
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
 }
 
 .card__stats { display: flex; gap: var(--s2); flex-wrap: wrap; align-items: center; }
