@@ -26,6 +26,7 @@ import { readPrefs, savePrefs } from './prefs';
 import type { FocusPrefs } from './prefs';
 import { RULES, weightOf } from './priority';
 import type { PriorityItem, Weights } from './priority';
+import type { Artifact } from './focus-artifacts';
 
 /** The five kinds of thing that can want you, each with a hue. See design/focus.css. */
 export type FocusKind = 'review' | 'issue' | 'agent' | 'question' | 'signal';
@@ -35,12 +36,22 @@ export const KINDS: FocusKind[] = ['review', 'issue', 'agent', 'question', 'sign
 /**
  * What a button on a card does.
  *
- * Four verbs, and they are the four things a person does with something that is waiting on
- * them: go to it, ask about it, put it aside, or say it is dealt with. Anything more specific
- * than that is a prompt - which is why `ask` carries one, and why a new kind of action is
- * usually a new prompt rather than new code.
+ * The first five are what a person does with anything that is waiting on them: go to it, open it
+ * where it lives, ask about it, put it aside, say it is dealt with. Most of what a card needs is
+ * one of those with a different prompt, which is why a new kind of card is usually a definition
+ * and not new code.
+ *
+ * The rest are the things that are typical of one kind of work and of nothing else, and each one
+ * exists because the alternative was a button that sent you somewhere to do it by hand: picking
+ * up a review, starting a fix, opening the build that is already running, posting the review the
+ * agent wrote, merging what has been approved.
+ *
+ * The last two of those leave this cluster - they write to GitHub - so they ask first. See
+ * `confirm`, and FocusCard, which draws such a button as two presses rather than one.
  */
-export type ActionVerb = 'open' | 'url' | 'ask' | 'snooze' | 'done';
+export type ActionVerb =
+  | 'open' | 'url' | 'ask' | 'snooze' | 'done'
+  | 'share' | 'review' | 'fix' | 'post' | 'merge';
 
 export interface CardAction {
   label: string;
@@ -49,6 +60,16 @@ export interface CardAction {
   prompt?: string;
   /** For `snooze`: how long. */
   hours?: number;
+  /**
+   * Ask before doing it.
+   *
+   * For the two verbs that reach GitHub. A review posted is a review everybody can see, and a
+   * merge is not undone by pressing the button again; neither should be one stray click away in
+   * a view whose whole motion is clicking through cards quickly.
+   */
+  confirm?: boolean;
+  /** For `share`: which build to open. */
+  kind?: 'dashboard' | 'storybook';
 }
 
 /**
@@ -67,6 +88,16 @@ export interface CardDef {
   rules: string[];
   /** The line under the title. `{why}` by default, which is what the rule said. */
   summary: string;
+  /**
+   * What to put in front of you, from focus-artifacts.ts.
+   *
+   * The join to everything a card shows below its title, and a definition rather than code so
+   * that changing what a kind of work puts on the table is the same act as changing its buttons
+   * - something an agent can be asked to do. Only the card on top is read, so this is also the
+   * budget: a card that asks for everything costs a pull request's worth of calls every time it
+   * reaches the top of the deck.
+   */
+  wants?: Artifact[];
   actions: CardAction[];
 }
 
@@ -107,6 +138,7 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'question',
     rules:   ['agent-question'],
     summary: '{why}',
+    wants:   ['body', 'media'],
     actions: [
       { label: 'Open the conversation', verb: 'open' },
       { label: 'Summarise what it asked', verb: 'ask', prompt: 'The agent in {workspace} has stopped and is waiting on an answer. Read the last few turns of its conversation and tell me, in three lines, what it is asking and what the options are.' },
@@ -119,7 +151,9 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'review',
     rules:   ['review-findings', 'review-response', 'review-agent'],
     summary: '{why}',
+    wants:   ['notes', 'stat', 'checks', 'media'],
     actions: [
+      { label: 'Post the review', verb: 'post', confirm: true },
       { label: 'Open the review', verb: 'open' },
       { label: 'Which ones matter?', verb: 'ask', prompt: 'For {what} in {workspace}: go through the findings the review agent produced and tell me which are worth filing and which are noise, with a line of reasoning each. Do not file anything.' },
       { label: 'Later', verb: 'snooze', hours: 8 },
@@ -131,9 +165,11 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'agent',
     rules:   ['fix-feedback'],
     summary: '{why}',
+    wants:   ['comments', 'stat', 'checks', 'media'],
     actions: [
+      { label: 'Answer the comments', verb: 'ask', prompt: 'For {what} in {workspace}: go through every review comment that has not been answered, and for each one draft a reply and say whether it needs a code change. Do not push anything.' },
       { label: 'Open the workspace', verb: 'open' },
-      { label: 'Answer the comments', verb: 'ask', prompt: 'Use the my-pr-address-feedback skill on {what} in {workspace}: read every unresolved comment, make the changes it asks for, and report what you changed and what you pushed back on.' },
+      { label: 'Open the pull request', verb: 'url' },
       { label: 'Later', verb: 'snooze', hours: 8 },
     ],
   },
@@ -143,10 +179,12 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'agent',
     rules:   ['fix-draft', 'fix-no-pr', 'mine-draft-green'],
     summary: '{why}',
+    wants:   ['files', 'stat', 'checks', 'media', 'live'],
     actions: [
       { label: 'Open the pull request', verb: 'url' },
-      { label: 'Walk me through it', verb: 'ask', prompt: 'Walk me through {what} in {workspace}: what it changes, file by file, in the order a reviewer should read them, and anything in it you would question.' },
-      { label: 'Later', verb: 'snooze', hours: 12 },
+      { label: 'Open the build', verb: 'share', kind: 'dashboard' },
+      { label: 'Walk me through it', verb: 'ask', prompt: 'For {what} in {workspace}: walk me through what the agent changed, file by file, and tell me what you would want a human to check before this goes up for review.' },
+      { label: 'Later', verb: 'snooze', hours: 8 },
     ],
   },
   {
@@ -155,10 +193,12 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'signal',
     rules:   ['mine-approved', 'mine-red'],
     summary: '{why}',
+    wants:   ['checks', 'stat', 'files'],
     actions: [
+      { label: 'Merge it', verb: 'merge', confirm: true },
       { label: 'Open it', verb: 'url' },
-      { label: 'Why is it red?', verb: 'ask', prompt: 'Look at the failing checks on {what} and tell me what broke, whether it is my change that broke it, and the smallest thing that would fix it.' },
-      { label: 'Later', verb: 'snooze', hours: 4 },
+      { label: 'Why is it red?', verb: 'ask', prompt: 'For {what}: read the failing checks and tell me what is actually broken, whether it is mine, and the smallest change that would fix it.' },
+      { label: 'Later', verb: 'snooze', hours: 6 },
     ],
   },
   {
@@ -167,9 +207,12 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'review',
     rules:   ['reviewing-asked', 'reviewing-pushed', 'reviewing-open'],
     summary: '{why}',
+    wants:   ['files', 'stat', 'checks', 'live', 'body'],
     actions: [
+      { label: 'Start a review workspace', verb: 'review' },
+      { label: 'Open the build', verb: 'share', kind: 'dashboard' },
       { label: 'Open the pull request', verb: 'url' },
-      { label: 'Start a review workspace', verb: 'ask', prompt: 'Start a review of {what}: make a workspace for it if there is none, run the review agent, and tell me when its findings are ready for my pass.' },
+      { label: 'What changed?', verb: 'ask', prompt: 'For {what} ({title}): read the diff and tell me in five lines what it changes, what it touches that I should be careful about, and what I should check by hand.' },
       { label: 'Later', verb: 'snooze', hours: 12 },
     ],
   },
@@ -179,9 +222,11 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'issue',
     rules:   ['issue-started'],
     summary: '{why}',
+    wants:   ['body'],
     actions: [
+      { label: 'Start the fix', verb: 'fix' },
       { label: 'Open the issue', verb: 'url' },
-      { label: 'Start the fix', verb: 'ask', prompt: 'Start a fix for {what}: make a workspace, reproduce it, and stop when you have a plan for me to look at.' },
+      { label: 'Is this well specified?', verb: 'ask', prompt: 'For {what} ({title}): read the issue and tell me whether it says enough to be fixed, what is missing, and where in the codebase it probably lives.' },
       { label: 'Later', verb: 'snooze', hours: 24 },
     ],
   },
@@ -191,10 +236,11 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'signal',
     rules:   ['stalled'],
     summary: '{why}',
+    wants:   ['body', 'media', 'checks'],
     actions: [
+      { label: 'What happened?', verb: 'ask', prompt: 'The work in {workspace} stopped. Read the end of its conversation and its last output, and tell me what it was doing, why it stopped, and what would get it going again.' },
       { label: 'Open the workspace', verb: 'open' },
-      { label: 'What happened?', verb: 'ask', prompt: 'The agent in {workspace} stopped without finishing. Read its last conversation and tell me where it got to and what stopped it.' },
-      { label: 'Later', verb: 'snooze', hours: 12 },
+      { label: 'Later', verb: 'snooze', hours: 4 },
     ],
   },
   {
@@ -203,6 +249,7 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'signal',
     rules:   ['advisory-critical', 'advisory-high', 'advisory-medium', 'advisory-low'],
     summary: '{why}',
+    wants:   ['body'],
     actions: [
       { label: 'Open the advisory', verb: 'url' },
       { label: 'Take the patch', verb: 'ask', prompt: 'Use the my-dependabot-fix skill for {what}: take the patch, run what the change touches, and open the pull request.' },
@@ -215,10 +262,12 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'issue',
     rules:   ['bot-cleared', 'bot-stopped', 'bot-green', 'bot-red'],
     summary: '{why}',
+    wants:   ['stat', 'checks', 'files'],
     actions: [
+      { label: 'Merge it', verb: 'merge', confirm: true },
       { label: 'Open the pull request', verb: 'url' },
-      { label: 'Is it safe?', verb: 'ask', prompt: 'Review the bump in {what}: what changed between the versions, whether anything we use is affected, and whether the build tells us enough.' },
-      { label: 'Later', verb: 'snooze', hours: 48 },
+      { label: 'Is it safe?', verb: 'ask', prompt: 'For {what}: read the changelog between the two versions and the diff, and tell me whether anything in this repository uses what changed. Say plainly whether you would merge it.' },
+      { label: 'Later', verb: 'snooze', hours: 24 },
     ],
   },
   {
@@ -227,6 +276,7 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'issue',
     rules:   ['manual'],
     summary: '{why}',
+    wants:   [],
     actions: [
       { label: 'Done', verb: 'done' },
       { label: 'Think it through with me', verb: 'ask', prompt: 'I have this on my list: "{title}" — {why}. Ask me whatever you need to, then tell me the first concrete step.' },

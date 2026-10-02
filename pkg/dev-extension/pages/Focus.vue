@@ -46,15 +46,22 @@ import {
 import type {
   FocusConfig, FocusState, FocusTask, CardAction, ManualTask, FocusKind, WeightRow
 } from '../focus';
+import { useStore } from 'vuex';
 import { priorityQueue } from '../priority';
 import type { PriorityItem } from '../priority';
-import { listAllWorkspaces } from '../api';
+import { listAllWorkspaces, currentOwner } from '../api';
 import { myWork } from '../github';
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
 import { askTheAgent, panelConversation } from '../focus-agent';
 import { reviewNotes } from '../focus-review';
 import type { ReviewNote } from '../focus-review';
+import { readArtifacts, NO_ARTIFACTS, subjectOf } from '../focus-artifacts';
+import type { CardArtifacts, CardComment } from '../focus-artifacts';
+import {
+  startPrReview, startIssueFix, submitReview, approveAndMerge, mergePr, prDetail, linesPrompt
+} from '../reviews';
+import { previewState } from '../previews';
 import { updateComment, deleteComment, discussPrompt } from '../reviews';
 import '../design/focus.css';
 import '../design/focus-chat.css';
@@ -125,6 +132,18 @@ function slotOf(key: string): Box | null {
 const notes = ref<ReviewNote[]>([]);
 const notesFor = ref('');
 
+const store = useStore();
+
+/**
+ * Everything else the card on top has to show, and which card it belongs to.
+ *
+ * Read for one card at a time, for the reason the notes are: every artifact is a network call or
+ * several, and a deck of thirty would be thirty pull requests fetched to draw one. What is read
+ * is the card's own `wants` - see focus-artifacts.ts.
+ */
+const artifacts = ref<CardArtifacts>(NO_ARTIFACTS);
+const artifactsFor = ref('');
+
 /**
  * The read in flight, handed back to every caller.
  *
@@ -163,6 +182,43 @@ function readNotes(): Promise<void> {
     });
 
   return reading;
+}
+
+/** Who you are, for telling your own comments from everybody else's. */
+const me = ref('');
+
+let readingArtifacts: Promise<void> = Promise.resolve();
+
+function readTheArtifacts(): Promise<void> {
+  const task = current.value;
+  const wants = task?.card.wants || [];
+
+  if (!task || !wants.length) {
+    artifacts.value = NO_ARTIFACTS;
+    artifactsFor.value = '';
+    readingArtifacts = Promise.resolve();
+
+    return readingArtifacts;
+  }
+
+  if (artifactsFor.value === task.key) {
+    return readingArtifacts;
+  }
+
+  artifactsFor.value = task.key;
+  // Cleared first: the card is about to draw, and last card's evidence under this card's title
+  // is worse than a card with nothing under it for a second.
+  artifacts.value = NO_ARTIFACTS;
+  readingArtifacts = readArtifacts(task, wants, store, me.value)
+    .catch(() => NO_ARTIFACTS)
+    .then((found) => {
+      // Turned again while this was in the air; see readNotes for the same guard.
+      if (artifactsFor.value === task.key) {
+        artifacts.value = found;
+      }
+    });
+
+  return readingArtifacts;
 }
 
 /**
@@ -230,6 +286,7 @@ async function load() {
 
     config.value = cfg;
     state.value = st;
+    me.value = await currentOwner().catch(() => '');
 
     // The same reads My Work's Priority tab makes, in the same order and for the same reasons -
     // see refreshPriority there. The one that matters is the second pass over the workspaces:
@@ -273,7 +330,10 @@ async function load() {
     // Capped, because this is a pull request being read over the network and the deck is the
     // page. Waiting is better than flickering; waiting forever is not, and a card that fills in
     // three seconds late is a card nobody had started reading yet.
-    await Promise.race([readNotes(), new Promise((done) => setTimeout(done, FIRST_PAINT_WAIT))]);
+    await Promise.race([
+      Promise.all([readNotes(), readTheArtifacts()]),
+      new Promise((done) => setTimeout(done, FIRST_PAINT_WAIT)),
+    ]);
   } catch (e) {
     error.value = (e as Error)?.message || String(e);
   } finally {
@@ -285,7 +345,10 @@ onMounted(load);
 
 /* ── Turning the deck ─────────────────────────────────────────────────────────────────────── */
 
-watch(current, readNotes, { immediate: true });
+watch(current, () => {
+  readNotes();
+  readTheArtifacts();
+}, { immediate: true });
 
 function go(step: 1 | -1) {
   if (!deck.value.length) {
@@ -456,7 +519,185 @@ async function act({ task, action }: { task: FocusTask; action: CardAction }) {
     } else if (action.verb === 'ask') {
       await askTheAgent(task, actionPrompt(action, task));
       say('Asked in the conversation.');
+    } else if (action.verb === 'share') {
+      await openTheBuild(task, action.kind || 'dashboard');
+    } else if (action.verb === 'review') {
+      await pickUpTheReview(task);
+    } else if (action.verb === 'fix') {
+      await pickUpTheIssue(task);
+    } else if (action.verb === 'post') {
+      await postTheReview(task);
+    } else if (action.verb === 'merge') {
+      await mergeIt(task);
     }
+  } catch (e) {
+    error.value = (e as Error)?.message || String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+/* ── The verbs that are typical of one kind of work ───────────────────────────────────────── */
+
+/**
+ * Open what is already running.
+ *
+ * The card knows there is one because the evidence band drew it, so this is the same link - the
+ * point of the button is that it is under your thumb rather than two tabs away.
+ */
+async function openTheBuild(task: FocusTask, kind: 'dashboard' | 'storybook') {
+  // The one asked for, else whatever is up: an agent that shared a whole Rancher rather than a
+  // static build put up the more useful thing, and a button that refused it on a technicality
+  // would be refusing the answer to the question it was pressed to ask.
+  const live = artifacts.value.live.find((entry) => entry.kind === kind)
+    || artifacts.value.live.find((entry) => entry.url);
+  const url = live?.url || (task.workspace
+    ? (await previewState(store, task.workspace, 'local', kind).catch(() => null))?.url
+    : '');
+
+  if (url) {
+    window.open(url, '_blank', 'noopener');
+
+    return;
+  }
+  say(`Nothing is serving ${ kind === 'storybook' ? 'Storybook' : 'a build' } for this yet.`);
+}
+
+/** Pick up a review: the workspace, the checkout and the agent, as the Create page would. */
+async function pickUpTheReview(task: FocusTask) {
+  const { pr } = subjectOf(task);
+
+  if (!pr) {
+    say('Nothing here to review.');
+
+    return;
+  }
+  const started = await startPrReview(store, { number: pr, title: task.title });
+
+  say(`Review started in ${ started.workspace }.`);
+}
+
+/** The same for an issue: a fix workspace, on a branch, with the issue in front of it. */
+async function pickUpTheIssue(task: FocusTask) {
+  const { issue } = subjectOf(task);
+
+  if (!issue) {
+    say('Nothing here to fix.');
+
+    return;
+  }
+  const started = await startIssueFix(store, { number: issue, title: task.title });
+
+  say(`Fix started in ${ started.workspace }.`);
+}
+
+/**
+ * Post what the agent wrote, as a review on GitHub.
+ *
+ * Only the comments that survived the pass: ReviewPass has already dropped the ones you threw
+ * out, so what goes up is what is left. The card asked before getting here - see `confirm`.
+ */
+async function postTheReview(task: FocusTask) {
+  const { pr } = subjectOf(task);
+
+  if (!pr) {
+    return;
+  }
+  const { posted, url } = await submitReview(pr);
+
+  say(posted ? `Posted ${ posted } comment${ posted === 1 ? '' : 's' } on ${ task.what }.` : 'Nothing was left to post.');
+  if (url) {
+    window.open(url, '_blank', 'noopener');
+  }
+  await done(task);
+}
+
+/**
+ * Merge it.
+ *
+ * Two things this has to get right that the button cannot say.
+ *
+ * Whose it is. `approveAndMerge` approves first, which is what a dependabot bump wants and what
+ * GitHub refuses on your own pull request - "can not approve your own" - so a merge of your own
+ * would have thrown before it ever merged. So: yours is merged, somebody else's is approved and
+ * merged.
+ *
+ * Whether it is green. A red pull request is one of the two things that puts a card of your own
+ * in this deck at all, so the button is right there under a card that says it is failing. This
+ * does not merge it; GitHub will, for anyone who means it, and saying so is better than either
+ * doing it quietly or hiding the button.
+ */
+async function mergeIt(task: FocusTask) {
+  const { pr } = subjectOf(task);
+
+  if (!pr) {
+    return;
+  }
+
+  if (artifacts.value.checks.some((check) => check.state === 'failed')) {
+    error.value = `${ task.what } is red. Merge it on GitHub if you mean to.`;
+
+    return;
+  }
+
+  const detail = await prDetail(pr).catch(() => null);
+  const mine = String(detail?.meta?.author || '').toLowerCase() === me.value.toLowerCase();
+
+  if (mine) {
+    await mergePr(pr);
+  } else {
+    const { steps } = await approveAndMerge(pr);
+    const failed = steps.find((step) => !step.ok);
+
+    if (failed) {
+      error.value = `${ failed.step }: ${ failed.note || 'failed' }`;
+
+      return;
+    }
+  }
+  say(`${ task.what } is merged.`);
+  await done(task);
+}
+
+/**
+ * A question about a run of code in the change, sent where every other question goes.
+ *
+ * `linesPrompt` is the same wording the pull request page uses, so the agent is answering the
+ * question it already knows how to answer rather than a second phrasing of it.
+ */
+async function askAboutCode(task: FocusTask, value: { path: string; label: string; code: string; text: string }) {
+  const { pr } = subjectOf(task);
+  const line = Number(/(\d+)/.exec(value.label)?.[1] || 0);
+
+  busy.value = true;
+  try {
+    await askTheAgent(task, pr
+      ? linesPrompt(pr, {
+        path: value.path, line, startLine: null, side: 'RIGHT', code: value.code,
+      }, value.text)
+      : `About ${ value.path } ${ value.label }:\n\n\`\`\`\n${ value.code }\n\`\`\`\n\n${ value.text }`);
+    say('Asked in the conversation.');
+  } catch (e) {
+    error.value = (e as Error)?.message || String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+/** Answer one of the comments waiting on this change, with the comment in front of the agent. */
+async function replyTo(task: FocusTask, value: { comment: CardComment }) {
+  const { comment } = value;
+
+  busy.value = true;
+  try {
+    await askTheAgent(task, [
+      `On ${ task.what }, ${ comment.author } said this${ comment.path ? ` about ${ comment.path }${ comment.line ? `:${ comment.line }` : '' }` : '' }:`,
+      '',
+      comment.body,
+      '',
+      'Draft a reply, and say whether it needs a change to the code. Do not push anything.',
+    ].join('\n'));
+    say('Asked in the conversation.');
   } catch (e) {
     error.value = (e as Error)?.message || String(e);
   } finally {
@@ -781,6 +1022,7 @@ onBeforeUnmount(closeSettings);
           :quiet="quiet"
           :landing="dropping"
           :notes="notes"
+          :artifacts="artifacts"
           @go="go"
           @jump="jumpTo"
           @act="act"
@@ -788,6 +1030,8 @@ onBeforeUnmount(closeSettings);
           @pin="pin"
           @resolve="resolveNote"
           @discuss="discussNote"
+          @ask-code="current && askAboutCode(current, $event)"
+          @reply="current && replyTo(current, $event)"
         />
       </main>
     </div>
