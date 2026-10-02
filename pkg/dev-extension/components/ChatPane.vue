@@ -215,6 +215,18 @@ export default {
 
   props: {
     session:   { type: String, default: 'agent-1' },
+    /**
+     * A name for a different look, or '' for this component's own.
+     *
+     * The chat is one component in several places - a workspace's conversations, the panel's
+     * drawer, the Focus deck's bar - and those places do not agree about what a conversation
+     * should look like. Rather than fork it, the root carries `mc-chat--skin-<name>` and
+     * whoever wants a different one ships a stylesheet for that class: nothing in here knows
+     * about any skin, and a page that asks for none is byte-for-byte what it was.
+     *
+     * The Focus view's is `loop`, which recreates the prototype's chat (design/focus-chat.css).
+     */
+    skin:      { type: String, default: '' },
     mode:      { type: String, default: 'claude' },
     command:   { type: Array, default: null },
     findPod:   { type: Function, default: null },
@@ -1869,7 +1881,7 @@ export default {
     :data-polled="polledAt"
     :data-entries="entries.length"
     :data-file="file"
-    :class="[`mc-chat--${ look.size }`, `mc-chat--${ look.density }`, { 'mc-chat--flat': !look.bubbles, 'mc-chat--no-times': !look.times }]"
+    :class="[`mc-chat--${ look.size }`, `mc-chat--${ look.density }`, skin ? `mc-chat--skin-${ skin }` : '', { 'mc-chat--flat': !look.bubbles, 'mc-chat--no-times': !look.times }]"
     @drop="onDrop"
     @dragover.prevent
   >

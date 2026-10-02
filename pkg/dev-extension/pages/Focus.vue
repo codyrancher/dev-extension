@@ -33,6 +33,7 @@ import KindChip from '../components/focus/KindChip.vue';
 import AppIcon from '../components/focus/AppIcon.vue';
 import AppButton from '../components/focus/AppButton.vue';
 import WeightsChart from '../components/focus/WeightsChart.vue';
+import MiniCard from '../components/focus/MiniCard.vue';
 import CardGallery from '../components/focus/CardGallery.vue';
 import FocusChatBar from '../components/focus/FocusChatBar.vue';
 import StudioTerminal from '../components/StudioTerminal.vue';
@@ -55,6 +56,7 @@ import { reviewNotes } from '../focus-review';
 import type { ReviewNote } from '../focus-review';
 import { updateComment, deleteComment, discussPrompt } from '../reviews';
 import '../design/focus.css';
+import '../design/focus-chat.css';
 
 const loading = ref(true);
 const busy = ref(false);
@@ -615,13 +617,10 @@ onBeforeUnmount(closeSettings);
           :key="task.key"
           type="button"
           class="pin"
-          :class="`pin--${ task.card.kind }`"
           :title="`${ task.needs } — click to put it back in the deck`"
           @click="unpin(task, $event)"
         >
-          <span class="pin__what">{{ task.what }}</span>
-          <span class="pin__title">{{ task.title || task.needs }}</span>
-          <span class="pin__needs">{{ task.needs }}</span>
+          <MiniCard :task="task" blur />
         </button>
         <p v-if="!pinned.length" class="focus__pins-empty">
           Nothing pinned. Pin a card to keep it here while you work on it.
@@ -670,10 +669,16 @@ onBeforeUnmount(closeSettings);
       @queue="openSettings('queue')"
     >
       <template #history>
+        <!--
+          The product's own conversation, wearing the prototype's clothes: `skin` is a class on
+          the chat's root and nothing more, so this is the same chat as everywhere else, reading
+          the same transcript, and the chat everywhere else is untouched. See design/focus-chat.css.
+        -->
         <StudioTerminal
           v-if="conversation"
           :key="conversation"
           :session="conversation"
+          skin="loop"
         />
         <p v-else class="focus__chat-empty">Starting a conversation…</p>
       </template>
@@ -923,10 +928,10 @@ onBeforeUnmount(closeSettings);
   display: flex;
   flex-direction: column;
   gap: var(--s2);
-  /* Narrow: it is a column of reminders beside the thing you are reading, and every pixel it
-     takes is a pixel off the card. The prototype's card is 90% of the window; this keeps it
-     near that. */
-  width: 168px;
+  /* Wide enough that a parked card's own words are readable at this scale, narrow enough that
+     the deck still has the room: the prototype's card is 90% of its window, and this keeps the
+     deck near that. */
+  width: 196px;
   padding: var(--s2) var(--s4) var(--s5);
   overflow-y: auto;
 }
@@ -945,31 +950,22 @@ onBeforeUnmount(closeSettings);
   text-transform: uppercase;
 }
 
+/*
+ * A pinned card is the card, parked: the real component scaled into the lane and blurred, with
+ * what it is and what it wants drawn over the top. See MiniCard - the blur is the point, not a
+ * decoration: a miniature that had to stay true would mean re-reading the pull request to
+ * redraw something this small.
+ */
 .pin {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--s3);
-  border: 1px solid color-mix(in srgb, var(--kind-c) 32%, var(--border));
-  border-left: 3px solid var(--kind-c);
-  border-radius: var(--r-md);
-  background: var(--surface-sunk);
-  color: var(--text-dim);
-  text-align: left;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
   cursor: pointer;
-  transition: transform var(--fast) var(--ease-spring), border-color var(--fast);
+  transition: transform var(--fast) var(--ease-spring);
 }
 
-.pin:hover { transform: translateX(2px); border-color: var(--kind-c); }
-.pin__what { color: var(--kind-c); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
-.pin__title { color: var(--text); font-size: var(--t-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pin__needs { color: var(--text-faint); font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.pin--review   { --kind-c: var(--kind-review); }
-.pin--issue    { --kind-c: var(--kind-issue); }
-.pin--agent    { --kind-c: var(--kind-agent); }
-.pin--question { --kind-c: var(--kind-question); }
-.pin--signal   { --kind-c: var(--kind-signal); }
+.pin:hover { transform: translateX(2px) scale(1.015); }
 
 /* ── What the page says to you ────────────────────────────────────────────────────────────── */
 .focus__notice,
