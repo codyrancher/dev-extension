@@ -10,8 +10,13 @@
  *
  * `blur` is what makes it honest in the rail. A pinned card is a card you are not reading: its
  * detail is stale the moment it is parked, and keeping it true would mean re-reading the pull
- * request to redraw something 124px tall. So the detail is blurred and the two things that do
- * not go stale - what it is, and what it wants - are drawn over the top at a size you can read.
+ * request to redraw something 102px tall. So it is blurred - the shape of the card, its hue and
+ * its weight, with none of the words claiming to be current.
+ *
+ * It carried its title and what it wanted, unblurred, over the top. They are gone: at this size
+ * a line of text is a grey smear with a serif on it, and the card's own colour and shape say
+ * which one it is faster than four words do. The name is on the button's title for anyone who
+ * wants it spelled out.
  */
 import {
   onBeforeUnmount, onMounted, ref
@@ -69,15 +74,6 @@ onBeforeUnmount(() => watching?.disconnect());
       <FocusCard :task="task" />
     </div>
 
-    <!-- What does not go stale, over the top, at a size that can be read. -->
-    <div
-      v-if="blur"
-      class="mini-card__label"
-    >
-      <span class="mini-card__what">{{ task.what }}</span>
-      <span class="mini-card__title">{{ task.title || task.needs }}</span>
-      <span class="mini-card__needs">{{ task.needs }}</span>
-    </div>
   </div>
 </template>
 
@@ -102,49 +98,21 @@ onBeforeUnmount(() => watching?.disconnect());
   pointer-events: none;
 }
 
-/* Parked rather than being read: the card is there, the words are legible, the detail is not. */
+/*
+ * Parked rather than being read.
+ *
+ * Enough blur that no word in it claims to be current, and enough of the card left that it is
+ * recognisably a card: its hue at the edges, its title block, the row of buttons along the
+ * bottom. Brighter than it was, now that nothing is drawn over it.
+ */
 .mini-card--blur .mini-card__stage {
-  filter: blur(2.5px) saturate(0.85);
-  opacity: 0.5;
+  filter: blur(2.2px) saturate(0.9);
+  opacity: 0.72;
 }
 
-.mini-card__label {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  gap: 1px;
-  padding: var(--s2) var(--s3);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-sunk) 55%, transparent) 0%, var(--surface-sunk) 62%);
-}
 
-.mini-card__what {
-  color: var(--kind-c);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
 
-.mini-card__title {
-  color: var(--text);
-  font-size: var(--t-sm);
-  line-height: 1.25;
-  /* Two lines of title and then an ellipsis: the rail is a reminder, not a reading surface. */
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-}
 
-.mini-card__needs {
-  color: var(--text-faint);
-  font-size: var(--t-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .mini-card--review   { --kind-c: var(--kind-review); }
 .mini-card--issue    { --kind-c: var(--kind-issue); }
