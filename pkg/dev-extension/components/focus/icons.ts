@@ -3,7 +3,7 @@ export type IconName =
   | 'settings' | 'tasks' | 'send' | 'chevron-up' | 'chevron-down'
   | 'check' | 'cross' | 'spinner' | 'play' | 'sparkle' | 'clock' | 'arrow-right'
   | 'pencil' | 'expand' | 'chevron-left' | 'chevron-right' | 'plus' | 'minus'
-  | 'pin' | 'snooze' | 'scales';
+  | 'pin' | 'snooze' | 'scales' | 'copy' | 'trash' | 'server';
 
 export const iconPaths: Record<IconName, string> = {
   // A pin, pointing down-left, as a drawing pin seen from the side.
@@ -34,6 +34,12 @@ export const iconPaths: Record<IconName, string> = {
   'chevron-right': 'm8 5 5 5-5 5',
   plus: 'M10 4.6v10.8M4.6 10h10.8',
   minus: 'M4.6 10h10.8',
+  // Two sheets, the back one offset: the copy mark everything uses.
+  copy: 'M7.4 7.4h7.8v7.8H7.4zM12.6 7.4V5.2a1 1 0 0 0-1-1H5.2a1 1 0 0 0-1 1v6.4a1 1 0 0 0 1 1h2.2',
+  // A bin with a lid and two staves.
+  trash: 'M4.6 6.6h10.8M8.2 6.6V4.8h3.6v1.8M6.2 6.6l.7 9.2h6.2l.7-9.2M8.8 9.4v3.8M11.2 9.4v3.8',
+  // A stack of two boxes with a light on each: a running thing, as against a static one.
+  server: 'M3.6 4.4h12.8v4.4H3.6zM3.6 11.2h12.8v4.4H3.6zM6.2 6.6h.01M6.2 13.4h.01',
 };
 
 /** The ones drawn as a solid shape rather than a stroked line. */
