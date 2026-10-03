@@ -11,7 +11,7 @@
 // sliced around the comment. A comment you cannot see the code for is a comment you cannot
 // judge, and judging them is the whole job.
 
-import { listComments, prDetail, DEFAULT_REPO } from './reviews';
+import { listComments, prDetail, artifactUrl, DEFAULT_REPO } from './reviews';
 import type { LocalComment } from './reviews';
 
 /** One line of a diff hunk, with the numbers from both sides so a comment can point at one. */
@@ -31,13 +31,30 @@ export interface ReviewNote {
   path: string;
   line: number;
   selects?: [number, number];
-  severity: 'blocker' | 'nit' | 'praise' | 'question';
+  severity: 'blocker' | 'nit' | 'praise' | 'question' | 'finding';
   /** One line for the list; the body is the comment itself. */
   title: string;
   body: string;
   hunk: DiffLine[];
   /** Where it came from, shown under the comment. */
   because?: string;
+  /** What the agent hung on it to prove it: the screenshot, the recording. */
+  media: NoteMedia[];
+}
+
+/**
+ * A file an agent attached to one of its comments.
+ *
+ * Served out of the workspace it was made in, not from GitHub - nothing has been posted yet, and
+ * uploading needs a github.com session this dashboard does not have. See reviews.ts, artifactUrl.
+ */
+export interface NoteMedia {
+  kind: 'image' | 'video';
+  label: string;
+  src: string;
+  caption: string;
+  /** The name as the comment's own `[[attach:...]]` marker writes it, for placing it inline. */
+  name: string;
 }
 
 /** How many lines either side of the comment to carry. Enough to judge, short enough to read. */
@@ -92,26 +109,36 @@ export function hunkAround(lines: DiffLine[], line: number, startLine?: number |
 }
 
 /**
- * What the agent meant by it, from the comment's own words.
+ * What the agent said this is, when it said.
  *
- * The agents write their severity into the comment - a blocker says so, a nit says so - and the
- * card colours and sorts by it. Read rather than stored, because the comment is the record and
- * a second field that has to agree with it is a second field that will not.
+ * Only what the comment declares. This used to guess from the prose - a body containing "bug" or
+ * "regression" was a blocker, anything left over was a nit - and on the reviews these agents
+ * actually write it was wrong in the one direction that matters. They write findings as prose: a
+ * paragraph on what breaks, a link to the line, a recording. Nothing in that declares a severity,
+ * so every comment fell through to `nit`, and a regression that silently stops an extension
+ * receiving updates was labelled a triviality on the card.
+ *
+ * So: a conventional-comment tag at the front is believed, a comment that is shaped like a
+ * question is a question, and everything else is a finding with no claim made about it. An
+ * unlabelled finding reads as what it is - something the agent thinks you should look at - which
+ * is both true and more use than a label that is false.
  */
 export function severityOf(body: string): ReviewNote['severity'] {
-  const text = String(body || '').toLowerCase();
+  const text = String(body || '');
+  const tagged = /^[\s*_>#-]*(nit|blocker|praise|question|suggestion|issue)\b\s*[:\u2014-]/i.exec(text);
 
-  if (/\b(blocker|must fix|bug|broken|regression|incorrect)\b/.test(text)) {
-    return 'blocker';
+  if (tagged) {
+    const word = tagged[1].toLowerCase();
+
+    return word === 'suggestion' ? 'nit' : word === 'issue' ? 'blocker' : word as ReviewNote['severity'];
   }
-  if (/\?\s*$|^\s*(why|what|should|could|is there|does this)\b/m.test(text)) {
+
+  // Shape rather than vocabulary: a comment that ends in a question mark is asking something.
+  if (/\?\s*$/.test(text.trim())) {
     return 'question';
   }
-  if (/\b(nice|good catch|neat|well done|clear)\b/.test(text)) {
-    return 'praise';
-  }
 
-  return 'nit';
+  return 'finding';
 }
 
 /** The first line of a comment, which is how the agents write them: a sentence, then the detail. */
@@ -132,8 +159,12 @@ export async function reviewNotes(pr: number, repo = DEFAULT_REPO): Promise<Revi
     listComments(pr).catch(() => [] as LocalComment[]),
     prDetail(pr, repo).catch(() => null),
   ]);
+  // Keyed on `path`, which is what this API calls it. It was `file.filename` - GitHub's own name
+  // for the field, and not the one the dev API re-maps it to - so every lookup missed, every
+  // comment got an empty hunk, and the pass drew no code at all. The whole claim of this surface
+  // is that the code comes to the comment; it had quietly stopped being true.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const patches = new Map<string, DiffLine[]>((detail?.files || []).map((file: any) => [file.filename, parsePatch(file.patch || '')]));
+  const patches = new Map<string, DiffLine[]>((detail?.files || []).map((file: any) => [file.path || file.filename, parsePatch(file.patch || '')]));
 
   return comments
     .filter((comment) => comment.status === 'pending' && comment.level === 'line' && comment.path)
@@ -153,6 +184,15 @@ export async function reviewNotes(pr: number, repo = DEFAULT_REPO): Promise<Revi
         body:      comment.body,
         hunk:      hunkAround(lines, line, comment.start_line),
         because:   comment.author && comment.author !== 'you' ? `written by ${ comment.author }` : '',
+        media:     (comment.attachments || [])
+          .filter((item) => item.found && item.kind !== 'file')
+          .map((item) => ({
+            kind:    item.kind === 'video' ? 'video' as const : 'image' as const,
+            label:   item.name || item.path,
+            src:     artifactUrl(pr, item.path),
+            caption: item.caption || '',
+            name:    item.name || String(item.path).split('/').pop() || item.path,
+          })),
       };
     });
 }

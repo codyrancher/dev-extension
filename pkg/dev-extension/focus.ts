@@ -162,7 +162,9 @@ export const SHIPPED_CARDS: CardDef[] = [
   {
     id:      'fix-feedback',
     label:   'Review comments to answer',
-    kind:    'agent',
+    // A review, not agent work. The chip is the first thing read on a card, and `agent` said this
+    // was something an agent was doing - when what it is is a human reviewer waiting on you.
+    kind:    'review',
     rules:   ['fix-feedback'],
     summary: '{why}',
     wants:   ['comments', 'stat', 'checks', 'media'],

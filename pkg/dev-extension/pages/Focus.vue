@@ -35,6 +35,7 @@ import AppButton from '../components/focus/AppButton.vue';
 import WeightsChart from '../components/focus/WeightsChart.vue';
 import MiniCard from '../components/focus/MiniCard.vue';
 import CardFlight from '../components/focus/CardFlight.vue';
+import FileModal from '../components/code/FileModal.vue';
 import CardGallery from '../components/focus/CardGallery.vue';
 import FocusChatBar from '../components/focus/FocusChatBar.vue';
 import StudioTerminal from '../components/StudioTerminal.vue';
@@ -47,6 +48,7 @@ import type {
   FocusConfig, FocusState, FocusTask, CardAction, ManualTask, FocusKind, WeightRow
 } from '../focus';
 import { useStore } from 'vuex';
+import { useRoute, useRouter } from 'vue-router';
 import { priorityQueue } from '../priority';
 import type { PriorityItem } from '../priority';
 import { listAllWorkspaces, currentOwner } from '../api';
@@ -59,7 +61,7 @@ import type { ReviewNote } from '../focus-review';
 import { readArtifacts, NO_ARTIFACTS, subjectOf } from '../focus-artifacts';
 import type { CardArtifacts, CardComment } from '../focus-artifacts';
 import {
-  startPrReview, startIssueFix, submitReview, approveAndMerge, mergePr, prDetail, linesPrompt
+  startPrReview, startIssueFix, submitReview, approveAndMerge, mergePr, prDetail, prFile, linesPrompt
 } from '../reviews';
 import { previewState } from '../previews';
 import { updateComment, deleteComment, discussPrompt } from '../reviews';
@@ -133,6 +135,29 @@ const notes = ref<ReviewNote[]>([]);
 const notesFor = ref('');
 
 const store = useStore();
+const route = useRoute();
+const router = useRouter();
+
+/**
+ * Which card you are on, in the address bar.
+ *
+ * The deck is a place you come back to - you open a pull request from a card, read it, and come
+ * back - and coming back to the top of the queue rather than to the card you left is the deck
+ * losing your place. The queue key goes in the URL, so a reload, a new tab, or a link to
+ * somebody else lands on the same card.
+ *
+ * The key, not the index: the queue is re-ranked on every load, and position 4 is a different
+ * card tomorrow. `replace` rather than `push`, so turning the deck does not fill the back button
+ * with thirty entries.
+ */
+const CARD_PARAM = 'card';
+
+function rememberInUrl(key: string) {
+  if (loading.value || String(route.query[CARD_PARAM] || '') === key) {
+    return;
+  }
+  router.replace({ query: { ...route.query, [CARD_PARAM]: key || undefined } }).catch(() => undefined);
+}
 
 /**
  * Everything else the card on top has to show, and which card it belongs to.
@@ -319,6 +344,16 @@ async function load() {
       extra:      (cfg.tasks || []).map(manualItem),
     });
 
+    // The card asked for, before anything is read for it: the artifacts and the comments below
+    // are read for whatever `current` is, and resolving this afterwards would fetch card zero's
+    // and then jump - which is both slower and the flicker this gate exists to stop.
+    const asked = String(route.query[CARD_PARAM] || '');
+    const at = asked ? deck.value.findIndex((task) => task.key === asked) : -1;
+
+    if (at >= 0) {
+      index.value = at;
+    }
+
     // Nothing is drawn until the top card is the card it is going to stay as.
     //
     // The first card is usually a review pass, and a review pass is a different card once its
@@ -348,7 +383,16 @@ onMounted(load);
 watch(current, () => {
   readNotes();
   readTheArtifacts();
+  rememberInUrl(current.value?.key || '');
 }, { immediate: true });
+
+// The first card is settled by the time loading ends, and `rememberInUrl` holds its tongue until
+// then - so this is what puts the opening card in the URL when nothing asked for one.
+watch(loading, (busyNow) => {
+  if (!busyNow) {
+    rememberInUrl(current.value?.key || '');
+  }
+});
 
 function go(step: 1 | -1) {
   if (!deck.value.length) {
@@ -535,6 +579,39 @@ async function act({ task, action }: { task: FocusTask; action: CardAction }) {
   } finally {
     busy.value = false;
   }
+}
+
+/**
+ * The file somebody asked to see all of, and where in it they were.
+ *
+ * Every code view on a card offers this - a hunk, a comment's lines, a file in the change - and
+ * all three hand over the same two things: which file, and which lines were on screen. Reading it
+ * is the page's job rather than theirs, because only the page knows that these lines came from a
+ * pull request and which commit to read them at.
+ */
+const whole = ref<{ path: string; mark: [number, number]; pr: number } | null>(null);
+
+function openWholeFile(task: FocusTask, value: { path: string; mark: [number, number] }) {
+  const { pr } = subjectOf(task);
+
+  if (!pr || !value.path) {
+    say('There is no file behind this one to open.');
+
+    return;
+  }
+  whole.value = { path: value.path, mark: value.mark, pr };
+}
+
+/** The file at the commit the review is of - not at the branch's tip, which has moved on. */
+async function readWholeFile(): Promise<string> {
+  const at = whole.value;
+
+  if (!at) {
+    return '';
+  }
+  const detail = await prDetail(at.pr).catch(() => null);
+
+  return prFile(at.pr, at.path, detail?.meta?.headSha || detail?.meta?.headRef || 'HEAD');
 }
 
 /* ── The verbs that are typical of one kind of work ───────────────────────────────────────── */
@@ -1032,6 +1109,7 @@ onBeforeUnmount(closeSettings);
           @discuss="discussNote"
           @ask-code="current && askAboutCode(current, $event)"
           @reply="current && replyTo(current, $event)"
+          @expand="current && openWholeFile(current, $event)"
         />
       </main>
     </div>
@@ -1049,6 +1127,17 @@ onBeforeUnmount(closeSettings);
       :to="flight.to"
       :mode="flight.mode"
       @done="flightDone"
+    />
+
+    <!-- The whole of a file somebody was reading six lines of. See components/code/FileModal. -->
+    <FileModal
+      v-if="whole"
+      :key="`${ whole.path }:${ whole.mark[0] }`"
+      :path="whole.path"
+      :mark="whole.mark"
+      :at="`PR #${ whole.pr }`"
+      :load="readWholeFile"
+      @close="whole = null"
     />
 
     <p v-if="error" class="focus__error">{{ error }}</p>
@@ -1322,6 +1411,13 @@ onBeforeUnmount(closeSettings);
 .focus__main {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
+  /*
+   * One row, the height of this element, for the reason the deck's own grid has one: an implicit
+   * `auto` row is sized to its tallest item, so a tall card grew the row past the bounded height
+   * it was supposed to sit in. Every box between the view and the card's scrolling body has to be
+   * pinned, or the card is not a fixed object - this one, the deck's, and the card's own column.
+   */
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 

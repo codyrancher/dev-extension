@@ -15,7 +15,12 @@ import { computed, ref, watch } from 'vue';
 import type { DiffLine, ReviewNote } from '../../focus-review';
 import AppButton from './AppButton.vue';
 import AppIcon from './AppIcon.vue';
-import CodeLines from './CodeLines.vue';
+import CodeView from '../code/CodeView.vue';
+import { fromDiffLines, highlighted } from '../code/rows';
+import CommentBody from './CommentBody.vue';
+import MediaViewer from './MediaViewer.vue';
+import { ghAssetUrl } from '../../reviews';
+import type { NoteMedia } from '../../focus-review';
 
 /** What you decided about one comment. The prototype's word for it, and its four states. */
 type NoteVerdict = 'pending' | 'good' | 'edited' | 'dropped';
@@ -36,7 +41,17 @@ const emit = defineEmits<{
   (e: 'progress', value: { settled: number; total: number; keeping: number }): void;
   (e: 'resolve', value: { note: ReviewNote; verdict: NoteVerdict; body?: string }): void;
   (e: 'ask', value: { note: ReviewNote; text: string }): void;
+  /** Which one you are on, so the card can show that comment's evidence and not the workspace's. */
+  (e: 'select', note: ReviewNote): void;
+  /** Open the whole file on the lines this comment is about. See FileModal. */
+  (e: 'expand', value: { path: string; mark: [number, number] }): void;
 }>();
+
+/** The comment's lines, syntax-highlighted, in the shape every code view in here takes. */
+const rowsFor = (note: ReviewNote) => highlighted(fromDiffLines(note.hunk), note.path);
+
+/** The evidence of the comment you are on, opened full size. See MediaViewer. */
+const viewer = ref<{ items: NoteMedia[]; at: number } | null>(null);
 
 const verdicts = ref<Record<string, NoteVerdict>>({});
 const bodies = ref<Record<string, string>>({});
@@ -67,17 +82,25 @@ const verdictWord: Record<NoteVerdict, string> = {
   dropped: 'dropped',
 };
 
+/**
+ * What to call one.
+ *
+ * `finding` is the one with no word: the agent did not say how bad it is, so neither does this.
+ * See severityOf - labelling every unlabelled comment `nit` was worse than labelling none.
+ */
 const severityWord: Record<ReviewNote['severity'], string> = {
-  blocker: 'blocker',
-  nit: 'nit',
-  praise: 'praise',
+  blocker:  'blocker',
+  nit:      'nit',
+  praise:   'praise',
   question: 'question',
+  finding:  'finding',
 };
 
 function select(note: ReviewNote) {
   selectedId.value = note.id;
   editingId.value = '';
   discussingId.value = '';
+  emit('select', note);
 }
 
 /** The next one that still wants a decision, so a pass runs forward on its own. */
@@ -218,7 +241,13 @@ function pickedRun(note: ReviewNote): [number, number] | null {
       </header>
 
       <div class="hunk">
-        <CodeLines :lines="selected.hunk" :picked="pickedRun(selected)" />
+        <CodeView
+          :rows="rowsFor(selected)"
+          :picked="pickedRun(selected)"
+          expandable
+          expand-label="See the whole file"
+          @expand="emit('expand', { path: selected.path, mark: selected.selects || [selected.line, selected.line] })"
+        />
       </div>
 
       <div v-if="editingId === selected.id" class="detail__edit">
@@ -226,6 +255,7 @@ function pickedRun(note: ReviewNote): [number, number] | null {
           v-model="draft"
           class="detail__draft"
           rows="5"
+          placeholder="Reword the comment. Markdown, and [[attach:name.mp4]] to place a recording."
           aria-label="Reword the comment"
           @keydown.esc.prevent="editingId = ''"
         />
@@ -236,7 +266,14 @@ function pickedRun(note: ReviewNote): [number, number] | null {
       </div>
 
       <template v-else>
-        <p class="detail__body">{{ bodyOf(selected) }}</p>
+        <!-- The comment as it will read once posted: markdown, with its evidence where it put it. -->
+        <CommentBody
+          class="detail__body"
+          :body="bodyOf(selected)"
+          :media="selected.media"
+          :asset-url="ghAssetUrl"
+          @open="viewer = $event"
+        />
         <p v-if="selected.because" class="detail__because">
           <AppIcon name="sparkle" :size="12" />
           {{ selected.because }}
@@ -288,6 +325,21 @@ function pickedRun(note: ReviewNote): [number, number] | null {
         </form>
       </div>
     </article>
+    <!--
+      Teleported: this is inside the deck's transformed, clipped card, and a `position: fixed`
+      child of a transform is fixed to the transform rather than to the window. Carrying
+      `.dev-focus` with it, because the view's tokens are declared there. See FocusModal.
+    -->
+    <Teleport to="body">
+      <div class="dev-focus">
+        <MediaViewer
+          v-if="viewer"
+          :items="viewer.items"
+          :start="viewer.at"
+          @close="viewer = null"
+        />
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -498,15 +550,12 @@ function pickedRun(note: ReviewNote): [number, number] | null {
   border-radius: var(--r-md);
 }
 
+/* The comment, rendered. It scrolls rather than pushing the four verdict buttons off the card. */
 .detail__body {
-  min-width: 0;
-  color: var(--text);
-  font-size: var(--t-md);
-  line-height: 1.55;
-  max-width: 78ch;
-  white-space: pre-wrap;
-  /* A comment quotes code, and a line of code has nowhere to break. */
-  overflow-wrap: anywhere;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-right: var(--s2);
+  overflow-y: auto;
 }
 
 .detail__because {

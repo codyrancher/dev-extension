@@ -19,6 +19,9 @@ import {
   parseHunks, highlightRows, hl
 } from './pr/diff';
 import type { DiffRow } from './pr/diff';
+import CodeView from './code/CodeView.vue';
+import { fromDiffRows } from './code/rows';
+import type { CodeRow } from './code/rows';
 import { listConversations, startConversation, queuePrompt, paneCommand } from '../conversations';
 import type { ProjectConversation } from '../conversations';
 import { readInWorkspace, ensureWorkspaceReady } from '../workspace-tools';
@@ -182,14 +185,28 @@ function parseDiff(text: string): ChangedFile[] {
 }
 
 interface RowView { row: DiffRow }
-interface FileView { file: ChangedFile; rows: RowView[] }
+interface FileView { file: ChangedFile; rows: RowView[]; code: CodeRow[] }
 
+/**
+ * Each file's diff, twice: as this tab's own rows, and as the shared view's.
+ *
+ * `code` is what is drawn (see components/code/CodeView.vue, which every diff in this extension
+ * now goes through) and each of its rows carries the `DiffRow` it came from in `meta`, so a click
+ * still arrives at `lineClick` with the row it has always taken.
+ */
 const fileViews = computed<FileView[]>(() => files.value.map((file) => {
   const rows: DiffRow[] = parseHunks(file.patch).flatMap((h) => h.rows);
 
   highlightRows(file.path, rows);
 
-  return { file, rows: rows.map((row) => ({ row })) };
+  // Highlighted into `hl()`'s map above, so the html is pulled from there rather than computed
+  // a second time.
+  const code: CodeRow[] = fromDiffRows(rows).map((row, n) => ({
+    ...row,
+    html: rows[n].type === 'hunk' ? undefined : hl(rows[n]),
+  }));
+
+  return { file, rows: rows.map((row) => ({ row })), code };
 }));
 
 const totals = computed(() => ({
@@ -675,97 +692,66 @@ defineExpose({ refresh });
               <span class="del-count">−{{ fv.file.deletions }}</span>
             </span>
           </div>
-          <table
+          <CodeView
             v-if="fv.file.patch && !collapsed.has(fv.file.path)"
-            class="diff-table"
+            :rows="fv.code"
+            selectable
+            @pick="(range) => lineClick(fv.file.path, fv.code[range[0]].meta as DiffRow)"
           >
-            <tbody>
-              <template
-                v-for="(rv, ri) in fv.rows"
-                :key="ri"
+            <!-- The composer, under the line it is about: what the table's `comment-row` was. -->
+            <template #after="{ row }">
+              <div
+                v-if="composerMatches(fv.file.path, row.meta as DiffRow)"
+                class="wr-anchored"
               >
-                <tr
-                  class="diff-row"
-                  :class="rv.row.type"
-                >
-                  <td
-                    class="lineno"
-                    :class="{ clickable: rv.row.oldN != null || rv.row.newN != null }"
-                    title="Click to comment"
-                    @click="lineClick(fv.file.path, rv.row)"
+                <div class="comment composer-card">
+                <div class="comment-head">
+                  <span class="comment-author">To the agent — L{{ composer!.line }}</span>
+                </div>
+                <textarea
+                  v-model="composerDraft"
+                  v-grow
+                  class="edit-textarea"
+                  placeholder="What should change here, or what do you want to know about it?"
+                  @keydown.esc.prevent="composer = null"
+                  @keydown.enter.ctrl.prevent="sendComposer"
+                />
+                <div class="edit-btns wr-send-row">
+                  <select
+                    v-model="target"
+                    class="review-target"
+                    title="Which conversation this goes to"
                   >
-                    {{ rv.row.oldN ?? '' }}
-                  </td>
-                  <td
-                    class="lineno"
-                    :class="{ clickable: rv.row.oldN != null || rv.row.newN != null }"
-                    title="Click to comment"
-                    @click="lineClick(fv.file.path, rv.row)"
+                    <option value="new">
+                      A new conversation
+                    </option>
+                    <option
+                      v-for="c in conversations"
+                      :key="c.id"
+                      :value="c.id"
+                    >
+                      {{ c.title }}
+                    </option>
+                  </select>
+                  <PrButton
+                    size="mini"
+                    class="approve"
+                    :disabled="!composerDraft.trim() || sending"
+                    @click="sendComposer"
                   >
-                    {{ rv.row.newN ?? '' }}
-                  </td>
-                  <td class="code">
-                    <span class="sign">{{ rv.row.type === 'add' ? '+' : rv.row.type === 'del' ? '−' : ' ' }}</span><span v-if="rv.row.type === 'hunk'">{{ rv.row.text }}</span><span
-                      v-else
-                      v-html="hl(rv.row)"
-                    />
-                  </td>
-                </tr>
-                <tr
-                  v-if="composerMatches(fv.file.path, rv.row)"
-                  class="comment-row"
-                >
-                  <td colspan="3">
-                    <div class="comment composer-card">
-                      <div class="comment-head">
-                        <span class="comment-author">To the agent — L{{ composer!.line }}</span>
-                      </div>
-                      <textarea
-                        v-model="composerDraft"
-                        v-grow
-                        class="edit-textarea"
-                        placeholder="What should change here, or what do you want to know about it?"
-                        @keydown.esc.prevent="composer = null"
-                        @keydown.enter.ctrl.prevent="sendComposer"
-                      />
-                      <div class="edit-btns wr-send-row">
-                        <select
-                          v-model="target"
-                          class="review-target"
-                          title="Which conversation this goes to"
-                        >
-                          <option value="new">
-                            A new conversation
-                          </option>
-                          <option
-                            v-for="c in conversations"
-                            :key="c.id"
-                            :value="c.id"
-                          >
-                            {{ c.title }}
-                          </option>
-                        </select>
-                        <PrButton
-                          size="mini"
-                          class="approve"
-                          :disabled="!composerDraft.trim() || sending"
-                          @click="sendComposer"
-                        >
-                          {{ sending ? 'Sending…' : 'Send to the agent' }}
-                        </PrButton>
-                        <PrButton
-                          size="mini"
-                          @click="composer = null"
-                        >
-                          Cancel
-                        </PrButton>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
+                    {{ sending ? 'Sending…' : 'Send to the agent' }}
+                  </PrButton>
+                  <PrButton
+                    size="mini"
+                    @click="composer = null"
+                  >
+                    Cancel
+                  </PrButton>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </CodeView>
           <div
             v-else-if="!collapsed.has(fv.file.path)"
             class="muted no-patch"
@@ -780,6 +766,10 @@ defineExpose({ refresh });
 
 <style lang="scss" scoped src="./pr/panel.scss"></style>
 <style lang="scss" scoped>
+// What `.comment-row td` used to give the composer, now that it hangs under the line rather than
+// inside a table cell. See components/code/CodeView.vue and its `after` slot.
+.wr-anchored { padding: var(--dev-space-2) var(--dev-space-5); }
+
 .review-target {
   height:    28px;
   padding:   0 var(--dev-space-3);

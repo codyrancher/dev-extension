@@ -21,11 +21,15 @@ import type { CardFile } from '../../focus-artifacts';
 import type { DiffLine } from '../../focus-review';
 import AppButton from './AppButton.vue';
 import AppIcon from './AppIcon.vue';
-import CodeLines from './CodeLines.vue';
+import CodeView from '../code/CodeView.vue';
+import { fromDiffLines, highlighted } from '../code/rows';
 
 const props = defineProps<{ files: CardFile[]; busy?: boolean }>();
 
-const emit = defineEmits<{ (e: 'ask', value: { path: string; label: string; code: string; text: string }): void }>();
+const emit = defineEmits<{
+  (e: 'ask', value: { path: string; label: string; code: string; text: string }): void;
+  (e: 'expand', value: { path: string; mark: [number, number] }): void;
+}>();
 
 /** A question that has been sent, kept under the lines it was about. */
 interface CodeThread {
@@ -77,6 +81,13 @@ const tree = computed(() => {
 });
 
 const nameOf = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+
+/** The first and last numbered line of a hunk, for opening the file on it. */
+function lineSpan(lines: DiffLine[]): [number, number] {
+  const numbers = lines.map((line) => line.new ?? line.old).filter((n): n is number => typeof n === 'number');
+
+  return numbers.length ? [numbers[0], numbers[numbers.length - 1]] : [1, 1];
+}
 
 const totals = computed(() => props.files.reduce(
   (sum, f) => ({ added: sum.added + f.added, removed: sum.removed + f.removed }),
@@ -212,11 +223,14 @@ const statusWord: Record<string, string> = {
       <div v-for="(hunk, h) in file.hunks" :key="h" class="file__hunk">
         <p class="file__hunk-head">{{ hunk.header }}</p>
 
-        <CodeLines
-          :lines="hunk.lines"
+        <CodeView
+          :rows="highlighted(fromDiffLines(hunk.lines), file.path)"
           selectable
           :picked="pick && pick.hunk === h ? pick.range : null"
+          :expandable="h === 0"
+          expand-label="See the whole file"
           @pick="onPick(h, $event)"
+          @expand="emit('expand', { path: file.path, mark: lineSpan(hunk.lines) })"
         >
           <template #after="{ index }">
             <!-- A question and its answer, under the lines they belong to. -->
@@ -232,7 +246,7 @@ const statusWord: Record<string, string> = {
               </p>
             </div>
           </template>
-        </CodeLines>
+        </CodeView>
       </div>
     </article>
 
