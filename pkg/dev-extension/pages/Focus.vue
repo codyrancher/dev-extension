@@ -40,7 +40,6 @@ import FocusDock from '../components/focus/FocusDock.vue';
 import type { DockRow } from '../components/focus/dock';
 import CardGallery from '../components/focus/CardGallery.vue';
 import FocusChatBar from '../components/focus/FocusChatBar.vue';
-import StudioTerminal from '../components/StudioTerminal.vue';
 import { holdOverlay, releaseOverlay } from '../components/focus/overlay';
 import { runtimeFacts } from '../components/focus/card-runtime';
 import {
@@ -65,7 +64,7 @@ import type { GithubWork } from '../github';
 import { workspaceBranch, startDevServer, stopDevServer } from '../workspace-tools';
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
-import { askTheAgent, panelConversation } from '../focus-agent';
+import { conversationFor, panelConversation, queueForLater } from '../focus-agent';
 import { sendToPane, paneCommand } from '../conversations';
 import { reviewNotes } from '../focus-review';
 import type { ReviewNote } from '../focus-review';
@@ -77,7 +76,6 @@ import {
 import { previewState } from '../previews';
 import { updateComment, deleteComment, discussPrompt } from '../reviews';
 import '../design/focus.css';
-import '../design/focus-chat.css';
 
 /** How long the deck will wait for the top card's detail before drawing it without. See load. */
 const FIRST_PAINT_WAIT = 3000;
@@ -474,9 +472,19 @@ const sections = computed(() => [
   },
 ]);
 
-/** The conversation the bar shows, made the first time somebody opens or asks. */
+/** The conversation the bar *is*, made the first time somebody opens, types or asks. */
 const chatOpen = ref(false);
 const conversation = ref('');
+
+/**
+ * The bar, so a card can put a question into it.
+ *
+ * A template ref rather than `provide`/`inject`: a UMD-loaded extension gets its own copy of
+ * vue, so an injection that crosses the extension boundary resolves to `undefined` - it works
+ * on the dev server and is dead in the installed plugin. Explicit, down one level, cannot break
+ * that way.
+ */
+const bar = ref<InstanceType<typeof FocusChatBar> | null>(null);
 
 /**
  * The workspace that conversation belongs to, when it belongs to one.
@@ -487,24 +495,43 @@ const conversation = ref('');
 const chatWorkspace = ref('');
 
 /**
- * Ask, and show the answer where the person is looking.
+ * Ask, in the bar, where the person is already looking.
  *
- * `askTheAgent` used to end in `openAgentPanel` - the shell's terminal drawer - so every one of
- * the ten asks on these cards threw you out of the deck and covered the card you had asked
- * about. The bar along the bottom is already on screen, already the right shape, and already
- * renders a StudioTerminal; the prompt still goes to the workspace's conversation, because that
- * is where the checkout and the tools are, and the bar now shows that conversation.
+ * This used to end in `openAgentPanel` - the shell's terminal drawer - so every one of the ten
+ * asks on these cards threw you out of the deck and covered the card you had asked about. Then
+ * it queued the prompt through the agent API and pointed the bar at the conversation, which put
+ * the answer in the right place but sent the question behind the chat's back: the bar could not
+ * show it as yours, could not say when claude had not recorded it, and could not put it in the
+ * log with everything else you had asked.
+ *
+ * So the card's question goes through the bar's own send - the same path as something typed into
+ * it, see chat-conversation.ts. The one thing that cannot go that way is a conversation whose
+ * pane will not take a paste yet (a workspace still coming up), and that falls back to the
+ * queue, which is read when the conversation finally starts.
  */
 async function askHere(task: FocusTask | null, prompt: string): Promise<string> {
-  const id = await askTheAgent(task, prompt);
+  const where = await conversationFor(task).catch(() => ({ id: '', workspace: '' }));
 
-  if (id) {
-    conversation.value = id;
-    chatWorkspace.value = task?.workspace || '';
-    chatOpen.value = true;
+  if (!where.id) {
+    say('Nothing here can hold a conversation yet.');
+
+    return '';
   }
 
-  return id;
+  conversation.value = where.id;
+  chatWorkspace.value = where.workspace;
+  chatOpen.value = true;
+  // The bar's conversation is derived from these two props; it has to see them before it sends.
+  await nextTick();
+
+  const said = await bar.value?.ask(prompt);
+
+  if (!said) {
+    await queueForLater(task, prompt).catch(() => {});
+    say('Queued \u2014 it runs when the conversation starts.');
+  }
+
+  return where.id;
 }
 
 /** Everything the queue has, drawn: pinned ones are marked and then held back from the deck. */
@@ -1622,11 +1649,27 @@ function closeSettings() {
  * Made on the way in, not on load: arriving at this page should not start a conversation, and
  * the first thing anybody does with the bar is open it or type in it.
  */
-async function wakeChat() {
-  if (!conversation.value) {
+let waking: Promise<void> | null = null;
+
+async function wakeChat(): Promise<void> {
+  if (conversation.value) {
+    return;
+  }
+  /*
+   * Once, however many times it is asked for.
+   *
+   * The bar asks on open and again on the first keystroke, and `waitForSession` asks while it
+   * waits - so without this guard three callers inside one second each reach
+   * `panelConversation`, each finds no session, and each starts one. The panel would grow three
+   * conversations from one keypress and the bar would end up reading whichever answered last.
+   */
+  waking = waking || (async() => {
     conversation.value = await panelConversation().catch(() => '');
     chatWorkspace.value = '';
-  }
+    waking = null;
+  })();
+
+  return waking;
 }
 
 async function onChatOpen(open: boolean) {
@@ -1803,34 +1846,27 @@ onBeforeUnmount(closeSettings);
     </Transition>
 
     <!--
-      The conversation. The bar is the prototype's; what is inside it when it opens is this
-      product's own conversation pane, so what you ask here is where everything else you have
-      asked is. See components/focus/FocusChatBar.vue.
+      The conversation, which is the bar rather than something the bar opens.
+
+      It is handed the two things that say *which* conversation - the id, and the argv when it is
+      a workspace's rather than the panel's - and it reads and writes that conversation itself,
+      through chat-conversation.ts. No slot and no embedded pane: the bar and the drawer's
+      ChatPane are two skins over one conversation, which is the only arrangement in which the
+      bar can be typed into and still be the same chat as everywhere else. `wake` is the bar
+      asking for a conversation because somebody started typing into it before there was one.
+      See components/focus/FocusChatBar.vue.
     -->
     <FocusChatBar
+      ref="bar"
       :open="chatOpen"
       :about="current?.title"
-      :live="!!conversation"
+      :session="conversation"
+      :command="chatWorkspace ? paneCommand(chatWorkspace, conversation) : null"
       @update:open="onChatOpen"
+      @wake="wakeChat"
       @settings="openSettings('queue')"
       @queue="openSettings('queue')"
-    >
-      <template #history>
-        <!--
-          The product's own conversation, wearing the prototype's clothes: `skin` is a class on
-          the chat's root and nothing more, so this is the same chat as everywhere else, reading
-          the same transcript, and the chat everywhere else is untouched. See design/focus-chat.css.
-        -->
-        <StudioTerminal
-          v-if="conversation"
-          :key="conversation"
-          :session="conversation"
-          :command="chatWorkspace ? paneCommand(chatWorkspace, conversation) : null"
-          skin="loop"
-        />
-        <p v-else class="focus__chat-empty">Starting a conversation…</p>
-      </template>
-    </FocusChatBar>
+    />
 
     <FocusModal
       :open="settings"
@@ -2212,7 +2248,6 @@ onBeforeUnmount(closeSettings);
 
 /* ── What is in the dialog ────────────────────────────────────────────────────────────────── */
 
-.focus__chat-empty { padding: var(--s4); color: var(--text-muted); font-size: var(--t-sm); }
 .focus__empty-note { color: var(--text-muted); font-size: var(--t-sm); }
 .focus__foot-note { color: var(--text-faint); font-size: var(--t-xs); }
 

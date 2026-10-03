@@ -117,11 +117,17 @@
    * leave room for.
    *
    * The page reserved `clamp(96px, 11vh, 118px)` for it - 96px at the measured 1024x678 for a bar
-   * whose row is 42px over `--s2` of padding, measured 54px tall. 42px of the page held for
+   * whose row was 42px over `--s2` of padding, measured 54px tall. 42px of the page held for
    * nothing, under a card whose surface was 173px. On the scale, and declared where the bar and
    * the page can both read it instead of one guessing at the other.
+   *
+   * 50 rather than 56 since the bar became the chat: its shut shape is the composer's one-line
+   * field, 30px, in `--s1` of padding inside a 1px border, which measures 50px at 1024x678 -
+   * the card above it now ends at y586 and the bar starts at y612. A reservation six pixels
+   * larger than the thing reserved is six pixels of the deck held for nothing, which is the
+   * mistake this token was declared to fix.
    */
-  --bar-h: 56px;
+  --bar-h: 50px;
   --r-sm: 8px;
   --r-md: 12px;
   --r-lg: 18px;

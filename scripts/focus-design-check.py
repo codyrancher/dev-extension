@@ -14,6 +14,18 @@ MINE = [
   'components/focus/WeightsChart.vue',
   'components/focus/CardGallery.vue',
   'components/focus/FocusChatBar.vue',
+  # The chat the bar is made of.
+  #
+  # The bar used to embed the drawer's whole conversation pane and restyle it from
+  # design/focus-chat.css, so none of what it drew was in a file this ever read - a 4,137-line
+  # component in components/ and a stylesheet keyed on a class. It is these five components now,
+  # every one of which draws something pressable: a tool row's disclosure, a turn's `send again`,
+  # the composer's send, the typeahead's rows, a question's options.
+  'components/chat/ChatTurns.vue',
+  'components/chat/ChatTurn.vue',
+  'components/chat/ChatToolRow.vue',
+  'components/chat/ChatQuestion.vue',
+  'components/chat/ChatComposer.vue',
   'components/focus/FocusCard.vue',
   'components/focus/AppButton.vue',
   'components/focus/CardAgent.vue',

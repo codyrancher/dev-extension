@@ -11,202 +11,23 @@
 // Reaching the pane: the same way the terminal does. The pane's argv says where it runs - in
 // the pod this component is pointed at, or, when it starts with `kubectl exec`, in another pod
 // that pod reaches - and every read and write here is a short exec along the same path.
-import {
-  parseTranscript, renderMarkdown, renderPlain, linkPaths, readPane, toolSummary, projectKey, agentsFrom, noteFrom } from '../chat';
-import { deriveState, parseEntries, reconcilePending, unwrapPasted } from '../chat-state.mjs';
+//
+// What is left in this file is the drawer's *skin*. Everything that is not drawn - reading the
+// transcript, deriving what the conversation is doing, the send path, the queue, the pending
+// messages, the questions, the subagents, the model options - moved to chat-conversation.ts,
+// because the Focus deck's bar had to become a chat rather than a button that opens one, and
+// there are only two other ways to do that: embed this whole component in a bar, which drags
+// the drawer's layout onto it, or write the send path a second time, which drifts. There are
+// four places in here that know what "claude has not recorded this message yet" means and two
+// copies of them would disagree within a week. So: one conversation, two skins. See
+// components/focus/FocusChatBar.vue for the other one.
+//
+// This component is also three slots now - `transcript`, `message` and `composer` - each
+// defaulting to exactly the markup it drew before. A host that wants the same conversation in
+// a different shape overrides one of them rather than forking the file.
+import { useConversation, escapeText, CUSTOMIZE } from '../chat-conversation';
 import { readLook, writeLook } from '../look';
-import {
-  modelAliases, flagChoices, parseMcpList, currentModel, isSafeOptionValue
-} from '../chat-options';
-import { podExecOnce, statPodPath, readPodFileBase64 } from '../pod';
-import { agentPod, sessionCommand } from '../agent';
 import PodFileViewer from './PodFileViewer.vue';
-
-
-const THUMB_MAX = 400_000;
-const MIME = {
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml',
-};
-
-function escapeText(text) {
-  return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-/**
- * Claude Code's interactive managers: commands that open a full-screen picker rather than
- * answering in the conversation.
- *
- * The chat cannot draw any of these, so sending one is the one thing this view does that leaves
- * the pane in a state it has to hand to the terminal. Listed because knowing *what was sent* is
- * the only reliable way to know that has happened - the pane's own shape cannot be told apart
- * from an ordinary finished turn, which is the mistake the warning above used to make.
- */
-const MANAGER_COMMANDS = ['mcp', 'permissions', 'hooks', 'memory', 'agents', 'model', 'config', 'resume', 'vim'];
-
-/** The manager a message opens, if it opens one: `/mcp`, `/mcp something`, and nothing else. */
-function managerIn(text) {
-  const match = /^\/([a-z-]+)\b/.exec(String(text || '').trim());
-
-  return match && MANAGER_COMMANDS.includes(match[1]) ? match[1] : '';
-}
-
-/**
- * Where queued messages are kept between visits.
- *
- * They used to live only in this component's data, which meant they survived exactly as long as
- * the component did: switching conversation or leaving the page unmounts it, and coming back
- * showed a log with the message gone - while the terminal, reading the same pane, still had it
- * in claude's input queue. So the one view that promised "this is waiting" was the one that
- * forgot.
- *
- * Per pane, because a queue belongs to the conversation it was typed into. localStorage can
- * throw outright in a private window or with site data blocked, so every read and write is
- * guarded and an unavailable one simply means the old behaviour.
- */
-/**
- * Slash commands that answer in the terminal and nowhere else.
- *
- * `/model` writes what it did into the transcript as a local-command line, and the chat shows
- * that as a note. `/cost`, `/usage`, `/status` and the rest print to the pane only - the
- * transcript has no record they were even typed - so after sending one of these the chat reads
- * what the pane printed and shows that instead. A person asking what this session cost gets
- * the same answer in either view.
- */
-const TERMINAL_ONLY = ['cost', 'usage', 'status', 'context', 'doctor', 'help', 'todos', 'release-notes', 'version'];
-
-function terminalOnly(text) {
-  const match = /^\/([a-z-]+)\b/.exec(String(text || '').trim());
-
-  return !!match && TERMINAL_ONLY.includes(match[1]);
-}
-
-/** Appearance preferences: what they are, and what a fresh browser gets. */
-// The look is one preference for every pane and the file viewer: see look.ts.
-
-const PENDING_KEY = 'mc-chat.pending';
-
-function readPending(paneId) {
-  try {
-    const all = JSON.parse(localStorage.getItem(PENDING_KEY) || '{}');
-
-    return Array.isArray(all[paneId]) ? all[paneId] : [];
-  } catch {
-    return [];
-  }
-}
-
-function writePending(paneId, list) {
-  try {
-    const all = JSON.parse(localStorage.getItem(PENDING_KEY) || '{}');
-
-    if (list.length) {
-      all[paneId] = list;
-    } else {
-      delete all[paneId];
-    }
-    localStorage.setItem(PENDING_KEY, JSON.stringify(all));
-  } catch {
-    // A browser that will not remember is not a view that fails.
-  }
-}
-
-const POLL_MS = 1500;
-const CHUNK = 3000;
-
-/**
- * Claude Code's own slash commands, for the ones that are not files anywhere.
- *
- * The custom half of the list is read out of the pod, which is authoritative: a project's
- * commands and skills are files, and files can be listed. The built-in half cannot be - claude
- * knows them, the filesystem does not - so it is written here, and that is why an unrecognised
- * command is reported as "not one I know of" and never as invalid, and never blocks sending.
- * This list going stale must cost a hint, not a message.
- */
-const BUILTIN_COMMANDS = [
-  ['/add-dir', 'Add another working directory'],
-  ['/agents', 'Manage agent configurations'],
-  ['/clear', 'Clear the conversation history'],
-  ['/compact', 'Summarise the conversation so far'],
-  ['/config', 'Open the config panel'],
-  ['/context', 'Show what is in the context window'],
-  ['/cost', 'Token usage for this session'],
-  ['/doctor', 'Check the installation'],
-  ['/exit', 'Leave'],
-  ['/export', 'Export the conversation'],
-  ['/help', 'List the commands claude actually has'],
-  ['/hooks', 'Configure hooks'],
-  ['/init', 'Write a CLAUDE.md for this repository'],
-  ['/login', 'Sign in'],
-  ['/logout', 'Sign out'],
-  ['/mcp', 'MCP servers and their tools'],
-  ['/memory', 'Edit the memory files'],
-  ['/model', 'Choose the model'],
-  ['/permissions', 'Edit tool permissions'],
-  ['/resume', 'Resume an earlier conversation'],
-  ['/review', 'Review a pull request'],
-  ['/rewind', 'Go back to an earlier point'],
-  ['/status', 'Version, account and connectivity'],
-  ['/todos', 'The current todo list'],
-  ['/usage', 'Plan usage limits'],
-  ['/vim', 'Toggle vim mode'],
-].map(([name, help]) => ({ name, help, source: 'built-in' }));
-
-/**
- * The template's view of the state: the same four things it always drew, decided by
- * chat-state.mjs rather than by the look of the terminal.
- */
-function paneFromState(state, paneText = '') {
-  const gone = state.phase === 'gone' || state.phase === 'absent';
-  let dialog = null;
-
-  if (state.phase === 'question' && state.question) {
-    const q = state.question;
-    const first = q.questions[0] || {};
-    const options = q.tool === 'ExitPlanMode'
-      ? [{ key: '1', label: 'Yes, proceed', selected: false }, { key: '2', label: 'No, keep planning', selected: false }]
-      : (first.options || []).map((o, i) => ({
-        key: String(i + 1), label: o.label || `option ${ i + 1 }`, description: o.description || '', selected: false,
-      }));
-
-    dialog = {
-      kind:    'options',
-      header:  q.tool === 'ExitPlanMode' ? 'Plan ready' : (first.header || ''),
-      prompt:  q.tool === 'ExitPlanMode' ? q.plan.slice(0, 4000) : String(first.question || ''),
-      options,
-      url:     '',
-    };
-  } else if (state.phase === 'login' && state.login) {
-    dialog = {
-      kind: state.login.kind, prompt: 'Claude needs you to sign in.', options: [], url: state.login.url,
-    };
-  } else if (state.phase === 'waiting') {
-    // claude said it is waiting (the Notification hook) but the transcript has not written the
-    // question yet - it can lag the prompt by minutes. The question is on the screen, though,
-    // and the pane reader knows the shape of a numbered list with the current choice marked;
-    // its options are the same keystrokes, so the buttons work the same. This is the one place
-    // the terminal's look is read for structure, and only while claude itself says to.
-    const seen = readPane(paneText);
-
-    if (seen.dialog && seen.dialog.options.length) {
-      dialog = { ...seen.dialog, header: '' };
-    }
-  }
-
-  return {
-    busy: state.phase === 'working', idle: state.phase === 'idle', gone, dialog, status: state.status || '',
-  };
-}
-
-function b64(text) {
-  const bytes = new TextEncoder().encode(text);
-  let binary = '';
-
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  return btoa(binary);
-}
 
 export default {
   name: 'ChatPane',
@@ -219,12 +40,10 @@ export default {
      * A name for a different look, or '' for this component's own.
      *
      * The chat is one component in several places - a workspace's conversations, the panel's
-     * drawer, the Focus deck's bar - and those places do not agree about what a conversation
-     * should look like. Rather than fork it, the root carries `mc-chat--skin-<name>` and
-     * whoever wants a different one ships a stylesheet for that class: nothing in here knows
-     * about any skin, and a page that asks for none is byte-for-byte what it was.
-     *
-     * The Focus view's is `loop`, which recreates the prototype's chat (design/focus-chat.css).
+     * drawer - and those places do not agree about what a conversation should look like.
+     * Rather than fork it, the root carries `mc-chat--skin-<name>` and whoever wants a
+     * different one ships a stylesheet for that class: nothing in here knows about any skin,
+     * and a page that asks for none is byte-for-byte what it was.
      */
     skin:      { type: String, default: '' },
     mode:      { type: String, default: 'claude' },
@@ -239,321 +58,103 @@ export default {
 
   emits: ['state', 'view'],
 
+  /**
+   * The conversation, and the two things this file renames on the way out.
+   *
+   * Spread first and overridden after, because a `setup` binding shadows a method of the same
+   * name - Vue resolves setupState before ctx - so adjusting one means replacing the key here
+   * rather than declaring a method beside it. `openManager` needs to bring the terminal
+   * forward as well, and `pickCommand` is a method of this component that calls the
+   * conversation's and then moves the caret, so the conversation's goes out under another name.
+   */
+  setup(props, { emit }) {
+    const conversation = useConversation(() => ({
+      session:   props.session,
+      mode:      props.mode,
+      command:   props.command,
+      namespace: props.namespace,
+      container: props.container,
+      imageDir:  props.imageDir,
+      home:      props.home,
+      findPod:   props.findPod,
+      label:     props.label,
+      // The drawer's chat reads from the moment it is on screen, which is what it always did.
+      enabled:   true,
+    }));
+
+    return {
+      ...conversation,
+      // `rendered` is what this template has always called the turns.
+      rendered:        conversation.turns,
+      pickCommandText: conversation.pickCommand,
+
+      /**
+       * Open one of claude's own managers, and go to the terminal, because that is where it is.
+       *
+       * `/permissions`, `/mcp`, `/memory` and the rest are full-screen pickers - keyboard-driven
+       * terminal UIs, not prompts with options in them. Opening one from the chat drew nothing,
+       * and since Escape is only offered while claude is working there was no way back either:
+       * every message typed afterwards went into the picker instead of the conversation. The
+       * terminal can drive them perfectly well, and switching to it is what somebody wanted when
+       * they pressed the button. The chat is one keypress away again afterwards.
+       */
+      async openManager(name) {
+        await conversation.openManager(name);
+        // After the command, so the terminal opens on the manager rather than on the prompt.
+        emit('view', 'terminal');
+      },
+    };
+  },
+
   data() {
     return {
-      messages:    [],
-      lines:       [],
-      remainder:   '',
-      offset:      0,
-      file:        '',
-      pane:        {
-        busy: false, idle: false, dialog: null, gone: false, status: '',
-      },
-      /**
-       * What the conversation is doing, decided from claude's own record rather than from the
-       * look of its terminal: see chat-state.mjs, which is also what the verifier runs. `pane`
-       * above is derived from it for the template.
-       */
-      entries:     [],
-      hook:        null,
-      alive:       false,
-      state:       { phase: 'absent', status: '', queue: [], question: null, login: null, model: '', effort: '', cost: null },
-      paneText:    '',
-      draft:       '',
-      code:        '',
-      sending:     false,
-      polling:     false,
-      timer:       null,
-      error:       '',
-      pasting:     '',
-      openTools:   {},
-      openThoughts: {},
-      stuck:       false,
-      attached:    false,
-      // Paths in the log: thumbnails fetched from the pod (path -> data URL, or 'missing'),
-      // the one open in the viewer, and where the viewer reads from.
-      thumbs:      {},
-      viewerPath:  '',
-      /** An image from the transcript itself (a screenshot a tool returned), open large. */
-      viewerData:  '',
-      /** What the terminal printed for a command the transcript does not record (see TERMINAL_ONLY). */
-      echoes:      [],
-      /** The terminal's panel for /usage, /status and the like, shown as a modal until closed. */
-      panel:       null,
-      /** When the last poll came back, as ISO: a stalled poll is a view that stopped being true. */
-      polledAt:    '',
+      openTools:      {},
+      openThoughts:   {},
+      openSummaries:  {},
+      /** The path open in the viewer, and an image from the transcript itself, open large. */
+      viewerPath:     '',
+      viewerData:     '',
       /**
        * The "Mention file" picker: the checkout's files, read once per opening, and the filter.
        * What it inserts is `@path`, which claude resolves at submit the way typing it would.
        */
-      files:       { open: false, list: [], filter: '', loading: false },
-      /** Whether claude thinks before answering: the alwaysThinkingEnabled setting in the pane's home. */
-      thinking:    null,
+      files:          {
+        open: false, list: [], filter: '', loading: false,
+      },
       /**
        * How the log looks, kept per browser. Every one of these is a class on the root and
        * nothing else, so a preference is a line of CSS rather than a branch in the template.
        */
-      look:        readLook(),
-      media:       null,
-      notice:      '',
-      noticeTimer: null,
-      hydrating:   false,
-      // Which conversation is shown: the main one, or one of the subagents it launched (by
-      // agent id), whose transcript is followed the same way with an offset of its own.
-      view:        'main',
-      sub:         {
-        offset: 0, lines: [], remainder: '', messages: [],
-      },
-      atBottom:    true,
-      mineIndex:   -1,
-      openSummaries: {},
-      // The subagents' last words and when they last wrote, read on every poll; and whether
-      // the list of them is open.
-      tails:       {},
-      showAgents:  false,
-      /**
-       * What has been sent from this box and is not in the transcript yet.
-       *
-       * Everything in the log comes from the transcript claude writes, and claude writes a user
-       * turn when it *starts* on it. So a message sent while it is working goes into its input
-       * queue and is written minutes later, or not until the current turn ends - and until then
-       * this view had cleared the box and shown nothing anywhere, which reads as the message
-       * having been dropped. These are held here and drawn at the end of the log, marked as
-       * queued, until the transcript catches up with them (see prunePending).
-       */
-      pending:     [],
-      // The commands this pane can be sent, and which one the typeahead has highlighted.
-      // Read once from the pod (see readCommands) and merged with the built-in list.
-      custom:      [],
-      slashIndex:  0,
+      look:           readLook(),
+      notice:         '',
+      noticeTimer:    null,
+      hydrating:      false,
+      atBottom:       true,
+      mineIndex:      -1,
+      /** Whether the list of subagents is open. */
+      showAgents:     false,
+      slashIndex:     0,
       slashDismissed: false,
-      /** Where the cursor is in the box, so the command menu can follow it. */
-      caret:       0,
       /** The skill a marked name was clicked on, and what has been read about each. */
-      details:      null,
-      detailsCache: {},
-      /**
-       * What claude here can be set to, read from claude rather than listed in this file.
-       *
-       * The menus offer the model, the effort level, the permission mode and the MCP servers -
-       * the things Claude Code's own UI changes mid-conversation. The values come out of
-       * `claude --help` in the pod (see chat-options.ts) because claude updates itself on its
-       * own schedule inside that pod, and a model alias written down in this component is
-       * wrong the first time a new one ships.
-       */
-      options:     {
-        read: false, models: [], efforts: [], model: '', modelSource: '', effort: '',
-      },
-      mcp:         {
-        read: false, loading: false, servers: [], error: '',
-      },
-      // Which menu is open, and which one is mid-apply.
-      menu:        '',
-      optionBusy:  '',
-      focused:     false,
-      // A touch screen, which is the only place the caret keys below are worth the room.
-      coarse:      typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches,
-      /**
-       * The interactive command this view last put into the pane, while its picker is still up.
-       *
-       * Set when one is sent and cleared the moment the conversation moves on - see
-       * `prunePending`'s neighbour, `clearManager`. It exists so `takenOver` is something known
-       * rather than something inferred.
-       */
-      manager:     '',
-      /**
-       * Images being written into the pod, whose paths are already in the box.
-       *
-       * Pasting puts the path in immediately and uploads behind it, so this is the only thing
-       * that still has to be waited for - and only at Send, and only if it has not finished by
-       * then. Typing the rest of the message usually outlasts the upload.
-       */
-      uploads:     [],
+      details:        null,
+      detailsCache:   {},
+      /** Which menu is open. */
+      menu:           '',
+      focused:        false,
+      /** A touch screen, which is the only place the caret keys are worth the room. */
+      coarse:         typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches,
     };
   },
 
   computed: {
-    /** The pane's argv, and what it says about where the pane is. */
-    argv() {
-      return this.command?.length ? this.command : sessionCommand(this.session, this.mode);
-    },
-
-    shellAt() {
-      return this.argv.indexOf('/seed/shell.sh');
-    },
-
-    paneId() {
-      return this.shellAt >= 0 ? this.argv[this.shellAt + 1] : this.session;
-    },
-
-    workdir() {
-      return (this.shellAt >= 0 && this.argv[this.shellAt + 2]) || '/workspace/conversations';
-    },
-
-    paneHome() {
-      return (this.shellAt >= 0 && this.argv[this.shellAt + 3]) || this.home;
-    },
-
-    /**
-     * Everything up to the `--` of a `kubectl exec`, without the TTY flags, when the pane is in
-     * another pod. The kubectl may be wrapped (a shell that sets PATH first, say); what marks it
-     * is `kubectl` followed by `exec` somewhere before the `--`.
-     */
-    prefix() {
-      const dash = this.argv.indexOf('--');
-      const k = this.argv.findIndex((arg, i) => arg === 'kubectl' && this.argv[i + 1] === 'exec');
-
-      if (k < 0 || dash < k) {
-        return [];
-      }
-
-      return this.argv.slice(0, dash + 1).filter((arg) => arg !== '-t' && arg !== '-i' && arg !== '-it' && arg !== '-ti');
-    },
-
-    /** The subagents this conversation launched, for the tabs. */
-    agents() {
-      return agentsFrom(this.messages);
-    },
-
-    shown() {
-      if (this.view !== 'main') {
-        return this.sub.messages;
-      }
-
-      // Only on the main conversation: a message typed here goes to claude, never to one of
-      // the subagents whose transcript the tabs show.
-      // The CLI queues a background task's completion the same way; that row is a note.
-      const queued = (this.state.queue || []).map((raw, i) => {
-        const text = unwrapPasted(raw);
-        const note = noteFrom(text);
-
-        return {
-          key: `queue-${ i }-${ text.slice(0, 24) }`, role: note !== null ? 'note' : 'user', text: note !== null ? note : text, tools: [], thinking: '', images: [], at: '', queued: true, inQueue: true,
-        };
-      }).filter((m) => m.text);
-
-      const extra = [...this.echoes, ...queued, ...this.pending];
-
-      return extra.length ? [...this.messages, ...extra] : this.messages;
-    },
-
-    /** The subagents with what each last said, the ones still writing first. */
-    agentRows() {
-      const now = Date.now() / 1000;
-
-      return this.agents.map((a) => {
-        const tail = this.tails[a.id] || {};
-        const working = !!tail.at && now - tail.at < 45;
-
-        return {
-          ...a, working, last: tail.last || '', when: tail.at ? this.when(new Date(tail.at * 1000).toISOString()) : '',
-        };
-      }).sort((x, y) => Number(y.working) - Number(x.working));
-    },
-
-    workingAgents() {
-      return this.agentRows.filter((a) => a.working).length;
-    },
-
-    rendered() {
-      return this.shown.map((m) => ({
-        ...m,
-        html:      m.role === 'user' ? renderPlain(m.text, m.parts) : linkPaths(renderMarkdown(m.text)),
-        queued:    !!m.queued,
-        inQueue:   !!m.inQueue,
-        failed:    !!m.failed,
-        toolRows:  m.tools.map((t) => ({
-          ...t, summary: toolSummary(t), summaryHtml: linkPaths(escapeText(toolSummary(t))),
-        })),
-      }));
-    },
-
-    /**
-     * The Customize section of the command menu.
-     *
-     * The VS Code extension's `/` menu has one, and what is in it is "MCP servers, slash
-     * commands, output styles, hooks, memory, permissions and plugins" - claude's own pickers,
-     * reached from the command menu rather than from buttons on the prompt box. Only the ones
-     * this pane can actually open are listed: each is a slash command typed into the pane, and
-     * its dialog comes back through the path this view already draws options for.
-     */
-    customize() {
-      return [
-        { command: 'mcp', help: 'MCP servers' },
-        { command: 'permissions', help: 'tool permissions' },
-        { command: 'hooks', help: 'hooks' },
-        { command: 'memory', help: 'the memory files' },
-        { command: 'agents', help: 'subagent definitions' },
-      ];
-    },
-
-    /** Every command that could be typed here: claude's own, then this pod's own. */
-    commands() {
-      return [...BUILTIN_COMMANDS, ...this.custom];
-    },
-
-    /**
-     * The command being typed at the cursor, wherever the cursor is.
-     *
-     * The menu used to open only for a slash in the first column, which is where claude's own
-     * commands have to be - but half of what people type a skill's name into is a sentence
-     * ("when CI is green run /my-pr-create"), and having to remember the name exactly because
-     * the menu will not help you anywhere but the front is the wrong way round. So the menu
-     * follows the cursor: a slash that starts a word, with the word still being typed.
-     *
-     * What gets *sent* is unchanged: claude reads a command from the front of a message, and
-     * a name completed in the middle of a sentence is a name in a sentence, which is how they
-     * are usually written down anyway ("when CI is green, run /my-pr-create").
-     */
-    slashSpot() {
-      const at = Math.min(this.caret ?? this.draft.length, this.draft.length);
-      const before = this.draft.slice(0, at);
-      const match = /(^|[\s([{"'`])\/([a-zA-Z0-9_:-]*)$/.exec(before);
-
-      if (!match) {
-        return null;
-      }
-      const name = `/${ match[2] }`;
-
-      return { name, start: at - name.length, end: at };
-    },
-
-    /**
-     * The draft with its command names marked, for the layer over the box.
-     *
-     * Only names this pod actually has are marked: a path with a slash in it, or a name claude
-     * has never heard of, is left as plain text rather than promised something it cannot do.
-     */
-    draftMarked() {
-      const known = new Map(this.commands.map((c) => [c.name.toLowerCase(), c]));
-      const escape = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-      return `${ escape(this.draft).replace(/(^|[\s([{"'`])(\/[a-zA-Z0-9_:-]+)/g, (all, lead, name) => {
-        const found = known.get(name.toLowerCase());
-
-        return found ? `${ lead }<mark class="mc-chat__cmd" data-name="${ name }">${ name }</mark>` : all;
-      }) }\n`;
-    },
-
-    slashMatches() {
-      if (!this.slashSpot) {
-        return [];
-      }
-      const typed = this.slashSpot.name.toLowerCase();
-
-      return this.commands
-        .filter((c) => c.name.toLowerCase().startsWith(typed))
-        .slice(0, 8);
-    },
-
     /** The menu is open while a name is still being typed and there is something to offer. */
     slashOpen() {
       return !!this.slashSpot && !this.slashDismissed && this.slashMatches.length > 0;
     },
 
-
-    canSend() {
-      return !!this.draft.trim() && !this.sending;
+    /** The Customize section of the command menu: claude's own pickers, by slash command. */
+    customize() {
+      return CUSTOMIZE;
     },
 
     fileMatches() {
@@ -571,48 +172,9 @@ export default {
         { key: 'times', label: 'Show times' },
       ];
     },
-
-    working() {
-      return this.pane.busy;
-    },
-
-    /**
-     * The pane is showing a full-screen picker this view cannot draw.
-     *
-     * Known positively, from what was sent, and NOT inferred from the pane's shape. The first
-     * version of this asked "not busy, not idle, no dialog, not gone" - which sounds like a
-     * description of a takeover and is really a description of everything readPane does not
-     * classify. readPane recognises four shapes: a login, a numbered list, a yes/no, and a bare
-     * prompt. A finished turn whose last line is claude's own status - `Cooked for 10m 11s ·
-     * done` - is none of them: not busy, because it says done, and not idle, because the prompt
-     * row is not empty. So the warning fired on ordinary completed work, repeatedly, and told
-     * the person their conversation was broken when it was not.
-     *
-     * The commands below are claude's interactive managers; sending one is the only way this
-     * view can put the pane into a state it cannot render, and we know when we have. That makes
-     * this a fact rather than a guess, and it cannot fire on output.
-     */
-    takenOver() {
-      return this.attached && !!this.manager && !this.pane.dialog && !this.pane.gone;
-    },
-
-    /** The last few lines of it, so what has taken the pane over is at least legible. */
-    paneTail() {
-      return this.paneText.split('\n').filter((l) => l.trim()).slice(-6).join('\n');
-    },
   },
 
   watch: {
-    // Written on every change rather than at the point of sending: a message is also removed
-    // when the transcript catches up with it, and a store that only ever grew would resurrect
-    // retired messages on the next visit.
-    pending: {
-      handler(list) {
-        writePending(this.paneId, list);
-      },
-      deep: true,
-    },
-
     // A new name being typed starts the menu at the top again, and un-dismisses it: Escape
     // hides the menu for the command being typed, not for the rest of the session.
     //
@@ -626,17 +188,43 @@ export default {
       }
       this.$nextTick(this.autoGrow);
     },
+
+    /**
+     * New transcript landed, or a different transcript did.
+     *
+     * The conversation counts both rather than telling anybody where to scroll - it draws
+     * nothing and holds no refs. A log stays at the bottom only while the person is already
+     * there, so reading back is not interrupted; a restart - the first load, a different
+     * conversation, a subagent tab - goes to the bottom unconditionally, because that is where
+     * the conversation is.
+     */
+    grew() {
+      this.$nextTick(() => this.scrollToEnd());
+    },
+
+    restarted() {
+      this.mineIndex = -1;
+      this.atBottom = true;
+      this.$nextTick(() => this.scrollToEnd(true));
+    },
+
+    /** Every poll, not only on a change: this is what PodTerminal's status line reads. */
+    polledAt() {
+      this.$emit('state', this.attached ? 'open' : 'waiting');
+    },
+
+    /** Focus it, so Esc closes it without a click first. */
+    panel(now) {
+      if (now) {
+        this.$nextTick(() => document.querySelector('.mc-chat__lightbox--panel')?.focus());
+      }
+    },
   },
 
   mounted() {
     // Anything typed into this pane and not yet recorded, from a previous visit - which the
     // box has to be sized for before it is seen.
     this.$nextTick(this.autoGrow);
-    this.poll();
-    this.readCommands();
-    this.readOptions();
-    this.readThinking();
-    this.timer = setInterval(() => this.poll(), POLL_MS);
   },
 
   updated() {
@@ -644,206 +232,11 @@ export default {
   },
 
   beforeUnmount() {
-    clearInterval(this.timer);
     clearTimeout(this.noticeTimer);
   },
 
   methods: {
-    async locatePod() {
-      try {
-        return this.findPod ? await this.findPod() : await agentPod();
-      } catch {
-        return null;
-      }
-    },
-
-    /**
-     * Run a script where the pane runs, as the pane's user, with its home. The script travels
-     * base64 in one argument, so nothing in it is ever quoted for a shell.
-     */
-    async run(script, timeoutMs = 20000) {
-      const pod = await this.locatePod();
-
-      if (!pod) {
-        throw new Error('no running pod');
-      }
-      const file = `/tmp/.chat-${ Date.now().toString(36) }${ Math.random().toString(36).slice(2, 7) }.sh`;
-      const wrapped = `export HOME=${ this.paneHome }; export PATH=$HOME/.local/bin:$PATH; ${ script }`;
-      const inner = `echo ${ b64(wrapped) } | base64 -d > ${ file } && chmod 755 ${ file } && if [ "$(id -u)" = 0 ]; then su node -s /bin/bash -c "/bin/bash ${ file }" 2>&1; else /bin/bash ${ file } 2>&1; fi; rm -f ${ file }`;
-
-      return podExecOnce(pod, [...this.prefix, '/bin/sh', '-c', inner], timeoutMs, this.container, this.namespace);
-    },
-
-    /** The transcript since last time, and the pane's last lines, in one round trip. */
-    async poll() {
-      if (this.polling || document.hidden) {
-        return;
-      }
-      this.polling = true;
-      try {
-        const sub = this.view === 'main' ? '' : this.view;
-        const out = await this.run([
-          // CAP bounds the FIRST read of a transcript. A conversation that has run for hours has
-          // a transcript of many megabytes, and shipping the whole of it through one exec (base64
-          // over the WebSocket, inside the poll's timeout) does not arrive - so the @@DATA block
-          // never lands whole, parseTranscript sees nothing, and the chat sits on "Nothing has
-          // been said yet." even though the pane (read separately, below) is full. So on the
-          // first read (OFF is 0) only the last CAP bytes are taken: the recent history, which is
-          // what the view is for, small enough to arrive every time. A partial first line from
-          // cutting mid-file is dropped by parseTranscript, and the browser sets its offset to
-          // the true size, so every read after this one is just the delta.
-          `ID=${ JSON.stringify(this.paneId) }; OFF=${ this.offset }; SUB=${ JSON.stringify(sub) }; SOFF=${ this.sub.offset }; CAP=1048576`,
-          `PROJ="$HOME/.claude/projects/${ projectKey(this.workdir) }"`,
-          'uuid=$(cat "$(dirname "$HOME")/sessions/$ID.id" 2>/dev/null)',
-          'FILE=""',
-          // Without an id file, fall back to the directory's transcript only when there is
-          // exactly one. Conversations share a working directory - every conversation of a
-          // workspace runs in its checkout - so "the newest transcript" was somebody else's
-          // for the seconds before a new conversation's id file landed, and the chat opened on
-          // eighteen messages that were not this conversation's.
-          'if [ -n "$uuid" ] && [ -f "$PROJ/$uuid.jsonl" ]; then FILE="$PROJ/$uuid.jsonl"; elif [ "$(ls "$PROJ"/*.jsonl 2>/dev/null | wc -l)" -eq 1 ]; then FILE=$(ls "$PROJ"/*.jsonl 2>/dev/null | head -1); fi',
-          'echo "@@FILE $FILE"',
-          'if [ -n "$FILE" ] && [ -f "$FILE" ]; then size=$(wc -c < "$FILE"); echo "@@SIZE $size"; FROM=$OFF; if [ "$OFF" -eq 0 ] && [ "$size" -gt "$CAP" ]; then FROM=$((size - CAP)); fi; if [ "$size" -gt "$FROM" ]; then echo "@@DATA"; tail -c +$((FROM+1)) "$FILE"; echo; echo "@@ENDDATA"; fi; fi',
-          // The subagent's transcript sits beside the session's, in a directory named for it. Capped the same way.
-          'if [ -n "$SUB" ] && [ -n "$FILE" ]; then SF="${FILE%.jsonl}/subagents/agent-$SUB.jsonl"; if [ -f "$SF" ]; then ssize=$(wc -c < "$SF"); echo "@@SSIZE $ssize"; SFROM=$SOFF; if [ "$SOFF" -eq 0 ] && [ "$ssize" -gt "$CAP" ]; then SFROM=$((ssize - CAP)); fi; if [ "$ssize" -gt "$SFROM" ]; then echo "@@SDATA"; tail -c +$((SFROM+1)) "$SF"; echo; echo "@@SENDDATA"; fi; fi; fi',
-          // Every subagent's last line and when it was written, for the list of them.
-          'if [ -n "$FILE" ] && [ -d "${FILE%.jsonl}/subagents" ]; then for f in "${FILE%.jsonl}"/subagents/agent-*.jsonl; do [ -f "$f" ] || continue; id=$(basename "$f" .jsonl); id=${id#agent-}; echo "@@TAIL $id $(stat -c %Y "$f")"; tail -c 6000 "$f" | grep "\"type\":\"assistant\"" | tail -n 1 | cut -c1-3000; done; echo "@@ENDTAILS"; fi',
-          // The hook state file (seed/chat-hook.mjs): the last thing claude said it was doing.
-          'echo "@@HOOK"; cat "$(dirname "$HOME")/sessions/$ID.state.json" 2>/dev/null; echo; echo "@@ENDHOOK"',
-          // Whether a claude process is running in the pane at all. The pane's own command is the
-          // loop that runs claude (claude-session.sh), so claude is its child - and a pane with the
-          // loop but no child is a shell, whatever the transcript's last line says.
-          'if tmux has-session -t "mc-$ID" 2>/dev/null; then P=$(tmux display -p -t "mc-$ID" "#{pane_pid}" 2>/dev/null); [ -n "$P" ] && pgrep -P "$P" -x claude >/dev/null 2>&1 && echo "@@ALIVE"; fi',
-          'echo "@@PANE"',
-          'if tmux has-session -t "mc-$ID" 2>/dev/null; then tmux capture-pane -p -t "mc-$ID" | tail -n 40; else echo "@@NOPANE"; fi',
-        ].join('\n'));
-
-        const before = this.messages.length;
-
-        this.absorb(out);
-        // After absorb, which is what moves the transcript on: a queued message is retired by
-        // the line claude has just written for it, and a picker is over once claude is writing
-        // into the conversation again.
-        this.prunePending();
-        this.clearManager(this.messages.length > before);
-        this.error = '';
-        this.polledAt = new Date().toISOString();
-      } catch (e) {
-        this.error = e.message || String(e);
-      } finally {
-        this.polling = false;
-      }
-    },
-
-    absorb(out) {
-      const fileMatch = /@@FILE (.*)/.exec(out);
-      const file = fileMatch ? fileMatch[1].trim() : '';
-      const size = Number(/@@SIZE (\d+)/.exec(out)?.[1] || 0);
-
-      if (file !== this.file || size < this.offset) {
-        // A different transcript (the id file appeared, or the conversation restarted): start over.
-        this.file = file;
-        this.offset = 0;
-        this.lines = [];
-        this.remainder = '';
-        this.messages = [];
-        if (size && out.includes('@@DATA') && this.offset === 0) {
-          // The data in this answer is from OFF, which was for the old file; ask again from 0.
-          return;
-        }
-      }
-
-      const dataAt = out.indexOf('@@DATA\n');
-      const dataEnd = out.indexOf('\n@@ENDDATA');
-
-      if (dataAt >= 0 && dataEnd > dataAt) {
-        const chunk = out.slice(dataAt + 7, dataEnd);
-        const text = this.remainder + chunk;
-        const parts = text.split('\n');
-
-        this.remainder = parts.pop() || '';
-        this.lines.push(...parts.filter((l) => l.trim()));
-        const first = !this.messages.length;
-
-        this.offset = size;
-        const all = this.lines.concat(this.remainder.trim() ? [this.remainder] : []);
-
-        this.messages = parseTranscript(all);
-        this.entries = parseEntries(all);
-        // The first load lands at the bottom, where the conversation is; after that, only
-        // while the person is already there, so reading back is not interrupted.
-        this.$nextTick(() => this.scrollToEnd(first));
-      }
-
-      const sdataAt = out.indexOf('@@SDATA\n');
-      const sdataEnd = out.indexOf('\n@@SENDDATA');
-      const ssize = Number(/@@SSIZE (\d+)/.exec(out)?.[1] || 0);
-
-      if (this.view !== 'main' && ssize && ssize < this.sub.offset) {
-        this.sub = {
-          offset: 0, lines: [], remainder: '', messages: [],
-        };
-      } else if (this.view !== 'main' && sdataAt >= 0 && sdataEnd > sdataAt) {
-        const text = this.sub.remainder + out.slice(sdataAt + 8, sdataEnd);
-        const parts = text.split('\n');
-        const remainder = parts.pop() || '';
-        const lines = this.sub.lines.concat(parts.filter((l) => l.trim()));
-
-        this.sub = {
-          offset: ssize, lines, remainder, messages: parseTranscript(lines.concat(remainder.trim() ? [remainder] : [])),
-        };
-        this.$nextTick(() => this.scrollToEnd());
-      }
-
-      const tailsAt = out.indexOf('@@TAIL ');
-      const tailsEnd = out.indexOf('@@ENDTAILS');
-
-      if (tailsAt >= 0 && tailsEnd > tailsAt) {
-        const tails = {};
-
-        for (const chunk of out.slice(tailsAt, tailsEnd).split('@@TAIL ').slice(1)) {
-          const [head, ...rest] = chunk.split('\n');
-          const [id, at] = head.trim().split(/\s+/);
-          let last = '';
-
-          try {
-            const entry = JSON.parse(rest.join('\n').trim());
-            const blocks = Array.isArray(entry?.message?.content) ? entry.message.content : [];
-            const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
-            const tool = blocks.find((b) => b.type === 'tool_use');
-
-            last = text || (tool ? `${ tool.name }: ${ toolSummary({ id: tool.id, name: tool.name, input: tool.input }) }` : '');
-          } catch { /* a partial line; keep what we had */ }
-          tails[id] = { at: Number(at) || 0, last: (last || this.tails[id]?.last || '').split('\n')[0].slice(0, 140) };
-        }
-        this.tails = tails;
-      }
-
-      const hookAt = out.indexOf('@@HOOK\n');
-      const hookEnd = out.indexOf('\n@@ENDHOOK');
-
-      if (hookAt >= 0 && hookEnd > hookAt) {
-        try {
-          const raw = out.slice(hookAt + 7, hookEnd).trim();
-
-          this.hook = raw ? JSON.parse(raw) : null;
-        } catch {
-          // Half-written; the next poll reads a whole one.
-        }
-      }
-
-      const paneAt = out.indexOf('@@PANE\n');
-      const paneText = paneAt >= 0 ? out.slice(paneAt + 7) : '';
-
-      this.attached = !paneText.includes('@@NOPANE');
-      this.alive = this.attached && out.slice(0, paneAt >= 0 ? paneAt : undefined).includes('@@ALIVE');
-      this.paneText = paneText;
-      this.state = deriveState({
-        entries: this.entries, hook: this.hook, attached: this.attached, alive: this.alive, paneText, now: Date.now(),
-      });
-      this.pane = paneFromState(this.state, paneText);
-      this.$emit('state', this.attached ? 'open' : 'waiting');
-    },
+    /* ── The log: where it is scrolled, and what is open in it ───────────────────────────── */
 
     scrollToEnd(force = false) {
       const el = this.$refs.log;
@@ -876,182 +269,75 @@ export default {
       this.atBottom = false;
     },
 
-    /** Main, or one subagent: a different transcript, followed from the start. */
-    show(view) {
-      if (view === this.view) {
-        return;
-      }
-      this.view = view;
-      this.sub = {
-        offset: 0, lines: [], remainder: '', messages: [],
-      };
-      this.mineIndex = -1;
-      this.atBottom = true;
-      this.poll();
-    },
-
     toggleSummary(key) {
       this.openSummaries = { ...this.openSummaries, [key]: !this.openSummaries[key] };
     },
 
-    firstLine(text) {
-      return (text || '').split('\n').find((l) => l.trim()) || '';
+    toggleTool(id) {
+      this.openTools = { ...this.openTools, [id]: !this.toolOpen(id) };
     },
 
-    /** Keys into the pane: a name tmux knows (Enter, Escape) or a literal string. */
-    async keys(...args) {
-      const quoted = args.map((a) => `'${ String(a).replace(/'/g, `'\\''`) }'`).join(' ');
-
-      await this.run(`tmux send-keys -t "mc-${ this.paneId }" ${ quoted }`);
+    toolOpen(id) {
+      return id in this.openTools ? this.openTools[id] : this.look.toolIo;
     },
 
-    /** Text into the pane as one paste, then Enter: what the person typed, whatever is in it. */
-    async say(text) {
-      await this.run([
-        `F=/tmp/.chat-say-${ Date.now().toString(36) }`,
-        `echo ${ b64(text) } | base64 -d > $F`,
-        `tmux load-buffer -b chat $F && tmux paste-buffer -b chat -t "mc-${ this.paneId }" -d -p && sleep 0.3 && tmux send-keys -t "mc-${ this.paneId }" Enter`,
-        'rm -f $F',
-      ].join('\n'));
+    toggleThought(key) {
+      this.openThoughts = { ...this.openThoughts, [key]: !this.thoughtOpen(key) };
     },
 
-    async send() {
-      if (!this.canSend) {
-        return;
-      }
-      const text = this.draft.trim();
-
-      this.sending = true;
-      try {
-        // The paths are in the message; the bytes may still be going. Waited for here rather
-        // than at the paste, which is the whole point: an upload that finished while the
-        // sentence was being typed costs nothing at all.
-        if (this.uploads.length) {
-          this.pasting = `Finishing ${ this.uploads.length === 1 ? 'an attachment' : `${ this.uploads.length } attachments` }`;
-          await Promise.all(this.uploads);
-        }
-        if (!this.attached) {
-          await this.start();
-        }
-        const before = this.paneText;
-
-        await this.say(text);
-        if (terminalOnly(text)) {
-          this.echoTerminal(text, before);
-        }
-        // Typing `/mcp` by hand puts the pane into the same state the Customize menu does, so
-        // it is recorded the same way rather than only when the menu was used.
-        this.manager = managerIn(text) || this.manager;
-        // Recorded before the poll rather than after it: the point of this is that there is
-        // never a moment where the box is empty and the log does not have it.
-        //
-        // Not for a slash command. Those are the CLI's own: some write a local-command line to
-        // the transcript (/model), some print to the terminal only (/cost) and some open a
-        // picker (/mcp) - none of them is ever recorded as a prompt, so one tracked here would
-        // read "not delivered" twenty seconds after doing exactly what it should.
-        const isCommand = /^\//.test(text);
-
-        this.pending = isCommand ? this.pending : [...this.pending, {
-          key: `pending-${ Date.now().toString(36) }-${ this.pending.length }`,
-          role: 'user',
-          text,
-          tools: [],
-          thinking: '',
-          images: [],
-          at: new Date().toISOString(),
-          queued: true,
-          sentAt: Date.now(),
-        }];
-        this.draft = '';
-        this.error = '';
-      } catch (e) {
-        this.error = e.message || String(e);
-      } finally {
-        this.sending = false;
-        this.poll();
-      }
+    thoughtOpen(key) {
+      return key in this.openThoughts ? this.openThoughts[key] : this.look.thoughts;
     },
+
+    setLook(key, value) {
+      this.look = { ...this.look, [key]: value };
+      writeLook(this.look);
+    },
+
+    flash(text) {
+      this.notice = text;
+      clearTimeout(this.noticeTimer);
+      this.noticeTimer = setTimeout(() => {
+        this.notice = '';
+      }, 5000);
+    },
+
+    /* ── The box: its size, its caret, and the layer that marks command names ────────────── */
 
     /**
-     * Drop the queued copies the transcript has now caught up with.
+     * Size the box to what is in it, up to the maximum the stylesheet sets.
      *
-     * Matched on the text, but only against user turns claude recorded at or after the moment
-     * the message was sent: matching on text alone would retire a queued message the first
-     * time the same words appeared anywhere in the conversation, and "yes" is said more than
-     * once. Each transcript line is spent on at most one queued message, so saying the same
-     * thing twice in a row retires one and leaves the other showing.
+     * Height to `auto` first, or scrollHeight only ever reports the height it already has and
+     * the box grows and never shrinks. Driven by a watcher on the draft rather than by the
+     * input handler, so a message put in from somewhere else - a queued prompt, a paste, the
+     * box being cleared after a send - sizes it too.
      */
-    /**
-     * What claude in this pod can be set to, asked of claude itself.
-     *
-     * One exec for all of it: the help, which carries every value the menus offer; the pane's
-     * own argv, the environment and the two settings files, which between them decide which
-     * model is actually in force and why (claude's own precedence, see currentModel).
-     *
-     * Read once at mount and again after a change is applied. Not polled: `claude --help`
-     * shells out to the binary, and the poll that keeps the transcript current runs every
-     * 1.5 seconds.
-     */
-    async readOptions() {
-      const script = [
-        'echo @@HELP',
-        'claude --help 2>/dev/null',
-        'echo @@ARGV',
-        "ps -eo args= 2>/dev/null | grep -m1 '^claude' || true",
-        'echo @@ENV',
-        'printenv ANTHROPIC_MODEL 2>/dev/null || true',
-        'echo @@FILES',
-        // Three lines, always all three, so a blank first line still means "settings.json sets
-        // no model" rather than shifting ~/.claude.json's answer into its place.
-        `node -e 'const fs=require("fs");const g=(f,k)=>{try{return String(JSON.parse(fs.readFileSync(f,"utf8"))[k]||"")}catch(e){return ""}};const s=process.env.HOME+"/.claude/settings.json";const c=process.env.HOME+"/.claude.json";console.log(g(s,"model"));console.log(g(c,"model"));console.log(g(s,"effort")||g(s,"effortLevel"))' 2>/dev/null`,
-        'echo @@END',
-      ].join('\n');
-      const out = await this.run(script, 30000).catch(() => '');
+    autoGrow() {
+      const el = this.$refs.box;
 
-      if (!out.includes('@@HELP') || !out.includes('@@END')) {
+      if (!el) {
         return;
       }
-
-      const between = (from, to) => (out.split(from)[1] || '').split(to)[0] || '';
-      const help = between('@@HELP', '@@ARGV');
-      const argv = between('@@ARGV', '@@ENV').split('\n').map((l) => l.trim()).find((l) => l.startsWith('claude')) || '';
-      const files = between('@@FILES', '@@END').split('\n');
-      const found = currentModel({
-        argv:     /--model[\s=]+(\S+)/.exec(argv)?.[1] || '',
-        env:      between('@@ENV', '@@FILES').trim(),
-        settings: files[1] || '',
-        config:   files[2] || '',
-      });
-
-      this.options = {
-        read:        true,
-        models:      modelAliases(help),
-        efforts:     flagChoices(help, '--effort'),
-        model:       found.model,
-        modelSource: found.source,
-        // Only if something recorded it. There is no flag to read the running session's effort
-        // back out of, so an unset one is shown as unset rather than guessed at, and the button
-        // reads "model" rather than claiming a value.
-        effort:      (files[3] || '').trim(),
-      };
+      el.style.height = 'auto';
+      el.style.height = `${ el.scrollHeight }px`;
     },
 
-    /** The MCP servers and whether each answered, read only when the menu is opened. */
-    async readMcp() {
-      this.mcp = { ...this.mcp, loading: true, error: '' };
+    /** The layer follows the box when the box scrolls. */
+    syncGhost() {
+      const ghost = this.$refs.ghost;
+      const box = this.$refs.box;
 
-      try {
-        // `mcp list` health-checks every server, which is seconds rather than milliseconds.
-        const out = await this.run('claude mcp list 2>&1', 60000);
-
-        this.mcp = {
-          read: true, loading: false, servers: parseMcpList(out), error: '',
-        };
-      } catch (e) {
-        this.mcp = {
-          read: true, loading: false, servers: [], error: e.message || String(e),
-        };
+      if (ghost && box) {
+        ghost.scrollTop = box.scrollTop;
       }
+    },
+
+    /** Where the cursor is, after anything that could have moved it. */
+    syncCaret(event) {
+      const box = event?.target || this.$refs.box;
+
+      this.caret = box?.selectionStart ?? this.draft.length;
+      this.$nextTick(() => this.syncGhost());
     },
 
     /**
@@ -1073,6 +359,8 @@ export default {
       box.setSelectionRange(at, at);
     },
 
+    /* ── The command menu ────────────────────────────────────────────────────────────────── */
+
     /** The `/` button: the command menu, opened the way typing a slash opens it. */
     openCommandMenu() {
       this.menu = '';
@@ -1089,236 +377,6 @@ export default {
 
     toggleMenu(kind) {
       this.menu = this.menu === kind ? '' : kind;
-
-    },
-
-    /**
-     * Change one of them, by typing claude's own command into the pane.
-     *
-     * Through claude rather than by writing its settings file, because claude is running: the
-     * command changes the conversation that is open, and claude persists the choice itself
-     * where it persists one. A settings file written underneath a live session would be read
-     * by the next one and not by this one, which is the opposite of what the menu appears to
-     * promise.
-     *
-     * A command claude does not understand answers in the pane, in view, which is why this can
-     * offer what `--help` lists without also having to know which of them grew a slash command
-     * in which version.
-     */
-    async applyOption(kind, value) {
-      if (!isSafeOptionValue(value)) {
-        this.error = `${ value } is not a value this can send`;
-
-        return;
-      }
-
-      this.menu = '';
-      this.optionBusy = kind;
-
-      try {
-        if (!this.attached) {
-          await this.start();
-        }
-        await this.say(`/${ kind } ${ value }`);
-        this.error = '';
-        // Optimistic, then corrected by the re-read below: claude writes the model into its
-        // settings, so the answer that comes back is the real one a moment later.
-        this.options = { ...this.options, [kind]: value };
-        setTimeout(() => this.readOptions().catch(() => {}), 2500);
-      } catch (e) {
-        this.error = e.message || String(e);
-      } finally {
-        this.optionBusy = '';
-        this.poll();
-      }
-    },
-
-    /**
-     * Open one of claude's own managers, and go to the terminal, because that is where it is.
-     *
-     * `/permissions`, `/mcp`, `/memory` and the rest are full-screen pickers - keyboard-driven
-     * terminal UIs, not prompts with options in them. The claim that "its prompt arrives
-     * through the same pane-dialog path this view already draws options for" was simply wrong:
-     * readPane recognises a login, a numbered list and a yes/no, and a manager is none of them.
-     * So opening one from the chat drew nothing, and since Escape is only offered while claude
-     * is working there was no way back either - every message typed afterwards went into the
-     * picker instead of the conversation. That is the bug this replaces.
-     *
-     * The terminal can drive them perfectly well, and switching to it is what somebody wanted
-     * when they pressed the button. The chat is one keypress away again afterwards.
-     */
-    async openManager(command) {
-      this.menu = '';
-      this.optionBusy = command;
-
-      try {
-        if (!this.attached) {
-          await this.start();
-        }
-        await this.say(`/${ command }`);
-        this.error = '';
-        this.manager = command;
-        // After the command, so the terminal opens on the manager rather than on the prompt.
-        this.$emit('view', 'terminal');
-      } catch (e) {
-        this.error = e.message || String(e);
-      } finally {
-        this.optionBusy = '';
-        this.poll();
-      }
-    },
-
-    /** Escape, from a pane the chat cannot draw. The one way out that always exists. */
-    async escapePane() {
-      // Cleared optimistically: Escape is what closes a picker, and leaving the warning up until
-      // the next poll agrees would be the same "says something untrue" problem in miniature.
-      this.manager = '';
-      try {
-        await this.keys('Escape');
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        await this.keys('Escape');
-      } catch (e) {
-        this.error = e.message || String(e);
-      }
-      setTimeout(() => this.poll(), 400);
-    },
-
-    /**
-     * The picker is gone: the conversation moved on, or the pane is showing something readPane
-     * understands again.
-     *
-     * A manager writes nothing to the transcript, so a transcript that has grown is proof that
-     * claude is answering in the conversation again. `idle` and `busy` are the same evidence
-     * from the pane's side. Any of them is enough, and being too eager to clear this is the safe
-     * direction to be wrong in: the cost is a warning that vanishes early, against a warning
-     * that lies.
-     */
-    clearManager(grew) {
-      if (this.manager && (grew || this.pane.idle || this.pane.busy || this.pane.gone)) {
-        this.manager = '';
-      }
-    },
-
-    /**
-     * The commands that are files in this pod: the project's, the user's, and the skills.
-     *
-     * `.claude/commands/<name>.md` is a command called `/<name>`; a directory under it is a
-     * namespace, which claude spells `/<dir>:<name>`. A skill is invoked the same way by its
-     * directory name. Read once, at mount, because these change when somebody edits the tree
-     * and not while a message is being typed.
-     */
-    async readCommands() {
-      const script = [
-        'cd "$(dirname "$HOME")" 2>/dev/null || cd /',
-        'for root in "$HOME/.claude" ".claude" "$PWD/.claude"; do',
-        '  [ -d "$root/commands" ] && find "$root/commands" -name "*.md" -maxdepth 2 2>/dev/null | sed "s|^|CMD |"',
-        '  [ -d "$root/skills" ] && find "$root/skills" -maxdepth 2 -name SKILL.md 2>/dev/null | sed "s|^|SKILL |"',
-        'done',
-      ].join('\n');
-      const out = await this.run(script, 15000).catch(() => '');
-      const seen = new Set();
-      const found = [];
-
-      for (const line of String(out).split('\n')) {
-        const cmd = /^CMD (.*\/commands\/(.*)\.md)\s*$/.exec(line);
-        const skill = /^SKILL .*\/skills\/([^/]+)\/SKILL\.md\s*$/.exec(line);
-        const name = cmd ? `/${ cmd[2].replace(/\//g, ':') }` : (skill ? `/${ skill[1] }` : '');
-
-        if (!name || seen.has(name)) {
-          continue;
-        }
-        seen.add(name);
-        found.push({
-          name, help: cmd ? 'this pod\u2019s own command' : 'skill', source: cmd ? 'command' : 'skill', path: (cmd ? cmd[1] : line.replace(/^SKILL /, '')).trim(),
-        });
-      }
-
-      this.custom = found.sort((a, b) => a.name.localeCompare(b.name));
-    },
-
-    /** A click on a marked name: what does that skill do? */
-    async onGhostClick(event) {
-      const name = event?.target?.dataset?.name;
-
-      if (!name) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      const command = this.commands.find((c) => c.name.toLowerCase() === name.toLowerCase());
-
-      if (!command) {
-        return;
-      }
-      this.details = { ...command, about: this.detailsCache[command.name] ?? '' };
-      if (this.detailsCache[command.name] !== undefined || !command.path) {
-        return;
-      }
-      // The first lines of the file: a skill's frontmatter says what it is for, and a command's
-      // first paragraph is the same thing by another name.
-      const about = await this.run(`sed -n '1,40p' ${ JSON.stringify(command.path) } 2>/dev/null`, 10000).catch(() => '');
-      const description = /^description:\s*(.+)$/m.exec(String(about))?.[1]
-        || String(about).split('\n').map((l) => l.trim()).find((l) => l && !/^(---|#|name:|allowed-tools:)/.test(l))
-        || 'No description in the file.';
-
-      this.detailsCache = { ...this.detailsCache, [command.name]: description.trim() };
-      if (this.details?.name === command.name) {
-        this.details = { ...this.details, about: description.trim() };
-      }
-    },
-
-    /** The layer follows the box when the box scrolls. */
-    syncGhost() {
-      const ghost = this.$refs.ghost;
-      const box = this.$refs.box;
-
-      if (ghost && box) {
-        ghost.scrollTop = box.scrollTop;
-      }
-    },
-
-    /** Where the cursor is, after anything that could have moved it. */
-    /**
-     * Size the box to what is in it, up to the maximum the stylesheet sets.
-     *
-     * Height to `auto` first, or scrollHeight only ever reports the height it already has and
-     * the box grows and never shrinks. Driven by a watcher on the draft rather than by the
-     * input handler, so a message put in from somewhere else - a queued prompt, a paste, the
-     * box being cleared after a send - sizes it too.
-     */
-    autoGrow() {
-      const el = this.$refs.box;
-
-      if (!el) {
-        return;
-      }
-      el.style.height = 'auto';
-      el.style.height = `${ el.scrollHeight }px`;
-    },
-
-    syncCaret(event) {
-      const box = event?.target || this.$refs.box;
-
-      this.caret = box?.selectionStart ?? this.draft.length;
-      this.$nextTick(() => this.syncGhost());
-    },
-
-    /** Put a command in the box in place of the name being typed, ready for its argument. */
-    pickCommand(command) {
-      const spot = this.slashSpot || { start: 0, end: this.draft.length };
-      const after = this.draft.slice(spot.end);
-      const head = `${ this.draft.slice(0, spot.start) }${ command.name }`;
-      const gap = after.startsWith(' ') || after.startsWith('\n') ? '' : ' ';
-
-      this.draft = `${ head }${ gap }${ after }`;
-      this.slashIndex = 0;
-      this.caret = head.length + gap.length;
-      this.$nextTick(() => {
-        const box = this.$refs.box;
-
-        box?.focus();
-        box?.setSelectionRange?.(this.caret, this.caret);
-      });
     },
 
     moveSlash(direction) {
@@ -1327,170 +385,17 @@ export default {
       this.slashIndex = n ? (this.slashIndex + direction + n) % n : 0;
     },
 
-    /**
-     * Retire what this box sent once claude has recorded it anywhere - as a queued item, as a
-     * prompt, or as the hook's UserPromptSubmit - and say so when it has not.
-     *
-     * The rule and the evidence are in chat-state.mjs, which the verifier runs against a real
-     * claude; here it is only the four things to reconcile against.
-     */
-    prunePending() {
-      this.pending = reconcilePending(this.pending, {
-        entries: this.entries, hook: this.hook, queue: this.state.queue, gone: this.pane.gone,
+    /** Put a command in the box in place of the name being typed, ready for its argument. */
+    pickCommand(item) {
+      const at = this.pickCommandText(item);
+
+      this.slashIndex = 0;
+      this.$nextTick(() => {
+        const box = this.$refs.box;
+
+        box?.focus();
+        box?.setSelectionRange?.(at, at);
       });
-    },
-
-    /**
-     * Read back what the terminal printed for a command that prints only there, and show it.
-     *
-     * These commands open a panel (Settings · Status · Config · Usage · Stats) that stays until
-     * Esc. So: wait for the panel to actually be there - a busy session draws it late, and a
-     * capture taken early found nothing and left the Esc hitting the prompt instead, which is
-     * how the terminal came to be stuck inside the panel - then take its text, close it, and
-     * check it closed. The text goes into a modal of its own rather than the log: it is the
-     * terminal's answer to a question, not part of the conversation.
-     */
-    async echoTerminal(command, before) {
-      const seen = new Set(before.split('\n').map((l) => l.trim()));
-      const capture = async () => {
-        const after = await this.run(`tmux capture-pane -p -t "mc-${ this.paneId }" | tail -n 60`);
-
-        return after.split('\n')
-          .map((l) => l.replace(/[│┃]/g, ' ').trimEnd())
-          .filter((l) => l.trim() && !seen.has(l.trim()) && !/^\s*❯/.test(l) && !/shift\+tab|esc to interrupt|for shortcuts|bypass permissions/i.test(l) && !/^[\s─╌═┌┐└┘╭╮╰╯▔▁]+$/.test(l));
-      };
-      let fresh = [];
-
-      try {
-        // Up to six seconds for the panel to draw; a panel is several new lines at once.
-        for (let i = 0; i < 12 && fresh.length < 3; i++) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          fresh = await capture();
-        }
-        // Close it, and make sure it closed: one Esc suffices when the panel is up.
-        for (let i = 0; i < 3; i++) {
-          await this.keys('Escape');
-          await new Promise((resolve) => setTimeout(resolve, 700));
-          const still = await capture();
-
-          if (still.length < 3) {
-            break;
-          }
-        }
-      } catch {
-        return;
-      }
-      // Nothing to show, or only the shell complaining (a pod still installing its tools
-      // answers "tmux: command not found"): that is an error for the status line, not a panel.
-      if (!fresh.length) {
-        return;
-      }
-      if (fresh.length <= 2 && /command not found|No such file|error/i.test(fresh.join('\n'))) {
-        this.error = fresh.join(' ');
-
-        return;
-      }
-      this.panel = { title: command, text: fresh.join('\n') };
-      // Focus it, so Esc closes it without a click first.
-      this.$nextTick(() => document.querySelector('.mc-chat__lightbox--panel')?.focus());
-    },
-
-    /** The panel modal: closed by its button or by Esc. */
-    onPanelKey(event) {
-      if (event.key === 'Escape') {
-        this.panel = null;
-      }
-    },
-
-    /** A menu action that is a slash command: sent as typed, with the terminal's answer shown. */
-    async command(text) {
-      this.menu = '';
-      this.draft = text;
-      await this.send();
-    },
-
-    async clearConversation() {
-      this.menu = '';
-      // eslint-disable-next-line no-alert
-      if (!window.confirm('Clear this conversation? claude forgets everything said so far.')) {
-        return;
-      }
-      await this.command('/clear');
-    },
-
-    /** Files chosen with the Attach button: images shrink as pasted ones do, anything else goes as it is. */
-    attachPicked(event) {
-      for (const file of [...(event.target.files || [])]) {
-        this.attachImage(file);
-      }
-      event.target.value = '';
-      this.$nextTick(() => this.$refs.box?.focus());
-    },
-
-    /** The checkout's files, for the mention picker: what git tracks plus what it has not been told to ignore. */
-    async openFiles() {
-      this.menu = '';
-      this.files = {
-        ...this.files, open: true, loading: true, filter: '',
-      };
-      this.$nextTick(() => this.$refs.fileFilter?.focus());
-      try {
-        const out = await this.run(`cd ${ JSON.stringify(this.workdir) } && (git ls-files --cached --others --exclude-standard 2>/dev/null || find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' | sed 's|^./||') | head -n 4000`, 30000);
-
-        this.files = { ...this.files, list: out.split('\n').map((l) => l.trim()).filter(Boolean), loading: false };
-      } catch (e) {
-        this.files = { ...this.files, loading: false };
-        this.error = e.message || String(e);
-      }
-    },
-
-    mention(path) {
-      const at = `@${ path }`;
-
-      this.draft = `${ this.draft }${ this.draft && !this.draft.endsWith(' ') ? ' ' : '' }${ at } `;
-      this.files = { ...this.files, open: false };
-      this.$nextTick(() => this.$refs.box?.focus());
-    },
-
-    /**
-     * Whether claude thinks before answering, read from and written to the pane's own
-     * settings.json - the same key /config's "Thinking mode" flips. claude reads it at the
-     * start of each turn, so the change applies to the next message.
-     */
-    async readThinking() {
-      try {
-        const out = await this.run(`node -e "const s=require(process.env.HOME+'/.claude/settings.json');console.log(s.alwaysThinkingEnabled===false?'off':'on')" 2>/dev/null || echo on`);
-
-        this.thinking = !/off/.test(out);
-      } catch {
-        this.thinking = null;
-      }
-    },
-
-    async toggleThinking() {
-      const next = !this.thinking;
-
-      this.optionBusy = 'thinking';
-      try {
-        await this.run(`node -e "const f=process.env.HOME+'/.claude/settings.json';const fs=require('fs');const s=JSON.parse(fs.readFileSync(f,'utf8'));s.alwaysThinkingEnabled=${ next ? 'true' : 'false' };fs.writeFileSync(f,JSON.stringify(s,null,2)+'\\n')"`);
-        this.thinking = next;
-      } catch (e) {
-        this.error = e.message || String(e);
-      } finally {
-        this.optionBusy = '';
-      }
-    },
-
-    setLook(key, value) {
-      this.look = { ...this.look, [key]: value };
-      writeLook(this.look);
-    },
-
-    /** Send a message the pane never recorded, again. */
-    async resend(p) {
-      this.pending = this.pending.filter((x) => x.key !== p.key);
-      this.draft = p.text;
-      await this.send();
     },
 
     onKeydown(event) {
@@ -1524,102 +429,113 @@ export default {
       }
     },
 
-    /** Start the pane detached, so a conversation opened here first has somewhere to go. */
-    async start() {
-      const argv = this.shellAt >= 0 ? [...this.argv.slice(this.shellAt, this.shellAt + 4), 'start'] : null;
+    /** A click on a marked name: what does that skill do? */
+    async onGhostClick(event) {
+      const name = event?.target?.dataset?.name;
 
-      if (!argv) {
-        throw new Error('this pane cannot be started from here; open the terminal view');
-      }
-      const pod = await this.locatePod();
-
-      if (!pod) {
-        throw new Error('no running pod');
-      }
-      await podExecOnce(pod, [...this.prefix, ...argv], 30000, this.container, this.namespace);
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-    },
-
-    async choose(option) {
-      try {
-        await this.keys(option.key);
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        await this.keys('Enter');
-      } catch (e) {
-        this.error = e.message || String(e);
-      }
-      setTimeout(() => this.poll(), 400);
-    },
-
-    async submitCode() {
-      const code = this.code.trim();
-
-      if (!code) {
+      if (!name) {
         return;
       }
-      try {
-        await this.say(code);
-        this.code = '';
-      } catch (e) {
-        this.error = e.message || String(e);
+      event.preventDefault();
+      event.stopPropagation();
+      const found = this.commands.find((c) => c.name.toLowerCase() === name.toLowerCase());
+
+      if (!found) {
+        return;
+      }
+      this.details = { ...found, about: this.detailsCache[found.name] ?? '' };
+      if (this.detailsCache[found.name] !== undefined || !found.path) {
+        return;
+      }
+      // The first lines of the file: a skill's frontmatter says what it is for, and a command's
+      // first paragraph is the same thing by another name.
+      const about = await this.readAbout(found);
+
+      this.detailsCache = { ...this.detailsCache, [found.name]: about };
+      if (this.details?.name === found.name) {
+        this.details = { ...this.details, about };
       }
     },
 
-    async stop() {
-      try {
-        await this.keys('Escape');
-      } catch (e) {
-        this.error = e.message || String(e);
-      }
-    },
-
-    async login() {
-      try {
-        await this.say('/login');
-      } catch (e) {
-        this.error = e.message || String(e);
-      }
-    },
-
-    toggleTool(id) {
-      this.openTools = { ...this.openTools, [id]: !this.toolOpen(id) };
-    },
+    /* ── The menus that act ──────────────────────────────────────────────────────────────── */
 
     /**
-     * Where the files a message names live: the pod the pane runs in. For a pane in another
-     * pod (kubectl prefix) that pod is looked up by the label its Deployment gives it; the
-     * viewer and the thumbnails then read it directly, with the same session that reads this one.
+     * A menu action that is a slash command: the menu out of the way, then sent as typed.
+     *
+     * It was called `command`, which is also the name of this component's `command` prop - and
+     * props resolve before methods, so `command('/compact')` was `null('/compact')`. Compact,
+     * Clear, Account & usage and Status threw on every click for as long as that was true.
      */
-    async mediaTarget() {
-      if (this.media) {
-        return this.media;
-      }
-      const pod = await this.locatePod();
+    async runCommand(text) {
+      this.menu = '';
+      await this.sendCommand(text);
+    },
 
-      if (!pod) {
-        return null;
+    async clearConversation() {
+      this.menu = '';
+      // eslint-disable-next-line no-alert
+      if (!window.confirm('Clear this conversation? claude forgets everything said so far.')) {
+        return;
       }
-      if (this.prefix.length) {
-        // The last `-n` and `-c`: kubectl's own. The wrapper before it is a `sh -c` of its own.
-        const ns = this.prefix[this.prefix.lastIndexOf('-n') + 1];
-        const container = this.prefix[this.prefix.lastIndexOf('-c') + 1] || 'workspace';
-        const k = this.prefix.findIndex((a) => a === 'kubectl');
-        const argv = [...this.prefix.slice(0, k + 1), 'get', 'pods', '-n', ns, '-l', `app=${ ns }`, '--field-selector=status.phase=Running', '-o', 'jsonpath={.items[0].metadata.name}'];
-        const name = (await podExecOnce(pod, argv, 15000, this.container, this.namespace)).trim();
+      await this.sendCommand('/clear');
+    },
 
-        if (!name) {
-          return null;
-        }
-        this.media = {
-          pod: name, container, namespace: ns, home: this.paneHome,
-        };
-      } else {
-        this.media = {
-          pod, container: this.container, namespace: this.namespace, home: this.paneHome,
-        };
+    async setOption(kind, value) {
+      this.menu = '';
+      await this.applyOption(kind, value);
+    },
+
+    /** Files chosen with the Attach button: images shrink as pasted ones do. */
+    attachPicked(event) {
+      for (const picked of [...(event.target.files || [])]) {
+        this.attachImage(picked);
       }
+      event.target.value = '';
+      this.$nextTick(() => this.$refs.box?.focus());
+    },
 
-      return this.media;
+    /** The checkout's files, for the mention picker. */
+    async openFiles() {
+      this.menu = '';
+      this.files = {
+        ...this.files, open: true, loading: true, filter: '',
+      };
+      this.$nextTick(() => this.$refs.fileFilter?.focus());
+      try {
+        this.files = { ...this.files, list: await this.readFiles(), loading: false };
+      } catch (e) {
+        this.files = { ...this.files, loading: false };
+        this.error = e.message || String(e);
+      }
+    },
+
+    pickFile(path) {
+      this.mention(path);
+      this.files = { ...this.files, open: false };
+      this.$nextTick(() => this.$refs.box?.focus());
+    },
+
+    /* ── The pictures and the paths in what was said ─────────────────────────────────────── */
+
+    /** An image pasted or dropped: into the pod beside the pane, its path into the draft. */
+    onPaste(event) {
+      const items = [...(event.clipboardData?.items || [])].filter((i) => i.kind === 'file' && i.type.startsWith('image/'));
+
+      if (!items.length) {
+        return;
+      }
+      event.preventDefault();
+      items.forEach((item) => this.attachImage(item.getAsFile()));
+    },
+
+    onDrop(event) {
+      const dropped = [...(event.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
+
+      if (!dropped.length) {
+        return;
+      }
+      event.preventDefault();
+      dropped.forEach((one) => this.attachImage(one));
     },
 
     /** Thumbnails for every media placeholder the log has not filled in yet, one after another. */
@@ -1627,14 +543,14 @@ export default {
       if (this.hydrating || !this.$refs.log) {
         return;
       }
-      const pending = [...this.$refs.log.querySelectorAll('.mc-chat__media:not([data-done])')];
+      const waiting = [...this.$refs.log.querySelectorAll('.mc-chat__media:not([data-done])')];
 
-      if (!pending.length) {
+      if (!waiting.length) {
         return;
       }
       this.hydrating = true;
       try {
-        for (const el of pending) {
+        for (const el of waiting) {
           const path = el.dataset.path;
           const kind = el.dataset.kind;
 
@@ -1643,28 +559,7 @@ export default {
             el.innerHTML = '<span class="mc-chat__chip" title="Open the recording">&#9654;</span>';
             continue;
           }
-          const cached = this.thumbs[path];
-
-          if (cached) {
-            this.fill(el, path, cached);
-            continue;
-          }
-          let data = 'missing';
-
-          try {
-            const target = await this.mediaTarget();
-            const stat = target ? await statPodPath(target, path) : { kind: 'none', size: 0 };
-
-            if (stat.kind === 'file' && stat.size > 0 && stat.size <= THUMB_MAX) {
-              const ext = path.split('.').pop().toLowerCase();
-
-              data = `data:${ MIME[ext] || 'image/png' };base64,${ await readPodFileBase64(target, path) }`;
-            } else if (stat.kind === 'file') {
-              data = 'large';
-            }
-          } catch { /* missing it is */ }
-          this.thumbs = { ...this.thumbs, [path]: data };
-          this.fill(el, path, data);
+          this.fill(el, path, await this.thumbFor(path));
         }
       } finally {
         this.hydrating = false;
@@ -1697,10 +592,7 @@ export default {
       const path = hit.dataset.path;
 
       try {
-        const target = await this.mediaTarget();
-        const stat = target ? await statPodPath(target, path) : { kind: 'none' };
-
-        if (stat.kind === 'none') {
+        if (!await this.pathExists(path)) {
           this.flash(`${ path } is not in the workspace (any more).`);
 
           return;
@@ -1711,163 +603,11 @@ export default {
       }
     },
 
-    flash(text) {
-      this.notice = text;
-      clearTimeout(this.noticeTimer);
-      this.noticeTimer = setTimeout(() => {
-        this.notice = '';
-      }, 5000);
-    },
-
-    toggleThought(key) {
-      this.openThoughts = { ...this.openThoughts, [key]: !this.thoughtOpen(key) };
-    },
-
-    thoughtOpen(key) {
-      return key in this.openThoughts ? this.openThoughts[key] : this.look.thoughts;
-    },
-
-    toolOpen(id) {
-      return id in this.openTools ? this.openTools[id] : this.look.toolIo;
-    },
-
-    when(iso) {
-      if (!iso) {
-        return '';
+    /** The panel modal: closed by its button or by Esc. */
+    onPanelKey(event) {
+      if (event.key === 'Escape') {
+        this.panel = null;
       }
-      const d = new Date(iso);
-
-      return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    },
-
-    /** An image pasted or dropped: into the pod beside the pane, its path into the draft. */
-    onPaste(event) {
-      const items = [...(event.clipboardData?.items || [])].filter((i) => i.kind === 'file' && i.type.startsWith('image/'));
-
-      if (!items.length) {
-        return;
-      }
-      event.preventDefault();
-      items.forEach((item) => this.attachImage(item.getAsFile()));
-    },
-
-    onDrop(event) {
-      const files = [...(event.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
-
-      if (!files.length) {
-        return;
-      }
-      event.preventDefault();
-      files.forEach((file) => this.attachImage(file));
-    },
-
-    /**
-     * Attach an image: the path goes in the box now, the bytes go to the pod behind it.
-     *
-     * The path is decided here rather than after the upload, which is what makes this
-     * possible - it is a timestamp and an extension, both known the moment the file arrives.
-     * So pasting a screenshot puts `/workspace/.images/2026-…png ` in the box immediately and
-     * you carry on typing the sentence around it; a 2MB screenshot is two hundred execs and
-     * there is no reason to watch them.
-     *
-     * The upload is registered in `uploads`, and `send()` waits on those and only those - so
-     * the wait happens once, at the point it actually matters, and only if the upload has not
-     * finished by then. It usually has, because typing the rest of the message takes longer.
-     */
-    attachImage(file) {
-      if (!file) {
-        return Promise.resolve();
-      }
-
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const original = (file.type.split('/')[1] || 'png').replace(/[^a-z0-9]/g, '');
-      // Naming the file before the bytes have been read means predicting what shrink will do
-      // with them, so the decision moves here and shrink is told rather than asked. Only the
-      // rare failure below can make this wrong, and it repairs itself.
-      const converting = file.size >= 150_000 && typeof createImageBitmap === 'function';
-      let path = `${ this.imageDir }/${ stamp }.${ converting ? 'jpg' : original }`;
-
-      // In the box before a byte has moved.
-      this.draft = `${ this.draft }${ this.draft && !this.draft.endsWith(' ') ? ' ' : '' }${ path } `;
-
-      const upload = (async() => {
-        try {
-          const { bytes, extension } = await this.shrink(file, converting);
-
-          // The conversion was meant to happen and could not - a decoder that threw, or a JPEG
-          // that came out bigger than the PNG. The name is already in somebody's message, so
-          // the name is what moves: the file is written under its true extension and the text
-          // is corrected in place.
-          if (extension !== path.split('.').pop()) {
-            const corrected = path.replace(/\.[^.]+$/, `.${ extension }`);
-
-            this.draft = this.draft.split(path).join(corrected);
-            path = corrected;
-          }
-          let binary = '';
-
-          for (let i = 0; i < bytes.length; i += 8192) {
-            binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-          }
-          const encoded = btoa(binary);
-
-          await this.run(`mkdir -p "$(dirname '${ path }')" && : > '${ path }.b64'`);
-          for (let i = 0; i < encoded.length; i += CHUNK) {
-            this.pasting = `Attaching the image (${ Math.round((i / encoded.length) * 100) }%)`;
-            await this.run(`printf %s '${ encoded.slice(i, i + CHUNK) }' >> '${ path }.b64'`);
-          }
-          const out = await this.run(`base64 -d '${ path }.b64' > '${ path }' && rm -f '${ path }.b64' && wc -c < '${ path }'`);
-
-          if (!parseInt(out.trim(), 10)) {
-            throw new Error(`the image did not land in ${ this.label }`);
-          }
-        } catch (e) {
-          // Said, and not silently: the path is already in the message, so a failure here is a
-          // message about to be sent that names a file which is not there.
-          this.error = `${ path } could not be attached: ${ e.message || e }`;
-        } finally {
-          this.uploads = this.uploads.filter((u) => u !== upload);
-          if (!this.uploads.length) {
-            this.pasting = '';
-          }
-        }
-      })();
-
-      this.uploads = [...this.uploads, upload];
-
-      return upload;
-    },
-
-    /**
-     * A screenshot as a JPEG when it is big: every chunk of it is an exec, and a 2 MB PNG of a
-     * dashboard is two hundred of them. The model reads a JPEG just as well.
-     */
-    async shrink(file, converting) {
-      const original = new Uint8Array(await file.arrayBuffer());
-      const extension = (file.type.split('/')[1] || 'png').replace(/[^a-z0-9]/g, '');
-
-      // Whether to convert is the caller's decision now, not this one's: the caller has already
-      // named the file, and a function that decided the format after the name was chosen is a
-      // function that could rename it underneath somebody's message.
-      if (!converting) {
-        return { bytes: original, extension };
-      }
-      try {
-        const bitmap = await createImageBitmap(file);
-        const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
-        const canvas = document.createElement('canvas');
-
-        canvas.width = Math.round(bitmap.width * scale);
-        canvas.height = Math.round(bitmap.height * scale);
-        canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-        const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
-
-        if (blob && blob.size < original.length) {
-          return { bytes: new Uint8Array(await blob.arrayBuffer()), extension: 'jpg' };
-        }
-      } catch { /* keep the original */ }
-
-      return { bytes: original, extension };
     },
   },
 };
@@ -1933,6 +673,20 @@ export default {
         <span class="mc-chat__agent-when">{{ a.when }}</span>
       </button>
     </div>
+    <!--
+      The conversation, as a slot.
+      
+      What is handed out is what it takes to draw one: the turns with their HTML and their
+      tool rows already worked out, whether claude is mid-turn, and what it says it is doing.
+      A host overriding this brings its own scroller, which is why `scrollToEnd` and
+      `stepMine` both tolerate `$refs.log` not being there.
+    -->
+    <slot
+      name="transcript"
+      :turns="rendered"
+      :working="working"
+      :status="pane.status"
+    >
     <div
       ref="log"
       class="mc-chat__log"
@@ -1947,12 +701,25 @@ export default {
         <template v-else-if="!file">Waiting for the conversation to begin.</template>
         <template v-else>Nothing has been said yet.</template>
       </p>
-      <div
+      <template
         v-for="m in rendered"
         :key="m.key"
-        class="mc-chat__msg"
-        :class="[`mc-chat__msg--${ m.role }`, { 'mc-chat__msg--queued': m.queued }]"
       >
+        <!--
+          One turn, as a slot: who said it, what they said, what it did, and what came back.
+          A host that draws turns differently - bubbles in a bar, say - replaces this and
+          keeps everything else, including the reconciling that decides whether a message is
+          `queued`, `inQueue` or `failed`.
+        -->
+        <slot
+          name="message"
+          :turn="m"
+          :when="when"
+        >
+          <div
+            class="mc-chat__msg"
+            :class="[`mc-chat__msg--${ m.role }`, { 'mc-chat__msg--queued': m.queued }]"
+          >
         <div class="mc-chat__meta">
           <span class="mc-chat__who">{{ m.role === 'user' ? 'You' : m.role === 'summary' ? 'Summary' : m.role === 'note' ? 'Claude Code' : 'Claude' }}</span>
           <span class="mc-chat__when">{{ m.failed ? 'not recorded' : m.queued ? 'queued' : when(m.at) }}</span>
@@ -2093,7 +860,9 @@ export default {
             >
           </div>
         </div>
-      </div>
+          </div>
+        </slot>
+      </template>
       <!-- Working: said where the next message will appear, moving, so it reads as happening. -->
       <div
         v-if="working"
@@ -2110,6 +879,7 @@ export default {
         </button>
       </div>
     </div>
+    </slot>
 
     <div
       v-if="notice"
@@ -2360,7 +1130,7 @@ export default {
       <button
         type="button"
         class="mc-chat__menu-item"
-        @click="command('/compact')"
+        @click="runCommand('/compact')"
       >
         <span class="mc-chat__menu-name">Compact conversation</span>
         <span class="mc-chat__menu-note">/compact</span>
@@ -2407,7 +1177,7 @@ export default {
       <button
         type="button"
         class="mc-chat__menu-item"
-        @click="command('/usage')"
+        @click="runCommand('/usage')"
       >
         <span class="mc-chat__menu-name">Account &amp; usage</span>
         <span class="mc-chat__menu-note">/usage<template v-if="state.cost && state.cost.totalCostUSD"> · ${{ state.cost.totalCostUSD.toFixed(2) }} this session</template></span>
@@ -2415,7 +1185,7 @@ export default {
       <button
         type="button"
         class="mc-chat__menu-item"
-        @click="command('/status')"
+        @click="runCommand('/status')"
       >
         <span class="mc-chat__menu-name">Status</span>
         <span class="mc-chat__menu-note">/status</span>
@@ -2488,14 +1258,14 @@ export default {
         class="mc-chat__file-filter"
         placeholder="Filter by path"
         @keydown.escape.prevent="files.open = false"
-        @keydown.enter.prevent="fileMatches[0] && mention(fileMatches[0])"
+        @keydown.enter.prevent="fileMatches[0] && pickFile(fileMatches[0])"
       >
       <button
         v-for="f in fileMatches"
         :key="f"
         type="button"
         class="mc-chat__menu-item mc-chat__menu-item--file"
-        @click="mention(f)"
+        @click="pickFile(f)"
       >
         <span class="mc-chat__menu-name">{{ f }}</span>
       </button>
@@ -2522,7 +1292,7 @@ export default {
         type="button"
         class="mc-chat__menu-item"
         :class="{ 'mc-chat__menu-item--on': value === options.model }"
-        @click="applyOption('model', value)"
+        @click="setOption('model', value)"
       >
         <span class="mc-chat__menu-tick">{{ value === options.model ? '✓' : '' }}</span>
         <span class="mc-chat__menu-name">{{ value }}</span>
@@ -2539,7 +1309,7 @@ export default {
             type="button"
             class="mc-chat__effort"
             :class="{ 'mc-chat__effort--on': value === options.effort }"
-            @click="applyOption('effort', value)"
+            @click="setOption('effort', value)"
           >
             {{ value }}
           </button>
@@ -2654,6 +1424,19 @@ export default {
         class="mc-chat__details-path"
       >{{ details.path }}</p>
     </div>
+    <!--
+      The composer, as a slot: the one control a host is most likely to want in a shape of
+      its own. The Focus deck's bar is a single line along the bottom of the page when it is
+      shut, which is not a box with a pill row under it however it is styled.
+    -->
+    <slot
+      name="composer"
+      :draft="draft"
+      :can-send="canSend"
+      :sending="sending"
+      :working="working"
+      :send="send"
+    >
     <!--
       The prompt box: one bordered box with the text area and the controls inside it, which is
       where Claude Code's VS Code extension puts them - "click the model name at the bottom of
@@ -2779,6 +1562,7 @@ export default {
         </button>
       </div>
     </div>
+    </slot>
   </div>
 </template>
 
