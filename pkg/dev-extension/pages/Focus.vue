@@ -24,7 +24,7 @@
  * change it. What is personal - pins, snoozes, what you have dealt with - lives in your prefs.
  */
 import {
-  computed, nextTick, onMounted, onBeforeUnmount, ref, watch
+  computed, getCurrentInstance, nextTick, onMounted, onBeforeUnmount, ref, watch
 } from 'vue';
 import FocusDeck from '../components/focus/FocusDeck.vue';
 import DeckSkeleton from '../components/focus/DeckSkeleton.vue';
@@ -36,6 +36,8 @@ import WeightsChart from '../components/focus/WeightsChart.vue';
 import MiniCard from '../components/focus/MiniCard.vue';
 import CardFlight from '../components/focus/CardFlight.vue';
 import FileModal from '../components/code/FileModal.vue';
+import FocusDock from '../components/focus/FocusDock.vue';
+import type { DockRow } from '../components/focus/dock';
 import CardGallery from '../components/focus/CardGallery.vue';
 import FocusChatBar from '../components/focus/FocusChatBar.vue';
 import StudioTerminal from '../components/StudioTerminal.vue';
@@ -48,10 +50,13 @@ import type {
   FocusConfig, FocusState, FocusTask, CardAction, ManualTask, FocusKind, WeightRow
 } from '../focus';
 import { useStore } from 'vuex';
-import { useRoute, useRouter } from 'vue-router';
 import { priorityQueue } from '../priority';
 import type { PriorityItem } from '../priority';
 import { listAllWorkspaces, currentOwner } from '../api';
+import type { DevWorkspace } from '../api';
+import { listRanchers } from '../ranchers';
+import { WORKSPACE_ROUTE } from '../config/constants';
+import type { RancherTarget } from '../ranchers';
 import {
   myWork, assignToMe, requestReviewers, describePr, createPullRequest, markReadyForReview
 } from '../github';
@@ -60,6 +65,7 @@ import { workspaceBranch } from '../workspace-tools';
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
 import { askTheAgent, panelConversation } from '../focus-agent';
+import { sendToPane } from '../conversations';
 import { reviewNotes } from '../focus-review';
 import type { ReviewNote } from '../focus-review';
 import { readArtifacts, NO_ARTIFACTS, subjectOf } from '../focus-artifacts';
@@ -74,6 +80,9 @@ import '../design/focus-chat.css';
 
 /** How long the deck will wait for the top card's detail before drawing it without. See load. */
 const FIRST_PAINT_WAIT = 3000;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Json = any;
 
 const loading = ref(true);
 const busy = ref(false);
@@ -139,8 +148,19 @@ const notes = ref<ReviewNote[]>([]);
 const notesFor = ref('');
 
 const store = useStore();
-const route = useRoute();
-const router = useRouter();
+
+/**
+ * The host's router, off this component's own instance.
+ *
+ * Not `useRouter()`. An extension is loaded as a UMD bundle with its own copy of vue-router, so
+ * the composition helpers look for a router in *that* module's injection context and find
+ * nothing - `replace` threw, the catch swallowed it, and the card never reached the URL. It
+ * worked on the dev server, where the extension is compiled into the dashboard and there is only
+ * one vue-router, which is the worst way for this to fail: right in development, silent in
+ * production. `$router` on the instance proxy is the host's, always.
+ */
+const self = getCurrentInstance();
+const router = computed(() => (self?.proxy as unknown as { $router?: Json })?.$router || null);
 
 /**
  * Which card you are on, in the address bar.
@@ -156,11 +176,39 @@ const router = useRouter();
  */
 const CARD_PARAM = 'card';
 
+/** What the address bar says now, read from the window rather than through the router. */
+function cardInUrl(): string {
+  try {
+    return new URLSearchParams(window.location.search).get(CARD_PARAM) || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Written with `history.replaceState` rather than through the router.
+ *
+ * The router is the host's and a `replace` through it is a navigation the dashboard can decline;
+ * this is the same URL by the end and cannot be declined, which is what makes it survive. Proven
+ * on the installed plugin rather than assumed: a query set this way is still there sixteen
+ * seconds and a deck turn later.
+ */
 function rememberInUrl(key: string) {
-  if (loading.value || String(route.query[CARD_PARAM] || '') === key) {
+  if (loading.value || cardInUrl() === key) {
     return;
   }
-  router.replace({ query: { ...route.query, [CARD_PARAM]: key || undefined } }).catch(() => undefined);
+  try {
+    const url = new URL(window.location.href);
+
+    if (key) {
+      url.searchParams.set(CARD_PARAM, key);
+    } else {
+      url.searchParams.delete(CARD_PARAM);
+    }
+    window.history.replaceState(window.history.state, '', url);
+  } catch {
+    // A URL this browser will not parse is not worth failing a render over.
+  }
 }
 
 /**
@@ -172,6 +220,9 @@ function rememberInUrl(key: string) {
  */
 const artifacts = ref<CardArtifacts>(NO_ARTIFACTS);
 const artifactsFor = ref('');
+
+/** The advisories and the bot's pull requests the queue was built from; see readArtifacts. */
+const alsoFrom = ref<{ alerts: Json[]; botPrs: Json[] }>({ alerts: [], botPrs: [] });
 
 /**
  * The read in flight, handed back to every caller.
@@ -216,6 +267,58 @@ function readNotes(): Promise<void> {
 /** Who you are, for telling your own comments from everybody else's. */
 const me = ref('');
 
+/*
+ * ── What else is running ──────────────────────────────────────────────────────────────────────
+ *
+ * The deck shows one card. These two corners are what is behind it: the workspaces, and the
+ * Ranchers they are pointed at. Read once with everything else and not polled - a dock that
+ * re-read the cluster every few seconds to draw two dots would cost more than the deck does.
+ */
+const spaces = ref<DevWorkspace[]>([]);
+const ranchers = ref<RancherTarget[]>([]);
+
+const workspaceRows = computed<DockRow[]>(() => spaces.value
+  .filter((ws) => !ws.preview)
+  .map((ws) => ({
+    id:    ws.name,
+    name:  ws.name,
+    state: ws.state,
+    up:    ws.state === 'running',
+    bad:   ws.state === 'failed',
+    note:  ws.title && ws.title !== ws.name ? '' : '',
+  })));
+
+const rancherRows = computed<DockRow[]>(() => ranchers.value.map((target) => ({
+  id:    target.url || target.id,
+  name:  target.name,
+  state: target.phase,
+  up:    target.phase === 'ready' || target.phase === 'host',
+  bad:   target.phase === 'error',
+  // What it is doing, while it is doing something; once it is up its address is the useful half.
+  note:  target.detail || (target.url ? host(target.url) : ''),
+})));
+
+/** Just the host, for a dock row: a full URL in a 340px card is a line of ellipsis. */
+function host(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+/** Open a workspace in the product's own page for it. */
+function openWorkspace(name: string) {
+  // The host's router when there is one; its own URL when there is not.
+  const go = router.value;
+
+  if (go) {
+    go.push({ name: WORKSPACE_ROUTE, params: { cluster: '_', workspace: name } }).catch(() => undefined);
+  } else {
+    window.location.href = `${ window.location.pathname.replace(/\/focus$/, '') }/workspaces/${ encodeURIComponent(name) }`;
+  }
+}
+
 let readingArtifacts: Promise<void> = Promise.resolve();
 
 function readTheArtifacts(): Promise<void> {
@@ -238,7 +341,7 @@ function readTheArtifacts(): Promise<void> {
   // Cleared first: the card is about to draw, and last card's evidence under this card's title
   // is worse than a card with nothing under it for a second.
   artifacts.value = NO_ARTIFACTS;
-  readingArtifacts = readArtifacts(task, wants, store, me.value, work.value)
+  readingArtifacts = readArtifacts(task, wants, store, me.value, work.value, alsoFrom.value)
     .catch(() => NO_ARTIFACTS)
     .then((found) => {
       // Turned again while this was in the air; see readNotes for the same guard.
@@ -323,6 +426,13 @@ async function load() {
     // so a cold page would rank a review workspace by what GitHub alone can see and miss that
     // its agent has already left findings waiting.
     const workspaces = await listAllWorkspaces().catch(() => []);
+
+    spaces.value = workspaces;
+    // The Ranchers are the one read here that nothing else needs, so it is allowed to be slow and
+    // allowed to fail: a corner with no dots in it is not a reason for the deck not to draw.
+    listRanchers(store).then((found) => {
+      ranchers.value = found;
+    }).catch(() => undefined);
     const names = workspaces.map((workspace) => workspace.name);
     const [found, dependabot, cached, botReviews] = await Promise.all([
       myWork().catch(() => null),
@@ -338,6 +448,10 @@ async function load() {
     }));
 
     work.value = found;
+    alsoFrom.value = {
+      alerts: (dependabot?.groups || []) as Json[],
+      botPrs: ((dependabot?.prs || []) as Json[]).map((pr: Json) => ({ ...pr, number: pr.number })),
+    };
     items.value = priorityQueue({
       work: found,
       statuses,
@@ -352,7 +466,7 @@ async function load() {
     // The card asked for, before anything is read for it: the artifacts and the comments below
     // are read for whatever `current` is, and resolving this afterwards would fetch card zero's
     // and then jump - which is both slower and the flicker this gate exists to stop.
-    const asked = String(route.query[CARD_PARAM] || '');
+    const asked = cardInUrl();
     const at = asked ? deck.value.findIndex((task) => task.key === asked) : -1;
 
     if (at >= 0) {
@@ -883,6 +997,55 @@ async function askAboutCode(task: FocusTask, value: { path: string; label: strin
   }
 }
 
+/**
+ * Make the workspace this card has none of.
+ *
+ * Which kind depends on what the card is: a pull request gets a review workspace, an issue gets a
+ * fix. The card already declares which through its own actions - that is what `review` and `fix`
+ * mean - so this reads the answer off the definition rather than guessing from the task.
+ */
+async function makeWorkspaceFor(task: FocusTask) {
+  const verbs = task.card.actions.map((action) => action.verb);
+
+  if (verbs.includes('review')) {
+    await pickUpTheReview(task);
+  } else if (verbs.includes('fix')) {
+    await pickUpTheIssue(task);
+  } else {
+    say('There is nothing here to make a workspace from.');
+  }
+}
+
+/**
+ * Answer the agent, with the key it listed.
+ *
+ * The whole of what answering a claude dialog means: the pane is a terminal, and its numbered
+ * list wants the number. Nothing is interpreted here - the key sent is the one the pane printed
+ * beside the label that was pressed - because guessing at a dialog this view cannot see the rest
+ * of is how you answer the wrong question.
+ */
+async function answerTheAgent(task: FocusTask, value: { key: string; label: string }) {
+  const turn = artifacts.value.agent;
+
+  if (!turn?.conversation) {
+    error.value = 'That conversation is no longer there to answer.';
+
+    return;
+  }
+  busy.value = true;
+  try {
+    await sendToPane(turn.conversation, value.key);
+    say(`Answered "${ value.label }".`);
+    // It is going to do something now, so what was on the card is already out of date.
+    artifactsFor.value = '';
+    setTimeout(() => readTheArtifacts(), 1500);
+  } catch (e) {
+    error.value = (e as Error)?.message || String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
 /** Answer one of the comments waiting on this change, with the comment in front of the agent. */
 async function replyTo(task: FocusTask, value: { comment: CardComment }) {
   const { comment } = value;
@@ -1235,6 +1398,9 @@ onBeforeUnmount(closeSettings);
           @take="current && takeIssue(current, $event)"
           @about-issue="current && askTheAgent(current, `About issue #${ $event.number } (${ $event.title }): read it and tell me whether it is specified well enough to start, roughly where in the codebase it lives, and how big it looks.`).then(() => say('Asked in the conversation.'))"
           @ask-reviewer="current && askReviewer(current, $event)"
+          @answer="current && answerTheAgent(current, $event)"
+          @workspace="current?.workspace && openWorkspace(current.workspace)"
+          @make-workspace="current && makeWorkspaceFor(current)"
         />
       </main>
     </div>
@@ -1252,6 +1418,30 @@ onBeforeUnmount(closeSettings);
       :to="flight.to"
       :mode="flight.mode"
       @done="flightDone"
+    />
+
+    <!--
+      The two corners: what is running behind the one card on screen. Workspaces on the left,
+      because that is where the card's own workspace is named; the Ranchers they are pointed at
+      on the right.
+    -->
+    <FocusDock
+      label="Workspaces"
+      icon="tasks"
+      side="left"
+      :rows="workspaceRows"
+      :here="current?.workspace || ''"
+      empty="No workspaces. A card that needs one offers to make it."
+      @open="openWorkspace"
+    />
+
+    <FocusDock
+      label="Ranchers"
+      icon="scales"
+      side="right"
+      :rows="rancherRows"
+      empty="No Rancher instances."
+      @open="(url) => url && window.open(url, '_blank', 'noopener')"
     />
 
     <!-- The whole of a file somebody was reading six lines of. See components/code/FileModal. -->

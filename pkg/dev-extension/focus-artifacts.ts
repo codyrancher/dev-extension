@@ -24,6 +24,10 @@ import { issueBody } from './github';
 import { reviewNotes, parsePatch, hunkAround } from './focus-review';
 import type { DiffLine, ReviewNote } from './focus-review';
 import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from './api';
+import { listConversations } from './conversations';
+import { latestAgentReport } from './conversations';
+import { conversationPane, readInWorkspace } from './workspace-tools';
+import { readPane } from './chat';
 import { APP_INSTANCE } from './config/constants';
 import { previewState } from './previews';
 import type { ShareKind } from './workspace-tools';
@@ -45,7 +49,7 @@ const SHARE_OF_LABEL = 'dev.rancher.io/share-of';
 
 export type Artifact =
   | 'stat' | 'checks' | 'notes' | 'files' | 'comments' | 'media' | 'live' | 'body'
-  | 'pool' | 'reviewers' | 'commits';
+  | 'pool' | 'reviewers' | 'commits' | 'conversation' | 'advisory' | 'bump';
 
 /** How big the change is. Three numbers, because they are the three everybody asks for. */
 export interface CardStat { files: number; added: number; removed: number }
@@ -139,6 +143,58 @@ export interface Reviewers {
   suggested: string[];
 }
 
+/**
+ * What the agent is actually asking, and the last thing it said.
+ *
+ * The card this is for is the highest thing in the queue - an agent has stopped and nothing it
+ * is doing can continue until it hears back - and it was showing the pull request's description,
+ * because `body` is what it asked for and that is what `body` resolves to. The one thing needed
+ * to answer the question was the one thing not on the card.
+ *
+ * `question` is the dialog claude is showing, read off its pane: the prompt and its numbered
+ * choices, which is what makes this answerable from here rather than somewhere else. `said` is
+ * its last report, for a stop with no question in it - which is what `stalled` always is.
+ */
+export interface AgentTurn {
+  /** The conversation it is in, so a card can open exactly that one. */
+  conversation: string;
+  /** The question, when it is asking one. */
+  question: string;
+  /** The choices it is offering, when it offers any. */
+  options: { key: string; label: string; selected: boolean }[];
+  /** What kind of answer it wants: a choice, a yes, a line of text. */
+  wants: string;
+  /** The last thing it said, when there is no dialog up. */
+  said: string;
+  /** Where it has got to, in its own words ("Brewing for 12s"), or '' when it is not working. */
+  status: string;
+  /** Its last few lines, for a stop that is neither a question nor a report. */
+  tail: string;
+}
+
+/** A security advisory, as the thing you decide about. */
+export interface AdvisoryFacts {
+  severity: string;
+  /** The packages it is about. */
+  packages: string[];
+  /** What is vulnerable, and what fixes it. */
+  affected: string;
+  patched: string;
+  /** How many alerts it raised in this repository. */
+  alerts: number;
+  summary: string;
+}
+
+/** A dependency bump: the one fact that decides it. */
+export interface BumpFacts {
+  package: string;
+  ecosystem: string;
+  from: string;
+  to: string;
+  /** Whether the version jump crosses a major, which is the whole question. */
+  major: boolean;
+}
+
 /** A commit on the branch: what there is to turn into a pull request. */
 export interface CardCommit {
   sha: string;
@@ -160,6 +216,9 @@ export interface CardArtifacts {
   pool: PoolIssue[];
   reviewers: Reviewers | null;
   commits: CardCommit[];
+  agent: AgentTurn | null;
+  advisory: AdvisoryFacts | null;
+  bump: BumpFacts | null;
 }
 
 export const NO_ARTIFACTS: CardArtifacts = {
@@ -175,6 +234,9 @@ export const NO_ARTIFACTS: CardArtifacts = {
   pool:   [],
   reviewers: null,
   commits: [],
+  agent:  null,
+  advisory: null,
+  bump:   null,
 };
 
 /* ── Reading one thing at a time ────────────────────────────────────────────────────────────── */
@@ -478,6 +540,138 @@ function reviewersOf(pr: number, detail: Json, work: Json): Reviewers {
   return { asked, approved, suggested };
 }
 
+/**
+ * What the agent in a workspace is asking, or last said.
+ *
+ * The pane first, because a dialog is answerable and a report is not: `readPane` recognises the
+ * four shapes claude's own UI uses - a numbered list, a yes/no, a login, a bare prompt - and the
+ * numbered list is the case that matters here. Then the last report, for a stop with no question
+ * in it, which is what a stalled workspace always is.
+ *
+ * Reads the busiest conversation rather than all of them: a workspace with four has one that
+ * stopped, and the others are not what the card is about.
+ */
+async function agentTurnOf(workspace: string): Promise<AgentTurn | null> {
+  if (!workspace) {
+    return null;
+  }
+  const sessions = await listConversations(workspace).catch(() => []);
+
+  if (!sessions.length) {
+    return null;
+  }
+
+  // Newest first: the one that stopped is the one last written to.
+  for (const session of [...sessions].reverse().slice(0, 3)) {
+    const pane = await conversationPane(workspace, session.id, 40).catch(() => null);
+
+    if (!pane?.text) {
+      continue;
+    }
+    const seen = readPane(pane.text);
+    const tail = pane.text.split('\n').filter((line) => line.trim()).slice(-6).join('\n');
+
+    if (seen.dialog) {
+      return {
+        conversation: session.id,
+        question:     seen.dialog.prompt,
+        options:      seen.dialog.options,
+        wants:        seen.dialog.kind,
+        said:         '',
+        status:       seen.status,
+        tail,
+      };
+    }
+
+    // No dialog: its last report, which is what a skill ends with.
+    const report = await latestAgentReport(workspace).catch(() => null);
+
+    return {
+      conversation: report?.conversation || session.id,
+      question:     '',
+      options:      [],
+      wants:        seen.idle ? 'text' : '',
+      said:         report?.text || '',
+      status:       seen.status,
+      tail,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * The branch's own commits, for work that has no pull request.
+ *
+ * The card this is for exists precisely because there is no pull request yet - and every other
+ * artifact on it comes off `prDetail`, which needs one. So `commits` resolved to nothing on the
+ * one card whose whole subject is what is on the branch, and it drew an empty body. Measured
+ * rather than reasoned about: the sweep reported `surf=none commits=0` on it.
+ *
+ * Read from the checkout, over the merge base, which is what the rail's own branch panel does.
+ */
+async function branchCommits(workspace: string): Promise<CardCommit[]> {
+  if (!workspace) {
+    return [];
+  }
+  const out = await readInWorkspace(workspace, [
+    'cd $WS/dashboard 2>/dev/null || { echo "@@NOREPO"; exit 0; }',
+    'base=$(git merge-base upstream/master HEAD 2>/dev/null || git merge-base origin/master HEAD 2>/dev/null || git rev-parse HEAD)',
+    'git log --format="%h%x09%s%x09%an%x09%aI" "$base"..HEAD 2>/dev/null | head -20',
+  ].join('\n')).catch(() => '');
+
+  if (!out || out.includes('@@NOREPO')) {
+    return [];
+  }
+
+  return out.split('\n').filter(Boolean).map((line) => {
+    const [sha, message, author, at] = line.split('\t');
+
+    return {
+      sha: sha || '', message: message || '', author: author || '', at: at || '',
+    };
+  }).filter((commit) => commit.sha);
+}
+
+/** The advisory behind an alert card, out of what the queue was built from. */
+function advisoryFrom(what: string, alerts: Json[]): AdvisoryFacts | null {
+  const slug = /Advisory\s+(\S+)/i.exec(what)?.[1] || '';
+  const found = (alerts || []).find((row: Json) => row.slug === slug || row.key === slug || row.ghsa === slug);
+
+  if (!found) {
+    return null;
+  }
+
+  return {
+    severity: String(found.severity || '').toLowerCase(),
+    packages: found.packages || [],
+    affected: String(found.vulnerableRange || found.affected || ''),
+    patched:  String(found.firstPatchedVersion || found.patched || ''),
+    alerts:   Number(found.count || found.alerts?.length || 0),
+    summary:  String(found.summary || found.title || '').slice(0, 600),
+  };
+}
+
+/** The version change behind a bump card: the one fact that decides it. */
+function bumpFrom(pr: number, botPrs: Json[]): BumpFacts | null {
+  const found = (botPrs || []).find((row: Json) => Number(row.number) === pr);
+
+  if (!found) {
+    return null;
+  }
+  const from = String(found.fromVersion || '');
+  const to = String(found.toVersion || '');
+
+  return {
+    package:   String(found.packageName || ''),
+    ecosystem: String(found.ecosystem || ''),
+    from,
+    to,
+    // A major jump is the whole question on a bump; everything else is usually a formality.
+    major:     Boolean(from && to && from.split('.')[0] !== to.split('.')[0]),
+  };
+}
+
 /* ── Reading what one card wants ────────────────────────────────────────────────────────────── */
 
 /** What a task is about, as the things that can be looked up. */
@@ -517,6 +711,8 @@ export async function readArtifacts(
   me = '',
   /** What the queue was built from, for the artifacts that are already in it. See poolFrom. */
   work: Json = null,
+  /** The other two things the queue was built from: the advisories and the bot's pull requests. */
+  extra: { alerts?: Json[]; botPrs?: Json[] } | null = null,
 ): Promise<CardArtifacts> {
   const want = new Set(wants || []);
   const subject = subjectOf(task);
@@ -593,16 +789,40 @@ export async function readArtifacts(
     })(),
 
     (async() => {
+      if (want.has('conversation')) {
+        out.agent = await agentTurnOf(subject.workspace).catch(() => null);
+      }
+    })(),
+
+    (async() => {
+      if (want.has('advisory')) {
+        out.advisory = advisoryFrom(task.what, extra?.alerts || []);
+      }
+    })(),
+
+    (async() => {
+      if (want.has('bump') && subject.pr) {
+        out.bump = bumpFrom(subject.pr, extra?.botPrs || []);
+      }
+    })(),
+
+    (async() => {
       if (want.has('reviewers') && detail && subject.pr) {
         out.reviewers = reviewersOf(subject.pr, detail, work);
       }
     })(),
 
     (async() => {
-      if (want.has('commits') && detail) {
+      if (!want.has('commits')) {
+        return;
+      }
+      if (detail) {
         out.commits = (detail.commits || []).slice(-12).map((commit: Json) => ({
           sha: String(commit.sha || '').slice(0, 7), message: commit.message || '', author: commit.author || '', at: commit.date || '',
         }));
+      } else {
+        // No pull request to read them from, which is the whole point of the card asking.
+        out.commits = await branchCommits(subject.workspace).catch(() => []);
       }
     })(),
 

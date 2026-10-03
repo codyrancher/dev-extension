@@ -59,6 +59,10 @@ const emit = defineEmits<{
   (e: 'reply', value: any): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: 'expand', value: any): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: 'answer', value: any): void;
+  (e: 'workspace'): void;
+  (e: 'make-workspace'): void;
 }>();
 
 const current = computed(() => props.cards[props.index] || null);
@@ -495,6 +499,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           @ask-code="emit('ask-code', $event)"
           @reply="emit('reply', $event)"
           @expand="emit('expand', $event)"
+          @answer="emit('answer', $event)"
+          @workspace="emit('workspace')"
+          @make-workspace="emit('make-workspace')"
         />
       </div>
 
