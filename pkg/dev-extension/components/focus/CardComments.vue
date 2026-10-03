@@ -141,7 +141,16 @@ const hasCode = (comment: CardComment) => comment.hunk.some((line) => line.text.
   overflow-y: auto;
 }
 
+/*
+ * Never squeezed.
+ *
+ * A flex item shrinks by default, and a scrolling column of forty of them hands each one less
+ * height than its content needs - so the rows collapse into each other and their text draws over
+ * the row below, which is what the file tree was doing. Pinning the row is what makes the column
+ * scroll instead of compressing. The same mistake, and the same fix, as the card's own header.
+ */
 .note {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: var(--s2);

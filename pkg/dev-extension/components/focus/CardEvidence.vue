@@ -7,9 +7,9 @@
  * while it was working. None of them is the point of a card - the change itself or the agent's
  * review is - so all four live in one band above it, small, in the order you would ask.
  *
- * CI is the one with a rule worth stating: every failure by name with what it reported, and one
- * pill for everything that passed. Twenty green checks listed by name is how a card stops being
- * read, and the name of a check that passed has never told anybody anything.
+ * CI is one badge per state, not one per check: `4 failing` opens the list. Four e2e suites named
+ * in full - `e2e-test (admin, @adminUser, @navigation, @extensions)` - took two rows of the card
+ * above the change they were about. See CardChecks.
  *
  * The screenshots are evidence rather than the subject, so they are thumbnails that open: see
  * MediaViewer, which is where a recording is actually watchable.
@@ -18,6 +18,7 @@ import { computed, ref } from 'vue';
 import AppIcon from './AppIcon.vue';
 import StatPill from './StatPill.vue';
 import MediaViewer from './MediaViewer.vue';
+import CardChecks from './CardChecks.vue';
 import type { CardArtifacts } from '../../focus-artifacts';
 
 const props = defineProps<{ artifacts: CardArtifacts }>();
@@ -41,7 +42,6 @@ const checks = computed(() => [...props.artifacts.checks].sort((a, b) => (
   (a.state === 'failed' ? 0 : a.state === 'running' ? 1 : 2) - (b.state === 'failed' ? 0 : b.state === 'running' ? 1 : 2)
 )));
 
-const ICON = { passed: 'check', failed: 'cross', running: 'spinner' } as const;
 </script>
 
 <template>
@@ -54,21 +54,7 @@ const ICON = { passed: 'check', failed: 'cross', running: 'spinner' } as const;
         <StatPill label="removed" :value="`−${ artifacts.stat.removed }`" tone="bad" />
       </template>
 
-      <component
-        :is="check.url ? 'a' : 'span'"
-        v-for="check in checks"
-        :key="check.name"
-        class="check"
-        :class="`check--${ check.state }`"
-        :href="check.url || undefined"
-        :target="check.url ? '_blank' : undefined"
-        :rel="check.url ? 'noopener' : undefined"
-        :title="check.detail || check.name"
-      >
-        <AppIcon :name="ICON[check.state]" :size="12" />
-        <span class="check__name">{{ check.name }}</span>
-        <span v-if="check.detail" class="check__detail">{{ check.detail }}</span>
-      </component>
+      <CardChecks v-if="checks.length" :checks="checks" />
     </div>
 
     <!-- Something running, on a link: the build of this branch you can actually click around in. -->
@@ -150,38 +136,11 @@ const ICON = { passed: 'check', failed: 'cross', running: 'spinner' } as const;
 }
 
 /* ── CI ───────────────────────────────────────────────────────────────────────────────────── */
-.check {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  height: 24px;
-  padding: 0 9px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  color: var(--text-muted);
-  font-size: var(--t-xs);
-  text-decoration: none;
-  white-space: nowrap;
-}
 
-a.check:hover { border-color: var(--border-strong); color: var(--text); }
 
-.check--failed { border-color: color-mix(in srgb, var(--danger) 42%, transparent); color: var(--danger); }
-.check--running { color: var(--text-dim); }
-.check--passed { color: var(--success); border-color: color-mix(in srgb, var(--success) 30%, transparent); }
 
-.check__name { font-weight: 600; }
 
 /* The check's own sentence, which is usually the whole reason it is on the card. */
-.check__detail {
-  min-width: 0;
-  max-width: 44ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-faint);
-  font-weight: 400;
-}
 
 /* ── What is up on a link ─────────────────────────────────────────────────────────────────── */
 .live {

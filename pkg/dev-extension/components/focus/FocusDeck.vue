@@ -27,6 +27,8 @@ const props = defineProps<{
   notes?: unknown[];
   /** Everything else the card on top has to show. See focus-artifacts.ts; opaque here. */
   artifacts?: unknown;
+  /** Those artifacts are still being read, so the top card says so. */
+  reading?: boolean;
   /**
    * A card is in the air between this deck and the pinned rail - see CardFlight.
    *
@@ -368,21 +370,23 @@ let wheelLock = 0;
 let wheelSum = 0;
 
 /**
- * Anything under the pointer that can still scroll the way the wheel is going.
+ * Is the pointer over something that scrolls?
  *
- * It used to ask only about `.card__body`, which was true while a card was prose and a few
- * pills. A card with a list of review comments in it has scrollers inside scrollers, and a
- * wheel over one of those has to scroll it - turning the deck instead loses the place in a list
- * somebody was reading.
+ * Not "can it scroll further the way the wheel is going", which is what this asked before. That
+ * is scroll chaining, and it means reading a list of review comments to the end hands the next
+ * notch to the deck: the list stops, the card turns, and the place in the list is gone. Reaching
+ * the bottom of something is not a request to leave it.
+ *
+ * So: anything under the pointer with room to scroll keeps the wheel for as long as the pointer
+ * is over it, at its end or not. Turning the deck is then the arrow keys, the rail, a drag, or a
+ * wheel over the card's own margins - all of which are deliberate in a way that a fifth notch of
+ * the same scroll is not.
  */
-function scrollingUnder(target: HTMLElement | null, down: boolean): boolean {
+function scrollingUnder(target: HTMLElement | null): boolean {
   let el: HTMLElement | null = target;
 
   while (el && el !== deck.value) {
-    const room = el.scrollHeight - el.clientHeight > 1;
-    const more = down ? el.scrollTop + el.clientHeight < el.scrollHeight - 1 : el.scrollTop > 0;
-
-    if (room && more) {
+    if (el.scrollHeight - el.clientHeight > 1) {
       const how = getComputedStyle(el).overflowY;
 
       if (how === 'auto' || how === 'scroll') {
@@ -399,7 +403,11 @@ function onWheel(event: WheelEvent) {
   if (overlayOpen.value) {
     return;
   }
-  if (scrollingUnder(event.target as HTMLElement, event.deltaY > 0)) {
+  if (scrollingUnder(event.target as HTMLElement)) {
+    // Its scroller keeps the wheel; the sum is dropped so leaving it does not turn on momentum
+    // the scroller already consumed.
+    wheelSum = 0;
+
     return;
   }
   event.preventDefault();
@@ -491,6 +499,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           :pinned="current.pinned"
           :notes="(notes as any)"
           :artifacts="(artifacts as any)"
+          :reading="reading"
           @act="(action) => emit('act', { task: current!, action })"
           @ask="emit('ask', current!)"
           @pin="emit('pin', current!)"

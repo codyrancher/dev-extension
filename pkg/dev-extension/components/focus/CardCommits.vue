@@ -58,7 +58,16 @@ const when = (at: string) => {
   overflow-y: auto;
 }
 
+/*
+ * Never squeezed.
+ *
+ * A flex item shrinks by default, and a scrolling column of forty of them hands each one less
+ * height than its content needs - so the rows collapse into each other and their text draws over
+ * the row below, which is what the file tree was doing. Pinning the row is what makes the column
+ * scroll instead of compressing. The same mistake, and the same fix, as the card's own header.
+ */
 .cm__row {
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: 62px minmax(0, 1fr) auto 34px;
   align-items: center;

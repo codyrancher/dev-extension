@@ -110,7 +110,18 @@ const shown = computed(() => props.pool);
   overflow-y: auto;
 }
 
-.pick { border-radius: var(--r-sm); }
+/*
+ * Never squeezed.
+ *
+ * A flex item shrinks by default, and a scrolling column of forty of them hands each one less
+ * height than its content needs - so the rows collapse into each other and their text draws over
+ * the row below, which is what the file tree was doing. Pinning the row is what makes the column
+ * scroll instead of compressing. The same mistake, and the same fix, as the card's own header.
+ */
+.pick {
+  flex: 0 0 auto;
+  border-radius: var(--r-sm);
+}
 .pick--on { background: color-mix(in srgb, var(--kind) 8%, transparent); }
 
 .pick__row {
