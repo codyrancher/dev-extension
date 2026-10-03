@@ -274,10 +274,9 @@ const statusWord: Record<string, string> = {
     <!-- The file. -->
     <article class="file u-fade-y">
       <div v-for="(hunk, h) in file.hunks" :key="h" class="file__hunk">
-        <p class="file__hunk-head">{{ hunk.header }}</p>
-
         <CodeView
           :rows="highlighted(fromDiffLines(hunk.lines), file.path)"
+          :label="hunk.header"
           selectable
           :picked="pick && pick.hunk === h ? pick.range : null"
           :expandable="h === 0"
@@ -495,11 +494,11 @@ const statusWord: Record<string, string> = {
 
 .file__hunk { display: flex; flex-direction: column; gap: 6px; }
 
-.file__hunk-head {
-  color: var(--text-faint);
-  font-family: var(--mono);
-  font-size: var(--t-xs);
-}
+/*
+ * `.file__hunk-head` lived here: `@@ -12,7 +12,9 @@` as a paragraph above each panel, which is a
+ * header for the panel drawn outside the panel. It is the panel's label now, and the 6px gap plus
+ * its own line came back to the code.
+ */
 
 /* ── A question, anchored to its lines ───────────────────────────────────── */
 .anchored {
