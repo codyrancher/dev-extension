@@ -42,6 +42,7 @@ import CardGallery from '../components/focus/CardGallery.vue';
 import FocusChatBar from '../components/focus/FocusChatBar.vue';
 import StudioTerminal from '../components/StudioTerminal.vue';
 import { holdOverlay, releaseOverlay } from '../components/focus/overlay';
+import { runtimeFacts } from '../components/focus/card-runtime';
 import {
   readFocusConfig, saveFocusConfig, readFocusState, saveFocusState, focusDeck, manualItem,
   weightRows, actionPrompt, SHIPPED_CARDS, KINDS
@@ -662,6 +663,16 @@ async function load() {
 }
 
 onMounted(load);
+
+/*
+ * What the card loader can prove about this page, where anyone can read it.
+ *
+ * Put here rather than behind a flag because the three facts it reports are the ones that decide
+ * whether a card held in a ConfigMap can be drawn at all, and two of them are properties of
+ * Rancher rather than of our code - which is exactly the shape of the `useRouter()` fault, where
+ * something worked on the dev server and was silently dead in the installed plugin.
+ */
+onMounted(() => { (window as any).__focusRuntime = runtimeFacts(); });
 
 /* ── Turning the deck ─────────────────────────────────────────────────────────────────────── */
 
