@@ -19,4 +19,11 @@ export interface DockRow {
   tone?: 'muted' | 'busy' | 'needs' | 'bad' | 'good';
   /** The room it has, when it is the kind of thing that has any. */
   room?: { label: string; fill: string; text: string }[];
+  /**
+   * What you can do to it from here, as the sidebar's own rows offer.
+   *
+   * `icon` is from the Focus icon set; `danger` draws it as the destructive one and makes it ask
+   * before it acts. The dock emits the id and the row; what they mean is the page's business.
+   */
+  actions?: { id: string; label: string; icon: string; danger?: boolean }[];
 }

@@ -35,7 +35,30 @@ const props = withDefaults(defineProps<{
   icon: 'tasks', here: '', empty: 'Nothing here yet.', meters: false,
 });
 
-const emit = defineEmits<{ (e: 'open', id: string): void }>();
+const emit = defineEmits<{
+  (e: 'open', id: string): void;
+  (e: 'act', value: { row: DockRow; action: string }): void;
+}>();
+
+/**
+ * The destructive action that has been pressed once.
+ *
+ * Deleting a Rancher takes its cluster and its node with it, and this is a list you open by
+ * resting a pointer in a corner - so it asks, the way the card's own merge does.
+ */
+const sure = ref('');
+
+function press(row: DockRow, action: { id: string; danger?: boolean }) {
+  const key = `${ row.id }:${ action.id }`;
+
+  if (action.danger && sure.value !== key) {
+    sure.value = key;
+
+    return;
+  }
+  sure.value = '';
+  emit('act', { row, action: action.id });
+}
 
 const open = ref(false);
 let showing: ReturnType<typeof setTimeout> | null = null;
@@ -120,6 +143,21 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
               <span v-if="row.id === here || row.name === here" class="u-badge">this card</span>
               <span class="ws__state" :class="`ws__state--${ row.tone || 'muted' }`">{{ row.state }}</span>
             </button>
+
+            <!-- What the sidebar's own rows offer for this thing, in the card where it is listed. -->
+            <span v-if="row.actions && row.actions.length" class="ws__acts">
+              <button
+                v-for="action in row.actions"
+                :key="action.id"
+                type="button"
+                class="ws__act"
+                :class="{ 'ws__act--danger': action.danger, 'ws__act--sure': sure === `${ row.id }:${ action.id }` }"
+                :title="sure === `${ row.id }:${ action.id }` ? `${ action.label } — press again` : action.label"
+                @click="press(row, action)"
+              >
+                <AppIcon :name="(action.icon as never)" :size="12" />
+              </button>
+            </span>
 
             <!-- What the normal view says about it: what it needs, and the room it has. -->
             <p v-if="row.note" class="ws__note">{{ row.note }}</p>
@@ -265,6 +303,37 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 }
 
 .ws__state { margin-left: auto; flex: 0 0 auto; color: var(--text-faint); font-size: var(--t-xs); }
+
+/* ── What you can do to a row ─────────────────────────────────────────────────────────────── */
+.ws__acts {
+  display: flex;
+  gap: 2px;
+  padding: 0 var(--s2) var(--s2) calc(7px + var(--s2));
+}
+
+.ws__act {
+  display: grid;
+  place-items: center;
+  /* 30px, the smallest the prototype presses. A 20px icon button in a popover is a dare. */
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--fast), border-color var(--fast), background var(--fast);
+}
+
+.ws__act:hover { border-color: var(--accent); color: var(--text); }
+.ws__act--danger:hover { border-color: var(--danger); color: var(--danger); }
+
+/* Pressed once: the next press does it. */
+.ws__act--sure {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
 
 /* The tones the sidebar's own rows use, so a state reads the same in both places. */
 .ws__state--busy { color: var(--kind-agent, var(--text-dim)); }

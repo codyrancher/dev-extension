@@ -52,16 +52,16 @@ import type {
 import { useStore } from 'vuex';
 import { priorityQueue } from '../priority';
 import type { PriorityItem } from '../priority';
-import { listAllWorkspaces, currentOwner } from '../api';
+import { listAllWorkspaces, currentOwner, workspaceProxyUrl } from '../api';
 import type { DevWorkspace } from '../api';
-import { listRanchers } from '../ranchers';
+import { listRanchers, deleteRancherInstance } from '../ranchers';
 import { WORKSPACE_ROUTE } from '../config/constants';
 import type { RancherTarget } from '../ranchers';
 import {
   myWork, assignToMe, requestReviewers, describePr, createPullRequest, markReadyForReview
 } from '../github';
 import type { GithubWork } from '../github';
-import { workspaceBranch } from '../workspace-tools';
+import { workspaceBranch, startDevServer, stopDevServer } from '../workspace-tools';
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
 import { askTheAgent, panelConversation } from '../focus-agent';
@@ -302,6 +302,10 @@ const workspaceRows = computed<DockRow[]>(() => spaces.value
       bad:   ws.state === 'failed',
       tone:  status?.tone || 'muted',
       note:  status?.title || '',
+      actions: [
+        { id: 'server', label: ws.state === 'running' ? 'Stop the dev server' : 'Start the dev server', icon: 'server' },
+        { id: 'app', label: 'Open the app', icon: 'expand' },
+      ],
     };
   }));
 
@@ -314,6 +318,13 @@ const rancherRows = computed<DockRow[]>(() => ranchers.value.map((target) => ({
   tone:  target.phase === 'error' ? 'bad' : target.phase === 'ready' || target.phase === 'host' ? 'good' : 'busy',
   // What it is doing, while it is doing something; once it is up its address is the useful half.
   note:  target.detail || (target.url ? host(target.url) : ''),
+  // The three the sidebar's own Rancher rows offer. The host is this dashboard's own Rancher and
+  // is not something to delete from a popover in the corner of a deck.
+  actions: [
+    ...(target.url ? [{ id: 'copy', label: 'Copy the address', icon: 'copy' }] : []),
+    ...(target.url && target.kind !== 'host' ? [{ id: 'open', label: 'Open it', icon: 'expand' }] : []),
+    ...(target.kind !== 'host' ? [{ id: 'delete', label: 'Delete this Rancher, with its cluster and node', icon: 'trash', danger: true }] : []),
+  ],
 })));
 
 /** Just the host, for a dock row: a full URL in a 340px card is a line of ellipsis. */
@@ -322,6 +333,53 @@ function host(url: string): string {
     return new URL(url).host;
   } catch {
     return url;
+  }
+}
+
+/**
+ * What a dock row's own controls do.
+ *
+ * The same acts the sidebar's rows offer, so the two places agree: a workspace's dev server and
+ * its running app, and a Rancher's address, its page and its removal. Which row it was comes back
+ * with the press, so this needs no state of its own.
+ */
+async function actOnRow(row: DockRow, action: string) {
+  busy.value = true;
+  try {
+    if (action === 'server') {
+      const ws = spaces.value.find((entry) => entry.name === row.id);
+      const running = ws?.state === 'running';
+
+      await (running ? stopDevServer(row.id) : startDevServer(row.id));
+      say(running ? `Stopping the dev server in ${ row.id }.` : `Starting the dev server in ${ row.id }.`);
+      spaces.value = await listAllWorkspaces().catch(() => spaces.value);
+    } else if (action === 'app') {
+      const ws = spaces.value.find((entry) => entry.name === row.id);
+
+      if (ws?.state !== 'running') {
+        say('Start the dev server first; then this opens the running build.');
+      } else {
+        window.open(workspaceProxyUrl(ws.name, ws.port, ws.scheme), '_blank', 'noopener');
+      }
+    } else if (action === 'copy') {
+      await navigator.clipboard.writeText(row.id).catch(() => undefined);
+      say('Address copied.');
+    } else if (action === 'open') {
+      window.open(row.id, '_blank', 'noopener');
+    } else if (action === 'delete') {
+      const target = ranchers.value.find((entry) => (entry.url || entry.id) === row.id);
+
+      if (!target) {
+        return;
+      }
+      await deleteRancherInstance(store, target.name);
+      say(`${ target.name } is being removed.`);
+      ranchers.value = await listRanchers(store).catch(() => ranchers.value);
+    }
+  } catch (e) {
+    error.value = (e as Error)?.message || String(e);
+  } finally {
+    busy.value = false;
   }
 }
 
@@ -1452,6 +1510,7 @@ onBeforeUnmount(closeSettings);
         :here="current?.workspace || ''"
         empty="No workspaces. A card that needs one offers to make it."
         @open="openWorkspace"
+        @act="({ row, action }) => actOnRow(row, action)"
       />
 
       <FocusDock
@@ -1460,6 +1519,7 @@ onBeforeUnmount(closeSettings);
         :rows="rancherRows"
         empty="No Rancher instances."
         @open="(url) => url && window.open(url, '_blank', 'noopener')"
+        @act="({ row, action }) => actOnRow(row, action)"
       />
     </div>
 
@@ -1805,18 +1865,23 @@ onBeforeUnmount(closeSettings);
 /* ── What the page says to you ────────────────────────────────────────────────────────────── */
 .focus__notice,
 /*
- * The corner: both marks together, so they read as a pair of the same kind of thing.
+ * The bottom row: the two marks and the chat bar, on one line, centred on each other.
  *
- * They were in opposite corners, which made the second one something you find rather than
- * something you see. Fixed here rather than in each dock, so a third one is one more child.
+ * They were three fixed elements with their own offsets - the docks at `2vh`, the bar at `2.4vh`
+ * - so they sat at three different heights and never read as a row. Both now take the bar's own
+ * offset, and this box is as tall as the bar's controls (IconButton's 42px) with its children
+ * centred in it, so the middle of a 34px mark lands on the middle of the bar's buttons rather
+ * than on their bottom edge.
  */
 .focus__docks {
   position: fixed;
-  bottom: clamp(var(--s3), 2vh, var(--s5));
+  bottom: clamp(var(--s3), 2.4vh, var(--s5));
   left: clamp(var(--s3), 2vw, var(--s5));
   z-index: 40;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
+  /* The height of the bar's own controls, so the row has one axis. See FocusChatBar. */
+  min-height: 42px;
   gap: var(--s2);
 }
 
