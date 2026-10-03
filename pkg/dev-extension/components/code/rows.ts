@@ -116,6 +116,65 @@ export function fromText(text: string, path = '', from = 1): CodeRow[] {
   }));
 }
 
+/**
+ * A whole file, with this change's own lines still marked.
+ *
+ * "See the whole file" was drawing plain text: every line the same colour, so the thing you had
+ * opened the file to put in context was the one thing you could no longer find. GitHub keeps the
+ * diff colours when it expands a file and so does this.
+ *
+ * The patch says which lines on the new side were added, and which lines were removed and where
+ * they sat. The file supplies everything between. Deletions are kept, in their place, because a
+ * line that was taken out is not visible in the new file at all and is often the half that
+ * explains the change.
+ */
+export function fromFileWithPatch(text: string, patch: string, path = ''): CodeRow[] {
+  const file = fromText(text, path);
+
+  if (!patch) {
+    return file;
+  }
+  const added = new Set<number>();
+  /** Removed lines, by the new-side line they came before. */
+  const gone = new Map<number, CodeRow[]>();
+  let at = 1;
+
+  for (const line of parsePatch(patch)) {
+    if (line.type === 'add' && line.new) {
+      added.add(line.new);
+      at = line.new + 1;
+    } else if (line.type === 'del') {
+      const here = gone.get(at) || [];
+
+      here.push({
+        kind: 'del', old: line.old ?? null, new: null, text: line.text,
+      });
+      gone.set(at, here);
+    } else if (line.new) {
+      at = line.new + 1;
+    }
+  }
+
+  const out: CodeRow[] = [];
+
+  for (const row of file) {
+    const before = row.new === null ? undefined : gone.get(row.new);
+
+    if (before) {
+      out.push(...before);
+    }
+    out.push(added.has(row.new ?? -1) ? { ...row, kind: 'add' } : row);
+  }
+  // Anything removed from the end of the file, which no surviving line comes after.
+  for (const [line, rows] of gone) {
+    if (line > file.length) {
+      out.push(...rows);
+    }
+  }
+
+  return highlighted(out, path);
+}
+
 /** Syntax, added to rows that came from a diff. The `@@` and expand rows are left as they are. */
 export function highlighted(rows: CodeRow[], path: string): CodeRow[] {
   if (!path) {

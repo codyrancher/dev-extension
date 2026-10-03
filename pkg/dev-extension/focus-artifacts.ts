@@ -47,6 +47,19 @@ type Store = any;
 /** What a `rancher-share` AppInstance says it is a share of. Set by the agent's own skill. */
 const SHARE_OF_LABEL = 'dev.rancher.io/share-of';
 
+/**
+ * The artifacts that become the card's main surface, as against the band above it.
+ *
+ * Known from the definition, before anything is read, which is what lets a card lay itself out
+ * once. The layout used to follow the artifacts that had *arrived*: no surface yet meant no
+ * `card--pass`, which meant the big title - so the title shrank and the summary reflowed the
+ * moment the content landed, and the header you had started reading moved. A card knows from its
+ * own `wants` whether it is going to have a surface; that does not change while it loads.
+ */
+export const SURFACE_WANTS: Artifact[] = [
+  'notes', 'files', 'comments', 'body', 'pool', 'reviewers', 'conversation', 'advisory', 'bump', 'commits',
+];
+
 export type Artifact =
   | 'stat' | 'checks' | 'notes' | 'files' | 'comments' | 'media' | 'live' | 'body'
   | 'pool' | 'reviewers' | 'commits' | 'conversation' | 'advisory' | 'bump';

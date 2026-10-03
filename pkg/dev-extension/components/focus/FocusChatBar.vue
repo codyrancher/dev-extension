@@ -31,13 +31,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:open', open: boolean): void;
-  (e: 'send', text: string): void;
   (e: 'settings'): void;
   (e: 'queue'): void;
 }>();
-
-const draft = ref('');
-const field = ref<HTMLTextAreaElement | null>(null);
 
 const preview = computed(() => {
   if (props.busy) {
@@ -50,32 +46,6 @@ const preview = computed(() => {
   return props.live ? 'Ask the agent' : 'Ask the agent about anything here';
 });
 
-watch(() => props.open, (open) => {
-  if (open) {
-    setTimeout(() => field.value?.focus(), 60);
-  }
-});
-
-function submit() {
-  const text = draft.value.trim();
-
-  if (!text) {
-    return;
-  }
-  draft.value = '';
-  emit('send', text);
-}
-
-/** Enter sends; shift+enter is a new line, which is what every chat has taught people. */
-function onKeydown(event: KeyboardEvent) {
-  if (event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault();
-    submit();
-  }
-  if (event.key === 'Escape') {
-    emit('update:open', false);
-  }
-}
 </script>
 
 <template>
@@ -107,19 +77,16 @@ function onKeydown(event: KeyboardEvent) {
           <AppIcon name="chevron-up" :size="15" class="bar__peek-chevron" />
         </button>
 
+        <!--
+          Open, there is no box here.
+          
+          The conversation handed in through the slot has its own composer - the real one, with
+          the model, the slash commands, the attachments and the queue - and this bar used to draw
+          a second textarea under it that sent the same text to the same place with none of that.
+          Two boxes, one of them worse. What is left is the one control the bar still owns.
+        -->
         <template v-else>
-          <textarea
-            ref="field"
-            v-model="draft"
-            class="bar__field"
-            rows="1"
-            placeholder="Ask about this card, or about anything here…"
-            @keydown="onKeydown"
-          />
-          <span v-if="about" class="bar__about" :title="about">about this card</span>
-          <button type="button" class="bar__send" :disabled="!draft.trim() || busy" @click="submit">
-            <AppIcon name="send" :size="16" />
-          </button>
+          <span v-if="about" class="bar__about" :title="about">about {{ about }}</span>
           <button type="button" class="bar__close" title="Close the conversation" aria-label="Close the conversation" @click="emit('update:open', false)">
             <AppIcon name="chevron-down" :size="16" />
           </button>
@@ -225,7 +192,6 @@ function onKeydown(event: KeyboardEvent) {
 .bar__peek-chevron { flex: none; opacity: 0.6; transition: transform var(--base) var(--ease-spring); }
 .bar__peek:hover .bar__peek-chevron { transform: translateY(-2px); }
 
-
 /* ── Expanded: the history and the composer ───────────────────────────────── */
 .bar__history {
   display: flex;
@@ -243,28 +209,6 @@ function onKeydown(event: KeyboardEvent) {
 .history-enter-from,
 .history-leave-to { height: 0; opacity: 0; }
 
-
-
-
-
-
-.bar__field {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-height: 140px;
-  padding: var(--s3);
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font-family: inherit;
-  font-size: var(--t-sm);
-  line-height: 1.5;
-  resize: none;
-}
-
-.bar__field:focus { outline: none; }
-.bar__field::placeholder { color: var(--text-faint); }
-
 .bar__about {
   flex: none;
   padding: 3px 9px;
@@ -275,7 +219,6 @@ function onKeydown(event: KeyboardEvent) {
   white-space: nowrap;
 }
 
-.bar__send,
 .bar__close {
   display: grid;
   place-items: center;
@@ -286,17 +229,6 @@ function onKeydown(event: KeyboardEvent) {
   border-radius: var(--r-pill);
   cursor: pointer;
   transition: background var(--fast), color var(--fast), transform var(--fast) var(--ease-spring);
-}
-
-.bar__send { background: var(--accent); color: #08101f; }
-.bar__send:hover:not(:disabled) { background: var(--accent-hover); transform: scale(1.06); }
-.bar__send:disabled { background: var(--surface-raised); color: var(--text-faint); cursor: default; }
-.bar__close { background: transparent; color: var(--text-muted); }
-.bar__close:hover { background: rgba(255, 255, 255, 0.05); color: var(--text); }
-
-@media (max-width: 720px) {
-  .bar { width: calc(100vw - var(--s3)); gap: var(--s2); bottom: var(--s2); }
-  .bar__history { height: 56vh; padding: var(--s2) var(--s2) 0; }
 }
 
 /* Whatever is handed in as the history fills the box it is given. */

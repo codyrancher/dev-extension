@@ -270,6 +270,25 @@ body.theme-light .dev-focus {
  * 18px: it sits on a line of 13px text without pushing the line taller, and the prototype's
  * own small chip measures the same.
  */
+/*
+ * A card that opens off a control: a popover.
+ *
+ * Shared because there are three of them now - the two corner docks and the failing checks - and
+ * three copies of a border, a radius, a surface and a shadow is three chances for them to stop
+ * being the same popover. The positioning is the caller's; this is only what it looks like.
+ */
+.dev-focus .u-popover {
+  position: absolute;
+  z-index: 40;
+  min-width: 220px;
+  max-width: min(420px, 80vw);
+  padding: var(--s3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-3);
+}
+
 .dev-focus .u-badge {
   display: inline-flex;
   align-items: center;

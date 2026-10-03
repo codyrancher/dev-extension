@@ -221,6 +221,9 @@ function rememberInUrl(key: string) {
 const artifacts = ref<CardArtifacts>(NO_ARTIFACTS);
 const artifactsFor = ref('');
 
+/** A read is in flight for the card on top, so it can say so instead of filling in. */
+const readingNow = ref(false);
+
 /** The advisories and the bot's pull requests the queue was built from; see readArtifacts. */
 const alsoFrom = ref<{ alerts: Json[]; botPrs: Json[] }>({ alerts: [], botPrs: [] });
 
@@ -276,17 +279,31 @@ const me = ref('');
  */
 const spaces = ref<DevWorkspace[]>([]);
 const ranchers = ref<RancherTarget[]>([]);
+/** What each workspace needs, as the sidebar's own rows read it. See workspace-status.ts. */
+const spaceStatus = ref<Record<string, Json>>({});
 
+/**
+ * The workspaces, saying what the sidebar's rows say about them.
+ *
+ * Its state is whether the pod is up, which is not the useful half: what a workspace row is read
+ * for is what the work in it needs - "needs you", "working", "stopped" - and that is the status
+ * the queue was already built from, so it costs nothing to put it here.
+ */
 const workspaceRows = computed<DockRow[]>(() => spaces.value
   .filter((ws) => !ws.preview)
-  .map((ws) => ({
-    id:    ws.name,
-    name:  ws.name,
-    state: ws.state,
-    up:    ws.state === 'running',
-    bad:   ws.state === 'failed',
-    note:  ws.title && ws.title !== ws.name ? '' : '',
-  })));
+  .map((ws) => {
+    const status = spaceStatus.value[ws.name];
+
+    return {
+      id:    ws.name,
+      name:  ws.name,
+      state: status?.label || ws.state,
+      up:    ws.state === 'running',
+      bad:   ws.state === 'failed',
+      tone:  status?.tone || 'muted',
+      note:  status?.title || '',
+    };
+  }));
 
 const rancherRows = computed<DockRow[]>(() => ranchers.value.map((target) => ({
   id:    target.url || target.id,
@@ -294,6 +311,7 @@ const rancherRows = computed<DockRow[]>(() => ranchers.value.map((target) => ({
   state: target.phase,
   up:    target.phase === 'ready' || target.phase === 'host',
   bad:   target.phase === 'error',
+  tone:  target.phase === 'error' ? 'bad' : target.phase === 'ready' || target.phase === 'host' ? 'good' : 'busy',
   // What it is doing, while it is doing something; once it is up its address is the useful half.
   note:  target.detail || (target.url ? host(target.url) : ''),
 })));
@@ -328,6 +346,7 @@ function readTheArtifacts(): Promise<void> {
   if (!task || !wants.length) {
     artifacts.value = NO_ARTIFACTS;
     artifactsFor.value = '';
+    readingNow.value = false;
     readingArtifacts = Promise.resolve();
 
     return readingArtifacts;
@@ -341,12 +360,14 @@ function readTheArtifacts(): Promise<void> {
   // Cleared first: the card is about to draw, and last card's evidence under this card's title
   // is worse than a card with nothing under it for a second.
   artifacts.value = NO_ARTIFACTS;
+  readingNow.value = true;
   readingArtifacts = readArtifacts(task, wants, store, me.value, work.value, alsoFrom.value)
     .catch(() => NO_ARTIFACTS)
     .then((found) => {
       // Turned again while this was in the air; see readNotes for the same guard.
       if (artifactsFor.value === task.key) {
         artifacts.value = found;
+        readingNow.value = false;
       }
     });
 
@@ -382,7 +403,6 @@ const sections = computed(() => [
 /** The conversation the bar shows, made the first time somebody opens or asks. */
 const chatOpen = ref(false);
 const conversation = ref('');
-const sending = ref(false);
 
 /** Everything the queue has, drawn: pinned ones are marked and then held back from the deck. */
 const all = computed<FocusTask[]>(() => focusDeck(items.value, config.value, state.value));
@@ -452,6 +472,7 @@ async function load() {
       alerts: (dependabot?.groups || []) as Json[],
       botPrs: ((dependabot?.prs || []) as Json[]).map((pr: Json) => ({ ...pr, number: pr.number })),
     };
+    spaceStatus.value = statuses as Record<string, Json>;
     items.value = priorityQueue({
       work: found,
       statuses,
@@ -714,7 +735,7 @@ async function act({ task, action }: { task: FocusTask; action: CardAction }) {
  * is the page's job rather than theirs, because only the page knows that these lines came from a
  * pull request and which commit to read them at.
  */
-const whole = ref<{ path: string; mark: [number, number]; pr: number } | null>(null);
+const whole = ref<{ path: string; mark: [number, number]; pr: number; patch: string } | null>(null);
 
 function openWholeFile(task: FocusTask, value: { path: string; mark: [number, number] }) {
   const { pr } = subjectOf(task);
@@ -724,7 +745,15 @@ function openWholeFile(task: FocusTask, value: { path: string; mark: [number, nu
 
     return;
   }
-  whole.value = { path: value.path, mark: value.mark, pr };
+  // The patch for this file, so the whole file keeps the change's own colours. It is already in
+  // hand - the card's own hunks were parsed from it - so this costs nothing.
+  const patch = artifacts.value.files.find((file) => file.path === value.path)?.hunks
+    .map((hunk) => [hunk.header, ...hunk.lines.map((line) => (line.type === 'add' ? `+${ line.text }` : line.type === 'del' ? `-${ line.text }` : ` ${ line.text }`))].join('\n'))
+    .join('\n') || '';
+
+  whole.value = {
+    path: value.path, mark: value.mark, pr, patch,
+  };
 }
 
 /** The file at the commit the review is of - not at the branch's tip, which has moved on. */
@@ -1309,17 +1338,6 @@ async function onChatOpen(open: boolean) {
   }
 }
 
-async function sendToChat(text: string) {
-  sending.value = true;
-  try {
-    await wakeChat();
-    await askTheAgent(null, text);
-  } catch (e) {
-    error.value = (e as Error)?.message || String(e);
-  } finally {
-    sending.value = false;
-  }
-}
 
 onBeforeUnmount(closeSettings);
 </script>
@@ -1385,6 +1403,7 @@ onBeforeUnmount(closeSettings);
           :landing="dropping"
           :notes="notes"
           :artifacts="artifacts"
+          :reading="readingNow"
           @go="go"
           @jump="jumpTo"
           @act="act"
@@ -1425,24 +1444,24 @@ onBeforeUnmount(closeSettings);
       because that is where the card's own workspace is named; the Ranchers they are pointed at
       on the right.
     -->
-    <FocusDock
-      label="Workspaces"
-      icon="tasks"
-      side="left"
-      :rows="workspaceRows"
-      :here="current?.workspace || ''"
-      empty="No workspaces. A card that needs one offers to make it."
-      @open="openWorkspace"
-    />
+    <div class="focus__docks">
+      <FocusDock
+        label="Workspaces"
+        icon="tasks"
+        :rows="workspaceRows"
+        :here="current?.workspace || ''"
+        empty="No workspaces. A card that needs one offers to make it."
+        @open="openWorkspace"
+      />
 
-    <FocusDock
-      label="Ranchers"
-      icon="scales"
-      side="right"
-      :rows="rancherRows"
-      empty="No Rancher instances."
-      @open="(url) => url && window.open(url, '_blank', 'noopener')"
-    />
+      <FocusDock
+        label="Ranchers"
+        icon="scales"
+        :rows="rancherRows"
+        empty="No Rancher instances."
+        @open="(url) => url && window.open(url, '_blank', 'noopener')"
+      />
+    </div>
 
     <!-- The whole of a file somebody was reading six lines of. See components/code/FileModal. -->
     <FileModal
@@ -1451,6 +1470,7 @@ onBeforeUnmount(closeSettings);
       :path="whole.path"
       :mark="whole.mark"
       :at="`PR #${ whole.pr }`"
+      :patch="whole.patch"
       :load="readWholeFile"
       @close="whole = null"
     />
@@ -1469,9 +1489,7 @@ onBeforeUnmount(closeSettings);
       :open="chatOpen"
       :about="current?.title"
       :live="!!conversation"
-      :busy="sending"
       @update:open="onChatOpen"
-      @send="sendToChat"
       @settings="openSettings('queue')"
       @queue="openSettings('queue')"
     >
@@ -1786,6 +1804,22 @@ onBeforeUnmount(closeSettings);
 
 /* ── What the page says to you ────────────────────────────────────────────────────────────── */
 .focus__notice,
+/*
+ * The corner: both marks together, so they read as a pair of the same kind of thing.
+ *
+ * They were in opposite corners, which made the second one something you find rather than
+ * something you see. Fixed here rather than in each dock, so a third one is one more child.
+ */
+.focus__docks {
+  position: fixed;
+  bottom: clamp(var(--s3), 2vh, var(--s5));
+  left: clamp(var(--s3), 2vw, var(--s5));
+  z-index: 40;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s2);
+}
+
 .focus__error {
   position: fixed;
   left: 50%;

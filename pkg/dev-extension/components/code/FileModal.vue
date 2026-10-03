@@ -8,8 +8,9 @@
  * to a deck that had moved on.
  *
  * So the run that was on screen stays marked, the file opens scrolled to it, and the same
- * renderer draws it as drew the hunk - so the lines are in the same places, the same colours,
- * the same width. See CodeView.
+ * renderer draws it as drew the hunk - the same places, the same colours, the same width. The
+ * change's own additions and deletions keep their colours too (see `patch`): a whole file in one
+ * flat colour loses the thing you opened it to put in context.
  *
  * The text is fetched by the caller rather than here: this component has no idea whether a file
  * comes from a pull request at a ref, a workspace checkout, or a pod. `load` is called when it
@@ -20,7 +21,7 @@ import {
 } from 'vue';
 import CodeView from './CodeView.vue';
 import AppIcon from '../focus/AppIcon.vue';
-import { fromText } from './rows';
+import { fromText, fromFileWithPatch } from './rows';
 import type { CodeRow } from './rows';
 import { holdOverlay, releaseOverlay } from '../focus/overlay';
 
@@ -30,6 +31,13 @@ const props = defineProps<{
   load: () => Promise<string>;
   /** The run to mark and scroll to, by line number, inclusive. */
   mark?: [number, number] | null;
+  /**
+   * This change's patch for the file, so the whole file keeps its diff colours.
+   *
+   * Without it the file is drawn as plain text - every line the same - and the lines you opened it
+   * to see in context are the ones you can no longer pick out.
+   */
+  patch?: string;
   /** A word about where the file is from: a ref, a branch, a pod. */
   at?: string;
 }>();
@@ -45,7 +53,9 @@ async function read() {
   busy.value = true;
   error.value = '';
   try {
-    rows.value = fromText(await props.load(), props.path);
+    const text = await props.load();
+
+    rows.value = props.patch ? fromFileWithPatch(text, props.patch, props.path) : fromText(text, props.path);
   } catch (e) {
     error.value = (e as Error)?.message || String(e);
   } finally {

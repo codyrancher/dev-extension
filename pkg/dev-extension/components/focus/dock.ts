@@ -13,6 +13,10 @@ export interface DockRow {
   up: boolean;
   /** Broken, as against merely not up. */
   bad?: boolean;
-  /** A word or two more: what it is doing, how much room it has left. */
+  /** A word or two more: what it needs, in the words the sidebar uses. */
   note?: string;
+  /** How its state should read: the sidebar's own tones. */
+  tone?: 'muted' | 'busy' | 'needs' | 'bad' | 'good';
+  /** The room it has, when it is the kind of thing that has any. */
+  room?: { label: string; fill: string; text: string }[];
 }

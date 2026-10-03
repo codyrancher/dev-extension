@@ -21,6 +21,7 @@ import type { CardFile } from '../../focus-artifacts';
 import type { DiffLine } from '../../focus-review';
 import AppButton from './AppButton.vue';
 import AppIcon from './AppIcon.vue';
+import SectionHead from './SectionHead.vue';
 import CodeView from '../code/CodeView.vue';
 import { fromDiffLines, highlighted } from '../code/rows';
 
@@ -167,18 +168,17 @@ const statusWord: Record<string, string> = {
 
 <template>
   <section v-if="file" ref="root" class="changes">
-    <header class="changes__head">
-      <span class="changes__title">
-        <AppIcon name="tasks" :size="14" />
-        What it changed
-      </span>
-      <span class="changes__count">{{ files.length }} files</span>
+    <SectionHead
+      class="changes__head"
+      label="What it changed"
+      :count="`${ files.length } files`"
+    >
       <span class="changes__stat changes__stat--add">+{{ totals.added }}</span>
       <span class="changes__stat changes__stat--del">−{{ totals.removed }}</span>
       <span class="changes__hint">
         {{ threads.length ? `${ threads.length } asked about` : 'Click a line to ask about it' }}
       </span>
-    </header>
+    </SectionHead>
 
     <!-- The explorer. -->
     <nav class="tree" aria-label="Files the agent changed">
@@ -283,28 +283,14 @@ const statusWord: Record<string, string> = {
 }
 
 /* ── The header ──────────────────────────────────────────────────────────── */
-.changes__head {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: var(--s3);
-  min-width: 0;
-}
+/* Placement only: the look is SectionHead's, like every other surface's header. */
+.changes__head { grid-column: 1 / -1; }
 
-.changes__title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--kind);
-  font-size: var(--t-sm);
-  font-weight: 620;
-}
 
-.changes__count { color: var(--text-muted); font-size: var(--t-sm); }
 .changes__stat { font-family: var(--mono); font-size: var(--t-sm); }
 .changes__stat--add { color: var(--success); }
 .changes__stat--del { color: var(--danger); }
-.changes__hint { margin-left: auto; color: var(--text-faint); font-size: var(--t-sm); }
+.changes__hint { color: var(--text-faint); font-size: var(--t-sm); }
 
 /* ── The tree ────────────────────────────────────────────────────────────── */
 .tree {
@@ -317,13 +303,28 @@ const statusWord: Record<string, string> = {
   touch-action: pan-y;
 }
 
+/*
+ * Never squeezed.
+ *
+ * A flex item shrinks by default, and a scrolling column of forty of them hands each one less
+ * height than its content needs - so the rows collapse into each other and their text draws over
+ * the row below, which is what the file tree was doing. Pinning the row is what makes the column
+ * scroll instead of compressing. The same mistake, and the same fix, as the card's own header.
+ */
 .tree__dir,
 .tree__file {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 5px var(--s2);
+  /*
+   * 30px, the row height the pool, the dock and the commits all use - and the smallest thing the
+   * prototype lets you press. It was a 5px padding and whatever the text came to, which is both
+   * a different rhythm from every other list on a card and a smaller target than any of them.
+   */
+  min-height: 30px;
+  padding: 0 var(--s2);
   border: 0;
   border-radius: var(--r-sm);
   background: none;
@@ -352,6 +353,9 @@ const statusWord: Record<string, string> = {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Right to left, so a long name loses its start - the end is the part that identifies it. */
+  direction: rtl;
+  text-align: left;
   white-space: nowrap;
   font-family: var(--mono);
   font-size: var(--t-xs);

@@ -32,7 +32,7 @@ import CardReviewers from './CardReviewers.vue';
 import CardCommits from './CardCommits.vue';
 import CardAgent from './CardAgent.vue';
 import CardFacts from './CardFacts.vue';
-import { NO_ARTIFACTS } from '../../focus-artifacts';
+import { NO_ARTIFACTS, SURFACE_WANTS } from '../../focus-artifacts';
 import type { CardArtifacts, CardComment, PoolIssue } from '../../focus-artifacts';
 import type { ReviewNote } from '../../focus-review';
 
@@ -58,6 +58,15 @@ const props = defineProps<{
    * and Focus.vue for the one place that asks.
    */
   artifacts?: CardArtifacts;
+  /**
+   * Its artifacts are still being read.
+   *
+   * The card itself is drawn from the queue and needs nothing, so the title and the buttons are
+   * there at once; what it is about takes a pull request's worth of calls. Saying so beats an
+   * empty body that fills itself a second later, which reads as the card having nothing on it
+   * right up until it does.
+   */
+  reading?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -165,8 +174,13 @@ const surface = computed<'agent' | 'pool' | 'facts' | 'pass' | 'who' | 'talk' | 
  * The surface needs most of the card's height to be worth having, so everything above it gives
  * some up: a smaller title, and the line of prose about why this is here dropped - the line
  * under the title already says what it is.
+ *
+ * Read off the definition rather than off what has arrived, so the header is the same size before
+ * and after the content loads. It was `surface !== ''`, which is false until the artifacts land -
+ * so every card with a surface drew a large title, then shrank it and reflowed the summary under
+ * the pointer the moment its content came in.
  */
-const hasPass = computed(() => surface.value !== '');
+const hasPass = computed(() => (props.task.card.wants || []).some((want) => SURFACE_WANTS.includes(want)));
 
 /**
  * The action that has been pressed once and is waiting to be meant.
@@ -300,11 +314,17 @@ const waited = computed(() => (props.task.waitingHours >= 48
       />
 
       <!-- Why this is in front of you at all, in the ranking's own words. -->
-      <p v-if="task.about && !hasPass" class="card__prose">{{ task.about }}</p>
+      <p v-if="task.about && !hasPass && !reading" class="card__prose">{{ task.about }}</p>
+
+      <!-- Being read. See `reading`: a card says so rather than filling in under you. -->
+      <div v-if="reading" class="card__reading">
+        <AppIcon name="spinner" :size="20" />
+        <span>Reading what this needs…</span>
+      </div>
 
       <!-- What the agent is asking, with its own choices as the buttons. -->
       <CardAgent
-        v-if="surface === 'agent' && art.agent"
+        v-else-if="surface === 'agent' && art.agent"
         :agent="art.agent"
         :busy="busy"
         @answer="emit('answer', $event)"
@@ -368,7 +388,7 @@ const waited = computed(() => (props.task.waitingHours >= 48
         <p class="card__text">{{ art.body }}</p>
       </div>
 
-      <div v-if="!hasPass" class="card__stats">
+      <div v-if="!hasPass && !reading" class="card__stats">
         <StatPill label="priority" :value="String(task.score)" />
         <StatPill v-if="task.waitingHours" label="waiting" :value="waited" />
         <StatPill v-if="task.workspace" label="workspace" :value="task.workspace" />
@@ -517,7 +537,25 @@ const waited = computed(() => (props.task.waitingHours >= 48
 .card__head,
 .card__body,
 /* The same, at the other end: the buttons are the point of the card and never give up room. */
-.card__foot { flex: 0 0 auto; min-width: 0; }
+/*
+ * The row of actions, separated from what it acts on.
+ *
+ * It was `flex: 0 0 auto; min-width: 0` and nothing else - never a flex row at all, so the
+ * buttons were inline elements with a text space between them rather than a gap, and the row sat
+ * flush against the content above it. The prototype's own rule is the three things that were
+ * missing: the gap, the room above, and a hairline in the card's hue to close the body off.
+ */
+.card__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  min-width: 0;
+  margin-top: var(--s4);
+  padding-top: var(--s4);
+  border-top: 1px solid color-mix(in srgb, var(--kind) 16%, var(--border));
+}
 
 /*
  * Never squeezed.
@@ -716,6 +754,23 @@ const waited = computed(() => (props.task.waitingHours >= 48
 .card__sure {
   border-color: var(--danger) !important;
   color: var(--danger) !important;
+}
+
+/*
+ * Where the surface will be, while it is being read.
+ *
+ * It takes the room the surface will take, so the card does not resize when the content arrives -
+ * which is the other half of why content appearing was jarring: it both appeared and moved
+ * everything under it.
+ */
+.card__reading {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex: 1 1 auto;
+  min-height: 0;
+  color: var(--text-faint);
+  font-size: var(--t-sm);
 }
 
 /* The one thing on the card: it takes the room the absent surface would have had. */

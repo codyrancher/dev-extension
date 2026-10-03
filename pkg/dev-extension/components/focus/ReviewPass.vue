@@ -418,7 +418,16 @@ function pickedRun(note: ReviewNote): [number, number] | null {
  * space in it to break at. A grid item's automatic minimum is its content, so that one string
  * made the whole list 555px wider than the card it was in.
  */
+/*
+ * Never squeezed.
+ *
+ * A flex item shrinks by default, and a scrolling column of forty of them hands each one less
+ * height than its content needs - so the rows collapse into each other and their text draws over
+ * the row below, which is what the file tree was doing. Pinning the row is what makes the column
+ * scroll instead of compressing. The same mistake, and the same fix, as the card's own header.
+ */
 .note {
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 5px;

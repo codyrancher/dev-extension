@@ -19,8 +19,15 @@
  * Anything attached but never referenced is drawn at the end rather than dropped: it is still
  * evidence, and a comment that silently loses half of it is worse than one that lists it.
  *
- * Playing happens here, inline, at something near the width GitHub gives it. Looking closely does
- * not: that is what the viewer is for, and the expand control on each one opens it.
+ * Nothing plays here. A recording is drawn as the frame it opens on, at the place and roughly the
+ * size GitHub gives it, and pressing it opens the viewer - which is where a video is actually
+ * watchable, scrubbable and closable with Escape. An inline player at the point in the argument
+ * where the agent put it sounds right and is not: it is a 380px-tall control in the middle of a
+ * comment you are reading, on a card that has four more things under it, and it begins playing
+ * where it sits rather than where you can see it.
+ *
+ * `preload="metadata"` is what makes the still: the browser fetches enough to draw the first
+ * frame and no more, so the strip costs a header per recording rather than a video.
  */
 import { computed } from 'vue';
 import { renderMd } from '../pr/diff';
@@ -104,32 +111,34 @@ const open = (item: NoteMedia) => emit('open', { items: shown.value, at: Math.ma
       <div v-if="part.kind === 'text'" class="md__text" v-html="renderMd(part.text)" />
 
       <figure v-else class="md__media">
-        <video
-          v-if="part.media.kind === 'video'"
-          class="md__play"
-          :src="part.media.src"
-          controls
-          preload="metadata"
-          playsinline
-        />
         <button
-          v-else
           type="button"
           class="md__shot"
           :title="`Open ${ part.media.label }`"
           @click="open(part.media)"
         >
-          <img :src="part.media.src" :alt="part.media.caption || part.media.label" loading="lazy">
+          <video
+            v-if="part.media.kind === 'video'"
+            class="md__frame"
+            :src="part.media.src"
+            preload="metadata"
+            muted
+            playsinline
+          />
+          <img
+            v-else
+            class="md__frame"
+            :src="part.media.src"
+            :alt="part.media.caption || part.media.label"
+            loading="lazy"
+          >
+
+          <span v-if="part.media.kind === 'video'" class="md__play"><AppIcon name="play" :size="20" /></span>
+          <span class="md__open"><AppIcon name="expand" :size="13" /></span>
         </button>
 
         <figcaption class="md__cap">
           <span class="md__cap-text">{{ part.media.caption || part.media.label }}</span>
-          <button
-            type="button"
-            class="md__expand"
-            :title="`Open ${ part.media.label } full size`"
-            @click="open(part.media)"
-          ><AppIcon name="expand" :size="12" /></button>
         </figcaption>
       </figure>
     </template>
@@ -211,56 +220,72 @@ const open = (item: NoteMedia) => emit('open', { items: shown.value, at: Math.ma
 .md__media { margin: 0; min-width: 0; }
 
 /*
- * Near the width GitHub gives a recording in a review comment, and no taller than fits beside the
- * rest of the pass. It plays here; the viewer is for looking closely.
+ * The frame it opens on, where the comment put it.
+ *
+ * Narrower than GitHub's full width on purpose: this sits inside a card with a verdict and four
+ * buttons under it, and a 760px still is the card. 420px is wide enough to tell what the
+ * recording is of, which is all a thumbnail has to do.
  */
-.md__play {
+.md__shot {
+  position: relative;
   display: block;
   width: 100%;
-  max-width: 760px;
-  max-height: 380px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: #000;
-}
-
-.md__shot {
-  display: block;
-  max-width: 760px;
+  max-width: 420px;
   padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface-sunk);
   cursor: zoom-in;
   overflow: hidden;
+  transition: border-color var(--fast);
 }
 
-.md__shot img { display: block; max-width: 100%; max-height: 380px; object-fit: contain; }
+.md__shot:hover { border-color: var(--kind); }
+
+.md__frame {
+  display: block;
+  width: 100%;
+  max-height: 236px;
+  object-fit: cover;
+  /* A video with no poster paints black before its first frame arrives. */
+  background: #000;
+}
+
+.md__play,
+.md__open {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-pill);
+  background: rgba(8, 10, 16, 0.7);
+  color: #fff;
+}
+
+.md__play {
+  inset: 50% auto auto 50%;
+  width: 40px;
+  height: 40px;
+  transform: translate(-50%, -50%);
+}
+
+.md__open {
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  opacity: 0;
+  transition: opacity var(--fast);
+}
+
+.md__shot:hover .md__open { opacity: 1; }
 
 .md__cap {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  max-width: 760px;
+  max-width: 420px;
   margin-top: 4px;
   color: var(--text-faint);
   font-size: var(--t-xs);
+  line-height: 1.4;
 }
 
-.md__cap-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.md__expand {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-  margin-left: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.md__expand:hover { border-color: var(--kind); color: var(--text); }
+.md__cap-text { overflow-wrap: anywhere; }
 </style>
