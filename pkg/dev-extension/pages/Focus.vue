@@ -52,14 +52,18 @@ import { useRoute, useRouter } from 'vue-router';
 import { priorityQueue } from '../priority';
 import type { PriorityItem } from '../priority';
 import { listAllWorkspaces, currentOwner } from '../api';
-import { myWork } from '../github';
+import {
+  myWork, assignToMe, requestReviewers, describePr, createPullRequest, markReadyForReview
+} from '../github';
+import type { GithubWork } from '../github';
+import { workspaceBranch } from '../workspace-tools';
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
 import { askTheAgent, panelConversation } from '../focus-agent';
 import { reviewNotes } from '../focus-review';
 import type { ReviewNote } from '../focus-review';
 import { readArtifacts, NO_ARTIFACTS, subjectOf } from '../focus-artifacts';
-import type { CardArtifacts, CardComment } from '../focus-artifacts';
+import type { CardArtifacts, CardComment, PoolIssue } from '../focus-artifacts';
 import {
   startPrReview, startIssueFix, submitReview, approveAndMerge, mergePr, prDetail, prFile, linesPrompt
 } from '../reviews';
@@ -234,7 +238,7 @@ function readTheArtifacts(): Promise<void> {
   // Cleared first: the card is about to draw, and last card's evidence under this card's title
   // is worse than a card with nothing under it for a second.
   artifacts.value = NO_ARTIFACTS;
-  readingArtifacts = readArtifacts(task, wants, store, me.value)
+  readingArtifacts = readArtifacts(task, wants, store, me.value, work.value)
     .catch(() => NO_ARTIFACTS)
     .then((found) => {
       // Turned again while this was in the air; see readNotes for the same guard.
@@ -320,7 +324,7 @@ async function load() {
     // its agent has already left findings waiting.
     const workspaces = await listAllWorkspaces().catch(() => []);
     const names = workspaces.map((workspace) => workspace.name);
-    const [work, dependabot, cached, botReviews] = await Promise.all([
+    const [found, dependabot, cached, botReviews] = await Promise.all([
       myWork().catch(() => null),
       dependabotData(DEFAULT_REPO).catch(() => null),
       workspaceStatuses(workspaces).catch(() => ({})),
@@ -333,8 +337,9 @@ async function load() {
       statuses[name] = await readStatusNow(name).catch(() => statuses[name]);
     }));
 
+    work.value = found;
     items.value = priorityQueue({
-      work,
+      work: found,
       statuses,
       workspaces: names,
       alerts:     (dependabot?.groups || []).map((group: Record<string, unknown>) => ({ ...group, key: group.slug })),
@@ -573,6 +578,12 @@ async function act({ task, action }: { task: FocusTask; action: CardAction }) {
       await postTheReview(task);
     } else if (action.verb === 'merge') {
       await mergeIt(task);
+    } else if (action.verb === 'ready') {
+      await readyForReview(task);
+    } else if (action.verb === 'create-pr') {
+      await openThePr(task);
+    } else if (action.verb === 'describe') {
+      await describeIt(task);
     }
   } catch (e) {
     error.value = (e as Error)?.message || String(e);
@@ -615,6 +626,117 @@ async function readWholeFile(): Promise<string> {
 }
 
 /* ── The verbs that are typical of one kind of work ───────────────────────────────────────── */
+
+/** What the queue was built from, kept so the pool artifact does not ask GitHub a second time. */
+const work = ref<GithubWork | null>(null);
+
+/** Out of draft: the one act at that stage GitHub's own UI was otherwise needed for. */
+async function readyForReview(task: FocusTask) {
+  const { pr } = subjectOf(task);
+
+  if (!pr) {
+    return;
+  }
+  await markReadyForReview(DEFAULT_REPO, pr);
+  say(`${ task.what } is ready for review.`);
+  await done(task);
+}
+
+/**
+ * Open the pull request for a branch that has the work on it.
+ *
+ * The branch and the base come from the workspace, and the title from the issue it is for, so
+ * this is one press rather than a form. The description is deliberately left for the agent to
+ * draft - see the `describe-pr` card - because a pull request opened with an empty body is the
+ * state that card exists to catch, and writing it here from the commit messages would be worse
+ * than either.
+ */
+async function openThePr(task: FocusTask) {
+  const { workspace } = subjectOf(task);
+  // `workspaceBranch` answers with the branch and its sha; only the name is wanted here.
+  const branch = workspace ? (await workspaceBranch(workspace).catch(() => null))?.branch || '' : '';
+
+  if (!branch) {
+    error.value = 'Could not work out which branch to open it from.';
+
+    return;
+  }
+  const made = await createPullRequest(DEFAULT_REPO, {
+    head:  branch,
+    base:  'master',
+    title: task.title || `Work from ${ workspace }`,
+    draft: true,
+  });
+
+  say(`Opened PR #${ made.number } as a draft.`);
+  window.open(made.url, '_blank', 'noopener');
+  await done(task);
+}
+
+/**
+ * Say what it does.
+ *
+ * The agent drafts it into the conversation first - that is the `ask` action on the same card -
+ * and this is the one that writes. It refuses rather than inventing: a description written from
+ * the diff by this page, with no reading of the issue behind it, is the thin description it is
+ * supposed to be replacing.
+ */
+async function describeIt(task: FocusTask) {
+  const { pr } = subjectOf(task);
+  const drafted = artifacts.value.body.trim();
+
+  if (!pr) {
+    return;
+  }
+  if (!drafted) {
+    await askTheAgent(task, `For ${ task.what }: read the diff, the commits and the issue it closes, then rewrite the pull request description on GitHub - what it changes, why, and what a reviewer should check.`);
+    say('Asked the agent to write it, since there was nothing to post.');
+
+    return;
+  }
+  await describePr(DEFAULT_REPO, pr, { body: drafted });
+  say(`${ task.what } now says what it does.`);
+}
+
+/** Take an issue out of the pool: assign it, then start the fix the way the Create page would. */
+async function takeIssue(task: FocusTask, issue: PoolIssue) {
+  busy.value = true;
+  try {
+    await assignToMe(issue.repo || DEFAULT_REPO, issue.number, me.value);
+    const started = await startIssueFix(store, { number: issue.number, title: issue.title });
+
+    say(`#${ issue.number } is yours; the fix is starting in ${ started.workspace }.`);
+    await load();
+  } catch (e) {
+    error.value = (e as Error)?.message || String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+/** Ask one person for a review, from the card that noticed nobody had been asked. */
+async function askReviewer(task: FocusTask, who: string) {
+  const { pr } = subjectOf(task);
+
+  if (!pr || !who) {
+    return;
+  }
+  busy.value = true;
+  try {
+    const { asked, refused } = await requestReviewers(DEFAULT_REPO, pr, [who]);
+
+    if (asked.length) {
+      say(`Asked ${ asked.join(', ') } to review ${ task.what }.`);
+      artifactsFor.value = '';
+      readTheArtifacts();
+    } else {
+      error.value = `GitHub would not ask ${ who }: ${ Object.values(refused)[0] || 'refused' }`;
+    }
+  } finally {
+    busy.value = false;
+  }
+}
+
 
 /**
  * Open what is already running.
@@ -1110,6 +1232,9 @@ onBeforeUnmount(closeSettings);
           @ask-code="current && askAboutCode(current, $event)"
           @reply="current && replyTo(current, $event)"
           @expand="current && openWholeFile(current, $event)"
+          @take="current && takeIssue(current, $event)"
+          @about-issue="current && askTheAgent(current, `About issue #${ $event.number } (${ $event.title }): read it and tell me whether it is specified well enough to start, roughly where in the codebase it lives, and how big it looks.`).then(() => say('Asked in the conversation.'))"
+          @ask-reviewer="current && askReviewer(current, $event)"
         />
       </main>
     </div>
