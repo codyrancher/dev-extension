@@ -12,6 +12,28 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
+    appVersion: 0.3.299
+    created: "2026-10-03T18:59:52.056557395Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
+    digest: 46b19c9152e0c05bff51d0b4a6b8038f4bfaa7c6f6c352e5ca4e43bead5acf2c
+    icon: https://codyrancher.github.io/dev-extension/icon.svg
+    name: dev-extension
+    type: application
+    urls:
+    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.299/dev-extension-0.3.299.tgz
+    version: 0.3.299
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/display-name: Dev Extension
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
+    apiVersion: v2
     appVersion: 0.3.298
     created: "2026-10-03T16:55:19.110366517Z"
     description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
@@ -2817,4 +2839,4 @@ entries:
     urls:
     - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.168/dev-extension-0.3.168.tgz
     version: 0.3.168
-generated: "2026-10-03T16:55:19.110836936Z"
+generated: "2026-10-03T18:59:52.057390162Z"
