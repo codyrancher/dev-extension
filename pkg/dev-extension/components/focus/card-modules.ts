@@ -111,3 +111,54 @@ export function resolveForCard(name: string): any {
 
   throw new Error(`A card asked for "${ name }", which is not in this bundle. Tried: ${ keys.join(', ') }. Rancher's own modules must be registered by name in card-modules.ts.`);
 }
+
+/**
+ * The components a template names, resolved - so nobody has to remember to register one.
+ *
+ * This exists because of a bug I shipped. `CardSurface.vue` was written after the component map
+ * and never added to it, so every one of the nineteen cards' templates failed to resolve
+ * `<CardSurface>`; Vue's runtime compiler falls back to a native element for an unknown tag, so
+ * each card rendered `<cardsurface api="[object Object]"></cardsurface>` - an empty box with no
+ * error anywhere. A hand-maintained map of components is a list somebody forgets to append to,
+ * and the failure is silent, which is the worst pair of properties a registry can have.
+ *
+ * So the template says which components it wants and they are looked up. Lazily, by scanning for
+ * capitalised tags: a card that names three components evaluates three modules, not the sixty in
+ * the view.
+ */
+const TAG = /<([A-Z][A-Za-z0-9_]*)/g;
+
+export function componentsIn(template: string): Record<string, any> {
+  const found: Record<string, any> = {};
+
+  for (const name of new Set(String(template || '').match(TAG)?.map((tag) => tag.slice(1)) || [])) {
+    try {
+      found[name] = resolveForCard(name);
+    } catch {
+      // Reported by `missingComponents`, which is what turns this into something the card says.
+    }
+  }
+
+  return found;
+}
+
+/**
+ * The capitalised tags a template names that this bundle has nothing for.
+ *
+ * Checked before a card is accepted, because an unresolved component is the one authoring mistake
+ * that draws *nothing* and says *nothing* - Vue treats the tag as a native element and renders an
+ * empty one. A card that names a component we cannot find should say so where its body would be.
+ */
+export function missingComponents(template: string): string[] {
+  const missing: string[] = [];
+
+  for (const name of new Set(String(template || '').match(TAG)?.map((tag) => tag.slice(1)) || [])) {
+    try {
+      resolveForCard(name);
+    } catch {
+      missing.push(name);
+    }
+  }
+
+  return missing;
+}

@@ -34,6 +34,7 @@
  */
 import { ref } from 'vue';
 import { evalModule } from './components/focus/card-runtime';
+import { missingComponents } from './components/focus/card-modules';
 import { CARD_SOURCES } from './cards.generated';
 
 /** Where a card lives, and what marks it as one. */
@@ -122,6 +123,30 @@ function evaluate(id: string, source: string, rev: string, was?: LoadedCard): Lo
        * all, and the work it was for goes to the fallback card with no hint why.
        */
       return failed('This card claims nothing: a module needs `rules`, the rule ids whose work it draws.');
+    }
+
+    /*
+     * A template naming a component this bundle has nothing for.
+     *
+     * The one authoring mistake that fails *silently*: Vue's runtime compiler treats an unknown
+     * capitalised tag as a native element, so the card renders an empty `<thatname>` and nothing
+     * anywhere says why. It cost all nineteen cards their bodies once, because `CardSurface` had
+     * been written and never registered, and no probe caught it - the wrapper was present, the
+     * card was the right height, and the body inside it was an empty unknown element.
+     *
+     * Reported as the card's error, so the card says it where its body would have been. The
+     * module is kept, so its `rules` go on claiming the work rather than sending it to fallback.
+     */
+    const missing = missingComponents(String(module.template || ''));
+
+    if (missing.length) {
+      return {
+        id,
+        module,
+        error: `This card's template uses <${ missing.join('>, <') }>, which this bundle has nothing for. A component is found by its file name - check the spelling, or require it in the module.`,
+        rev,
+        generation,
+      };
     }
 
     styleFor(id, module.styles);

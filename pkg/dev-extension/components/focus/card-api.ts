@@ -37,6 +37,7 @@
 import * as vue from 'vue';
 import type { Ref } from 'vue';
 import { compileTemplate } from './card-runtime';
+import { componentsIn } from './card-modules';
 import type { LoadedCard } from '../../focus-cards';
 
 import AppButton from './AppButton.vue';
@@ -61,6 +62,7 @@ import CardCommits from './CardCommits.vue';
 import CardAgent from './CardAgent.vue';
 import CardFacts from './CardFacts.vue';
 import CardChecks from './CardChecks.vue';
+import CardSurface from './CardSurface.vue';
 import CodeView from '../code/CodeView.vue';
 import FileModal from '../code/FileModal.vue';
 
@@ -74,6 +76,12 @@ import FileModal from '../code/FileModal.vue';
  * which is how every surface in this view stays the same shape as every other.
  */
 export const CARD_COMPONENTS: Record<string, any> = {
+  /*
+   * First, because every ported card's body is one `<CardSurface :api="api" />` and it was the
+   * one component missing from this map - see `componentsIn`, written after that cost nineteen
+   * cards their bodies.
+   */
+  CardSurface,
   AppButton,
   AppIcon,
   KindChip,
@@ -180,7 +188,7 @@ export interface CardApi {
  */
 const built = new Map<string, { generation: number; component: any }>();
 
-export function componentFor(loaded: LoadedCard, api: CardApi): any {
+export function componentFor(loaded: LoadedCard): any {
   const had = built.get(loaded.id);
 
   if (had && had.generation === loaded.generation) {
@@ -189,7 +197,12 @@ export function componentFor(loaded: LoadedCard, api: CardApi): any {
   const module = loaded.module;
   const component = module?.component ? module.component : {
     name:       `card-${ loaded.id }`,
-    components: { ...CARD_COMPONENTS, ...(module?.components || {}) },
+    /*
+     * The named map, plus whatever this template asks for by name, plus the card's own. The
+     * middle one is what stops a component added to the view later from being invisible to cards
+     * until somebody remembers this file.
+     */
+    components: { ...CARD_COMPONENTS, ...componentsIn(String(module?.template || '')), ...(module?.components || {}) },
     /*
      * The template, compiled here rather than in the module.
      *
@@ -199,7 +212,19 @@ export function componentFor(loaded: LoadedCard, api: CardApi): any {
      * actually draw are written down.
      */
     render: module?.template ? compileTemplate(String(module.template), loaded.id) : () => null,
-    setup:  () => (typeof module?.setup === 'function' ? module.setup(api) : {}),
+    /*
+     * The api arrives as a prop, and `setup` reads it from there.
+     *
+     * It used to be captured here, closed over by the memoised component - and the memo is keyed
+     * on the card, while the *deck* mounts several FocusCard instances at once (the card on top
+     * and the stack behind it). So the first instance to build a card's component won, and every
+     * later mount re-used a component whose `setup` was still holding the first instance's props.
+     * Measured: all twenty-six bodies empty, because the api they were reading belonged to a card
+     * that had no artifacts. A prop is per-mount, which is what this always needed to be, and it
+     * leaves the memo a pure function of the module.
+     */
+    props: { api: { type: Object, required: true } },
+    setup:  (props: any) => (typeof module?.setup === 'function' ? module.setup(props.api) : {}),
   };
 
   built.set(loaded.id, { generation: loaded.generation, component });
