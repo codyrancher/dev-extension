@@ -276,19 +276,6 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 
     <!-- The one you are on: the lines, the comment, and the four things you can do to it. -->
     <article class="pass__detail" :class="`pass__detail--${ selected.severity }`">
-      <header class="detail__head">
-        <span class="u-pill detail__sev">{{ severityWord[selected.severity] }}</span>
-        <code class="detail__path">{{ selected.path }}</code>
-        <span class="detail__lines">
-          {{ selected.selects && selected.selects[0] !== selected.selects[1]
-            ? `lines ${ selected.selects[0] }–${ selected.selects[1] }`
-            : `line ${ selected.line }` }}
-        </span>
-        <span v-if="verdictOf(selected) !== 'pending'" class="u-pill detail__state" :class="`detail__state--${ verdictOf(selected) }`">
-          {{ verdictWord[verdictOf(selected)] }}
-        </span>
-      </header>
-
       <!--
         The code, then the comment on it - the order GitHub uses and the order the work is done in:
         you read the lines, then you read what was said about them, then you decide.
@@ -303,10 +290,31 @@ function pickedRun(note: ReviewNote): [number, number] | null {
         <CodeView
           :rows="rowsFor(selected)"
           :picked="pickedRun(selected)"
+          :label="selected.path"
           expandable
           expand-label="See the whole file"
           @expand="emit('expand', { path: selected.path, mark: selected.selects || [selected.line, selected.line] })"
-        />
+        >
+          <!--
+            Which file, which lines, how bad, and whether it is settled - on the panel's own bar.
+
+            This was `.detail__head`, a row of its own above the panel saying the same four
+            things, which on a narrow card was 26px of a 142px pane spent on a label the panel
+            was able to carry. One bar per surface, the way the panel already draws one for a
+            whole file in FileModal.
+          -->
+          <template #head>
+            <span class="detail__lines">
+              {{ selected.selects && selected.selects[0] !== selected.selects[1]
+                ? `${ selected.selects[0] }–${ selected.selects[1] }`
+                : selected.line }}
+            </span>
+            <span class="u-pill detail__sev">{{ severityWord[selected.severity] }}</span>
+            <span v-if="verdictOf(selected) !== 'pending'" class="u-pill detail__state" :class="`detail__state--${ verdictOf(selected) }`">
+              {{ verdictWord[verdictOf(selected)] }}
+            </span>
+          </template>
+        </CodeView>
       </div>
 
       <!--
@@ -348,9 +356,6 @@ function pickedRun(note: ReviewNote): [number, number] | null {
           @open="viewer = $event"
         />
       </div>
-
-      <!-- The evidence: the one thing in this pane that scrolls. -->
-
 
       <div class="detail__actions">
         <AppButton
@@ -568,6 +573,15 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 
 .note__top { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
 
+/*
+ * Neither of these wraps.
+ *
+ * `needs you` broke after `needs` inside a 34px chip - two half-height lines where a two-word
+ * label belongs - because a flex item's automatic minimum lets it be squeezed to its longest word.
+ */
+.note__sev,
+.note__state { flex: 0 0 auto; white-space: nowrap; }
+
 .note__sev {
   color: var(--sev);
   font-size: var(--t-xs);
@@ -640,14 +654,27 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 .pass__detail {
   display: grid;
   /*
-   * Head, the code, the comment, the verdicts.
+   * The code, the comment, the verdicts.
+   *
+   * There was a fourth track above these - a row carrying the path, the line range and the two
+   * pills - and the panel below it already has a bar to carry all four. The pills are on that bar
+   * now and this is three tracks.
    *
    * The comment's track was a fixed 56px - three lines and a fade - which is how a sentence came
    * to be cut mid-word on a card whose whole question is whether that sentence is right. It takes
    * the remainder now and scrolls; the code is what is capped, because a hunk is six lines either
    * side of a change and reads fine at any height.
+   *
+   * `fit-content(50%)` rather than `minmax(0, auto)`, which was the same bug one track over. An
+   * `auto` track's base size is its max-content, and a hunk's max-content is the whole hunk - 346px
+   * of it in a 192px pane - so the free space `1fr` divides was already negative and the comment's
+   * track came out at **0px**: `.detail__say` measured `h: 0` against `scrollHeight: 122`, the
+   * agent's sentence not drawn at all on the card whose one question is whether it is right.
+   * `.hunk { max-height: 50% }` could not save it, because a max-height on the item does not shrink
+   * the track it sits in. `fit-content(50%)` is min(max-content, half the pane) applied to the
+   * track, which is what "capped at half the pane" was supposed to mean both times.
    */
-  grid-template-rows: auto minmax(0, auto) minmax(0, 1fr) auto;
+  grid-template-rows: fit-content(50%) minmax(0, 1fr) auto;
   gap: var(--s2);
   min-height: 0;
   min-width: 0;
@@ -655,17 +682,11 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 }
 
 /*
- * One row, never two: it is the line that says which file and which lines, inside a pane that is
- * 142px tall on a narrow card. A wrap here is 26px off the code.
+ * `.detail__head` lived here: a row above the panel saying which file, which lines, how bad and
+ * whether it was settled. All four are on the panel's own bar now - see the `#head` slot above -
+ * because a second header for one thing cost this pane 26px of its 142px, and the panel draws a
+ * bar either way the moment it is given a label.
  */
-.detail__head {
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  flex-wrap: nowrap;
-  gap: var(--s3);
-  min-width: 0;
-}
 
 .detail__step { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
 
@@ -688,6 +709,7 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 
 /* Both of these are `.u-pill` now; what is theirs is the colour and the voice. */
 .detail__sev {
+  flex: 0 0 auto;
   background: var(--sev-wash, var(--surface-raised));
   color: var(--sev, var(--text-dim));
   font-weight: 700;
@@ -700,23 +722,27 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 .pass__detail--question { --sev: var(--warning);    --sev-wash: var(--warning-wash); }
 .pass__detail--praise   { --sev: var(--success);    --sev-wash: var(--success-wash); }
 
-/* The end of a path is the part that identifies it, so that is the end it keeps. */
-.detail__path {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-dim);
-  font-family: var(--mono);
-  font-size: var(--t-sm);
-  text-overflow: ellipsis;
+/*
+ * `.detail__path` lived here, with its own `rtl` clip to keep the end of the path. The panel's
+ * label does that now, for every surface that draws a hunk rather than for this one - see
+ * `.cv__label--path`.
+ *
+ * What is left on the bar is the line range and the two pills, so they sit in the bar's type
+ * rather than the pane's: `--t-xs` beside the panel's own label, and the range without the word
+ * "line" in front of it, which the gutter under it is already saying.
+ */
+.detail__lines {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: var(--t-xs);
   white-space: nowrap;
-  direction: rtl;
-  text-align: left;
 }
 
-.detail__lines { flex: 0 0 auto; color: var(--text-faint); font-size: var(--t-sm); white-space: nowrap; }
+/* To the right of the bar, where the state of a file sits on GitHub's own. */
+.detail__sev { margin-left: auto; }
 
 .detail__state {
-  margin-left: auto;
+  flex: 0 0 auto;
   background: var(--success-wash);
   color: var(--success);
   font-weight: 620;
@@ -733,10 +759,13 @@ function pickedRun(note: ReviewNote): [number, number] | null {
  */
 .hunk {
   min-height: 0;
-  /* Never more than half the pane: the comment is the thing being judged. */
-  max-height: 50%;
   overflow: auto;
   border-radius: var(--r-md);
+  /*
+   * `max-height: 50%` lived here, and once the track became `fit-content(50%)` it capped the hunk
+   * twice: a percentage height resolves against the grid *area*, which is already half the pane,
+   * so the hunk drew at 37px inside the 74px track it had been given. One cap, on the track.
+   */
 }
 
 /*
@@ -913,15 +942,83 @@ function pickedRun(note: ReviewNote): [number, number] | null {
  * scrolling the pane, which is what a pane with a height can do.
  */
 @media (max-width: 1100px) {
-  .pass { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   /*
-   * The list stays, short and scrolling.
+   * Three children, three tracks.
    *
-   * It used to be hidden here because the meter stood in for it. The meter is gone, so hiding it
-   * would leave nothing at all saying which findings there are - which is the whole subject of
-   * the card. A third of the surface, scrolled, is enough to see where you are in two of them.
+   * It declared two - `auto minmax(0, 1fr)` - against the head, the list and the detail, and an
+   * implicit grid row is `auto`: the detail took an implicit third row sized to its own content,
+   * which left the free space `1fr` divides at zero and gave the **list** a 0px track. Its two
+   * 103px rows then drew outside it, over the panel below - the findings list painting through
+   * the code on every narrow review card. `grid-template-rows` has to name every row a grid
+   * actually has; the one it leaves out is the one that breaks it.
    */
-  .pass__list { max-height: 30%; }
+  .pass { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); }
+
+  /*
+   * The code gets less of a small pane, because what is left is the sentence being judged.
+   *
+   * Half of a 149px pane is 74px of hunk against 26px of comment - two code rows beside a line and
+   * a half of the claim they are evidence for, which is the wrong way round on this card. 40%
+   * leaves the comment 41px and the hunk still shows the changed line and its neighbour. At width
+   * the pane is big enough that half of it is several lines of each, so the base rule stands.
+   */
+  .pass__detail { grid-template-rows: fit-content(40%) minmax(0, 1fr) auto; }
+
+  /*
+   * The strip the fade above has been describing since it was written: "a column down the side at
+   * width, a strip along the top when the card is narrow".
+   *
+   * It was the column at both widths, and a stacked row is 103px tall - so on a 235px pane two
+   * findings asked for 206px and the detail below them was left with 121, of which the hunk took
+   * half and the agent's sentence got **12**. The list was not too long; each row was three lines
+   * of a layout that only makes sense in a 240px column.
+   *
+   * One line each here: how bad, what it is, where it stands. The track is `auto`, so the strip
+   * costs its own 34px and the whole of the rest is the detail's - which is where the code and the
+   * sentence being judged are.
+   */
+  .pass__list {
+    flex-direction: row;
+    align-items: start;
+    padding: 0 0 var(--s2);
+    overflow: auto hidden;
+    scroll-snap-type: x proximity;
+    /* The fade follows the axis, which is the reason it is written out here at all. */
+    mask-image: linear-gradient(to right, #000 calc(100% - var(--s5)), transparent 100%);
+    touch-action: pan-x;
+  }
+
+  .note {
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+    width: auto;
+    /* Enough for a finding's title to be told from its neighbour, never enough to be the card. */
+    max-width: 280px;
+    min-height: var(--control-h);
+    padding: 0 var(--s3);
+  }
+
+  /* So the severity and the state sit on the chip's one line rather than in a row of their own. */
+  .note__top { display: contents; }
+
+  /*
+   * And the state goes to the end of that line. `.note__top` holds it before the title in the
+   * markup, which is the order a stacked row wants - the label above, the title under it - and on
+   * one line it put `needs you` between the severity and the thing that says which finding this
+   * is. What identifies the chip comes first; how it stands comes last, against the far edge.
+   */
+  .note__state { order: 1; }
+
+  .note__title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /*
+   * The file and the line, which the panel's own bar now says for the finding you are on, and
+   * which will not fit on a 280px chip beside the thing that identifies it: its title.
+   */
+  .note__where { display: none; }
+
+  .note:hover { transform: none; }
   /*
    * No caps here any more. `.hunk { max-height: 100px }` and `.detail__body { max-height: 56px }`
    * were this fault treated at the symptom: the hunk's cap was larger than the pane on the wide

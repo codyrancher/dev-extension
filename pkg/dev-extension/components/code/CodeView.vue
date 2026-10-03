@@ -109,8 +109,17 @@ defineExpose({
     :class="{ 'cv--pickable': selectable, 'cv--wrap': wrap, 'cv--one-side': !twoSided }"
   >
     <!-- A heading, only where there is a heading. See the note at the top of this file. -->
-    <header v-if="label" class="cv__head">
-      <code class="cv__label">{{ label }}</code>
+    <header v-if="label || $slots.head" class="cv__head">
+      <code v-if="label" class="cv__label" :class="{ 'cv__label--path': label.includes('/') }">{{ label }}</code>
+
+      <!--
+        What the caller has to say about this panel, said on the panel's own bar.
+
+        Every surface that draws a hunk was also drawing a line above it - the path in
+        ReviewPass, `@@ -12,7 +12,9 @@` in ChangeSet - which is a second header for one thing and,
+        on a 142px pane, 26px of the code's height spent on a label the panel could carry itself.
+      -->
+      <slot name="head" />
     </header>
 
     <div class="cv__rows">
@@ -186,6 +195,17 @@ defineExpose({
   font-size: var(--t-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/*
+ * A path is identified by its end, so the end is what survives the clip.
+ *
+ * The `rtl` trick `.detail__path` used before this bar took the path off its own line, and only
+ * for a label with a slash in it: `@@ -12,7 +12,9 @@` is not a path, and `rtl` reorders its signs.
+ */
+.cv__label--path {
+  direction: rtl;
+  text-align: left;
 }
 
 /*
