@@ -1,0 +1,212 @@
+/**
+ * What a card held outside the bundle is given, and what it gives back.
+ *
+ * The shell keeps the parts of a card that are the same on every card - the chip, the title, the
+ * lede, the footer, the pin, the workspace tag, the loading state - and a module supplies the two
+ * parts that are not: the **body** and the **actions**. That split is not a guess about what
+ * might be wanted; it is where the existing cards already differ. Nineteen definitions share one
+ * header and one footer and pick between eleven bodies, so the body and the buttons are exactly
+ * the axis along which a card is a different card.
+ *
+ * ## The contract
+ *
+ *     module.exports = {
+ *       id: 'review-pass',               // which card this is; must match the definition's id
+ *       wants: ['notes', 'stat'],        // artifacts to load, same names focus-artifacts.ts uses
+ *       template: '<div>...</div>',      // compiled here; or `component` for a built one
+ *       setup(api) { return { ... } },   // bindings the template can see
+ *       actions(api) { return [ ... ] }, // optional; replaces the definition's buttons
+ *     };
+ *
+ * `setup` receives the api and returns what the template reads, exactly as a `setup()` in a
+ * single-file component does. Every live value on the api is a **ref**, because `setup` runs once
+ * and a plain value read at that moment would never change again - the artifacts in particular
+ * arrive a second after the card does.
+ *
+ * ## Why everything is handed in
+ *
+ * A module gets `vue` from the api and imports nothing. This is not tidiness: a UMD bundle
+ * resolves its externals through `require` or a global, and neither reaches the `vue` this bundle
+ * is using. Two copies of Vue in one page is the same fault that makes `useRouter()` silently
+ * dead in the installed plugin - a composable's injection does not cross between copies. A card
+ * that imported its own Vue would mount into a different reactivity system and never update.
+ *
+ * It is also what keeps a card small enough to live in a ConfigMap. Externalised, a card is a few
+ * kilobytes; with Vue inlined, four of them would not fit in one map's 1MiB.
+ */
+import * as vue from 'vue';
+import type { Ref } from 'vue';
+import { compileTemplate } from './card-runtime';
+import type { LoadedCard } from '../../focus-cards';
+
+import AppButton from './AppButton.vue';
+import AppIcon from './AppIcon.vue';
+import KindChip from './KindChip.vue';
+import Markdown from './Markdown.vue';
+import TextModal from './TextModal.vue';
+import SectionHead from './SectionHead.vue';
+import StatPill from './StatPill.vue';
+import IssueMarks from './IssueMarks.vue';
+import CheckList from './CheckList.vue';
+import CommentBody from './CommentBody.vue';
+import MediaViewer from './MediaViewer.vue';
+import ReviewPass from './ReviewPass.vue';
+import ChangeSet from './ChangeSet.vue';
+import CardComments from './CardComments.vue';
+import CardEvidence from './CardEvidence.vue';
+import CardPool from './CardPool.vue';
+import CardBumps from './CardBumps.vue';
+import CardReviewers from './CardReviewers.vue';
+import CardCommits from './CardCommits.vue';
+import CardAgent from './CardAgent.vue';
+import CardFacts from './CardFacts.vue';
+import CardChecks from './CardChecks.vue';
+import CodeView from '../code/CodeView.vue';
+import FileModal from '../code/FileModal.vue';
+
+/**
+ * The surfaces a card can build out of, rather than build again.
+ *
+ * The eleven bodies the shipped cards pick between are in here, so moving a card out of the
+ * bundle is not a rewrite: a card whose body is `<ReviewPass ... />` is a three-line module. The
+ * smaller pieces are here for the same reason in the other direction - a card that wants a hunk
+ * and a sentence beside it composes `CodeView` and `Markdown` instead of reimplementing either,
+ * which is how every surface in this view stays the same shape as every other.
+ */
+export const CARD_COMPONENTS: Record<string, any> = {
+  AppButton,
+  AppIcon,
+  KindChip,
+  Markdown,
+  TextModal,
+  SectionHead,
+  StatPill,
+  IssueMarks,
+  CheckList,
+  CommentBody,
+  MediaViewer,
+  ReviewPass,
+  ChangeSet,
+  CardComments,
+  CardEvidence,
+  CardPool,
+  CardBumps,
+  CardReviewers,
+  CardCommits,
+  CardAgent,
+  CardFacts,
+  CardChecks,
+  CodeView,
+  FileModal,
+};
+
+export interface CardApi {
+  /** The Vue drawing the page around this card. See the note at the top of this file. */
+  vue: typeof vue;
+
+  /** The work this card is about: the queue item, its title, its card definition. */
+  task: Ref<any>;
+  /** Everything the card asked for in `wants`, as it arrives. */
+  artifacts: Ref<any>;
+  /** The agent's comments, when this card's work is a review waiting for a pass. */
+  notes: Ref<any[]>;
+  /** Still being read. The shell draws the header either way; a body should say so. */
+  reading: Ref<boolean>;
+  /** False in the deck behind the top card: do not let a body be clicked through. */
+  interactive: Ref<boolean>;
+
+  /**
+   * Everything the card can set off, straight through to the shell.
+   *
+   * The seventeen events the shell already handles - `act`, `resolve`, `discuss`, `expand`,
+   * `take`, `reply`, `answer`, `workspace` and the rest - reach it unchanged, so a module gets
+   * the same reach the built-in surfaces have and no more. A name the shell does not handle is
+   * not an error here; it simply does nothing, which is the same as it is anywhere in Vue.
+   */
+  emit: (event: string, payload?: any) => void;
+
+  /** The dev-api, for a card that needs something nobody thought to put in `wants`. */
+  devApi: (path: string, options?: any) => Promise<any>;
+
+  /** The surfaces and controls in CARD_COMPONENTS, for a body built by hand. */
+  components: Record<string, any>;
+
+  /**
+   * The three pieces of the shell's own state a body is allowed to move.
+   *
+   * Not an escape hatch - these are every case where a built-in surface sets something on the
+   * card rather than emitting past it, found by reading the template for handlers that assign
+   * instead of emit. There are three, and each one is a real part of the contract: without
+   * `keeping`, a card could not gate its own primary button; without `selected`, the evidence
+   * strip above the body would not follow what the body is showing; without `openText`, a long
+   * body would have no way to hand its prose to the dialog the shell already owns.
+   */
+  shell: {
+    /** How many findings this card is keeping. Gates the `anyKept` action; see `visible`. */
+    keeping: (count: number) => void;
+    /** Which note the evidence strip follows. The one field `art` adds to `base`. */
+    selected: (note: any) => void;
+    /** Open the long prose over the card: `'prose'`, `'talk'`, or `''` to close it. */
+    openText: (what: string) => void;
+  };
+}
+
+/**
+ * Turn a loaded module into something mountable.
+ *
+ * Memoised on the card's `generation`, so re-evaluating a module after an edit produces a new
+ * component - which is the point, a new component is what Vue will remount - while a re-render
+ * for any other reason reuses the one already built. Without this a card would be rebuilt on
+ * every tick of its artifacts arriving.
+ */
+const built = new Map<string, { generation: number; component: any }>();
+
+export function componentFor(loaded: LoadedCard, api: CardApi): any {
+  const had = built.get(loaded.id);
+
+  if (had && had.generation === loaded.generation) {
+    return had.component;
+  }
+  const module = loaded.module;
+  const component = module?.component ? module.component : {
+    name:       `card-${ loaded.id }`,
+    components: { ...CARD_COMPONENTS, ...(module?.components || {}) },
+    /*
+     * The template, compiled here rather than in the module.
+     *
+     * A module *could* ship a render function and skip this, and a bundler-produced card will.
+     * But a card somebody edits in a text box is a card written as a template, and the compiler
+     * is in this bundle - see card-runtime.ts, where the two corrections needed to make it
+     * actually draw are written down.
+     */
+    render: module?.template ? compileTemplate(String(module.template), loaded.id) : () => null,
+    setup:  () => (typeof module?.setup === 'function' ? module.setup(api) : {}),
+  };
+
+  built.set(loaded.id, { generation: loaded.generation, component });
+
+  return component;
+}
+
+/** What a module says its buttons are, or nothing - in which case the definition's stand. */
+export function actionsFrom(loaded: LoadedCard | undefined, api: CardApi): any[] | null {
+  const make = loaded?.module?.actions;
+
+  if (typeof make !== 'function') {
+    return null;
+  }
+  try {
+    const got = make(api);
+
+    return Array.isArray(got) ? got : null;
+  } catch {
+    /*
+     * A card whose buttons throw keeps the definition's.
+     *
+     * The body can afford to fail loudly - it is the thing being edited, and the shell says why.
+     * The footer cannot: a card with no buttons is a card you cannot act on, which turns a typo
+     * in a template into work you cannot get at from the deck at all.
+     */
+    return null;
+  }
+}

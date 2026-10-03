@@ -37,6 +37,11 @@ import CardFacts from './CardFacts.vue';
 import CheckList from './CheckList.vue';
 import SectionHead from './SectionHead.vue';
 import IssueMarks from './IssueMarks.vue';
+import * as cardVue from 'vue';
+import { loadedCards } from '../../focus-cards';
+import { componentFor, actionsFrom, CARD_COMPONENTS } from './card-api';
+import type { CardApi } from './card-api';
+import { devApi } from '../../reviews';
 import { NO_ARTIFACTS } from '../../focus-artifacts';
 import type {
   CardArtifacts, CardComment, PoolIssue, BumpRow
@@ -211,8 +216,55 @@ function visible(action: CardAction): boolean {
   return state[action.when];
 }
 
-/** The ones this card is offering at all, in the definition's order. */
-const shown = computed(() => props.task.card.actions.filter(visible));
+/* ── A card held outside the bundle ───────────────────────────────────────────────────────── */
+
+/**
+ * The module for this card, when there is one.
+ *
+ * Keyed on the definition's id, so a ConfigMap named `dev-card-review-pass` takes over the card
+ * `review-pass` by existing - no flag on the definition, nothing to keep in step. That is also
+ * how a card is moved out of this bundle one at a time and how it is moved back: delete the map.
+ */
+const bundle = computed(() => loadedCards.value[props.task.card.id]);
+
+/**
+ * What the module is given. See card-api.ts.
+ *
+ * Built once, not computed, because `setup` runs once and holds whatever it is handed; the parts
+ * that change are refs inside it. `artifacts` reads `base` and **not** `art` - `art` is downstream
+ * of `surface`, and a body that read it would close the loop `art -> surface -> body -> art`,
+ * which is the cycle that once resolved to `undefined` and rendered no cards at all.
+ */
+const cardApi: CardApi = {
+  vue:         cardVue,
+  task:        computed(() => props.task),
+  artifacts:   computed(() => base.value),
+  notes:       computed(() => props.notes || []),
+  reading:     computed(() => Boolean(props.reading)),
+  interactive: computed(() => Boolean(props.interactive)),
+  emit:        (event: string, payload?: any) => (emit as any)(event, payload),
+  devApi,
+  components:  CARD_COMPONENTS,
+  shell:       {
+    keeping:  (count: number) => { kept.value = Number(count) || 0; },
+    selected: (note: any) => { noteOn.value = note || null; },
+    openText: (what: string) => { readOn.value = String(what || '') as typeof readOn.value; },
+  },
+};
+
+/** The body the module draws, or nothing - in which case the built-in surfaces below do. */
+const bundleBody = computed(() => {
+  const loaded = bundle.value;
+
+  return loaded?.module && !loaded.error ? componentFor(loaded, cardApi) : null;
+});
+
+/** The ones this card is offering at all, in the definition's order - or the module's. */
+const shown = computed(() => {
+  const own = actionsFrom(bundle.value, cardApi);
+
+  return (own || props.task.card.actions).filter(visible);
+});
 
 const primary = computed(() => shown.value[0] || null);
 const others = computed(() => shown.value.slice(1));
@@ -900,6 +952,35 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         <div v-if="reading" class="card__reading">
           <AppIcon name="spinner" :size="20" />
           <span>Reading what this needs…</span>
+        </div>
+
+        <!--
+          A card held outside this bundle draws its own body.
+
+          Keyed on `generation`, which is what turns "the module reloaded" into "the card
+          redrew": re-evaluating a module after an edit gives a new component, and a new component
+          alone is not enough - Vue keeps the mounted one until something it keys on changes.
+        -->
+        <component
+          :is="bundleBody"
+          v-else-if="bundleBody"
+          :key="bundle.generation"
+          class="card__bundle"
+        />
+
+        <!--
+          A card that would not load says why, where the card would have been.
+
+          The alternative is a card that is silently not there, which while editing one is the
+          worse of the two: you change a line, it vanishes, and nothing tells you whether the save
+          failed, the watch dropped, or the module threw.
+        -->
+        <div v-else-if="bundle && bundle.error" class="card__broke">
+          <AppIcon name="alert" :size="18" />
+          <div class="card__broke-what">
+            <p class="card__broke-head">This card would not load.</p>
+            <code class="card__broke-why">{{ bundle.error }}</code>
+          </div>
         </div>
 
         <!-- What the agent is asking, with its own choices as the buttons. -->
@@ -1864,4 +1945,50 @@ a.card__ident:hover { background: var(--surface-raised); color: var(--text); tex
 }
 
 .card__menu-row:hover { background: var(--surface-raised); color: var(--text); }
+
+/* ── A card held outside the bundle ───────────────────────────────────────── */
+
+/*
+ * The module's body gets what a surface gets: the remaining height, and permission to scroll
+ * inside itself rather than push the footer down. Every built-in surface is bounded this way and
+ * a card from a ConfigMap is not a different kind of card.
+ */
+.card__bundle {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden auto;
+}
+
+.card__broke {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  min-height: 0;
+  padding: var(--s4);
+  border: 1px solid var(--danger);
+  border-radius: var(--r-md);
+  background: var(--danger-wash);
+  color: var(--danger);
+  overflow: hidden auto;
+}
+
+.card__broke-what { min-width: 0; }
+
+.card__broke-head {
+  margin: 0 0 var(--s2);
+  color: var(--text);
+  font-size: var(--t-sm);
+  font-weight: 650;
+}
+
+.card__broke-why {
+  display: block;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  line-height: 1.5;
+  /* A compiler's message is one long line with no space to break at. */
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
 </style>
