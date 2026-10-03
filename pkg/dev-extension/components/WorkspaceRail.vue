@@ -22,6 +22,8 @@ import PrButton from './pr/PrButton.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
 import ArtifactViewer from './pr/ArtifactViewer.vue';
+import CodeView from './code/CodeView.vue';
+import { fromRailRows } from './code/rows';
 import {
   readStatusNow, knownStatus, provisionalStatus, agentLabel, agentStateOf, displayTone, setManualStage, clearManualStage, isManual
 } from '../workspace-status';
@@ -61,7 +63,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceTools,
+    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceTools, CodeView,
   },
 
   props: {
@@ -478,6 +480,9 @@ export default {
   },
 
   methods: {
+    /** The rail's own row shape, as the shared code view takes it. See components/code/rows.ts. */
+    fromRailRows,
+
     ago,
     agentLabel,
     displayTone,
@@ -2232,20 +2237,7 @@ export default {
                       v-if="f.status"
                       class="workspace-rail__tag"
                     >{{ f.status }}</span></div>
-                    <table class="diff-table">
-                      <tbody>
-                        <tr
-                          v-for="(r, k) in f.rows"
-                          :key="k"
-                          class="diff-row"
-                          :class="r.type"
-                        >
-                          <td class="lineno">{{ r.oldN ?? '' }}</td>
-                          <td class="lineno">{{ r.newN ?? '' }}</td>
-                          <td class="code"><span class="sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
-                        </tr>
-                      </tbody>
-                    </table>
+                    <CodeView :rows="fromRailRows(f.rows)" />
                   </div>
                 </div>
                 <ul class="workspace-rail__list workspace-rail__list--plain">
@@ -2286,20 +2278,7 @@ export default {
                         v-if="f.status"
                         class="workspace-rail__tag"
                       >{{ f.status }}</span></div>
-                      <table class="diff-table">
-                        <tbody>
-                          <tr
-                            v-for="(r, k) in f.rows"
-                            :key="k"
-                            class="diff-row"
-                            :class="r.type"
-                          >
-                            <td class="lineno">{{ r.oldN ?? '' }}</td>
-                            <td class="lineno">{{ r.newN ?? '' }}</td>
-                            <td class="code"><span class="sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
-                          </tr>
-                        </tbody>
-                      </table>
+                      <CodeView :rows="fromRailRows(f.rows)" />
                     </div>
                   </div>
                   </li>
@@ -2462,20 +2441,7 @@ export default {
                         title="Show the lines above"
                         @click="extend(c, 'up')"
                       >↑ more above</button>
-                      <table class="diff-table">
-                        <tbody>
-                          <tr
-                            v-for="(r, k) in rowsAround(c)"
-                            :key="k"
-                            class="diff-row"
-                            :class="[r.type, { 'on-comment-line': r.marked }]"
-                          >
-                            <td class="lineno">{{ r.oldN ?? '' }}</td>
-                            <td class="lineno">{{ r.newN ?? '' }}</td>
-                            <td class="code"><span class="sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' ' }}</span><span v-html="r.html" /></td>
-                          </tr>
-                        </tbody>
-                      </table>
+                      <CodeView :rows="fromRailRows(rowsAround(c))" />
                       <button
                         v-if="c.path && c.headSha && status.pr"
                         type="button"

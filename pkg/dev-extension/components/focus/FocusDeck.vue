@@ -57,6 +57,8 @@ const emit = defineEmits<{
   (e: 'ask-code', value: any): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: 'reply', value: any): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: 'expand', value: any): void;
 }>();
 
 const current = computed(() => props.cards[props.index] || null);
@@ -492,6 +494,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           @discuss="emit('discuss', $event)"
           @ask-code="emit('ask-code', $event)"
           @reply="emit('reply', $event)"
+          @expand="emit('expand', $event)"
         />
       </div>
 
@@ -557,13 +560,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
    */
   grid-template-columns: minmax(0, 1fr);
   /*
-   * Stretched down the block axis, centred across it. A card sized with `height: 100%` was
-   * resolving against the row rather than against the room left inside this padding, so it
-   * ran past the bottom and under the chat bar; stretching hands it exactly the space there
-   * is.
+   * One row, exactly the height there is.
+   *
+   * This is what makes a card a fixed object rather than one that grows with what is on it. With
+   * no explicit row the grid gets an implicit `auto` one, which is sized to its tallest item - so
+   * `height: 100%` bounded this element while the row inside it grew with the card's content, and
+   * a card with forty comments on it ran off the bottom of the screen, taking its actions with it.
+   * `minmax(0, 1fr)` pins the row to the deck, the card stretches to the row, and the scrolling
+   * happens where it belongs: inside the card's body. See FocusCard.
    */
+  grid-template-rows: minmax(0, 1fr);
   place-items: stretch center;
   height: 100%;
+  min-height: 0;
   /*
    * The card takes the room. What is left is only what something else needs: a lane on the
    * right for the rail, a line at the bottom for what is coming next, and a hair at the top so

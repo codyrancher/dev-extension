@@ -63,9 +63,35 @@ const emit = defineEmits<{
   (e: 'discuss', value: { note: ReviewNote; text: string }): void;
   (e: 'ask-code', value: { path: string; label: string; code: string; text: string }): void;
   (e: 'reply', value: { comment: CardComment }): void;
+  (e: 'expand', value: { path: string; mark: [number, number] }): void;
 }>();
 
-const art = computed<CardArtifacts>(() => props.artifacts || NO_ARTIFACTS);
+/**
+ * The comment the pass is on, when the card is a pass.
+ *
+ * It decides what the evidence band shows. A review card's workspace holds everything every
+ * comment was built from - eight recordings, of which one belongs to the comment you are reading
+ * - so the band was showing the workspace rather than the comment, which is a different claim and
+ * the wrong one. Pick a comment and the band is that comment's.
+ */
+const noteOn = ref<ReviewNote | null>(null);
+
+watch(() => props.notes, (found) => { noteOn.value = found?.[0] || null; }, { immediate: true });
+
+const art = computed<CardArtifacts>(() => {
+  const base = props.artifacts || NO_ARTIFACTS;
+
+  if (surface.value !== 'pass' || !noteOn.value) {
+    return base;
+  }
+
+  return {
+    ...base,
+    media: noteOn.value.media.map((item) => ({
+      kind: item.kind, label: item.label, src: item.src, caption: item.caption, at: '',
+    })),
+  };
+});
 
 /** Waiting long enough that somebody is being held up by it. */
 const overdue = computed(() => props.task.waitingHours >= 48);
@@ -201,6 +227,8 @@ const waited = computed(() => (props.task.waitingHours >= 48
       <ReviewPass
         v-if="surface === 'pass'"
         :notes="notes || []"
+        @select="noteOn = $event"
+        @expand="emit('expand', $event)"
         @progress="pass = $event"
         @resolve="emit('resolve', $event)"
         @ask="emit('discuss', $event)"
@@ -212,6 +240,7 @@ const waited = computed(() => (props.task.waitingHours >= 48
         :files="art.files"
         :busy="busy"
         @ask="emit('ask-code', $event)"
+        @expand="emit('expand', $event)"
       />
 
       <!-- Or what people said about it, when answering them is the job. -->
@@ -220,6 +249,7 @@ const waited = computed(() => (props.task.waitingHours >= 48
         :comments="art.comments"
         :busy="busy"
         @reply="emit('reply', $event)"
+        @expand="emit('expand', $event)"
       />
 
       <!-- Or its own words: an issue, an advisory, a question the agent asked. -->
@@ -375,9 +405,24 @@ const waited = computed(() => (props.task.waitingHours >= 48
 
 .card__head,
 .card__body,
-.card__foot { min-width: 0; }
+/* The same, at the other end: the buttons are the point of the card and never give up room. */
+.card__foot { flex: 0 0 auto; min-width: 0; }
 
-.card__head { position: relative; }
+/*
+ * Never squeezed.
+ *
+ * The card is a column flex box, so every child of it shrinks by default - and a header with no
+ * `overflow` does not clip when it is shrunk, it draws its children outside itself. Once the body
+ * grew tall enough to push (which is what putting the evidence and a diff on a card did), the
+ * summary and the byline were painted straight over the top of the body. The header is as tall as
+ * its text and the body is what gives: that is what `min-height: 0` and `overflow: auto` down
+ * there are for.
+ */
+.card__head {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
+}
 
 /*
  * One line, and everything on it the same height.

@@ -16,14 +16,20 @@
  * already said is context for reading it rather than part of the queue.
  */
 import { computed } from 'vue';
-import CodeLines from './CodeLines.vue';
+import CodeView from '../code/CodeView.vue';
+import { fromDiffLines, highlighted } from '../code/rows';
 import AppIcon from './AppIcon.vue';
 import AppButton from './AppButton.vue';
 import type { CardComment } from '../../focus-artifacts';
 
 const props = defineProps<{ comments: CardComment[]; busy?: boolean }>();
 
-const emit = defineEmits<{ (e: 'reply', value: { comment: CardComment }): void }>();
+const emit = defineEmits<{
+  (e: 'reply', value: { comment: CardComment }): void;
+  (e: 'expand', value: { path: string; mark: [number, number] }): void;
+}>();
+
+const rowsFor = (comment: CardComment) => highlighted(fromDiffLines(comment.hunk), comment.path);
 
 /** Theirs, and not answered after it: the ones the card is actually about. */
 const waiting = computed(() => props.comments.filter((c, n) => !c.mine && !props.comments.slice(n + 1).some((later) => later.mine)));
@@ -40,6 +46,9 @@ const when = (at: string) => {
 };
 
 const file = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+
+/** Worth drawing: at least one line with something on it. */
+const hasCode = (comment: CardComment) => comment.hunk.some((line) => line.text.trim());
 </script>
 
 <template>
@@ -67,8 +76,19 @@ const file = (path: string) => path.slice(path.lastIndexOf('/') + 1);
           <span class="note__when">{{ when(comment.at) }}</span>
         </div>
 
-        <!-- The lines it is about, so the comment can be read where it was written. -->
-        <CodeLines v-if="comment.hunk.length" :lines="comment.hunk" />
+        <!--
+          The lines it is about, so the comment can be read where it was written - when there are
+          any. A comment anchored to a file GitHub sent no usable hunk for came through as one
+          blank row, which drew an empty code box with a `0 0` gutter and nothing in it.
+        -->
+        <CodeView
+          v-if="hasCode(comment)"
+          :rows="rowsFor(comment)"
+          :mark-lines="comment.line ? [comment.line, comment.line] : null"
+          expandable
+          expand-label="See the whole file"
+          @expand="emit('expand', { path: comment.path, mark: [comment.line || 1, comment.line || 1] })"
+        />
 
         <p class="note__body">{{ comment.body }}</p>
 
