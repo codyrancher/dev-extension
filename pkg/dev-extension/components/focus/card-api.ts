@@ -114,6 +114,15 @@ export interface CardApi {
   reading: Ref<boolean>;
   /** False in the deck behind the top card: do not let a body be clicked through. */
   interactive: Ref<boolean>;
+  /** An action is in flight. A surface uses it to stop offering a second press. */
+  busy: Ref<boolean>;
+  /**
+   * The number the card's own lede already shows, so a surface does not say it twice.
+   *
+   * Shell knowledge, which is why it is handed over rather than worked out: the lede is drawn
+   * above the body and a surface cannot see it.
+   */
+  claimed: Ref<string>;
 
   /**
    * Everything the card can set off, straight through to the shell.
@@ -148,6 +157,16 @@ export interface CardApi {
     selected: (note: any) => void;
     /** Open the long prose over the card: `'prose'`, `'talk'`, or `''` to close it. */
     openText: (what: string) => void;
+    /**
+     * What the body is drawing, so the frame does not say it twice.
+     *
+     * The shell used to know, because it did the dispatching. Three things around the body need
+     * it: whether to draw the issue's own words above it, whether the evidence band should carry
+     * the comments, and whether there is a body at all. Rather than have the shell guess from a
+     * declared field - which a card need not declare, and which says nothing about what a bespoke
+     * body chose - the body says. `CardSurface` reports its pick; a hand-written card can too.
+     */
+    showing: (surface: string) => void;
   };
 }
 
@@ -192,6 +211,16 @@ export function componentFor(loaded: LoadedCard, api: CardApi): any {
 export function actionsFrom(loaded: LoadedCard | undefined, api: CardApi): any[] | null {
   const make = loaded?.module?.actions;
 
+  /*
+   * An array or a function of the api.
+   *
+   * The nineteen ported cards kept the arrays their definitions had, because a fixed list of
+   * buttons is what nearly every card wants and a function would be ceremony around a constant.
+   * A card whose buttons depend on what it loaded returns a function instead.
+   */
+  if (Array.isArray(make)) {
+    return make;
+  }
   if (typeof make !== 'function') {
     return null;
   }

@@ -34,6 +34,7 @@
  */
 import { ref } from 'vue';
 import { evalModule } from './components/focus/card-runtime';
+import { CARD_SOURCES } from './cards.generated';
 
 /** Where a card lives, and what marks it as one. */
 export const CARD_NS = 'dev-system';
@@ -49,7 +50,17 @@ const idOf = (name: string) => (name.startsWith(NAME_PREFIX) ? name.slice(NAME_P
 
 export interface LoadedCard {
   id: string;
-  /** What the module exported, or null when it would not load. */
+  /**
+   * What the module exported, or the last version of it that worked.
+   *
+   * **Not null on failure, and that is the point.** A card carries `rules` now - the join to the
+   * queue - so a module that will not evaluate stops claiming its work, and the items it would
+   * have drawn fall through to the fallback card. Mid-edit that means a missing semicolon does not
+   * break one card's body, it unroutes that whole kind of work out of the deck. So a card that
+   * fails keeps the last module that worked: its rules go on claiming, its chip and title go on
+   * drawing, and `error` is what the body shows. You see exactly what broke and nothing vanishes
+   * from the queue while you are typing.
+   */
   module: any;
   /** Why it would not load, for the card to say so rather than draw nothing. */
   error: string;
@@ -66,8 +77,20 @@ export interface LoadedCard {
   generation: number;
 }
 
-/** Every card currently held outside the bundle, by id. Reactive; the view reads it directly. */
-export const loadedCards = ref<Record<string, LoadedCard>>({});
+/**
+ * Every card, by id. Reactive; the view reads it directly.
+ *
+ * Seeded synchronously from the cards this extension ships - see `cards.generated.ts` - so the
+ * deck has its cards on the first paint rather than after a round trip, and then overridden per
+ * id by whatever the watch finds. Both arrive here as source and both go through `evaluate`,
+ * which is the whole point: a bundled card and an edited card are the same kind of thing.
+ */
+export const loadedCards = ref<Record<string, LoadedCard>>(Object.fromEntries(
+  Object.entries(CARD_SOURCES).map(([id, source]) => [id, evaluate(id, source, `bundled`)]),
+));
+
+/** Where a card's source came from, for the editor to say so before someone overwrites it. */
+export const cardSource = (id: string) => (loadedCards.value[id]?.rev === 'bundled' ? 'bundled' : 'configmap');
 
 /** Set while the first list is in flight, so the deck can wait rather than flash the built-ins. */
 export const cardsSettled = ref(false);
@@ -79,31 +102,99 @@ export const cardsWatch = ref<{ state: 'off' | 'listing' | 'watching' | 'retryin
 
 function evaluate(id: string, source: string, rev: string, was?: LoadedCard): LoadedCard {
   const generation = (was?.generation ?? 0) + 1;
+  /* The last thing that worked, which a failure falls back to rather than through. */
+  const kept = was?.module ?? null;
+
+  const failed = (why: string): LoadedCard => ({
+    id, module: kept, error: why.slice(0, 400), rev, generation,
+  });
 
   try {
-    const module = evalModule(source, {});
+    const module = evalModule(source);
 
     if (!module || typeof module !== 'object') {
-      return {
-        id, module: null, error: 'The module exported nothing. A card should `module.exports = { ... }`.', rev, generation,
-      };
+      return failed('The module exported nothing. A card should `module.exports = { ... }`.');
     }
+    if (!module.rules && !kept) {
+      /*
+       * Said once, here, rather than discovered as an empty deck. A card with no rules claims no
+       * work, so it is not that the card looks wrong - it never reaches the top of the deck at
+       * all, and the work it was for goes to the fallback card with no hint why.
+       */
+      return failed('This card claims nothing: a module needs `rules`, the rule ids whose work it draws.');
+    }
+
+    styleFor(id, module.styles);
 
     return {
       id, module, error: '', rev, generation,
     };
   } catch (e) {
-    /*
-     * A card that will not load keeps its place and says why.
-     *
-     * The alternative is a card that silently is not there, which while editing one is the worst
-     * of the two: you change a line, the card vanishes, and nothing tells you whether the save
-     * failed, the watch dropped or the module threw.
-     */
-    return {
-      id, module: null, error: String((e as Error)?.message || e).slice(0, 400), rev, generation,
-    };
+    return failed(String((e as Error)?.message || e));
   }
+}
+
+/**
+ * A card's own CSS, scoped to that card.
+ *
+ * Written in the module beside the template it belongs to, because a card in one piece is a card
+ * somebody can edit in one box. It is prefixed with the card's own class before it goes in: the
+ * browser's parser does the prefixing (a stylesheet built here and walked rule by rule) rather
+ * than a regular expression over the text, which gets `@media`, commas and pseudo-classes wrong
+ * in that order. Without it a card that styles `.note` restyles every other card that has one.
+ */
+function styleFor(id: string, css: unknown) {
+  const tag = `focus-card-${ id }`;
+  let element = document.getElementById(tag) as HTMLStyleElement | null;
+
+  if (typeof css !== 'string' || !css.trim()) {
+    element?.remove();
+
+    return;
+  }
+  if (!element) {
+    element = document.createElement('style');
+    element.id = tag;
+    document.head.appendChild(element);
+  }
+
+  try {
+    const sheet = new CSSStyleSheet();
+
+    sheet.replaceSync(css);
+    element.textContent = scoped([...sheet.cssRules], `.card--mod-${ id }`);
+  } catch {
+    /*
+     * A stylesheet that will not parse is dropped rather than injected raw. The card still draws;
+     * only its own styling is missing, which is visible, and the body is where an error belongs.
+     */
+    element.textContent = '';
+  }
+}
+
+/** Every selector in these rules, prefixed - walking into `@media` and friends. */
+function scoped(rules: CSSRule[], prefix: string): string {
+  return rules.map((rule) => {
+    const style = rule as CSSStyleRule;
+    const group = rule as CSSGroupingRule;
+
+    if (style.selectorText) {
+      const selector = style.selectorText.split(',')
+        .map((one) => `${ prefix } ${ one.trim() }`)
+        .join(', ');
+
+      return `${ selector } { ${ style.style.cssText } }`;
+    }
+    if (group.cssRules) {
+      // `@media`, `@supports`, `@container`: keep the condition, scope what is inside it.
+      const head = group.cssText.slice(0, group.cssText.indexOf('{'));
+
+      return `${ head.trim() } { ${ scoped([...group.cssRules], prefix) } }`;
+    }
+
+    // `@keyframes`, `@font-face`: nothing to scope, and both are global by nature.
+    return rule.cssText;
+  }).join('\n');
 }
 
 /** Take one ConfigMap and keep what it holds, if it changed. */
@@ -124,13 +215,30 @@ function absorb(map: any) {
   loadedCards.value = { ...loadedCards.value, [id]: evaluate(id, source, rev, was) };
 }
 
+/**
+ * A card's ConfigMap has gone: fall back to the card this extension ships, if it ships one.
+ *
+ * Deleting the override is how a card is put back to its shipped version, so it has to restore
+ * rather than remove - otherwise reverting an experiment would take the card out of the deck and
+ * send its work to the fallback card.
+ */
 function forget(map: any) {
   const id = idOf(map?.metadata?.name || '');
+
+  if (!loadedCards.value[id]) {
+    return;
+  }
+
+  const shipped = CARD_SOURCES[id];
+
+  if (shipped) {
+    loadedCards.value = { ...loadedCards.value, [id]: evaluate(id, shipped, 'bundled', loadedCards.value[id]) };
+
+    return;
+  }
   const { [id]: gone, ...rest } = loadedCards.value;
 
-  if (gone) {
-    loadedCards.value = rest;
-  }
+  loadedCards.value = rest;
 }
 
 type Requester = (url: string) => Promise<any>;
@@ -163,9 +271,13 @@ export function followCards(request: Requester, cluster = 'local'): () => void {
           absorb(map);
           seen.add(idOf(map?.metadata?.name || ''));
         }
-        // Anything we were holding that the list no longer has was deleted while we were away.
-        for (const id of Object.keys(loadedCards.value)) {
-          if (!seen.has(id)) {
+        /*
+         * An override we were holding that the list no longer has was deleted while we were away.
+         * Only an override: a bundled card is not in that list and never was, so comparing the
+         * list against everything loaded would delete all nineteen on the first sweep.
+         */
+        for (const [id, card] of Object.entries(loadedCards.value)) {
+          if (card.rev !== 'bundled' && !seen.has(id)) {
             forget({ metadata: { name: `${ NAME_PREFIX }${ id }` } });
           }
         }

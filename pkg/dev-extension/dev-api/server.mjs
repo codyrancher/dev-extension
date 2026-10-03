@@ -880,6 +880,234 @@ async function writeFocus(body) {
   return { ok: true, ...(await readFocus()) };
 }
 
+// ── The spec ─────────────────────────────────────────────────────────────────────
+//
+// This API is used by agents, and an agent given a URL and a sentence invents the rest. So the
+// routes describe themselves. There was no OpenAPI document here before this one - nothing in the
+// repository matched `openapi` or `swagger` - so it starts with the routes an agent needs today,
+// and the others get described as they are touched rather than in one unverifiable sweep.
+//
+// Served, not generated at build time, because it has to agree with `routes` in this same file:
+// a spec kept somewhere else is a spec that drifts the first time a path changes.
+
+const OPENAPI = {
+  openapi: '3.1.0',
+  info:    {
+    title:       'Dev extension API',
+    version:     '1',
+    description: 'Workspaces, the harness my-work routes, and the Focus deck\'s cards. Served by the dev-api Deployment in dev-system.',
+  },
+  paths: {
+    '/focus': {
+      get: {
+        operationId: 'readFocus',
+        summary:     'The Focus document: queue weights and hand-written tasks.',
+        description: 'Cards are not in here. A card is a module - bundled with the extension, or held in its own ConfigMap under /focus/cards.',
+        responses:   { 200: { description: 'The document.' } },
+      },
+      put: {
+        operationId: 'writeFocus',
+        summary:     'Write weights or tasks. Each key is optional; the others keep what they were.',
+        responses:   { 200: { description: 'The document as written.' }, 400: { description: 'Nothing to write.' } },
+      },
+    },
+    '/focus/cards': {
+      get: {
+        operationId: 'listCards',
+        summary:     'Every card somebody has edited, newest first.',
+        description: 'Only the edited ones. A card not listed here is whatever the extension ships, which is the normal case.',
+        responses:   { 200: { description: 'ids, versions and sizes.' } },
+      },
+    },
+    '/focus/cards/{id}': {
+      parameters: [{
+        name: 'id', in: 'path', required: true, schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]*$' }, description: "The card's id, as declared inside the module.",
+      }],
+      get: {
+        operationId: 'readCard',
+        summary:     "One card's module source, or an empty string when it is the shipped one.",
+        responses:   { 200: { description: '{ id, source, version }' } },
+      },
+      put: {
+        operationId: 'writeCard',
+        summary:     'Write a card. It takes effect in any open deck within a couple of seconds, with no reload.',
+        description: [
+          'A card is a CommonJS module. The minimum:',
+          '',
+          "  module.exports = {",
+          "    id: 'my-card',",
+          "    label: 'What this card is', kind: 'review', summary: '{why}',",
+          "    rules: ['some-rule-id'],",
+          "    wants: ['stat'],",
+          "    template: '<CardSurface :api=\"api\" />',",
+          "    setup(api) { return { api }; },",
+          "    actions: [{ label: 'Open it', verb: 'url' }],",
+          "  };",
+          '',
+          '`rules` is the join to the queue and a card without them never reaches the deck. `require`',
+          'reaches any module in the extension; Vue is handed in as `api.vue` rather than imported.',
+          'Refused unless it exports something, claims rules and draws something.',
+        ].join('\n'),
+        requestBody: {
+          required: true,
+          content:  {
+            'application/json': {
+              schema: {
+                type: 'object', required: ['source'], properties: { source: { type: 'string', description: 'The module, as text.' } },
+              },
+            },
+          },
+        },
+        responses: { 200: { description: 'The card as written.' }, 400: { description: 'Why it was refused.' } },
+      },
+      delete: {
+        operationId: 'deleteCard',
+        summary:     'Drop the edit and go back to the card the extension ships.',
+        responses:   { 200: { description: 'Dropped.' } },
+      },
+    },
+    '/workspace/{name}/media': {
+      parameters: [{
+        name: 'name', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'listArtifacts',
+        summary:     "Everything under a workspace's artifacts directory, newest first.",
+        description: "What an agent left behind: recordings, screenshots, logs, reports. `?media=1` returns only the images and videos, which is what the review panel asks for. One file is fetched from the same path plus `/<its path>`.",
+        responses:   { 200: { description: '{ files: [{ path, name, type, size, mtimeMs }] }' } },
+      },
+    },
+  },
+};
+
+// ── Cards ──────────────────────────────────────────────────────────────────────────────
+//
+// A card is a module, and a card somebody has edited is one ConfigMap: `dev-card-<id>`, labelled
+// so the browser can watch the set rather than poll a list of names. One map per card buys a
+// resourceVersion per card, no shared 1MiB ceiling and no sibling to corrupt - see focus-cards.ts
+// in the extension, which reads these.
+//
+// These routes exist because the agents edit cards. "Make me a card for X" should end in a PUT
+// here rather than a pull request against the extension, and an agent is pointed at
+// /openapi.json rather than at this file.
+
+const CARD_LABEL_KEY = 'dev.rancher.io/kind';
+const CARD_LABEL_VALUE = 'focus-card';
+const CARD_KEY = 'card.js';
+const CARD_ID = /^[a-z0-9][a-z0-9-]*$/;
+
+const cardMapName = (id) => `dev-card-${ id }`;
+
+function cardId(id) {
+  if (!CARD_ID.test(String(id || ''))) {
+    throw failure(400, 'A card id is lower-case letters, digits and dashes.');
+  }
+
+  return String(id);
+}
+
+/** Every card somebody has edited, newest first. Not the bundled ones: those are in the image. */
+async function listCards() {
+  const selector = encodeURIComponent(`${ CARD_LABEL_KEY }=${ CARD_LABEL_VALUE }`);
+  const list = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps?labelSelector=${ selector }`);
+
+  return {
+    cards: (list.items || []).map((map) => ({
+      id:      String(map.metadata?.name || '').replace(/^dev-card-/, ''),
+      version: map.metadata?.resourceVersion || '',
+      changed: map.metadata?.creationTimestamp || '',
+      bytes:   String(map.data?.[CARD_KEY] || '').length,
+    })).sort((a, b) => String(b.changed).localeCompare(String(a.changed))),
+  };
+}
+
+async function readCard(id) {
+  const card = cardId(id);
+
+  try {
+    const map = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ cardMapName(card) }`);
+
+    return { id: card, source: String(map.data?.[CARD_KEY] || ''), version: map.metadata?.resourceVersion || '' };
+  } catch (e) {
+    if (e.status === 404) {
+      // Not an error: it means this card is whatever the extension ships, which is the normal case.
+      return { id: card, source: '', version: '' };
+    }
+    throw e;
+  }
+}
+
+/**
+ * Write a card.
+ *
+ * Checked here and not only in the browser, because the browser is not the only writer: an agent
+ * posting a card with no `module.exports` would otherwise get a card that loads to an error
+ * message with no hint which end was wrong. These three are what make a module a card at all - it
+ * exports something, it claims rules, it draws something - and they are cheap to check on text.
+ * Anything subtler is the loader's job and shows on the card itself.
+ */
+async function writeCard(id, body) {
+  const card = cardId(id);
+  const source = String(body?.source ?? '');
+
+  if (!source.trim()) {
+    throw failure(400, 'Nothing to write: send { "source": "module.exports = { ... }" }.');
+  }
+  if (!/module\.exports\s*=/.test(source)) {
+    throw failure(400, 'A card is a CommonJS module: it has to `module.exports = { ... }`.');
+  }
+  if (!/\brules\s*:/.test(source)) {
+    throw failure(400, 'A card needs `rules`, the rule ids whose work it draws. Without them it claims nothing and never reaches the deck.');
+  }
+  if (!/\b(?:template|component)\s*:/.test(source)) {
+    throw failure(400, 'A card needs `template` (or `component`): the body it draws.');
+  }
+
+  // Either quote. It was `'` only, and a card written `id: "other"` was accepted under another
+  // name - caught by the test for this check, which is the sort of thing the check exists for.
+  const declared = /\bid\s*:\s*['"]([^'"]+)['"]/.exec(source);
+
+  if (declared && declared[1] !== card) {
+    throw failure(400, `This card declares id '${ declared[1] }' but is being written as '${ card }'. The deck matches on the declared id, so the two have to agree.`);
+  }
+
+  const name = cardMapName(card);
+  const data = { [CARD_KEY]: source };
+  const metadata = { labels: { [CARD_LABEL_KEY]: CARD_LABEL_VALUE } };
+  const where = `/api/v1/namespaces/${ NAMESPACE }/configmaps/${ name }`;
+
+  try {
+    await k8s(where, { method: 'PATCH', body: JSON.stringify({ metadata, data }) });
+  } catch (e) {
+    if (e.status !== 404) {
+      throw e;
+    }
+    await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps`, {
+      method: 'POST',
+      body:   JSON.stringify({
+        apiVersion: 'v1', kind: 'ConfigMap', metadata: { name, namespace: NAMESPACE, ...metadata }, data,
+      }),
+    });
+  }
+
+  return { ok: true, ...(await readCard(card)) };
+}
+
+/** Drop the edit. The extension puts the bundled card back in its place; see `forget` there. */
+async function deleteCard(id) {
+  const card = cardId(id);
+
+  try {
+    await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ cardMapName(card) }`, { method: 'DELETE' });
+  } catch (e) {
+    if (e.status !== 404) {
+      throw e;
+    }
+  }
+
+  return { ok: true, id: card, source: '' };
+}
+
 /** The edited prompt templates, by the action's key: what a button sends before the variables go in. */
 async function promptOverrides() {
   try {
@@ -2318,6 +2546,11 @@ const routes = [
   // the shipped cards, not an empty page.
   ['GET', /^\/focus$/, async() => readFocus()],
   ['PUT', /^\/focus$/, async(m, url, body) => writeFocus(body)],
+  ['GET', /^\/openapi.json$/, async() => OPENAPI],
+  ['GET', /^\/focus\/cards$/, async() => listCards()],
+  ['GET', /^\/focus\/cards\/([a-z0-9-]+)$/, async(m) => readCard(m[1])],
+  ['PUT', /^\/focus\/cards\/([a-z0-9-]+)$/, async(m, url, body) => writeCard(m[1], body)],
+  ['DELETE', /^\/focus\/cards\/([a-z0-9-]+)$/, async(m) => deleteCard(m[1])],
   ['GET', /^\/skills\/([a-z0-9-]+)$/, async(m) => readSkill(m[1])],
   ['PUT', /^\/skills\/([a-z0-9-]+)$/, async(m, url, body) => saveSkill(m[1], body)],
   ['POST', /^\/skills\/([a-z0-9-]+)\/reset$/, async(m, url, body) => {
@@ -3035,8 +3268,16 @@ function workspaceArtifactsRoot(ws) {
   return path.join(WORKSPACES_ROOT, ws, 'artifacts');
 }
 
-/** Every image and video under a workspace's artifacts, newest first, with its path and type. */
-function listWorkspaceMedia(ws) {
+/**
+ * Everything under a workspace's artifacts, newest first, with its path and type.
+ *
+ * `mediaOnly` because there are two callers with different needs. The review panel wants the
+ * images and the recordings, which is what it can show. A card wants whatever the agent actually
+ * left there - a log, a JSON report, a diff - because `wants` is no longer a closed list of
+ * fourteen names and a card can surface anything in this tree. Filtering to media by default
+ * would make the wider case the surprising one, so the filter is the caller's to ask for.
+ */
+function listWorkspaceMedia(ws, mediaOnly = false) {
   const root = workspaceArtifactsRoot(ws);
 
   if (!root) {
@@ -3063,7 +3304,7 @@ function listWorkspaceMedia(ws) {
 
       if (entry.isDirectory()) {
         walk(abs, relPath);
-      } else if (MEDIA_EXTS.has(extOf(entry.name))) {
+      } else if (!mediaOnly || MEDIA_EXTS.has(extOf(entry.name))) {
         let stat = { size: 0, mtimeMs: 0 };
 
         try {
@@ -3082,7 +3323,15 @@ function listWorkspaceMedia(ws) {
   return found.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
-/** Resolve one media file's absolute path, or '' if it escapes the tree, is not media, or is gone. */
+/**
+ * Resolve one artifact's absolute path, or '' if it escapes the tree or is gone.
+ *
+ * The extension-only check went with the lister's: a card can now list anything an agent left
+ * here, and a listing of files that cannot be fetched is a listing of dead links. What stays is
+ * the only check that was ever load-bearing - the resolved path has to be inside the workspace's
+ * own artifacts directory, so `../../etc/passwd` resolves out and is refused. The type is still
+ * reported from the extension (see ARTIFACT_TYPES), with a byte stream as the fallback.
+ */
 function workspaceMediaPath(ws, rel) {
   const root = workspaceArtifactsRoot(ws);
 
@@ -3093,10 +3342,6 @@ function workspaceMediaPath(ws, rel) {
   const file = path.resolve(root, rel);
 
   if (file !== root && !file.startsWith(root + path.sep)) {
-    return '';
-  }
-
-  if (!MEDIA_EXTS.has(extOf(file))) {
     return '';
   }
 
@@ -3169,7 +3414,8 @@ http.createServer(async(req, res) => {
   const mediaList = /^\/workspace\/([a-z0-9][a-z0-9-]*)\/media$/.exec(url.pathname);
 
   if (mediaList && req.method === 'GET') {
-    return send(res, 200, { files: listWorkspaceMedia(mediaList[1]) });
+    // `?media=1` keeps the old answer for the review panel; everything else gets the whole tree.
+    return send(res, 200, { files: listWorkspaceMedia(mediaList[1], url.searchParams.get('media') === '1') });
   }
 
   // An image or a recording attached to a GitHub comment. The browser cannot fetch those

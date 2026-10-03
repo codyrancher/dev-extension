@@ -110,22 +110,38 @@ const emit = defineEmits<{
  */
 const noteOn = ref<ReviewNote | null>(null);
 
+/**
+ * What the card's body says it is drawing. See `api.shell.showing`.
+ *
+ * Cleared when the card changes, because the next card's body reports on its own first render and
+ * until it does the frame would otherwise be deciding from the last card's answer.
+ */
+const bodyShows = ref('');
+
 watch(() => props.notes, (found) => { noteOn.value = found?.[0] || null; }, { immediate: true });
 
 /**
  * What arrived, before this card has had its say about it.
  *
- * Split out from `art` because `art` and `surface` had each other as a dependency - `art` asked
- * `surface` whether the pass was on, `surface` asked `art` what it had - and Vue hands back
- * `undefined` for the computed it is already inside. So `art.value.agent` threw on the first
- * render of every card in the deck, FocusCard's render aborted to a comment node, and the view
- * was a header saying "1 of 36 waiting" over an empty box. The ladder below reads this, which
- * depends on nothing; `art` is left free to read the ladder.
+ * It was split out from `art` because `art` and `surface` had each other as a dependency, and Vue
+ * hands back `undefined` for the computed it is already inside: `art.value.agent` threw on the
+ * first render of every card, the render aborted to a comment node, and the view was a header
+ * saying "1 of 36 waiting" over an empty box. The dispatch has moved to CardSurface and that
+ * cycle cannot form here any more, but the split stays - it is what the card api hands a module
+ * (see `cardApi.artifacts`), and a body reading a value that depends on the body is the same trap
+ * one level out.
  */
 const base = computed<CardArtifacts>(() => props.artifacts || NO_ARTIFACTS);
 
 const art = computed<CardArtifacts>(() => {
-  if (surface.value !== 'pass' || !noteOn.value) {
+  /*
+   * `noteOn` alone, where this asked `surface === 'pass'` as well.
+   *
+   * The shell no longer knows which surface a card drew, and it does not need to: `noteOn` is set
+   * only through `api.shell.selected`, which only a pass ever calls, so a non-null one already
+   * means the body is showing a finding.
+   */
+  if (!noteOn.value) {
     return base.value;
   }
 
@@ -149,7 +165,7 @@ const overdue = computed(() => props.task.waitingHours >= 48);
  */
 const kept = ref(0);
 
-watch(() => props.task.key, () => { kept.value = 0; });
+watch(() => props.task.key, () => { kept.value = 0; bodyShows.value = ''; });
 
 /**
  * Whether a workspace could be made for this at all.
@@ -242,6 +258,8 @@ const cardApi: CardApi = {
   notes:       computed(() => props.notes || []),
   reading:     computed(() => Boolean(props.reading)),
   interactive: computed(() => Boolean(props.interactive)),
+  busy:        computed(() => Boolean(props.busy)),
+  claimed:     computed(() => claimed.value),
   emit:        (event: string, payload?: any) => (emit as any)(event, payload),
   devApi,
   components:  CARD_COMPONENTS,
@@ -249,6 +267,7 @@ const cardApi: CardApi = {
     keeping:  (count: number) => { kept.value = Number(count) || 0; },
     selected: (note: any) => { noteOn.value = note || null; },
     openText: (what: string) => { readOn.value = String(what || '') as typeof readOn.value; },
+    showing:  (name: string) => { bodyShows.value = String(name || ''); },
   },
 };
 
@@ -323,115 +342,12 @@ const later = computed(() => others.value.find((action) => action.verb === 'snoo
 /** The places to go, open. */
 const navOpen = ref(false);
 
-/**
- * Which of the four surfaces this card is built around, or none.
- *
- * In the order a card is worth reading in: an agent's review waiting for a pass beats the change
- * it is about, the change beats the talk about it, and an issue with none of those has its own
- * words. One at a time, because each of them wants most of the card.
+/*
+ * The ladder, the `surface` field and the reasoning behind both are in CardSurface.vue now, with
+ * the branches they chose between. What is left here is the frame: the chip, the title, the lede,
+ * the evidence band, the prose block and the footer.
  */
-const ladder = computed<CardSurface>(() => {
-  // An agent waiting on an answer beats everything: it is the highest thing in the queue, and
-  // the answer is on the card.
-  if (base.value.agent) {
-    return 'agent';
-  }
-  // The pool next: it is the whole of its card, and that card has nothing else.
-  if (base.value.pool.length) {
-    return 'pool';
-  }
-  // The bumps, for the same reason: the list is the card.
-  if (base.value.bumps.length) {
-    return 'bumps';
-  }
-  // The few facts a bump or an advisory is decided on, for the two cards that had no surface.
-  if (base.value.advisory || base.value.bump) {
-    return 'facts';
-  }
-  if (props.notes?.length) {
-    return 'pass';
-  }
-  if (base.value.comments.length) {
-    return 'talk';
-  }
-  if (base.value.files.length) {
-    return 'files';
-  }
-  /*
-   * The commits, as a surface rather than as a band above one.
-   *
-   * They were drawn above the surface on any card that asked for them, and the card is not wide
-   * enough for two things: measured on the open-pr card, `.cm` came out 0px tall against a
-   * scrollHeight of 26 and `.cm__list` 589 - so "On the branch · 20 commits" sat directly on top
-   * of "What it changed" with nothing at all between the two headings. A heading over nothing is
-   * worse than no heading, and the count it was announcing is already this card's 36px lede.
-   *
-   * So they are a rung like everything else: the surface of the card whose subject is a branch
-   * with no pull request, and invisible on the cards that have a diff to read instead.
-   */
-  if (base.value.commits.length) {
-    return 'commits';
-  }
 
-  /*
-   * Last, which is where it belongs: who is looking at it is the surface of the one card that
-   * has nothing else - the one about nobody looking at it, which asks for `reviewers` and no
-   * diff. It used to be tested above the diff and the talk, which was harmless only for as
-   * long as that was the single card asking: the moment the approved-pull-request card wanted
-   * to name its approver, asking for `reviewers` would have replaced its diff with a reviewer
-   * list. Who approved it is a fact about the work, so it goes in the evidence band instead -
-   * see CardEvidence - and this rung is left to the card it was written for.
-   */
-  return base.value.reviewers ? 'who' : '';
-});
-
-/**
- * Whether the thing a surface draws is actually here.
- *
- * A declared subject that has not arrived falls back to the ladder rather than drawing an empty
- * frame - and an artifact that never resolves for a card's kind of work falls back for ever,
- * which is how a want gets noticed as dead.
- */
-function hasFor(which: CardSurface): boolean {
-  const a = base.value;
-
-  switch (which) {
-  case 'agent':   return Boolean(a.agent);
-  case 'pool':    return a.pool.length > 0;
-  case 'bumps':   return a.bumps.length > 0;
-  case 'facts':   return Boolean(a.advisory || a.bump);
-  case 'pass':    return Boolean(props.notes?.length);
-  case 'talk':    return a.comments.length > 0;
-  case 'files':   return a.files.length > 0;
-  case 'commits': return a.commits.length > 0;
-  case 'checks':  return Boolean(a.ci?.failing);
-  case 'who':     return Boolean(a.reviewers);
-  case 'said':    return Boolean(prose.value);
-  default:        return false;
-  }
-}
-
-/**
- * The card's own subject where it names one, and the ladder where it does not.
- *
- * The ladder is an order over *artifacts*, which is the wrong thing to rank when two cards ask
- * for the same ones and are about different halves of them. Two cards were paying for that:
- *
- *   - red-pr asks for `checks`, `stat` and `files`, and `files` is the only one the ladder had a
- *     rung for - so the card whose whole subject is "6 of 46 checks failing" showed a 45-file
- *     diff, and the names of the three red e2e suites could only ever be read in a 26px popover.
- *   - start-fix is an issue's own words, and the moment it asked for the comments that hold the
- *     screenshot the issue is about, `talk` would have outranked the words on the ladder.
- *
- * So a definition may say which of its wants is the subject (`surface` on CardDef), the way it
- * already says which of its numbers is the lede. One line per card rather than a rung that
- * reorders the whole deck.
- */
-const surface = computed<CardSurface>(() => {
-  const named = props.task.card.surface;
-
-  return named && hasFor(named) ? named : ladder.value;
-});
 
 /**
  * What it says it is, when the card asked.
@@ -470,11 +386,11 @@ const prose = computed(() => ((props.task.card.wants || []).includes('body') ? b
  * fills the body, rendered, through the one markdown component.
  */
 /* `said` is the words *as* the surface, which is what a card declares when that is its subject. */
-const readsProse = computed(() => Boolean(prose.value) && (surface.value === '' || surface.value === 'said'));
+const readsProse = computed(() => Boolean(prose.value) && (bodyShows.value === '' || bodyShows.value === 'said'));
 const prosePill = computed(() => Boolean(prose.value) && !readsProse.value);
 
 /** Whether there is a surface at all, for the box that gives one its floor. See `.card__surface`. */
-const hasSurface = computed(() => Boolean(props.reading || readsProse.value || surface.value));
+const hasSurface = computed(() => Boolean(props.reading || readsProse.value || bodyShows.value || bundleBody.value));
 
 /** What the prose is, named the way the card would name it. */
 const proseLabel = computed(() => (art.value.issue ? 'What the issue asks for' : 'What it does'));
@@ -503,7 +419,7 @@ const proseLabel = computed(() => (art.value.issue ? 'What the issue asks for' :
  * markdown and so is a description, so there is nothing a second dialog would do differently -
  * and once Markdown.vue embeds a bare attachment URL, the picture of the bug is in here.
  */
-const talk = computed(() => (surface.value === 'talk' ? [] : base.value.comments));
+const talk = computed(() => (bodyShows.value === 'talk' ? [] : base.value.comments));
 
 const talkText = computed(() => talk.value
   .map((comment) => `**${ comment.author }**${ comment.path ? ` · \`${ comment.path }\`` : '' }\n\n${ comment.body }`)
@@ -753,7 +669,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
 <template>
   <article
     class="card"
-    :class="[`card--${ task.card.kind }`, { 'card--flat': !interactive }]"
+    :class="[`card--${ task.card.kind }`, { 'card--flat': !interactive }, bundle ? `card--mod-${ bundle.id }` : '']"
   >
     <div class="card__glow" aria-hidden="true" />
     <div class="card__glow card__glow--foot" aria-hidden="true" />
@@ -961,12 +877,27 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           redrew": re-evaluating a module after an edit gives a new component, and a new component
           alone is not enough - Vue keeps the mounted one until something it keys on changes.
         -->
-        <component
-          :is="bundleBody"
+        <!--
+          A real element around the module, owned by the shell.
+
+          `class="card__bundle"` used to ride on the component itself, and a class on a component
+          falls through to that component's root - which for a card whose body is one
+          `<CardSurface />` is whatever that resolved to, and for a surface that draws nothing
+          (`said`, or an artifact that has not arrived) is a comment node. Measured: four of the
+          deck's twenty-six cards had no `.card__bundle` at all while their modules had loaded
+          perfectly. A wrapper the shell writes is there on every render, whatever the card does
+          inside it.
+
+          Transparent to layout on purpose - see the flex rule - because the surfaces were direct
+          children of `.card__body` before this and they size themselves against their parent.
+        -->
+        <div
           v-else-if="bundleBody"
           :key="bundle.generation"
           class="card__bundle"
-        />
+        >
+          <component :is="bundleBody" />
+        </div>
 
         <!--
           A card that would not load says why, where the card would have been.
@@ -983,104 +914,15 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           </div>
         </div>
 
-        <!-- What the agent is asking, with its own choices as the buttons. -->
-        <CardAgent
-          v-else-if="surface === 'agent' && art.agent"
-          :agent="art.agent"
-          :busy="busy"
-          @answer="emit('answer', $event)"
-        />
-
         <!--
-          The failures, for the card whose whole subject is a red build.
+          No surfaces here.
 
-          `red-pr` wants `checks`, `stat` and `files` and the surface ladder had a rung for `files`
-          only, so the card headed "6 of 46 checks failing" drew a 45-file diff and the three red
-          e2e suites were readable in a 26px popover and nowhere else. The names and their own
-          one-line reports were already on the card. The diff stays one press away on "Open it".
+          The ten branches that stood in this place - the pass, the change set, the talk, the
+          pool, the bumps, the reviewers, the checks, the facts, the commits - are in
+          CardSurface.vue, and a card's module invokes it. That is what makes the body the card's
+          own: the shell had the opinion about what a card shows, and a card held in a ConfigMap
+          could not use the surface that already existed without redrawing it.
         -->
-        <CheckList
-          v-else-if="surface === 'checks' && art.ci"
-          surface
-          :checks="art.checks"
-          :failing="art.ci.failing"
-          :claimed="claimed"
-        />
-
-        <!-- The facts a bump or an advisory is decided on. -->
-        <CardFacts
-          v-else-if="surface === 'facts'"
-          :advisory="art.advisory"
-          :bump="art.bump"
-          :claimed="claimed"
-        />
-
-        <!-- Work to choose from, when nothing is waiting on you. -->
-        <CardPool
-          v-else-if="surface === 'pool'"
-          :pool="art.pool"
-          :busy="busy"
-          @take="emit('take', $event)"
-          @ask="emit('about-issue', $event)"
-        />
-
-        <!-- Every bump nobody has reviewed, one row each. See CardBumps. -->
-        <CardBumps
-          v-else-if="surface === 'bumps'"
-          :bumps="art.bumps"
-          :busy="busy"
-          :claimed="claimed"
-          @merge="emit('merge-bump', $event)"
-          @ask="emit('about-bump', $event)"
-        />
-
-        <!-- Who has it, when that is the thing that is missing. -->
-        <CardReviewers
-          v-else-if="surface === 'who' && art.reviewers"
-          :reviewers="art.reviewers"
-          :busy="busy"
-          @ask="emit('ask-reviewer', $event)"
-        />
-
-        <!-- The agent's review, when there is one waiting: the substance of a review card. -->
-        <ReviewPass
-          v-else-if="surface === 'pass'"
-          :notes="notes || []"
-          @kept="kept = $event"
-          @select="noteOn = $event"
-          @expand="emit('expand', $event)"
-          @resolve="emit('resolve', $event)"
-          @ask="emit('discuss', $event)"
-        />
-
-        <!-- Or the change itself, file by file, when reading it is the job. -->
-        <ChangeSet
-          v-else-if="surface === 'files'"
-          :files="art.files"
-          :total="art.stat?.files || 0"
-          :busy="busy"
-          :claimed="claimed"
-          @ask="emit('ask-code', $event)"
-          @expand="emit('expand', $event)"
-        />
-
-        <!-- What is on the branch, for the card whose subject is a branch with no pull request. -->
-        <!-- What is on the branch - and, for the second look, which of it is new. See `fresh`. -->
-        <CardCommits
-          v-else-if="surface === 'commits'"
-          :commits="art.commits"
-          :claimed="claimed"
-          :since="task.newSince || ''"
-        />
-
-        <!-- Or what people said about it, when answering them is the job. -->
-        <CardComments
-          v-else-if="surface === 'talk'"
-          :comments="art.comments"
-          :busy="busy"
-          @reply="emit('reply', $event)"
-          @expand="emit('expand', $event)"
-        />
       </div>
     </div>
 
@@ -1953,10 +1795,22 @@ a.card__ident:hover { background: var(--surface-raised); color: var(--text); tex
  * inside itself rather than push the footer down. Every built-in surface is bounded this way and
  * a card from a ConfigMap is not a different kind of card.
  */
+/*
+ * The module's body gets what a surface got: the remaining height, and permission to scroll inside
+ * itself rather than push the footer down.
+ *
+ * A flex column that takes the leftover, because every surface in this view sets `flex: 1 1 auto`
+ * on itself and was a direct child of `.card__body` until this wrapper existed. Without the
+ * column, a surface's own flex rule has nothing to resolve against and it collapses to its
+ * content - which is the fault that has produced "overlapping elements" four times in this view.
+ */
 .card__bundle {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
-  overflow: hidden auto;
+  overflow: hidden;
 }
 
 .card__broke {

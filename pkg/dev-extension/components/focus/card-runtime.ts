@@ -27,9 +27,10 @@
  */
 import * as vue from 'vue';
 import { compile } from '@vue/compiler-dom';
+import { resolveForCard } from './card-modules';
 
-/** What a card module is allowed to `require`. Anything else is an error, named. */
-export type CardDeps = Record<string, unknown>;
+/** How a card's `require` is answered. See card-modules.ts: the answer is "anything in here". */
+export type CardResolve = (name: string) => unknown;
 
 /**
  * Run a module's source and return what it exported.
@@ -40,16 +41,11 @@ export type CardDeps = Record<string, unknown>;
  * page's own - and `self` is a plain object, so the `root.Thing = factory(root.Vue)` branch
  * assigns into something we own instead of onto `window`.
  */
-export function evalModule(source: string, deps: CardDeps = {}): any {
+export function evalModule(source: string, resolve: CardResolve = resolveForCard): any {
   const module: { exports: any } = { exports: {} };
   const root: Record<string, any> = {};
 
-  const require = (name: string) => {
-    if (name in deps) {
-      return deps[name];
-    }
-    throw new Error(`This card asked for "${ name }", which a card is not given. It gets: ${ Object.keys(deps).join(', ') }.`);
-  };
+  const require = (name: string) => resolve(name);
 
   // AMD: `define([deps], factory)` or `define(factory)`.
   const define: any = (first: any, second?: any) => {
@@ -120,6 +116,13 @@ export function runtimeFacts() {
     facts.newFunction = evalModule('module.exports = { ok: 2 + 2 };').ok === 4;
   } catch (e) {
     facts.newFunction = `threw: ${ (e as Error).message }`;
+  }
+
+  try {
+    // The registry, on something every card will reach for.
+    facts.imports = Boolean(evalModule("module.exports = { got: require('AppIcon') };").got);
+  } catch (e) {
+    facts.imports = `threw: ${ (e as Error).message }`;
   }
 
   try {

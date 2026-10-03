@@ -45,7 +45,7 @@ import { runtimeFacts } from '../components/focus/card-runtime';
 import { followCards, loadedCards, cardsWatch, cardsSettled } from '../focus-cards';
 import {
   readFocusConfig, saveFocusConfig, readFocusState, saveFocusState, focusDeck, manualItem,
-  weightRows, actionPrompt, SHIPPED_CARDS, KINDS
+  weightRows, actionPrompt, cardOf, KINDS
 } from '../focus';
 import type {
   FocusConfig, FocusState, FocusTask, CardAction, ManualTask, FocusKind, WeightRow
@@ -90,7 +90,19 @@ const notice = ref('');
 const error = ref('');
 
 const items = ref<PriorityItem[]>([]);
-const config = ref<FocusConfig>({ cards: SHIPPED_CARDS, weights: {}, tasks: [] });
+const config = ref<FocusConfig>({ cards: [], weights: {}, tasks: [] });
+
+/**
+ * The cards, from the modules that are loaded.
+ *
+ * The one source. `loadedCards` is seeded synchronously from the cards this extension ships and
+ * then overridden per id by the ConfigMap watch, so this is correct on the first paint and
+ * recomputes when a card is edited - which is what moves an edit through to the queue, since a
+ * card's `rules` decide what work it draws.
+ */
+const cards = computed(() => Object.values(loadedCards.value)
+  .filter((card) => card.module)
+  .map((card) => cardOf(card.id, card.module)));
 const state = ref<FocusState>({ pinned: [], snoozed: {}, done: {} });
 
 const index = ref(0);
@@ -466,7 +478,7 @@ const sections = computed(() => [
     id: 'weights', label: 'Order', count: rows.value.filter((row) => row.count).length, about: 'What decides that order: every rule that can put something in the queue, and what it is worth.',
   },
   {
-    id: 'cards', label: 'Cards', count: config.value.cards.length, about: 'What a kind of waiting work looks like when it reaches the top, and what its buttons do.',
+    id: 'cards', label: 'Cards', count: cards.value.length, about: 'What a kind of waiting work looks like when it reaches the top, and what its buttons do.',
   },
   {
     id: 'new', label: 'Yours', count: (config.value.tasks || []).length, about: 'Anything no system knows about. It is ranked with everything else, which is the point.',
@@ -536,7 +548,7 @@ async function askHere(task: FocusTask | null, prompt: string): Promise<string> 
 }
 
 /** Everything the queue has, drawn: pinned ones are marked and then held back from the deck. */
-const all = computed<FocusTask[]>(() => focusDeck(items.value, config.value, state.value));
+const all = computed<FocusTask[]>(() => focusDeck(items.value, { ...config.value, cards: cards.value }, state.value));
 const pinned = computed(() => all.value.filter((task) => task.pinned));
 const deck = computed(() => all.value.filter((task) => !task.pinned));
 const current = computed(() => deck.value[index.value] || null);
@@ -1590,7 +1602,7 @@ async function dropTask(id: string) {
  * so the answer is the edit rather than a suggestion of one.
  */
 async function editCard(id: string) {
-  const card = config.value.cards.find((entry) => entry.id === id);
+  const card = cards.value.find((entry) => entry.id === id);
 
   if (!card) {
     return;
@@ -1646,8 +1658,11 @@ async function newCard() {
 }
 
 async function resetCards() {
-  await saveFocusConfig({ cards: SHIPPED_CARDS }).catch(() => {});
-  config.value = { ...config.value, cards: SHIPPED_CARDS };
+  /*
+   * Nothing to reset. A card is a module now: the shipped one is in the bundle and an edited one
+   * is its own ConfigMap, so putting a card back is deleting that ConfigMap - which the watch
+   * sees, and which restores the bundled card in place. See `forget` in focus-cards.ts.
+   */
   say('Back to the cards that shipped.');
 }
 
