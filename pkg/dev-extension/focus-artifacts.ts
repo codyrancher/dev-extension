@@ -146,6 +146,13 @@ export interface PoolIssue {
   comments: number;
   /** Days since it was opened. */
   age: number;
+  /**
+   * Who already has it, when anybody does.
+   *
+   * Always empty for the pool - it is built from the unassigned search - and the one fact that
+   * makes "Start the fix" the wrong button on the card about a single issue.
+   */
+  assignee: string;
 }
 
 /** Who has been asked to review, and who has answered. */
@@ -183,6 +190,18 @@ export interface AgentTurn {
   status: string;
   /** Its last few lines, for a stop that is neither a question nor a report. */
   tail: string;
+  /** What the conversation is called, for a card that can say nothing else about it. */
+  title: string;
+  /**
+   * Whether its pane could be read at all.
+   *
+   * `agentTurnOf` used to return null when every pane came back empty, and null is the one
+   * answer this card cannot use: the surface ladder falls through, and the highest thing in the
+   * whole queue - an agent blocked on an answer - draws as a title, a why-line and three
+   * buttons. False here means "it is there, we could not read it", which is a sentence; null
+   * meant nothing at all.
+   */
+  reachable: boolean;
 }
 
 /** A security advisory, as the thing you decide about. */
@@ -225,7 +244,16 @@ export interface CardArtifacts {
   media: CardMedia[];
   live: CardLive[];
   body: string;
-  labels: string[];
+  /**
+   * The issue behind this card, as the facts that decide it.
+   *
+   * This slot used to be `labels: string[]` - declared, defaulted, never assigned by
+   * `readArtifacts` and never read by a component. The card about one issue asked for `body`
+   * and got prose and nothing else: no area label, no age, no comment count, no sign that
+   * somebody already had it, all four of which the *browsing* card shows for thirty issues at
+   * once. Same shape as a pool row, so IssueMarks draws either.
+   */
+  issue: PoolIssue | null;
   pool: PoolIssue[];
   reviewers: Reviewers | null;
   commits: CardCommit[];
@@ -243,7 +271,7 @@ export const NO_ARTIFACTS: CardArtifacts = {
   media:  [],
   live:   [],
   body:   '',
-  labels: [],
+  issue:  null,
   pool:   [],
   reviewers: null,
   commits: [],
@@ -524,7 +552,25 @@ function poolFrom(issues: Json[]): PoolIssue[] {
     labels:   issue.labels || [],
     comments: issue.comments ?? 0,
     age:      Math.max(0, Math.round((now - Date.parse(issue.createdAt || '')) / 86_400_000)) || 0,
+    // The pool is the unassigned search, so this is always empty here; it is a fact the shape
+    // carries for the card about one issue, which can be assigned to somebody.
+    assignee: '',
   }));
+}
+
+/**
+ * What an issue's labels say, minus the noise.
+ *
+ * This repository labels nearly everything `kind/bug` and `area/...`; the area is the useful
+ * half and the prefix is not. It lived in CardPool as a local arrow function, and then the card
+ * about a single issue needed the same four labels cleaned the same way - so it is here, beside
+ * the shape it cleans, rather than copied into a second component.
+ */
+export function issueTags(issue: PoolIssue): string[] {
+  return (issue.labels || [])
+    .filter((label) => !/^status\/|^priority\//.test(label))
+    .map((label) => label.replace(/^(kind|area|team)\//, ''))
+    .slice(0, 4);
 }
 
 /**
@@ -593,6 +639,8 @@ async function agentTurnOf(workspace: string): Promise<AgentTurn | null> {
         said:         '',
         status:       seen.status,
         tail,
+        title:        session.title || '',
+        reachable:    true,
       };
     }
 
@@ -607,10 +655,31 @@ async function agentTurnOf(workspace: string): Promise<AgentTurn | null> {
       said:         report?.text || '',
       status:       seen.status,
       tail,
+      title:        session.title || '',
+      reachable:    true,
     };
   }
 
-  return null;
+  /*
+   * Its conversations exist and not one of their panes could be read.
+   *
+   * A degraded turn rather than null: the name of the busiest conversation and the admission
+   * that the pane is unreadable beats an empty card on the highest-priority item in the queue.
+   * See `reachable`, which is what CardAgent words differently.
+   */
+  const busiest = sessions[sessions.length - 1];
+
+  return {
+    conversation: busiest.id,
+    question:     '',
+    options:      [],
+    wants:        '',
+    said:         '',
+    status:       '',
+    tail:         '',
+    title:        busiest.title || '',
+    reachable:    false,
+  };
 }
 
 /**
@@ -644,6 +713,88 @@ async function branchCommits(workspace: string): Promise<CardCommit[]> {
       sha: sha || '', message: message || '', author: author || '', at: at || '',
     };
   }).filter((commit) => commit.sha);
+}
+
+/**
+ * The branch's own diff, for work that has no pull request - and how big it is.
+ *
+ * The card this is for asks for `files`, `stat` and `media`, and every one of those came off
+ * `prDetail`: its rule is `fix-no-pr`, so by construction there is no pull request, `needsPr`
+ * is false and all three resolved to nothing. What was left was commit subject lines - and the
+ * card's primary button publishes the branch to GitHub. You were being asked to open a pull
+ * request having seen nothing but the commit messages.
+ *
+ * Same mechanism as `branchCommits`, one command further: `git diff` over the merge base feeds
+ * the same `patchHunks` the pull-request path uses, so ChangeSet draws a local branch exactly
+ * as it draws a remote one, and `--numstat` gives the three numbers the band wants.
+ *
+ * Capped at forty files and at a diff a card can hold. A branch that changed four hundred files
+ * is not going to be read on a card, and the cost of reading it is paid on every turn of the
+ * deck onto this one.
+ */
+async function branchDiff(workspace: string): Promise<{ files: CardFile[]; stat: CardStat | null }> {
+  const none = { files: [], stat: null };
+
+  if (!workspace) {
+    return none;
+  }
+  const out = await readInWorkspace(workspace, [
+    'cd $WS/dashboard 2>/dev/null || { echo "@@NOREPO"; exit 0; }',
+    'base=$(git merge-base upstream/master HEAD 2>/dev/null || git merge-base origin/master HEAD 2>/dev/null || git rev-parse HEAD)',
+    'echo "@@NUMSTAT"',
+    'git diff --numstat "$base"..HEAD 2>/dev/null | head -200',
+    'echo "@@PATCH"',
+    'git diff --no-color --unified=3 "$base"..HEAD 2>/dev/null | head -6000',
+  ].join('\n')).catch(() => '');
+
+  if (!out || out.includes('@@NOREPO') || !out.includes('@@PATCH')) {
+    return none;
+  }
+  const [counts, patch] = out.slice(out.indexOf('@@NUMSTAT') + 9).split('@@PATCH');
+
+  // `added<TAB>removed<TAB>path`, with '-' for a binary file.
+  const sizes = new Map<string, { added: number; removed: number }>();
+  let added = 0;
+  let removed = 0;
+
+  for (const line of String(counts || '').split('\n')) {
+    const [plus, minus, path] = line.trim().split('\t');
+
+    if (!path) {
+      continue;
+    }
+    const size = { added: Number(plus) || 0, removed: Number(minus) || 0 };
+
+    sizes.set(path, size);
+    added += size.added;
+    removed += size.removed;
+  }
+
+  // One patch per `diff --git` header, which is how git separates them.
+  const files: CardFile[] = [];
+
+  for (const chunk of String(patch || '').split(/^diff --git /m).slice(1)) {
+    const path = /^a\/(\S+) b\/(\S+)/.exec(chunk)?.[2] || '';
+    const hunks = patchHunks(chunk);
+
+    if (!path || !hunks.length) {
+      continue;
+    }
+    const size = sizes.get(path) || { added: 0, removed: 0 };
+
+    files.push({
+      path,
+      status: /^new file mode/m.test(chunk) ? 'added' : /^deleted file mode/m.test(chunk) ? 'removed' : 'modified',
+      added:  size.added,
+      removed: size.removed,
+      hunks,
+    });
+    if (files.length >= 40) {
+      break;
+    }
+  }
+
+  return { files, stat: sizes.size ? { files: sizes.size, added, removed } : null };
 }
 
 /** The advisory behind an alert card, out of what the queue was built from. */
@@ -783,6 +934,28 @@ export async function readArtifacts(
       }
     })(),
 
+    /*
+     * The change, when there is no pull request to read it off.
+     *
+     * One read for both artifacts rather than two: `files` and `stat` come out of the same
+     * `git diff`, and the card that needs this - the one offering to publish a branch - asks
+     * for both. Without it that card showed commit subject lines and nothing else, and its
+     * primary button creates a pull request on GitHub. See `branchDiff`.
+     */
+    (async() => {
+      if (detail || !subject.workspace || !(want.has('files') || want.has('stat'))) {
+        return;
+      }
+      const local = await branchDiff(subject.workspace).catch(() => ({ files: [] as CardFile[], stat: null }));
+
+      if (want.has('files')) {
+        out.files = local.files;
+      }
+      if (want.has('stat')) {
+        out.stat = local.stat;
+      }
+    })(),
+
     (async() => {
       if (want.has('media')) {
         out.media = await mediaOf(subject.workspace).catch(() => []);
@@ -847,6 +1020,20 @@ export async function readArtifacts(
         const issue = await issueBody(DEFAULT_REPO, subject.issue).catch(() => null);
 
         out.body = String(issue?.body || '').slice(0, 2400);
+        if (issue) {
+          // The same four facts the pool shows, for the card that asks you to commit a
+          // workspace to this one issue. Same shape, so IssueMarks draws either.
+          out.issue = {
+            number:   subject.issue,
+            title:    issue.title,
+            url:      issue.url,
+            repo:     DEFAULT_REPO,
+            labels:   issue.labels,
+            comments: issue.comments,
+            age:      Math.max(0, Math.round((Date.now() - Date.parse(issue.createdAt || '')) / 86_400_000)) || 0,
+            assignee: issue.assignee,
+          };
+        }
       } else if (detail) {
         out.body = String(detail.meta?.body || '').slice(0, 2400);
       }

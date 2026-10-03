@@ -36,14 +36,14 @@ const nobody = computed(() => !props.reviewers.asked.length && !props.reviewers.
 
     <div v-if="reviewers.approved.length" class="rv__group">
       <span class="rv__label">Approved</span>
-      <span v-for="who in reviewers.approved" :key="who" class="who who--yes">
+      <span v-for="who in reviewers.approved" :key="who" class="u-pill who who--yes">
         <AppIcon name="check" :size="11" />{{ who }}
       </span>
     </div>
 
     <div v-if="silent.length" class="rv__group">
       <span class="rv__label">Asked, no answer</span>
-      <span v-for="who in silent" :key="who" class="who who--waiting">{{ who }}</span>
+      <span v-for="who in silent" :key="who" class="u-pill who who--waiting">{{ who }}</span>
     </div>
 
     <!-- The useful half when nobody is looking: who to ask, one press each. -->
@@ -87,16 +87,11 @@ const nobody = computed(() => !props.reviewers.asked.length && !props.reviewers.
   font-size: var(--t-xs);
 }
 
+/* `.u-pill` carries the box; a reviewer chip is a border and a name. It was 24px and 10px of
+   padding - a fourth height and a sixth padding for "a small rounded label". */
 .who {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: var(--r-pill);
   color: var(--text-dim);
-  font-size: var(--t-xs);
 }
 
 .who--yes { border-color: color-mix(in srgb, var(--success) 38%, transparent); color: var(--success); }

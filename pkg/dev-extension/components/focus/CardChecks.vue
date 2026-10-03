@@ -12,6 +12,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import AppIcon from './AppIcon.vue';
+import SectionHead from './SectionHead.vue';
 import type { CardCheck } from '../../focus-artifacts';
 
 const props = defineProps<{ checks: CardCheck[] }>();
@@ -40,7 +41,7 @@ onBeforeUnmount(() => window.removeEventListener('click', away, true));
     <button
       v-if="failing.length"
       type="button"
-      class="ck__badge ck__badge--bad"
+      class="u-pill ck__badge ck__badge--bad"
       :class="{ 'ck__badge--on': open }"
       :title="open ? 'Hide which ones' : 'See which ones are failing'"
       :aria-expanded="open ? 'true' : 'false'"
@@ -52,18 +53,18 @@ onBeforeUnmount(() => window.removeEventListener('click', away, true));
     </button>
 
     <!-- The other two states are already one badge each, so they stay as they are. -->
-    <span v-if="running" class="ck__badge ck__badge--run">
+    <span v-if="running" class="u-pill ck__badge ck__badge--run">
       <AppIcon name="spinner" :size="11" />
       {{ running.name }}
     </span>
-    <span v-if="passed" class="ck__badge ck__badge--ok">
+    <span v-if="passed" class="u-pill ck__badge ck__badge--ok">
       <AppIcon name="check" :size="11" />
       {{ passed.name }}
     </span>
 
     <Transition name="ck">
       <div v-if="open && failing.length" class="u-popover ck__list">
-        <p class="ck__head">Failing checks</p>
+        <SectionHead label="Failing checks" icon="cross" :count="String(failing.length)" />
         <component
           :is="check.url ? 'a' : 'div'"
           v-for="check in failing"
@@ -83,23 +84,21 @@ onBeforeUnmount(() => window.removeEventListener('click', away, true));
 </template>
 
 <style scoped>
-.ck { position: relative; display: inline-flex; align-items: center; gap: var(--s2); }
+/* The band's height, so a row of evidence is a row and not three boxes near each other. */
+.ck { position: relative; display: inline-flex; align-items: center; gap: var(--s2); height: var(--pill-h); }
 
+/*
+ * `.u-pill` carries the box; this carries what makes it a check.
+ *
+ * The 24px here was wrong and said so in a comment - "the height everything else in the
+ * evidence band is" - while its two neighbours on that row were 32px and 26px.
+ */
 .ck__badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  /* 24px, the height everything else in the evidence band is. */
-  height: 24px;
-  padding: 0 9px;
   border: 1px solid var(--border);
-  border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-muted);
   font-family: var(--font);
-  font-size: var(--t-xs);
   font-weight: 600;
-  white-space: nowrap;
 }
 
 .ck__badge--bad { border-color: color-mix(in srgb, var(--danger) 42%, transparent); color: var(--danger); cursor: pointer; }
@@ -111,11 +110,13 @@ onBeforeUnmount(() => window.removeEventListener('click', away, true));
 /* Opening downward: the band is at the top of the card and there is nothing above it. */
 .ck__list { top: calc(100% + 6px); left: 0; }
 
-.ck__head {
-  margin: 0 0 var(--s2);
-  color: var(--text-faint);
-  font-size: var(--t-xs);
-}
+/*
+ * The header this popover used to hand-roll - its own margin, `--text-faint`, `--t-xs`, weight
+ * 400 - is SectionHead now, which is what every other named part of a card is. It was the only
+ * surface on the deck that looked like it came from somewhere else. The gap below it is the
+ * list's, not the header's.
+ */
+.ck__list > :deep(.sh) { margin-bottom: var(--s2); }
 
 .ck__row {
   display: grid;

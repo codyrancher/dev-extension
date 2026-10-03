@@ -79,6 +79,16 @@ const wants = computed(() => ({
     <!-- Neither: its last lines, so a stop is never a blank card. -->
     <pre v-else-if="!asking && agent.tail" class="ag__tail">{{ agent.tail }}</pre>
 
+    <!--
+      Its pane could not be read at all, which is not the same claim as "it has not said
+      anything" - and saying the wrong one of the two is worse than saying neither. The card
+      still names the conversation, so the button under it goes somewhere.
+    -->
+    <p v-else-if="!agent.reachable" class="ag__quiet">
+      Its pane could not be read{{ agent.title ? ` - the conversation is ${ agent.title }` : '' }}.
+      Open the conversation to see where it got to.
+    </p>
+
     <p v-else-if="!asking && !agent.said" class="ag__quiet">
       Its pane is up but it has not said anything. Open the conversation to see what it is doing.
     </p>

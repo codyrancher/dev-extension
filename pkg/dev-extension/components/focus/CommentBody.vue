@@ -247,8 +247,9 @@ const open = (item: NoteMedia) => emit('open', { items: shown.value, at: Math.ma
   width: 100%;
   max-height: 236px;
   object-fit: cover;
-  /* A video with no poster paints black before its first frame arrives. */
-  background: #000;
+  /* A video with no poster paints its background before its first frame arrives; the deepest
+     ground this view has, rather than a literal black that does not follow the theme. */
+  background: var(--ground-deep);
 }
 
 .md__play,
@@ -257,8 +258,10 @@ const open = (item: NoteMedia) => emit('open', { items: shown.value, at: Math.ma
   display: grid;
   place-items: center;
   border-radius: var(--r-pill);
-  background: rgba(8, 10, 16, 0.7);
-  color: #fff;
+  /* Tokens, so the scrim and its glyph follow `body.theme-light` like everything else; the
+     literals here were this view's own dark ground and dark text written out by hand. */
+  background: color-mix(in srgb, var(--ground) 72%, transparent);
+  color: var(--text);
 }
 
 .md__play {

@@ -30,11 +30,22 @@ const props = defineProps<{ artifacts: CardArtifacts }>();
  */
 const viewerAt = ref<number | null>(null);
 
+/**
+ * Who has already said yes.
+ *
+ * A fact about the work rather than a surface for it: the card that offers to merge your own
+ * pull request justified the merge with the line 'approved and still open' and never named the
+ * person. `reviewersOf` reads it off the same `prDetail` response the stat and the checks come
+ * from, so it is free - and it belongs here, beside them, for the same reason they do.
+ */
+const approved = computed(() => props.artifacts.reviewers?.approved || []);
+
 const has = computed(() => Boolean(
   props.artifacts.stat
   || props.artifacts.checks.length
   || props.artifacts.live.length
-  || props.artifacts.media.length,
+  || props.artifacts.media.length
+  || approved.value.length,
 ));
 
 /** Failures first: the reason to look at CI at all is the thing that is red. */
@@ -47,7 +58,7 @@ const checks = computed(() => [...props.artifacts.checks].sort((a, b) => (
 <template>
   <div v-if="has" class="ev">
     <!-- How big it is, and what the robots think of it. -->
-    <div v-if="artifacts.stat || checks.length" class="ev__row">
+    <div v-if="artifacts.stat || checks.length || approved.length" class="ev__row">
       <template v-if="artifacts.stat">
         <StatPill label="files" :value="String(artifacts.stat.files)" />
         <StatPill label="added" :value="`+${ artifacts.stat.added }`" tone="good" />
@@ -55,6 +66,12 @@ const checks = computed(() => [...props.artifacts.checks].sort((a, b) => (
       </template>
 
       <CardChecks v-if="checks.length" :checks="checks" />
+
+      <!-- Who said yes. Named, because "approved" with nobody attached to it is not a fact. -->
+      <span v-for="who in approved" :key="who" class="u-pill ev__yes">
+        <AppIcon name="check" :size="11" />
+        {{ who }}
+      </span>
     </div>
 
     <!-- Something running, on a link: the build of this branch you can actually click around in. -->
@@ -63,7 +80,7 @@ const checks = computed(() => [...props.artifacts.checks].sort((a, b) => (
         :is="live.url ? 'a' : 'span'"
         v-for="live in artifacts.live"
         :key="live.kind"
-        class="live"
+        class="u-pill live"
         :class="`live--${ live.state }`"
         :href="live.url || undefined"
         target="_blank"
@@ -127,6 +144,14 @@ const checks = computed(() => [...props.artifacts.checks].sort((a, b) => (
 <style scoped>
 .ev { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
 
+/*
+ * One strip of facts, one height.
+ *
+ * Every direct child of this row is `--pill-h` now - the stats, the check badges, the live
+ * pills - so centring them lines up their boxes and their text together. It was three heights
+ * (32, 24, 26) centred on one line, which is three baselines across something that reads as a
+ * single sentence of numbers.
+ */
 .ev__row {
   display: flex;
   flex-wrap: wrap;
@@ -143,20 +168,22 @@ const checks = computed(() => [...props.artifacts.checks].sort((a, b) => (
 /* The check's own sentence, which is usually the whole reason it is on the card. */
 
 /* ── What is up on a link ─────────────────────────────────────────────────────────────────── */
+/* `.u-pill` carries the box - this was the only one of the three band heights that happened to
+   be right, and the only one that said nothing about it. What is left is the hue and the link. */
 .live {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 26px;
-  padding: 0 11px;
   border: 1px solid color-mix(in srgb, var(--kind) 34%, transparent);
-  border-radius: var(--r-pill);
   background: color-mix(in srgb, var(--kind) 9%, transparent);
   color: var(--text-dim);
-  font-size: var(--t-xs);
   text-decoration: none;
-  white-space: nowrap;
   transition: background var(--fast), color var(--fast);
+}
+
+/* The band's own green: an approval is the one fact on this row that is good news. */
+.ev__yes {
+  border: 1px solid color-mix(in srgb, var(--success) 38%, transparent);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+  color: var(--success);
+  font-weight: 600;
 }
 
 a.live:hover { background: color-mix(in srgb, var(--kind) 18%, transparent); color: var(--text); }
@@ -169,7 +196,9 @@ a.live:hover { background: color-mix(in srgb, var(--kind) 18%, transparent); col
 }
 
 .live--serving .live__dot { background: var(--success); }
-.live--building .live__dot { background: var(--warning, #e3b341); animation: live-pulse 1.4s ease-in-out infinite; }
+/* `--warning` is declared in focus.css; the fallback was a second, slightly different yellow
+   waiting to be used the day somebody renamed the token. */
+.live--building .live__dot { background: var(--warning); animation: live-pulse 1.4s ease-in-out infinite; }
 .live--failed .live__dot { background: var(--danger); }
 
 @keyframes live-pulse { 50% { opacity: 0.35; } }
@@ -207,14 +236,21 @@ a.live:hover { background: color-mix(in srgb, var(--kind) 18%, transparent); col
 
 .shot__img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
+/*
+ * The scrim over a thumbnail, in tokens.
+ *
+ * It was `rgba(8, 10, 16, 0.66)` and `#fff`, which is this view's dark ground and its dark
+ * text written out by hand - so in light theme the play scrim and its glyph were the only
+ * things on the page that ignored the theme switch, a dark disc with white ink on a white card.
+ */
 .shot__play,
 .shot__open {
   position: absolute;
   display: grid;
   place-items: center;
   border-radius: var(--r-pill);
-  background: rgba(8, 10, 16, 0.66);
-  color: #fff;
+  background: color-mix(in srgb, var(--ground) 72%, transparent);
+  color: var(--text);
 }
 
 .shot__play { inset: 50% auto auto 50%; width: 28px; height: 28px; transform: translate(-50%, -50%); }
@@ -225,7 +261,7 @@ a.live:hover { background: color-mix(in srgb, var(--kind) 18%, transparent); col
   margin-top: 4px;
   overflow: hidden;
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: var(--t-2xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

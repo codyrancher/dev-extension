@@ -12,7 +12,9 @@
  * rotation, and lets go past a threshold that scales with the viewport so the gesture feels the
  * same on a phone as on a desktop.
  */
-import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
+import {
+  computed, onBeforeUnmount, onErrorCaptured, onMounted, ref, watch,
+} from 'vue';
 import type { FocusTask, CardAction } from '../../focus';
 import FocusCard from './FocusCard.vue';
 import AppIcon from './AppIcon.vue';
@@ -445,6 +447,49 @@ function onKey(event: KeyboardEvent) {
 
 onMounted(() => window.addEventListener('keydown', onKey));
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
+
+/* ── When a card cannot be drawn ──────────────────────────────────────────── */
+/**
+ * The deck's own empty state, for the case the cards could not report themselves.
+ *
+ * A FocusCard that throws while rendering leaves a comment node behind, and the stage said
+ * nothing at all: a 746x484 hole next to a rail reading "1 of 36 waiting". That is the
+ * empty-state rule turned on the deck - absent data should say so - and it is the one place
+ * where the component that would say it is the component that failed. So the deck says it,
+ * keyed by card id, and the rail goes on working so the deck can be turned past it.
+ *
+ * Keyed by id rather than a single flag because the deck renders five cards at once (the top,
+ * three behind, one below): a flag would blame whichever card is on top for a band's failure.
+ */
+const failed = ref<Record<string, string>>({});
+
+onErrorCaptured((error, instance) => {
+  const id = (instance?.$props as { task?: FocusTask } | undefined)?.task?.id;
+
+  if (!id) {
+    return undefined;
+  }
+  failed.value = { ...failed.value, [id]: String((error as Error)?.message || error) };
+
+  // Stopped here: above this is Focus.vue and the dashboard's own handler, and a card that
+  // cannot draw is not a reason to take the page down.
+  return false;
+});
+
+const topFailed = computed(() => (current.value ? failed.value[current.value.id] || '' : ''));
+
+/* ── Keeping the rail's mark in view ──────────────────────────────────────── */
+/**
+ * The rail scrolls now (36 real cards do not fit a window), so the current dot has to be
+ * brought to where it can be seen - otherwise turning the deck moves a mark nobody can find.
+ */
+const dots = ref<HTMLElement>();
+
+watch(() => props.index, () => {
+  requestAnimationFrame(() => {
+    dots.value?.querySelector('.deck__dot--on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
+}, { immediate: true });
 </script>
 
 <template>
@@ -482,7 +527,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
       @after-enter="clearCarry"
     >
       <div
-        v-if="current"
+        v-if="current && !topFailed"
         :key="current.id"
         class="deck__top"
         :class="{ 'deck__top--dragging': dragging, 'deck__top--landing': landing }"
@@ -514,6 +559,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         />
       </div>
 
+      <!--
+        It is there, and it could not be drawn. Same place and same padding as the empty state,
+        because that is what this is: the deck reporting absent data about itself.
+      -->
+      <div v-else-if="current" :key="`fail-${ current.id }`" class="deck__empty deck__empty--fail">
+        <span class="deck__empty-mark deck__empty-mark--fail"><AppIcon name="cross" :size="28" /></span>
+        <h2>{{ current.title || current.what }}</h2>
+        <p>This card could not be drawn. Turn the deck past it with the rail, or the arrow keys.</p>
+        <code class="deck__why">{{ topFailed }}</code>
+      </div>
+
       <div v-else class="deck__empty">
         <span class="deck__empty-mark"><AppIcon name="check" :size="28" /></span>
         <h2>Nothing is waiting on you</h2>
@@ -538,7 +594,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         @click="go(-1)"
       ><AppIcon name="chevron-up" :size="16" /></button>
 
-      <ol class="deck__dots">
+      <ol ref="dots" class="deck__dots">
         <li v-for="(task, n) in cards" :key="task.id">
           <button
             type="button"
@@ -814,7 +870,29 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 
 .deck__empty h2 { font-size: var(--t-xl); color: var(--text); }
 
+/* Not a success, so not the success colour. */
+.deck__empty--fail { max-width: 52ch; }
+.deck__empty-mark--fail { background: var(--danger-wash); color: var(--danger); }
+
+.deck__why {
+  max-width: 100%;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  overflow-wrap: anywhere;
+}
+
 /* ── The rail ─────────────────────────────────────────────────────────────── */
+/*
+ * Bounded, because the deck is real.
+ *
+ * Thirty-six cards is thirty-six dots, and with no `max-height` the rail was a 1117px column
+ * centred on a 678px window: 241px of it above the top edge, 198px below the bottom, with no
+ * scroller of its own - so the first eight dots, the last eight, and one of the two step
+ * buttons were off-screen and unclickable. Most of the deck could not be reached from its only
+ * navigation control. The rail is now at most the stage's height and the dots scroll inside it;
+ * the two steps stay pinned outside the scroller.
+ */
 .deck__rail {
   position: absolute;
   top: 50%;
@@ -823,12 +901,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   flex-direction: column;
   align-items: center;
   gap: var(--s2);
+  max-height: calc(100% - var(--s6));
   transform: translateY(-50%);
 }
 
 .deck__step {
   display: grid;
   place-items: center;
+  /* Never squeezed: it is a flex item in a bounded column, which shrinks by default - and a
+     step button compressed to 12px is the same bug the card's header had. */
+  flex: 0 0 auto;
   width: 30px;
   height: 30px;
   border: 1px solid var(--border);
@@ -847,22 +929,61 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
  */
 .deck__top--landing { visibility: hidden; }
 
-.deck__dots { display: flex; flex-direction: column; gap: 6px; margin: var(--s2) 0; padding: 0; list-style: none; }
+/*
+ * The scroller, and the only thing in the rail that gives.
+ *
+ * `min-height: 0` because an unbounded flex column refuses to be smaller than its content and
+ * would push the steps out again. No gap: the 30px targets below supply the rhythm, and 6px on
+ * top of them was 36px between marks.
+ */
+.deck__dots {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
+  margin: var(--s2) 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  /* The scrollbar would be wider than the dots it sits beside. */
+  scrollbar-width: none;
+}
 
+.deck__dots::-webkit-scrollbar { width: 0; height: 0; }
+
+/*
+ * The mark is 9px; the thing you press is 30px.
+ *
+ * It was one 9px button - a quarter of the 30px this view sets as its own minimum, and the
+ * deck's only navigation control. Visual size and target size are different numbers: the button
+ * is a transparent 30px square and the dot is drawn in its `::before`, so nothing about the
+ * rail's appearance changes and all of it becomes hittable.
+ */
 .deck__dot {
-  width: 9px;
-  height: 9px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
   padding: 0;
   border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.deck__dot::before {
+  content: '';
+  display: block;
+  width: 9px;
+  height: 9px;
   border-radius: var(--r-pill);
   background: var(--dot, var(--text-faint));
   opacity: 0.45;
-  cursor: pointer;
   transition: opacity var(--fast), height var(--base) var(--ease-spring), transform var(--fast);
 }
 
-.deck__dot:hover { opacity: 0.85; transform: scale(1.25); }
-.deck__dot--on { height: 22px; opacity: 1; }
+.deck__dot:hover::before { opacity: 0.85; transform: scale(1.25); }
+.deck__dot--on::before { height: 22px; opacity: 1; }
 
 .deck__dot--review   { --dot: var(--kind-review); }
 .deck__dot--issue    { --dot: var(--kind-issue); }
@@ -882,7 +1003,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
     flex-direction: row;
     transform: translateX(-50%);
   }
-  .deck__dots { flex-direction: row; margin: 0 var(--s2); }
-  .deck__dot--on { height: 9px; width: 22px; }
+  /* On a phone the rail lies along the bottom, so it is the width that has to be bounded and
+     the dots that scroll sideways. */
+  .deck__rail { max-width: calc(100% - var(--s6)); max-height: none; }
+  .deck__dots { flex-direction: row; margin: 0 var(--s2); min-width: 0; overflow-x: auto; overflow-y: visible; }
+  .deck__dot--on::before { height: 9px; width: 22px; }
 }
 </style>

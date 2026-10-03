@@ -32,6 +32,8 @@ import CardReviewers from './CardReviewers.vue';
 import CardCommits from './CardCommits.vue';
 import CardAgent from './CardAgent.vue';
 import CardFacts from './CardFacts.vue';
+import SectionHead from './SectionHead.vue';
+import IssueMarks from './IssueMarks.vue';
 import { NO_ARTIFACTS, SURFACE_WANTS } from '../../focus-artifacts';
 import type { CardArtifacts, CardComment, PoolIssue } from '../../focus-artifacts';
 import type { ReviewNote } from '../../focus-review';
@@ -98,15 +100,25 @@ const noteOn = ref<ReviewNote | null>(null);
 
 watch(() => props.notes, (found) => { noteOn.value = found?.[0] || null; }, { immediate: true });
 
-const art = computed<CardArtifacts>(() => {
-  const base = props.artifacts || NO_ARTIFACTS;
+/**
+ * What arrived, before this card has had its say about it.
+ *
+ * Split out from `art` because `art` and `surface` had each other as a dependency - `art` asked
+ * `surface` whether the pass was on, `surface` asked `art` what it had - and Vue hands back
+ * `undefined` for the computed it is already inside. So `art.value.agent` threw on the first
+ * render of every card in the deck, FocusCard's render aborted to a comment node, and the view
+ * was a header saying "1 of 36 waiting" over an empty box. The ladder below reads this, which
+ * depends on nothing; `art` is left free to read the ladder.
+ */
+const base = computed<CardArtifacts>(() => props.artifacts || NO_ARTIFACTS);
 
+const art = computed<CardArtifacts>(() => {
   if (surface.value !== 'pass' || !noteOn.value) {
-    return base;
+    return base.value;
   }
 
   return {
-    ...base,
+    ...base.value,
     media: noteOn.value.media.map((item) => ({
       kind: item.kind, label: item.label, src: item.src, caption: item.caption, at: '',
     })),
@@ -137,36 +149,57 @@ const rest = computed(() => props.task.card.actions.slice(1));
  * it is about, the change beats the talk about it, and an issue with none of those has its own
  * words. One at a time, because each of them wants most of the card.
  */
-const surface = computed<'agent' | 'pool' | 'facts' | 'pass' | 'who' | 'talk' | 'files' | 'prose' | ''>(() => {
+const surface = computed<'agent' | 'pool' | 'facts' | 'pass' | 'who' | 'talk' | 'files' | ''>(() => {
   // An agent waiting on an answer beats everything: it is the highest thing in the queue, and
   // the answer is on the card.
-  if (art.value.agent) {
+  if (base.value.agent) {
     return 'agent';
   }
   // The pool next: it is the whole of its card, and that card has nothing else.
-  if (art.value.pool.length) {
+  if (base.value.pool.length) {
     return 'pool';
   }
   // The few facts a bump or an advisory is decided on, for the two cards that had no surface.
-  if (art.value.advisory || art.value.bump) {
+  if (base.value.advisory || base.value.bump) {
     return 'facts';
   }
   if (props.notes?.length) {
     return 'pass';
   }
-  // Who is looking at it beats the diff on a card about nobody looking at it.
-  if (art.value.reviewers) {
-    return 'who';
-  }
-  if (art.value.comments.length) {
+  if (base.value.comments.length) {
     return 'talk';
   }
-  if (art.value.files.length) {
+  if (base.value.files.length) {
     return 'files';
   }
 
-  return art.value.body ? 'prose' : '';
+  /*
+   * Last, which is where it belongs: who is looking at it is the surface of the one card that
+   * has nothing else - the one about nobody looking at it, which asks for `reviewers` and no
+   * diff. It used to be tested above the diff and the talk, which was harmless only for as
+   * long as that was the single card asking: the moment the approved-pull-request card wanted
+   * to name its approver, asking for `reviewers` would have replaced its diff with a reviewer
+   * list. Who approved it is a fact about the work, so it goes in the evidence band instead -
+   * see CardEvidence - and this rung is left to the card it was written for.
+   */
+  return base.value.reviewers ? 'who' : '';
 });
+
+/**
+ * What it says it is, when the card asked.
+ *
+ * `body` used to be the bottom rung of the ladder above - a surface of last resort - which meant
+ * it never once drew on the three cards that ask for it. describe-pr wants `body` and `files`, so
+ * the diff won and the description it is about to overwrite was fetched and discarded; same for
+ * the review somebody asked you for, and for the card about who should review it. None of those
+ * is a card where the prose is the *alternative* to the change: it is the sentence you read
+ * before the change. So it is its own block above the surface, and the ladder no longer has a
+ * 'prose' rung to lose.
+ */
+const prose = computed(() => ((props.task.card.wants || []).includes('body') ? art.value.body : ''));
+
+/** With a surface under it the description is a lead-in; alone, it is the card. */
+const leadIn = computed(() => Boolean(prose.value) && surface.value !== '');
 
 /**
  * A card with a surface on it is laid out differently.
@@ -310,11 +343,32 @@ const waited = computed(() => (props.task.waitingHours >= 48
       <CardCommits
         v-if="art.commits.length"
         :commits="art.commits"
-        :class="{ 'card__only': surface === '' }"
+        :class="{ 'card__only': surface === '' && !prose }"
       />
 
       <!-- Why this is in front of you at all, in the ranking's own words. -->
       <p v-if="task.about && !hasPass && !reading" class="card__prose">{{ task.about }}</p>
+
+      <!--
+        What it says it is: a pull request's description, or an issue's own words.
+
+        Above the surface rather than instead of it. See `prose`: this used to be the last rung
+        of the surface ladder, so on the three cards that ask for it - the one that overwrites
+        the description, the review somebody asked you for, and the one about who should review
+        it - the diff won and the prose was read from GitHub and thrown away.
+      -->
+      <section v-if="prose && !reading" class="card__said" :class="{ 'card__said--lead': leadIn }">
+        <SectionHead
+          v-if="art.issue || leadIn"
+          :label="art.issue ? 'What the issue asks for' : 'What it says it does'"
+          :icon="art.issue ? 'tasks' : 'pencil'"
+        >
+          <IssueMarks v-if="art.issue" :issue="art.issue" />
+        </SectionHead>
+        <div class="card__read">
+          <p class="card__text">{{ prose }}</p>
+        </div>
+      </section>
 
       <!-- Being read. See `reading`: a card says so rather than filling in under you. -->
       <div v-if="reading" class="card__reading">
@@ -382,11 +436,6 @@ const waited = computed(() => (props.task.waitingHours >= 48
         @reply="emit('reply', $event)"
         @expand="emit('expand', $event)"
       />
-
-      <!-- Or its own words: an issue, an advisory, a question the agent asked. -->
-      <div v-else-if="surface === 'prose'" class="card__read">
-        <p class="card__text">{{ art.body }}</p>
-      </div>
 
       <div v-if="!hasPass && !reading" class="card__stats">
         <StatPill label="priority" :value="String(task.score)" />
@@ -731,6 +780,24 @@ const waited = computed(() => (props.task.waitingHours >= 48
   font-size: var(--t-md);
   line-height: 1.6;
 }
+
+/*
+ * What it says it is, named and then quoted.
+ *
+ * Never squeezed, and never squeezing: alone on a card it takes the room the surface would have
+ * had, and above a surface it is capped at about six lines and scrolls - because a lead-in that
+ * can grow to forty lines of release notes is not a lead-in, it is the card again.
+ */
+.card__said {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.card__said--lead { flex: 0 0 auto; max-height: 9.5em; }
 
 /* An issue's own words: as much as fits, scrolled, rather than a paragraph cut off mid-sentence. */
 .card__read {

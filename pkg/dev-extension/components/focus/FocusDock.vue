@@ -199,6 +199,12 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 .dock__count { margin-left: auto; color: var(--text-faint); font-size: var(--t-xs); }
 
 .dock__list {
+  /*
+   * The state dot's width, declared where all three things that depend on it can see it: the
+   * dot itself and the two lines that hang under a row and indent past it. The 7 was written
+   * out in three places, so the indent could drift off the dot by anybody changing one.
+   */
+  --ws-dot: 7px;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -240,8 +246,8 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 
 .ws__dot {
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
+  width: var(--ws-dot);
+  height: var(--ws-dot);
   border-radius: 50%;
   background: var(--text-faint);
 }
@@ -269,17 +275,17 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 /* What it needs, in the words the sidebar uses. */
 .ws__note {
   margin: 0 0 var(--s2);
-  padding: 0 var(--s2) 0 calc(7px + var(--s2));
+  padding: 0 var(--s2) 0 calc(var(--ws-dot) + var(--s2));
   color: var(--text-muted);
   font-size: var(--t-xs);
   line-height: 1.45;
 }
 
 /* ── The room, for the things that have any ───────────────────────────────────────────────── */
-.ws__room { display: flex; gap: var(--s3); padding: 0 var(--s2) var(--s2) calc(7px + var(--s2)); }
+.ws__room { display: flex; gap: var(--s3); padding: 0 var(--s2) var(--s2) calc(var(--ws-dot) + var(--s2)); }
 
 .meter { display: flex; align-items: center; gap: 5px; min-width: 0; }
-.meter__label { color: var(--text-faint); font-size: 10px; }
+.meter__label { color: var(--text-faint); font-size: var(--t-2xs); }
 
 .meter__track {
   width: 46px;
@@ -290,7 +296,7 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 }
 
 .meter__fill { display: block; height: 100%; background: var(--success); }
-.meter__text { color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.meter__text { color: var(--text-muted); font-size: var(--t-2xs); font-variant-numeric: tabular-nums; }
 
 .dock__empty { margin: 0; color: var(--text-muted); font-size: var(--t-sm); line-height: 1.5; }
 

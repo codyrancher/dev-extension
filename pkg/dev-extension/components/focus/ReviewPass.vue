@@ -228,14 +228,14 @@ function pickedRun(note: ReviewNote): [number, number] | null {
     <!-- The one you are on: the lines, the comment, and the four things you can do to it. -->
     <article class="pass__detail" :class="`pass__detail--${ selected.severity }`">
       <header class="detail__head">
-        <span class="detail__sev">{{ severityWord[selected.severity] }}</span>
+        <span class="u-pill detail__sev">{{ severityWord[selected.severity] }}</span>
         <code class="detail__path">{{ selected.path }}</code>
         <span class="detail__lines">
           {{ selected.selects && selected.selects[0] !== selected.selects[1]
             ? `lines ${ selected.selects[0] }–${ selected.selects[1] }`
             : `line ${ selected.line }` }}
         </span>
-        <span v-if="verdictOf(selected) !== 'pending'" class="detail__state" :class="`detail__state--${ verdictOf(selected) }`">
+        <span v-if="verdictOf(selected) !== 'pending'" class="u-pill detail__state" :class="`detail__state--${ verdictOf(selected) }`">
           {{ verdictWord[verdictOf(selected)] }}
         </span>
       </header>
@@ -519,12 +519,10 @@ function pickedRun(note: ReviewNote): [number, number] | null {
   flex-wrap: wrap;
 }
 
+/* Both of these are `.u-pill` now; what is theirs is the colour and the voice. */
 .detail__sev {
-  padding: 2px 9px;
-  border-radius: var(--r-pill);
   background: var(--sev-wash, var(--surface-raised));
   color: var(--sev, var(--text-dim));
-  font-size: var(--t-xs);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -540,11 +538,8 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 
 .detail__state {
   margin-left: auto;
-  padding: 2px 10px;
-  border-radius: var(--r-pill);
   background: var(--success-wash);
   color: var(--success);
-  font-size: var(--t-xs);
   font-weight: 620;
 }
 

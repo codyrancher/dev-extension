@@ -186,7 +186,7 @@ const shown = computed(() => props.cards.map((card) => ({ card, task: sample(car
   background: color-mix(in srgb, var(--kind-c) 10%, transparent);
   color: var(--text-dim);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--t-2xs);
 }
 
 .mini__rule--idle { border-color: var(--border); background: transparent; color: var(--text-faint); }
