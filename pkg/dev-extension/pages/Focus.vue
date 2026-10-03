@@ -42,6 +42,7 @@ import CardGallery from '../components/focus/CardGallery.vue';
 import FocusChatBar from '../components/focus/FocusChatBar.vue';
 import { holdOverlay, releaseOverlay } from '../components/focus/overlay';
 import { runtimeFacts } from '../components/focus/card-runtime';
+import { followCards, loadedCards, cardsWatch, cardsSettled } from '../focus-cards';
 import {
   readFocusConfig, saveFocusConfig, readFocusState, saveFocusState, focusDeck, manualItem,
   weightRows, actionPrompt, SHIPPED_CARDS, KINDS
@@ -699,7 +700,31 @@ onMounted(load);
  * Rancher rather than of our code - which is exactly the shape of the `useRouter()` fault, where
  * something worked on the dev server and was silently dead in the installed plugin.
  */
-onMounted(() => { (window as any).__focusRuntime = runtimeFacts(); });
+let unfollow: (() => void) | null = null;
+
+onMounted(() => {
+  (window as any).__focusRuntime = runtimeFacts();
+
+  /*
+   * Follow the cards held outside the bundle.
+   *
+   * The request goes through the store rather than `fetch`, because `management/request` carries
+   * the dashboard's own credentials and error handling; the *watch* cannot, since that dispatch
+   * parses a whole JSON body and a watch never ends - so `followCards` streams that one with
+   * `fetch`, same-origin against the same proxy path.
+   */
+  unfollow = followCards((url) => store.dispatch('management/request', { url }));
+
+  // Where a probe can see what the watch is doing. See focus-cards.ts.
+  (window as any).__focusCards = {
+    cards: loadedCards, watch: cardsWatch, settled: cardsSettled, store,
+  };
+});
+
+onBeforeUnmount(() => {
+  unfollow?.();
+  unfollow = null;
+});
 
 /* ── Turning the deck ─────────────────────────────────────────────────────────────────────── */
 
