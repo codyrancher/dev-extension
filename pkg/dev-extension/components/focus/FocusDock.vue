@@ -61,6 +61,48 @@ function press(row: DockRow, action: { id: string; danger?: boolean }) {
 }
 
 const open = ref(false);
+const mark = ref<HTMLElement | null>(null);
+
+/**
+ * Where the card goes, measured off the mark each time it opens.
+ *
+ * It is teleported to the body, which is what every other popover in this view does and what this
+ * one did not. The deck sets `perspective` on itself and `transform-style: preserve-3d` on the
+ * card it is showing, and inside a 3D rendering context what paints on top follows Z position
+ * rather than `z-index` - so the card drew over this popover whatever number it was given. Out of
+ * that subtree it is an ordinary fixed box and the number means something again.
+ */
+const at = ref<{ left: number; top: number | null; bottom: number | null }>({ left: 0, top: null, bottom: null });
+
+/** What the card is at most; it is `min(340px, 78vw)` in the stylesheet. */
+const CARD_W = 340;
+const GAP = 8;
+
+/**
+ * Below the mark or above it, whichever has the room, and never off an edge.
+ *
+ * It opened upward unconditionally, from when both marks sat in the bottom-left corner. They are
+ * at the top now, so "upward" put the card 357px above the top of the window and 49px past the
+ * right of it - measured, with `elementFromPoint` returning null at every corner of it. It read as
+ * the popover being behind the card; it was never on the screen.
+ *
+ * So the direction follows the room, and both axes are clamped to the window. A popover that
+ * decides its side from where its control actually is does not care where the dock moves to next.
+ */
+function place() {
+  const box = mark.value?.getBoundingClientRect();
+
+  if (!box) {
+    return;
+  }
+  const room = { below: window.innerHeight - box.bottom, above: box.top };
+  const width = Math.min(CARD_W, window.innerWidth * 0.78);
+  const left = Math.round(Math.min(Math.max(GAP, box.left), window.innerWidth - width - GAP));
+
+  at.value = room.below >= room.above
+    ? { left, top: Math.round(box.bottom + GAP), bottom: null }
+    : { left, top: null, bottom: Math.round(window.innerHeight - box.top + GAP) };
+}
 let showing: ReturnType<typeof setTimeout> | null = null;
 let hiding: ReturnType<typeof setTimeout> | null = null;
 
@@ -74,6 +116,7 @@ function enter() {
   }
   if (!open.value && !showing) {
     showing = setTimeout(() => {
+      place();
       open.value = true;
       showing = null;
     }, SHOW_MS);
@@ -113,8 +156,9 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
       class="dock__mark"
       :class="{ 'dock__mark--on': open }"
       :title="`${ label }: ${ live } of ${ sorted.length } up`"
+      ref="mark"
       :aria-expanded="open ? 'true' : 'false'"
-      @click="open = !open"
+      @click="place(); open = !open"
     >
       <AppIcon :name="icon" :size="15" />
       <!--
@@ -128,8 +172,17 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
       <span v-if="live" class="dock__live">{{ live }}</span>
     </button>
 
-    <Transition name="dock">
-      <div v-if="open" class="dock__card">
+    <Teleport to="body">
+      <div class="dev-focus dock-layer" @mouseenter="enter" @mouseleave="leave">
+        <Transition name="dock">
+          <div
+            v-if="open"
+            class="dock__card"
+            :style="{
+              left: `${ at.left }px`,
+              ...(at.top === null ? { bottom: `${ at.bottom }px` } : { top: `${ at.top }px` }),
+            }"
+          >
         <header class="dock__head">
           <span class="dock__title">{{ label }}</span>
           <span class="dock__count">{{ live }} of {{ sorted.length }} up</span>
@@ -180,8 +233,10 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
         </ul>
 
         <p v-else class="dock__empty">{{ empty }}</p>
+          </div>
+        </Transition>
       </div>
-    </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -224,9 +279,18 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
  * the deck, which is where there is room. It opened upward when the mark lived in the bottom-left
  * corner.
  */
+/* A box of nothing that carries the view's tokens to a teleported child. See FocusModal. */
+.dock-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+}
+
+.dock-layer > * { pointer-events: auto; }
+
 .dock__card {
-  position: absolute;
-  top: calc(100% + var(--s2));
+  position: fixed;
   width: min(340px, 78vw);
   padding: var(--s3);
   border: 1px solid var(--border-strong);
@@ -246,6 +310,9 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 
 .dock__title { color: var(--text); font-size: var(--t-sm); font-weight: 650; }
 .dock__count { margin-left: auto; color: var(--text-faint); font-size: var(--t-xs); }
+
+/* Never taller than the room its side has; the rest scrolls. */
+.dock__card { max-height: min(46vh, calc(100vh - 96px)); display: flex; flex-direction: column; }
 
 .dock__list {
   /*

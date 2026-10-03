@@ -35,6 +35,15 @@ MINE = [
   'components/code/CodeView.vue',
   'components/code/FileModal.vue',
   'pages/Focus.vue',
+  # The stylesheet the whole view is built out of, which was the one file not being read.
+  #
+  # It said "nothing to fix" while 15 of 26 cards carried a pressable under the 30px floor, and it
+  # could not have said otherwise: `.ev__go` declares `cursor: pointer` in CardEvidence and takes
+  # its height from `.dev-focus .u-pill { height: var(--pill-h) }` in here, so the two halves of
+  # one violation sat in two files and only one of them was ever opened. A control's height is as
+  # likely to be written in the shared sheet as in the component, and a checker that reads only
+  # components is a checker that can be satisfied by moving a declaration.
+  'design/focus.css',
 ]
 ROOT = pathlib.Path('/tmp/claude-1000/dev-extension/pkg/dev-extension')
 
@@ -58,12 +67,21 @@ TOKEN_PX = {
 issues = []
 for rel in MINE:
     text = (ROOT / rel).read_text()
-    css = text[text.index('<style'):] if '<style' in text else ''
+    # A plain stylesheet is all style; a component's is what follows its `<style`.
+    sheet = not rel.endswith('.vue')
+    css = text if sheet else (text[text.index('<style'):] if '<style' in text else '')
+    before = 0 if sheet else text[:text.index('<style')].count('\n') if '<style' in text else 0
     for block in re.finditer(r'(^\.[^\n{]*)\{([^}]*)\}', css, re.M):
         sel, body = block.group(1).strip(), block.group(2)
-        line = css[:block.start()].count('\n') + text[:text.index('<style')].count('\n') + 1
+        line = css[:block.start()].count('\n') + before + 1
         # 1. A hand-rolled colour where a token exists.
-        for hit in re.finditer(r':\s*(#[0-9a-f]{3,8}|rgba?\([^)]*\))', body, re.I):
+        #
+        # Not in `design/focus.css`, which is where the tokens are *declared*: every literal in it
+        # is the definition of the thing the rule is asking the components to use, so running this
+        # rule there would report the palette as sixty violations of itself. The other two rules -
+        # the space scale and the floor under anything pressable - apply there like anywhere else,
+        # and the floor is the reason the file is in this list at all.
+        for hit in () if sheet else re.finditer(r':\s*(#[0-9a-f]{3,8}|rgba?\([^)]*\))', body, re.I):
             if rel.endswith('FocusChatBar.vue') or 'rgba(0, 0, 0' in hit.group(0) or 'rgba(6, 8, 14' in hit.group(0):
                 continue  # shadows, veils and the bar are the prototype's own, literals included
             issues.append((rel, line, sel, f'literal colour {hit.group(1)}'))
