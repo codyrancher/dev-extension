@@ -14,6 +14,15 @@
  */
 import { githubToken } from './api';
 
+/**
+ * The repository the unassigned search is scoped to.
+ *
+ * Its own constant rather than `DEFAULT_REPO` from reviews.ts, which imports this file - taking it
+ * from there would close a cycle. The searches above need no repository because `assignee:@me` and
+ * `author:@me` mean something on their own; `no:assignee` does not.
+ */
+const POOL_REPO = 'rancher/dashboard';
+
 const ENDPOINT = 'https://api.github.com/graphql';
 
 /** How many of each list to ask for. The harness shows about this many and it fits a screen. */
@@ -74,6 +83,10 @@ export interface GithubPr {
   pushedAt: string;
   /** When you last reviewed it, for the list of things waiting on you. '' when you never have. */
   reviewedAt: string;
+  /** Who has been asked for a review: logins, and team names for a team request. */
+  reviewers: string[];
+  /** The description, as much of it as matters for telling whether there is one. */
+  body: string;
   /**
    * Whether GitHub is currently asking *you* for a review (the `review-requested:@me` search).
    * True the first time you are added, and again when a reviewer re-requests you after changes -
@@ -106,6 +119,8 @@ export interface GithubIssue {
   createdAt: string;
   /** Null when the issue is on no board - or when the token cannot read boards; see GithubWork. */
   projectStatus: GithubBoardStatus | null;
+  /** How much has been said on it, which is the cheapest signal of whether it is well specified. */
+  comments?: number;
 }
 
 /**
@@ -142,6 +157,8 @@ export interface GithubWork {
   reviewing: GithubPr[];
   mine: GithubPr[];
   issues: GithubIssue[];
+  /** Open issues in this repository that nobody has taken. The pool to pick the next one from. */
+  unassigned: GithubIssue[];
 }
 
 /**
@@ -162,6 +179,15 @@ const QUERY = `
     author { login }
     repository { nameWithOwner }
     reviewDecision
+    # Whether anybody has been asked to look at it. A pull request of yours that is green and
+    # that nobody has been asked about is not waiting on review; it is waiting on you to ask.
+    reviewRequests(first: 10) {
+      nodes { requestedReviewer { __typename ... on User { login } ... on Team { name } } }
+    }
+    # The first part of the description, for telling a pull request that says what it does from
+    # one that says nothing. Truncated here rather than fetched whole: this query asks for fifty
+    # of them and only the length and the first lines are ever read.
+    bodyText
     closingIssuesReferences(first: 1) { nodes { number url } }
     latestReviews(first: 20) { nodes { author { login } submittedAt } }
     comments(last: 1) { nodes { createdAt } }
@@ -207,6 +233,27 @@ const QUERY = `
     }
     mine: search(query: "is:open is:pr author:@me archived:false", type: ISSUE, first: $page) {
       nodes { ...pr }
+    }
+    # Work nobody has picked up, in the repository this product is for.
+    #
+    # Scoped to the repository, unlike the searches above: assignee:@me means something across
+    # all of GitHub and no:assignee means nothing. Newest first, because an issue nobody has
+    # taken in two years is not a thing anybody is about to take now.
+    #
+    # No backticks anywhere in this query. It is a JavaScript template literal, so one ends the
+    # string, and the error it produces names a line thirty lines further down.
+    unassigned: search(query: "repo:${ POOL_REPO } is:open is:issue no:assignee archived:false sort:created-desc", type: ISSUE, first: $issues) {
+      nodes {
+        ... on Issue {
+          number
+          title
+          url
+          createdAt
+          repository { nameWithOwner }
+          labels(first: 10) { nodes { name } }
+          comments { totalCount }
+        }
+      }
     }
     issues: search(query: "is:open is:issue assignee:@me archived:false", type: ISSUE, first: $issues) {
       nodes {
@@ -331,6 +378,12 @@ function prFrom(node: Json, login: string, reviewRequested = false): GithubPr {
     reviewedAt:      mine?.submittedAt || '',
     reviewRequested,
     commentedAt:     node.comments?.nodes?.[0]?.createdAt || '',
+    reviewers:       (node.reviewRequests?.nodes || [])
+      .map((row: Json) => row.requestedReviewer?.login || row.requestedReviewer?.name || '')
+      .filter(Boolean),
+    // Enough to tell a description from the absence of one. A thousand characters is well past
+    // any threshold anything here applies, and keeps fifty of these out of the way.
+    body:            String(node.bodyText || '').slice(0, 1000),
   };
 }
 
@@ -346,6 +399,7 @@ function issueFrom(node: Json): GithubIssue {
     labels:        (node.labels?.nodes || []).map((label: Json) => label.name),
     createdAt:     node.createdAt || '',
     projectStatus: null,
+    comments:      node.comments?.totalCount ?? undefined,
   };
 }
 
@@ -637,6 +691,7 @@ export async function myWork(): Promise<GithubWork> {
     reviewing,
     mine: (body.data?.mine?.nodes || []).map((node: Json) => prFrom(node, login)),
     issues,
+    unassigned: (body.data?.unassigned?.nodes || []).map(issueFrom),
     projectStatusError,
   };
 }
@@ -802,9 +857,92 @@ export async function linkedPullRequest(repo: string, issue: number): Promise<nu
 }
 
 /**
+ * The REST calls behind the stages of a pull request that happen by hand.
+ *
+ * Straight to api.github.com with the person's own token, the way the rest of this file reaches
+ * GitHub: it answers with `access-control-allow-origin: *`, so a browser can.
+ */
+async function rest(method: string, path: string, body?: unknown): Promise<Json> {
+  const token = await githubToken();
+
+  if (!token) {
+    throw new Error('No GitHub token is set. Add one in Settings.');
+  }
+  const response = await fetch(`https://api.github.com${ path }`, {
+    method,
+    headers: {
+      authorization: `Bearer ${ token }`,
+      accept:        'application/vnd.github+json',
+      ...(body ? { 'content-type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+
+  if (!response.ok) {
+    const said = await response.text().catch(() => '');
+    const why = (() => {
+      try {
+        return JSON.parse(said).message || said;
+      } catch {
+        return said;
+      }
+    })();
+
+    throw new Error(`GitHub answered ${ response.status }: ${ String(why).slice(0, 200) }`);
+  }
+
+  return response.status === 204 ? {} : response.json();
+}
+
+/** Put the issue in your name, which is what taking a piece of work means to everybody else. */
+export async function assignToMe(repo: string, issue: number, login: string): Promise<void> {
+  await rest('POST', `/repos/${ repo }/issues/${ issue }/assignees`, { assignees: [login] });
+}
+
+/**
+ * Ask people to review it.
+ *
+ * This used to be left to GitHub's own UI on purpose. It is here now because "nobody has been
+ * asked" turned out to be the state a pull request of yours dies in most quietly, and a card that
+ * can name the people who already know the change but cannot ask them is a card that has done
+ * the hard half and left the easy one.
+ *
+ * A login that is not a collaborator is refused by GitHub for the whole call, so each is sent on
+ * its own and what failed is reported by name rather than losing the ones that would have worked.
+ */
+export async function requestReviewers(repo: string, pr: number, logins: string[]): Promise<{ asked: string[]; refused: Record<string, string> }> {
+  const asked: string[] = [];
+  const refused: Record<string, string> = {};
+
+  for (const login of logins) {
+    try {
+      await rest('POST', `/repos/${ repo }/pulls/${ pr }/requested_reviewers`, { reviewers: [login] });
+      asked.push(login);
+    } catch (e) {
+      refused[login] = (e as Error)?.message || String(e);
+    }
+  }
+
+  return { asked, refused };
+}
+
+/** Say what it does, after the fact. The title and the description, either or both. */
+export async function describePr(repo: string, pr: number, changes: { title?: string; body?: string }): Promise<void> {
+  await rest('PATCH', `/repos/${ repo }/pulls/${ pr }`, changes);
+}
+
+/** Open the pull request for a branch that already has the work on it. */
+export async function createPullRequest(repo: string, from: { head: string; base: string; title: string; body?: string; draft?: boolean }): Promise<{ number: number; url: string }> {
+  const made = await rest('POST', `/repos/${ repo }/pulls`, {
+    head: from.head, base: from.base, title: from.title, body: from.body || '', draft: from.draft ?? true,
+  });
+
+  return { number: made.number, url: made.html_url };
+}
+
+/**
  * Take a draft PR out of draft. The person's own act - the skills never do it - and the one
- * thing GitHub's UI is otherwise needed for at the draft stage. Requesting a reviewer stays on
- * GitHub, on purpose.
+ * thing GitHub's UI is otherwise needed for at the draft stage.
  */
 export async function markReadyForReview(repo: string, number: number): Promise<void> {
   const data = await graphql(`

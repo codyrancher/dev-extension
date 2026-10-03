@@ -19,6 +19,7 @@ import { computed } from 'vue';
 import CodeView from '../code/CodeView.vue';
 import { fromDiffLines, highlighted } from '../code/rows';
 import AppIcon from './AppIcon.vue';
+import SectionHead from './SectionHead.vue';
 import AppButton from './AppButton.vue';
 import type { CardComment } from '../../focus-artifacts';
 
@@ -53,14 +54,9 @@ const hasCode = (comment: CardComment) => comment.hunk.some((line) => line.text.
 
 <template>
   <section class="talk">
-    <header class="talk__head">
-      <span class="talk__title">
-        <AppIcon name="tasks" :size="14" />
-        What was said
-      </span>
-      <span class="talk__count">{{ comments.length }} comments</span>
+    <SectionHead label="What was said" :count="`${ comments.length } comments`">
       <span v-if="waiting.length" class="talk__waiting">{{ waiting.length }} waiting on you</span>
-    </header>
+    </SectionHead>
 
     <ol class="talk__list">
       <li
@@ -130,18 +126,8 @@ const hasCode = (comment: CardComment) => comment.hunk.some((line) => line.text.
   min-height: 0;
 }
 
-.talk__head { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
 
-.talk__title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--kind);
-  font-size: var(--t-sm);
-  font-weight: 620;
-}
 
-.talk__count { color: var(--text-muted); font-size: var(--t-sm); }
 .talk__waiting { margin-left: auto; color: var(--kind); font-size: var(--t-sm); font-weight: 600; }
 
 .talk__list {

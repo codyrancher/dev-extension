@@ -51,7 +51,8 @@ export const KINDS: FocusKind[] = ['review', 'issue', 'agent', 'question', 'sign
  */
 export type ActionVerb =
   | 'open' | 'url' | 'ask' | 'snooze' | 'done'
-  | 'share' | 'review' | 'fix' | 'post' | 'merge';
+  | 'share' | 'review' | 'fix' | 'post' | 'merge'
+  | 'create-pr' | 'describe' | 'ready';
 
 export interface CardAction {
   label: string;
@@ -168,8 +169,13 @@ export const SHIPPED_CARDS: CardDef[] = [
     rules:   ['fix-feedback'],
     summary: '{why}',
     wants:   ['comments', 'stat', 'checks', 'media'],
+    // Answering a review is two jobs and they are not the same act: replying to what was said,
+    // and changing the code it was said about. Both are offered because a reviewer's comment is
+    // usually one or the other and you can tell which from reading it, which is what this card is
+    // for.
     actions: [
-      { label: 'Answer the comments', verb: 'ask', prompt: 'For {what} in {workspace}: go through every review comment that has not been answered, and for each one draft a reply and say whether it needs a code change. Do not push anything.' },
+      { label: 'Draft the replies', verb: 'ask', prompt: 'For {what} in {workspace}: go through every review comment that has not been answered, and for each one draft a reply. Say which ones need a code change and which are answered by explaining. Do not push anything.' },
+      { label: 'Make the changes', verb: 'ask', prompt: 'For {what} in {workspace}: make the changes the review asked for, one commit per comment, and leave the replies for me to send. Stop and ask if a comment is ambiguous rather than guessing.' },
       { label: 'Open the workspace', verb: 'open' },
       { label: 'Open the pull request', verb: 'url' },
       { label: 'Later', verb: 'snooze', hours: 8 },
@@ -179,10 +185,11 @@ export const SHIPPED_CARDS: CardDef[] = [
     id:      'draft-pr',
     label:   'A draft waiting to be read',
     kind:    'agent',
-    rules:   ['fix-draft', 'fix-no-pr', 'mine-draft-green'],
+    rules:   ['fix-draft', 'mine-draft-green'],
     summary: '{why}',
     wants:   ['files', 'stat', 'checks', 'media', 'live'],
     actions: [
+      { label: 'Mark it ready for review', verb: 'ready', confirm: true },
       { label: 'Open the pull request', verb: 'url' },
       { label: 'Open the build', verb: 'share', kind: 'dashboard' },
       { label: 'Walk me through it', verb: 'ask', prompt: 'For {what} in {workspace}: walk me through what the agent changed, file by file, and tell me what you would want a human to check before this goes up for review.' },
@@ -270,6 +277,60 @@ export const SHIPPED_CARDS: CardDef[] = [
       { label: 'Open the pull request', verb: 'url' },
       { label: 'Is it safe?', verb: 'ask', prompt: 'For {what}: read the changelog between the two versions and the diff, and tell me whether anything in this repository uses what changed. Say plainly whether you would merge it.' },
       { label: 'Later', verb: 'snooze', hours: 24 },
+    ],
+  },
+  {
+    id:      'pick-up-work',
+    label:   'Work nobody has taken',
+    kind:    'issue',
+    rules:   ['pick-up'],
+    summary: '{why}',
+    wants:   ['pool'],
+    actions: [
+      { label: 'Open the search on GitHub', verb: 'url' },
+      { label: 'What should I pick up?', verb: 'ask', prompt: 'Look at the open unassigned issues in rancher/dashboard. Tell me which three are worth picking up next and why, given what I have been working on, and which are too vague to start.' },
+      { label: 'Later', verb: 'snooze', hours: 24 },
+    ],
+  },
+  {
+    id:      'open-pr',
+    label:   'Work with no pull request',
+    kind:    'agent',
+    rules:   ['fix-no-pr'],
+    summary: '{why}',
+    wants:   ['commits', 'files', 'stat', 'media', 'live'],
+    actions: [
+      { label: 'Open the pull request', verb: 'create-pr', confirm: true },
+      { label: 'Open the workspace', verb: 'open' },
+      { label: 'Is it ready to show?', verb: 'ask', prompt: 'For the branch in {workspace}: read the commits and the diff, and tell me whether this is ready to put up as a pull request - what is unfinished, what is debug left in, and what the description should say.' },
+      { label: 'Later', verb: 'snooze', hours: 8 },
+    ],
+  },
+  {
+    id:      'ask-reviewers',
+    label:   'Nobody is looking at it',
+    kind:    'review',
+    rules:   ['mine-unasked'],
+    summary: '{why}',
+    wants:   ['reviewers', 'stat', 'checks', 'body'],
+    actions: [
+      { label: 'Open it on GitHub', verb: 'url' },
+      { label: 'Who should review this?', verb: 'ask', prompt: 'For {what}: look at which files it changes and who has worked on them lately, and tell me who to ask for a review and what to say to them.' },
+      { label: 'Later', verb: 'snooze', hours: 12 },
+    ],
+  },
+  {
+    id:      'describe-pr',
+    label:   'It does not say what it does',
+    kind:    'signal',
+    rules:   ['mine-thin'],
+    summary: '{why}',
+    wants:   ['body', 'stat', 'files', 'commits'],
+    actions: [
+      { label: 'Write the description', verb: 'describe', confirm: true },
+      { label: 'Open it on GitHub', verb: 'url' },
+      { label: 'Draft it for me first', verb: 'ask', prompt: 'For {what}: read the diff and the commits and draft the pull request description - what it changes, why, and what a reviewer should check. Show it to me, do not post it.' },
+      { label: 'Later', verb: 'snooze', hours: 12 },
     ],
   },
   {

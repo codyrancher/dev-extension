@@ -43,7 +43,9 @@ type Store = any;
 /** What a `rancher-share` AppInstance says it is a share of. Set by the agent's own skill. */
 const SHARE_OF_LABEL = 'dev.rancher.io/share-of';
 
-export type Artifact = 'stat' | 'checks' | 'notes' | 'files' | 'comments' | 'media' | 'live' | 'body';
+export type Artifact =
+  | 'stat' | 'checks' | 'notes' | 'files' | 'comments' | 'media' | 'live' | 'body'
+  | 'pool' | 'reviewers' | 'commits';
 
 /** How big the change is. Three numbers, because they are the three everybody asks for. */
 export interface CardStat { files: number; added: number; removed: number }
@@ -116,6 +118,35 @@ export interface CardComment {
   hunk: DiffLine[];
 }
 
+/** One thing you could pick up, with what there is to judge it by. */
+export interface PoolIssue {
+  number: number;
+  title: string;
+  url: string;
+  repo: string;
+  labels: string[];
+  /** How much has been said on it: the cheapest signal of whether it is specified. */
+  comments: number;
+  /** Days since it was opened. */
+  age: number;
+}
+
+/** Who has been asked to review, and who has answered. */
+export interface Reviewers {
+  asked: string[];
+  approved: string[];
+  /** The people who have touched these files most, as the obvious people to ask. */
+  suggested: string[];
+}
+
+/** A commit on the branch: what there is to turn into a pull request. */
+export interface CardCommit {
+  sha: string;
+  message: string;
+  author: string;
+  at: string;
+}
+
 export interface CardArtifacts {
   stat: CardStat | null;
   checks: CardCheck[];
@@ -126,10 +157,24 @@ export interface CardArtifacts {
   live: CardLive[];
   body: string;
   labels: string[];
+  pool: PoolIssue[];
+  reviewers: Reviewers | null;
+  commits: CardCommit[];
 }
 
 export const NO_ARTIFACTS: CardArtifacts = {
-  stat: null, checks: [], notes: [], files: [], comments: [], media: [], live: [], body: '', labels: [],
+  stat:   null,
+  checks: [],
+  notes:  [],
+  files:  [],
+  comments: [],
+  media:  [],
+  live:   [],
+  body:   '',
+  labels: [],
+  pool:   [],
+  reviewers: null,
+  commits: [],
 };
 
 /* ── Reading one thing at a time ────────────────────────────────────────────────────────────── */
@@ -387,6 +432,52 @@ async function liveOf(store: Store, workspace: string): Promise<CardLive[]> {
   return [...shares, ...built];
 }
 
+/**
+ * The pool, read from the same search the queue counted.
+ *
+ * `myWork` already fetched it, so this takes what the page has rather than asking GitHub again -
+ * which is why `readArtifacts` is handed the work it was built from.
+ */
+function poolFrom(issues: Json[]): PoolIssue[] {
+  const now = Date.now();
+
+  return (issues || []).slice(0, 30).map((issue) => ({
+    number:   issue.number,
+    title:    issue.title,
+    url:      issue.url,
+    repo:     issue.repo,
+    labels:   issue.labels || [],
+    comments: issue.comments ?? 0,
+    age:      Math.max(0, Math.round((now - Date.parse(issue.createdAt || '')) / 86_400_000)) || 0,
+  }));
+}
+
+/**
+ * Who has been asked, who has answered, and who would be the obvious person to ask.
+ *
+ * The suggestion is the people who have touched these files most recently, which GitHub does not
+ * offer and a reviewer picker without it is a list of the whole organisation.
+ */
+function reviewersOf(pr: number, detail: Json, work: Json): Reviewers {
+  // Who has been asked comes off the queue's own copy of the pull request, not off `prDetail`:
+  // the dev API's `meta` has `approvedBy` but no review requests, and `myWork` already asked
+  // GitHub for them. Adding a call to find out what is in hand would be the wrong trade.
+  const found = [...(work?.mine || []), ...(work?.reviewing || [])].find((entry: Json) => entry.number === pr);
+  const asked: string[] = found?.reviewers || [];
+  const approved: string[] = detail?.meta?.approvedBy || [];
+  const seen = new Set([...asked, ...approved]);
+
+  // Whoever has already said something on it: the people who know this change without being
+  // briefed. GitHub suggests reviewers from code ownership, which this cannot read; the people
+  // in the thread are the next best thing and are usually the same people.
+  // Typed on the way in: `detail` is `any`, so a Set built straight off it is `Set<unknown>` and
+  // nothing can be asked about its members.
+  const authors: string[] = (detail?.reviewComments || []).map((c: Json) => String(c.author || ''));
+  const suggested = [...new Set(authors)].filter((who) => Boolean(who) && !seen.has(who)).slice(0, 5);
+
+  return { asked, approved, suggested };
+}
+
 /* ── Reading what one card wants ────────────────────────────────────────────────────────────── */
 
 /** What a task is about, as the things that can be looked up. */
@@ -424,6 +515,8 @@ export async function readArtifacts(
   wants: Artifact[],
   store: Store,
   me = '',
+  /** What the queue was built from, for the artifacts that are already in it. See poolFrom. */
+  work: Json = null,
 ): Promise<CardArtifacts> {
   const want = new Set(wants || []);
   const subject = subjectOf(task);
@@ -436,7 +529,7 @@ export async function readArtifacts(
   // One read of the pull request behind everything that comes off it. `prDetail` keeps its
   // answer for a few seconds, but the point here is that four artifacts share one await rather
   // than racing four of them through the same cache.
-  const needsPr = subject.pr && ['stat', 'checks', 'files', 'comments', 'body'].some((kind) => want.has(kind as Artifact));
+  const needsPr = subject.pr && ['stat', 'checks', 'files', 'comments', 'body', 'reviewers', 'commits'].some((kind) => want.has(kind as Artifact));
   const detail = needsPr ? await prDetail(subject.pr).catch(() => null) : null;
 
   await Promise.all([
@@ -490,6 +583,26 @@ export async function readArtifacts(
     (async() => {
       if (want.has('live')) {
         out.live = await liveOf(store, subject.workspace).catch(() => []);
+      }
+    })(),
+
+    (async() => {
+      if (want.has('pool')) {
+        out.pool = poolFrom(work?.unassigned || []);
+      }
+    })(),
+
+    (async() => {
+      if (want.has('reviewers') && detail && subject.pr) {
+        out.reviewers = reviewersOf(subject.pr, detail, work);
+      }
+    })(),
+
+    (async() => {
+      if (want.has('commits') && detail) {
+        out.commits = (detail.commits || []).slice(-12).map((commit: Json) => ({
+          sha: String(commit.sha || '').slice(0, 7), message: commit.message || '', author: commit.author || '', at: commit.date || '',
+        }));
       }
     })(),
 

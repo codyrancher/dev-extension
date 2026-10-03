@@ -122,6 +122,39 @@ export const RULES: Record<string, PriorityRule> = {
     about: 'The branch has the work on it and nothing can review it until the PR exists.',
     score: 62,
   },
+  /*
+   * The three stages of your own pull request that nothing used to notice.
+   *
+   * Between "it is a draft with a green build" and "it is approved" a pull request of yours has
+   * to be described, shown to somebody, and have their answers folded in - and none of that was
+   * in the queue, so the deck went quiet at exactly the point where the work is yours to move.
+   *
+   * Asking is worth more than describing: a pull request nobody has been asked to look at is not
+   * waiting on anything at all, where one with a thin description is at least in somebody's list.
+   */
+  'mine-unasked': {
+    label: 'Your PR has no reviewer',
+    about: 'Open, green, and nobody has been asked to look at it - so nothing is happening to it.',
+    score: 67,
+  },
+  'mine-thin': {
+    label: 'Your PR says nothing about itself',
+    about: 'A reviewer has to read the diff to find out what it is for, which is how a PR waits a week.',
+    score: 44,
+  },
+  /*
+   * Work nobody has taken.
+   *
+   * One card for the pool rather than one per issue: an unassigned backlog is not a queue, and
+   * thirty cards of other people's unfiled bugs would bury everything that is actually waiting on
+   * you. It sits near the bottom for the same reason - this is what you do when the deck is
+   * empty, which is precisely when it should be the thing in front of you.
+   */
+  'pick-up': {
+    label: 'Nobody has taken these',
+    about: 'What is open in this repository and unassigned, for when you are choosing the next thing.',
+    score: 20,
+  },
   'reviewing-pushed': {
     label: 'A PR you reviewed was pushed to',
     about: 'The follow-up look, which nobody else can give.',
@@ -386,6 +419,17 @@ function fromReviewing(prs: GithubPr[], seen: Set<number>): PriorityItem[] {
  * it outranks a red build; a red build outranks a draft, because a draft is yours to finish
  * whenever and a red build is blocking a review somebody may already be waiting to give.
  */
+/**
+ * Whether a description tells a reviewer anything.
+ *
+ * Two hundred characters, which is about three lines: below that a pull request is a title and a
+ * diff, and the reviewer's first act is working out what it is for. Deliberately a length and not
+ * a judgement - anything cleverer would be wrong about somebody's terse but complete paragraph.
+ */
+function thin(body: string): boolean {
+  return String(body || '').trim().length < 200;
+}
+
 function fromMine(prs: GithubPr[], seen: Set<number>): PriorityItem[] {
   const out: PriorityItem[] = [];
 
@@ -418,10 +462,53 @@ function fromMine(prs: GithubPr[], seen: Set<number>): PriorityItem[] {
         rule:  'mine-draft-green',
         score: weightOf('mine-draft-green'),
       });
+    } else if (!pr.draft && !pr.reviewers.length && !pr.approved) {
+      // Open, nobody asked, and not already approved: it is waiting on you to ask somebody.
+      out.push({
+        ...base,
+        needs: 'Ask somebody to review it',
+        why:   'open with nobody asked to look at it',
+        rule:  'mine-unasked',
+        score: weightOf('mine-unasked'),
+      });
+    } else if (!pr.draft && thin(pr.body)) {
+      out.push({
+        ...base,
+        needs: 'Say what it does',
+        why:   pr.body.trim() ? 'the description is a line long' : 'it has no description',
+        rule:  'mine-thin',
+        score: weightOf('mine-thin'),
+      });
     }
   }
 
   return out;
+}
+
+/**
+ * The pool of unassigned work, as one item.
+ *
+ * Its `title` carries the count and its `why` the first few, so the card has something to say
+ * before its artifacts arrive; the issues themselves are read as an artifact (focus-artifacts.ts,
+ * `pool`) because a list of thirty is not something to put in a queue item.
+ */
+function fromPool(issues: GithubIssue[]): PriorityItem[] {
+  if (!issues.length) {
+    return [];
+  }
+
+  return [{
+    key:       'pool:unassigned',
+    what:      'Unassigned',
+    title:     `${ issues.length } open issue${ issues.length === 1 ? '' : 's' } nobody has taken`,
+    needs:     'Pick one up',
+    why:       `newest: ${ issues.slice(0, 2).map((issue) => `#${ issue.number }`).join(', ') }`,
+    workspace: '',
+    url:       `https://github.com/${ issues[0].repo }/issues?q=is%3Aopen+is%3Aissue+no%3Aassignee`,
+    since:     '',
+    rule:      'pick-up',
+    score:     weightOf('pick-up'),
+  }];
 }
 
 /**
@@ -576,6 +663,7 @@ export function priorityQueue(input: {
     ...fromReviewing(input.work?.reviewing || [], claimed),
     ...fromMine(input.work?.mine || [], claimed),
     ...fromIssues(input.work?.issues || [], names),
+    ...fromPool(input.work?.unassigned || []),
     ...fromAlerts(input.alerts || [], names),
     ...fromBotPrs(input.botPrs || [], input.botReviews || {}),
     ...(input.extra || []),

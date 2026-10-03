@@ -27,8 +27,11 @@ import ReviewPass from './ReviewPass.vue';
 import ChangeSet from './ChangeSet.vue';
 import CardComments from './CardComments.vue';
 import CardEvidence from './CardEvidence.vue';
+import CardPool from './CardPool.vue';
+import CardReviewers from './CardReviewers.vue';
+import CardCommits from './CardCommits.vue';
 import { NO_ARTIFACTS } from '../../focus-artifacts';
-import type { CardArtifacts, CardComment } from '../../focus-artifacts';
+import type { CardArtifacts, CardComment, PoolIssue } from '../../focus-artifacts';
 import type { ReviewNote } from '../../focus-review';
 
 const props = defineProps<{
@@ -64,6 +67,9 @@ const emit = defineEmits<{
   (e: 'ask-code', value: { path: string; label: string; code: string; text: string }): void;
   (e: 'reply', value: { comment: CardComment }): void;
   (e: 'expand', value: { path: string; mark: [number, number] }): void;
+  (e: 'take', issue: PoolIssue): void;
+  (e: 'about-issue', issue: PoolIssue): void;
+  (e: 'ask-reviewer', who: string): void;
 }>();
 
 /**
@@ -107,15 +113,23 @@ const rest = computed(() => props.task.card.actions.slice(1));
  * it is about, the change beats the talk about it, and an issue with none of those has its own
  * words. One at a time, because each of them wants most of the card.
  */
-const surface = computed<'pass' | 'files' | 'talk' | 'prose' | ''>(() => {
+const surface = computed<'pool' | 'pass' | 'who' | 'talk' | 'files' | 'prose' | ''>(() => {
+  // The pool first: it is the whole of its card, and that card has nothing else.
+  if (art.value.pool.length) {
+    return 'pool';
+  }
   if (props.notes?.length) {
     return 'pass';
   }
-  if (art.value.files.length) {
-    return 'files';
+  // Who is looking at it beats the diff on a card about nobody looking at it.
+  if (art.value.reviewers) {
+    return 'who';
   }
   if (art.value.comments.length) {
     return 'talk';
+  }
+  if (art.value.files.length) {
+    return 'files';
   }
 
   return art.value.body ? 'prose' : '';
@@ -220,12 +234,32 @@ const waited = computed(() => (props.task.waitingHours >= 48
       -->
       <CardEvidence :artifacts="art" />
 
+      <!-- What is on the branch, for a card about turning it into something reviewable. -->
+      <CardCommits v-if="art.commits.length" :commits="art.commits" />
+
       <!-- Why this is in front of you at all, in the ranking's own words. -->
       <p v-if="task.about && !hasPass" class="card__prose">{{ task.about }}</p>
 
+      <!-- Work to choose from, when nothing is waiting on you. -->
+      <CardPool
+        v-if="surface === 'pool'"
+        :pool="art.pool"
+        :busy="busy"
+        @take="emit('take', $event)"
+        @ask="emit('about-issue', $event)"
+      />
+
+      <!-- Who has it, when that is the thing that is missing. -->
+      <CardReviewers
+        v-else-if="surface === 'who' && art.reviewers"
+        :reviewers="art.reviewers"
+        :busy="busy"
+        @ask="emit('ask-reviewer', $event)"
+      />
+
       <!-- The agent's review, when there is one waiting: the substance of a review card. -->
       <ReviewPass
-        v-if="surface === 'pass'"
+        v-else-if="surface === 'pass'"
         :notes="notes || []"
         @select="noteOn = $event"
         @expand="emit('expand', $event)"
