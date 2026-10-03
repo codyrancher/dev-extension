@@ -1,91 +1,66 @@
 /**
- * Findings waiting for your pass.
+ * Findings waiting for your pass
  *
- * The first card moved out of the bundle, and deliberately the one with the most going on: it
- * reaches all three of the shell's own setters, forwards four events past the shell, and composes
- * a surface rather than drawing one. If the api is wrong anywhere, it is wrong here.
+ * A card, whole: what it claims, what it reads, what it shows and what its buttons do. Ported from
+ * the definition that used to be compiled into the bundle, where a card was a declaration in one
+ * file and one of eleven hard-wired bodies in another - so a card somebody wanted to change was
+ * neither of them.
  *
- * This is a plain CommonJS module. It imports nothing - `api.vue` is the Vue drawing the page,
- * and `api.components` holds the surfaces, because a second copy of Vue in one page is the fault
- * that makes composables silently dead in a UMD-loaded extension. See card-api.ts.
+ * Plain CommonJS. It imports nothing: `api.vue` is the Vue drawing the page, and `require` reaches
+ * anything in the extension. See components/focus/card-api.ts for what the api carries.
  */
 module.exports = {
-  id:    'review-pass',
-  label: 'Findings waiting for your pass',
 
-  /*
-   * What to read for this card. Same names focus-artifacts.ts uses.
-   *
-   * No `checks`: the whole want produced one badge - `7 passed` - on a card whose job is to judge
-   * two agent findings, and it cost a check-runs call every time the card reached the top.
-   */
-  wants: ['notes', 'stat', 'media'],
-
-  /*
-   * The pass itself. One component, because the shell already has it and a card from a ConfigMap
-   * is not a reason to have a second one.
-   *
-   * `kept` and `select` go to the shell rather than past it: the first gates this card's own
-   * primary button, the second is what the evidence strip above the body follows. The other four
-   * go straight through to the page.
-   */
-  /*
-   * A real root element, not `<ReviewPass>` itself.
-   *
-   * The shell puts `class="card__bundle"` on whatever this draws, and a class on a component
-   * falls through to that component's own root - which for ReviewPass is behind a `v-if`. With no
-   * findings yet it renders a comment node, the class lands nowhere, and the body looks like it
-   * never drew. A card's module owns an element of its own, so the shell's class has somewhere to
-   * go on every render rather than most of them.
-   */
-  template: `
-    <div class="from-configmap" data-card="review-pass">
-      <ReviewPass
-        :notes="notes"
-        @kept="keeping"
-        @select="selected"
-        @expand="expand"
-        @resolve="resolve"
-        @ask="discuss"
-      />
-    </div>
-  `,
-
-  setup(api) {
-    const { computed } = api.vue;
-
-    return {
-      notes: computed(() => api.notes.value || []),
-
-      keeping:  (count) => api.shell.keeping(count),
-      selected: (note) => api.shell.selected(note),
-
-      expand:  (payload) => api.emit('expand', payload),
-      resolve: (payload) => api.emit('resolve', payload),
-      discuss: (payload) => api.emit('discuss', payload),
-    };
-  },
-
-  /*
-   * The buttons, which the module owns now.
-   *
-   * `Post the review` stays gated on something being kept - every one of these cards arrives at
-   * `0 of 2 decided · 0 to post`, and ungated the button posted nothing and then dismissed the
-   * card. The gate is the shell's (`when: 'anyKept'`, fed by `keeping` above), so a module gets
-   * it by naming it rather than by reimplementing it.
-   */
-  actions() {
-    return [
-      {
-        label: 'Post the review', verb: 'post', confirm: true, when: 'anyKept',
-      },
-      {
-        label:  'Which ones matter?',
-        verb:   'ask',
-        prompt: 'For {what} in {workspace}: go through the findings the review agent produced and tell me which are worth filing and which are noise, with a line of reasoning each. Do not file anything.',
-      },
+    id:      'review-pass',
+    chip:    'Agent review',
+    label:   'Findings waiting for your pass',
+    kind:    'review',
+    lede:    'findings',
+    rules:   ['review-findings', 'review-response', 'review-agent'],
+    summary: '{why}',
+    /*
+     * No `checks`. The whole want produced one badge - `7 passed` - on a card whose job is to
+     * judge two agent findings, in a strip reading "28 FILES / +3738 ADDED / -317 REMOVED / 7
+     * passed". The size of what was reviewed is context for a pass; the CI tally is not what the
+     * pass is about, and it cost a check-runs call on every turn of the deck to a review card.
+     */
+    wants:   ['notes', 'stat', 'media'],
+    /*
+     * The pass is the surface, said rather than inferred: `notes` is the only thing here the
+     * ladder would have picked anyway, and a card that names its subject cannot have it quietly
+     * outranked by an artifact somebody adds to `wants` later.
+     */
+    surface: 'pass',
+    actions: [
+      /*
+       * Gated, because it arrives ungateable. Every one of these cards is `0 of 2 decided · 0 to
+       * post` on arrival, and this button posted nothing and then dismissed the card. See
+       * `anyKept`.
+       */
+      { label: 'Post the review', verb: 'post', confirm: true, when: 'anyKept' },
+      /*
+       * Before `Open the review`, because the first visible action is the primary. With the post
+       * gated and a nav next, the 44px kind-coloured button on arrival was `Open the review` - a
+       * link dressed as the decision, which is the fault 'open-pr' and 'pick-up-work' were both
+       * fixed for. At nought decided the first move is reading them; the link stays, in the quiet
+       * slot the footer has for links.
+       */
+      { label: 'Which ones matter?', verb: 'ask', prompt: 'For {what} in {workspace}: go through the findings the review agent produced and tell me which are worth filing and which are noise, with a line of reasoning each. Do not file anything.' },
       { label: 'Open the review', verb: 'open' },
       { label: 'Later', verb: 'snooze', hours: 8 },
-    ];
+    ],
+
+  /*
+   * The body.
+   *
+   * `CardSurface` is the dispatch the shell used to hold, and it reads the `surface` declared
+   * above - so this card draws exactly what it drew before. The moment it wants something none of
+   * the eleven surfaces are, this line is where it says so, and it can compose the same pieces
+   * they do.
+   */
+  template: '<CardSurface :api="api" />',
+
+  setup(api) {
+    return { api };
   },
 };
