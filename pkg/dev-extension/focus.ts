@@ -139,7 +139,7 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'question',
     rules:   ['agent-question'],
     summary: '{why}',
-    wants:   ['body', 'media'],
+    wants:   ['conversation', 'media'],
     actions: [
       { label: 'Open the conversation', verb: 'open' },
       { label: 'Summarise what it asked', verb: 'ask', prompt: 'The agent in {workspace} has stopped and is waiting on an answer. Read the last few turns of its conversation and tell me, in three lines, what it is asking and what the options are.' },
@@ -245,7 +245,7 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'signal',
     rules:   ['stalled'],
     summary: '{why}',
-    wants:   ['body', 'media', 'checks'],
+    wants:   ['conversation', 'media', 'checks'],
     actions: [
       { label: 'What happened?', verb: 'ask', prompt: 'The work in {workspace} stopped. Read the end of its conversation and its last output, and tell me what it was doing, why it stopped, and what would get it going again.' },
       { label: 'Open the workspace', verb: 'open' },
@@ -258,7 +258,7 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'signal',
     rules:   ['advisory-critical', 'advisory-high', 'advisory-medium', 'advisory-low'],
     summary: '{why}',
-    wants:   ['body'],
+    wants:   ['advisory'],
     actions: [
       { label: 'Open the advisory', verb: 'url' },
       { label: 'Take the patch', verb: 'ask', prompt: 'Use the my-dependabot-fix skill for {what}: take the patch, run what the change touches, and open the pull request.' },
@@ -271,7 +271,7 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'issue',
     rules:   ['bot-cleared', 'bot-stopped', 'bot-green', 'bot-red'],
     summary: '{why}',
-    wants:   ['stat', 'checks', 'files'],
+    wants:   ['bump', 'stat', 'checks', 'files'],
     actions: [
       { label: 'Merge it', verb: 'merge', confirm: true },
       { label: 'Open the pull request', verb: 'url' },

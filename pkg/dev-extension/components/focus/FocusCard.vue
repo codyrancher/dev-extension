@@ -30,6 +30,8 @@ import CardEvidence from './CardEvidence.vue';
 import CardPool from './CardPool.vue';
 import CardReviewers from './CardReviewers.vue';
 import CardCommits from './CardCommits.vue';
+import CardAgent from './CardAgent.vue';
+import CardFacts from './CardFacts.vue';
 import { NO_ARTIFACTS } from '../../focus-artifacts';
 import type { CardArtifacts, CardComment, PoolIssue } from '../../focus-artifacts';
 import type { ReviewNote } from '../../focus-review';
@@ -70,6 +72,9 @@ const emit = defineEmits<{
   (e: 'take', issue: PoolIssue): void;
   (e: 'about-issue', issue: PoolIssue): void;
   (e: 'ask-reviewer', who: string): void;
+  (e: 'answer', value: { key: string; label: string }): void;
+  (e: 'workspace'): void;
+  (e: 'make-workspace'): void;
 }>();
 
 /**
@@ -102,6 +107,16 @@ const art = computed<CardArtifacts>(() => {
 /** Waiting long enough that somebody is being held up by it. */
 const overdue = computed(() => props.task.waitingHours >= 48);
 
+/**
+ * Whether a workspace could be made for this at all.
+ *
+ * Only where there is something to make one from: a pull request to review, or an issue to fix.
+ * A bump, an advisory or a hand-written task has nothing a checkout could be of, and an offer
+ * that cannot be taken is worse than no offer.
+ */
+const canMakeOne = computed(() => /#\d+/.test(props.task.what)
+  && props.task.card.actions.some((action) => action.verb === 'review' || action.verb === 'fix'));
+
 /** The first action is the one the card is built around; the rest are quieter. */
 const primary = computed(() => props.task.card.actions[0] || null);
 const rest = computed(() => props.task.card.actions.slice(1));
@@ -113,10 +128,19 @@ const rest = computed(() => props.task.card.actions.slice(1));
  * it is about, the change beats the talk about it, and an issue with none of those has its own
  * words. One at a time, because each of them wants most of the card.
  */
-const surface = computed<'pool' | 'pass' | 'who' | 'talk' | 'files' | 'prose' | ''>(() => {
-  // The pool first: it is the whole of its card, and that card has nothing else.
+const surface = computed<'agent' | 'pool' | 'facts' | 'pass' | 'who' | 'talk' | 'files' | 'prose' | ''>(() => {
+  // An agent waiting on an answer beats everything: it is the highest thing in the queue, and
+  // the answer is on the card.
+  if (art.value.agent) {
+    return 'agent';
+  }
+  // The pool next: it is the whole of its card, and that card has nothing else.
   if (art.value.pool.length) {
     return 'pool';
+  }
+  // The few facts a bump or an advisory is decided on, for the two cards that had no surface.
+  if (art.value.advisory || art.value.bump) {
+    return 'facts';
   }
   if (props.notes?.length) {
     return 'pass';
@@ -211,7 +235,37 @@ const waited = computed(() => (props.task.waitingHours >= 48
           <AppIcon name="pin" :size="13" />
         </button>
         <KindChip :kind="task.card.kind" />
-        <span class="card__where">{{ task.what }}<span v-if="task.workspace" class="card__ws"> · {{ task.workspace }}</span></span>
+        <span class="card__where">{{ task.what }}</span>
+
+        <!--
+          Where the work lives, or the offer to give it somewhere.
+          
+          It was a grey suffix on the line above - ` · lte-pr-19153` - which said which workspace
+          but did nothing, and said nothing at all for the cards that have none. Those are the
+          ones where it matters: a review somebody asked you for, an issue to pick up, a bump.
+          Making the workspace is the first thing you would do and it was the one thing the card
+          could not do.
+        -->
+        <button
+          v-if="task.workspace"
+          type="button"
+          class="card__ws"
+          :title="`Open ${ task.workspace }`"
+          @click="emit('workspace')"
+        >
+          <AppIcon name="tasks" :size="11" />
+          {{ task.workspace }}
+        </button>
+        <button
+          v-else-if="canMakeOne"
+          type="button"
+          class="card__ws card__ws--none"
+          title="Make a workspace for this and start"
+          @click="emit('make-workspace')"
+        >
+          <AppIcon name="plus" :size="11" />
+          No workspace
+        </button>
         <span v-if="overdue" class="card__overdue">
           <AppIcon name="clock" :size="13" />
           waiting {{ waited }}
@@ -234,15 +288,38 @@ const waited = computed(() => (props.task.waitingHours >= 48
       -->
       <CardEvidence :artifacts="art" />
 
-      <!-- What is on the branch, for a card about turning it into something reviewable. -->
-      <CardCommits v-if="art.commits.length" :commits="art.commits" />
+      <!--
+        What is on the branch. Above the surface when there is one, and the surface itself when
+        there is not - which is the case on the card whose subject is a branch with no pull
+        request, where everything else a card reads comes off a pull request that does not exist.
+      -->
+      <CardCommits
+        v-if="art.commits.length"
+        :commits="art.commits"
+        :class="{ 'card__only': surface === '' }"
+      />
 
       <!-- Why this is in front of you at all, in the ranking's own words. -->
       <p v-if="task.about && !hasPass" class="card__prose">{{ task.about }}</p>
 
+      <!-- What the agent is asking, with its own choices as the buttons. -->
+      <CardAgent
+        v-if="surface === 'agent' && art.agent"
+        :agent="art.agent"
+        :busy="busy"
+        @answer="emit('answer', $event)"
+      />
+
+      <!-- The facts a bump or an advisory is decided on. -->
+      <CardFacts
+        v-else-if="surface === 'facts'"
+        :advisory="art.advisory"
+        :bump="art.bump"
+      />
+
       <!-- Work to choose from, when nothing is waiting on you. -->
       <CardPool
-        v-if="surface === 'pool'"
+        v-else-if="surface === 'pool'"
         :pool="art.pool"
         :busy="busy"
         @take="emit('take', $event)"
@@ -504,7 +581,6 @@ const waited = computed(() => (props.task.waitingHours >= 48
 }
 
 /* Where the work lives, said in the same breath as what it is. */
-.card__ws { color: var(--text-faint); }
 
 /*
  * The pin: a control the size the rest of them are (the smallest button here is 30px), in the
@@ -641,6 +717,41 @@ const waited = computed(() => (props.task.waitingHours >= 48
   border-color: var(--danger) !important;
   color: var(--danger) !important;
 }
+
+/* The one thing on the card: it takes the room the absent surface would have had. */
+.card__only { flex: 1 1 auto; min-height: 0; }
+
+/* Where the work lives. A control, so it reads as somewhere you can go rather than a label. */
+.card__ws {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  /* 24px, the header line's own height: everything on that line is the same height on purpose. */
+  height: var(--head-h, 24px);
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--fast), border-color var(--fast);
+}
+
+.card__ws:hover { border-color: var(--kind); color: var(--text); }
+
+/* Nothing to open: an offer to make one, in the card's own colour so it reads as the next step. */
+.card__ws--none {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--kind) 40%, transparent);
+  color: var(--kind);
+  font-family: var(--font);
+}
+
+.card__ws--none:hover { background: color-mix(in srgb, var(--kind) 12%, transparent); }
 
 .card__stats { display: flex; gap: var(--s2); flex-wrap: wrap; align-items: center; }
 
