@@ -65,6 +65,24 @@ const emit = defineEmits<{
   (e: 'expand', value: any): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: 'answer', value: any): void;
+  /*
+   * The four the card emits that this never declared, so they stopped here.
+   *
+   * Focus.vue listens for all four on this component - `@take`, `@about-issue`, `@ask-reviewer`
+   * - and the card emits them, and nothing in between passed them on: "Take it and start" on the
+   * pool card, "Is it worth doing?" beside it, and "Nudge them" on the reviewers card were
+   * buttons that did nothing at all. A pass-through that forgets an event is the quietest
+   * possible failure, which is why they are listed rather than relayed with `v-bind`.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: 'take', issue: any): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: 'about-issue', issue: any): void;
+  (e: 'ask-reviewer', who: string): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: 'merge-bump', row: any): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: 'about-bump', row: any): void;
   (e: 'workspace'): void;
   (e: 'make-workspace'): void;
 }>();
@@ -554,6 +572,11 @@ watch(() => props.index, () => {
           @reply="emit('reply', $event)"
           @expand="emit('expand', $event)"
           @answer="emit('answer', $event)"
+          @take="emit('take', $event)"
+          @about-issue="emit('about-issue', $event)"
+          @ask-reviewer="emit('ask-reviewer', $event)"
+          @merge-bump="emit('merge-bump', $event)"
+          @about-bump="emit('about-bump', $event)"
           @workspace="emit('workspace')"
           @make-workspace="emit('make-workspace')"
         />
@@ -586,13 +609,24 @@ watch(() => props.index, () => {
       dot quietly falls back to grey.
     -->
     <nav v-if="cards.length" class="deck__rail" aria-label="Deck position">
+      <!--
+        The chevrons say how many, not just which way.
+        
+        The window has room for about thirteen of the twenty-six dots and the dots scroll inside the
+        rail, which is right - but a scroller with no number on it says nothing about there being a
+        second half, and these two were the only hint. The count is what makes the rail a position
+        rather than a decoration.
+      -->
       <button
         class="deck__step"
         type="button"
-        title="Previous card (←)"
+        :title="index ? `${ index } above — previous card (←)` : 'Previous card (←)'"
         aria-label="Previous card"
         @click="go(-1)"
-      ><AppIcon name="chevron-up" :size="16" /></button>
+      >
+        <AppIcon name="chevron-up" :size="16" />
+        <span v-if="index" class="deck__step-n">{{ index }}</span>
+      </button>
 
       <ol ref="dots" class="deck__dots">
         <li v-for="(task, n) in cards" :key="task.id">
@@ -611,10 +645,13 @@ watch(() => props.index, () => {
       <button
         class="deck__step"
         type="button"
-        title="Next card (→)"
+        :title="cards.length - index - 1 ? `${ cards.length - index - 1 } below — next card (→)` : 'Next card (→)'"
         aria-label="Next card"
         @click="go(1)"
-      ><AppIcon name="chevron-down" :size="16" /></button>
+      >
+        <AppIcon name="chevron-down" :size="16" />
+        <span v-if="cards.length - index - 1" class="deck__step-n">{{ cards.length - index - 1 }}</span>
+      </button>
     </nav>
   </section>
 </template>
@@ -650,7 +687,14 @@ watch(() => props.index, () => {
    * right for the rail, a line at the bottom for what is coming next, and a hair at the top so
    * the card does not touch the header.
    */
-  padding: 34px 62px var(--s3) clamp(var(--s3), 2vw, var(--s6));
+  /*
+   * The card takes the room, and the room is most of what this screen is for: 293px of a 478px
+   * card was chrome and 195px was content. The top was 34px for the stack's bands to show above
+   * the card (`--stack-y` is -15px), which needs 24, and the two horizontal numbers are published
+   * by the page as tokens so the chat bar can land on the card's own edges. See `--pins-w` in
+   * pages/Focus.vue.
+   */
+  padding: var(--s5) var(--deck-pad-r, 62px) var(--s3) var(--deck-pad-l, clamp(var(--s3), 2vw, var(--s6)));
   /* The axis the deck turns around is horizontal and in front of the screen. */
   perspective: 2200px;
   perspective-origin: 50% 45%;
@@ -691,8 +735,16 @@ watch(() => props.index, () => {
 .deck__behind,
 .deck__prev {
   grid-area: 1 / 1;
-  /* Nearly the page, as asked: the card is the page, and the deck's padding is the frame. */
-  width: min(1680px, 100%);
+  /*
+   * As wide as a card is worth being, which is not as wide as the window.
+   *
+   * It was `min(1680px, 100%)`, and every part of this card but one is a fixed height - the 119px
+   * header, the 37px facts band, the 61px footer - so every extra pixel of width went to a surface
+   * that was still two rows tall. On a big monitor that is a 1660px letterbox over a 127px diff.
+   * Capped, the proportions are the ones the surface was budgeted against, and the deck's own
+   * `place-items: stretch center` puts it in the middle of whatever room there is.
+   */
+  width: min(1100px, 100%);
   min-width: 0;
   max-width: 100%;
   min-height: 0;
@@ -906,19 +958,29 @@ watch(() => props.index, () => {
 }
 
 .deck__step {
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   /* Never squeezed: it is a flex item in a bounded column, which shrinks by default - and a
      step button compressed to 12px is the same bug the card's header had. */
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
+  width: var(--control-h);
+  min-height: var(--control-h);
+  padding: 2px 0;
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   background: var(--surface);
   color: var(--text-muted);
   cursor: pointer;
   transition: color var(--fast), border-color var(--fast), transform var(--fast) var(--ease-spring);
+}
+
+/* How many are that way, under the arrow: tabular so the two counts do not jitter as you turn. */
+.deck__step-n {
+  font-size: var(--t-2xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
 
 .deck__step:hover { color: var(--text); border-color: var(--border-strong); transform: scale(1.06); }

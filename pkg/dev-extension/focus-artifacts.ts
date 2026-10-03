@@ -56,13 +56,17 @@ const SHARE_OF_LABEL = 'dev.rancher.io/share-of';
  * moment the content landed, and the header you had started reading moved. A card knows from its
  * own `wants` whether it is going to have a surface; that does not change while it loads.
  */
-export const SURFACE_WANTS: Artifact[] = [
-  'notes', 'files', 'comments', 'body', 'pool', 'reviewers', 'conversation', 'advisory', 'bump', 'commits',
-];
+/*
+ * `SURFACE_WANTS` lived here: the list of wants that meant "this card has a surface, so lay the
+ * header out smaller and hide the two fallback blocks". Both fallbacks are gone - they were gated
+ * on *not* having a surface, and fifteen of the sixteen shipped cards have one, so neither drew on
+ * any of the deck's thirty-six - and the header has one size now, from a written budget rather
+ * than from what a card happens to have asked for. Nothing imported it.
+ */
 
 export type Artifact =
   | 'stat' | 'checks' | 'notes' | 'files' | 'comments' | 'media' | 'live' | 'body'
-  | 'pool' | 'reviewers' | 'commits' | 'conversation' | 'advisory' | 'bump';
+  | 'pool' | 'reviewers' | 'commits' | 'conversation' | 'advisory' | 'bump' | 'bumps';
 
 /** How big the change is. Three numbers, because they are the three everybody asks for. */
 export interface CardStat { files: number; added: number; removed: number }
@@ -147,20 +151,42 @@ export interface PoolIssue {
   /** Days since it was opened. */
   age: number;
   /**
-   * Who already has it, when anybody does.
+   * Who *else* already has it.
    *
-   * Always empty for the pool - it is built from the unassigned search - and the one fact that
-   * makes "Start the fix" the wrong button on the card about a single issue.
+   * Always empty for the pool - it is built from the unassigned search - and on the card about a
+   * single issue it is the one fact that makes "Start the fix" the wrong button.
+   *
+   * **The viewer is not in here.** It was every assignee, and `fromIssues` builds these cards from
+   * the viewer's own issues with a board status of Working - so the assignee is always the viewer,
+   * and IssueMarks drew `codyrancher has it` in `--warning` on 6 of 6 start-fix cards, naming the
+   * person reading it. A warning that fires on every card of a kind carries no information and
+   * reads as if somebody else has the work. What is worth the colour is the other case, which the
+   * live deck has exactly one of: `MSpencer87 also has it` on #13888.
    */
   assignee: string;
+  /** And whether the viewer is one of them, which is what makes it "also". */
+  mine?: boolean;
 }
 
-/** Who has been asked to review, and who has answered. */
+/**
+ * Somebody worth asking, and the reason they are worth asking.
+ *
+ * The reason is the half that makes the row a decision rather than a name: "touched this branch"
+ * and "already commented on it" are different claims, and a list of five bare handles is a
+ * reviewer picker, which is the thing this card exists instead of.
+ */
+export interface Candidate {
+  who: string;
+  /** In words, on the line under the name: "already commented on it". */
+  why: string;
+}
+
+/** Who has been asked to review, who has answered, and who else knows this change. */
 export interface Reviewers {
   asked: string[];
   approved: string[];
-  /** The people who have touched these files most, as the obvious people to ask. */
-  suggested: string[];
+  /** Who to ask, best first, with the reason each. See `reviewersOf`. */
+  suggested: Candidate[];
 }
 
 /**
@@ -227,6 +253,37 @@ export interface BumpFacts {
   major: boolean;
 }
 
+/**
+ * One row of the bumps card: a bump, as the four things that decide it in a list.
+ *
+ * Deliberately off the bot's own pull request list and nothing else - no per-bump detail read -
+ * because eleven bumps would otherwise be eleven pull requests' worth of calls for a card you
+ * scan, and because one source per number is what stopped two different failing counts appearing
+ * on the same card. See fromBotPrs.
+ */
+export interface BumpRow {
+  number: number;
+  package: string;
+  from: string;
+  to: string;
+  url: string;
+  state: 'green' | 'failing' | 'pending';
+  /**
+   * Whether the jump crosses a major.
+   *
+   * The single-bump card has said this since it was written - "crosses a major: a major version
+   * can change or remove what this repository uses, worth reading the changelog before merging" -
+   * and the card that merges without reading did not have it. On the live pile the one green row
+   * was `ts-node 8.10.2 → 10.9.2`, a major, and it was exactly what "Merge the green ones"
+   * merged. Stating the deciding fact on one card and withholding it on the card that acts is
+   * worse than never stating it.
+   */
+  major: boolean;
+  failing: number;
+  /** Days since it was last touched: an old bump is usually one nobody will ever read. */
+  age: number;
+}
+
 /** A commit on the branch: what there is to turn into a pull request. */
 export interface CardCommit {
   sha: string;
@@ -235,8 +292,26 @@ export interface CardCommit {
   at: string;
 }
 
+/**
+ * What CI says about a pull request, as the counts it says it in.
+ *
+ * Separate from `checks` because they are not the same thing and the card was reading one as the
+ * other. `checks` is at most six failures *by name*; this is how many there are. A lede reading
+ * `6 of 7 checks failing` sat 36px above its own summary line reading `6 of 46 checks failing`,
+ * and a badge read `1 passed` on a pull request where 40 had. The numbers were counts of display
+ * rows. They come straight off `detail.meta.ci`, which `ciOf` was already reading.
+ */
+export interface CardCi {
+  total: number;
+  failing: number;
+  pending: number;
+  passed: number;
+}
+
 export interface CardArtifacts {
   stat: CardStat | null;
+  ci: CardCi | null;
+  /** The failures, by name, capped at six. How many there are is `ci`. */
   checks: CardCheck[];
   notes: ReviewNote[];
   files: CardFile[];
@@ -260,10 +335,12 @@ export interface CardArtifacts {
   agent: AgentTurn | null;
   advisory: AdvisoryFacts | null;
   bump: BumpFacts | null;
+  bumps: BumpRow[];
 }
 
 export const NO_ARTIFACTS: CardArtifacts = {
   stat:   null,
+  ci:     null,
   checks: [],
   notes:  [],
   files:  [],
@@ -278,6 +355,7 @@ export const NO_ARTIFACTS: CardArtifacts = {
   agent:  null,
   advisory: null,
   bump:   null,
+  bumps:  [],
 };
 
 /* ── Reading one thing at a time ────────────────────────────────────────────────────────────── */
@@ -330,54 +408,51 @@ function statOf(detail: Json): CardStat | null {
 }
 
 /**
- * CI, as the few lines worth reading.
+ * CI: the counts, and the few names worth reading.
  *
- * The counts come off the pull request; the names come off the failures, because a passing
- * check has nothing to say and twenty of them said at length is how a card stops being read.
- * So: every failure by name with what it reported, and one pill for everything that passed.
+ * **These used to come back as one list, and the card counted the list.** The names are capped at
+ * six - a passing check has nothing to say and twenty of them said at length is how a card stops
+ * being read - and there were two synthetic rows on the end, `{n} still running` and `{n}
+ * passed`, so `checks.length` was 7 on a pull request with 46 checks and
+ * `checks.filter(passed).length` was 1 on one where 40 passed. The card's 36px lede and its badge
+ * row both read those, and both were wrong on every card with a build. So the counts leave here
+ * as counts, in their own shape, and the list is only ever the failures by name.
  */
-async function checksOf(pr: number, detail: Json): Promise<CardCheck[]> {
-  const ci = detail?.meta?.ci;
+async function ciOf(pr: number, detail: Json): Promise<{ ci: CardCi | null; checks: CardCheck[] }> {
+  const meta = detail?.meta?.ci;
 
-  if (!ci || !ci.total) {
-    return [];
+  if (!meta || !meta.total) {
+    return { ci: null, checks: [] };
   }
-  const out: CardCheck[] = [];
+  const ci: CardCi = {
+    total:   meta.total || 0,
+    failing: meta.failing || 0,
+    pending: meta.pending || 0,
+    passed:  Math.max(0, (meta.total || 0) - (meta.failing || 0) - (meta.pending || 0)),
+  };
+  const checks: CardCheck[] = [];
 
   if (ci.failing) {
     const failures = await ciFailures(pr).catch(() => null);
 
     for (const check of (failures?.checks || []).slice(0, 6)) {
-      out.push({
+      checks.push({
         name:   check.name || 'check',
         state:  'failed',
         detail: String(check.title || check.summary || '').split('\n')[0].slice(0, 120),
-        url:    check.url || ci.failingUrl || '',
+        url:    check.url || meta.failingUrl || '',
       });
     }
-    // Named by the counts when the detail call came back with nothing, so a red card is never
-    // a card that says everything passed.
-    if (!out.length) {
-      out.push({
-        name: `${ ci.failing } failing`, state: 'failed', detail: '', url: ci.failingUrl || '',
+    // One row carrying the count, where the detail call came back with nothing: the badge opens
+    // onto a list, and an empty list under a red badge reads as a card that lost the answer.
+    if (!checks.length) {
+      checks.push({
+        name: `${ ci.failing } failing`, state: 'failed', detail: '', url: meta.failingUrl || '',
       });
     }
   }
-  if (ci.pending) {
-    out.push({
-      name: `${ ci.pending } still running`, state: 'running', detail: '', url: '',
-    });
-  }
 
-  const passed = (ci.total || 0) - (ci.failing || 0) - (ci.pending || 0);
-
-  if (passed > 0) {
-    out.push({
-      name: `${ passed } passed`, state: 'passed', detail: '', url: '',
-    });
-  }
-
-  return out;
+  return { ci, checks };
 }
 
 const MEDIA_KIND = (type: string, name: string): 'image' | 'video' => (
@@ -536,15 +611,21 @@ async function liveOf(store: Store, workspace: string): Promise<CardLive[]> {
 }
 
 /**
- * The pool, read from the same search the queue counted.
+ * The pool, read from the same search the queue counted - all of it.
  *
  * `myWork` already fetched it, so this takes what the page has rather than asking GitHub again -
  * which is why `readArtifacts` is handed the work it was built from.
+ *
+ * **It used to `slice(0, 30)`.** The rule's title counts the search (`100 open issues nobody has
+ * taken`) and the card's lede and section head counted this, so one card said 100 at the top, 30
+ * at 36px 150px below it, and `30 open` under that: two different counts of one set in one glance,
+ * and the 36px one was a sample size dressed as a quantity. The list scrolls; thirty rows and a
+ * hundred rows cost the same to draw, and the honest number is free.
  */
 function poolFrom(issues: Json[]): PoolIssue[] {
   const now = Date.now();
 
-  return (issues || []).slice(0, 30).map((issue) => ({
+  return (issues || []).map((issue) => ({
     number:   issue.number,
     title:    issue.title,
     url:      issue.url,
@@ -576,10 +657,26 @@ export function issueTags(issue: PoolIssue): string[] {
 /**
  * Who has been asked, who has answered, and who would be the obvious person to ask.
  *
- * The suggestion is the people who have touched these files most recently, which GitHub does not
- * offer and a reviewer picker without it is a list of the whole organisation.
+ * **The suggestions used to be impossible on the one card that needs them.** They were built from
+ * the authors of `detail.reviewComments` - and the card asking for them is `mine-unasked`, whose
+ * whole definition is that nobody has been asked and nobody is looking, so there are no review
+ * comments by definition. Measured on both live cards of this rule: `suggested` empty, so the one
+ * surface the card has degraded to a sentence telling you to go and pick a reviewer on GitHub, and
+ * the wired-up one-press `requestReviewers` was unreachable on its own kind of work.
+ *
+ * So four sources, best first, every one of them already in hand - three off the `prDetail`
+ * response the stat and the checks come from, and one off the queue's own copy of my open pull
+ * requests. Whoever has said anything on it knows the change without being briefed; whoever has
+ * reviewed it before knows it too; and failing both, the people I have asked on my other open pull
+ * requests are the people I ask, which is the answer on exactly the card where the first three are
+ * empty by definition. Each carries why it thinks so, because a bare handle is a reviewer picker
+ * and that is the thing this card exists instead of.
+ *
+ * Not `detail.commits[].author`, which was the obvious fourth: the dev API maps it from
+ * `commit.author.name`, so it is a git display name - "Cody Jackson" - and `requestReviewers`
+ * wants a login. A candidate the one-press Ask cannot ask is the bug this function was fixing.
  */
-function reviewersOf(pr: number, detail: Json, work: Json): Reviewers {
+function reviewersOf(pr: number, detail: Json, work: Json, me: string): Reviewers {
   // Who has been asked comes off the queue's own copy of the pull request, not off `prDetail`:
   // the dev API's `meta` has `approvedBy` but no review requests, and `myWork` already asked
   // GitHub for them. Adding a call to find out what is in hand would be the wrong trade.
@@ -588,13 +685,36 @@ function reviewersOf(pr: number, detail: Json, work: Json): Reviewers {
   const approved: string[] = detail?.meta?.approvedBy || [];
   const seen = new Set([...asked, ...approved]);
 
-  // Whoever has already said something on it: the people who know this change without being
-  // briefed. GitHub suggests reviewers from code ownership, which this cannot read; the people
-  // in the thread are the next best thing and are usually the same people.
-  // Typed on the way in: `detail` is `any`, so a Set built straight off it is `Set<unknown>` and
+  // Typed on the way in: `detail` is `any`, so a list built straight off it is `unknown[]` and
   // nothing can be asked about its members.
-  const authors: string[] = (detail?.reviewComments || []).map((c: Json) => String(c.author || ''));
-  const suggested = [...new Set(authors)].filter((who) => Boolean(who) && !seen.has(who)).slice(0, 5);
+  const named = (rows: Json[], why: string): Candidate[] => (rows || [])
+    .map((row: Json) => ({ who: String(row?.author || ''), why }));
+
+  // Who I have asked on my other open pull requests, newest first. `work.mine` is the queue's own
+  // copy, so this is free, and on the card this function exists for it is the only source that can
+  // have anything in it.
+  const elsewhere: Candidate[] = (work?.mine || [])
+    .filter((entry: Json) => Number(entry?.number) !== pr && (entry?.reviewers || []).length)
+    .flatMap((entry: Json) => (entry.reviewers || [])
+      .map((who: Json) => ({ who: String(who || ''), why: `you asked them on #${ entry.number }` })));
+
+  const suggested: Candidate[] = [
+    ...named(detail?.reviewComments, 'already commented on the diff'),
+    ...named(detail?.discussion, 'already commented on it'),
+    ...named(detail?.reviews, 'has reviewed it before'),
+    ...elsewhere,
+  ]
+    .filter((row) => row.who && row.who !== me && !seen.has(row.who))
+    // First reason wins: the sources are in order of how well it knows the change, and the same
+    // person showing up twice would otherwise read as two candidates.
+    .filter((row, n, all) => all.findIndex((other) => other.who === row.who) === n)
+    /*
+     * Five, not three. This list is the whole of its card's surface - the question the card asks
+     * is "who do I ask" - and the surface is 173px now, which is three 44px rows and most of a
+     * fourth. Three candidates in a box that holds four is a list that cannot be scrolled and a
+     * row of empty space under it.
+     */
+    .slice(0, 5);
 
   return { asked, approved, suggested };
 }
@@ -797,24 +917,104 @@ async function branchDiff(workspace: string): Promise<{ files: CardFile[]; stat:
   return { files, stat: sizes.size ? { files: sizes.size, added, removed } : null };
 }
 
-/** The advisory behind an alert card, out of what the queue was built from. */
-function advisoryFrom(what: string, alerts: Json[]): AdvisoryFacts | null {
-  const slug = /Advisory\s+(\S+)/i.exec(what)?.[1] || '';
-  const found = (alerts || []).find((row: Json) => row.slug === slug || row.key === slug || row.ghsa === slug);
+/**
+ * The advisory behind an alert card, out of what the queue was built from.
+ *
+ * Matched on the queue's own key rather than on words parsed back out of the title. It read the
+ * slug out of `Advisory GHSA-xxxx` and then looked for a row whose `slug` was that - but the
+ * rows' `slug` is the *package* slug and the title carries the GHSA id (priority.ts prefers
+ * `ghsaId` when building it), and the field it tried for the id was called `ghsa` while dev-api
+ * calls it `ghsaId`. So nothing ever matched: `wants: ['advisory']` resolved to null, the surface
+ * never became 'facts', and all three live advisory cards drew a title over 126px of nothing -
+ * with `Take the patch` offered under it. The severity band, the affected range, the patched
+ * version and the summary are the facts that decision is made on.
+ *
+ * The key is `alert:<slug or ghsaId>` (see fromAlerts), which is exactly one of the two fields
+ * a row can be found by, so there is nothing to parse.
+ */
+function advisoryFrom(task: { key?: string; what: string }, alerts: Json[]): AdvisoryFacts | null {
+  const key = String(task.key || '').replace(/^alert:/, '')
+    || /Advisory\s+(\S+)/i.exec(task.what)?.[1]
+    || '';
+  const found = (alerts || []).find((row: Json) => [row.slug, row.ghsaId, row.ghsa, row.key].includes(key));
 
   if (!found) {
     return null;
   }
 
+  /*
+   * The field names are dev-api's grouped ones (`fetchDependabot`): `patchedVersion` on the
+   * group, `alerts` as the array of the raised alerts, `description` as the advisory's own prose
+   * - the group's `title` *is* its summary, and the card already uses that as its title, so
+   * repeating it here would have been the only thing in the body. `vulnerableRange` is read
+   * where dev-api carries it and is simply absent otherwise; CardFacts draws the rows it has.
+   */
   return {
     severity: String(found.severity || '').toLowerCase(),
     packages: found.packages || [],
-    affected: String(found.vulnerableRange || found.affected || ''),
-    patched:  String(found.firstPatchedVersion || found.patched || ''),
+    affected: String(found.vulnerableRange || found.alerts?.[0]?.vulnerableRange || found.affected || ''),
+    patched:  String(found.patchedVersion || found.firstPatchedVersion || found.patched || ''),
     alerts:   Number(found.count || found.alerts?.length || 0),
-    summary:  String(found.summary || found.title || '').slice(0, 600),
+    summary:  String(found.description || found.summary || '').slice(0, 600),
   };
 }
+
+/**
+ * Every unreviewed bump, as the rows of the one card that holds them all.
+ *
+ * Sorted green first and then oldest first: the green ones are the four seconds of work this card
+ * exists for, and among the rest the one that has sat longest is the one to look at.
+ */
+function bumpsFrom(botPrs: Json[], reviews: Json): BumpRow[] {
+  const state = (pr: Json): BumpRow['state'] => {
+    if (pr.ci?.failing) {
+      return 'failing';
+    }
+
+    return !pr.ci || pr.ci.pending ? 'pending' : 'green';
+  };
+
+  return (botPrs || [])
+    .filter((pr: Json) => !reviews?.[pr.number])
+    .map((pr: Json) => ({
+      number:  Number(pr.number),
+      package: String(pr.packageName || pr.title || ''),
+      from:    String(pr.fromVersion || ''),
+      to:      String(pr.toVersion || ''),
+      url:     String(pr.url || ''),
+      state:   state(pr),
+      // The same one-liner `bumpFrom` uses for the single-bump card, on the rows of the card that
+      // merges a pile of them without reading any.
+      major:   Boolean(pr.fromVersion && pr.toVersion
+        && String(pr.fromVersion).split('.')[0] !== String(pr.toVersion).split('.')[0]),
+      failing: Number(pr.ci?.failing || 0),
+      age:     Math.max(0, Math.round((Date.now() - Date.parse(pr.updatedAt || '')) / 86_400_000)) || 0,
+    }))
+    // The same dedupe the queue does, for the same reason: the bot leaves its replacements open.
+    .filter((row, n, all) => all.findIndex((other) => other.package === row.package
+      && other.from === row.from
+      && other.to === row.to) === n)
+    .sort((a, b) => (a.state === 'green' ? 0 : 1) - (b.state === 'green' ? 0 : 1) || b.age - a.age);
+}
+
+/**
+ * The description, as long as a description gets.
+ *
+ * It was `.slice(0, 2400)`, and the card printed `prose.length / 1000` beside the control that
+ * opens it - so every long description read exactly "2.4k", which is the cap and not the size of
+ * anything, and the modal it opened held 2201-2212 characters ending mid-sentence: "Cluster detail
+ * → Machine P", "(unlikely,", "writes the file to". Nothing on the card or in the modal said
+ * anything had been cut, so you read the author's description, believed you had read it, and
+ * pressed "Start a review workspace".
+ *
+ * `detail.meta.body` is in hand uncut and TextModal scrolls, so the only reason for a cap at all
+ * is that a pull request body can be a 200KB generated table and this renders markdown into the
+ * card. 40,000 characters is past every real description and short of that; the card no longer
+ * prints a number, because the honest number was never the one it had.
+ */
+const BODY_CAP = 40_000;
+
+const capBody = (body: unknown): string => String(body || '').slice(0, BODY_CAP);
 
 /** The version change behind a bump card: the one fact that decides it. */
 function bumpFrom(pr: number, botPrs: Json[]): BumpFacts | null {
@@ -869,18 +1069,30 @@ export function subjectOf(task: { what: string; workspace: string; rule: string 
  * card without that part, not a card that failed to load.
  */
 export async function readArtifacts(
-  task: { what: string; workspace: string; rule: string },
+  task: { key?: string; what: string; workspace: string; rule: string },
   wants: Artifact[],
   store: Store,
   me = '',
   /** What the queue was built from, for the artifacts that are already in it. See poolFrom. */
   work: Json = null,
   /** The other two things the queue was built from: the advisories and the bot's pull requests. */
-  extra: { alerts?: Json[]; botPrs?: Json[] } | null = null,
+  extra: { alerts?: Json[]; botPrs?: Json[]; botReviews?: Json } | null = null,
 ): Promise<CardArtifacts> {
   const want = new Set(wants || []);
   const subject = subjectOf(task);
   const out: CardArtifacts = { ...NO_ARTIFACTS };
+  /*
+   * Who the reader is *on GitHub*.
+   *
+   * `me` is `currentOwner()`, which is this Rancher's principal id put through `sanitiseOwner` -
+   * so every comparison against a GitHub login in here was against the wrong name. Measured: the
+   * start-fix cards drew "codyrancher has it" in `--warning` on every one of them, because the
+   * filter that is supposed to take the reader out of the assignee list never matched; and
+   * `comment.mine` was false on every comment the reader had written. `myWork` asks
+   * `viewer { login }` in the same query the queue is built from and returns it, and `work` is
+   * that payload - so the right name was already on the call.
+   */
+  const viewer = String(work?.login || me || '');
 
   if (!want.size) {
     return out;
@@ -901,7 +1113,10 @@ export async function readArtifacts(
 
     (async() => {
       if (want.has('checks') && detail && subject.pr) {
-        out.checks = await checksOf(subject.pr, detail).catch(() => []);
+        const found = await ciOf(subject.pr, detail).catch(() => ({ ci: null, checks: [] }));
+
+        out.ci = found.ci;
+        out.checks = found.checks;
       }
     })(),
 
@@ -930,7 +1145,7 @@ export async function readArtifacts(
 
     (async() => {
       if (want.has('comments') && detail && subject.pr) {
-        out.comments = commentsOf(subject.pr, detail, me);
+        out.comments = commentsOf(subject.pr, detail, viewer);
       }
     })(),
 
@@ -982,7 +1197,7 @@ export async function readArtifacts(
 
     (async() => {
       if (want.has('advisory')) {
-        out.advisory = advisoryFrom(task.what, extra?.alerts || []);
+        out.advisory = advisoryFrom(task, extra?.alerts || []);
       }
     })(),
 
@@ -993,8 +1208,14 @@ export async function readArtifacts(
     })(),
 
     (async() => {
+      if (want.has('bumps')) {
+        out.bumps = bumpsFrom(extra?.botPrs || [], extra?.botReviews || null);
+      }
+    })(),
+
+    (async() => {
       if (want.has('reviewers') && detail && subject.pr) {
-        out.reviewers = reviewersOf(subject.pr, detail, work);
+        out.reviewers = reviewersOf(subject.pr, detail, work, viewer);
       }
     })(),
 
@@ -1019,10 +1240,14 @@ export async function readArtifacts(
       if (subject.issue) {
         const issue = await issueBody(DEFAULT_REPO, subject.issue).catch(() => null);
 
-        out.body = String(issue?.body || '').slice(0, 2400);
+        out.body = capBody(issue?.body);
         if (issue) {
           // The same four facts the pool shows, for the card that asks you to commit a
           // workspace to this one issue. Same shape, so IssueMarks draws either.
+          // Everybody but the reader. See `assignee` on PoolIssue for what the reader being in
+          // there cost: a warning-coloured "codyrancher has it" on every card of this kind.
+          const whoElse = issue.assignees.filter((who) => who.toLowerCase() !== viewer.toLowerCase());
+
           out.issue = {
             number:   subject.issue,
             title:    issue.title,
@@ -1031,11 +1256,33 @@ export async function readArtifacts(
             labels:   issue.labels,
             comments: issue.comments,
             age:      Math.max(0, Math.round((Date.now() - Date.parse(issue.createdAt || '')) / 86_400_000)) || 0,
-            assignee: issue.assignee,
+            assignee: whoElse.join(', '),
+            mine:     issue.assignees.length !== whoElse.length,
           };
+          /*
+           * An issue's comments, which is where its evidence usually is.
+           *
+           * #13888's body is "There is clearly a margin error. Check the screenshot." and the
+           * screenshot is in a comment. They come out of the same query as the body - no extra
+           * round trip - and only the card that asked for them gets them.
+           */
+          if (want.has('comments')) {
+            out.comments = issue.comments_list.map((comment, n) => ({
+              id:      n + 1,
+              author:  comment.author,
+              mine:    comment.author.toLowerCase() === viewer.toLowerCase(),
+              pending: false,
+              body:    comment.body,
+              path:    '',
+              line:    null,
+              at:      comment.at,
+              media:   [],
+              hunk:    [],
+            }));
+          }
         }
       } else if (detail) {
-        out.body = String(detail.meta?.body || '').slice(0, 2400);
+        out.body = capBody(detail.meta?.body);
       }
     })(),
   ]);

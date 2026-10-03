@@ -5,11 +5,35 @@ every one of them is something that reads as "off" when it is broken.
 """
 import re, sys, pathlib
 
+# Every file in the view that draws a control, which is not the same list as the files somebody
+# happened to be editing when this was written. It said "nothing to fix" while four kinds of
+# pressable thing sat under the floor on nearly every card - the pin and the workspace tag at 24px
+# on 26 and 22 of 26 cards, `See the whole file` at 22px on 24 of them, and 753 code rows at 20px -
+# because none of those four lived in the five files it was looking at.
 MINE = [
   'components/focus/WeightsChart.vue',
   'components/focus/CardGallery.vue',
   'components/focus/FocusChatBar.vue',
   'components/focus/FocusCard.vue',
+  'components/focus/AppButton.vue',
+  'components/focus/CardAgent.vue',
+  'components/focus/CardBumps.vue',
+  'components/focus/CardChecks.vue',
+  'components/focus/CardComments.vue',
+  'components/focus/CardEvidence.vue',
+  'components/focus/CardFacts.vue',
+  'components/focus/CardPool.vue',
+  'components/focus/CardReviewers.vue',
+  'components/focus/ChangeSet.vue',
+  'components/focus/FocusDeck.vue',
+  'components/focus/FocusDock.vue',
+  'components/focus/MediaViewer.vue',
+  'components/focus/ReviewPass.vue',
+  'components/focus/SectionHead.vue',
+  'components/focus/StatPill.vue',
+  'components/focus/TextModal.vue',
+  'components/code/CodeView.vue',
+  'components/code/FileModal.vue',
   'pages/Focus.vue',
 ]
 ROOT = pathlib.Path('/tmp/claude-1000/dev-extension/pkg/dev-extension')
@@ -17,8 +41,19 @@ ROOT = pathlib.Path('/tmp/claude-1000/dev-extension/pkg/dev-extension')
 # What the prototype allows itself: its scale, its control sizes, its ornament values.
 SCALE = {'--s1','--s2','--s3','--s4','--s5','--s6','--s7','--s8'}
 OK_PX = {0,1,2,3,4,5,6,8,9,10,14,16,18,20,22,24,26,28,30,32,34,38,40,44,48,56,64}
-MIN_HIT = 30          # .btn--sm is 30px; nothing clickable in the POC is smaller
-CONTROL_RE = re.compile(r'^\.(?:[a-z0-9_-]*(?:btn|button|tab|edit|undo|pin|close|send|tool|peek|kind|track|row)[a-z0-9_-]*)\b', re.I)
+MIN_HIT = 30          # `--control-h` is 32px and the smallest hit area in the view is 30
+# The heights the view names. A control that says `height: var(--control-h)` is the point of having
+# the token, and the check went blind to every one of them the moment they stopped being literals -
+# which would have let the next 22px control through under a token's name.
+TOKEN_PX = {
+    '--control-h': 32, '--primary-h': 44, '--pill-h': 26, '--head-h': 32, '--ws-dot': 7,
+}
+# What counts as a control: `cursor: pointer`, and nothing about its name.
+#
+# It was a list of fourteen words a control's class might contain - btn, button, tab, pin, close,
+# row and so on - which is a guess about naming rather than a test for pressability, and it let
+# `.cv__expand` through at 22px on 24 of the deck's 26 cards because nobody had thought of
+# "expand". A declaration saying the pointer turns into a hand is the thing itself.
 
 issues = []
 for rel in MINE:
@@ -39,16 +74,24 @@ for rel in MINE:
                     issues.append((rel, line, sel, f'{px}px off the scale in "{hit.group(0).strip()}"'))
         # 3. Something you press that is too small to press.
         pressable = 'cursor: pointer' in body or 'cursor: ew-resize' in body or 'cursor: grab' in body
-        if CONTROL_RE.match(sel) and pressable:
-            h = re.search(r'(?:^|\s)height:\s*(\d+)px', body)
-            mh = re.search(r'min-height:\s*(\d+)px', body)
+        if pressable:
+            def px(prop):
+                hit = re.search(rf'(?:^|\s){ prop }:\s*([^;]+);', body)
+                if not hit:
+                    return 0
+                literal = re.match(r'\s*(\d+)px', hit.group(1))
+                if literal:
+                    return int(literal.group(1))
+                named = re.search(r'var\((--[a-z-]+)', hit.group(1))
+                return TOKEN_PX.get(named.group(1), 0) if named else 0
+
+            h, mh = px('height'), px('min-height')
             pad = re.search(r'padding:\s*(\d+)px', body)
-            tall = max(int(h.group(1)) if h else 0, int(mh.group(1)) if mh else 0,
-                       (int(pad.group(1)) * 2 + 16) if pad else 0)
+            tall = max(h, mh, (int(pad.group(1)) * 2 + 16) if pad else 0)
             if tall and tall < MIN_HIT:
                 issues.append((rel, line, sel, f'{tall}px tall; the smallest control in the POC is {MIN_HIT}px'))
-            square = re.search(r'(?:^|\s)width:\s*var\(--head-h\)', body) or re.search(r'aspect-ratio', body)
-            if not tall and not square and 'place-items: center' in body and not h:
+            square = re.search(r'(?:^|\s)width:\s*var\(--(?:head-h|control-h)\)', body) or re.search(r'aspect-ratio', body)
+            if not tall and not square and 'place-items: center' in body:
                 issues.append((rel, line, sel, 'pressable with no height set'))
 
 for rel, line, sel, what in issues:

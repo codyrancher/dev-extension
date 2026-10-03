@@ -30,7 +30,7 @@
  * frame and no more, so the strip costs a header per recording rather than a video.
  */
 import { computed } from 'vue';
-import { renderMd } from '../pr/diff';
+import Markdown from './Markdown.vue';
 import AppIcon from './AppIcon.vue';
 import type { NoteMedia } from '../../focus-review';
 
@@ -107,8 +107,9 @@ const open = (item: NoteMedia) => emit('open', { items: shown.value, at: Math.ma
 <template>
   <div class="md">
     <template v-for="(part, n) in parts" :key="n">
-      <!-- eslint-disable-next-line vue/no-v-html -- renderMd escapes authored HTML; see pr/diff.ts -->
-      <div v-if="part.kind === 'text'" class="md__text" v-html="renderMd(part.text)" />
+      <!-- A run of text, through the one component that draws markdown. `dense` because this is
+           a comment in a list and not a document in a dialog. -->
+      <Markdown v-if="part.kind === 'text'" :text="part.text" dense />
 
       <figure v-else class="md__media">
         <button
@@ -155,66 +156,6 @@ const open = (item: NoteMedia) => emit('open', { items: shown.value, at: Math.ma
   font-size: var(--t-sm);
   line-height: 1.6;
 }
-
-.md__text { min-width: 0; overflow-wrap: anywhere; }
-
-/* ── What markdown turns into ─────────────────────────────────────────────────────────────── */
-.md__text :deep(p) { margin: 0 0 var(--s2); }
-.md__text :deep(p:last-child) { margin-bottom: 0; }
-.md__text :deep(strong) { color: var(--text); font-weight: 650; }
-.md__text :deep(a) { color: var(--kind); text-decoration: none; }
-.md__text :deep(a:hover) { text-decoration: underline; }
-
-.md__text :deep(code) {
-  padding: 1px 5px;
-  border-radius: var(--r-sm);
-  background: var(--surface-raised);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 0.92em;
-}
-
-.md__text :deep(pre) {
-  margin: 0 0 var(--s2);
-  padding: var(--s3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface-sunk);
-  overflow-x: auto;
-}
-
-.md__text :deep(pre code) { padding: 0; background: none; }
-
-.md__text :deep(ul),
-.md__text :deep(ol) { margin: 0 0 var(--s2); padding-left: var(--s5); }
-.md__text :deep(li) { margin: 2px 0; }
-
-.md__text :deep(blockquote) {
-  margin: 0 0 var(--s2);
-  padding-left: var(--s3);
-  border-left: 2px solid var(--border-strong);
-  color: var(--text-muted);
-}
-
-/* A test matrix is the most useful thing in these comments and the least readable unrendered. */
-.md__text :deep(table) {
-  display: block;
-  width: max-content;
-  max-width: 100%;
-  margin: 0 0 var(--s2);
-  border-collapse: collapse;
-  overflow-x: auto;
-  font-size: var(--t-xs);
-}
-
-.md__text :deep(th),
-.md__text :deep(td) {
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  text-align: left;
-}
-
-.md__text :deep(th) { background: var(--surface-raised); color: var(--text); font-weight: 650; }
 
 /* ── The evidence, where the comment put it ───────────────────────────────────────────────── */
 .md__media { margin: 0; min-width: 0; }

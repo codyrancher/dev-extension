@@ -18,6 +18,7 @@ import AppIcon from './AppIcon.vue';
 import CodeView from '../code/CodeView.vue';
 import { fromDiffLines, highlighted } from '../code/rows';
 import CommentBody from './CommentBody.vue';
+import TextModal from './TextModal.vue';
 import MediaViewer from './MediaViewer.vue';
 import { ghAssetUrl } from '../../reviews';
 import type { NoteMedia } from '../../focus-review';
@@ -38,13 +39,25 @@ const props = defineProps<{ notes: ReviewNote[] }>();
  * called a mock from in here; this asks.
  */
 const emit = defineEmits<{
-  (e: 'progress', value: { settled: number; total: number; keeping: number }): void;
   (e: 'resolve', value: { note: ReviewNote; verdict: NoteVerdict; body?: string }): void;
   (e: 'ask', value: { note: ReviewNote; text: string }): void;
   /** Which one you are on, so the card can show that comment's evidence and not the workspace's. */
   (e: 'select', note: ReviewNote): void;
   /** Open the whole file on the lines this comment is about. See FileModal. */
   (e: 'expand', value: { path: string; mark: [number, number] }): void;
+  /**
+   * How many of them you are keeping, for the card's own `Post the review`.
+   *
+   * Nothing has been written to GitHub - the verdicts are this component's state - so the footer
+   * had no way to know whether its primary would post anything. It arrived live on every one of
+   * these cards, every one of which starts at `0 of 2 decided`, and pressing it said "Nothing was
+   * left to post." and then marked the card done. See `anyKept` in focus.ts.
+   *
+   * A count rather than a boolean, because the next thing to want it is a label. `progress` used
+   * to be emitted from here so the footer could *print* two numbers this surface already prints;
+   * this one is read and not drawn.
+   */
+  (e: 'kept', count: number): void;
 }>();
 
 /** The comment's lines, syntax-highlighted, in the shape every code view in here takes. */
@@ -71,9 +84,19 @@ const bodyOf = (note: ReviewNote) => bodies.value[note.id] ?? note.body;
 const settled = computed(() => props.notes.filter((note) => verdictOf(note) !== 'pending').length);
 const keeping = computed(() => props.notes.filter((note) => ['good', 'edited'].includes(verdictOf(note))).length);
 
-watch([settled, keeping], () => {
-  emit('progress', { settled: settled.value, total: props.notes.length, keeping: keeping.value });
-}, { immediate: true });
+watch(keeping, (count) => emit('kept', count), { immediate: true });
+
+/** The agent's words, read over the card, when three lines of them are not the argument. */
+const sayAll = ref(false);
+
+watch(selectedId, () => { sayAll.value = false; });
+
+/*
+ * `progress` used to be emitted from here so the card's footer could print "3 of 11 kept · 8
+ * still to decide" - beside this surface, which prints the same two numbers in its own meter.
+ * The card said the same thing twice about a list that could not be read at all, so the footer's
+ * copy is gone and this is the one place that counts.
+ */
 
 const verdictWord: Record<NoteVerdict, string> = {
   pending: 'needs you',
@@ -101,6 +124,22 @@ function select(note: ReviewNote) {
   editingId.value = '';
   discussingId.value = '';
   emit('select', note);
+}
+
+/**
+ * One along, decided or not.
+ *
+ * `advance` goes to the next thing that still needs you, which is what a verdict should do. This
+ * is the plain walk, for the layout where the list of notes is not on the card at all and the
+ * only other way between them is the meter.
+ */
+function step(by: number) {
+  const at = props.notes.findIndex((note) => note.id === selected.value?.id);
+  const next = props.notes[(at + by + props.notes.length) % props.notes.length];
+
+  if (next) {
+    select(next);
+  }
 }
 
 /** The next one that still wants a decision, so a pass runs forward on its own. */
@@ -195,6 +234,7 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 </script>
 
 <template>
+  <!-- `pass--few` is gone with the strip that needed it: there is one list, and it is the meter. -->
   <section v-if="selected" class="pass">
     <header class="pass__head">
       <span class="pass__title">
@@ -202,7 +242,31 @@ function pickedRun(note: ReviewNote): [number, number] | null {
         The agent's pass
       </span>
       <span class="pass__count">{{ settled }} of {{ notes.length }} decided</span>
-      <span class="pass__meter" :style="{ '--at': `${ (settled / notes.length) * 100 }%` }" />
+
+      <!--
+        The meter and the list said the same thing, and only one of them fits on this card.
+
+        It was a 4px bar whose width was `settled / notes.length` beside a column of 230px note
+        cards. One segment per finding, in its own severity, filled once decided and pressable -
+        so it is the progress *and* the list, which is the only shape of either that fits below
+        1100px, where the list is hidden and this is how you move between findings.
+      -->
+      <ol class="pass__meter">
+        <li v-for="note in notes" :key="note.id">
+          <button
+            type="button"
+            class="seg"
+            :class="[
+              `seg--${ note.severity }`,
+              { 'seg--done': verdictOf(note) !== 'pending', 'seg--on': note.id === selected.id },
+            ]"
+            :title="`${ severityWord[note.severity] } · ${ note.title } — ${ verdictWord[verdictOf(note)] }`"
+            :aria-current="note.id === selected.id ? 'true' : undefined"
+            @click="select(note)"
+          ><span class="seg__bar" /></button>
+        </li>
+      </ol>
+
       <span class="pass__keeping">{{ keeping }} to post</span>
     </header>
 
@@ -240,16 +304,19 @@ function pickedRun(note: ReviewNote): [number, number] | null {
         </span>
       </header>
 
-      <div class="hunk">
-        <CodeView
-          :rows="rowsFor(selected)"
-          :picked="pickedRun(selected)"
-          expandable
-          expand-label="See the whole file"
-          @expand="emit('expand', { path: selected.path, mark: selected.selects || [selected.line, selected.line] })"
-        />
-      </div>
+      <!--
+        The claim, above the evidence for it.
 
+        It was below: head, then the hunk at `flex: none; max-height: 156px`, then the comment.
+        Measured, `.pass__detail` was 129px of clientHeight against 314 of content, the head took
+        26 and the hunk took 100 of it - which left the agent's actual words about three pixels.
+        The card asked for a verdict on a sentence it did not display, with four verdict buttons
+        sitting on top of a code line bisected horizontally. The judgement is of the claim; the
+        code is the evidence for it, and the order says so now.
+
+        One wrapper so the grid below always has four children whichever of the two states this is
+        in - the rewording textarea takes this slot whole.
+      -->
       <div v-if="editingId === selected.id" class="detail__edit">
         <textarea
           v-model="draft"
@@ -265,8 +332,18 @@ function pickedRun(note: ReviewNote): [number, number] | null {
         </div>
       </div>
 
-      <template v-else>
-        <!-- The comment as it will read once posted: markdown, with its evidence where it put it. -->
+      <!--
+        Three lines of it, cut on a fade, with the rest in the dialog.
+
+        Nothing else is in this track. `Read it all` went to the verdict row and `because` - where
+        the agent got it from - went into the dialog with the words it belongs to: a 32px control
+        and a 38px aside inside a 56px track is the track spent on everything but the sentence,
+        which is the fault this pane was rebuilt for. The cap is on this wrapper rather than on
+        CommentBody, because CommentBody draws children and `-webkit-line-clamp` on a box with
+        element children clamps the boxes - measured, `.detail__body` came back 14px tall against
+        334 of content, which is no sentence at all.
+      -->
+      <div v-else class="detail__say">
         <CommentBody
           class="detail__body"
           :body="bodyOf(selected)"
@@ -274,11 +351,18 @@ function pickedRun(note: ReviewNote): [number, number] | null {
           :asset-url="ghAssetUrl"
           @open="viewer = $event"
         />
-        <p v-if="selected.because" class="detail__because">
-          <AppIcon name="sparkle" :size="12" />
-          {{ selected.because }}
-        </p>
-      </template>
+      </div>
+
+      <!-- The evidence: the one thing in this pane that scrolls. -->
+      <div class="hunk">
+        <CodeView
+          :rows="rowsFor(selected)"
+          :picked="pickedRun(selected)"
+          expandable
+          expand-label="See the whole file"
+          @expand="emit('expand', { path: selected.path, mark: selected.selects || [selected.line, selected.line] })"
+        />
+      </div>
 
       <div class="detail__actions">
         <AppButton
@@ -301,6 +385,19 @@ function pickedRun(note: ReviewNote): [number, number] | null {
         <AppButton variant="quiet" size="sm" icon="cross" @click="settle(selected, 'dropped')">
           {{ verdictOf(selected) === 'dropped' ? 'Dropped' : 'Drop it' }}
         </AppButton>
+
+        <!-- The whole of what is being judged, over the card: the same answer a description gets,
+             through the same dialog. A comment has no natural size either. -->
+        <AppButton variant="quiet" size="sm" icon="expand" @click="sayAll = true">Read it all</AppButton>
+
+        <!--
+          Step, because below 1100px there is no list to click: the meter above is clickable but a
+          pass runs in order, and `Mark good` only advances to the next *undecided* one.
+        -->
+        <span class="detail__step">
+          <button type="button" class="step" title="The one before" @click="step(-1)">‹</button>
+          <button type="button" class="step" title="The next one" @click="step(1)">›</button>
+        </span>
       </div>
 
       <!-- The agent, under the comment it wrote, about that comment only. -->
@@ -325,6 +422,15 @@ function pickedRun(note: ReviewNote): [number, number] | null {
         </form>
       </div>
     </article>
+    <!-- The whole of the agent's argument, over the card. TextModal teleports itself. -->
+    <TextModal
+      v-if="sayAll"
+      :title="`${ severityWord[selected.severity] } · ${ selected.title }`"
+      :text="selected.because ? `${ bodyOf(selected) }\n\n---\n\n${ selected.because }` : bodyOf(selected)"
+      :at="`${ selected.path }:${ selected.line }`"
+      @close="sayAll = false"
+    />
+
     <!--
       Teleported: this is inside the deck's transformed, clipped card, and a `position: fixed`
       child of a transform is fixed to the transform rather than to the window. Carrying
@@ -344,11 +450,20 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 </template>
 
 <style scoped>
+/*
+ * The surface takes the room, and it has to say so.
+ *
+ * Every child of `.card__body` is `flex-shrink: 1`, so this grid was outbid by the evidence band
+ * above it: measured 28px of pass - a card headed "Go through the agent's findings (round 2)" with
+ * "0 of 8 decided" and no findings on it - under 129px of band, 95px of which was one video
+ * thumbnail. See the budget on `.card__body`, which now gives every surface a floor.
+ */
 .pass {
   display: grid;
   grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   gap: var(--s3) var(--s5);
+  flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
 }
@@ -374,24 +489,57 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 
 .pass__count { color: var(--text-muted); font-size: var(--t-sm); }
 
+/*
+ * The meter, which is the list of findings.
+ *
+ * The row is `--control-h` tall so each segment is a real target - the bar inside it is 4px, so
+ * it still reads as a meter and not as a row of buttons - and the segments share the width, so a
+ * pass of three is three wide bands and a pass of twenty is twenty narrow ones.
+ */
 .pass__meter {
-  position: relative;
+  display: flex;
+  align-items: stretch;
   flex: 1;
+  gap: 2px;
   min-width: 40px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pass__meter > li { display: flex; flex: 1 1 0; min-width: 0; }
+
+.seg {
+  display: grid;
+  align-items: center;
+  flex: 1 1 0;
+  height: var(--control-h);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.seg__bar {
   height: 4px;
   border-radius: var(--r-pill);
   background: var(--surface-raised);
-  overflow: hidden;
+  transition: background var(--fast), height var(--fast) var(--ease-out);
 }
 
-.pass__meter::after {
-  content: '';
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: var(--at, 0%);
-  background: var(--kind);
-  transition: width var(--base) var(--ease-out);
-}
+/* Decided: filled in the finding's own severity, which is the colour its row carries. */
+.seg--done .seg__bar { background: var(--sev, var(--kind)); }
+.seg--blocker  { --sev: var(--danger); }
+.seg--nit      { --sev: var(--text-muted); }
+.seg--question { --sev: var(--warning); }
+.seg--praise   { --sev: var(--success); }
+
+.seg:hover .seg__bar { background: var(--text-muted); }
+.seg--done:hover .seg__bar { background: var(--sev, var(--kind)); }
+
+/* The one you are reading: taller, and in the card's hue whatever its verdict. */
+.seg--on .seg__bar { height: 10px; background: var(--kind); }
 
 .pass__keeping { color: var(--text-dim); font-size: var(--t-sm); font-weight: 560; }
 
@@ -403,12 +551,24 @@ function pickedRun(note: ReviewNote): [number, number] | null {
   min-height: 0;
   min-width: 0;
   margin: 0;
-  padding: 0 var(--s2) var(--s2) 0;
+  /* The fade's own room; see `.u-fade-y` in design/focus.css. */
+  padding: 0 var(--s2) var(--s5) 0;
   list-style: none;
   overflow: hidden auto;
   /* The deck owns the vertical gesture; this pane asks for it back. */
   touch-action: pan-y;
+  /*
+   * The fade, written out rather than taken from `.u-fade-y` in design/focus.css, because this is
+   * the one scroller in the view whose axis changes with the breakpoint - a column down the side
+   * at width, a strip along the top when the card is narrow - and a class cannot follow that. The
+   * reason for it is the utility's: a cut through the middle of a glyph reads as a rendering
+   * fault, a fade reads as a scroller, and these are the same pixels either way.
+   */
+  scroll-snap-type: y proximity;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--s5)), transparent 100%);
 }
+
+.pass__list > li { scroll-snap-align: start; }
 
 /*
  * A grid column that may be narrower than what is in it.
@@ -501,23 +661,73 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 }
 
 /* ── The comment itself ──────────────────────────────────────────────────── */
+/*
+ * Four tracks: which file, what the agent says, the code it says it about, and the verdict.
+ *
+ * It was a column of flex children where every one of them had an opinion and the pane had 129px:
+ * `.detail__head` 26px pinned, `.hunk` at `flex: none; max-height: 156px` (a cap 27px *larger*
+ * than the pane it lives in) measuring 100px, `.detail__actions` sticky at the foot, and
+ * `.detail__body` - the agent's actual words, which is the thing being judged - taking what was
+ * left, which measured about three pixels against a natural 122. 59% of the finding was below the
+ * fold, and the screenshot shows four verdict buttons sitting on top of a bisected code line.
+ *
+ * As tracks, each one's share is written down: the path line and the verdict row are `auto` and
+ * cannot be squeezed, the agent's sentence is `auto` and clamped to three lines with the rest in
+ * TextModal, and the hunk is the `minmax(0, 1fr)` - the one thing here that is a scroller, which
+ * is what evidence should be. The pane itself stops scrolling, so nothing can hide the verdicts by
+ * being long.
+ */
+/*
+ * And the tracks are written down, because `auto` beside `1fr` in a box that cannot afford both is
+ * the same starvation one level up. Measured with the say track at `auto`: the pane's computed rows
+ * were `26px 97px 0px 32px` - the sentence took 97 and the hunk, the one thing here that is meant
+ * to scroll, got nothing at all.
+ *
+ * 191px, which is what the surface leaves after the meter: 26 (the path line) + 56 (three lines of
+ * 13px at 1.45) + 53 (the hunk, which is two code rows and the row that opens the whole file) + 32
+ * (the verdicts) + three 8px gaps. `--s2` rather than `--s3` between them, because 36px of gap in
+ * 191 is a fifth of the pane spent on air.
+ */
 .pass__detail {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s3);
+  display: grid;
+  grid-template-rows: auto 56px minmax(0, 1fr) auto;
+  gap: var(--s2);
   min-height: 0;
   min-width: 0;
-  padding-right: var(--s2);
-  overflow: hidden auto;
-  touch-action: pan-y;
+  overflow: hidden;
 }
 
+/*
+ * One row, never two: it is the line that says which file and which lines, inside a pane that is
+ * 142px tall on a narrow card. A wrap here is 26px off the code.
+ */
 .detail__head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   gap: var(--s3);
-  flex-wrap: wrap;
+  min-width: 0;
 }
+
+.detail__step { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+
+.step {
+  display: grid;
+  place-items: center;
+  width: var(--control-h);
+  height: var(--control-h);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--t-md);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.step:hover { border-color: var(--border-strong); color: var(--text); }
 
 /* Both of these are `.u-pill` now; what is theirs is the colour and the voice. */
 .detail__sev {
@@ -533,8 +743,20 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 .pass__detail--question { --sev: var(--warning);    --sev-wash: var(--warning-wash); }
 .pass__detail--praise   { --sev: var(--success);    --sev-wash: var(--success-wash); }
 
-.detail__path { color: var(--text-dim); font-family: var(--mono); font-size: var(--t-sm); }
-.detail__lines { color: var(--text-faint); font-size: var(--t-sm); }
+/* The end of a path is the part that identifies it, so that is the end it keeps. */
+.detail__path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.detail__lines { flex: 0 0 auto; color: var(--text-faint); font-size: var(--t-sm); white-space: nowrap; }
 
 .detail__state {
   margin-left: auto;
@@ -545,33 +767,59 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 
 .detail__state--dropped { background: var(--surface-raised); color: var(--text-faint); }
 
-/* The few lines the comment is about, so the diff does not have to be opened. */
+/*
+ * The few lines the comment is about, and the one thing in this pane that scrolls.
+ *
+ * `max-height: 156px` lived here, which was 27px taller than the 129px pane it was inside - so the
+ * cap did nothing but guarantee the hunk ate everything the sentence above it needed. It is a
+ * track now and it takes the remainder, whatever that is.
+ */
 .hunk {
-  /* A long hunk scrolls rather than pushing the comment it belongs to out of the pane. */
-  max-height: 156px;
+  min-height: 0;
   overflow: auto;
-  flex: none;
   border-radius: var(--r-md);
 }
 
-/* The comment, rendered. It scrolls rather than pushing the four verdict buttons off the card. */
-.detail__body {
-  flex: 1 1 auto;
+/*
+ * What the agent said, and the reason it said it: three lines, with the rest over the card.
+ *
+ * A comment has no natural size, which is the same thing a pull request's description has and the
+ * same answer: a control that says what it opens, and TextModal. It was `flex: 1 1 auto` in a pane
+ * with nothing to spare, which is how it came to be three pixels tall.
+ */
+.detail__say {
+  min-width: 0;
   min-height: 0;
-  padding-right: var(--s2);
-  overflow-y: auto;
+  /*
+   * Cut on a fade rather than through a glyph, which is what the rest of this view does with a
+   * list it cannot finish - see `.u-fade-y` in design/focus.css. Written out rather than taken
+   * from the utility because the utility owes itself `--s5` of bottom padding to eat, and a 56px
+   * track has no 24px to give it; what is wanted here is only that the third line says there is a
+   * fourth. `Read it all` is on the verdict row.
+   */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--s3)), transparent 100%);
+  overflow: hidden;
 }
 
-.detail__because {
+.detail__body { min-width: 0; }
+
+/*
+ * `.detail__because` lived here: the agent's own note about where it got the finding from, drawn
+ * as a bordered aside under the comment. It is in the dialog with the comment now - see `sayAll` -
+ * because a 38px aside inside the 56px track that holds the sentence being judged is the track
+ * spent on the footnote instead of the claim.
+ */
+
+/*
+ * Rewording spans the sentence's track and the hunk's: a five-row textarea does not fit 56px, and
+ * while you are writing the comment the code it is about is not what you are reading.
+ */
+.detail__edit {
+  grid-row: 2 / 4;
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  max-width: 78ch;
-  padding: var(--s2) var(--s3);
-  border-left: 2px solid color-mix(in srgb, var(--kind) 40%, var(--border));
-  color: var(--text-muted);
-  font-size: var(--t-sm);
-  line-height: 1.5;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden auto;
 }
 
 .detail__draft {
@@ -596,17 +844,27 @@ function pickedRun(note: ReviewNote): [number, number] | null {
  * These are the whole point of the surface, and a comment long enough to scroll was pushing
  * them out of the card entirely - you could read the agent's argument but not answer it.
  */
+/*
+ * The fourth track, not an overlay on the third.
+ *
+ * These are the whole point of the surface and they were the thing that could not be reached: the
+ * pane they sat in had a computed height of 0, so they painted at card-relative 386-434 while the
+ * footer occupied 402-463, and `elementFromPoint` over the verdict row returned a footer button.
+ * Then they were `position: sticky` over a pane that scrolled, which is how they came to sit on
+ * top of a half-drawn line of code. A row with a track of its own is on screen because it has
+ * somewhere to be, and nothing is underneath it.
+ */
 .detail__actions {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
   display: flex;
   align-items: center;
   gap: var(--s2);
-  flex-wrap: wrap;
-  margin-top: auto;
-  padding: var(--s3) 0 var(--s1);
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+
+.detail__actions::-webkit-scrollbar { height: 0; }
 
 /* ── Arguing with it ─────────────────────────────────────────────────────── */
 .thread {
@@ -670,13 +928,41 @@ function pickedRun(note: ReviewNote): [number, number] | null {
   50% { opacity: 0.25; transform: translateY(-2px); }
 }
 
+/*
+ * Narrow: one finding, and no list.
+ *
+ * This is the layout that ships - the view runs at 1024px - and it was the one that could not be
+ * used at all. The list lay along the top as a strip of 230px note cards and the detail took
+ * `minmax(0, 1fr)` of what was left, which was nothing: measured, `.pass` computed its rows as
+ * `19.5px 83.5px 0px` inside a 127px surface, so `.pass__detail` had a height of 0 against a
+ * scrollHeight of 288. Its contents painted outside the card - the code of the finding at
+ * card-relative 398-860 inside a 488px card, 372px past its bottom edge - and the four verdict
+ * buttons landed under the footer, where `elementFromPoint` returned a footer button. The card
+ * said `0 of 2 decided · 0 to post` and its primary could only ever answer "N comments are still
+ * pending", because the buttons that un-pend them were not reachable.
+ *
+ * Three ways out were tried on paper. Capping the strip at 72px and flooring the detail at 120
+ * sums to 242px of rows in a 180px box, which is the same overflow one row further down. Shrinking
+ * the notes to 32px pills leaves the detail 90px, which is a severity row and no code. So: the
+ * strip goes, and the meter in the head - which already draws one segment per finding, in its
+ * severity, and is clickable - is the list. Nothing is lost that was readable; a 230px card
+ * holding a title and a path was never the thing being decided.
+ *
+ * What the detail gets: 180 (the surface) − 32 (the head) − 12 = 136px, with the verdict row
+ * sticky at its foot so it is on screen whatever is being read, the hunk capped at five code rows,
+ * and the agent's sentence clamped to three lines. Everything above the verdicts is reachable by
+ * scrolling the pane, which is what a pane with a height can do.
+ */
 @media (max-width: 1100px) {
-  .pass { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); }
-  .pass__list {
-    flex-direction: row;
-    overflow: auto hidden;
-    padding-bottom: var(--s2);
-  }
-  .note { width: 230px; flex: none; }
+  .pass { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  /* The meter is the list here. See `.pass__meter`. */
+  .pass__list { display: none; }
+  /*
+   * No caps here any more. `.hunk { max-height: 100px }` and `.detail__body { max-height: 56px }`
+   * were this fault treated at the symptom: the hunk's cap was larger than the pane on the wide
+   * layout and smaller than it needed on the narrow one, and the body's cap was a guess at three
+   * lines. The pane is four tracks now (see `.pass__detail`), so the hunk takes the remainder and
+   * the sentence is clamped by line count rather than by pixels - at either width.
+   */
 }
 </style>

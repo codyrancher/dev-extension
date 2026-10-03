@@ -25,7 +25,36 @@ import SectionHead from './SectionHead.vue';
 import CodeView from '../code/CodeView.vue';
 import { fromDiffLines, highlighted } from '../code/rows';
 
-const props = defineProps<{ files: CardFile[]; busy?: boolean }>();
+const props = withDefaults(defineProps<{
+  files: CardFile[];
+  busy?: boolean;
+  /**
+   * How many files the change really has, where that is more than were fetched.
+   *
+   * The card showed "157 FILES +13281 ADDED" in its evidence row and "What it changed · 40 files"
+   * four lines under it, and presented both as the size of the same change - because `files` is
+   * capped at the first 40 with a patch while the stat is the pull request's own total. Two
+   * numbers for one thing, neither of them labelled. The header says which this is.
+   */
+  total?: number;
+  /**
+   * The fact the card's 36px lede already said. See `claimed` in FocusCard.
+   *
+   * On draft-pr and describe-pr the lede is `13 files changed` and this head read `13 files` 150px
+   * below it. Where the list is a *subset* the count is a different fact and stays - "first 40 of
+   * 157 files" says the list is not the change - which is the one case this head was written for.
+   */
+  claimed?: string;
+}>(), { busy: false, total: 0, claimed: '' });
+
+/** The count beside the head's label, or nothing where the lede has already said it. */
+const subset = computed(() => {
+  if (props.total > props.files.length) {
+    return `first ${ props.files.length } of ${ props.total } files`;
+  }
+
+  return props.claimed === 'files' ? '' : `${ props.files.length } files`;
+});
 
 const emit = defineEmits<{
   (e: 'ask', value: { path: string; label: string; code: string; text: string }): void;
@@ -43,12 +72,23 @@ interface CodeThread {
   text: string;
 }
 
-const openPath = ref(props.files[0]?.path ?? '');
+/**
+ * The file this opens on: the one with the most changed lines in it.
+ *
+ * It opened on whichever file GitHub happened to send first, which on a 66-file pull request is
+ * a lockfile or a snapshot about half the time - so the first thing a reviewer saw was the one
+ * file nobody reads, and the first thing they did was go and find the big one. Churn is the
+ * closest thing there is to "where the change actually is", and it costs a sort.
+ */
+const biggest = (files: CardFile[]) => [...files]
+  .sort((a, b) => (b.added + b.removed) - (a.added + a.removed))[0]?.path ?? '';
+
+const openPath = ref(biggest(props.files));
 
 // A different task's files, so the file that was open is not a file any more.
 watch(() => props.files, (files) => {
   if (!files.some((entry) => entry.path === openPath.value)) {
-    openPath.value = files[0]?.path ?? '';
+    openPath.value = biggest(files);
     pick.value = null;
     threads.value = [];
   }
@@ -62,11 +102,12 @@ const root = ref<HTMLElement>();
 
 const file = computed(() => props.files.find((f) => f.path === openPath.value) ?? props.files[0]);
 
-/** The tree: one entry per directory, in the order the files came in. */
+/** The tree: one entry per directory, biggest change first, for the reason `biggest` gives. */
 const tree = computed(() => {
   const dirs: { dir: string; files: CardFile[] }[] = [];
+  const byChurn = [...props.files].sort((a, b) => (b.added + b.removed) - (a.added + a.removed));
 
-  for (const entry of props.files) {
+  for (const entry of byChurn) {
     const cut = entry.path.lastIndexOf('/');
     const dir = cut === -1 ? '' : entry.path.slice(0, cut);
     const found = dirs.find((d) => d.dir === dir);
@@ -89,11 +130,6 @@ function lineSpan(lines: DiffLine[]): [number, number] {
 
   return numbers.length ? [numbers[0], numbers[numbers.length - 1]] : [1, 1];
 }
-
-const totals = computed(() => props.files.reduce(
-  (sum, f) => ({ added: sum.added + f.added, removed: sum.removed + f.removed }),
-  { added: 0, removed: 0 },
-));
 
 function open(path: string) {
   openPath.value = path;
@@ -160,9 +196,15 @@ function ask() {
   nextTick(() => root.value?.querySelector(`[data-thread="${ thread.id }"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
 }
 
-/** GitHub's own words for what happened to a file, in shorter ones. */
+/**
+ * GitHub's own words for what happened to a file, in shorter ones.
+ *
+ * `modified` is not in here on purpose: nearly every file in a diff is modified, so a badge
+ * saying so on every file is a badge saying nothing. What is worth a word is the file that is new,
+ * gone or moved - which is the one case where the +/− pair beside it is misleading on its own.
+ */
 const statusWord: Record<string, string> = {
-  added: 'new', modified: 'changed', removed: 'gone', renamed: 'moved', changed: 'changed', copied: 'copied',
+  added: 'new', removed: 'gone', renamed: 'moved', copied: 'copied',
 };
 </script>
 
@@ -171,10 +213,28 @@ const statusWord: Record<string, string> = {
     <SectionHead
       class="changes__head"
       label="What it changed"
-      :count="`${ files.length } files`"
+      :count="subset"
     >
-      <span class="changes__stat changes__stat--add">+{{ totals.added }}</span>
-      <span class="changes__stat changes__stat--del">−{{ totals.removed }}</span>
+      <!--
+        No `+added −removed` here. It was the sum over the shown subset, not over the change, so it
+        sat 26px under the authoritative totals on the facts strip as a second unlabelled pair that
+        contradicted them: "157 FILES +13281 ADDED −507 REMOVED" on the strip against "+268 −139"
+        on this head, on the same card; "+1725 −1426" against "+1502 −1402" on another; "+2819 −5"
+        against "+1620 −5" on a third. The count beside the label does its job - it says the list
+        is the first 40 of 157 - and is the one number here that is about the subset on purpose.
+      -->
+      <!--
+        The file being read, named here rather than in a header of its own.
+
+        `.file__head` was a second heading inside the pane, and on nine of the eleven cards with a
+        diff it measured 0px tall against a scrollHeight of 16 - so the path of the file you were
+        looking at was not drawn at all, and the 38px it wanted when it did draw came off the code.
+        One header per surface, which is what SectionHead is for.
+      -->
+      <code class="changes__path" :title="file.path">{{ file.path }}</code>
+      <span v-if="statusWord[file.status]" class="u-badge">{{ statusWord[file.status] }}</span>
+      <span class="changes__stat changes__stat--add">+{{ file.added }}</span>
+      <span class="changes__stat changes__stat--del">−{{ file.removed }}</span>
       <span class="changes__hint">
         {{ threads.length ? `${ threads.length } asked about` : 'Click a line to ask about it' }}
       </span>
@@ -191,7 +251,7 @@ const statusWord: Record<string, string> = {
           @click="toggle(group.dir)"
         >
           <AppIcon :name="folded[group.dir] ? 'chevron-right' : 'chevron-down'" :size="13" />
-          {{ group.dir }}
+          <span class="tree__dirname">{{ group.dir }}</span>
         </button>
 
         <template v-if="!folded[group.dir]">
@@ -212,14 +272,7 @@ const statusWord: Record<string, string> = {
     </nav>
 
     <!-- The file. -->
-    <article class="file">
-      <header class="file__head">
-        <code class="file__path">{{ file.path }}</code>
-        <span class="file__status" :class="`file__status--${ file.status }`">{{ statusWord[file.status] }}</span>
-        <span class="file__stat file__stat--add">+{{ file.added }}</span>
-        <span class="file__stat file__stat--del">−{{ file.removed }}</span>
-      </header>
-
+    <article class="file u-fade-y">
       <div v-for="(hunk, h) in file.hunks" :key="h" class="file__hunk">
         <p class="file__hunk-head">{{ hunk.header }}</p>
 
@@ -274,11 +327,28 @@ const statusWord: Record<string, string> = {
 </template>
 
 <style scoped>
+/*
+ * Two columns, at the width this view actually runs at.
+ *
+ * A diff is a two-column object and the breakpoint for the second column was 1100px, so at the
+ * measured 1024 every diff card in the deck got the phone layout: a 32px horizontal strip of file
+ * chips over a code box. What that cost, measured on the four cards with a diff - `.tree`
+ * clientWidth 688 against scrollWidth 8,729 (157 files), 6,623, 6,616 and 3,339, so 8-20% of the
+ * file list, scrolled sideways with no scrollbar and 3 of 157 files visible; and `.file`
+ * clientHeight 99 against scrollHeight 1,762 to 22,978, which with the code pane's old 39px empty
+ * header meant 60px of a 488px card was code. 12.3% of the card for the thing the card is for.
+ *
+ * 760px, which is the narrowest a 180px file column and a readable code pane fit in. The column is
+ * a fixed track rather than `minmax(200px, 250px)`: 250 of 688 is 36% of the card spent on file
+ * names, and 180px is a path's last two segments, which is what identifies it. Ten rows at 30px.
+ */
 .changes {
   display: grid;
-  grid-template-columns: minmax(200px, 250px) minmax(0, 1fr);
+  grid-template-columns: 180px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: var(--s3) var(--s5);
+  gap: var(--s3) var(--s4);
+  /* The card is the width that decides; nothing in here is allowed to widen it. */
+  min-width: 0;
   min-height: 0;
 }
 
@@ -287,21 +357,56 @@ const statusWord: Record<string, string> = {
 .changes__head { grid-column: 1 / -1; }
 
 
-.changes__stat { font-family: var(--mono); font-size: var(--t-sm); }
+/* The end of a path identifies it, so that is the end it keeps when the head has to give. */
+.changes__path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.changes__stat { flex: 0 0 auto; font-family: var(--mono); font-size: var(--t-xs); }
 .changes__stat--add { color: var(--success); }
 .changes__stat--del { color: var(--danger); }
-.changes__hint { color: var(--text-faint); font-size: var(--t-sm); }
+
+.changes__hint { flex: 0 0 auto; color: var(--text-faint); font-size: var(--t-sm); }
 
 /* ── The tree ────────────────────────────────────────────────────────────── */
+/*
+ * A column that scrolls down, never across.
+ *
+ * `.tree` reported a scrollWidth of 8713px in a 660px box: the directory button laid its path
+ * out at full length - a flex container's bare text node cannot be ellipsised - and pushed the
+ * whole column out, which the card's body then offered to scroll sideways to. A long path loses
+ * its middle instead.
+ */
 .tree {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 0;
   min-height: 0;
-  padding-right: var(--s2);
+  /*
+   * The fade, written out rather than taken from `.u-fade-y` in design/focus.css, for the reason
+   * `.pass__list` writes its own: at this card's width the tree is a column and below 1100px it is
+   * a strip along the top, so the axis of the cut changes with the breakpoint and a class cannot
+   * follow it. The reason for it is the utility's - a row of a file list bisected horizontally at
+   * the surface's edge reads as a rendering fault, and a fade reads as a scroller - and the
+   * padding is the room the gradient eats so a short list is left alone.
+   */
+  padding: 0 var(--s2) var(--s5) 0;
   overflow: hidden auto;
   touch-action: pan-y;
+  scroll-snap-type: y proximity;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--s5)), transparent 100%);
 }
+
+.tree > * { scroll-snap-align: start; }
 
 /*
  * Never squeezed.
@@ -339,6 +444,16 @@ const statusWord: Record<string, string> = {
 .tree__dir { font-family: var(--mono); font-size: var(--t-xs); letter-spacing: 0.01em; }
 .tree__dir:hover { color: var(--text-dim); }
 
+.tree__dirname {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Right to left: the end of a path is the part that identifies it, as on the file rows. */
+  direction: rtl;
+  text-align: left;
+  white-space: nowrap;
+}
+
 .tree__file { padding-left: var(--s4); color: var(--text-dim); }
 .tree__file:hover { background: var(--surface-raised); color: var(--text); }
 
@@ -373,28 +488,10 @@ const statusWord: Record<string, string> = {
   gap: var(--s3);
   min-height: 0;
   min-width: 0;
-  padding-right: var(--s2);
+  padding: 0 var(--s2) var(--s5) 0;
   overflow: hidden auto;
   touch-action: pan-y;
 }
-
-.file__head { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; }
-.file__path { color: var(--text); font-family: var(--mono); font-size: var(--t-sm); }
-
-.file__status {
-  padding: 1px 8px;
-  border-radius: var(--r-pill);
-  background: var(--surface-raised);
-  color: var(--text-muted);
-  font-size: var(--t-xs);
-  font-weight: 620;
-}
-
-.file__status--added { background: var(--success-wash); color: var(--success); }
-.file__stat { font-family: var(--mono); font-size: var(--t-xs); }
-.file__stat--add { color: var(--success); }
-.file__stat--del { color: var(--danger); }
-
 
 .file__hunk { display: flex; flex-direction: column; gap: 6px; }
 
@@ -460,9 +557,49 @@ const statusWord: Record<string, string> = {
   50% { opacity: 0.25; transform: translateY(-2px); }
 }
 
-@media (max-width: 1100px) {
-  .changes { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; }
-  .tree { flex-direction: row; overflow: auto hidden; padding-bottom: var(--s2); }
+/*
+ * Narrow: a phone, which is the only place this layout belongs.
+ *
+ * It was the layout that *shipped*, because the breakpoint was 1100px and the view runs at 1024 -
+ * so every diff card in the deck stacked a 32px sideways strip of file chips over a 99px code box,
+ * showing 3 of 157 files and two lines of code. See `.changes` above for what that measured. The
+ * breakpoint is 760px now and this is what is left: one column, because at a phone's width there
+ * is no second one to have.
+ *
+ * Everything above the code is still a number, and the code gets the remainder. The head is 26px
+ * (SectionHead does not wrap, and it is the only header this surface has - `.file__head` was a
+ * second one, 0px tall on nine cards). The file strip is 32px of chips with its 8px scrollbar
+ * hidden: the `u-fade-x` on it already says there is more, and an 8px track under a 30px row is a
+ * quarter of the row. Capping what is above the code rather than flooring the code is the version
+ * of that fix which cannot overflow: 26 + a 140px floor + the gaps + an open ask bar is 258px of
+ * rows in a box that does not have it, which is this same bug one row further down.
+ */
+@media (max-width: 760px) {
+  .changes {
+    grid-template-columns: minmax(0, 1fr);
+    /*
+     * Three tracks for four children on purpose: the ask bar lands in an implicit fourth row, so
+     * it costs a row *and* a gap only while it is open. Four explicit tracks charge the code 8px
+     * of gap on every card whether anybody has picked a line or not - and a `min-height` floor on
+     * the pane plus an open ask bar sums to 226px of rows in a 180px box, which is this same bug
+     * one row further down. The floor is the capped furniture above it, not a declaration here.
+     */
+    grid-template-rows: auto auto minmax(0, 1fr);
+    gap: var(--s2);
+  }
+  /* Turned sideways with the strip: a bottom mask on a sideways scroller dims the row it is
+     meant to be reading. */
+  .tree {
+    flex: 0 0 auto;
+    flex-direction: row;
+    height: 32px;
+    padding: 0 var(--s5) 0 0;
+    overflow: auto hidden;
+    scroll-snap-type: x proximity;
+    mask-image: linear-gradient(to right, #000 calc(100% - var(--s5)), transparent 100%);
+    scrollbar-width: none;
+  }
+  .tree::-webkit-scrollbar { height: 0; }
   .tree__dir { display: none; }
   .tree__file { width: auto; flex: none; }
   .ask { flex-wrap: wrap; border-radius: var(--r-md); }

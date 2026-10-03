@@ -980,8 +980,22 @@ export async function issueBody(repo: string, number: number): Promise<{
   url: string;
   labels: string[];
   comments: number;
+  /**
+   * And what was actually said, which is where an issue's evidence usually is.
+   *
+   * This returned `comments` - the count - and nothing else, so the Focus card that asks you to
+   * commit a workspace to one issue printed "2 comments" in its header and had no way to open
+   * them. On #13888 that withheld the entire content of the issue: its body is "There is clearly a
+   * margin error. Check the screenshot." and the screenshot is in MSpencer87's reply. Same
+   * selection set as the body, so it is one round trip either way.
+   *
+   * Twenty, newest last, which is how a thread reads. A long thread is a different problem and not
+   * this card's.
+   */
+  comments_list: { author: string; body: string; at: string }[];
   createdAt: string;
-  assignee: string;
+  /** Every assignee. Who counts as "somebody else" is the caller's business; see readArtifacts. */
+  assignees: string[];
 }> {
   const data = await graphql(`
     query Issue($owner: String!, $name: String!, $number: Int!) {
@@ -989,7 +1003,7 @@ export async function issueBody(repo: string, number: number): Promise<{
         issue(number: $number) {
           title body url createdAt
           labels(first: 10) { nodes { name } }
-          comments { totalCount }
+          comments(last: 20) { totalCount nodes { body createdAt author { login } } }
           assignees(first: 3) { nodes { login } }
         }
       }
@@ -1003,8 +1017,13 @@ export async function issueBody(repo: string, number: number): Promise<{
     url:       issue.url || '',
     labels:    (issue.labels?.nodes || []).map((node: Json) => String(node?.name || '')).filter(Boolean),
     comments:  Number(issue.comments?.totalCount || 0),
+    comments_list: (issue.comments?.nodes || []).map((node: Json) => ({
+      author: String(node?.author?.login || 'somebody'),
+      body:   String(node?.body || ''),
+      at:     String(node?.createdAt || ''),
+    })).filter((one: { body: string }) => one.body),
     createdAt: issue.createdAt || '',
-    assignee:  (issue.assignees?.nodes || []).map((node: Json) => String(node?.login || '')).filter(Boolean).join(', '),
+    assignees: (issue.assignees?.nodes || []).map((node: Json) => String(node?.login || '')).filter(Boolean),
   };
 }
 

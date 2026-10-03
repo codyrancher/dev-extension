@@ -16,10 +16,18 @@
  * works in an editor. The indices are into the rows given, so a caller that slices its rows gets
  * indices into the slice.
  *
- * **The way out.** `expandable` draws one control in the corner, and the caller decides what it
- * opens; in practice that is FileModal, with this same component inside it showing the whole file
- * with these lines marked. A hunk is six lines of context either side, and the question it raises
- * most often is what the rest of the function looks like.
+ * **The way out.** `expandable` draws one row at the foot of the hunk, and the caller decides what
+ * it opens; in practice that is FileModal, with this same component inside it showing the whole
+ * file with these lines marked. A hunk is six lines of context either side, and the question it
+ * raises most often is what the rest of the function looks like.
+ *
+ * That control used to be a chip floated into a header, and the header drew whenever *either* a
+ * label or the chip was there. `ChangeSet` passes no label, so on all seven diff cards in the deck
+ * `.cv__head` measured `{h: 39, label: "", kids: 1}`: a full-width band of `--surface-raised` with
+ * nothing in it but one right-floated chip, sitting on top of every piece of code in the view. On
+ * the open-pr card the whole code pane was 99px, so 39% of it was an empty strip, and in all four
+ * diff screenshots it read as a rendering failure. A header draws when there is a heading; the way
+ * out of a hunk goes at the end of the hunk, which is where a diff puts it everywhere else.
  */
 import { computed } from 'vue';
 import AppIcon from '../focus/AppIcon.vue';
@@ -100,18 +108,9 @@ defineExpose({
     class="cv"
     :class="{ 'cv--pickable': selectable, 'cv--wrap': wrap, 'cv--one-side': !twoSided }"
   >
-    <header v-if="label || expandable" class="cv__head">
-      <code v-if="label" class="cv__label">{{ label }}</code>
-      <button
-        v-if="expandable"
-        type="button"
-        class="cv__expand"
-        :title="expandLabel"
-        @click="emit('expand')"
-      >
-        <AppIcon name="expand" :size="12" />
-        <span>{{ expandLabel }}</span>
-      </button>
+    <!-- A heading, only where there is a heading. See the note at the top of this file. -->
+    <header v-if="label" class="cv__head">
+      <code class="cv__label">{{ label }}</code>
     </header>
 
     <div class="cv__rows">
@@ -142,6 +141,20 @@ defineExpose({
         <!-- Anything anchored to this line: a question asked about it, a composer, an answer. -->
         <slot name="after" :row="row" :index="i" />
       </template>
+
+      <!-- The last row of the hunk, in the hunk row's own treatment: the rest of the file. -->
+      <button
+        v-if="expandable"
+        type="button"
+        class="cv__row cv__row--out"
+        :title="expandLabel"
+        @click="emit('expand')"
+      >
+        <span class="cv__span cv__span--out">
+          <AppIcon name="chevron-down" :size="12" />
+          {{ expandLabel }}
+        </span>
+      </button>
     </div>
   </div>
 </template>
@@ -161,7 +174,7 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: var(--s2);
-  padding: 4px var(--s2) 4px var(--s3);
+  padding: 3px var(--s2) 3px var(--s3);
   border-bottom: 1px solid var(--border);
   background: var(--surface-raised);
 }
@@ -175,25 +188,33 @@ defineExpose({
   white-space: nowrap;
 }
 
-.cv__expand {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 22px;
-  margin-left: auto;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  background: transparent;
-  color: var(--text-muted);
-  font-family: var(--font);
-  font-size: var(--t-xs);
+/*
+ * The way out of a hunk: the hunk's last row, at the height everything you press here is.
+ *
+ * It was a 22px chip in a header - two thirds of the 32px floor the view sets for itself, and the
+ * header it was floated into was an empty 39px band on every diff card in the deck. A row costs
+ * the hunk its own height and nothing above the code.
+ */
+.cv__row--out {
+  width: 100%;
+  min-height: var(--control-h);
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
-  white-space: nowrap;
-  transition: color var(--fast), border-color var(--fast);
 }
 
-.cv__expand:hover { border-color: var(--kind, var(--accent)); color: var(--text); }
+.cv__span--out {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--control-h);
+  color: var(--text-muted);
+  font-family: var(--font);
+}
+
+.cv__row--out:hover .cv__span--out { background: var(--surface); color: var(--text); }
 
 .cv__row {
   display: grid;
@@ -211,7 +232,16 @@ defineExpose({
 
 .cv--one-side .cv__row { grid-template-columns: 44px 16px minmax(0, 1fr); }
 
-.cv--pickable .cv__row { cursor: pointer; }
+/*
+ * A line you can press is a control; a line you only read is text.
+ *
+ * `.cv__row` measured 20px across 753 instances in one walk of the deck, and the view's own floor
+ * is 32px - but a diff at 32px a line is a third of the lines on screen, and reading the code is
+ * what the component is for. So only the rows that are actually pickable grow: the padding makes
+ * the whole row the target at 30px without changing the leading of the code inside it, and a
+ * read-only diff keeps its density.
+ */
+.cv--pickable .cv__row { padding-block: 5px; cursor: pointer; }
 .cv--pickable .cv__row:hover { background: color-mix(in srgb, var(--kind, var(--accent)) 7%, transparent); }
 .cv--pickable .cv__row:focus-visible { outline: 2px solid var(--kind, var(--accent)); outline-offset: -2px; }
 

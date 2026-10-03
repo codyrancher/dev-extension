@@ -1,27 +1,72 @@
 <script setup lang="ts">
 /**
- * The things you would have gone and looked up, on the card.
+ * The things you would have gone and looked up, as one line of facts under the card's lede.
  *
- * Four of them, each drawn only when the card's work has it: how big the change is, what CI
- * says about it, what is running on a link you can click around in, and what the agent recorded
- * while it was working. None of them is the point of a card - the change itself or the agent's
- * review is - so all four live in one band above it, small, in the order you would ask.
+ * How big the change is, what CI says about it, who said yes, what is running on a link, what the
+ * agent recorded, how long it has sat, and the description if there is one to read. None of them
+ * is the point of a card - the change itself or the agent's review is - so all of them are one
+ * 26px line above it, in the order you would ask.
  *
- * CI is one badge per state, not one per check: `4 failing` opens the list. Four e2e suites named
- * in full - `e2e-test (admin, @adminUser, @navigation, @extensions)` - took two rows of the card
- * above the change they were about. See CardChecks.
+ * **It was a toolbar, and it was a sideways scroller.** Every one of those facts was a bordered
+ * box: three `StatPill`s at an 8px radius beside four `.u-pill` capsules at 999px on the same
+ * 26px row, in a strip with `overflow: auto` and a 24px fade. What that cost, all measured on the
+ * live deck:
  *
- * The screenshots are evidence rather than the subject, so they are thumbnails that open: see
- * MediaViewer, which is where a recording is actually watchable.
+ *   - `.card__strip` scrollWidth/clientWidth 593/472, 601/543, 740/524, 596/563 - overflowing on
+ *     4 of the 11 cards walked, with a hidden scrollbar and a fade as the only sign of it.
+ *   - on the red-pr card, `.ck` - the one control that card exists for, the list of failures -
+ *     measured x812 to r1025 against a window of 1024: off the screen.
+ *   - on the review-asked card the strip arrived already scrolled (`scrollLeft` 216 with no
+ *     interaction), because `.u-fade-x > * { scroll-snap-align: start }` landed on this
+ *     component's own `display: contents` root, which measures 0px wide - so the zero-box wrapper
+ *     was the snap target and the real pills inside it were not. The first thing on the fact line
+ *     was 60px of a pill reading "OVED", with `+13281 added` and `-507 removed` off the card to
+ *     the left.
+ *   - and when everything on a row has a border, nothing on it reads as a control.
+ *
+ * So: the numbers are text, coloured, with `·` between them, on one line that ellipsises and
+ * never scrolls. A border is kept for the two or three things that are actually pressable, and
+ * anything past that collapses into one `+n` chip that opens a `.u-popover` - the pattern
+ * CardChecks already uses. `StatPill` is gone; it was the only box on the row that did not know
+ * it was on a row.
  */
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import AppIcon from './AppIcon.vue';
-import StatPill from './StatPill.vue';
 import MediaViewer from './MediaViewer.vue';
 import CardChecks from './CardChecks.vue';
+import { under } from './popover';
 import type { CardArtifacts } from '../../focus-artifacts';
 
-const props = defineProps<{ artifacts: CardArtifacts }>();
+const props = defineProps<{
+  artifacts: CardArtifacts;
+  /**
+   * The fact the card's 36px lede has already said, which this row may not say again.
+   *
+   * `13 files changed` at 36px with `13 FILES` 50px beside it, on 9 of the deck's 26 cards; the
+   * same with `157`. The deltas stay - they are the pair nobody reads off the lede - and the
+   * count goes, because one of them earns its place and not both. See `claimed` in FocusCard.
+   */
+  claimed?: string;
+  /** How long it has sat, in the card's own words, or '' where the lede already said it. */
+  waited?: string;
+  /**
+   * What the description would be called, where there is one to read and a surface it would eat.
+   *
+   * The control for it belongs on this line with the other things you go and look at, rather than
+   * in a second row of the card's own - which is what made the band wrap to 71px and 105px.
+   */
+  prose?: string;
+  /**
+   * How many comments there are, where the card's subject is not the comments.
+   *
+   * The start-fix card withheld the only evidence its issue had: the screenshot is in a comment,
+   * the head printed "2 comments" and nothing opened them. This is the control that does, the way
+   * the recordings pill opens the recordings.
+   */
+  talk?: number;
+}>();
+
+const emit = defineEmits<{ (e: 'read'): void; (e: 'talk'): void }>();
 
 /*
  * Teleported rather than opened in place: this card is inside a transformed, clipped element,
@@ -29,6 +74,21 @@ const props = defineProps<{ artifacts: CardArtifacts }>();
  * window. The deck transforms every card it holds.
  */
 const viewerAt = ref<number | null>(null);
+
+/** The overflow, when there are more things to go and look at than fit on a 26px line. */
+const moreOpen = ref(false);
+const root = ref<HTMLElement | null>(null);
+
+function away(event: MouseEvent) {
+  const inMenu = (event.target as HTMLElement)?.closest?.('.ev__menu');
+
+  if (moreOpen.value && root.value && !root.value.contains(event.target as Node) && !inMenu) {
+    moreOpen.value = false;
+  }
+}
+
+onMounted(() => window.addEventListener('click', away, true));
+onBeforeUnmount(() => window.removeEventListener('click', away, true));
 
 /**
  * Who has already said yes.
@@ -40,93 +100,202 @@ const viewerAt = ref<number | null>(null);
  */
 const approved = computed(() => props.artifacts.reviewers?.approved || []);
 
-const has = computed(() => Boolean(
-  props.artifacts.stat
-  || props.artifacts.checks.length
-  || props.artifacts.live.length
-  || props.artifacts.media.length
-  || approved.value.length,
-));
+/** One tone per kind of number, so the colour does the work the borders were doing badly. */
+type Tone = '' | 'good' | 'bad' | 'warn';
+interface Fact { n: string; of: string; tone: Tone }
 
-/** Failures first: the reason to look at CI at all is the thing that is red. */
-const checks = computed(() => [...props.artifacts.checks].sort((a, b) => (
-  (a.state === 'failed' ? 0 : a.state === 'running' ? 1 : 2) - (b.state === 'failed' ? 0 : b.state === 'running' ? 1 : 2)
-)));
+/**
+ * The facts, as a sentence.
+ *
+ * Deliberately in the order somebody asks them - how big, did it build, who looked at it, how
+ * long has it been there - rather than in the order the artifacts happen to arrive.
+ */
+const facts = computed<Fact[]>(() => {
+  const a = props.artifacts;
+  const out: Fact[] = [];
 
+  if (a.stat) {
+    if (props.claimed !== 'files') {
+      out.push({ n: String(a.stat.files), of: a.stat.files === 1 ? 'file' : 'files', tone: '' });
+    }
+    out.push({ n: `+${ a.stat.added }`, of: '', tone: 'good' });
+    out.push({ n: `−${ a.stat.removed }`, of: '', tone: 'bad' });
+  }
+  if (a.ci?.pending) {
+    out.push({ n: String(a.ci.pending), of: 'still running', tone: 'warn' });
+  }
+  if (a.ci?.passed) {
+    out.push({ n: String(a.ci.passed), of: 'passed', tone: 'good' });
+  }
+  for (const who of approved.value) {
+    out.push({ n: who, of: 'approved', tone: 'good' });
+  }
+  if (props.waited) {
+    out.push({ n: props.waited, of: 'waiting', tone: '' });
+  }
+
+  return out;
+});
+
+/**
+ * Something you go and look at: a link, a recording, the description.
+ *
+ * The failing checks are not in here - they are CardChecks, which carries its own popover and is
+ * the subject of the card whose build is red, so it is never the thing that collapses.
+ */
+interface Go {
+  key: string;
+  label: string;
+  icon: 'expand' | 'play' | 'pencil' | 'send';
+  url: string;
+  /** For a live build: which of the four states its dot is in. */
+  state: string;
+  title: string;
+}
+
+const goes = computed<Go[]>(() => {
+  const a = props.artifacts;
+  const out: Go[] = a.live.map((live) => ({
+    key:   `live-${ live.kind }`,
+    label: live.state === 'serving' ? live.label : `${ live.label } ${ live.state }`,
+    icon:  'expand' as const,
+    url:   live.url || '',
+    state: live.state,
+    title: live.detail || live.label,
+  }));
+
+  if (a.media.length) {
+    out.push({
+      key:   'shots',
+      label: `${ a.media.length } ${ a.media.length === 1 ? 'recording' : 'recordings' }`,
+      icon:  'play',
+      url:   '',
+      state: '',
+      title: `Watch what it recorded: ${ a.media.map((item) => item.label).join(', ') }`,
+    });
+  }
+  if (props.talk) {
+    const label = `${ props.talk } ${ props.talk === 1 ? 'comment' : 'comments' }`;
+
+    out.push({
+      key: 'talk', label, icon: 'send', url: '', state: '', title: `Read what was said: ${ label }`,
+    });
+  }
+  if (props.prose) {
+    out.push({
+      key: 'prose', label: `Read ${ props.prose.toLowerCase() }`, icon: 'pencil', url: '', state: '', title: `Read ${ props.prose.toLowerCase() }`,
+    });
+  }
+
+  return out;
+});
+
+/**
+ * How many of them get a chip of their own.
+ *
+ * Three controls on a 26px line is about 390px of the ~480px this row has beside a 36px lede, and
+ * the failing-checks badge is one of them where it exists. Past that the line could only grow or
+ * scroll, and both of those are what this row was being fixed for.
+ */
+const room = computed(() => (props.artifacts.ci?.failing ? 2 : 3));
+const shown = computed(() => goes.value.slice(0, room.value));
+const over = computed(() => goes.value.slice(shown.value.length));
+
+function pressed(go: Go) {
+  moreOpen.value = false;
+  if (go.key === 'shots') {
+    viewerAt.value = 0;
+  } else if (go.key === 'prose') {
+    emit('read');
+  } else if (go.key === 'talk') {
+    emit('talk');
+  }
+}
+
+const has = computed(() => Boolean(facts.value.length || props.artifacts.ci?.failing || goes.value.length));
+
+/** Measured from the chip that opens it; see `under` for why it cannot just be absolute. */
+const moreAt = ref<Record<string, string>>({});
+
+function openMore() {
+  moreOpen.value = !moreOpen.value;
+  if (moreOpen.value) {
+    moreAt.value = under(more.value, 280);
+  }
+}
+
+const more = ref<HTMLElement | null>(null);
 </script>
 
 <template>
-  <div v-if="has" class="ev">
-    <!-- How big it is, and what the robots think of it. -->
-    <div v-if="artifacts.stat || checks.length || approved.length" class="ev__row">
-      <template v-if="artifacts.stat">
-        <StatPill label="files" :value="String(artifacts.stat.files)" />
-        <StatPill label="added" :value="`+${ artifacts.stat.added }`" tone="good" />
-        <StatPill label="removed" :value="`−${ artifacts.stat.removed }`" tone="bad" />
+  <div v-if="has" ref="root" class="ev">
+    <!-- The numbers, as one line of text that loses its tail rather than scrolling. -->
+    <p v-if="facts.length" class="ev__line">
+      <template v-for="(fact, n) in facts" :key="`${ fact.n }-${ fact.of }`">
+        <span v-if="n" class="ev__sep">·</span><span class="ev__fact" :class="`ev__fact--${ fact.tone || 'plain' }`"><span class="ev__n">{{ fact.n }}</span><span v-if="fact.of" class="ev__of">{{ fact.of }}</span></span>
       </template>
+    </p>
 
-      <CardChecks v-if="checks.length" :checks="checks" />
+    <!-- The failures, which are the one thing on this row that is a card's whole subject. -->
+    <CardChecks v-if="artifacts.ci?.failing" :ci="artifacts.ci" :checks="artifacts.checks" :claimed="claimed" />
 
-      <!-- Who said yes. Named, because "approved" with nobody attached to it is not a fact. -->
-      <span v-for="who in approved" :key="who" class="u-pill ev__yes">
-        <AppIcon name="check" :size="11" />
-        {{ who }}
-      </span>
-    </div>
+    <!-- Everything you go and look at, bordered because it is pressed. -->
+    <component
+      :is="go.url ? 'a' : 'button'"
+      v-for="go in shown"
+      :key="go.key"
+      class="u-pill ev__go"
+      :class="[`ev__go--${ go.key.split('-')[0] }`, go.state ? `ev__go--${ go.state }` : '']"
+      :type="go.url ? undefined : 'button'"
+      :href="go.url || undefined"
+      :target="go.url ? '_blank' : undefined"
+      :rel="go.url ? 'noopener' : undefined"
+      :title="go.title"
+      @click="go.url ? undefined : pressed(go)"
+    >
+      <span v-if="go.state" class="ev__dot" />
+      <AppIcon v-else :name="go.icon" :size="11" />
+      {{ go.label }}
+    </component>
 
-    <!-- Something running, on a link: the build of this branch you can actually click around in. -->
-    <div v-if="artifacts.live.length" class="ev__row">
-      <component
-        :is="live.url ? 'a' : 'span'"
-        v-for="live in artifacts.live"
-        :key="live.kind"
-        class="u-pill live"
-        :class="`live--${ live.state }`"
-        :href="live.url || undefined"
-        target="_blank"
-        rel="noopener"
-        :title="live.detail || live.label"
+    <!-- And the rest behind one chip, rather than off the edge of the card. -->
+    <template v-if="over.length">
+      <button
+        ref="more"
+        type="button"
+        class="u-pill ev__go"
+        :title="over.map((go) => go.label).join(', ')"
+        :aria-expanded="moreOpen ? 'true' : 'false'"
+        @click="openMore"
       >
-        <span class="live__dot" />
-        <span class="live__label">{{ live.label }}</span>
-        <span v-if="live.state !== 'serving'" class="live__state">{{ live.state }}</span>
-        <AppIcon v-else name="expand" :size="11" />
-      </component>
-    </div>
+        +{{ over.length }}
+        <AppIcon :name="moreOpen ? 'chevron-up' : 'chevron-down'" :size="11" />
+      </button>
 
-    <!-- What it recorded while it worked. Newest first, because that is the run you mean. -->
-    <div v-if="artifacts.media.length" class="ev__shots">
-      <figure
-        v-for="(item, n) in artifacts.media"
-        :key="item.src"
-        class="shot"
-      >
-        <button
-          type="button"
-          class="shot__frame"
-          :title="`Open ${ item.label }`"
-          @click="viewerAt = n"
-        >
-          <img
-            v-if="item.kind === 'image'"
-            class="shot__img"
-            :src="item.src"
-            :alt="item.label"
-            loading="lazy"
-          >
-          <video
-            v-else
-            class="shot__img"
-            :src="item.src"
-            muted
-            preload="metadata"
-          />
-          <span v-if="item.kind === 'video'" class="shot__play"><AppIcon name="play" :size="16" /></span>
-          <span class="shot__open"><AppIcon name="expand" :size="12" /></span>
-        </button>
-        <figcaption class="shot__label">{{ item.label }}</figcaption>
-      </figure>
-    </div>
+      <!-- Teleported for the reason CardChecks' list is: four boxes between here and the page
+           clip, and the deck transforms the card. See `under`. -->
+      <Teleport to="body">
+        <div class="dev-focus">
+          <div v-if="moreOpen" class="u-popover ev__menu" :style="moreAt">
+            <component
+              :is="go.url ? 'a' : 'button'"
+              v-for="go in over"
+              :key="go.key"
+              class="ev__row"
+              :type="go.url ? undefined : 'button'"
+              :href="go.url || undefined"
+              :target="go.url ? '_blank' : undefined"
+              :rel="go.url ? 'noopener' : undefined"
+              :title="go.title"
+              @click="go.url ? (moreOpen = false) : pressed(go)"
+            >
+              <AppIcon :name="go.icon" :size="12" />
+              {{ go.label }}
+            </component>
+          </div>
+        </div>
+      </Teleport>
+    </template>
 
     <Teleport to="body">
       <div class="dev-focus">
@@ -141,128 +310,116 @@ const checks = computed(() => [...props.artifacts.checks].sort((a, b) => (
   </div>
 </template>
 
-<style scoped>
-.ev { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
 
+<style scoped>
 /*
- * One strip of facts, one height.
+ * One line of facts, one height, never squeezed and never scrolled.
  *
- * Every direct child of this row is `--pill-h` now - the stats, the check badges, the live
- * pills - so centring them lines up their boxes and their text together. It was three heights
- * (32, 24, 26) centred on one line, which is three baselines across something that reads as a
- * single sentence of numbers.
+ * It was `display: contents` so that the card's own two pills could join the row - which is also
+ * what made it a 0px-wide snap target that arrived pre-scrolled. The card hands those two in as
+ * props now (`waited`, `prose`), so this is the row itself and there is one owner of it.
  */
-.ev__row {
+.ev {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
   gap: var(--s2);
   min-width: 0;
+  height: var(--pill-h);
+  /* No scroller. What does not fit is a `+n` chip or an ellipsis, both of which say so. */
+  overflow: hidden;
 }
 
-/* ── CI ───────────────────────────────────────────────────────────────────────────────────── */
+/* ── The numbers, as a sentence ──────────────────────────────────────────────────────────── */
+/*
+ * The one thing on this row allowed to lose its tail, because it is the only thing on it that is
+ * prose. The controls beside it are pinned: an ellipsised control is a control you cannot read.
+ */
+.ev__line {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
+.ev__sep { margin: 0 6px; color: var(--text-faint); }
+.ev__n { font-weight: 650; font-variant-numeric: tabular-nums; }
+.ev__fact--plain .ev__n { color: var(--text); }
+.ev__fact--good .ev__n { color: var(--success); }
+.ev__fact--bad .ev__n { color: var(--danger); }
+.ev__fact--warn .ev__n { color: var(--warning); }
+/*
+ * The gap after the number, as a margin.
+ *
+ * It was a literal space in the template - `<span class="ev__of"> {{ fact.of }}</span>` - and the
+ * compiler condensed it away, so the line read "157files·+13281·−507". Whitespace that has to
+ * survive a template compiler is not whitespace, it is spacing.
+ */
+.ev__of { margin-left: var(--s1); color: var(--text-muted); }
 
-
-
-/* The check's own sentence, which is usually the whole reason it is on the card. */
-
-/* ── What is up on a link ─────────────────────────────────────────────────────────────────── */
-/* `.u-pill` carries the box - this was the only one of the three band heights that happened to
-   be right, and the only one that said nothing about it. What is left is the hue and the link. */
-.live {
-  border: 1px solid color-mix(in srgb, var(--kind) 34%, transparent);
-  background: color-mix(in srgb, var(--kind) 9%, transparent);
-  color: var(--text-dim);
+/* ── The things you go and look at ───────────────────────────────────────────────────────── */
+/*
+ * `.u-pill` carries the box. What is left here is the hue and the fact that it is pressed: on a
+ * row where only the controls have a border, a border is what says "this does something".
+ */
+.ev__go {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--kind) 34%, var(--border));
+  background: transparent;
+  color: var(--kind);
+  cursor: pointer;
   text-decoration: none;
   transition: background var(--fast), color var(--fast);
 }
 
-/* The band's own green: an approval is the one fact on this row that is good news. */
-.ev__yes {
-  border: 1px solid color-mix(in srgb, var(--success) 38%, transparent);
-  background: color-mix(in srgb, var(--success) 10%, transparent);
-  color: var(--success);
-  font-weight: 600;
-}
+.ev__go:hover { background: color-mix(in srgb, var(--kind) 12%, transparent); color: var(--text); }
 
-a.live:hover { background: color-mix(in srgb, var(--kind) 18%, transparent); color: var(--text); }
-
-.live__dot {
+/* What is up on a link says so with a dot, as it always did. */
+.ev__dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--text-faint);
 }
 
-.live--serving .live__dot { background: var(--success); }
+.ev__go--serving .ev__dot { background: var(--success); }
 /* `--warning` is declared in focus.css; the fallback was a second, slightly different yellow
    waiting to be used the day somebody renamed the token. */
-.live--building .live__dot { background: var(--warning); animation: live-pulse 1.4s ease-in-out infinite; }
-.live--failed .live__dot { background: var(--danger); }
+.ev__go--building .ev__dot { background: var(--warning); animation: live-pulse 1.4s ease-in-out infinite; }
+.ev__go--failed .ev__dot { background: var(--danger); }
 
 @keyframes live-pulse { 50% { opacity: 0.35; } }
 
-.live__label { font-weight: 600; }
-.live__state { color: var(--text-faint); }
-
-/* ── What it recorded ─────────────────────────────────────────────────────────────────────── */
-.ev__shots {
+/* The overflow, which is what keeps this a line. `.u-popover` is the surface; `under` places it. */
+.ev__menu {
   display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ev__row {
+  display: flex;
+  align-items: center;
   gap: var(--s2);
-  min-width: 0;
-  padding-bottom: 2px;
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-
-.shot { flex: 0 0 auto; width: 132px; margin: 0; }
-
-.shot__frame {
-  position: relative;
-  display: block;
-  width: 100%;
-  height: 74px;
-  padding: 0;
-  border: 1px solid var(--border);
+  min-height: var(--control-h);
+  padding: 0 var(--s3);
+  border: 0;
   border-radius: var(--r-sm);
-  background: var(--surface-sunk);
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+  text-decoration: none;
   cursor: pointer;
-  overflow: hidden;
-  transition: border-color var(--fast), transform var(--fast);
-}
-
-.shot__frame:hover { border-color: var(--kind); transform: translateY(-1px); }
-
-.shot__img { width: 100%; height: 100%; object-fit: cover; display: block; }
-
-/*
- * The scrim over a thumbnail, in tokens.
- *
- * It was `rgba(8, 10, 16, 0.66)` and `#fff`, which is this view's dark ground and its dark
- * text written out by hand - so in light theme the play scrim and its glyph were the only
- * things on the page that ignored the theme switch, a dark disc with white ink on a white card.
- */
-.shot__play,
-.shot__open {
-  position: absolute;
-  display: grid;
-  place-items: center;
-  border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--ground) 72%, transparent);
-  color: var(--text);
-}
-
-.shot__play { inset: 50% auto auto 50%; width: 28px; height: 28px; transform: translate(-50%, -50%); }
-.shot__open { top: 5px; right: 5px; width: 20px; height: 20px; opacity: 0; transition: opacity var(--fast); }
-.shot__frame:hover .shot__open { opacity: 1; }
-
-.shot__label {
-  margin-top: 4px;
-  overflow: hidden;
-  color: var(--text-faint);
-  font-size: var(--t-2xs);
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.ev__row:hover { background: var(--surface-raised); color: var(--text); }
 </style>
