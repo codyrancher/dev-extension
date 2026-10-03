@@ -19,7 +19,7 @@
 import { computed } from 'vue';
 import AppButton from './AppButton.vue';
 import SectionHead from './SectionHead.vue';
-import { renderMarkdown } from '../../chat';
+import Markdown from './Markdown.vue';
 import type { AgentTurn } from '../../focus-artifacts';
 
 const props = defineProps<{ agent: AgentTurn; busy?: boolean }>();
@@ -72,9 +72,13 @@ const wants = computed(() => ({
 
     <p v-if="wants && !agent.options.length" class="ag__wants">{{ wants }}</p>
 
-    <!-- No question: the last thing it said. -->
-    <!-- eslint-disable-next-line vue/no-v-html -- renderMarkdown escapes before it marks up. -->
-    <div v-if="agent.said" class="ag__said" v-html="renderMarkdown(agent.said)" />
+    <!-- No question: the last thing it said, through the one component that draws markdown.
+         This was the chat pane's own `renderMarkdown` - a third renderer for the same job, with
+         a third stylesheet under it that handled `p` and `code` and nothing else, so a list or a
+         table in an agent's report came out as one run-on paragraph. -->
+    <div v-if="agent.said" class="ag__said">
+      <Markdown :text="agent.said" />
+    </div>
 
     <!-- Neither: its last lines, so a stop is never a blank card. -->
     <pre v-else-if="!asking && agent.tail" class="ag__tail">{{ agent.tail }}</pre>
@@ -125,23 +129,10 @@ const wants = computed(() => ({
 
 .ag__said {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
-  max-width: 82ch;
   padding-right: var(--s2);
-  color: var(--text-dim);
-  font-size: var(--t-sm);
-  line-height: 1.6;
   overflow-y: auto;
-}
-
-.ag__said :deep(p) { margin: 0 0 var(--s2); }
-.ag__said :deep(p:last-child) { margin-bottom: 0; }
-.ag__said :deep(code) {
-  padding: 1px 5px;
-  border-radius: var(--r-sm);
-  background: var(--surface-raised);
-  font-family: var(--mono);
-  font-size: 0.92em;
 }
 
 .ag__tail {

@@ -3,28 +3,35 @@
 // The prototype this view came from had a chat bar of its own along the bottom. This product
 // already has one conversation - the panel, and a workspace's own - and a second one here would
 // be a place where half of what you asked ended up. So every "ask" from the deck goes into the
-// conversation the work belongs to, and the panel opens so you see it arrive.
+// conversation the work belongs to.
 //
 // Which conversation that is follows from the work rather than from this file: something that
 // lives in a workspace is asked in that workspace, where the checkout and the tools are;
 // anything else is asked in the panel, which is the conversation that belongs to no workspace.
+//
+// Where the answer is *shown* is not this file's business either, and used to be: it ended in
+// `openAgentPanel`, the shell's terminal drawer, which slides over the card you just asked about.
+// Every card in this view offers to ask - `Which ones matter?`, `Is it safe?`, `What changed?`,
+// `Who should review this?` - and all of them threw you out of the deck to read the reply. So
+// this says which conversation it used and stops there; the view puts it in the bar that is
+// already on screen. See Focus.vue.
 
 import { openConversation, sayInConversation } from './reviews';
 import {
   agentSessions, startAgentSession, queueSessionPrompt
 } from './agent';
-import { openAgentPanel } from './overlay';
 import type { FocusTask } from './focus';
 
 /**
- * Put a prompt where it belongs, and show it being put there.
+ * Put a prompt where it belongs, and say where that was.
  *
  * `task` may be null: the card editor asks about the cards themselves, which are nobody's
- * workspace.
+ * workspace. The id comes back so the caller can show that conversation; empty means nothing
+ * was asked.
  */
-export async function askTheAgent(task: FocusTask | null, prompt: string): Promise<void> {
+export async function askTheAgent(task: FocusTask | null, prompt: string): Promise<string> {
   if (!prompt.trim()) {
-    return;
+    return '';
   }
 
   if (task?.workspace) {
@@ -34,10 +41,10 @@ export async function askTheAgent(task: FocusTask | null, prompt: string): Promi
 
     await sayInConversation(conversation, prompt);
 
-    return;
+    return conversation.id;
   }
 
-  await panelAsk(prompt);
+  return panelAsk(prompt);
 }
 
 /** The panel's conversation, made if there is none: what the Focus bar shows. */
@@ -55,9 +62,10 @@ export async function panelConversation(): Promise<string> {
  * nobody can find anything in. `panel` rather than `api` as the origin: this one is meant to be
  * seen there. See agent.ts.
  */
-async function panelAsk(prompt: string): Promise<void> {
+async function panelAsk(prompt: string): Promise<string> {
   const id = await panelConversation();
 
   await queueSessionPrompt(id, prompt);
-  await openAgentPanel(id).catch(() => {});
+
+  return id;
 }

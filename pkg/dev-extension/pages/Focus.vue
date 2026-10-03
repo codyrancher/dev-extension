@@ -65,7 +65,7 @@ import { workspaceBranch, startDevServer, stopDevServer } from '../workspace-too
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
 import { askTheAgent, panelConversation } from '../focus-agent';
-import { sendToPane } from '../conversations';
+import { sendToPane, paneCommand } from '../conversations';
 import { reviewNotes } from '../focus-review';
 import type { ReviewNote } from '../focus-review';
 import { readArtifacts, NO_ARTIFACTS, subjectOf } from '../focus-artifacts';
@@ -225,7 +225,7 @@ const artifactsFor = ref('');
 const readingNow = ref(false);
 
 /** The advisories and the bot's pull requests the queue was built from; see readArtifacts. */
-const alsoFrom = ref<{ alerts: Json[]; botPrs: Json[] }>({ alerts: [], botPrs: [] });
+const alsoFrom = ref<{ alerts: Json[]; botPrs: Json[]; botReviews: Json }>({ alerts: [], botPrs: [], botReviews: null });
 
 /**
  * The read in flight, handed back to every caller.
@@ -240,7 +240,22 @@ function readNotes(): Promise<void> {
   const task = current.value;
   const pr = Number(/#(\d+)/.exec(task?.what || '')?.[1] || 0);
 
-  if (!task || !pr || task.rule !== 'review-findings') {
+  /*
+   * Whether the card on top asked for them, which is the question.
+   *
+   * It was `task.rule === 'review-findings'` - one of the three rules the review-pass card claims,
+   * alongside `review-response` and `review-agent`. On either of the other two `notes` stayed
+   * empty, the surface ladder fell through (that card's wants are notes/stat/checks/media: no
+   * files, no comments, no reviewers), and what was left was the facts strip under a two-press
+   * confirm that posts a review to GitHub you were never shown. The live deck only holds
+   * review-findings items, so it never reproduced - it was a latent GitHub write.
+   *
+   * Not the pull request number alone, which was the first fix and is worse: `reviewNotes` keys off
+   * the number, so every card with a `#` in it would read them - and a review-asked card that
+   * happened to have stored findings would draw the agent's pass, because `notes` is the top rung
+   * of the surface ladder. The card says what it wants (`wants` on CardDef); this asks it.
+   */
+  if (!task || !pr || !(task.card.wants || []).includes('notes')) {
     notes.value = [];
     notesFor.value = '';
     reading = Promise.resolve();
@@ -462,11 +477,82 @@ const sections = computed(() => [
 const chatOpen = ref(false);
 const conversation = ref('');
 
+/**
+ * The workspace that conversation belongs to, when it belongs to one.
+ *
+ * A workspace's conversation runs in that workspace's own pod, so the pane needs the argv rather
+ * than the Studio's default - the shape WorkspaceReview.vue uses. Empty for the panel's own.
+ */
+const chatWorkspace = ref('');
+
+/**
+ * Ask, and show the answer where the person is looking.
+ *
+ * `askTheAgent` used to end in `openAgentPanel` - the shell's terminal drawer - so every one of
+ * the ten asks on these cards threw you out of the deck and covered the card you had asked
+ * about. The bar along the bottom is already on screen, already the right shape, and already
+ * renders a StudioTerminal; the prompt still goes to the workspace's conversation, because that
+ * is where the checkout and the tools are, and the bar now shows that conversation.
+ */
+async function askHere(task: FocusTask | null, prompt: string): Promise<string> {
+  const id = await askTheAgent(task, prompt);
+
+  if (id) {
+    conversation.value = id;
+    chatWorkspace.value = task?.workspace || '';
+    chatOpen.value = true;
+  }
+
+  return id;
+}
+
 /** Everything the queue has, drawn: pinned ones are marked and then held back from the deck. */
 const all = computed<FocusTask[]>(() => focusDeck(items.value, config.value, state.value));
 const pinned = computed(() => all.value.filter((task) => task.pinned));
 const deck = computed(() => all.value.filter((task) => !task.pinned));
 const current = computed(() => deck.value[index.value] || null);
+
+/**
+ * What is coming, for the column beside the deck.
+ *
+ * The column measured 196x524 - 19% of the main region - and held the word PINNED and the sentence
+ * "Nothing pinned. Pin a card to keep it here while you work on it", which is about 164x67px of
+ * content: 89% of the largest piece of empty space on the screen. Meanwhile the only thing saying
+ * what was next was the rail's column of 26 nine-pixel dots, of which the window has room for 13
+ * and which says nothing about the other 13 beyond a chevron.
+ *
+ * So the column is the queue. The next six in words, which is the one thing a deck structurally
+ * hides, and the index with each so a row can turn straight to it.
+ *
+ * No lede number on these rows, tempting as it is: a card's numbers come from `readArtifacts`, and
+ * that is read for the card on top and nothing else - a deck of thirty would be thirty pull
+ * requests fetched to draw a sidebar. How long it has waited is on every item already.
+ */
+const behindMe = computed(() => deck.value
+  .map((task, n) => ({ task, n }))
+  .filter((row) => row.n > index.value));
+
+/*
+ * Eight, which is how many fit.
+ *
+ * It was four, and before that six: four rows of 58px end at y325 in a column measured 196x524, so
+ * 257px - 49% of the largest piece of empty space on the screen - was blank, with `pinsScroll
+ * [524, 524]` saying nothing was cut off. There simply was no fifth row. Meanwhile the rail beside
+ * the deck advertised 26 dots and "9 above / 16 below", so the two things on this screen that say
+ * how long the deck is disagreed by twenty-two.
+ *
+ * Six was dropped because the titles ellipsised at 196px; they are two clamped lines now (see
+ * `.up__title`), so the count is a question of height and nothing else.
+ *
+ * Seven, not eight: eight rows plus the closing row measured `[540, 570]` - 30px of scroll, with
+ * `+17 more` half under the edge. The closing row is the part that makes this column rather than
+ * the rail the thing that answers "what else is there", so it is the row that must be on screen.
+ * Seven is 524 of the 540 the column measures, and nothing scrolls.
+ */
+const comingUp = computed(() => behindMe.value.slice(0, 7));
+
+/** How many are behind the ones this column names. The row that says so opens the whole queue. */
+const restOfDeck = computed(() => Math.max(0, behindMe.value.length - comingUp.value.length));
 
 const rows = computed<WeightRow[]>(() => weightRows(items.value, config.value.weights));
 const snoozedCount = computed(() => Object.keys(state.value.snoozed).length);
@@ -529,6 +615,8 @@ async function load() {
     alsoFrom.value = {
       alerts: (dependabot?.groups || []) as Json[],
       botPrs: ((dependabot?.prs || []) as Json[]).map((pr: Json) => ({ ...pr, number: pr.number })),
+      // The bumps card lists the ones nobody has reviewed, which is what the queue collapsed.
+      botReviews,
     };
     spaceStatus.value = statuses as Record<string, Json>;
     items.value = priorityQueue({
@@ -756,11 +844,28 @@ async function act({ task, action }: { task: FocusTask; action: CardAction }) {
     } else if (action.verb === 'url' && task.url) {
       window.open(task.url, '_blank', 'noopener');
     } else if (action.verb === 'open') {
-      await askTheAgent(task, `Open ${ task.what }${ task.workspace ? ` in ${ task.workspace }` : '' } and tell me where it stands.`);
-      say('Asked in the conversation.');
+      /*
+       * It opens the thing. It used to post a prompt.
+       *
+       * `open` dispatched to `askHere(task, 'Open … and tell me where it stands')`, so
+       * answer-agent's primary button - on the one card that exists because an agent has stopped
+       * and is waiting on you - started a second conversation asking where things stand instead of
+       * taking you to the conversation. Four other cards carried the same mislabelled button, each
+       * beside an `ask` that is also a prompt: two of a card's four controls did the same kind of
+       * thing and one of them was dressed as navigation. The prompt behaviour is the card's `ask`;
+       * this is `openWorkspace`, which is what the label says and what the header's workspace chip
+       * has always called.
+       */
+      if (task.workspace) {
+        openWorkspace(task.workspace);
+      } else if (task.url) {
+        window.open(task.url, '_blank', 'noopener');
+      } else {
+        say('There is nowhere to open this: it has no workspace and no link.');
+      }
     } else if (action.verb === 'ask') {
-      await askTheAgent(task, actionPrompt(action, task));
-      say('Asked in the conversation.');
+      await askHere(task, actionPrompt(action, task));
+      say('Asked — the reply arrives in the bar.');
     } else if (action.verb === 'share') {
       await openTheBuild(task, action.kind || 'dashboard');
     } else if (action.verb === 'review') {
@@ -771,6 +876,10 @@ async function act({ task, action }: { task: FocusTask; action: CardAction }) {
       await postTheReview(task);
     } else if (action.verb === 'merge') {
       await mergeIt(task);
+    } else if (action.verb === 'merge-green') {
+      await mergeTheGreenOnes(task);
+    } else if (action.verb === 'ask-all') {
+      await askReviewer(task, (artifacts.value?.reviewers?.suggested || []).map((one) => one.who));
     } else if (action.verb === 'ready') {
       await readyForReview(task);
     } else if (action.verb === 'create-pr') {
@@ -832,10 +941,29 @@ async function readWholeFile(): Promise<string> {
 const work = ref<GithubWork | null>(null);
 
 /** Out of draft: the one act at that stage GitHub's own UI was otherwise needed for. */
+/*
+ * Putting a draft up for review, with the one thing that stops it.
+ *
+ * The draft card's own evidence row read "1 failing, 35 passed" while its primary offered
+ * ready-for-review without qualification - one step milder than the mismatch the my-pr/red-pr
+ * split was made to fix, and the same shape. The check state is already on the card, so the
+ * button can read it: a red draft is not ready, and saying so beats letting it go up and be
+ * bounced. It names the way round, as the merge does, rather than simply refusing.
+ */
 async function readyForReview(task: FocusTask) {
   const { pr } = subjectOf(task);
 
   if (!pr) {
+    return;
+  }
+
+  // `ci.failing`, not the length of the list: the list is at most six failures by name, so a
+  // pull request with nine of them used to be told it had six. See CardCi in focus-artifacts.
+  const red = artifacts.value.ci?.failing || 0;
+
+  if (red) {
+    error.value = `${ task.what } has ${ red } check${ red > 1 ? 's' : '' } failing. Fix the build, or mark it ready on GitHub if you mean to.`;
+
     return;
   }
   await markReadyForReview(DEFAULT_REPO, pr);
@@ -890,7 +1018,7 @@ async function describeIt(task: FocusTask) {
     return;
   }
   if (!drafted) {
-    await askTheAgent(task, `For ${ task.what }: read the diff, the commits and the issue it closes, then rewrite the pull request description on GitHub - what it changes, why, and what a reviewer should check.`);
+    await askHere(task, `For ${ task.what }: read the diff, the commits and the issue it closes, then rewrite the pull request description on GitHub - what it changes, why, and what a reviewer should check.`);
     say('Asked the agent to write it, since there was nothing to post.');
 
     return;
@@ -915,23 +1043,30 @@ async function takeIssue(task: FocusTask, issue: PoolIssue) {
   }
 }
 
-/** Ask one person for a review, from the card that noticed nobody had been asked. */
-async function askReviewer(task: FocusTask, who: string) {
+/**
+ * Ask for a review, from the card that noticed nobody had been asked.
+ *
+ * One name from a candidate row, or every name the card found from the footer's primary - which is
+ * the act that card is named for and was its smallest control. `requestReviewers` always took a
+ * list; this was the only caller and it only ever passed one.
+ */
+async function askReviewer(task: FocusTask, who: string | string[]) {
   const { pr } = subjectOf(task);
+  const whom = (Array.isArray(who) ? who : [who]).filter(Boolean);
 
-  if (!pr || !who) {
+  if (!pr || !whom.length) {
     return;
   }
   busy.value = true;
   try {
-    const { asked, refused } = await requestReviewers(DEFAULT_REPO, pr, [who]);
+    const { asked, refused } = await requestReviewers(DEFAULT_REPO, pr, whom);
 
     if (asked.length) {
       say(`Asked ${ asked.join(', ') } to review ${ task.what }.`);
       artifactsFor.value = '';
       readTheArtifacts();
     } else {
-      error.value = `GitHub would not ask ${ who }: ${ Object.values(refused)[0] || 'refused' }`;
+      error.value = `GitHub would not ask ${ whom.join(', ') }: ${ Object.values(refused)[0] || 'refused' }`;
     }
   } finally {
     busy.value = false;
@@ -1027,6 +1162,22 @@ async function postTheReview(task: FocusTask) {
  * does not merge it; GitHub will, for anyone who means it, and saying so is better than either
  * doing it quietly or hiding the button.
  */
+async function mergeOne(pr: number): Promise<string> {
+  const detail = await prDetail(pr).catch(() => null);
+  const mine = String(detail?.meta?.author || '').toLowerCase() === me.value.toLowerCase();
+
+  if (mine) {
+    await mergePr(pr);
+
+    return '';
+  }
+
+  const { steps } = await approveAndMerge(pr);
+  const failed = steps.find((step) => !step.ok);
+
+  return failed ? `${ failed.step }: ${ failed.note || 'failed' }` : '';
+}
+
 async function mergeIt(task: FocusTask) {
   const { pr } = subjectOf(task);
 
@@ -1034,29 +1185,104 @@ async function mergeIt(task: FocusTask) {
     return;
   }
 
-  if (artifacts.value.checks.some((check) => check.state === 'failed')) {
+  if (artifacts.value.ci?.failing) {
     error.value = `${ task.what } is red. Merge it on GitHub if you mean to.`;
 
     return;
   }
 
-  const detail = await prDetail(pr).catch(() => null);
-  const mine = String(detail?.meta?.author || '').toLowerCase() === me.value.toLowerCase();
+  const trouble = await mergeOne(pr);
 
-  if (mine) {
-    await mergePr(pr);
-  } else {
-    const { steps } = await approveAndMerge(pr);
-    const failed = steps.find((step) => !step.ok);
+  if (trouble) {
+    error.value = trouble;
 
-    if (failed) {
-      error.value = `${ failed.step }: ${ failed.note || 'failed' }`;
-
-      return;
-    }
+    return;
   }
   say(`${ task.what } is merged.`);
   await done(task);
+}
+
+/**
+ * One bump off the list, from its own row.
+ *
+ * The row offers the press only where the bot's own list says the build is green - `Merge` on a
+ * red bump is the mistake the my-pr/red-pr split was made to stop - and the list is read again
+ * afterwards, so a merged bump leaves the card rather than sitting there merged.
+ */
+async function mergeBump(row: { number: number; package: string; state: string }) {
+  if (row.state !== 'green') {
+    error.value = `${ row.package } is not green. Merge it on GitHub if you mean to.`;
+
+    return;
+  }
+  busy.value = true;
+  error.value = '';
+  try {
+    const trouble = await mergeOne(row.number);
+
+    if (trouble) {
+      error.value = trouble;
+
+      return;
+    }
+    say(`${ row.package } is merged.`);
+    await load();
+  } catch (e) {
+    error.value = (e as Error)?.message || String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+/**
+ * Every green bump on the card, one after the other.
+ *
+ * The whole reason the bumps are one card: nine identical green bumps are one decision made once,
+ * not nine turns of the deck. Sequential and stopping at the first refusal, because the
+ * interesting outcome of a bulk merge is the one that did not go through - and it says how far it
+ * got, which a silent partial failure does not.
+ */
+async function mergeTheGreenOnes(task: FocusTask) {
+  const green = (artifacts.value.bumps || []).filter((row) => row.state === 'green');
+  /*
+   * Green is not the same as safe.
+   *
+   * The single bump's own card says it in as many words - "crosses a major: a major version can
+   * change or remove what this repository uses, worth reading the changelog before it goes in" -
+   * and on the live pile the one green row was `ts-node 8.10.2 → 10.9.2`, which is a major, and
+   * was exactly what this merged. A bulk press is for the formalities; a major is the case the
+   * other card exists for, so it stays behind its own row's `Merge` where it can be seen first.
+   */
+  const major = green.filter((row) => row.major);
+  const take = green.filter((row) => !row.major);
+
+  if (!take.length) {
+    error.value = green.length
+      ? `${ green.length === 1 ? 'The only green one crosses' : `All ${ green.length } green ones cross` } a major. Merge those from their own row, after reading the changelog.`
+      : 'None of them is green.';
+
+    return;
+  }
+
+  let merged = 0;
+
+  for (const row of take) {
+    const trouble = await mergeOne(row.number).catch((e: Error) => e?.message || String(e));
+
+    if (trouble) {
+      error.value = `${ row.package }: ${ trouble }${ merged ? ` (${ merged } merged first)` : '' }`;
+      break;
+    }
+    merged += 1;
+  }
+
+  if (merged) {
+    say(`${ merged } bump${ merged > 1 ? 's' : '' } merged.${ major.length ? ` ${ major.length } crossing a major left for you to read.` : '' }`);
+  }
+  await load();
+  if (merged === take.length && !major.length) {
+    await done(task);
+  }
 }
 
 /**
@@ -1071,12 +1297,12 @@ async function askAboutCode(task: FocusTask, value: { path: string; label: strin
 
   busy.value = true;
   try {
-    await askTheAgent(task, pr
+    await askHere(task, pr
       ? linesPrompt(pr, {
         path: value.path, line, startLine: null, side: 'RIGHT', code: value.code,
       }, value.text)
       : `About ${ value.path } ${ value.label }:\n\n\`\`\`\n${ value.code }\n\`\`\`\n\n${ value.text }`);
-    say('Asked in the conversation.');
+    say('Asked — the reply arrives in the bar.');
   } catch (e) {
     error.value = (e as Error)?.message || String(e);
   } finally {
@@ -1139,14 +1365,14 @@ async function replyTo(task: FocusTask, value: { comment: CardComment }) {
 
   busy.value = true;
   try {
-    await askTheAgent(task, [
+    await askHere(task, [
       `On ${ task.what }, ${ comment.author } said this${ comment.path ? ` about ${ comment.path }${ comment.line ? `:${ comment.line }` : '' }` : '' }:`,
       '',
       comment.body,
       '',
       'Draft a reply, and say whether it needs a change to the code. Do not push anything.',
     ].join('\n'));
-    say('Asked in the conversation.');
+    say('Asked — the reply arrives in the bar.');
   } catch (e) {
     error.value = (e as Error)?.message || String(e);
   } finally {
@@ -1157,8 +1383,8 @@ async function replyTo(task: FocusTask, value: { comment: CardComment }) {
 async function ask(task: FocusTask) {
   busy.value = true;
   try {
-    await askTheAgent(task, `About ${ task.what }${ task.title ? ` (${ task.title })` : '' }: ${ task.needs }. What should I know before I start?`);
-    say('Asked in the conversation.');
+    await askHere(task, `About ${ task.what }${ task.title ? ` (${ task.title })` : '' }: ${ task.needs }. What should I know before I start?`);
+    say('Asked — the reply arrives in the bar.');
   } catch (e) {
     error.value = (e as Error)?.message || String(e);
   } finally {
@@ -1195,7 +1421,7 @@ async function discussNote({ note, text }: { note: ReviewNote; text: string }) {
   const task = current.value;
 
   try {
-    await askTheAgent(task, discussPrompt(
+    await askHere(task, discussPrompt(
       { id: note.commentId, path: note.path, line: note.line, body: note.body } as never,
       note.pr,
       text,
@@ -1306,7 +1532,7 @@ async function editCard(id: string) {
   }
   busy.value = true;
   try {
-    await askTheAgent(null, [
+    await askHere(null, [
       `This is the Focus card "${ card.id }" as it stands:`,
       '',
       '```json',
@@ -1338,7 +1564,7 @@ async function editCard(id: string) {
 async function newCard() {
   busy.value = true;
   try {
-    await askTheAgent(null, [
+    await askHere(null, [
       'I want a new card in the Focus view: a kind of waiting work that should look like something of its own when it reaches the top of my queue.',
       '',
       `The rules the queue has right now, with how many things each is holding: ${ rows.value.map((row) => `${ row.id } (${ row.count })`).join(', ') }.`,
@@ -1346,7 +1572,7 @@ async function newCard() {
       'Ask me what the card is for and what its buttons should do, then add it with a PUT to `$CLAUDE_HARNESS_API/focus` carrying the whole `cards` array - read the current one first with `curl -fsS "$CLAUDE_HARNESS_API/focus"`.',
       'A card is `{ id, label, kind, rules, summary, actions: [{ label, verb, prompt?, hours? }] }`; verbs are open, url, ask, snooze, done.',
     ].join('\n'));
-    say('Ask away in the conversation.');
+    say('Ask away — the bar is open below.');
   } catch (e) {
     error.value = (e as Error)?.message || String(e);
   } finally {
@@ -1386,6 +1612,7 @@ function closeSettings() {
 async function wakeChat() {
   if (!conversation.value) {
     conversation.value = await panelConversation().catch(() => '');
+    chatWorkspace.value = '';
   }
 }
 
@@ -1417,34 +1644,116 @@ onBeforeUnmount(closeSettings);
         <template v-else>Nothing in the deck</template>
       </p>
 
+      <!--
+        What is running behind the one card on screen: the workspaces, and the Ranchers they are
+        pointed at.
+
+        In the page's own top-right corner rather than fixed to the bottom-left one. Both docks
+        were in that corner - at x20 and x84, each 55x34 - and the chat bar was `left: 50%` with a
+        980px body, which at this width put its own left edge at x22 and its first 42px button
+        straight over the first dock, higher z-index winning. Two fixed layers were competing for
+        the same forty pixels. Here they are in the flow, beside the count, where nothing can
+        land on them at any width. (The bar is inset by `--pins-w` now and starts at the card's own
+        left edge, so it would no longer reach them either.)
+      -->
+      <div class="focus__docks">
+        <FocusDock
+          label="Workspaces"
+          icon="tasks"
+          :rows="workspaceRows"
+          :here="current?.workspace || ''"
+          empty="No workspaces. A card that needs one offers to make it."
+          @open="openWorkspace"
+          @act="({ row, action }) => actOnRow(row, action)"
+        />
+
+        <FocusDock
+          label="Ranchers"
+          icon="scales"
+          :rows="rancherRows"
+          empty="No Rancher instances."
+          @open="(url) => url && window.open(url, '_blank', 'noopener')"
+          @act="({ row, action }) => actOnRow(row, action)"
+        />
+      </div>
     </header>
 
     <div class="focus__main">
       <!--
-        Pinned, down the side: taken out of the queue because you are dealing with them. They
-        keep their hue and their title and nothing else - a pinned thing is a reminder, and a
-        reminder that needs reading is a card, which is what the deck is for.
+        The column: what you have pinned, and then what is coming.
+
+        Pinned first - taken out of the queue because you are dealing with them. They keep their
+        hue and their title and nothing else: a pinned thing is a reminder, and a reminder that
+        needs reading is a card, which is what the deck is for.
+
+        Then the queue itself, because this column was 196x524 - 19% of the main region - holding
+        the word PINNED and one sentence of empty-state copy, about 89% of it empty, while the only
+        thing saying what was next was a rail of 26 nine-pixel dots. See `comingUp`.
 
         The lane is always here, empty or not. It used to appear with the first pin, which moved
         the deck sideways - and, because nothing is pinned while the queue is still being read,
         moved it again the moment the page finished loading.
       -->
       <aside class="focus__pins">
-        <h2 class="focus__pins-head">Pinned</h2>
-        <button
-          v-for="task in pinned"
-          :key="task.key"
-          type="button"
-          class="pin"
-          :class="{ 'pin--flying': task.key === flyingPin }"
-          :data-key="task.key"
-          :title="`${ task.needs } — click to put it back in the deck`"
-          @click="unpin(task, $event)"
-        >
-          <MiniCard :task="task" blur />
-        </button>
-        <p v-if="!pinned.length" class="focus__pins-empty">
-          Nothing pinned. Pin a card to keep it here while you work on it.
+        <template v-if="pinned.length">
+          <h2 class="focus__pins-head">Pinned</h2>
+          <button
+            v-for="task in pinned"
+            :key="task.key"
+            type="button"
+            class="pin"
+            :class="{ 'pin--flying': task.key === flyingPin }"
+            :data-key="task.key"
+            :title="`${ task.needs } — click to put it back in the deck`"
+            @click="unpin(task, $event)"
+          >
+            <MiniCard :task="task" blur />
+          </button>
+          <hr class="focus__pins-rule">
+        </template>
+
+        <!--
+          What is next, in words. See `comingUp`: the rail's dots say where you are in a deck of 26
+          and nothing about what is in it, and this column was 89% empty around one sentence of
+          empty-state copy. A row turns the deck to that card.
+        -->
+        <template v-if="comingUp.length">
+          <h2 class="focus__pins-head">Coming up</h2>
+          <ol class="up">
+            <li v-for="row in comingUp" :key="row.task.key">
+              <button
+                type="button"
+                class="up__row"
+                :class="`up__row--${ row.task.card.kind }`"
+                :data-key="row.task.key"
+                :title="`${ row.task.what } — ${ row.task.needs }`"
+                @click="jumpTo(row.n)"
+              >
+                <span class="up__chip">{{ row.task.card.chip || row.task.card.label }}</span>
+                <span class="up__title">{{ row.task.title || row.task.what }}</span>
+                <span v-if="row.task.waitingHours" class="up__wait">
+                  {{ row.task.waitingHours >= 48 ? `${ Math.round(row.task.waitingHours / 24) }d` : `${ row.task.waitingHours }h` }}
+                </span>
+              </button>
+            </li>
+
+            <!--
+              And how many are behind these, because this column is the only place that can say.
+              A deck structurally hides what is under the top card, and the only other thing that
+              answered it was a rail of 26 nine-pixel dots. Opens the queue, which is the list.
+            -->
+            <li v-if="restOfDeck">
+              <button type="button" class="up__rest" @click="openSettings('queue')">
+                +{{ restOfDeck }} more
+                <AppIcon name="chevron-right" :size="13" />
+              </button>
+            </li>
+          </ol>
+        </template>
+
+        <p v-if="!pinned.length && !comingUp.length" class="focus__pins-empty">
+          Nothing pinned, and nothing behind the card you are on. Pin a card to keep it here while
+          you work on it.
         </p>
       </aside>
 
@@ -1473,7 +1782,9 @@ onBeforeUnmount(closeSettings);
           @reply="current && replyTo(current, $event)"
           @expand="current && openWholeFile(current, $event)"
           @take="current && takeIssue(current, $event)"
-          @about-issue="current && askTheAgent(current, `About issue #${ $event.number } (${ $event.title }): read it and tell me whether it is specified well enough to start, roughly where in the codebase it lives, and how big it looks.`).then(() => say('Asked in the conversation.'))"
+          @merge-bump="mergeBump($event)"
+          @about-bump="current && askHere(current, `For dependency bump #${ $event.number } (${ $event.package } ${ $event.from } → ${ $event.to }): read the changelog between the two versions and the failing checks, and tell me whether anything here uses what changed and whether you would merge it.`)"
+          @about-issue="current && askHere(current, `About issue #${ $event.number } (${ $event.title }): read it and tell me whether it is specified well enough to start, roughly where in the codebase it lives, and how big it looks.`).then(() => say('Asked — the reply arrives in the bar.'))"
           @ask-reviewer="current && askReviewer(current, $event)"
           @answer="current && answerTheAgent(current, $event)"
           @workspace="current?.workspace && openWorkspace(current.workspace)"
@@ -1496,32 +1807,6 @@ onBeforeUnmount(closeSettings);
       :mode="flight.mode"
       @done="flightDone"
     />
-
-    <!--
-      The two corners: what is running behind the one card on screen. Workspaces on the left,
-      because that is where the card's own workspace is named; the Ranchers they are pointed at
-      on the right.
-    -->
-    <div class="focus__docks">
-      <FocusDock
-        label="Workspaces"
-        icon="tasks"
-        :rows="workspaceRows"
-        :here="current?.workspace || ''"
-        empty="No workspaces. A card that needs one offers to make it."
-        @open="openWorkspace"
-        @act="({ row, action }) => actOnRow(row, action)"
-      />
-
-      <FocusDock
-        label="Ranchers"
-        icon="scales"
-        :rows="rancherRows"
-        empty="No Rancher instances."
-        @open="(url) => url && window.open(url, '_blank', 'noopener')"
-        @act="({ row, action }) => actOnRow(row, action)"
-      />
-    </div>
 
     <!-- The whole of a file somebody was reading six lines of. See components/code/FileModal. -->
     <FileModal
@@ -1563,6 +1848,7 @@ onBeforeUnmount(closeSettings);
           v-if="conversation"
           :key="conversation"
           :session="conversation"
+          :command="chatWorkspace ? paneCommand(chatWorkspace, conversation) : null"
           skin="loop"
         />
         <p v-else class="focus__chat-empty">Starting a conversation…</p>
@@ -1592,7 +1878,8 @@ onBeforeUnmount(closeSettings);
               @click="jumpTo(n); closeSettings()"
             >
               <span class="queue__rank">{{ n + 1 }}</span>
-              <KindChip :kind="task.card.kind" size="sm" />
+              <!-- The card's own word, as on the card: the queue and the deck name a thing alike. -->
+              <KindChip :kind="task.card.kind" :word="task.card.chip" size="sm" />
               <span class="queue__text">
                 <span class="queue__title">{{ task.title || task.what }}</span>
                 <span class="queue__needs">{{ task.needs }}</span>
@@ -1741,9 +2028,15 @@ onBeforeUnmount(closeSettings);
    * dashboard, so it is this element and the shell's main area (see DevShell, dev-root--bare).
    */
   overflow: hidden;
-  /* Room for the bar, which floats over the deck: its height, the gap it sits in, and a hair
-     so a card's last row of actions is never under it. */
-  padding-bottom: clamp(96px, 11vh, 118px);
+  /*
+   * Room for the bar, which floats over the deck: its height plus the gap it sits in.
+   *
+   * It was `clamp(96px, 11vh, 118px)`, which at the measured 1024x678 resolved to 96px for a bar
+   * that measures 54px tall at a 16px inset - so 26px of the page was held for nothing, below a
+   * card whose own surface was 173px. The bar's height is a number this view knows; it does not
+   * need to be guessed at with a viewport unit.
+   */
+  padding-bottom: calc(var(--bar-h) + var(--s5));
   background:
     radial-gradient(1200px 680px at 12% -8%, rgba(91, 140, 255, 0.10), transparent 62%),
     radial-gradient(900px 560px at 92% 4%, rgba(184, 166, 255, 0.07), transparent 58%),
@@ -1800,6 +2093,24 @@ onBeforeUnmount(closeSettings);
 .focus__tool:hover { color: var(--text); border-color: var(--border-strong); }
 .focus__tool--on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 
+/*
+ * One spine, not four.
+ *
+ * Measured: `.focus__top` at x=0, the chat bar at x=22 running 980px wide to x=1002, the deck
+ * region at x=196, the card at x=216 and its content at x=250. So the bar was 234px wider than the
+ * 746px card it is about and began underneath the pins column, which put the sentence `Ask about
+ * "<this card's title>"` centred on the window rather than on the card it names.
+ *
+ * The column's width is a token now, so the bar can be inset by it and by the deck's own padding
+ * and land on the card's left edge. See `.bar` in FocusChatBar, which reads both, and the phone
+ * branch at the bottom of this file, which zeroes the first when the column goes away.
+ */
+.dev-focus {
+  --pins-w: 196px;
+  --deck-pad-l: clamp(var(--s3), 2vw, var(--s6));
+  --deck-pad-r: 62px;
+}
+
 /* The deck, with whatever has been pinned beside it. */
 .focus__main {
   display: grid;
@@ -1822,8 +2133,8 @@ onBeforeUnmount(closeSettings);
   gap: var(--s2);
   /* Wide enough that a parked card's own words are readable at this scale, narrow enough that
      the deck still has the room: the prototype's card is 90% of its window, and this keeps the
-     deck near that. */
-  width: 196px;
+     deck near that. The bar lines up with the card by subtracting it; see `--pins-w`. */
+  width: var(--pins-w);
   padding: var(--s2) var(--s4) var(--s5);
   overflow-y: auto;
 }
@@ -1833,6 +2144,103 @@ onBeforeUnmount(closeSettings);
   font-size: var(--t-xs);
   line-height: 1.4;
 }
+
+.focus__pins-rule {
+  margin: var(--s2) 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* ── What is coming ───────────────────────────────────────────────────────── */
+.up { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+
+/*
+ * One row per card that is coming, at the height everything pressable in this view is: a hue bar
+ * down its left edge, what kind of thing it is, its title on one line, and how long it has sat.
+ */
+.up__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 0 var(--s2);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--s1) var(--s2) var(--s1) var(--s3);
+  border-radius: var(--r-sm);
+  background: transparent;
+  box-shadow: inset 3px 0 0 var(--up-c, var(--border-strong));
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--fast);
+}
+
+.up__row:hover { background: var(--surface); }
+
+.up__chip {
+  grid-row: 1;
+  color: var(--up-c, var(--text-muted));
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Two lines, because one was never a title at 196px: see `comingUp` for what was measured. */
+.up__title {
+  grid-row: 2;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--text-dim);
+  font-size: var(--t-sm);
+  line-height: 1.35;
+  overflow: hidden;
+}
+
+.up__wait {
+  grid-row: 1 / -1;
+  grid-column: 2;
+  color: var(--text-faint);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * The last row: what this column is not showing, in the column's own rhythm.
+ *
+ * Quieter than a card row because it is not a card - it is the count the rail was being asked to
+ * carry in nine-pixel dots - and at `--control-h` because it is pressed.
+ */
+.up__rest {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  width: 100%;
+  min-height: var(--control-h);
+  margin-top: var(--s1);
+  padding: 0 var(--s2) 0 var(--s3);
+  border: 1px dashed var(--border);
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--t-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.up__rest:hover { border-color: var(--border-strong); color: var(--text); }
+
+.up__row--review   { --up-c: var(--kind-review); }
+.up__row--issue    { --up-c: var(--kind-issue); }
+.up__row--agent    { --up-c: var(--kind-agent); }
+.up__row--question { --up-c: var(--kind-question); }
+.up__row--signal   { --up-c: var(--kind-signal); }
 
 .focus__pins-head {
   color: var(--text-muted);
@@ -1862,28 +2270,20 @@ onBeforeUnmount(closeSettings);
 
 .pin:hover { transform: translateX(2px) scale(1.015); }
 
-/* ── What the page says to you ────────────────────────────────────────────────────────────── */
-.focus__notice,
 /*
- * The bottom row: the two marks and the chat bar, on one line, centred on each other.
- *
- * They were three fixed elements with their own offsets - the docks at `2vh`, the bar at `2.4vh`
- * - so they sat at three different heights and never read as a row. Both now take the bar's own
- * offset, and this box is as tall as the bar's controls (IconButton's 42px) with its children
- * centred in it, so the middle of a 34px mark lands on the middle of the bar's buttons rather
- * than on their bottom edge.
+ * The docks, in the page's own header rather than fixed over its bottom-left corner, where the
+ * chat bar is. In the flow, so nothing can be drawn on top of them and nothing has to be kept in
+ * step with the bar's offsets. See the markup for what the overlap measured.
  */
 .focus__docks {
-  position: fixed;
-  bottom: clamp(var(--s3), 2.4vh, var(--s5));
-  left: clamp(var(--s3), 2vw, var(--s5));
-  z-index: 40;
   display: flex;
   align-items: center;
-  /* The height of the bar's own controls, so the row has one axis. See FocusChatBar. */
-  min-height: 42px;
+  flex: 0 0 auto;
   gap: var(--s2);
 }
+
+/* ── What the page says to you ────────────────────────────────────────────────────────────── */
+.focus__notice,
 
 .focus__error {
   position: fixed;
@@ -2061,6 +2461,8 @@ onBeforeUnmount(closeSettings);
 }
 
 @media (max-width: 900px) {
+  /* No column, so nothing for the bar to be inset by. See `--pins-w`. */
+  .dev-focus { --pins-w: 0px; --deck-pad-l: var(--s3); --deck-pad-r: var(--s3); }
   .focus__main { grid-template-columns: minmax(0, 1fr); }
   .dev-focus { padding-bottom: 96px; }
   .focus__pins { display: none; }

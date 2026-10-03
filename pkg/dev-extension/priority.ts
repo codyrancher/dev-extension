@@ -53,6 +53,17 @@ export interface PriorityItem {
    * one opened this morning - which is the whole of what this is for.
    */
   since: string;
+  /**
+   * Where the *new* work starts (ISO), for the items that are about a second look.
+   *
+   * A pull request you have already reviewed and that has been pushed to since is the one item in
+   * this queue whose subject is a slice of its own history rather than the whole of it - and the
+   * card drew the whole of it: "157 files changed", "+13,281", "first 40 of 157 files", with
+   * nothing marking what arrived after your review. The card's own summary line promises "Review
+   * the new commits"; this is the date that makes that possible, and `fromReviewing` already
+   * computed it to decide the rule.
+   */
+  newSince?: string;
 }
 
 /**
@@ -199,6 +210,11 @@ export const RULES: Record<string, PriorityRule> = {
   'advisory-high':     { label: 'A high advisory', about: 'As above, one band down.', score: 35 },
   'advisory-medium':   { label: 'A medium advisory', about: 'As above, one band down.', score: 30 },
   'advisory-low':      { label: 'A low advisory', about: 'As above, the bottom band.', score: 25 },
+  'bot-pile': {
+    label: 'The unreviewed bumps, together',
+    about: 'Eleven bumps are one job, not eleven turns of the deck. One card, one row each.',
+    score: 16,
+  },
   'bot-green': {
     label: 'A green bump, unreviewed',
     about: 'The bottom of the queue: it can wait, and it is one press when you get there.',
@@ -392,10 +408,12 @@ function fromReviewing(prs: GithubPr[], seen: Set<number>): PriorityItem[] {
     if (pushedSince) {
       out.push({
         ...base,
-        needs: 'Review the new commits',
-        why:   `${ pr.author } pushed after your review`,
-        rule:  'reviewing-pushed',
-        score: weightOf('reviewing-pushed'),
+        needs:     'Review the new commits',
+        why:       `${ pr.author } pushed after your review`,
+        rule:      'reviewing-pushed',
+        score:     weightOf('reviewing-pushed'),
+        // The whole point of this rule, and the one thing its card could not draw. See `newSince`.
+        newSince:  pr.reviewedAt || '',
       });
     } else if (!pr.reviewedAt) {
       out.push({
@@ -447,10 +465,19 @@ function fromMine(prs: GithubPr[], seen: Set<number>): PriorityItem[] {
         ...base, needs: 'Merge it', why: 'approved and still open', rule: 'mine-approved', score: weightOf('mine-approved'),
       });
     } else if (pr.checks?.failing) {
+      /*
+       * No arithmetic here. The card's 36px lede is this number and it reads it off
+       * `detail.meta.ci`, which is what GitHub says; `pr.checks.total` comes off the list query
+       * and disagreed with it - measured on PR #19039, the summary said "1 of 43 checks failing"
+       * 20px under a lede saying "1 of 46". FocusCard's own comment says the lede was moved to the
+       * better source precisely so the big number would stop contradicting the sentence under it,
+       * and this was the sentence. One number, one source, and this line says the thing the lede
+       * cannot: what you are being asked to do about it.
+       */
       out.push({
         ...base,
         needs: 'Fix the build',
-        why:   `${ pr.checks.failing } of ${ pr.checks.total } checks failing`,
+        why:   'the build is failing',
         rule:  'mine-red',
         score: weightOf('mine-red'),
       });
@@ -497,12 +524,22 @@ function fromPool(issues: GithubIssue[]): PriorityItem[] {
     return [];
   }
 
+  /*
+   * One number, and no preview of a list that is 40px below in full.
+   *
+   * The title said "100 open issues nobody has taken" and the card's 36px lede says "100 nobody
+   * has taken" - the same count twice, 180px apart - while the summary line read "Pick one up -
+   * newest: #19363, #19360" over a surface whose first two rows are those two issues with their
+   * titles, ages, comment counts and labels. The summary is the one place a card says why it is in
+   * front of you; this one said what the row under it says better. So: the lede carries the count,
+   * the title stops repeating it, and the summary says the thing nothing else on the card does.
+   */
   return [{
     key:       'pool:unassigned',
     what:      'Unassigned',
-    title:     `${ issues.length } open issue${ issues.length === 1 ? '' : 's' } nobody has taken`,
+    title:     'Open issues nobody has taken',
     needs:     'Pick one up',
-    why:       `newest: ${ issues.slice(0, 2).map((issue) => `#${ issue.number }`).join(', ') }`,
+    why:       'nothing is waiting on you, so this is the choice',
     workspace: '',
     url:       `https://github.com/${ issues[0].repo }/issues?q=is%3Aopen+is%3Aissue+no%3Aassignee`,
     since:     '',
@@ -579,16 +616,45 @@ function fromAlerts(alerts: Json[], workspaces: Set<string>): PriorityItem[] {
     }));
 }
 
+/** What a bump actually is, for telling two of them apart: this package, this jump. */
+function bumpKey(pr: Json): string {
+  return `${ pr.packageName || pr.title }@${ pr.fromVersion || '' }→${ pr.toVersion || '' }`;
+}
+
+/** Nothing failing and nothing still running, as the bot's own pull request list reports it. */
+const botGreen = (pr: Json) => Boolean(pr.ci) && !pr.ci.failing && !pr.ci.pending;
+
 /**
  * The Dependabot pull requests, at the bottom, because that is where they belong.
  *
- * One reviewed to MERGE is the exception: the work has been done and all that is left is the
- * press, so it sits with the ordinary merges rather than with the bumps.
+ * Two things happen here that did not.
+ *
+ * **They are deduplicated.** Dependabot opens a replacement without always closing the one it
+ * replaces, and the deck held `ip-address 10.4.0 → 10.7.2` twice and `axios 1.18.0 → 1.20.0`
+ * twice - two cards with identical titles, different diffs and different failing counts, and
+ * nothing on either saying which pull request it was. The higher number is the live one.
+ *
+ * **The unreviewed ones are one card.** Eleven of the deck's thirty-six turns were bumps, nine of
+ * them measuring byte-identical geometry with the same four buttons: the same card, turned nine
+ * times. That is a queue people stop turning. They collapse the way `pick-up` already collapses
+ * a hundred issues - one card, one row each - so the deck is twenty-three turns instead of
+ * thirty-six and clearing the green ones is four seconds instead of a minute of clicking.
+ *
+ * One reviewed to MERGE or STOP is still its own card: a decision has been made about it and the
+ * card is about that decision. A review still running wants nothing yet.
  */
 function fromBotPrs(prs: Json[], reviews: Json): PriorityItem[] {
-  return (prs || []).map((pr) => {
+  const byBump = new Map<string, Json>();
+
+  for (const pr of [...(prs || [])].sort((a, b) => Number(a.number) - Number(b.number))) {
+    byBump.set(bumpKey(pr), pr);
+  }
+
+  const out: PriorityItem[] = [];
+  const pile: Json[] = [];
+
+  for (const pr of byBump.values()) {
     const review = reviews?.[pr.number];
-    const green = pr.ci && !pr.ci.failing && !pr.ci.pending;
     const base = {
       key:       `bot:${ pr.number }`,
       what:      `Bump #${ pr.number }`,
@@ -599,28 +665,79 @@ function fromBotPrs(prs: Json[], reviews: Json): PriorityItem[] {
     };
 
     if (review?.verdict === 'MERGE') {
-      return {
+      out.push({
         ...base, needs: 'Approve and merge', why: 'reviewed and cleared', rule: 'bot-cleared', score: weightOf('bot-cleared'),
-      };
-    }
-    if (review?.verdict === 'STOP') {
-      return {
+      });
+    } else if (review?.verdict === 'STOP') {
+      out.push({
         ...base, needs: 'Read why it was stopped', why: review.reason || 'the review said stop', rule: 'bot-stopped', score: weightOf('bot-stopped'),
-      };
+      });
+    } else if (!review) {
+      pile.push(pr);
     }
-    if (review) {
-      // A review that is running wants nothing yet.
-      return null;
-    }
+  }
 
-    return {
-      ...base,
-      needs: 'Review the bump',
-      why:   green ? 'green build, not reviewed' : (pr.ci?.failing ? `${ pr.ci.failing } checks failing` : 'not reviewed'),
-      rule:  green ? 'bot-green' : 'bot-red',
-      score: weightOf(green ? 'bot-green' : 'bot-red'),
-    };
-  }).filter(Boolean) as PriorityItem[];
+  /*
+   * One left is not a pile. And note what the `why` no longer says: it was
+   * `${pr.ci.failing} checks failing` off the bot's list while the card drew its check badge
+   * from the pull request's own check runs, so ten of the eleven live bump cards showed two
+   * different failing counts - "6 checks failing" beside "1 failing, 44 passed" - under a big
+   * kind-coloured `Merge it`. The pile counts with `pr.ci` and nothing else, and the card it
+   * draws reads the same field for every row, so there is one number per bump again.
+   */
+  if (pile.length === 1) {
+    const pr = pile[0];
+    const green = botGreen(pr);
+
+    out.push({
+      key:       `bot:${ pr.number }`,
+      what:      `Bump #${ pr.number }`,
+      title:     `${ pr.packageName || pr.title }${ pr.fromVersion ? ` ${ pr.fromVersion } → ${ pr.toVersion }` : '' }`,
+      workspace: '',
+      url:       pr.url,
+      since:     pr.updatedAt || '',
+      needs:     'Review the bump',
+      why:       green ? 'green build, not reviewed' : 'build not green, not reviewed',
+      rule:      green ? 'bot-green' : 'bot-red',
+      score:     weightOf(green ? 'bot-green' : 'bot-red'),
+    });
+  } else if (pile.length) {
+    const green = pile.filter(botGreen).length;
+    const oldest = pile
+      .map((pr) => Date.parse(pr.updatedAt || ''))
+      .filter((at) => Number.isFinite(at))
+      .sort((a, b) => a - b)[0];
+
+    /*
+     * The same nine said once, not five times.
+     *
+     * Measured on the live pile: the identifier read "9 bumps", the title "9 dependency bumps", the
+     * summary "Clear the bumps - 1 green, 8 not", the 36px lede "0 of 9 ready to merge" and the
+     * section head "Dependency bumps · 1 green, 1 of them major" - five framings of one number
+     * across 180px of header, over a list measured 135px of 320. Two of them said "1 green" while
+     * the big one said 0, and only the head explained the gap (the green one crosses a major), so
+     * the restatement made the lede look wrong.
+     *
+     * The lede and the head together are correct and sufficient. What goes is the summary's copy
+     * of the arithmetic and the identifier's copy of the count; what this line says now is the one
+     * thing none of the others does, which is why the pile is a pile.
+     */
+    out.push({
+      key:       'bumps',
+      what:      'Bumps',
+      title:     `${ pile.length } dependency bumps`,
+      needs:     'Clear the bumps',
+      why:       'nobody has reviewed any of them',
+      workspace: '',
+      // The bot's own list on GitHub, from any one of their URLs.
+      url:       String(pile[0].url || '').replace(/\/pull\/\d+.*$/, '/pulls?q=is%3Apr+is%3Aopen+author%3Aapp%2Fdependabot'),
+      since:     oldest ? new Date(oldest).toISOString() : '',
+      rule:      'bot-pile',
+      score:     weightOf('bot-pile'),
+    });
+  }
+
+  return out;
 }
 
 /**

@@ -112,10 +112,24 @@ const preview = computed(() => {
 .veil-enter-from,
 .veil-leave-to { opacity: 0; }
 
+/*
+ * Over the card, and the width of the card.
+ *
+ * It was `left: 50%` with `width: min(980px, …)` and a `translateX(-50%)`, so it was centred on the
+ * window: measured at 1024px that put its left edge at x=22, underneath the 196px pins column, and
+ * made it 234px wider than the 746px card whose title it prints. The sentence `Ask about "<this
+ * card's title>"` was centred on the window rather than on the thing it is about.
+ *
+ * The page publishes the two numbers that place the card - the pins column's width and the deck's
+ * own left and right padding - as tokens on `.dev-focus`, so the bar is inset by exactly those and
+ * then centred inside what is left, which is how `.deck__top` places the card. Same box, one
+ * spine. See `--pins-w` in pages/Focus.vue.
+ */
 .bar {
   position: fixed;
   z-index: 50;
-  left: 50%;
+  left: calc(var(--pins-w, 0px) + var(--deck-pad-l, var(--s4)));
+  right: var(--deck-pad-r, var(--s4));
   bottom: clamp(var(--s3), 2.4vh, var(--s5));
   display: flex;
   /*
@@ -125,8 +139,10 @@ const preview = computed(() => {
    */
   align-items: center;
   gap: var(--s3);
-  width: min(980px, calc(100vw - var(--s5)));
-  transform: translateX(-50%);
+  /* The card's own box: `min(1680px, 100%)`, centred in whatever the insets leave. */
+  width: auto;
+  max-width: min(1680px, 100%);
+  margin-inline: auto;
 }
 
 .bar__end { flex: none; box-shadow: var(--shadow-2); }

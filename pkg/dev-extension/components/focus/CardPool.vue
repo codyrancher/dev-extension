@@ -17,7 +17,7 @@
  * Picking one assigns it to you on GitHub and starts the fix, which is the whole point - the
  * alternative is three tabs and a workspace you have to name.
  */
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import AppButton from './AppButton.vue';
 import SectionHead from './SectionHead.vue';
 import { issueTags } from '../../focus-artifacts';
@@ -30,8 +30,31 @@ const emit = defineEmits<{
   (e: 'ask', issue: PoolIssue): void;
 }>();
 
-/** Which one is open for a closer look. One at a time; this is a list, not thirty cards. */
-const openOn = ref(0);
+/**
+ * Which one is open for a closer look. One at a time; this is a list, not thirty cards.
+ *
+ * **None, on arrival.** It was `ref(0)`, so the first row auto-expanded - and its `.pick__more`
+ * (the labels, "Take it and start", "Is it worth doing?", "On GitHub") takes 115px of the list's
+ * 135px. Measured: 100 `.pick` rows in the DOM, 1 expanded, and exactly one row whose box fell
+ * inside `.pool__list`. The card for choosing work offered one choice and a sliver of the next.
+ * Five 30px rows fit the list closed; opening one is a decision somebody makes.
+ */
+const openOn = ref<number | null>(null);
+
+/**
+ * Open it, and make sure it is still on screen once it is 115px taller.
+ *
+ * Expanding the last visible row pushes its own controls below the fade without this - which is
+ * the fault the auto-expand was hiding by only ever opening the row at the top.
+ */
+function openAt(n: number, event: MouseEvent) {
+  openOn.value = openOn.value === n ? null : n;
+  if (openOn.value === n) {
+    const row = (event.currentTarget as HTMLElement)?.parentElement;
+
+    nextTick(() => row?.scrollIntoView({ block: 'nearest' }));
+  }
+}
 
 /**
  * What the labels say, minus the noise. Shared with the card about a single issue - see
@@ -44,18 +67,22 @@ const shown = computed(() => props.pool);
 
 <template>
   <section class="pool">
-    <SectionHead label="Nobody has taken these" :count="`${ pool.length } open`">
+    <!--
+      No count: the card's 36px lede is this list's length, 150px above, and `30 open` under `30
+      nobody has taken` is one number earning its place twice.
+    -->
+    <SectionHead label="Nobody has taken these">
       <span class="pool__hint">Newest first</span>
     </SectionHead>
 
-    <ol class="pool__list">
+    <ol class="pool__list u-fade-y">
       <li
         v-for="(issue, n) in shown"
         :key="issue.number"
         class="pick"
         :class="{ 'pick--on': n === openOn }"
       >
-        <button type="button" class="pick__row" @click="openOn = n">
+        <button type="button" class="pick__row" :aria-expanded="n === openOn" @click="openAt(n, $event)">
           <span class="pick__no">#{{ issue.number }}</span>
           <span class="pick__title">{{ issue.title }}</span>
           <span class="pick__age">{{ issue.age }}d</span>
@@ -100,6 +127,7 @@ const shown = computed(() => props.pool);
   display: flex;
   flex-direction: column;
   gap: var(--s3);
+  flex: 1 1 auto;
   min-height: 0;
 }
 
@@ -113,7 +141,9 @@ const shown = computed(() => props.pool);
   gap: 2px;
   min-height: 0;
   margin: 0;
-  padding: 0 var(--s2) 0 0;
+  /* The fade's own room; see `.u-fade-y` in design/focus.css. The fourth row of this list was
+     bisected horizontally at the body's bottom edge, which reads as a rendering fault. */
+  padding: 0 var(--s2) var(--s5) 0;
   list-style: none;
   overflow-y: auto;
 }

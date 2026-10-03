@@ -21,6 +21,7 @@ import { fromDiffLines, highlighted } from '../code/rows';
 import AppIcon from './AppIcon.vue';
 import SectionHead from './SectionHead.vue';
 import AppButton from './AppButton.vue';
+import Markdown from './Markdown.vue';
 import type { CardComment } from '../../focus-artifacts';
 
 const props = defineProps<{ comments: CardComment[]; busy?: boolean }>();
@@ -58,7 +59,7 @@ const hasCode = (comment: CardComment) => comment.hunk.some((line) => line.text.
       <span v-if="waiting.length" class="talk__waiting">{{ waiting.length }} waiting on you</span>
     </SectionHead>
 
-    <ol class="talk__list">
+    <ol class="talk__list u-fade-y">
       <li
         v-for="comment in comments"
         :key="comment.id"
@@ -86,7 +87,10 @@ const hasCode = (comment: CardComment) => comment.hunk.some((line) => line.text.
           @expand="emit('expand', { path: comment.path, mark: [comment.line || 1, comment.line || 1] })"
         />
 
-        <p class="note__body">{{ comment.body }}</p>
+        <!-- What a reviewer wrote is GitHub markdown, so it is drawn as GitHub markdown. It was
+             interpolated into a `<p>` with `white-space: pre-wrap`, which shows a code fence as
+             three backticks and a checklist as hyphens. -->
+        <Markdown class="note__body" :text="comment.body" dense />
 
         <!-- What the agent attached to prove it: the screenshot, the recording. -->
         <div v-if="comment.media.length" class="note__shots">
@@ -119,10 +123,12 @@ const hasCode = (comment: CardComment) => comment.hunk.some((line) => line.text.
 </template>
 
 <style scoped>
+/* The surface takes the room it is given; see the budget on `.card__body`. */
 .talk {
   display: flex;
   flex-direction: column;
   gap: var(--s3);
+  flex: 1 1 auto;
   min-height: 0;
 }
 
@@ -136,7 +142,8 @@ const hasCode = (comment: CardComment) => comment.hunk.some((line) => line.text.
   gap: var(--s3);
   min-height: 0;
   margin: 0;
-  padding: 0 var(--s2) 0 0;
+  /* The fade's own room; see `.u-fade-y` in design/focus.css. */
+  padding: 0 var(--s2) var(--s5) 0;
   list-style: none;
   overflow-y: auto;
 }
@@ -188,14 +195,7 @@ const hasCode = (comment: CardComment) => comment.hunk.some((line) => line.text.
 
 .note__when { margin-left: auto; flex: 0 0 auto; color: var(--text-faint); font-size: var(--t-xs); }
 
-.note__body {
-  margin: 0;
-  color: var(--text-dim);
-  font-size: var(--t-sm);
-  line-height: 1.55;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
+.note__body { min-width: 0; }
 
 .note__shots { display: flex; flex-wrap: wrap; gap: var(--s2); }
 

@@ -117,6 +117,14 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
       @click="open = !open"
     >
       <AppIcon :name="icon" :size="15" />
+      <!--
+        What it counts, in words.
+
+        The mark drew a bare number - "5" and "2", two 55x34 chips in a corner - and the `label`
+        prop it was given never appeared anywhere you could see without opening it. A corner
+        control with a number and no noun is a thing people press to find out what it is.
+      -->
+      <span class="dock__name">{{ label }}</span>
       <span v-if="live" class="dock__live">{{ live }}</span>
     </button>
 
@@ -178,11 +186,7 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 </template>
 
 <style scoped>
-/*
- * Bottom left, over the deck, clear of the chat bar's own corner. Fixed rather than in the flow:
- * the deck is a grid of one row and anything added to it takes room from the card.
- */
-/* Positioned by the row it is in, so the marks sit together in one corner. See Focus.vue. */
+/* Positioned by the row it is in: the page's header. See Focus.vue. */
 .dock { position: relative; }
 
 .dock__mark {
@@ -205,6 +209,8 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 .dock__mark:hover,
 .dock__mark--on { border-color: var(--accent); color: var(--text); background: var(--surface); }
 
+.dock__name { color: var(--text-dim); font-size: var(--t-sm); white-space: nowrap; }
+
 .dock__live {
   color: var(--accent);
   font-family: var(--font);
@@ -213,9 +219,14 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * Opens downward, from the header's right edge: it hangs under the control that opened it, over
+ * the deck, which is where there is room. It opened upward when the mark lived in the bottom-left
+ * corner.
+ */
 .dock__card {
   position: absolute;
-  bottom: calc(100% + 8px);
+  top: calc(100% + var(--s2));
   width: min(340px, 78vw);
   padding: var(--s3);
   border: 1px solid var(--border-strong);
@@ -224,7 +235,7 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
   box-shadow: var(--shadow-3);
 }
 
-.dock__card { left: 0; }
+.dock__card { right: 0; }
 
 .dock__head {
   display: flex;
@@ -308,7 +319,9 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 .ws__acts {
   display: flex;
   gap: 2px;
-  padding: 0 var(--s2) var(--s2) calc(7px + var(--s2));
+  /* `--ws-dot`, which `.dock__list` declares for exactly this: the 7 was written out in three
+     places, and this was the third one still writing it out. */
+  padding: 0 var(--s2) var(--s2) calc(var(--ws-dot) + var(--s2));
 }
 
 .ws__act {

@@ -1,9 +1,21 @@
 <script setup lang="ts">
-/** What kind of card this is, in its own hue: the first thing read on a card and in the rail. */
+/**
+ * What kind of card this is, in its own hue: the first thing read on a card and in the rail.
+ *
+ * The hue is one of five and the kinds of card are fifteen, so a chip that said only the hue's
+ * name mislabelled the card: a dependency bump was chipped "Issue", a failing build "Signal", a
+ * security advisory also "Signal", and the agent's finished review and a review somebody asked
+ * you for were both "Review". The chip is the only thing on a card whose job is to say what kind
+ * of card it is, and it was saying what colour family it belonged to.
+ *
+ * So the colour still comes from the kind - five hues is what makes a deck legible while it is
+ * still moving - and the word comes from the card's own definition (`chip` in focus.ts). The
+ * hue's name is the fallback, for the rail and anywhere drawing a kind rather than a card.
+ */
 import { computed } from 'vue';
 import type { FocusKind } from '../../focus';
 
-const props = defineProps<{ kind: FocusKind; size?: 'sm' | 'md' }>();
+const props = defineProps<{ kind: FocusKind; size?: 'sm' | 'md'; word?: string }>();
 
 const words: Record<FocusKind, string> = {
   review: 'Review',
@@ -13,7 +25,7 @@ const words: Record<FocusKind, string> = {
   signal: 'Signal',
 };
 
-const label = computed(() => words[props.kind]);
+const label = computed(() => props.word || words[props.kind]);
 </script>
 
 <template>

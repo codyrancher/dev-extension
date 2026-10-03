@@ -41,6 +41,22 @@
   --warning-wash:  rgba(240, 180, 41, 0.14);
   --danger-wash:   rgba(242, 85, 90, 0.14);
 
+  /*
+   * The ink that goes on a solid fill, which is a property of the fill and not of the page.
+   *
+   * It was `color: var(--ground)` on `.btn--kind`, `.btn--primary` and `.u-badge--solid` - correct
+   * on this ground and catastrophic on the light one, where `--ground` is #f4f6fb: measured on the
+   * bumps card in `body.theme-light`, the primary came out #F4F6FB on the issue hue #7FD7C4 at
+   * 1.56:1, and the agent hue was 1.3:1. Every card in the deck had a near-white button on a
+   * pastel, which the screenshots show as "Merge" and "Is any of them risky? ->" as mint ghosts.
+   *
+   * The card hues and the accent are pastels in *both* themes - the light theme redefines their
+   * washes and leaves the hues alone - so one dark ink reads on all six of them either way:
+   * 10.8:1 on this ground, 9.7:1 on the light one. It is therefore declared once here and NOT
+   * redefined under `body.theme-light`; a fill's foreground does not follow the page behind it.
+   */
+  --ink-on-kind:   #0d0f16;
+
   /* ── The deck: one hue per kind of task ──────────────────────────────── */
   /* review: a pull request waiting on your eyes */
   --kind-review:        #b8a6ff;
@@ -83,6 +99,29 @@
    * else in the evidence band is", which neither of its neighbours was. It is this now, once.
    */
   --pill-h: 26px;
+  /*
+   * And one height for everything you press.
+   *
+   * A single card ran five control heights down it - 24 (chip, pin, workspace tag), 26 (stats,
+   * check badges), 30 (nav, prose pill, Later), 38 (secondary buttons) and 47-48 (the primary,
+   * whose `clamp()` padding resolved to 48px on the first eleven cards of the deck and 47px on
+   * the last fifteen). Five sizes for "a small rounded thing" is what makes a card read as
+   * assembled rather than designed, which is the same argument `--pill-h` above already makes
+   * for labels. So: `--pill-h` is anything that is never pressable, this is anything that is,
+   * and the primary is the one exception because it is meant to be the exception.
+   */
+  --control-h: 32px;
+  --primary-h: 44px;
+  /*
+   * The chat bar, which is the one thing on the page that is not a card, and which the deck has to
+   * leave room for.
+   *
+   * The page reserved `clamp(96px, 11vh, 118px)` for it - 96px at the measured 1024x678 for a bar
+   * whose row is 42px over `--s2` of padding, measured 54px tall. 42px of the page held for
+   * nothing, under a card whose surface was 173px. On the scale, and declared where the bar and
+   * the page can both read it instead of one guessing at the other.
+   */
+  --bar-h: 56px;
   --r-sm: 8px;
   --r-md: 12px;
   --r-lg: 18px;
@@ -195,6 +234,33 @@ body.theme-light .dev-focus {
 }
 
 .dev-focus button { cursor: pointer; }
+
+/*
+ * And `code`, which was the one bare element in this view nobody had thought to undo.
+ *
+ * The reset above names button, input, textarea and select because those are the four the shell
+ * was visibly wrecking. It styles bare `code` too - a 1px border, a sunk background, 5px of
+ * padding and a 4px radius, `display: block` - and that was arriving on `.card__ident` on 26 of
+ * 26 cards, where it read as an empty disabled text input holding `PR #11`. Proved by injecting
+ * a bare `<code>` into a live card and reading back a border and a background that no rule in
+ * this repository asks for.
+ *
+ * It cost more than the look: 39px of a 488px card, and a 5px padding with a 4px radius - both
+ * off the --s and --r scales - on every `.file__path`, `.detail__path`, `.cm__sha` and
+ * `.bump__pkg` in the deck, where `focus-design-check.py` cannot see them because it only reads
+ * this repository's own style blocks. A reset is the only place a rule from outside can be
+ * answered once.
+ */
+.dev-focus code,
+.dev-focus pre,
+.dev-focus kbd {
+  display: inline;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+}
 
 /* The shell draws its own focus ring on buttons; this view uses the prototype's. */
 .dev-focus :focus-visible {
@@ -327,6 +393,43 @@ body.theme-light .dev-focus {
   white-space: nowrap;
 }
 
+/*
+ * A list that is cut on a boundary rather than through a glyph.
+ *
+ * Measured `mask-image: none` on every scroller in the deck, and the result was visible on five
+ * cards at once: the ninth bump row and the fourth pool row bisected horizontally at the body's
+ * edge, a finding ending "and it is wh", an advisory's prose ending "or the OpenJS Foundation,
+ * which". Same pixels either way - a hard cut through the middle of a letter reads as a
+ * rendering fault, and a fade reads as a scroller.
+ *
+ * `scroll-snap-type: proximity` rather than `mandatory`: mandatory fights a drag and would also
+ * snap the card's own body away from wherever you left it.
+ *
+ * Not on `.card__body` itself, which was the first thing tried: a mask makes a new compositing
+ * context, and the body holds CardChecks' popover, so masking there would fade the one surface
+ * that is meant to float out of the box.
+ *
+ * **The caller owes it `--s5` of bottom padding.** A mask does not know whether there is
+ * anything to scroll, so on a list that fits it would fade the last row of a complete list -
+ * which is the bug, not the fix. With `--s5` of padding under the content the gradient has its
+ * own room to eat: a short list is untouched, a scrolled one fades whatever is half cut, and
+ * scrolled to the end the last row sits clear of it.
+ */
+.dev-focus .u-fade-y {
+  scroll-snap-type: y proximity;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--s5)), transparent 100%);
+}
+
+.dev-focus .u-fade-y > * { scroll-snap-align: start; }
+
+/* The same, sideways, for the strips that scroll that way, and the same debt. */
+.dev-focus .u-fade-x {
+  scroll-snap-type: x proximity;
+  mask-image: linear-gradient(to right, #000 calc(100% - var(--s5)), transparent 100%);
+}
+
+.dev-focus .u-fade-x > * { scroll-snap-align: start; }
+
 .dev-focus .u-badge {
   display: inline-flex;
   align-items: center;
@@ -350,5 +453,6 @@ body.theme-light .dev-focus {
 
 .dev-focus .u-badge--solid {
   background: var(--kind-c, var(--accent));
-  color: var(--ground);
+  /* The fill's own ink, not the page's ground. See `--ink-on-kind`. */
+  color: var(--ink-on-kind);
 }

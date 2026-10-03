@@ -14,9 +14,20 @@
 import { computed } from 'vue';
 import SectionHead from './SectionHead.vue';
 import AppIcon from './AppIcon.vue';
+import Markdown from './Markdown.vue';
 import type { AdvisoryFacts, BumpFacts } from '../../focus-artifacts';
 
-const props = defineProps<{ advisory?: AdvisoryFacts | null; bump?: BumpFacts | null }>();
+const props = defineProps<{
+  advisory?: AdvisoryFacts | null;
+  bump?: BumpFacts | null;
+  /**
+   * The fact the card's lede already said. See `claimed` in FocusCard.
+   *
+   * `high` at 36px with `HIGH` 40px beside it, on all three advisory cards. The badge was the
+   * severity before there was a lede; now one of them says it.
+   */
+  claimed?: string;
+}>();
 
 const tone = computed(() => ({
   critical: 'bad', high: 'bad', medium: 'warn', low: 'muted', moderate: 'warn',
@@ -27,7 +38,11 @@ const tone = computed(() => ({
   <section class="fx">
     <template v-if="advisory">
       <SectionHead label="The advisory" icon="clock">
-        <span class="u-pill fx__sev" :class="`fx__sev--${ tone }`">{{ advisory.severity || 'unrated' }}</span>
+        <span
+          v-if="claimed !== 'severity'"
+          class="u-pill fx__sev"
+          :class="`fx__sev--${ tone }`"
+        >{{ advisory.severity || 'unrated' }}</span>
       </SectionHead>
 
       <dl class="fx__rows">
@@ -43,13 +58,20 @@ const tone = computed(() => ({
           <dt>Fixed in</dt>
           <dd class="fx__good"><code>{{ advisory.patched }}</code></dd>
         </template>
+        <!-- Boxed like the other three. It was a bare "1" in body type beside two bordered mono
+             chips - three rows, two value treatments, which reads as oversight because it is. -->
         <template v-if="advisory.alerts">
           <dt>Alerts here</dt>
-          <dd>{{ advisory.alerts }}</dd>
+          <dd><code>{{ advisory.alerts }}</code></dd>
         </template>
       </dl>
 
-      <p v-if="advisory.summary" class="fx__prose">{{ advisory.summary }}</p>
+      <!-- GitHub writes these in markdown, links and all. -->
+      <!-- As much of the advisory's own words as fits, scrolled and faded at the cut rather than
+           stopping mid-word at "…or the OpenJS Foundation, which". -->
+      <div v-if="advisory.summary" class="fx__read u-fade-y">
+        <Markdown class="fx__prose" :text="advisory.summary" dense />
+      </div>
     </template>
 
     <template v-if="bump">
@@ -73,7 +95,15 @@ const tone = computed(() => ({
 </template>
 
 <style scoped>
-.fx { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+/* The surface takes the room it is given; see the budget on `.card__body`. */
+.fx {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
 
 /* `.u-pill` carries the box. A severity is the one pill that shouts, so what is left here is
    the shouting: uppercase, tracked out, heavy. */
@@ -87,18 +117,42 @@ const tone = computed(() => ({
 .fx__sev--warn { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
 .fx__sev--muted { background: var(--surface-raised); color: var(--text-muted); }
 
-/* Label and value, aligned, because four facts in a row of prose is four facts nobody reads. */
+/*
+ * Label and value, aligned, because four facts in a row of prose is four facts nobody reads.
+ *
+ * Two pairs of columns rather than one: the values are short - a package name, a version range, a
+ * count - and stopped at x≈500 in a region running to 928, so 428px sat empty beside them while
+ * the prose underneath was being clipped for room. The pairs collapse back to one at the width
+ * where a value would have to wrap to fit.
+ */
 .fx__rows {
   display: grid;
-  grid-template-columns: 11ch minmax(0, 1fr);
-  gap: 4px var(--s3);
+  grid-template-columns: 11ch minmax(0, 1fr) 11ch minmax(0, 1fr);
+  gap: var(--s1) var(--s3);
   margin: 0;
   font-size: var(--t-sm);
 }
 
-.fx__rows dt { color: var(--text-faint); font-size: var(--t-xs); }
+@media (max-width: 1100px) {
+  .fx__rows { grid-template-columns: 11ch minmax(0, 1fr); }
+}
+
+.fx__rows dt { display: flex; align-items: center; min-height: 22px; color: var(--text-faint); font-size: var(--t-xs); }
 .fx__rows dd { margin: 0; min-width: 0; color: var(--text-dim); overflow-wrap: anywhere; }
-.fx__rows code { font-family: var(--mono); font-size: var(--t-xs); }
+
+/*
+ * Every value boxed the same way, or none of them. A bordered mono chip says "this is a literal
+ * you would copy", which is true of a package name, a version range and an alert count alike.
+ */
+.fx__rows code {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunk);
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+}
 .fx__good code { color: var(--success); }
 
 .fx__jump {
@@ -122,6 +176,14 @@ const tone = computed(() => ({
 .fx__to { border-color: color-mix(in srgb, var(--kind) 40%, transparent); color: var(--text); }
 .fx__pkg { color: var(--text-dim); font-size: var(--t-sm); font-weight: 600; }
 .fx__major { color: var(--danger); font-size: var(--t-xs); font-weight: 650; }
+
+.fx__read {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* The fade's own room; see `.u-fade-y` in design/focus.css. */
+  padding: 0 var(--s2) var(--s5) 0;
+  overflow-y: auto;
+}
 
 .fx__prose { margin: 0; max-width: 78ch; color: var(--text-dim); font-size: var(--t-sm); line-height: 1.6; }
 </style>

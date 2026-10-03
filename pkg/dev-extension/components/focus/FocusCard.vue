@@ -18,24 +18,29 @@
  * says less, which is honest for work that has nothing to show yet.
  */
 import { computed, ref, watch } from 'vue';
-import type { FocusTask, CardAction } from '../../focus';
+import type { FocusTask, CardAction, CardSurface } from '../../focus';
 import AppButton from './AppButton.vue';
 import KindChip from './KindChip.vue';
-import StatPill from './StatPill.vue';
 import AppIcon from './AppIcon.vue';
+import Markdown from './Markdown.vue';
+import TextModal from './TextModal.vue';
 import ReviewPass from './ReviewPass.vue';
 import ChangeSet from './ChangeSet.vue';
 import CardComments from './CardComments.vue';
 import CardEvidence from './CardEvidence.vue';
 import CardPool from './CardPool.vue';
+import CardBumps from './CardBumps.vue';
 import CardReviewers from './CardReviewers.vue';
 import CardCommits from './CardCommits.vue';
 import CardAgent from './CardAgent.vue';
 import CardFacts from './CardFacts.vue';
+import CheckList from './CheckList.vue';
 import SectionHead from './SectionHead.vue';
 import IssueMarks from './IssueMarks.vue';
-import { NO_ARTIFACTS, SURFACE_WANTS } from '../../focus-artifacts';
-import type { CardArtifacts, CardComment, PoolIssue } from '../../focus-artifacts';
+import { NO_ARTIFACTS } from '../../focus-artifacts';
+import type {
+  CardArtifacts, CardComment, PoolIssue, BumpRow
+} from '../../focus-artifacts';
 import type { ReviewNote } from '../../focus-review';
 
 const props = defineProps<{
@@ -81,6 +86,8 @@ const emit = defineEmits<{
   (e: 'reply', value: { comment: CardComment }): void;
   (e: 'expand', value: { path: string; mark: [number, number] }): void;
   (e: 'take', issue: PoolIssue): void;
+  (e: 'merge-bump', row: BumpRow): void;
+  (e: 'about-bump', row: BumpRow): void;
   (e: 'about-issue', issue: PoolIssue): void;
   (e: 'ask-reviewer', who: string): void;
   (e: 'answer', value: { key: string; label: string }): void;
@@ -129,6 +136,17 @@ const art = computed<CardArtifacts>(() => {
 const overdue = computed(() => props.task.waitingHours >= 48);
 
 /**
+ * How many of the agent's findings you have said yes to, when this card is a pass.
+ *
+ * ReviewPass holds the verdicts - none of them has been written to GitHub - so this is the only
+ * way the footer can know whether `Post the review` would post anything. See `anyKept` in
+ * `visible`, and the comment there for what it cost not to know.
+ */
+const kept = ref(0);
+
+watch(() => props.task.key, () => { kept.value = 0; });
+
+/**
  * Whether a workspace could be made for this at all.
  *
  * Only where there is something to make one from: a pull request to review, or an issue to fix.
@@ -138,9 +156,120 @@ const overdue = computed(() => props.task.waitingHours >= 48);
 const canMakeOne = computed(() => /#\d+/.test(props.task.what)
   && props.task.card.actions.some((action) => action.verb === 'review' || action.verb === 'fix'));
 
-/** The first action is the one the card is built around; the rest are quieter. */
-const primary = computed(() => props.task.card.actions[0] || null);
-const rest = computed(() => props.task.card.actions.slice(1));
+/**
+ * The first action is the one the card is built around; the rest are sorted by what they are.
+ *
+ * Every action used to be an `lg` ghost button in one wrapping row: review-asked drew `Start a
+ * review workspace` / `Open the build` / `Open the pull request` / `What changed?` / `Later` as
+ * five identical 48px boxes over two rows, 125px of footer against 88px of body, and the card
+ * gave no signal which of the five it wanted pressed. They are not five of a kind. One of them
+ * is the decision; one is the question you might ask instead; two of them only open a tab
+ * somewhere else, which is navigation and belongs on the provenance line with the rest of the
+ * facts; and `Later` is the way out, which belongs at the far end away from the thing it is not.
+ */
+/**
+ * Whether the work is in the state this action was written for. See `when` on CardAction.
+ *
+ * One condition, resolved in four lines, because the alternative shipped: the advisory card
+ * offered "Take the patch" on an advisory whose own facts row said there was no patch, and that
+ * button's prompt sends an agent off to open a pull request for a version nobody has published.
+ */
+function visible(action: CardAction): boolean {
+  if (!action.when) {
+    return true;
+  }
+  const a = base.value;
+  /*
+   * `mergeable` is the bumps card's version of the same fault the advisory card had.
+   *
+   * `Merge the green ones` filters out the majors and then refuses - "The only green one crosses
+   * a major. Merge those from their own row" - so on the live pile, whose own lede reads `0 of 9
+   * ready to merge` and whose hint reads `1 green, 1 of them major`, the 44px kind-coloured
+   * primary behind a two-press confirm could do nothing but error. The card already knew; it is
+   * the same `state === 'green' && !major` the lede counts.
+   */
+  /*
+   * `anyKept` is the same fault a third time, and the most expensive of the three.
+   *
+   * `Post the review` was live on arrival on every review-pass card, and every one of them arrives
+   * at `0 of 2 decided · 0 to post`. Pressing it runs `postTheReview` -> `submitReview` -> "Nothing
+   * was left to post." -> `done(task)`, which also clears the card off the deck: the card's one
+   * decision posted nothing and dismissed the work. Both live cards were in that state.
+   *
+   * The verdicts are ReviewPass's own state - nothing has been written to GitHub yet - so it says
+   * how many it is keeping and this reads that. With nothing kept the primary falls through to
+   * "Which ones matter?", which is the right first move at 0 decided.
+   */
+  const state: Record<NonNullable<CardAction['when']>, boolean> = {
+    patched:   Boolean(a.advisory?.patched),
+    unpatched: !a.advisory?.patched,
+    mergeable: a.bumps.some((row) => row.state === 'green' && !row.major),
+    anyKept:   kept.value > 0,
+    suggested: Boolean(a.reviewers?.suggested.length),
+  };
+
+  return state[action.when];
+}
+
+/** The ones this card is offering at all, in the definition's order. */
+const shown = computed(() => props.task.card.actions.filter(visible));
+
+const primary = computed(() => shown.value[0] || null);
+const others = computed(() => shown.value.slice(1));
+
+/**
+ * Opens something somewhere else: a link, not a decision.
+ *
+ * `open` is one of these now. It used to post a prompt into the chat bar - see the `open` verb in
+ * Focus.vue - so it was a decision-shaped button that went nowhere; now it is what it says, and
+ * what it says is navigation. That also empties the old `more` list, which across all sixteen
+ * shipped cards could only ever hold a single `open` and measured as appearing on 2 of 25 live
+ * cards with one row in it: a popover, a chevron and a piece of state to hold one link. The
+ * popover stays and holds the navigation instead, which is what it is worth having for.
+ */
+/**
+ * Where a nav actually goes, so a card can stop offering its own identifier twice.
+ *
+ * `.card__ident` is an `<a>` to `task.url` on the head line, and the footer's third control was
+ * `Open the pull request` - verb `url`, which `act` resolves to `task.url` and nothing else. Same
+ * destination, 350px apart, on review-asked, bump, describe-pr and advisory. Measured on dot9 it
+ * cost 203px, which is what pushed `Later` 45px past the card's edge; dropping it takes that row
+ * from 983 back to 768. `open` is in here too because with no workspace it falls through to the
+ * same link, and `share` opens a build, which is somewhere else.
+ */
+function target(action: CardAction): string {
+  if (action.verb === 'url') {
+    return props.task.url;
+  }
+  if (action.verb === 'open') {
+    return props.task.workspace ? `ws:${ props.task.workspace }` : props.task.url;
+  }
+
+  return `build:${ action.kind || 'dashboard' }`;
+}
+
+const navs = computed(() => others.value
+  .filter((action) => action.verb === 'url' || action.verb === 'share' || action.verb === 'open')
+  .filter((action) => !(props.task.url && target(action) === props.task.url)));
+
+/**
+ * The one quieter question, beside the primary - and nothing where the primary is itself a question.
+ *
+ * The `v-else` under this used to draw a generic `Ask about this` whenever the definition offered
+ * no second question, which on the five cards whose *primary* is an ask put two question buttons
+ * side by side - `Who should review this?` + `Ask about this`, `Take the patch` + `Ask about this`
+ * - with the chat bar 100px below reading `Ask about "<title>"`, which is the same control a third
+ * time. Where the card has already asked, the bar is the general question.
+ */
+const asked = computed(() => others.value.find((action) => action.verb === 'ask') || null);
+
+const offersAsk = computed(() => Boolean(asked.value) || primary.value?.verb === 'ask');
+
+/** Putting it off: the far end of the row, because it is the opposite of the primary. */
+const later = computed(() => others.value.find((action) => action.verb === 'snooze') || null);
+
+/** The places to go, open. */
+const navOpen = ref(false);
 
 /**
  * Which of the four surfaces this card is built around, or none.
@@ -149,7 +278,7 @@ const rest = computed(() => props.task.card.actions.slice(1));
  * it is about, the change beats the talk about it, and an issue with none of those has its own
  * words. One at a time, because each of them wants most of the card.
  */
-const surface = computed<'agent' | 'pool' | 'facts' | 'pass' | 'who' | 'talk' | 'files' | ''>(() => {
+const ladder = computed<CardSurface>(() => {
   // An agent waiting on an answer beats everything: it is the highest thing in the queue, and
   // the answer is on the card.
   if (base.value.agent) {
@@ -158,6 +287,10 @@ const surface = computed<'agent' | 'pool' | 'facts' | 'pass' | 'who' | 'talk' | 
   // The pool next: it is the whole of its card, and that card has nothing else.
   if (base.value.pool.length) {
     return 'pool';
+  }
+  // The bumps, for the same reason: the list is the card.
+  if (base.value.bumps.length) {
+    return 'bumps';
   }
   // The few facts a bump or an advisory is decided on, for the two cards that had no surface.
   if (base.value.advisory || base.value.bump) {
@@ -171,6 +304,21 @@ const surface = computed<'agent' | 'pool' | 'facts' | 'pass' | 'who' | 'talk' | 
   }
   if (base.value.files.length) {
     return 'files';
+  }
+  /*
+   * The commits, as a surface rather than as a band above one.
+   *
+   * They were drawn above the surface on any card that asked for them, and the card is not wide
+   * enough for two things: measured on the open-pr card, `.cm` came out 0px tall against a
+   * scrollHeight of 26 and `.cm__list` 589 - so "On the branch · 20 commits" sat directly on top
+   * of "What it changed" with nothing at all between the two headings. A heading over nothing is
+   * worse than no heading, and the count it was announcing is already this card's 36px lede.
+   *
+   * So they are a rung like everything else: the surface of the card whose subject is a branch
+   * with no pull request, and invisible on the cards that have a diff to read instead.
+   */
+  if (base.value.commits.length) {
+    return 'commits';
   }
 
   /*
@@ -186,6 +334,54 @@ const surface = computed<'agent' | 'pool' | 'facts' | 'pass' | 'who' | 'talk' | 
 });
 
 /**
+ * Whether the thing a surface draws is actually here.
+ *
+ * A declared subject that has not arrived falls back to the ladder rather than drawing an empty
+ * frame - and an artifact that never resolves for a card's kind of work falls back for ever,
+ * which is how a want gets noticed as dead.
+ */
+function hasFor(which: CardSurface): boolean {
+  const a = base.value;
+
+  switch (which) {
+  case 'agent':   return Boolean(a.agent);
+  case 'pool':    return a.pool.length > 0;
+  case 'bumps':   return a.bumps.length > 0;
+  case 'facts':   return Boolean(a.advisory || a.bump);
+  case 'pass':    return Boolean(props.notes?.length);
+  case 'talk':    return a.comments.length > 0;
+  case 'files':   return a.files.length > 0;
+  case 'commits': return a.commits.length > 0;
+  case 'checks':  return Boolean(a.ci?.failing);
+  case 'who':     return Boolean(a.reviewers);
+  case 'said':    return Boolean(prose.value);
+  default:        return false;
+  }
+}
+
+/**
+ * The card's own subject where it names one, and the ladder where it does not.
+ *
+ * The ladder is an order over *artifacts*, which is the wrong thing to rank when two cards ask
+ * for the same ones and are about different halves of them. Two cards were paying for that:
+ *
+ *   - red-pr asks for `checks`, `stat` and `files`, and `files` is the only one the ladder had a
+ *     rung for - so the card whose whole subject is "6 of 46 checks failing" showed a 45-file
+ *     diff, and the names of the three red e2e suites could only ever be read in a 26px popover.
+ *   - start-fix is an issue's own words, and the moment it asked for the comments that hold the
+ *     screenshot the issue is about, `talk` would have outranked the words on the ladder.
+ *
+ * So a definition may say which of its wants is the subject (`surface` on CardDef), the way it
+ * already says which of its numbers is the lede. One line per card rather than a rung that
+ * reorders the whole deck.
+ */
+const surface = computed<CardSurface>(() => {
+  const named = props.task.card.surface;
+
+  return named && hasFor(named) ? named : ladder.value;
+});
+
+/**
  * What it says it is, when the card asked.
  *
  * `body` used to be the bottom rung of the ladder above - a surface of last resort - which meant
@@ -196,24 +392,79 @@ const surface = computed<'agent' | 'pool' | 'facts' | 'pass' | 'who' | 'talk' | 
  * before the change. So it is its own block above the surface, and the ladder no longer has a
  * 'prose' rung to lose.
  */
-const prose = computed(() => ((props.task.card.wants || []).includes('body') ? art.value.body : ''));
-
-/** With a surface under it the description is a lead-in; alone, it is the card. */
-const leadIn = computed(() => Boolean(prose.value) && surface.value !== '');
+/*
+ * Off `base`, not `art`.
+ *
+ * `art` reads `surface` (it swaps the media for the selected finding's), and `surface` now reads
+ * the card's declared subject - which for an issue is its own words. Reading `art` here would put
+ * `prose` in the cycle `base` exists to keep out of this file: `art` -> `surface` -> `prose` ->
+ * `art`, which Vue answers with `undefined` and which cost this view a render that drew no cards
+ * at all. `art` differs from `base` in exactly one field and it is not this one.
+ */
+const prose = computed(() => ((props.task.card.wants || []).includes('body') ? base.value.body : ''));
 
 /**
- * A card with a surface on it is laid out differently.
+ * Prose on the card, or prose over it.
  *
- * The surface needs most of the card's height to be worth having, so everything above it gives
- * some up: a smaller title, and the line of prose about why this is here dropped - the line
- * under the title already says what it is.
+ * A description has no natural size - three lines on one pull request and two screens on the next
+ * - so it was drawn as a block above the surface, capped at nine lines and scrolled. Measured,
+ * that block came to 143px inside an 88px body on a review card and pushed the diff 517px off the
+ * right-hand edge: the one thing the card existed to show was the one thing off screen, eaten by
+ * a paragraph you could read 15% of.
  *
- * Read off the definition rather than off what has arrived, so the header is the same size before
- * and after the content loads. It was `surface !== ''`, which is false until the artifacts land -
- * so every card with a surface drew a large title, then shrank it and reflowed the summary under
- * the pointer the moment its content came in.
+ * So prose never stacks above a surface again. Where there is a surface it is a 30px control on
+ * the provenance line that says how much there is and opens it over the card (TextModal); where
+ * there is none - an issue to pick up, a task somebody wrote down - the prose IS the surface and
+ * fills the body, rendered, through the one markdown component.
  */
-const hasPass = computed(() => (props.task.card.wants || []).some((want) => SURFACE_WANTS.includes(want)));
+/* `said` is the words *as* the surface, which is what a card declares when that is its subject. */
+const readsProse = computed(() => Boolean(prose.value) && (surface.value === '' || surface.value === 'said'));
+const prosePill = computed(() => Boolean(prose.value) && !readsProse.value);
+
+/** Whether there is a surface at all, for the box that gives one its floor. See `.card__surface`. */
+const hasSurface = computed(() => Boolean(props.reading || readsProse.value || surface.value));
+
+/** What the prose is, named the way the card would name it. */
+const proseLabel = computed(() => (art.value.issue ? 'What the issue asks for' : 'What it does'));
+
+/*
+ * `proseSize` lived here: `prose.length / 1000`, printed beside the control that opens the
+ * description. While `readArtifacts` capped the body at 2400 characters it was not the size of
+ * anything - it printed the identical "2.4k" on every long description in the deck, which is the
+ * cap and not a quantity - and the modal it opened cut mid-sentence with nothing saying so. The
+ * cap is 40,000 now and the body arrives whole (see `capBody` in focus-artifacts), so the honest
+ * thing is a pill that says what it opens. A character count is not a number anybody has an
+ * intuition for either way.
+ */
+
+/**
+ * What was said on it, for the card whose subject is not what was said.
+ *
+ * The start-fix card asks you to commit a workspace to one issue and showed the issue's body and
+ * nothing else - so on #13888, whose body is "There is clearly a margin error. Check the
+ * screenshot.", the screenshot was withheld: it is in MSpencer87's comment, the head printed "2
+ * comments" and offered no control that opened them, and "Read it all" opened the description
+ * again (744px of the same one sentence). `commentsOf` and this want already existed for
+ * fix-feedback; the card just never asked.
+ *
+ * Read over the card, through the one component for reading prose over a card. A comment is
+ * markdown and so is a description, so there is nothing a second dialog would do differently -
+ * and once Markdown.vue embeds a bare attachment URL, the picture of the bug is in here.
+ */
+const talk = computed(() => (surface.value === 'talk' ? [] : base.value.comments));
+
+const talkText = computed(() => talk.value
+  .map((comment) => `**${ comment.author }**${ comment.path ? ` · \`${ comment.path }\`` : '' }\n\n${ comment.body }`)
+  .join('\n\n---\n\n'));
+
+/**
+ * Open over the card, at the width prose is read at: the description, or what was said about it.
+ *
+ * One piece of state for both, because there is one dialog and only one of them can be open.
+ */
+const readOn = ref<'' | 'prose' | 'talk'>('');
+
+watch(() => props.task.key, () => { readOn.value = ''; });
 
 /**
  * The action that has been pressed once and is waiting to be meant.
@@ -224,7 +475,7 @@ const hasPass = computed(() => (props.task.card.wants || []).some((want) => SURF
  */
 const confirming = ref('');
 
-watch(() => props.task.key, () => { confirming.value = ''; });
+watch(() => props.task.key, () => { confirming.value = ''; navOpen.value = false; });
 
 function press(action: CardAction) {
   if (action.confirm && confirming.value !== action.label) {
@@ -238,19 +489,219 @@ function press(action: CardAction) {
 
 const labelOf = (action: CardAction) => (confirming.value === action.label ? `${ action.label } — sure?` : action.label);
 
-/** How far through the agent's comments you are, shown beside the card's own button. */
-const pass = ref<{ settled: number; total: number; keeping: number } | null>(null);
+/**
+ * The commits that arrived after your review, for the one card whose subject is a second look.
+ *
+ * `newSince` is the review's own timestamp, which `fromReviewing` already computed to decide the
+ * rule; a commit without a parseable date is counted as new, because the alternative is quietly
+ * dropping work from a list whose entire job is to be complete.
+ */
+const fresh = computed(() => {
+  const at = Date.parse(props.task.newSince || '');
+
+  if (!Number.isFinite(at)) {
+    return [];
+  }
+
+  return base.value.commits.filter((commit) => !(Date.parse(commit.at) <= at));
+});
 
 /** Days, where hours stop being a number anybody reads. */
 const waited = computed(() => (props.task.waitingHours >= 48
   ? `${ Math.round(props.task.waitingHours / 24) } days`
   : `${ props.task.waitingHours }h`));
+
+/**
+ * The size of the change, as words rather than as three pills.
+ *
+ * It was `StatPill files / added / removed` in the evidence band and `StatPill priority / waiting
+ * / workspace` under the body, and the header said two of those a second time: `waiting 3 days`
+ * as a badge and again as a pill, the workspace as a button and again as a pill, and - on a card
+ * about a pull request - `priority 118`, which is the ranking's own arithmetic and not a fact
+ * about the work. Four restatements of the same four facts is why the header grew to 221px of a
+ * 484px card. One 13px line, once.
+ */
+/*
+ * The headline number, which is the one thing on this card you can read from across the room.
+ *
+ * Every kind in the deck has exactly one and all of them were 18-26px pills in a row of equals:
+ * 928 days open, 6 of 46 checks failing, 8 findings waiting on a verdict, 1 green bump of 9, 100
+ * issues nobody has taken, HIGH. `--t-xl`, `--t-2xl` and `--t-3xl` were declared and used by
+ * nothing in the deck, so the largest type on a screen whose whole premise is one thing at a time
+ * was the 19px title. The card says which number it is (`lede` on CardDef); this reads it off
+ * whatever came back, and answers null where the artifact is not in yet - a slot that fills in
+ * under you is worse than a slot that was never there.
+ */
+/*
+ * `word` is the one lede that is not a quantity.
+ *
+ * `.card__lede-n` is `--t-2xl` at 650 with `font-variant-numeric: tabular-nums` and
+ * `letter-spacing: -0.03em` - a type treatment built for a number - and the advisory card puts
+ * "high" in it. Measured on dot21: n = "high", of = "patch available", which at 36px in `--danger`
+ * over its own subtitle reads as an unfinished string rather than as a verdict. A severity is a
+ * verdict, so it gets the treatment a verdict wants: caps, `--t-xl`, normal tracking and the kind
+ * wash behind it. Same slot, same place in the card, legible as what it is.
+ */
+const lede = computed<{ n: string; of: string; tone: 'kind' | 'good' | 'bad' | 'warn'; word?: boolean } | null>(() => {
+  const a = art.value;
+
+  switch (props.task.card.lede) {
+  case 'waited':
+    return props.task.waitingHours
+      ? { n: waited.value, of: 'waiting', tone: overdue.value ? 'bad' : 'kind' }
+      : null;
+
+  /*
+   * The pull request's counts, not the number of rows the card happened to draw.
+   *
+   * `a.checks` is at most six named failures - see `ciOf` - so this read `6 of 7 checks
+   * failing` at 36px directly over its own summary line `6 of 46 checks failing`, and on the next
+   * card `1 of 2` over `1 of 43`. The one number a card is built to be read from across the room
+   * contradicted the sentence under it, and a pull request with more than six failures would have
+   * said `6 failing` for ever. `a.ci` is what GitHub says; the rows are only the names.
+   */
+  case 'checks': {
+    const ci = a.ci;
+
+    if (!ci) {
+      return null;
+    }
+
+    return ci.failing
+      ? { n: `${ ci.failing } of ${ ci.total }`, of: 'checks failing', tone: 'bad' }
+      : { n: String(ci.passed), of: 'checks passed', tone: 'good' };
+  }
+
+  case 'findings': {
+    const n = props.notes?.length || 0;
+
+    return n ? { n: String(n), of: n === 1 ? 'finding to judge' : 'findings to judge', tone: 'kind' } : null;
+  }
+
+  case 'comments':
+    return a.comments.length
+      ? { n: String(a.comments.length), of: a.comments.length === 1 ? 'comment' : 'comments', tone: 'kind' }
+      : null;
+
+  case 'files':
+    return a.stat?.files
+      ? { n: String(a.stat.files), of: a.stat.files === 1 ? 'file changed' : 'files changed', tone: 'kind' }
+      : null;
+
+  case 'commits':
+    return a.commits.length
+      ? { n: String(a.commits.length), of: a.commits.length === 1 ? 'commit' : 'commits', tone: 'kind' }
+      : null;
+
+  /*
+   * The commits that arrived after your review, which is the number the card is about.
+   *
+   * `commits` would be every commit on the branch - which is what the first review covered, and
+   * what this card used to lead with as "157 files changed". See `newSince` on PriorityItem.
+   */
+  case 'fresh': {
+    const n = fresh.value.length;
+
+    if (n) {
+      return { n: String(n), of: n === 1 ? 'new commit' : 'new commits', tone: 'kind' };
+    }
+
+    /*
+     * Nothing it can tell is new, so the wait.
+     *
+     * Measured on PR #19217: the surface draws "Since your review · 12 commits" - so `newSince`
+     * arrived and the marking works - and none of the twelve is newer than the review. The cause
+     * is upstream of this view: `detail.commits` comes from `GET /pulls/N/commits?per_page=100`
+     * with no page parameter, which returns the *first* hundred of a branch with more than that,
+     * and `readArtifacts` then keeps the last twelve of those. On a big pull request those twelve
+     * are commits 89-100, not the newest twelve. That is a paginated fetch in dev-api and not a
+     * number this file can mend.
+     *
+     * A lede that resolves to nothing leaves the card with no 36px number at all, which is worse
+     * than the second-best one - so this falls back the way the rest of this family already leads.
+     */
+    return props.task.waitingHours
+      ? { n: waited.value, of: 'waiting', tone: overdue.value ? 'bad' : 'kind' }
+      : null;
+  }
+
+  case 'bumps': {
+    if (!a.bumps.length) {
+      return null;
+    }
+    const ready = a.bumps.filter((row) => row.state === 'green' && !row.major).length;
+
+    return { n: `${ ready } of ${ a.bumps.length }`, of: 'ready to merge', tone: ready ? 'good' : 'warn' };
+  }
+
+  case 'pool':
+    return a.pool.length ? { n: String(a.pool.length), of: 'nobody has taken', tone: 'kind' } : null;
+
+  case 'severity':
+    return a.advisory?.severity
+      ? {
+        n:    a.advisory.severity,
+        of:   a.advisory.patched ? 'patch available' : 'no patch yet',
+        tone: ['critical', 'high'].includes(a.advisory.severity) ? 'bad' : 'warn',
+        word: true,
+      }
+      : null;
+
+  default:
+    return null;
+  }
+});
+
+/**
+ * The fact the lede owns, which is the fact nothing else on this card may repeat.
+ *
+ * One number, once. Measured across the deck: the header's overdue pill said `waiting 929 days`
+ * 20px above a lede reading `929 days waiting` on 8 of 26 cards (and IssueMarks said `1039d old`
+ * as a third copy); the first StatPill said `13 FILES` 50px from a lede reading `13 files
+ * changed` on 10 more; and the advisory's severity badge said `HIGH` 40px from a lede reading
+ * `high`. Saying a number twice in one glance is what makes a card read as generated rather than
+ * written, and it cost about 90px of strip.
+ *
+ * Passed down as one name rather than four booleans: the card's definition already says which of
+ * its numbers is the headline (`lede` on CardDef), so every part that can draw that same number
+ * is handed the name and leaves it out. Null where the lede did not resolve - a card whose
+ * headline number has not arrived is a card where the duplicate is the only copy.
+ */
+const claimed = computed(() => (lede.value ? props.task.card.lede || '' : ''));
+
+/**
+ * Whether the facts row has anything on it.
+ *
+ * The same test CardEvidence makes about the artifacts, plus the card's own two pills. Asked here
+ * because `.card__body` is a column with a `--s4` gap: a facts row that renders empty is not
+ * invisible, it is sixteen pixels off the surface - which is the shape of mistake this card has
+ * been paying for all along.
+ */
+const hasFacts = computed(() => {
+  const a = art.value;
+
+  return Boolean(lede.value
+    || prosePill.value
+    || talk.value.length
+    || (!overdue.value && props.task.waitingHours)
+    || a.stat
+    || a.ci
+    || a.live.length
+    || a.media.length
+    || a.reviewers?.approved.length);
+});
+
+/** How long it has sat, unless that is what the lede says - in which case this is the same string. */
+const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours && claimed.value !== 'waited'
+  ? `${ waited.value }`
+  : ''));
+
 </script>
 
 <template>
   <article
     class="card"
-    :class="[`card--${ task.card.kind }`, { 'card--flat': !interactive, 'card--pass': hasPass }]"
+    :class="[`card--${ task.card.kind }`, { 'card--flat': !interactive }]"
   >
     <div class="card__glow" aria-hidden="true" />
     <div class="card__glow card__glow--foot" aria-hidden="true" />
@@ -281,8 +732,7 @@ const waited = computed(() => (props.task.waitingHours >= 48
         >
           <AppIcon name="pin" :size="13" />
         </button>
-        <KindChip :kind="task.card.kind" />
-        <span class="card__where">{{ task.what }}</span>
+        <KindChip :kind="task.card.kind" :word="task.card.chip" />
 
         <!--
           Where the work lives, or the offer to give it somewhere.
@@ -313,190 +763,412 @@ const waited = computed(() => (props.task.waitingHours >= 48
           <AppIcon name="plus" :size="11" />
           No workspace
         </button>
-        <span v-if="overdue" class="card__overdue">
+        <!--
+          Which thing this is, on the line that says what this is, and a link to it.
+
+          It was a block of its own under the summary - and because `@rancher/shell` styles bare
+          `code` and nothing in this view undid it, that block measured 696x31 with a border, a
+          sunk background and 5px of padding on 26 of 26 cards: an empty disabled text input
+          holding `PR #11`. 39px of a 488px card for seven characters. The reset is in
+          design/focus.css now; what is left belongs beside the chip, at the row's own height,
+          and pressing the identifier of a thing should open the thing.
+        -->
+        <component
+          :is="task.url ? 'a' : 'span'"
+          class="card__ident"
+          :href="task.url || undefined"
+          :target="task.url ? '_blank' : undefined"
+          :rel="task.url ? 'noopener' : undefined"
+          :title="task.url ? `Open ${ task.what }` : task.what"
+        >{{ task.what }}</component>
+
+        <span v-if="overdue && claimed !== 'waited'" class="card__overdue">
           <AppIcon name="clock" :size="13" />
           waiting {{ waited }}
         </span>
       </div>
 
-      <h2 class="card__title">{{ task.title || task.what }}</h2>
-      <p class="card__summary">{{ task.needs }}</p>
+      <!--
+        One line, reserved, so the body starts at the same y on every card: see `.card__title`.
 
-      <div class="card__by">
-        <span class="card__by-name">{{ task.summary }}</span>
-      </div>
+        It was two, and two lines of 26px is 30px of the card reserved on the 12 of 26 cards whose
+        title is one line - 30px spent on a frame rather than on the thing the card is about,
+        which on a diff card had 60px of code in it. The whole title is in the tooltip, in the chat
+        bar's subject and in every modal the card opens, so nothing is unreachable.
+      -->
+      <h2 class="card__title" :title="task.title || task.what">{{ task.title || task.what }}</h2>
+
+      <!--
+        Why it is in front of you, in one line.
+
+        It was three: `.card__summary` ("Review it"), `.card__by` in a bordered strip ("you were
+        asked for a review and have not given one") and `.card__prose` (the rule's own blurb) -
+        two of which say the same thing, and on dot9 the strip read "you were asked for a review
+        and have not given one" directly under a summary reading "Review it". The imperative and
+        its reason are one sentence, so they are written as one.
+      -->
+      <p class="card__summary">
+        {{ task.needs }}<span v-if="task.summary && task.summary !== task.needs" class="card__why"> — {{ task.summary }}</span>
+      </p>
+
     </header>
 
     <div class="card__body">
       <!--
-        The things you would have gone and looked up: the size of the change, what CI says, what
-        is running on a link, what the agent recorded. Above the surface rather than inside it,
-        because all four are true of the work whichever surface it has.
+        One band of numbers: the headline one, and then the things you would have gone and looked
+        up - the size of the change, what CI says, what is running on a link, how many recordings
+        there are, how long it has sat, and the description if there is one to read.
+
+        Pinned at `flex: 0 0 auto`, which is the whole of finding after finding. It was three rows
+        in a column that kept its natural height while every surface under it could shrink, so the
+        decoration was at natural height and the point was at 1px: 139px of band against 23px of
+        diff on a card whose button says "Mark it ready for review", 129px of band against 28px for
+        eight findings on a card that posts a review to GitHub. Measured after: 37px where the lede
+        is alone on the row and 71px where the facts wrap under it, against surfaces of 120-127px.
+
+        **One line, and it neither wraps nor scrolls.** It wrapped, and then it scrolled sideways,
+        and the scroller was worse: `.card__strip` measured scrollWidth/clientWidth of 740/524 on
+        the review-asked card and arrived at `scrollLeft: 216` with no interaction, so the first
+        thing on a card's fact line was 60px of a pill reading "OVED" while `+13281 added` sat off
+        the card to the left. On the red-pr card the one control the card exists for - the list of
+        failures - measured x812 to r1025 against a window of 1024. The numbers are text now and
+        the controls are pinned; see CardEvidence, which owns the whole line, including the two
+        pills this template used to add to it by hand.
       -->
-      <CardEvidence :artifacts="art" />
+      <div v-if="hasFacts" class="card__facts">
+        <p v-if="lede" class="card__lede" :class="[`card__lede--${ lede.tone }`, { 'card__lede--word': lede.word }]">
+          <span class="card__lede-n">{{ lede.n }}</span>
+          <span class="card__lede-of">{{ lede.of }}</span>
+        </p>
 
-      <!--
-        What is on the branch. Above the surface when there is one, and the surface itself when
-        there is not - which is the case on the card whose subject is a branch with no pull
-        request, where everything else a card reads comes off a pull request that does not exist.
-      -->
-      <CardCommits
-        v-if="art.commits.length"
-        :commits="art.commits"
-        :class="{ 'card__only': surface === '' && !prose }"
-      />
-
-      <!-- Why this is in front of you at all, in the ranking's own words. -->
-      <p v-if="task.about && !hasPass && !reading" class="card__prose">{{ task.about }}</p>
-
-      <!--
-        What it says it is: a pull request's description, or an issue's own words.
-
-        Above the surface rather than instead of it. See `prose`: this used to be the last rung
-        of the surface ladder, so on the three cards that ask for it - the one that overwrites
-        the description, the review somebody asked you for, and the one about who should review
-        it - the diff won and the prose was read from GitHub and thrown away.
-      -->
-      <section v-if="prose && !reading" class="card__said" :class="{ 'card__said--lead': leadIn }">
-        <SectionHead
-          v-if="art.issue || leadIn"
-          :label="art.issue ? 'What the issue asks for' : 'What it says it does'"
-          :icon="art.issue ? 'tasks' : 'pencil'"
-        >
-          <IssueMarks v-if="art.issue" :issue="art.issue" />
-        </SectionHead>
-        <div class="card__read">
-          <p class="card__text">{{ prose }}</p>
-        </div>
-      </section>
-
-      <!-- Being read. See `reading`: a card says so rather than filling in under you. -->
-      <div v-if="reading" class="card__reading">
-        <AppIcon name="spinner" :size="20" />
-        <span>Reading what this needs…</span>
+        <CardEvidence
+          :artifacts="art"
+          :claimed="claimed"
+          :waited="waitedOnLine"
+          :prose="prosePill ? proseLabel : ''"
+          :talk="talk.length"
+          @read="readOn = 'prose'"
+          @talk="readOn = 'talk'"
+        />
       </div>
 
-      <!-- What the agent is asking, with its own choices as the buttons. -->
-      <CardAgent
-        v-else-if="surface === 'agent' && art.agent"
-        :agent="art.agent"
-        :busy="busy"
-        @answer="emit('answer', $event)"
-      />
+      <!--
+        The one surface this card is about, in a box that has a floor.
 
-      <!-- The facts a bump or an advisory is decided on. -->
-      <CardFacts
-        v-else-if="surface === 'facts'"
-        :advisory="art.advisory"
-        :bump="art.bump"
-      />
+        Every child of `.card__body` is `flex-shrink: 1` with no `min-height`, so the surface was
+        what gave: measured, `ev` 139px of natural height against `cm` at 1px and `changes` at 23px
+        - "On the branch 20 commits" and "What it changed, first 40 of 50 files" as two headings
+        16px apart with two scroll chevrons, no commits and no files between them. A wrapper rather
+        than a declaration on each surface component, because the floor and the `min-height: 0` a
+        scrolling surface needs for its own children are the same property at the same specificity:
+        the box is told it may not be smaller than 120px, and what is inside it is free to shrink to
+        nothing inside that.
+      -->
+      <div v-if="hasSurface" class="card__surface">
+        <!--
+          What it says it is, when that is all this card has: an issue's own words.
 
-      <!-- Work to choose from, when nothing is waiting on you. -->
-      <CardPool
-        v-else-if="surface === 'pool'"
-        :pool="art.pool"
-        :busy="busy"
-        @take="emit('take', $event)"
-        @ask="emit('about-issue', $event)"
-      />
+          Rendered, not interpolated. It was `<p>{{ prose }}</p>` with `white-space: pre-wrap`, so
+          a GitHub pull request template showed the user its own HTML comment - "This template is
+          for Devs to give QA details before moving the issue To-Test" - followed by `### Summary`
+          with the hashes showing. `Markdown.vue` had been written for this and imported nowhere.
+        -->
+        <section v-if="readsProse && !reading" class="card__said">
+          <SectionHead :label="proseLabel" :icon="art.issue ? 'tasks' : 'pencil'">
+            <IssueMarks v-if="art.issue" :issue="art.issue" :claimed="claimed" />
+            <!--
+              The way to read the rest of it, which this card did not have.
 
-      <!-- Who has it, when that is the thing that is missing. -->
-      <CardReviewers
-        v-else-if="surface === 'who' && art.reviewers"
-        :reviewers="art.reviewers"
-        :busy="busy"
-        @ask="emit('ask-reviewer', $event)"
-      />
+              Where there is a surface the description opens from a pill on the facts strip; where
+              the prose *is* the surface there was no control at all, and `.card__read` measured
+              93px against a scrollHeight of 145-3,080 - about four lines of a three-thousand-pixel
+              issue, read four lines at a time. TextModal is already here for the other case.
+            -->
+            <button
+              v-if="prose"
+              type="button"
+              class="card__all"
+              @click="readOn = 'prose'"
+            >Read it all</button>
+          </SectionHead>
+          <div class="card__read u-fade-y">
+            <Markdown :text="prose" />
+          </div>
+        </section>
 
-      <!-- The agent's review, when there is one waiting: the substance of a review card. -->
-      <ReviewPass
-        v-else-if="surface === 'pass'"
-        :notes="notes || []"
-        @select="noteOn = $event"
-        @expand="emit('expand', $event)"
-        @progress="pass = $event"
-        @resolve="emit('resolve', $event)"
-        @ask="emit('discuss', $event)"
-      />
+        <!-- Being read. See `reading`: a card says so rather than filling in under you. -->
+        <div v-if="reading" class="card__reading">
+          <AppIcon name="spinner" :size="20" />
+          <span>Reading what this needs…</span>
+        </div>
 
-      <!-- Or the change itself, file by file, when reading it is the job. -->
-      <ChangeSet
-        v-else-if="surface === 'files'"
-        :files="art.files"
-        :busy="busy"
-        @ask="emit('ask-code', $event)"
-        @expand="emit('expand', $event)"
-      />
+        <!-- What the agent is asking, with its own choices as the buttons. -->
+        <CardAgent
+          v-else-if="surface === 'agent' && art.agent"
+          :agent="art.agent"
+          :busy="busy"
+          @answer="emit('answer', $event)"
+        />
 
-      <!-- Or what people said about it, when answering them is the job. -->
-      <CardComments
-        v-else-if="surface === 'talk'"
-        :comments="art.comments"
-        :busy="busy"
-        @reply="emit('reply', $event)"
-        @expand="emit('expand', $event)"
-      />
+        <!--
+          The failures, for the card whose whole subject is a red build.
 
-      <div v-if="!hasPass && !reading" class="card__stats">
-        <StatPill label="priority" :value="String(task.score)" />
-        <StatPill v-if="task.waitingHours" label="waiting" :value="waited" />
-        <StatPill v-if="task.workspace" label="workspace" :value="task.workspace" />
+          `red-pr` wants `checks`, `stat` and `files` and the surface ladder had a rung for `files`
+          only, so the card headed "6 of 46 checks failing" drew a 45-file diff and the three red
+          e2e suites were readable in a 26px popover and nowhere else. The names and their own
+          one-line reports were already on the card. The diff stays one press away on "Open it".
+        -->
+        <CheckList
+          v-else-if="surface === 'checks' && art.ci"
+          surface
+          :checks="art.checks"
+          :failing="art.ci.failing"
+          :claimed="claimed"
+        />
+
+        <!-- The facts a bump or an advisory is decided on. -->
+        <CardFacts
+          v-else-if="surface === 'facts'"
+          :advisory="art.advisory"
+          :bump="art.bump"
+          :claimed="claimed"
+        />
+
+        <!-- Work to choose from, when nothing is waiting on you. -->
+        <CardPool
+          v-else-if="surface === 'pool'"
+          :pool="art.pool"
+          :busy="busy"
+          @take="emit('take', $event)"
+          @ask="emit('about-issue', $event)"
+        />
+
+        <!-- Every bump nobody has reviewed, one row each. See CardBumps. -->
+        <CardBumps
+          v-else-if="surface === 'bumps'"
+          :bumps="art.bumps"
+          :busy="busy"
+          :claimed="claimed"
+          @merge="emit('merge-bump', $event)"
+          @ask="emit('about-bump', $event)"
+        />
+
+        <!-- Who has it, when that is the thing that is missing. -->
+        <CardReviewers
+          v-else-if="surface === 'who' && art.reviewers"
+          :reviewers="art.reviewers"
+          :busy="busy"
+          @ask="emit('ask-reviewer', $event)"
+        />
+
+        <!-- The agent's review, when there is one waiting: the substance of a review card. -->
+        <ReviewPass
+          v-else-if="surface === 'pass'"
+          :notes="notes || []"
+          @kept="kept = $event"
+          @select="noteOn = $event"
+          @expand="emit('expand', $event)"
+          @resolve="emit('resolve', $event)"
+          @ask="emit('discuss', $event)"
+        />
+
+        <!-- Or the change itself, file by file, when reading it is the job. -->
+        <ChangeSet
+          v-else-if="surface === 'files'"
+          :files="art.files"
+          :total="art.stat?.files || 0"
+          :busy="busy"
+          :claimed="claimed"
+          @ask="emit('ask-code', $event)"
+          @expand="emit('expand', $event)"
+        />
+
+        <!-- What is on the branch, for the card whose subject is a branch with no pull request. -->
+        <!-- What is on the branch - and, for the second look, which of it is new. See `fresh`. -->
+        <CardCommits
+          v-else-if="surface === 'commits'"
+          :commits="art.commits"
+          :claimed="claimed"
+          :since="task.newSince || ''"
+        />
+
+        <!-- Or what people said about it, when answering them is the job. -->
+        <CardComments
+          v-else-if="surface === 'talk'"
+          :comments="art.comments"
+          :busy="busy"
+          @reply="emit('reply', $event)"
+          @expand="emit('expand', $event)"
+        />
       </div>
     </div>
 
+    <!--
+      One row, and two heights inside it: the decision at 44px in the card's own hue, everything
+      else at 32px, and the way out as text at the end of the row. Measured before this: 125px of
+      footer with the buttons on two rows at 341 and 401, five equal 48px boxes, against 88px of
+      body on the same card - and then, after that was fixed, four heights on one row ([48, 38, 38,
+      30]) with the primary itself resolving to 48px on the deck's first eleven cards and 47px on
+      the last fifteen.
+    -->
     <footer class="card__foot">
+      <!--
+        `busy || reading`: not pressable on evidence that has not arrived.
+
+        `Post the review` was live over its own spinner - the card offers an irreversible act on
+        a list of findings it is still fetching, and `submitReview` can only throw until they are
+        there. See `reading`.
+      -->
       <AppButton
         v-if="primary"
         variant="kind"
         size="lg"
         icon-after="arrow-right"
-        :busy="busy"
+        :busy="busy || reading"
         :class="{ 'card__sure': confirming === primary.label }"
         @click="press(primary)"
       >{{ labelOf(primary) }}</AppButton>
 
+      <!-- The question this card offers, or the general one where it offers none. -->
       <AppButton
-        v-for="action in rest"
-        :key="action.label"
+        v-if="asked"
         variant="ghost"
-        size="lg"
-        :class="{ 'card__sure': confirming === action.label }"
-        @click="press(action)"
-      >{{ labelOf(action) }}</AppButton>
-
-      <span v-if="pass" class="card__pass">
-        <strong>{{ pass.keeping }}</strong> of {{ pass.total }} kept
-        <span v-if="pass.settled < pass.total" class="card__pass-left">· {{ pass.total - pass.settled }} still to decide</span>
-      </span>
-
-      <!--
-        Only where the card does not already offer one: every definition's second action is an
-        ask of its own, and two of them is a fourth button on a row that then wraps.
-      -->
-      <AppButton
-        v-if="!task.card.actions.some((a) => a.verb === 'ask')"
-        variant="quiet"
-        size="lg"
+        size="md"
         icon="sparkle"
-        class="card__ask"
+        :class="{ 'card__sure': confirming === asked.label }"
+        @click="press(asked)"
+      >{{ labelOf(asked) }}</AppButton>
+      <AppButton
+        v-else-if="!offersAsk"
+        variant="ghost"
+        size="md"
+        icon="sparkle"
         @click="emit('ask')"
       >
         Ask about this
       </AppButton>
+
+      <!--
+        Everywhere else this work is. One control, so the row can never become two.
+
+        "Elsewhere", not "More". It was `More` over a list of whatever actions the definition had
+        left over, which across all sixteen shipped cards could only ever be a single `open` - and
+        that `open` was a prompt dressed as navigation. What is behind it now is only ever places:
+        the pull request, the review, the workspace, the build. A control that holds one kind of
+        thing should say which kind.
+      -->
+      <!--
+        One link is not a menu.
+
+        Measured on the top card, `Elsewhere` opened onto exactly one row - `Open the review` -
+        and across the ten live kinds it held one row on eight of them. A chevron, a popover and
+        a piece of component state to reach a single link is the same fault this control's own
+        comment says it fixed for `More`; where there is one place to go, the button is that
+        place and says its name.
+      -->
+      <AppButton
+        v-if="navs.length === 1"
+        variant="quiet"
+        size="md"
+        icon="expand"
+        @click="press(navs[0])"
+      >{{ navs[0].label }}</AppButton>
+
+      <div v-else-if="navs.length" class="card__overflow">
+        <AppButton
+          variant="quiet"
+          size="md"
+          icon="expand"
+          icon-after="chevron-down"
+          :aria-expanded="navOpen ? 'true' : 'false'"
+          @click="navOpen = !navOpen"
+        >Elsewhere</AppButton>
+
+        <div v-if="navOpen" class="u-popover card__menu">
+          <button
+            v-for="action in navs"
+            :key="action.label"
+            type="button"
+            class="card__menu-row"
+            @click="navOpen = false; press(action)"
+          >
+            <AppIcon name="expand" :size="12" />
+            {{ action.label }}
+          </button>
+        </div>
+      </div>
+
+      <!-- The way out, at the other end from the thing it is the opposite of. -->
+      <button
+        v-if="later"
+        type="button"
+        class="card__later"
+        @click="press(later)"
+      >{{ labelOf(later) }}</button>
     </footer>
+
+    <!-- The description, or what was said about it, read over the card. See `prose` and `talk`. -->
+    <TextModal
+      v-if="readOn"
+      :title="readOn === 'talk' ? `What was said · ${ talk.length } ${ talk.length === 1 ? 'comment' : 'comments' }` : proseLabel"
+      :text="readOn === 'talk' ? talkText : prose"
+      :at="task.what"
+      @close="readOn = ''"
+    />
   </article>
 </template>
 
 
 <style scoped>
+/*
+ * Three zones with a budget, written down.
+ *
+ * It was a column flex box and the three zones fought over it, so the ratio was decided by how
+ * long the title happened to be: measured head/body/foot across the deck came out 221/23/125,
+ * 178/66/125, 156/88/125 and 120/184/65 on a 484px card. The zone carrying the thing you opened
+ * the card for got 5% of it while the header took 46%, and the deck visibly breathed as you
+ * turned it because the same kind of card gave its surface 23px on one pull request and 88px on
+ * the next.
+ *
+ * So: `auto minmax(0, 1fr) auto`, and the head and the foot are capped rather than merely asked
+ * nicely. The head is the sum of its capped parts and nothing else: 32 (the chip row, which now
+ * carries the identifier too) + 4 + 60 (two title lines at 26px, reserved on the header rather
+ * than inside the title) + 4 + 19 (one 13px line of why) = 119px whatever the title says. The foot
+ * is one 44px row plus its rule. The body is the rest, and it is the same share on every kind of
+ * card, which is the point.
+ *
+ * **It was 165, and the 46px went to the surface.** Two things were being paid for twice: a
+ * `.card__ident` block under the summary that `@rancher/shell`'s bare `code` rule was drawing as a
+ * 696x31 bordered box holding seven characters, and 30px of reserved second line sitting *inside*
+ * the title box under a one-line title on 12 of 26 cards. The identifier is a control on the chip
+ * row and the reservation is one gap below the summary; the surface went 127px to 173px, which is
+ * the room the pass's verdict buttons and the diff pane were starving for.
+ *
+ * **The budget capped the wrong things.** It capped the head and the foot and left the body a
+ * free-for-all, so the starvation moved rather than stopped: inside the body the evidence band
+ * kept its natural height while every surface could shrink, and the surface the card exists for
+ * went to 23-40px under 105px of thumbnails. The body is a budget too now - a facts row at
+ * `flex: 0 0 auto`, one surface with a 120px floor, and nothing else - and the two 42px savings
+ * (the provenance row's duplicate numbers, the card's 33px padding) went to the surface rather
+ * than to the header.
+ */
 .card {
   position: relative;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100%;
   /* The card may be narrower than the widest thing in it; see the deck's grid track. */
   min-width: 0;
-  padding: clamp(var(--s5), 3.2vw, var(--s7));
+  /*
+   * A flat `--s4`.
+   *
+   * It was a `clamp()` that resolved to 33px, so 66px of the card's 478px height was its own
+   * margin while its subject had 195px; then a flat `--s5`, 48px of the two. At the measured
+   * 1024x678 the card is 488px and the surface - the only part of it that is the work - was 173px
+   * of that, with 60px of code in it on a diff card. 16px of frame is still a frame; the other
+   * 16px is a line of code. The screen's whole job is to show you one thing.
+   */
+  padding: var(--s4);
   border: 1px solid var(--border);
   /* The hue closes the card at both ends, so a card reads as one object rather than as a
      coloured header with a page under it. */
@@ -514,15 +1186,6 @@ const waited = computed(() => (props.task.waitingHours >= 48
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
-
-/* A card with the pass on it gives the header's room to the comments. */
-.card--pass .card__title { font-size: clamp(var(--t-lg), 2vw, var(--t-xl)); }
-.card--pass .card__summary { font-size: var(--t-sm); }
-.card--pass .card__body { gap: var(--s3); }
-
-.card__pass { margin-left: auto; color: var(--text-muted); font-size: var(--t-sm); }
-.card__pass strong { color: var(--text); font-variant-numeric: tabular-nums; }
-.card__pass-left { color: var(--text-faint); }
 
 /* The hue, once, at the top of the component that owns it. */
 .card--review   { --kind: var(--kind-review);   --kind-deep: var(--kind-review-deep);   --kind-wash: var(--kind-review-wash); }
@@ -583,28 +1246,51 @@ const waited = computed(() => (props.task.waitingHours >= 48
   pointer-events: none;
 }
 
-.card__head,
-.card__body,
-/* The same, at the other end: the buttons are the point of the card and never give up room. */
 /*
  * The row of actions, separated from what it acts on.
  *
- * It was `flex: 0 0 auto; min-width: 0` and nothing else - never a flex row at all, so the
- * buttons were inline elements with a text space between them rather than a gap, and the row sat
- * flush against the content above it. The prototype's own rule is the three things that were
- * missing: the gap, the room above, and a hairline in the card's hue to close the body off.
+ * `.card__head,` and `.card__body,` sat at the head of this selector list, so all three zones
+ * shared the footer's declarations and the head's and the body's own rules only overrode part of
+ * them. What that cost, measured: the body computed `display:flex; flex-direction:column;
+ * flex-wrap:wrap; align-items:center; border-top:1px; padding-top:16px`, so a 23-131px column
+ * that wraps threw every child after the first into a second column to the right - a review
+ * card's diff drew at x=1479 on a card whose right edge is 962, and `overflow:hidden` clipped it
+ * away entirely. The header computed `display:flex` and laid the h2 out *beside* the p. And the
+ * body grew a hairline and 16px of padding nobody wrote on purpose.
+ *
+ * One rule, one zone, and `focus.css`'s `.dev-focus header{display:block}` can do its job again.
  */
 .card__foot {
   display: flex;
   align-items: center;
   gap: var(--s3);
-  flex: 0 0 auto;
-  flex-wrap: wrap;
+  /* Never two rows: the navigation goes behind one control instead. See `navs`. */
+  flex-wrap: nowrap;
   min-width: 0;
   margin-top: var(--s4);
   padding-top: var(--s4);
   border-top: 1px solid color-mix(in srgb, var(--kind) 16%, var(--border));
 }
+
+/*
+ * The buttons give; the way out does not.
+ *
+ * Every `.btn` in here was `flex: 0 1 auto` by default *and* `white-space: nowrap`, so nothing on
+ * the row could shrink and the overflow was paid by whatever was last. `Later` is last. Measured
+ * across the deck: card content ends at 938 on every card, and `.card__later`'s right edge came
+ * out 955, 975 and 983 - up to 21px of it painted outside the card's 962px border and removed by
+ * `overflow: hidden`, which three screenshots show as the word "Late". It happens whenever the
+ * footer has four children: 242 + 187 + 195 + 58, three 12px gaps and a 16px margin is 734 in 688.
+ *
+ * So the two middle controls are the ones that give - their labels ellipsise, see `.btn__label` -
+ * and `Later` keeps its width, because a control that is clipped is a control that is not there
+ * and this is the only one that means "not now". The 203px duplicate nav is gone as well (see
+ * `navs`), which on dot9 alone took the row from 983 to 768.
+ */
+.card__foot > :deep(.btn) { flex: 0 1 auto; min-width: 0; }
+
+/* The decision keeps its label: it is the one thing the card wants read. */
+.card__foot > :deep(.btn--lg) { flex: 0 0 auto; }
 
 /*
  * Never squeezed.
@@ -616,10 +1302,43 @@ const waited = computed(() => (props.task.waitingHours >= 48
  * its text and the body is what gives: that is what `min-height: 0` and `overflow: auto` down
  * there are for.
  */
+/*
+ * A block, said out loud.
+ *
+ * `focus.css` already says `.dev-focus header { display: block }` for exactly this reason - the
+ * shell's own `header { display: flex }` leaks in here - and the dangling selector above beat it
+ * on specificity. Declared here as well so neither can take it back: without it the h2 and the p
+ * are flex items on one line, and measured they were - title at offsetLeft 0 and summary at 415
+ * on the same offsetTop, on 13 of the deck's 36 cards, with the rest escaping only because the
+ * title happened to wrap first.
+ */
+/*
+ * The reservation moved out of the title and onto the header.
+ *
+ * `.card__title` reserved two lines so that every card's body started at the same y. On the 12
+ * cards whose title is one line that put 30px of slack *inside* the title box, directly under the
+ * words, 4px above the summary - so it read as a hole rather than as spacing, plainly visible
+ * under "Switch cluster import to use to RcSections" and "9 dependency bumps". And on the one
+ * card whose title wants three lines it clamped the third away while the box was already tall
+ * enough for it.
+ *
+ * Same total, one gap, and the gap falls below the summary where a gap reads as rhythm.
+ *
+ * **89px, which is one title line and not two.** It was 119 = 32 (the chip row) + 4 + 60 (two
+ * title lines at 26px) + 4 + 19 (the summary), reserved so that there is no step between a
+ * one-line card and a two-line one. There still is not; the reservation is just one line shorter.
+ * 12 of the deck's 26 titles are one line, and on those the second reserved line was 30px of the
+ * card held empty for a line that never came - on a diff card whose code pane was 99px. The whole
+ * title is in the `title` attribute, in the chat bar's subject and in every modal the card opens,
+ * so the clamp costs a glance and not the words. The header was 165px before the identifier moved
+ * onto the chip row; 76px of it has gone to the surface, which is the only part of this card that
+ * is the work.
+ */
 .card__head {
   position: relative;
-  flex: 0 0 auto;
+  display: block;
   min-width: 0;
+  min-height: 89px;
 }
 
 /*
@@ -630,8 +1349,13 @@ const waited = computed(() => (props.task.waitingHours >= 48
  * line. They all take the row's height now and sit on its centre; what differs between them is
  * weight and colour, which is what was supposed to be doing the work.
  */
+/*
+ * `--control-h`, not a fourth number. The row centred a 24px chip beside a 24px workspace tag
+ * beside a 30px nav; everything that stands on it is one height now, and that height is the one
+ * everything you press in this view is. See `--control-h` in design/focus.css.
+ */
 .card__head-line {
-  --head-h: 24px;
+  --head-h: var(--control-h);
   display: flex;
   align-items: center;
   gap: var(--s2);
@@ -656,21 +1380,8 @@ const waited = computed(() => (props.task.waitingHours >= 48
   padding-bottom: 0;
 }
 
-.card__where {
-  flex: 0 1 auto;
-  min-width: 0;
-  color: var(--text-muted);
-  font-family: var(--mono);
-  font-size: var(--t-sm);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Where the work lives, said in the same breath as what it is. */
-
 /*
- * The pin: a control the size the rest of them are (the smallest button here is 30px), in the
+ * The pin: a control the size the rest of them are (`--control-h`, 32px), in the
  * card's top-left corner. It shows its glyph alone until the pointer is on the card, and then
  * says what it does - a corner icon with no word is a thing people press to find out.
  */
@@ -696,15 +1407,15 @@ const waited = computed(() => (props.task.waitingHours >= 48
 }
 
 /*
- * The hit area, taller than the ink rather than wider: the row clips horizontally - it has to,
- * or a long workspace name pushes the line out - so a target that reached sideways was six
- * pixels of nothing being clipped. Vertically there is room, and vertically is where a 24px
- * target is actually missed.
+ * The hit area, taller than the ink rather than wider: the row clips horizontally - it has to, or
+ * a long workspace name pushes the line out - so a target that reached sideways was six pixels of
+ * nothing being clipped. At 32px the ink is the target; this is what is left of the days when it
+ * was 24, and it costs nothing to keep a thumb's worth of slack above and below.
  */
 .card__pin::after {
   content: '';
   position: absolute;
-  inset: -8px 0;
+  inset: -5px 0;
 }
 
 .card__pin:hover { color: var(--text); border-color: var(--border-strong); }
@@ -731,63 +1442,248 @@ const waited = computed(() => (props.task.waitingHours >= 48
   font-weight: 600;
 }
 
+/*
+ * Two lines, always two lines, at one size on every card.
+ *
+ * The size was `clamp(--t-xl, 3.1vw, --t-3xl)` - up to 48px - with a second size for cards
+ * carrying a surface, so a long title took four lines and a third of the card before anything else
+ * got a say. It was then pinned at `--t-lg`, 19px, which is the size this product sets a table
+ * row's heading at: the subject of a screen whose whole premise is one thing at a time, set at the
+ * size of a list item, and the largest type anywhere in the deck.
+ *
+ * `--t-xl`, with the line *reserved* on the header rather than merely capped here. 10 of 26 titles
+ * wrapped at 19px, and because the card is a fixed height each of those paid for the second line
+ * out of its own body - so the same kind of card gave its surface 22px less than its neighbour for
+ * no reason but how long somebody's pull request title happened to be. A reservation costs the
+ * short titles a gap and buys every card the same body.
+ *
+ * **One line, not two.** Two lines reserved is 30px held empty on the 12 cards whose title is one,
+ * and a 26px title is the second-largest thing on the card after the lede - it is not where the
+ * reading happens. The full text is in the tooltip and in the three other places the card writes
+ * it, and the 30px is eight lines of a diff.
+ */
 .card__title {
-  margin-top: var(--s4);
-  font-size: clamp(var(--t-xl), 3.1vw, var(--t-3xl));
-  line-height: 1.08;
-  letter-spacing: -0.03em;
-  text-wrap: balance;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  /* No `min-height` here any more; the header carries the reservation. See `.card__head`. */
+  margin-top: var(--s1);
+  font-size: var(--t-xl);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  overflow: hidden;
 }
 
+/* One line: what it wants and why, truncated rather than allowed to become a paragraph. */
 .card__summary {
-  margin-top: var(--s3);
-  max-width: 62ch;
+  margin-top: var(--s1);
   color: var(--text-dim);
-  font-size: clamp(var(--t-md), 1.3vw, var(--t-lg));
+  font-size: var(--t-sm);
   line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.card__by {
+.card__why { color: var(--text-muted); }
+
+/*
+ * Which thing this is: a quiet mono control on the head-line, at the row's own height.
+ *
+ * It was a block under the summary, and the shell's bare `code` rule - which nothing in this view
+ * undid until now - drew it as a 696x31 bordered, sunk, 5px-padded box holding seven characters,
+ * reading as an empty disabled text input on every card in the deck. On the line it costs its own
+ * width and nothing else, and it is the one place a card names the thing it is about, so it is
+ * also the link to it.
+ */
+.card__ident {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: var(--head-h, var(--control-h));
+  max-width: 50%;
+  min-width: 0;
+  padding: 0 var(--s2);
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+  overflow: hidden;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+a.card__ident { cursor: pointer; }
+a.card__ident:hover { background: var(--surface-raised); color: var(--text); text-decoration: none; }
+
+/*
+ * The band of numbers: the headline one, and the strip of facts beside it.
+ *
+ * One row, pinned. It was a column of three that kept its natural height inside a body whose every
+ * other child could shrink - so a card's 8-thumbnail filmstrip was at 105px while the 13 files you
+ * were being asked to mark ready for review were at 40px. The strip is what is left of that band,
+ * and the lede is the one number on the card worth reading from across the room; they are on one
+ * line because they are both the same thing, which is the arithmetic of the work.
+ */
+/*
+ * One 37px row, and it is 37px on every card.
+ *
+ * It wrapped, and so it measured 37px on 14 cards, 71px on 9 and 105px on dot8 - which put the
+ * surface's top edge at y341, y375 or y409 depending on which card you had turned to, a jump of
+ * up to 68px as you move through the deck. The title reserves its lines precisely so the body
+ * starts at a constant y, and this undid it on 12 of 26.
+ *
+ * So it is a height rather than a hope, and the strip scrolls sideways instead of stacking. What
+ * is on it is a row of facts; the fifth fact on a long one is worth a drag, not 34px of every
+ * other card in the deck.
+ */
+.card__facts {
   display: flex;
   align-items: center;
-  gap: var(--s2);
-  margin-top: var(--s4);
-  padding-bottom: var(--s4);
-  border-bottom: 1px solid color-mix(in srgb, var(--kind) 16%, var(--border));
-  color: var(--text-muted);
-  font-size: var(--t-sm);
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: var(--s4);
+  height: 37px;
+  min-width: 0;
+  /*
+   * And it keeps what is in it. Measured `h: 37 / scrollHeight: 43` on every card walked - the
+   * lede's own box is 36px, so there is nothing to clip, but a band declared one height and
+   * reporting another is the thing this rule exists to stop being true.
+   */
+  overflow: hidden;
 }
 
-.card__by-name { color: var(--text-dim); font-weight: 560; }
-.card__by-dot { color: var(--text-faint); }
-
-
-.card__body {
+.card__lede {
   display: flex;
-  flex-direction: column;
-  gap: var(--s5);
-  flex: 1 1 auto;
-  min-height: 0;
-  margin-top: var(--s4);
-  overflow: auto;
-  padding-right: var(--s2);
+  align-items: baseline;
+  flex: 0 0 auto;
+  gap: var(--s2);
+  min-width: 0;
 }
 
-.card__prose {
-  max-width: 70ch;
-  color: var(--text-dim);
-  font-size: var(--t-md);
-  line-height: 1.6;
+.card__lede-n {
+  color: var(--kind);
+  font-size: var(--t-2xl);
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /*
- * What it says it is, named and then quoted.
+ * Beside it on the baseline, quiet: the number is what carries, and the noun says what of.
  *
- * Never squeezed, and never squeezing: alone on a card it takes the room the surface would have
- * had, and above a surface it is capped at about six lines and scrolls - because a lead-in that
- * can grow to forty lines of release notes is not a lead-in, it is the card again.
+ * `line-height: 1`, like the number's. Without it this 13px span inherited a 1.45 line, and because
+ * the two are baseline-aligned its extra descent hung below the 36px number - so `.card__lede`
+ * laid out at 42px inside a band declared 37px and poked 2.5px out of it at both ends. Measured:
+ * `.card__facts` h 37 / scrollHeight 42 on all nine cards walked. Both boxes are 36 now.
  */
+.card__lede-of {
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.card__lede--good .card__lede-n { color: var(--success); }
+.card__lede--warn .card__lede-n { color: var(--warning); }
+.card__lede--bad .card__lede-n { color: var(--danger); }
+
+/*
+ * A verdict, where the slot is built for a quantity.
+ *
+ * The advisory card's lede is `high`. In the number treatment - 36px, 650, tabular figures,
+ * -0.03em - a lowercase word reads as an unfinished string, which is what all three advisory cards
+ * looked like. Caps at `--t-xl` over the tone's own wash is the treatment a severity wants: still
+ * the largest thing on the card, still in `--danger`, and legible as a judgement rather than as a
+ * truncated label.
+ */
+.card__lede--word .card__lede-n {
+  padding: 0 var(--s3);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, currentcolor 13%, transparent);
+  font-size: var(--t-xl);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/*
+ * `.card__strip` lived here, and so did the two pills the card added to it by hand.
+ *
+ * It was `display: contents` on CardEvidence's root so that the description control and the wait
+ * pill could sit on the same row as the artifacts' - which is also what made the row's snap target
+ * a 0px-wide wrapper and the row arrive pre-scrolled. Then it was `overflow: auto hidden` with the
+ * scrollbar hidden and a fade for a signal, which measured 740px of content in a 524px box on 4 of
+ * the 11 cards walked and put the red-pr card's one control at x1025 on a 1024px window.
+ *
+ * The line has one owner now and it is CardEvidence: the card hands it `waited` and `prose` as
+ * props, the numbers are coloured text with `.` between them, the two or three pressable things
+ * keep a border, and anything past them is one `+n` chip. Nothing here is left to say.
+ */
+
+
+/*
+ * The surface. Every declaration here is load-bearing and every one of them was being supplied
+ * by the footer's rule instead.
+ *
+ * `flex-wrap: nowrap` and `align-items: stretch` are written out rather than left to the
+ * defaults because the defaults are what the merged rule overrode, and the cost was not subtle:
+ * wrapping put the diff in a second column 517px off the card, and `align-items: center` sized
+ * every surface to its content and centred it, so no two cards shared a left margin - measured,
+ * `.card__said` started at x=271, 575, 676, 685, 693, 773, 788 and 839 across one walk of the
+ * deck while the title stayed at 250. `overflow: hidden auto` because the only thing that was
+ * reachable by scrolling sideways was content that should never have been out there: scrollWidth
+ * measured 1897 against a 668px box. Code scrolls inside CodeView, where the lines are.
+ */
+.card__body {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: var(--s4);
+  min-width: 0;
+  min-height: 0;
+  margin-top: var(--s4);
+  padding-right: var(--s2);
+  /*
+   * `hidden`, not `auto`.
+   *
+   * It scrolled on 14 of 26 cards - clientHeight 180 against scrollHeight 191-243 - and it was
+   * the one scroller in the view not wearing `u-fade-y`, so it cut on a hard horizontal edge
+   * through the middle of a glyph: a bisected reviewer row, a file row sliced through its letters,
+   * half a row of `github/gh-aw-actions/setup`. The utility cannot go here - `.u-fade-y`'s own
+   * comment says why: a mask makes a compositing context and this box holds CardChecks' popover,
+   * which is meant to float out of it.
+   *
+   * So the body stops scrolling instead. Everything in it is bounded: the facts band is 37px
+   * exactly and the surface is one box with a floor that scrolls inside itself, which is where the
+   * scrolling belonged. A body that cannot scroll also cannot hide the surface by scrolling it.
+   */
+  overflow: hidden;
+}
+
+/*
+ * The surface, and the floor under it.
+ *
+ * Two declarations, and between them they are most of what was wrong with this card. Every child
+ * of the body shrinks by default and none of them had a minimum, so the band kept its natural
+ * height and the subject took what was left: measured, `pass` at 28px on a card headed "Go through
+ * the agent's findings" with "0 of 8 decided" on it, `cm` at 1px against a natural 10px on a card
+ * about 20 commits, `changes` at 23px for 13 files under a button that marks the work ready for
+ * review. 120px is three rows and a header - the least that is worth drawing a surface for - and
+ * below that the card would rather scroll than pretend.
+ */
+.card__surface {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 120px;
+}
+
+/* What it says it is, named and then quoted: the surface of the cards that have no other. */
 .card__said {
   display: flex;
   flex-direction: column;
@@ -797,24 +1693,31 @@ const waited = computed(() => (props.task.waitingHours >= 48
   min-width: 0;
 }
 
-.card__said--lead { flex: 0 0 auto; max-height: 9.5em; }
+/* Opens the whole of it over the card; see the pill on the facts strip, which is the same act. */
+.card__all {
+  flex: 0 0 auto;
+  height: var(--control-h);
+  padding: 0 var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--t-xs);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.card__all:hover { border-color: var(--kind); color: var(--text); }
 
 /* An issue's own words: as much as fits, scrolled, rather than a paragraph cut off mid-sentence. */
 .card__read {
   flex: 1 1 auto;
   min-height: 0;
-  padding-right: var(--s2);
+  /* The fade's own room; see `.u-fade-y` in design/focus.css. An issue's own words used to stop
+     mid-word at the clip edge, which reads as a rendering fault rather than as more below. */
+  padding: 0 var(--s2) var(--s5) 0;
   overflow-y: auto;
-}
-
-.card__text {
-  margin: 0;
-  max-width: 82ch;
-  color: var(--text-dim);
-  font-size: var(--t-sm);
-  line-height: 1.6;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 /* Pressed once: it is about to do something outside this cluster, and says so. */
@@ -830,9 +1733,17 @@ const waited = computed(() => (props.task.waitingHours >= 48
  * which is the other half of why content appearing was jarring: it both appeared and moved
  * everything under it.
  */
+/*
+ * Centred on both axes, because it had only one.
+ *
+ * It measured 688x180 with its 20px spinner and 160px of text pinned to the left edge and
+ * floating in the vertical middle, which reads as a card that failed rather than one that is
+ * loading. `align-items` without `justify-content` is half a centring.
+ */
 .card__reading {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: var(--s3);
   flex: 1 1 auto;
   min-height: 0;
@@ -840,22 +1751,30 @@ const waited = computed(() => (props.task.waitingHours >= 48
   font-size: var(--t-sm);
 }
 
-/* The one thing on the card: it takes the room the absent surface would have had. */
-.card__only { flex: 1 1 auto; min-height: 0; }
-
 /* Where the work lives. A control, so it reads as somewhere you can go rather than a label. */
 .card__ws {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  flex: 0 0 auto;
-  /* 24px, the header line's own height: everything on that line is the same height on purpose. */
-  height: var(--head-h, 24px);
-  padding: 0 9px;
+  /*
+   * Shrinkable, and the first thing on the line to give. The identifier beside it is what this
+   * card is about and is pinned; a workspace name is derivable from it, so a long one loses its
+   * tail rather than pushing `PR #19153` into `PR #1…` - which is the exact cut this line was
+   * reorganised to stop.
+   */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* The header line's own height, which is `--control-h`: everything on that line is the same
+     height on purpose, and this one is pressed. It was 24px on 22 of the deck's 26 cards. */
+  height: var(--head-h, var(--control-h));
+  padding: 0 var(--s3);
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   background: transparent;
-  color: var(--text-faint);
+  /* 2.39:1 at 11px, and it is pressed. See `.card__later` for the same number. */
+  color: var(--text-muted);
   font-family: var(--mono);
   font-size: var(--t-xs);
   cursor: pointer;
@@ -875,7 +1794,74 @@ const waited = computed(() => (props.task.waitingHours >= 48
 
 .card__ws--none:hover { background: color-mix(in srgb, var(--kind) 12%, transparent); }
 
-.card__stats { display: flex; gap: var(--s2); flex-wrap: wrap; align-items: center; }
+/*
+ * The way out: text, at the far end of the row.
+ *
+ * `Later` was a 48px ghost button identical to the other four, which is a card asking you to
+ * choose between doing the work and not doing it in the same breath and the same weight.
+ */
+/*
+ * The way out, at the end of the row rather than at the end of the card.
+ *
+ * `Later` was a 48px ghost button identical to the other four, which is a card asking you to choose
+ * between doing the work and not doing it in the same breath and the same weight. It was then
+ * `margin-left: auto`, which put it at the card's right edge - so the gap before it measured 72px
+ * on one card and 336px on the next, from nothing but how long the other labels were. The row ends
+ * where the buttons end; the separation is a gap, and a gap is the same on every card.
+ */
+.card__later {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: var(--control-h);
+  margin-left: var(--s4);
+  padding: 0 var(--s3);
+  /*
+   * `--text-muted` with a hairline, not `--text-faint` on the ground.
+   *
+   * Measured against the card's own background it computed to rgb(77, 85, 114) - 2.39:1 for 13px
+   * text, against a 4.5:1 requirement - so the one way out of a card was effectively not there in
+   * any screenshot. The footer ran four contrast levels across one 61px row. It is still the
+   * quietest thing on that row; it is now a thing you can see.
+   */
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--t-sm);
+  cursor: pointer;
+}
 
+.card__later:hover { border-color: var(--border-strong); background: var(--surface-raised); color: var(--text); }
 
+/* The overflow, which is what keeps the row one row. `.u-popover` is the surface; this places it. */
+.card__overflow { position: relative; flex: 0 0 auto; }
+
+.card__menu {
+  bottom: calc(100% + var(--s2));
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.card__menu-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--control-h);
+  padding: 0 var(--s3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.card__menu-row:hover { background: var(--surface-raised); color: var(--text); }
 </style>
