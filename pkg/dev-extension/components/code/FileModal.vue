@@ -27,8 +27,15 @@ import { holdOverlay, releaseOverlay } from '../focus/overlay';
 
 const props = defineProps<{
   path: string;
-  /** Fetches the file's text. Called once when this opens. */
-  load: () => Promise<string>;
+  /**
+   * Fetches the file, and the patch that colours it.
+   *
+   * One call returning both, rather than the text here and the patch through a prop: the patch is
+   * usually discovered while fetching the text, and a prop that arrives mid-await is a race over
+   * whether this draws the file in colour or in grey. Returning a bare string still works for a
+   * caller that has no patch.
+   */
+  load: () => Promise<string | { text: string; patch?: string }>;
   /** The run to mark and scroll to, by line number, inclusive. */
   mark?: [number, number] | null;
   /**
@@ -53,9 +60,11 @@ async function read() {
   busy.value = true;
   error.value = '';
   try {
-    const text = await props.load();
+    const got = await props.load();
+    const text = typeof got === 'string' ? got : got.text;
+    const patch = (typeof got === 'string' ? '' : got.patch) || props.patch || '';
 
-    rows.value = props.patch ? fromFileWithPatch(text, props.patch, props.path) : fromText(text, props.path);
+    rows.value = patch ? fromFileWithPatch(text, patch, props.path) : fromText(text, props.path);
   } catch (e) {
     error.value = (e as Error)?.message || String(e);
   } finally {

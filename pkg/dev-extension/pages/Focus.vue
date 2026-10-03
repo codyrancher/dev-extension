@@ -552,7 +552,6 @@ const behindMe = computed(() => deck.value
 const comingUp = computed(() => behindMe.value.slice(0, 7));
 
 /** How many are behind the ones this column names. The row that says so opens the whole queue. */
-const restOfDeck = computed(() => Math.max(0, behindMe.value.length - comingUp.value.length));
 
 const rows = computed<WeightRow[]>(() => weightRows(items.value, config.value.weights));
 const snoozedCount = computed(() => Object.keys(state.value.snoozed).length);
@@ -902,7 +901,7 @@ async function act({ task, action }: { task: FocusTask; action: CardAction }) {
  * is the page's job rather than theirs, because only the page knows that these lines came from a
  * pull request and which commit to read them at.
  */
-const whole = ref<{ path: string; mark: [number, number]; pr: number; patch: string } | null>(null);
+const whole = ref<{ path: string; mark: [number, number]; pr: number } | null>(null);
 
 function openWholeFile(task: FocusTask, value: { path: string; mark: [number, number] }) {
   const { pr } = subjectOf(task);
@@ -912,27 +911,31 @@ function openWholeFile(task: FocusTask, value: { path: string; mark: [number, nu
 
     return;
   }
-  // The patch for this file, so the whole file keeps the change's own colours. It is already in
-  // hand - the card's own hunks were parsed from it - so this costs nothing.
-  const patch = artifacts.value.files.find((file) => file.path === value.path)?.hunks
-    .map((hunk) => [hunk.header, ...hunk.lines.map((line) => (line.type === 'add' ? `+${ line.text }` : line.type === 'del' ? `-${ line.text }` : ` ${ line.text }`))].join('\n'))
-    .join('\n') || '';
-
-  whole.value = {
-    path: value.path, mark: value.mark, pr, patch,
-  };
+  whole.value = { path: value.path, mark: value.mark, pr };
 }
 
-/** The file at the commit the review is of - not at the branch's tip, which has moved on. */
-async function readWholeFile(): Promise<string> {
+/**
+ * The file at the commit the review is of - not at the branch's tip, which has moved on - and the
+ * patch that goes with it, so the whole file keeps this change's colours.
+ *
+ * The patch used to be taken from `artifacts.files`, which is empty on the card that opens this
+ * most: a review pass asks for `notes`, not `files`, because its subject is the agent's comments
+ * and each one already carries its own hunk. So the lookup found nothing, the modal fell back to
+ * plain text, and the one thing you opened the file to put in context - the changed lines - was
+ * the one thing drawn like everything else. Both come off the same `prDetail`, which is already
+ * cached from reading the comments.
+ */
+async function readWholeFile(): Promise<{ text: string; patch: string }> {
   const at = whole.value;
 
   if (!at) {
-    return '';
+    return { text: '', patch: '' };
   }
   const detail = await prDetail(at.pr).catch(() => null);
+  const file = (detail?.files || []).find((entry: Json) => entry.path === at.path);
+  const text = await prFile(at.pr, at.path, detail?.meta?.headSha || detail?.meta?.headRef || 'HEAD');
 
-  return prFile(at.pr, at.path, detail?.meta?.headSha || detail?.meta?.headRef || 'HEAD');
+  return { text, patch: file?.patch || '' };
 }
 
 /* ── The verbs that are typical of one kind of work ───────────────────────────────────────── */
@@ -1072,7 +1075,6 @@ async function askReviewer(task: FocusTask, who: string | string[]) {
     busy.value = false;
   }
 }
-
 
 /**
  * Open what is already running.
@@ -1623,7 +1625,6 @@ async function onChatOpen(open: boolean) {
   }
 }
 
-
 onBeforeUnmount(closeSettings);
 </script>
 
@@ -1713,48 +1714,14 @@ onBeforeUnmount(closeSettings);
         </template>
 
         <!--
-          What is next, in words. See `comingUp`: the rail's dots say where you are in a deck of 26
-          and nothing about what is in it, and this column was 89% empty around one sentence of
-          empty-state copy. A row turns the deck to that card.
+          Nothing here about what is next.
+
+          There was a column of the next seven cards, with their kind and their age. The rail of
+          dots down the right already carries that - one dot per card in its kind's hue, the
+          current one marked, each with its title on the pointer - and the settings sheet lists
+          the whole queue. A second list of the same thing in the other margin is a second place
+          to keep in step and one more thing between you and the card you are reading.
         -->
-        <template v-if="comingUp.length">
-          <h2 class="focus__pins-head">Coming up</h2>
-          <ol class="up">
-            <li v-for="row in comingUp" :key="row.task.key">
-              <button
-                type="button"
-                class="up__row"
-                :class="`up__row--${ row.task.card.kind }`"
-                :data-key="row.task.key"
-                :title="`${ row.task.what } — ${ row.task.needs }`"
-                @click="jumpTo(row.n)"
-              >
-                <span class="up__chip">{{ row.task.card.chip || row.task.card.label }}</span>
-                <span class="up__title">{{ row.task.title || row.task.what }}</span>
-                <span v-if="row.task.waitingHours" class="up__wait">
-                  {{ row.task.waitingHours >= 48 ? `${ Math.round(row.task.waitingHours / 24) }d` : `${ row.task.waitingHours }h` }}
-                </span>
-              </button>
-            </li>
-
-            <!--
-              And how many are behind these, because this column is the only place that can say.
-              A deck structurally hides what is under the top card, and the only other thing that
-              answered it was a rail of 26 nine-pixel dots. Opens the queue, which is the list.
-            -->
-            <li v-if="restOfDeck">
-              <button type="button" class="up__rest" @click="openSettings('queue')">
-                +{{ restOfDeck }} more
-                <AppIcon name="chevron-right" :size="13" />
-              </button>
-            </li>
-          </ol>
-        </template>
-
-        <p v-if="!pinned.length && !comingUp.length" class="focus__pins-empty">
-          Nothing pinned, and nothing behind the card you are on. Pin a card to keep it here while
-          you work on it.
-        </p>
       </aside>
 
       <main class="focus__deck">
@@ -1815,7 +1782,6 @@ onBeforeUnmount(closeSettings);
       :path="whole.path"
       :mark="whole.mark"
       :at="`PR #${ whole.pr }`"
-      :patch="whole.patch"
       :load="readWholeFile"
       @close="whole = null"
     />
@@ -2152,62 +2118,13 @@ onBeforeUnmount(closeSettings);
 }
 
 /* ── What is coming ───────────────────────────────────────────────────────── */
-.up { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
 
 /*
  * One row per card that is coming, at the height everything pressable in this view is: a hue bar
  * down its left edge, what kind of thing it is, its title on one line, and how long it has sat.
  */
-.up__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: auto auto;
-  align-items: center;
-  gap: 0 var(--s2);
-  width: 100%;
-  min-height: 44px;
-  padding: var(--s1) var(--s2) var(--s1) var(--s3);
-  border-radius: var(--r-sm);
-  background: transparent;
-  box-shadow: inset 3px 0 0 var(--up-c, var(--border-strong));
-  cursor: pointer;
-  text-align: left;
-  transition: background var(--fast);
-}
-
-.up__row:hover { background: var(--surface); }
-
-.up__chip {
-  grid-row: 1;
-  color: var(--up-c, var(--text-muted));
-  font-size: var(--t-2xs);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 /* Two lines, because one was never a title at 196px: see `comingUp` for what was measured. */
-.up__title {
-  grid-row: 2;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  color: var(--text-dim);
-  font-size: var(--t-sm);
-  line-height: 1.35;
-  overflow: hidden;
-}
-
-.up__wait {
-  grid-row: 1 / -1;
-  grid-column: 2;
-  color: var(--text-faint);
-  font-size: var(--t-xs);
-  font-variant-numeric: tabular-nums;
-}
 
 /*
  * The last row: what this column is not showing, in the column's own rhythm.
@@ -2215,32 +2132,6 @@ onBeforeUnmount(closeSettings);
  * Quieter than a card row because it is not a card - it is the count the rail was being asked to
  * carry in nine-pixel dots - and at `--control-h` because it is pressed.
  */
-.up__rest {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--s2);
-  width: 100%;
-  min-height: var(--control-h);
-  margin-top: var(--s1);
-  padding: 0 var(--s2) 0 var(--s3);
-  border: 1px dashed var(--border);
-  border-radius: var(--r-sm);
-  background: none;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: var(--t-xs);
-  text-align: left;
-  cursor: pointer;
-}
-
-.up__rest:hover { border-color: var(--border-strong); color: var(--text); }
-
-.up__row--review   { --up-c: var(--kind-review); }
-.up__row--issue    { --up-c: var(--kind-issue); }
-.up__row--agent    { --up-c: var(--kind-agent); }
-.up__row--question { --up-c: var(--kind-question); }
-.up__row--signal   { --up-c: var(--kind-signal); }
 
 .focus__pins-head {
   color: var(--text-muted);

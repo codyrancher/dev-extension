@@ -244,29 +244,14 @@ function pickedRun(note: ReviewNote): [number, number] | null {
       <span class="pass__count">{{ settled }} of {{ notes.length }} decided</span>
 
       <!--
-        The meter and the list said the same thing, and only one of them fits on this card.
+        No meter here.
 
-        It was a 4px bar whose width was `settled / notes.length` beside a column of 230px note
-        cards. One segment per finding, in its own severity, filled once decided and pressable -
-        so it is the progress *and* the list, which is the only shape of either that fits below
-        1100px, where the list is hidden and this is how you move between findings.
+        There was one: a segment per finding, its own severity, filled once decided - progress and
+        list in one control. It was correct, measured and aligned, and it was a bar restating the
+        two numbers either side of it. The list below says which findings there are and where each
+        one stands; the stepper moves between them where the list does not fit. A row of pixels
+        that only repeats its neighbours is a row you are reading past.
       -->
-      <ol class="pass__meter">
-        <li v-for="note in notes" :key="note.id">
-          <button
-            type="button"
-            class="seg"
-            :class="[
-              `seg--${ note.severity }`,
-              { 'seg--done': verdictOf(note) !== 'pending', 'seg--on': note.id === selected.id },
-            ]"
-            :title="`${ severityWord[note.severity] } · ${ note.title } — ${ verdictWord[verdictOf(note)] }`"
-            :aria-current="note.id === selected.id ? 'true' : undefined"
-            @click="select(note)"
-          ><span class="seg__bar" /></button>
-        </li>
-      </ol>
-
       <span class="pass__keeping">{{ keeping }} to post</span>
     </header>
 
@@ -305,17 +290,28 @@ function pickedRun(note: ReviewNote): [number, number] | null {
       </header>
 
       <!--
-        The claim, above the evidence for it.
+        The code, then the comment on it - the order GitHub uses and the order the work is done in:
+        you read the lines, then you read what was said about them, then you decide.
 
-        It was below: head, then the hunk at `flex: none; max-height: 156px`, then the comment.
-        Measured, `.pass__detail` was 129px of clientHeight against 314 of content, the head took
-        26 and the hunk took 100 of it - which left the agent's actual words about three pixels.
-        The card asked for a verdict on a sentence it did not display, with four verdict buttons
-        sitting on top of a code line bisected horizontally. The judgement is of the claim; the
-        code is the evidence for it, and the order says so now.
+        It was the other way round for a round, on the reasoning that the claim should precede its
+        evidence. The reason it was moved was that the comment had been crushed to three pixels by
+        a hunk with a fixed height - and putting it first did not fix that, it moved the clipping
+        to its other edge: a 56px track with a fade, cutting the agent's sentence mid-word. The
+        fault was the track, not the order. The hunk is capped and the comment takes the rest.
+      -->
+      <div class="hunk">
+        <CodeView
+          :rows="rowsFor(selected)"
+          :picked="pickedRun(selected)"
+          expandable
+          expand-label="See the whole file"
+          @expand="emit('expand', { path: selected.path, mark: selected.selects || [selected.line, selected.line] })"
+        />
+      </div>
 
-        One wrapper so the grid below always has four children whichever of the two states this is
-        in - the rewording textarea takes this slot whole.
+      <!--
+        One wrapper either way, so the grid keeps four children whichever state this is in - the
+        rewording textarea takes this slot whole.
       -->
       <div v-if="editingId === selected.id" class="detail__edit">
         <textarea
@@ -354,15 +350,7 @@ function pickedRun(note: ReviewNote): [number, number] | null {
       </div>
 
       <!-- The evidence: the one thing in this pane that scrolls. -->
-      <div class="hunk">
-        <CodeView
-          :rows="rowsFor(selected)"
-          :picked="pickedRun(selected)"
-          expandable
-          expand-label="See the whole file"
-          @expand="emit('expand', { path: selected.path, mark: selected.selects || [selected.line, selected.line] })"
-        />
-      </div>
+
 
       <div class="detail__actions">
         <AppButton
@@ -496,50 +484,11 @@ function pickedRun(note: ReviewNote): [number, number] | null {
  * it still reads as a meter and not as a row of buttons - and the segments share the width, so a
  * pass of three is three wide bands and a pass of twenty is twenty narrow ones.
  */
-.pass__meter {
-  display: flex;
-  align-items: stretch;
-  flex: 1;
-  gap: 2px;
-  min-width: 40px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.pass__meter > li { display: flex; flex: 1 1 0; min-width: 0; }
-
-.seg {
-  display: grid;
-  align-items: center;
-  flex: 1 1 0;
-  height: var(--control-h);
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  cursor: pointer;
-}
-
-.seg__bar {
-  height: 4px;
-  border-radius: var(--r-pill);
-  background: var(--surface-raised);
-  transition: background var(--fast), height var(--fast) var(--ease-out);
-}
 
 /* Decided: filled in the finding's own severity, which is the colour its row carries. */
-.seg--done .seg__bar { background: var(--sev, var(--kind)); }
 .seg--blocker  { --sev: var(--danger); }
-.seg--nit      { --sev: var(--text-muted); }
-.seg--question { --sev: var(--warning); }
-.seg--praise   { --sev: var(--success); }
-
-.seg:hover .seg__bar { background: var(--text-muted); }
-.seg--done:hover .seg__bar { background: var(--sev, var(--kind)); }
 
 /* The one you are reading: taller, and in the card's hue whatever its verdict. */
-.seg--on .seg__bar { height: 10px; background: var(--kind); }
 
 .pass__keeping { color: var(--text-dim); font-size: var(--t-sm); font-weight: 560; }
 
@@ -690,7 +639,15 @@ function pickedRun(note: ReviewNote): [number, number] | null {
  */
 .pass__detail {
   display: grid;
-  grid-template-rows: auto 56px minmax(0, 1fr) auto;
+  /*
+   * Head, the code, the comment, the verdicts.
+   *
+   * The comment's track was a fixed 56px - three lines and a fade - which is how a sentence came
+   * to be cut mid-word on a card whose whole question is whether that sentence is right. It takes
+   * the remainder now and scrolls; the code is what is capped, because a hunk is six lines either
+   * side of a change and reads fine at any height.
+   */
+  grid-template-rows: auto minmax(0, auto) minmax(0, 1fr) auto;
   gap: var(--s2);
   min-height: 0;
   min-width: 0;
@@ -776,6 +733,8 @@ function pickedRun(note: ReviewNote): [number, number] | null {
  */
 .hunk {
   min-height: 0;
+  /* Never more than half the pane: the comment is the thing being judged. */
+  max-height: 50%;
   overflow: auto;
   border-radius: var(--r-md);
 }
@@ -787,18 +746,18 @@ function pickedRun(note: ReviewNote): [number, number] | null {
  * same answer: a control that says what it opens, and TextModal. It was `flex: 1 1 auto` in a pane
  * with nothing to spare, which is how it came to be three pixels tall.
  */
+/*
+ * The comment, with the room to be read.
+ *
+ * It was `-webkit-line-clamp: 3` with a fade over the last line, inside a 56px track - a sentence
+ * cut mid-word on the card whose one question is whether that sentence is right. It scrolls now
+ * and nothing is hidden.
+ */
 .detail__say {
-  min-width: 0;
   min-height: 0;
-  /*
-   * Cut on a fade rather than through a glyph, which is what the rest of this view does with a
-   * list it cannot finish - see `.u-fade-y` in design/focus.css. Written out rather than taken
-   * from the utility because the utility owes itself `--s5` of bottom padding to eat, and a 56px
-   * track has no 24px to give it; what is wanted here is only that the third line says there is a
-   * fourth. `Read it all` is on the verdict row.
-   */
-  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--s3)), transparent 100%);
-  overflow: hidden;
+  min-width: 0;
+  padding-right: var(--s2);
+  overflow-y: auto;
 }
 
 .detail__body { min-width: 0; }
@@ -955,8 +914,14 @@ function pickedRun(note: ReviewNote): [number, number] | null {
  */
 @media (max-width: 1100px) {
   .pass { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-  /* The meter is the list here. See `.pass__meter`. */
-  .pass__list { display: none; }
+  /*
+   * The list stays, short and scrolling.
+   *
+   * It used to be hidden here because the meter stood in for it. The meter is gone, so hiding it
+   * would leave nothing at all saying which findings there are - which is the whole subject of
+   * the card. A third of the surface, scrolled, is enough to see where you are in two of them.
+   */
+  .pass__list { max-height: 30%; }
   /*
    * No caps here any more. `.hunk { max-height: 100px }` and `.detail__body { max-height: 56px }`
    * were this fault treated at the symptom: the hunk's cap was larger than the pane on the wide

@@ -22,7 +22,21 @@ withDefaults(defineProps<{
   text: string;
   /** Tighter, for a comment in a list rather than a document in a dialog. */
   dense?: boolean;
-}>(), { dense: false });
+  /**
+   * On a card, where something else is the frame.
+   *
+   * The headings were `--t-md` (15px) everywhere, and a card's own SectionHead is `--t-sm` (13px)
+   * - so on every start-fix card the issue template's own `Setup`, `Describe the bug` and `To
+   * Reproduce` were set *larger* than `What the issue asks for` that frames them. The content
+   * outranked the frame, and your eye landed on GitHub's boilerplate before it landed on what the
+   * card was asking you to do.
+   *
+   * Inside a card, markdown is card-scaled: the headings drop to the card's own 13px and do their
+   * work with weight and colour instead. In TextModal the prose *is* the document and nothing
+   * frames it, so 15px is right there and this stays false.
+   */
+  card?: boolean;
+}>(), { dense: false, card: false });
 
 /**
  * A bare attachment URL is a picture, which is what GitHub makes of it.
@@ -72,11 +86,40 @@ const embedded = (text: string) => String(text ?? '')
     return `[![${ alt }](${ url })](${ url })`;
   })
   .join('\n');
+
+/**
+ * GitHub's alert syntax, which `renderMd` does not implement and therefore leaks.
+ *
+ * An advisory body opens `> [!IMPORTANT]` on its own line, and with gfm alone that renders as a
+ * blockquote whose first four characters are the literal markup - visible as `[!IMPORTANT]` at the
+ * top of the only surface the advisory card has. Same class of leak as `### Summary` showing its
+ * hashes, which is what this component was written to end: markdown shown raw by accident looks
+ * like the data is wrong rather than the page.
+ *
+ * The rendered HTML is post-processed rather than the source pre-processed, because the token is
+ * only an alert when it is the first thing *inside a blockquote* - `[!NOTE]` in a sentence is a
+ * reference-style link and belongs to the author. The five GitHub names, their three tones, and
+ * the token removed so nothing says it twice.
+ */
+const ALERTS: Record<string, string> = {
+  NOTE: 'accent', TIP: 'success', IMPORTANT: 'accent', WARNING: 'warning', CAUTION: 'danger',
+};
+
+const alerted = (html: string) => html.replace(
+  /(<blockquote>\s*(?:<p>)?\s*)\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(?:<br\s*\/?>)?\s*/gi,
+  (whole, head: string, name: string) => {
+    const tone = ALERTS[name.toUpperCase()];
+
+    return tone ? `${ head }<span class="u-badge md-alert md-alert--${ tone }">${ name.toLowerCase() }</span> ` : whole;
+  },
+);
+
+const drawn = (text: string) => alerted(renderMd(embedded(text)));
 </script>
 
 <template>
   <!-- eslint-disable-next-line vue/no-v-html -- renderMd escapes authored HTML before marking up. -->
-  <div class="md-body" :class="{ 'md-body--dense': dense }" v-html="renderMd(embedded(text))" />
+  <div class="md-body" :class="{ 'md-body--dense': dense, 'md-body--card': card }" v-html="drawn(text)" />
 </template>
 
 <style scoped>

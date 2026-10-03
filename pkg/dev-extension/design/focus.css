@@ -351,6 +351,10 @@ body.theme-light .dev-focus {
  *
  * 18px: it sits on a line of 13px text without pushing the line taller, and the prototype's
  * own small chip measures the same.
+ *
+ * The 7px side padding was the last off-scale length in the view, and it only came to light the
+ * day this file was added to what `focus-design-check.py` reads - which is the whole argument for
+ * adding it. `--s2`, like every other horizontal inset in here.
  */
 /*
  * A card that opens off a control: a popover.
@@ -434,7 +438,7 @@ body.theme-light .dev-focus {
   display: inline-flex;
   align-items: center;
   height: 18px;
-  padding: 0 7px;
+  padding: 0 var(--s2);
   border-radius: var(--r-pill);
   background: var(--surface-raised);
   color: var(--text-muted);
