@@ -197,16 +197,50 @@ export const SHIPPED_CARDS: CardDef[] = [
     ],
   },
   {
-    id:      'my-pr',
-    label:   'Your own pull request',
-    kind:    'signal',
-    rules:   ['mine-approved', 'mine-red'],
+    id:    'my-pr',
+    label: 'Your own pull request, approved',
+    kind:  'signal',
+    /*
+     * `mine-approved` only.
+     *
+     * It claimed `mine-red` as well, and `mine-red` is built with `needs: 'Fix the build'` and
+     * `why: 'N of M checks failing'` (priority.ts) - so on a red pull request the card's own two
+     * lines said the build was broken while the big kind-coloured primary said "Merge it", two
+     * presses from a write to GitHub. The label claimed more than the data supported. They are
+     * two different jobs with two different first moves, so they are two cards; see 'red-pr'.
+     */
+    rules:   ['mine-approved'],
     summary: '{why}',
-    wants:   ['checks', 'stat', 'files'],
+    /*
+     * Who approved it and what is still being said on it, which are the two things a person
+     * checks before merging their own work - and the merge was justified by nothing but the
+     * summary line 'approved and still open'. Both come off the single `prDetail` call this
+     * card already makes (`reviewersOf` reads `detail.meta.approvedBy`, `commentsOf` the same
+     * response), so neither costs a request.
+     */
+    wants:   ['checks', 'stat', 'files', 'reviewers', 'comments'],
     actions: [
       { label: 'Merge it', verb: 'merge', confirm: true },
       { label: 'Open it', verb: 'url' },
+      { label: 'Anything left to answer?', verb: 'ask', prompt: 'For {what}: it is approved and still open. Read the review threads and tell me whether anything was asked that has not been answered, and whether you would merge it as it stands.' },
+      { label: 'Later', verb: 'snooze', hours: 6 },
+    ],
+  },
+  {
+    id:    'red-pr',
+    label: 'Your own pull request is red',
+    kind:  'signal',
+    /*
+     * The other half of what 'my-pr' used to be. Same subject, opposite first move: nothing here
+     * offers a merge, because the queue's own line about this work is "Fix the build".
+     */
+    rules:   ['mine-red'],
+    summary: '{why}',
+    wants:   ['checks', 'stat', 'files'],
+    actions: [
       { label: 'Why is it red?', verb: 'ask', prompt: 'For {what}: read the failing checks and tell me what is actually broken, whether it is mine, and the smallest change that would fix it.' },
+      { label: 'Fix it', verb: 'ask', prompt: 'For {what}: work out what the failing checks are complaining about and make the smallest change that fixes them. Run what you touched. Stop and tell me if the failure is not mine.' },
+      { label: 'Open it', verb: 'url' },
       { label: 'Later', verb: 'snooze', hours: 6 },
     ],
   },
@@ -271,7 +305,13 @@ export const SHIPPED_CARDS: CardDef[] = [
     kind:    'issue',
     rules:   ['bot-cleared', 'bot-stopped', 'bot-green', 'bot-red'],
     summary: '{why}',
-    wants:   ['bump', 'stat', 'checks', 'files'],
+    /*
+     * No `files`. `facts` is tested above `files` in the surface ladder - rightly, from → to →
+     * crosses-a-major is what a bump is decided on - so a bump always drew CardFacts and the
+     * patches it had fetched were never looked at. That is a pull request's worth of diff
+     * payload read and thrown away on every turn of the deck to a bump card.
+     */
+    wants:   ['bump', 'stat', 'checks'],
     actions: [
       { label: 'Merge it', verb: 'merge', confirm: true },
       { label: 'Open the pull request', verb: 'url' },

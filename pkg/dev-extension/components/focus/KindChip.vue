@@ -40,7 +40,7 @@ const label = computed(() => words[props.kind]);
   white-space: nowrap;
 }
 
-.chip--sm { padding: 2px 8px 2px 6px; font-size: 10px; }
+.chip--sm { padding: 2px 8px 2px 6px; font-size: var(--t-2xs); }
 
 .chip__dot {
   width: 6px;

@@ -74,6 +74,15 @@
   --s8: 64px;
 
   /* ── Shape ───────────────────────────────────────────────────────────── */
+  /*
+   * One height for everything that is a small rounded label.
+   *
+   * The evidence band had three of them on one row - a stat at ~32px, a check badge at 24px and
+   * a live pill at 26px, centred, so three different text baselines across a strip that reads as
+   * one line of facts. The 24px even carried a comment claiming it was "the height everything
+   * else in the evidence band is", which neither of its neighbours was. It is this now, once.
+   */
+  --pill-h: 26px;
   --r-sm: 8px;
   --r-md: 12px;
   --r-lg: 18px;
@@ -83,6 +92,13 @@
   /* ── Type scale ──────────────────────────────────────────────────────── */
   --font: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  /*
+   * 10px was being used as a size in six files - the shot caption, the facts severity, the
+   * gallery tag, the pool badge, two of the dock's marks, the small chip - which makes it a
+   * token and not a one-off. Declared, so the deck stops having an undeclared second small
+   * size one pixel off `--t-xs`.
+   */
+  --t-2xs: 10px;
   --t-xs: 11px;
   --t-sm: 13px;
   --t-md: 15px;
@@ -289,6 +305,28 @@ body.theme-light .dev-focus {
   box-shadow: var(--shadow-3);
 }
 
+/*
+ * And a pill, once.
+ *
+ * The badge above is the small dense one that sits inside a line of text. This is the other
+ * kind: the things that stand in a row of their own - the check counts, what is up on a link,
+ * a reviewer, a severity, a verdict, the chat bar's subject. "A small rounded label" was
+ * drawn thirteen times with eight different horizontal paddings (5, 6, 7, 8, 9, 10, 11, 12)
+ * and two font sizes one pixel apart, which is most of why a card reads as assembled rather
+ * than designed. Colour stays local - that is the part that differs on purpose.
+ */
+.dev-focus .u-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  height: var(--pill-h);
+  padding: 0 var(--s3);
+  border-radius: var(--r-pill);
+  font-size: var(--t-xs);
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .dev-focus .u-badge {
   display: inline-flex;
   align-items: center;
@@ -297,7 +335,7 @@ body.theme-light .dev-focus {
   border-radius: var(--r-pill);
   background: var(--surface-raised);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--t-2xs);
   font-weight: 700;
   letter-spacing: 0.02em;
   line-height: 1;

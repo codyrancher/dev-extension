@@ -27,7 +27,7 @@ const tone = computed(() => ({
   <section class="fx">
     <template v-if="advisory">
       <SectionHead label="The advisory" icon="clock">
-        <span class="fx__sev" :class="`fx__sev--${ tone }`">{{ advisory.severity || 'unrated' }}</span>
+        <span class="u-pill fx__sev" :class="`fx__sev--${ tone }`">{{ advisory.severity || 'unrated' }}</span>
       </SectionHead>
 
       <dl class="fx__rows">
@@ -75,20 +75,16 @@ const tone = computed(() => ({
 <style scoped>
 .fx { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 
+/* `.u-pill` carries the box. A severity is the one pill that shouts, so what is left here is
+   the shouting: uppercase, tracked out, heavy. */
 .fx__sev {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 9px;
-  border-radius: var(--r-pill);
-  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 .fx__sev--bad { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
-.fx__sev--warn { background: color-mix(in srgb, var(--warning, #e3b341) 20%, transparent); color: var(--warning, #e3b341); }
+.fx__sev--warn { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
 .fx__sev--muted { background: var(--surface-raised); color: var(--text-muted); }
 
 /* Label and value, aligned, because four facts in a row of prose is four facts nobody reads. */

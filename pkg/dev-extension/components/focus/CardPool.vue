@@ -20,6 +20,7 @@
 import { computed, ref } from 'vue';
 import AppButton from './AppButton.vue';
 import SectionHead from './SectionHead.vue';
+import { issueTags } from '../../focus-artifacts';
 import type { PoolIssue } from '../../focus-artifacts';
 
 const props = defineProps<{ pool: PoolIssue[]; busy?: boolean }>();
@@ -33,15 +34,10 @@ const emit = defineEmits<{
 const openOn = ref(0);
 
 /**
- * What the labels say, minus the noise.
- *
- * This repository labels nearly everything `kind/bug` and `area/...`; the area is the useful half
- * and the prefix is not, so both are shown without it.
+ * What the labels say, minus the noise. Shared with the card about a single issue - see
+ * `issueTags` in focus-artifacts.ts; it was a copy of this.
  */
-const tags = (issue: PoolIssue) => issue.labels
-  .filter((label) => !/^status\/|^priority\//.test(label))
-  .map((label) => label.replace(/^(kind|area|team)\//, ''))
-  .slice(0, 4);
+const tags = issueTags;
 
 const shown = computed(() => props.pool);
 </script>
@@ -64,7 +60,7 @@ const shown = computed(() => props.pool);
           <span class="pick__title">{{ issue.title }}</span>
           <span class="pick__age">{{ issue.age }}d</span>
           <span
-            class="pick__talk"
+            class="u-badge pick__talk"
             :class="{ 'pick__talk--quiet': !issue.comments }"
             :title="issue.comments ? `${ issue.comments } comments` : 'Nobody has replied to it'"
           >{{ issue.comments }}</span>
@@ -93,7 +89,19 @@ const shown = computed(() => props.pool);
 </template>
 
 <style scoped>
-.pool { display: flex; flex-direction: column; gap: var(--s3); min-height: 0; }
+.pool {
+  /*
+   * The width of the issue number column, named once.
+   *
+   * It is also the indent of the row that opens underneath, and it was the literal 62 twice -
+   * so the grid and the indent could drift apart by anybody changing one of them.
+   */
+  --pick-no: 62px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  min-height: 0;
+}
 
 
 
@@ -126,7 +134,7 @@ const shown = computed(() => props.pool);
 
 .pick__row {
   display: grid;
-  grid-template-columns: 62px minmax(0, 1fr) 38px 30px;
+  grid-template-columns: var(--pick-no) minmax(0, 1fr) 38px 30px;
   align-items: center;
   gap: var(--s2);
   width: 100%;
@@ -157,14 +165,17 @@ const shown = computed(() => props.pool);
 .pick--on .pick__title { color: var(--text); font-weight: 600; }
 .pick__age { color: var(--text-faint); font-size: var(--t-xs); text-align: right; font-variant-numeric: tabular-nums; }
 
+/*
+ * A badge, and nothing of its own but the centring.
+ *
+ * It was `.u-badge`'s whole declaration list copied out - the height, the radius, the surface,
+ * the colour, the size - minus the weight and the letter-spacing, so the comment count on a pool
+ * row was a badge a little lighter than every other badge on the deck. focus.css says badges are
+ * one thing; this was the one place that said otherwise.
+ */
 .pick__talk {
-  display: grid;
-  place-items: center;
-  height: 18px;
-  border-radius: var(--r-pill);
-  background: var(--surface-raised);
-  color: var(--text-muted);
-  font-size: 10px;
+  justify-content: center;
+  min-width: 22px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -176,7 +187,7 @@ const shown = computed(() => props.pool);
   flex-wrap: wrap;
   align-items: center;
   gap: var(--s2);
-  padding: var(--s2) var(--s2) var(--s3) calc(62px + var(--s2));
+  padding: var(--s2) var(--s2) var(--s3) calc(var(--pick-no) + var(--s2));
 }
 
 .pick__untagged { color: var(--text-faint); font-size: var(--t-xs); font-style: italic; }

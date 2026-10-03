@@ -965,15 +965,46 @@ export async function markReadyForReview(repo: string, number: number): Promise<
   `, { id: pr.id });
 }
 
-/** An issue's title and text, for judging a fix against what was asked. */
-export async function issueBody(repo: string, number: number): Promise<{ title: string; body: string; url: string }> {
+/**
+ * An issue's title and text, for judging a fix against what was asked - and the four facts
+ * beside it that decide whether to start at all.
+ *
+ * The labels, the age, how much has been said, and whether somebody already has it. This asked
+ * for `title body url` only, so the card about one issue was its prose and nothing else while
+ * the card that *browses* issues showed all four for thirty of them at once. They are in the
+ * same selection set as the body, so they cost no extra round trip.
+ */
+export async function issueBody(repo: string, number: number): Promise<{
+  title: string;
+  body: string;
+  url: string;
+  labels: string[];
+  comments: number;
+  createdAt: string;
+  assignee: string;
+}> {
   const data = await graphql(`
     query Issue($owner: String!, $name: String!, $number: Int!) {
-      repository(owner: $owner, name: $name) { issue(number: $number) { title body url } }
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          title body url createdAt
+          labels(first: 10) { nodes { name } }
+          comments { totalCount }
+          assignees(first: 3) { nodes { login } }
+        }
+      }
     }
   `, { ...splitRepo(repo), number });
   const issue = data.repository?.issue || {};
 
-  return { title: issue.title || '', body: issue.body || '', url: issue.url || '' };
+  return {
+    title:     issue.title || '',
+    body:      issue.body || '',
+    url:       issue.url || '',
+    labels:    (issue.labels?.nodes || []).map((node: Json) => String(node?.name || '')).filter(Boolean),
+    comments:  Number(issue.comments?.totalCount || 0),
+    createdAt: issue.createdAt || '',
+    assignee:  (issue.assignees?.nodes || []).map((node: Json) => String(node?.login || '')).filter(Boolean).join(', '),
+  };
 }
 

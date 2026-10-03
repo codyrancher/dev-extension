@@ -247,10 +247,12 @@ defineExpose({
   font-size: var(--t-xs);
 }
 
-.cv__row--add { background: rgba(72, 199, 142, 0.09); }
+/* The wash behind an added or removed line, mixed from the token rather than written out as
+   the same colour at 9% - which, being a literal, did not follow the light theme. */
+.cv__row--add { background: color-mix(in srgb, var(--success) 9%, transparent); }
 .cv__row--add .cv__sign,
 .cv__row--add .cv__text { color: color-mix(in srgb, var(--success) 45%, var(--text)); }
-.cv__row--del { background: rgba(242, 85, 90, 0.09); }
+.cv__row--del { background: color-mix(in srgb, var(--danger) 9%, transparent); }
 .cv__row--del .cv__sign,
 .cv__row--del .cv__text { color: color-mix(in srgb, var(--danger) 45%, var(--text)); }
 

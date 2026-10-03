@@ -240,7 +240,9 @@ onBeforeUnmount(() => {
   max-width: 100%;
   max-height: 100%;
   border-radius: var(--r-md);
-  background: #000;
+  /* The deepest ground, not a literal black: this view has a light theme and the letterbox
+     around a portrait recording was the one part of the viewer that did not know. */
+  background: var(--ground-deep);
   box-shadow: var(--shadow-3);
 }
 

@@ -86,7 +86,7 @@ const preview = computed(() => {
           Two boxes, one of them worse. What is left is the one control the bar still owns.
         -->
         <template v-else>
-          <span v-if="about" class="bar__about" :title="about">about {{ about }}</span>
+          <span v-if="about" class="u-pill bar__about" :title="about">about {{ about }}</span>
           <button type="button" class="bar__close" title="Close the conversation" aria-label="Close the conversation" @click="emit('update:open', false)">
             <AppIcon name="chevron-down" :size="16" />
           </button>
@@ -209,14 +209,11 @@ const preview = computed(() => {
 .history-enter-from,
 .history-leave-to { height: 0; opacity: 0; }
 
+/* `.u-pill` carries the box; the bar's subject tag is a sunk surface and a quiet colour. */
 .bar__about {
   flex: none;
-  padding: 3px 9px;
-  border-radius: var(--r-pill);
   background: var(--surface-sunk);
   color: var(--text-muted);
-  font-size: var(--t-xs);
-  white-space: nowrap;
 }
 
 .bar__close {
