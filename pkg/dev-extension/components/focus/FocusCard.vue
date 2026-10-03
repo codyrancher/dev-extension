@@ -275,7 +275,7 @@ const cardApi: CardApi = {
 const bundleBody = computed(() => {
   const loaded = bundle.value;
 
-  return loaded?.module && !loaded.error ? componentFor(loaded, cardApi) : null;
+  return loaded?.module && !loaded.error ? componentFor(loaded) : null;
 });
 
 /** The ones this card is offering at all, in the definition's order - or the module's. */
@@ -896,7 +896,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           :key="bundle.generation"
           class="card__bundle"
         >
-          <component :is="bundleBody" />
+          <component :is="bundleBody" :api="cardApi" />
         </div>
 
         <!--
