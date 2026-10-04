@@ -1019,10 +1019,21 @@ export async function createWorkspace(store: Store, name: string, appId: string,
     throw new Error(conflict);
   }
 
-  // The dev-api reconciles workspaces and tends their trees on the node they run on, so it has to
-  // exist on the cluster this one lands on, not only on local. Create-if-missing against the
-  // target; a no-op when it is already there (the local case, and any cluster used before).
+  /*
+   * Everything this extension needs on the cluster the workspace lands on.
+   *
+   * It was `ensureWorkspaceApi()` alone, which is one of three. The other two run once per
+   * dashboard load against `local` and never against anything else, so a downstream cluster got
+   * an API and no identities to run as and no browser to upload through - and the API itself
+   * failed to appear, because it writes into a namespace `ensureDevRbac` creates.
+   *
+   * In order: the identities and the namespace first, then the API that writes into it, then the
+   * browser. Each is create-if-missing, so this is a few GETs on a cluster that has them already,
+   * which is every call after the first.
+   */
+  await ensureDevRbac();
   await ensureWorkspaceApi();
+  await ensureGithubBrowser();
 
   // The Installation is the workspace. Apps Plus renders the App's templates into a Fleet
   // Bundle when it is saved, and Fleet makes the namespace, the Deployment and the Service on
@@ -1889,15 +1900,77 @@ async function ensureRules(type: string, name: string, body: Json): Promise<void
   }
 }
 
+/**
+ * The namespace everything this extension runs lives in.
+ *
+ * Its own function because three separate `ensure*` calls write into `dev-system` and only one of
+ * them created it - `ensureDevRbac`, which runs once per dashboard load against `local` and never
+ * against anything else. So on a downstream cluster the dev-api ConfigMap was POSTed into a
+ * namespace that did not exist, the POST failed, `.catch(() => null)` ate it, and the cluster was
+ * left with no API and nothing anywhere saying so. Creating a workspace there then waited on a
+ * service that was never going to appear.
+ *
+ * Idempotent and cheap: a GET that finds it does nothing. Called first by each of the three.
+ */
+/**
+ * What the install could not do, and why.
+ *
+ * Every `ensure` here swallows its failure, which is right - this runs on every dashboard load,
+ * for every user, including ones with no permission to create any of it, and a toast about RBAC
+ * in front of somebody reading a pull request helps nobody. But swallowed and *unrecorded* means
+ * a cluster can be missing its API with nothing anywhere saying so, which is how a workspace
+ * comes to wait forever on a service that was never created.
+ *
+ * So: quiet, and written down. The page can ask.
+ */
+const installFailures = new Map<string, string>();
+
+export function installProblems(): { what: string; why: string }[] {
+  return [...installFailures.entries()].map(([what, why]) => ({ what, why }));
+}
+
+/** Record one, keyed so a retry that succeeds clears it. */
+function noteInstall(what: string, why: string | null) {
+  if (why) {
+    installFailures.set(what, why);
+  } else {
+    installFailures.delete(what);
+  }
+}
+
+export async function ensureDevNamespace(): Promise<void> {
+  await ensure('namespaces', null, DEV_SYSTEM_NAMESPACE, {
+    apiVersion: 'v1',
+    kind:       'Namespace',
+    metadata:   { name: DEV_SYSTEM_NAMESPACE },
+  });
+}
+
 async function ensure(type: string, namespace: string | null, name: string, body: Json): Promise<void> {
   const path = namespace ? `${ BASE }/v1/${ type }/${ namespace }/${ name }` : `${ BASE }/v1/${ type }/${ name }`;
   const existing = await devFetch(path).catch(() => null);
 
   if (existing) {
+    noteInstall(`${ type }/${ name }`, null);
+
     return;
   }
 
-  await devFetch(`${ BASE }/v1/${ type }`, { method: 'POST', body: JSON.stringify(body) }).catch(() => null);
+  try {
+    await devFetch(`${ BASE }/v1/${ type }`, { method: 'POST', body: JSON.stringify(body) });
+    noteInstall(`${ type }/${ name }`, null);
+  } catch (e: any) {
+    const why = String(e?.message || e);
+
+    /*
+     * Someone else got there first, which is success.
+     *
+     * `product.ts` starts these concurrently and three of them create `dev-system`, so on a fresh
+     * cluster two will lose that race every time. Recording a 409 as a problem would mean every
+     * clean install reported two failures it did not have.
+     */
+    noteInstall(`${ type }/${ name }`, /409|already exists|alreadyexists/i.test(why) ? null : why.slice(0, 200));
+  }
 }
 
 /**
@@ -2477,6 +2550,9 @@ export async function ensureWorkspaceApi(): Promise<void> {
   const namespace = DEV_SYSTEM_NAMESPACE;
   const labels = { app: API_NAME };
 
+  // Before anything is written into it; see ensureDevNamespace.
+  await ensureDevNamespace();
+
   // The script, rewritten whenever it differs, so an edit in this repo reaches a service that
   // already exists. It carries no templates of its own any more: those are Apps Plus apps, which
   // it reads from the cluster when asked.
@@ -2716,6 +2792,9 @@ exec sleep infinity
  * a Service. The login lives on a node hostPath, so it survives the pod and carried over the move.
  */
 export async function ensureGithubBrowser(): Promise<void> {
+  // Before anything is written into it; see ensureDevNamespace.
+  await ensureDevNamespace();
+
   const name = GITHUB_BROWSER_NAME;
   const namespace = DEV_SYSTEM_NAMESPACE;
   const labels = { app: name };
