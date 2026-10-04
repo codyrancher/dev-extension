@@ -39,6 +39,15 @@ const props = defineProps<{
    * movement. Left to itself the deck would animate its own half as well, so pinning threw the
    * card off the bottom of the screen at the same time as the copy of it flew to the dock.
    */
+  /**
+   * Nothing is connected yet, so the deck has nothing to be empty *of*.
+   *
+   * Without this the first thing a new install says is "Nothing is waiting on you - eight things
+   * came in today and all of them are dealt with", which is not true and not recoverable from:
+   * there is no token, so nothing was ever read, and the one screen that would tell you is the
+   * one claiming you are done.
+   */
+  setup?: string;
   quiet?: boolean;
   /**
    * ...and that card is landing on top of this deck, so the top card is not drawn at all. The one
@@ -48,6 +57,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  /** Nothing is connected: take them to where the token goes. */
+  (e: 'settings'): void;
   (e: 'go', step: 1 | -1): void;
   (e: 'jump', index: number): void;
   (e: 'act', payload: { task: FocusTask; action: CardAction }): void;
@@ -593,10 +604,24 @@ watch(() => props.index, () => {
         <code class="deck__why">{{ topFailed }}</code>
       </div>
 
+      <!--
+        Not set up, which is not the same as nothing waiting.
+
+        A fresh install has no GitHub token, so nothing is read and the deck is empty - and the
+        empty state below would congratulate somebody who has not started. This says what is
+        missing and where to put it.
+      -->
+      <div v-else-if="setup" :key="'setup'" class="deck__empty deck__empty--setup">
+        <span class="deck__empty-mark deck__empty-mark--setup"><AppIcon name="settings" :size="28" /></span>
+        <h2>Not connected yet</h2>
+        <p>{{ setup }}</p>
+        <button type="button" class="deck__go" @click="emit('settings')">Open Settings</button>
+      </div>
+
       <div v-else class="deck__empty">
         <span class="deck__empty-mark"><AppIcon name="check" :size="28" /></span>
         <h2>Nothing is waiting on you</h2>
-        <p>Eight things came in today and all of them are dealt with. The next one will land here.</p>
+        <p>Everything that came in is dealt with. The next one will land here.</p>
       </div>
     </Transition>
 
@@ -1078,4 +1103,31 @@ watch(() => props.index, () => {
   .deck__dots { flex-direction: row; margin: 0 var(--s2); min-width: 0; overflow-x: auto; overflow-y: visible; }
   .deck__dot--on::before { height: 9px; width: 22px; }
 }
+
+/* ── Not connected yet ────────────────────────────────────────────────────── */
+.deck__empty--setup h2 { color: var(--text); }
+
+.deck__empty-mark--setup {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: var(--accent);
+}
+
+.deck__go {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--primary-h);
+  margin-top: var(--s4);
+  padding: 0 var(--s5);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent, #fff);
+  font: inherit;
+  font-size: var(--t-md);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.deck__go:hover { filter: brightness(1.08); }
 </style>
