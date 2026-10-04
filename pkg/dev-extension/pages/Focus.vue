@@ -788,42 +788,43 @@ async function load() {
     listRanchers(store).then((found) => {
       ranchers.value = found;
     }).catch(() => undefined);
+
     const names = workspaces.map((workspace) => workspace.name);
-    const [found, dependabot, cached, botReviews] = await Promise.all([
-      // Scoped to the repositories this person cares about; empty means all of them.
-      myWork(cfg.repos).catch((e) => {
-        /*
-         * The one failure that is not a failure: nothing has been set up yet.
-         *
-         * `myWork` throws with that sentence when there is no token, and everything downstream
-         * treats a null as "nothing waiting" - so a fresh install was told it was finished. The
-         * deck says what is missing instead; see `setupNeeded`.
-         */
-        if (/no github token/i.test(String((e as Error)?.message || e))) {
-          setupNeeded.value = 'The queue is built from GitHub, and no token is set yet. Add one and this fills with what is waiting on you.';
-        }
 
-        return null;
-      }),
-      dependabotData(DEFAULT_REPO).catch(() => null),
-      workspaceStatuses(workspaces).catch(() => ({})),
-      dependabotReviews().catch(() => ({})),
-    ]);
-    const statuses = { ...cached };
+    /*
+     * GitHub's three reads, started and deliberately not waited for.
+     *
+     * The search behind `myWork` is the whole of this page's load: measured at 364KB in 7.7s, and
+     * the queue is built from it, so the deck was gated on it however early `loading` was flipped.
+     * Nothing local needs it, so it runs while the rest of this happens.
+     */
+    const workSoon = myWork(cfg.repos).catch((e) => {
+      /*
+       * The one failure that is not a failure: nothing has been set up yet.
+       *
+       * `myWork` throws with that sentence when there is no token, and everything downstream
+       * treats a null as "nothing waiting" - so a fresh install was told it was finished. The
+       * deck says what is missing instead; see `setupNeeded`.
+       */
+      if (/no github token/i.test(String((e as Error)?.message || e))) {
+        setupNeeded.value = 'The queue is built from GitHub, and no token is set yet. Add one and this fills with what is waiting on you.';
+      }
 
-    work.value = found;
-    alsoFrom.value = {
-      alerts: (dependabot?.groups || []) as Json[],
-      botPrs: ((dependabot?.prs || []) as Json[]).map((pr: Json) => ({ ...pr, number: pr.number })),
-      // The bumps card lists the ones nobody has reviewed, which is what the queue collapsed.
-      botReviews,
-    };
+      return null;
+    });
+    const dependSoon = dependabotData(DEFAULT_REPO).catch(() => null);
+    const botReviewsSoon = dependabotReviews().catch(() => ({}));
+
+    // The cheap one, and the only one the first draw needs: what the workspaces have already said.
+    const cached = await workspaceStatuses(workspaces).catch(() => ({}));
+    const statuses: Record<string, Json> = { ...cached };
+
     spaceStatus.value = statuses as Record<string, Json>;
 
-    /* The ranking, from whatever is known about the workspaces at the time it is called. */
-    const rank = (known: Record<string, Json>) => priorityQueue({
-      work: found,
-      statuses:   known,
+    /* The ranking, from whatever is known at the time it is called. */
+    const rank = (known: Record<string, Json>, found: Json, dependabot: Json, botReviews: Json) => priorityQueue({
+      work:       found,
+      statuses:   known as Record<string, never>,
       workspaces: names,
       alerts:     (dependabot?.groups || []).map((group: Record<string, unknown>) => ({ ...group, key: group.slug })),
       botPrs:     (dependabot?.prs || []).map((pr: Record<string, unknown>) => ({ ...pr, key: pr.number, repo: DEFAULT_REPO })),
@@ -832,62 +833,103 @@ async function load() {
       extra:      (cfg.tasks || []).map(manualItem),
     });
 
-    items.value = rank(statuses);
+    /* Put the card the URL asked for on top, if it is in the queue we have. */
+    const askedFor = () => {
+      const asked = cardInUrl();
+      const at = asked ? deck.value.findIndex((task) => task.key === asked) : -1;
 
-    // The card asked for, before anything is read for it: the artifacts and the comments below
-    // are read for whatever `current` is, and resolving this afterwards would fetch card zero's
-    // and then jump - which is both slower and the flicker this gate exists to stop.
-    const asked = cardInUrl();
-    const at = asked ? deck.value.findIndex((task) => task.key === asked) : -1;
+      if (at >= 0) {
+        index.value = at;
+      }
 
-    if (at >= 0) {
-      index.value = at;
+      return at >= 0;
+    };
+
+    /*
+     * Drawn from what is local, before GitHub has answered - but only if there is anything to draw.
+     *
+     * An empty queue drawn early is worse than a skeleton: the deck's empty state says the work is
+     * finished, and saying that for eight seconds to somebody with twenty-six things waiting is a
+     * wrong answer rather than a slow one. Most of this queue does come from GitHub, so this is
+     * the honest version of "draw early": it happens when the local reads alone have something.
+     */
+    items.value = rank(statuses, null, null, {});
+
+    const drewEarly = items.value.length > 0;
+
+    if (drewEarly) {
+      askedFor();
+      loading.value = false;
     }
 
     /*
-     * Drawn here, with the queue built from what the workspaces had already told us.
+     * The ranking the page is really for, and the card being read held across it.
      *
-     * `loading` used to be cleared in the `finally` below, so the skeleton was held for the whole
-     * of load() - every request in it, at a serial depth of six, measured at 13.1s before anything
-     * at all appeared. The cards behind the top one already render against `NO_ARTIFACTS`, and the
-     * top one has `card__reading` for exactly this, so there was never anything to wait for except
-     * the ranking - and the ranking is here.
-     *
-     * After the index from the URL, deliberately: resolving that afterwards would draw card zero,
-     * read its artifacts, and then jump.
+     * Held by key rather than by position, and only once the person has moved the deck themselves
+     * or asked for a card by URL: before that there is nothing to disturb, and the better ranking
+     * should simply win. After it, a card that moves out from under somebody is the thing this
+     * guards against.
      */
-    loading.value = false;
+    /* What the last ranking was built from, so a later one can be built from the same thing. */
+    let lastWork: Json = null;
+    let lastDepend: Json = null;
+    let lastBotReviews: Json = {};
+
+    const reRank = () => {
+      const held = index.value > 0 || cardInUrl() ? current.value?.key : '';
+
+      items.value = rank(statuses, lastWork, lastDepend, lastBotReviews);
+
+      if (!held) {
+        return;
+      }
+
+      const moved = deck.value.findIndex((task) => task.key === held);
+
+      if (moved >= 0 && moved !== index.value) {
+        index.value = moved;
+      }
+    };
+
+    const [found, dependabot, botReviews] = await Promise.all([workSoon, dependSoon, botReviewsSoon]);
+
+    lastWork = found;
+    lastDepend = dependabot;
+    lastBotReviews = botReviews;
+
+    work.value = found;
+    alsoFrom.value = {
+      alerts: (dependabot?.groups || []) as Json[],
+      botPrs: ((dependabot?.prs || []) as Json[]).map((pr: Json) => ({ ...pr, number: pr.number })),
+      // The bumps card lists the ones nobody has reviewed, which is what the queue collapsed.
+      botReviews,
+    };
+
+    if (drewEarly) {
+      reRank();
+    } else {
+      items.value = rank(statuses, found, dependabot, botReviews);
+      askedFor();
+      loading.value = false;
+    }
 
     /*
      * The rest of what the workspaces know, read behind the drawn deck.
      *
-     * This was awaited before the queue was built, and it is the heaviest thing in load(): a read
-     * per unread workspace, each around a dozen GitHub calls server-side. Measured on the live
-     * deck: ten of them, 868KB, most of the 11.6s the per-pull-request reads took, all of it before
-     * the first card. Only the card on top can be read, and the ranking it affects is a refinement
-     * - without it a review workspace is ranked by what GitHub alone can see, and the findings its
-     * agent has already left are missed.
-     *
-     * So the deck is re-ranked when they land, and the card being read is held in place by key
-     * rather than by position: a better ranking is worth having, and a card that moves out from
-     * under somebody is not.
+     * This was awaited before the queue was built, and it is the heaviest thing here after the
+     * search: a read per unread workspace, each around a dozen GitHub calls server-side. Measured
+     * on the live deck: ten of them, 868KB, all of it before the first card. Only the card on top
+     * can be read, and the ranking it affects is a refinement - without it a review workspace is
+     * ranked by what GitHub alone can see, and the findings its agent has already left are missed.
      */
-    const unread = Object.entries(statuses).filter(([, status]) => !status.readAt).map(([name]) => name);
+    const unread = Object.entries(statuses).filter(([, status]) => !(status as Json).readAt).map(([name]) => name);
 
     if (unread.length) {
       Promise.all(unread.map(async(name) => {
         statuses[name] = await readStatusNow(name).catch(() => statuses[name]);
       })).then(() => {
-        const held = current.value?.key;
-
         spaceStatus.value = { ...statuses } as Record<string, Json>;
-        items.value = rank(statuses);
-
-        const moved = held ? deck.value.findIndex((task) => task.key === held) : -1;
-
-        if (moved >= 0 && moved !== index.value) {
-          index.value = moved;
-        }
+        reRank();
       }).catch(() => undefined);
     }
 
