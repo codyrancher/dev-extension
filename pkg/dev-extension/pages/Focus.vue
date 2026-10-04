@@ -71,7 +71,7 @@ import { conversationFor, panelConversation, queueForLater } from '../focus-agen
 import { sendToPane, paneCommand } from '../conversations';
 import { reviewNotes } from '../focus-review';
 import type { ReviewNote } from '../focus-review';
-import { readArtifacts, NO_ARTIFACTS, subjectOf } from '../focus-artifacts';
+import { readArtifacts, NO_ARTIFACTS, subjectOf, keepArtifacts, keptArtifacts, haveArtifacts, keptKeys } from '../focus-artifacts';
 import type { CardArtifacts, CardComment, PoolIssue } from '../focus-artifacts';
 import {
   startPrReview, startIssueFix, submitReview, approveAndMerge, mergePr, prDetail, prFile, linesPrompt
@@ -80,8 +80,22 @@ import { previewState } from '../previews';
 import { updateComment, deleteComment, discussPrompt } from '../reviews';
 import '../design/focus.css';
 
-/** How long the deck will wait for the top card's detail before drawing it without. See load. */
-const FIRST_PAINT_WAIT = 3000;
+/**
+ * How long the deck will wait for the top card's detail before drawing it without. See load.
+ *
+ * Was three seconds, to avoid drawing a review pass before its findings arrived and replacing it
+ * under somebody who had started reading. Measured: the first card is always cold, a card's read
+ * is 0-4000ms, and the whole of load() finished at 13.1s with the deck, the first card, its body
+ * and its settled state all appearing in the same frame - so the three seconds were spent at the
+ * end of a chain nobody could see, and the race was lost about as often as it was won. A lost race
+ * drew exactly the half-filled card the wait existed to prevent.
+ *
+ * A quarter of a second instead, which is long enough for the one case the wait is really for: a
+ * return to a card already in `seen`, which resolves in a tick and draws complete. Everything
+ * else draws the card's chrome now and fills its surface in, which is what `card__reading` and the
+ * reserved facts band are for.
+ */
+const FIRST_PAINT_WAIT = 250;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -305,7 +319,21 @@ function readNotes(): Promise<void> {
   }
 
   notesFor.value = task.key;
-  reading = reviewNotes(pr)
+  /*
+   * The second answer, when each finding has its code.
+   *
+   * `reviewNotes` hands back the findings as soon as they are readable and calls this once the
+   * pull request's diff has arrived, so the pass draws its list at comment latency and fills in
+   * the code under each one. Guarded on the key for the same reason the `then` below is: the deck
+   * may have been turned while the diff was in the air.
+   */
+  const alsoWithCode = (found: ReviewNote[]) => {
+    if (notesFor.value === task.key) {
+      notes.value = found;
+    }
+  };
+
+  reading = reviewNotes(pr, undefined, alsoWithCode)
     .catch(() => [] as ReviewNote[])
     .then((found) => {
       // Turned again while this was in the air. A pull request with a lot of comments can take
@@ -449,26 +477,6 @@ function openWorkspace(name: string) {
 
 let readingArtifacts: Promise<void> = Promise.resolve();
 
-/**
- * What has already been read, by task key.
- *
- * Turning the deck used to re-read everything: one slot, cleared on every turn, so going forward
- * and then back fetched the same pull request twice and showed the spinner both times. A card's
- * artifacts are a pull request's worth of calls, and the deck is a thing you turn.
- *
- * Bounded, because the queue can be long and a card's artifacts hold diffs and comment bodies.
- * Oldest out first; the number is small on purpose - the value is in the neighbours you are about
- * to reach, not in remembering the whole deck.
- */
-const seen = new Map<string, CardArtifacts>();
-const SEEN_MAX = 12;
-
-function keepArtifacts(key: string, found: CardArtifacts) {
-  seen.set(key, found);
-  while (seen.size > SEEN_MAX) {
-    seen.delete(seen.keys().next().value as string);
-  }
-}
 
 /**
  * Read the cards either side of this one, quietly.
@@ -487,7 +495,7 @@ function prefetchNeighbours() {
   for (const task of around) {
     const wants = task.card.wants || [];
 
-    if (!wants.length || seen.has(task.key)) {
+    if (!wants.length || haveArtifacts(task.key)) {
       continue;
     }
     readArtifacts(task, wants, store, me.value, work.value, alsoFrom.value)
@@ -518,7 +526,7 @@ function readTheArtifacts(): Promise<void> {
    *
    * This is what makes turning back instant, and what the prefetch above is for.
    */
-  const held = seen.get(task.key);
+  const held = keptArtifacts(task.key);
 
   if (held) {
     artifactsFor.value = task.key;
@@ -752,19 +760,28 @@ const top = computed(() => deck.value.slice(0, 5).map((task) => ({
 async function load() {
   error.value = '';
   try {
-    const [cfg, st] = await Promise.all([readFocusConfig(), readFocusState()]);
+    /*
+     * Four reads that need nothing from each other, together.
+     *
+     * These were a `Promise.all` of two, then an awaited `currentOwner`, then an awaited
+     * `listAllWorkspaces` - three round trips deep before the queue's own reads could start, and
+     * none of the later ones used a result of the earlier ones. Serial by accident, which is the
+     * cheapest kind of slow to fix.
+     */
+    const [cfg, st, who, workspaces] = await Promise.all([
+      readFocusConfig(),
+      readFocusState(),
+      currentOwner().catch(() => ''),
+      listAllWorkspaces().catch(() => []),
+    ]);
 
     config.value = cfg;
     state.value = st;
-    me.value = await currentOwner().catch(() => '');
+    me.value = who;
 
-    // The same reads My Work's Priority tab makes, in the same order and for the same reasons -
-    // see refreshPriority there. The one that matters is the second pass over the workspaces:
-    // `workspaceStatuses` hands back what has been read so far and starts a read for the rest,
-    // so a cold page would rank a review workspace by what GitHub alone can see and miss that
-    // its agent has already left findings waiting.
-    const workspaces = await listAllWorkspaces().catch(() => []);
-
+    // The same reads My Work's Priority tab makes, for the same reasons - see refreshPriority
+    // there. `workspaceStatuses` hands back what has been read so far and starts a read for the
+    // rest; the second pass over the ones it had nothing for is below, behind the drawn deck.
     spaces.value = workspaces;
     // The Ranchers are the one read here that nothing else needs, so it is allowed to be slow and
     // allowed to fail: a corner with no dots in it is not a reason for the deck not to draw.
@@ -793,11 +810,6 @@ async function load() {
       dependabotReviews().catch(() => ({})),
     ]);
     const statuses = { ...cached };
-    const unread = Object.entries(statuses).filter(([, status]) => !status.readAt).map(([name]) => name);
-
-    await Promise.all(unread.map(async(name) => {
-      statuses[name] = await readStatusNow(name).catch(() => statuses[name]);
-    }));
 
     work.value = found;
     alsoFrom.value = {
@@ -807,9 +819,11 @@ async function load() {
       botReviews,
     };
     spaceStatus.value = statuses as Record<string, Json>;
-    items.value = priorityQueue({
+
+    /* The ranking, from whatever is known about the workspaces at the time it is called. */
+    const rank = (known: Record<string, Json>) => priorityQueue({
       work: found,
-      statuses,
+      statuses:   known,
       workspaces: names,
       alerts:     (dependabot?.groups || []).map((group: Record<string, unknown>) => ({ ...group, key: group.slug })),
       botPrs:     (dependabot?.prs || []).map((pr: Record<string, unknown>) => ({ ...pr, key: pr.number, repo: DEFAULT_REPO })),
@@ -817,6 +831,8 @@ async function load() {
       weights:    cfg.weights,
       extra:      (cfg.tasks || []).map(manualItem),
     });
+
+    items.value = rank(statuses);
 
     // The card asked for, before anything is read for it: the artifacts and the comments below
     // are read for whatever `current` is, and resolving this afterwards would fetch card zero's
@@ -828,7 +844,54 @@ async function load() {
       index.value = at;
     }
 
-    // Nothing is drawn until the top card is the card it is going to stay as.
+    /*
+     * Drawn here, with the queue built from what the workspaces had already told us.
+     *
+     * `loading` used to be cleared in the `finally` below, so the skeleton was held for the whole
+     * of load() - every request in it, at a serial depth of six, measured at 13.1s before anything
+     * at all appeared. The cards behind the top one already render against `NO_ARTIFACTS`, and the
+     * top one has `card__reading` for exactly this, so there was never anything to wait for except
+     * the ranking - and the ranking is here.
+     *
+     * After the index from the URL, deliberately: resolving that afterwards would draw card zero,
+     * read its artifacts, and then jump.
+     */
+    loading.value = false;
+
+    /*
+     * The rest of what the workspaces know, read behind the drawn deck.
+     *
+     * This was awaited before the queue was built, and it is the heaviest thing in load(): a read
+     * per unread workspace, each around a dozen GitHub calls server-side. Measured on the live
+     * deck: ten of them, 868KB, most of the 11.6s the per-pull-request reads took, all of it before
+     * the first card. Only the card on top can be read, and the ranking it affects is a refinement
+     * - without it a review workspace is ranked by what GitHub alone can see, and the findings its
+     * agent has already left are missed.
+     *
+     * So the deck is re-ranked when they land, and the card being read is held in place by key
+     * rather than by position: a better ranking is worth having, and a card that moves out from
+     * under somebody is not.
+     */
+    const unread = Object.entries(statuses).filter(([, status]) => !status.readAt).map(([name]) => name);
+
+    if (unread.length) {
+      Promise.all(unread.map(async(name) => {
+        statuses[name] = await readStatusNow(name).catch(() => statuses[name]);
+      })).then(() => {
+        const held = current.value?.key;
+
+        spaceStatus.value = { ...statuses } as Record<string, Json>;
+        items.value = rank(statuses);
+
+        const moved = held ? deck.value.findIndex((task) => task.key === held) : -1;
+
+        if (moved >= 0 && moved !== index.value) {
+          index.value = moved;
+        }
+      }).catch(() => undefined);
+    }
+
+    // The top card's own detail, briefly, so a card already read draws complete.
     //
     // The first card is usually a review pass, and a review pass is a different card once its
     // comments are in - a column of findings with the code around each one, rather than a title
@@ -882,7 +945,7 @@ onMounted(() => {
 
   /* The reading state, so a stuck spinner can be told from a slow fetch. */
   (window as any).__focusRead = {
-    now: readingNow, forKey: artifactsFor, current: () => current.value?.key || '', held: () => [...seen.keys()],
+    now: readingNow, forKey: artifactsFor, current: () => current.value?.key || '', held: () => keptKeys(),
   };
 });
 

@@ -33,7 +33,7 @@
  * without one replays history and a watch left on a stale one is refused with a 410.
  */
 import { ref } from 'vue';
-import { evalModule } from './components/focus/card-runtime';
+import { evalModule, DEFAULT_BODY } from './components/focus/card-runtime';
 import { missingComponents } from './components/focus/card-modules';
 import { CARD_SOURCES } from './cards.generated';
 
@@ -137,7 +137,7 @@ function evaluate(id: string, source: string, rev: string, was?: LoadedCard): Lo
      * Reported as the card's error, so the card says it where its body would have been. The
      * module is kept, so its `rules` go on claiming the work rather than sending it to fallback.
      */
-    const missing = missingComponents(String(module.template || ''));
+    const missing = missingComponents(String(module.template || DEFAULT_BODY));
 
     if (missing.length) {
       return {

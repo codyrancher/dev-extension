@@ -803,7 +803,16 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         the controls are pinned; see CardEvidence, which owns the whole line, including the two
         pills this template used to add to it by hand.
       -->
-      <div v-if="hasFacts" class="card__facts">
+      <!--
+        Reserved while the read is in flight, so the band does not appear under the reader.
+
+        The deck no longer holds its skeleton until the top card's detail arrives, so this strip is
+        now usually empty for the first moment of a card's life. An empty 37px band plus its gap
+        arriving a second later moved everything below it; holding the space costs nothing, because
+        the rest of the card is already fixed - `.card__head` is sized from the task alone and
+        `.card__surface` has a 120px floor.
+      -->
+      <div v-if="hasFacts || reading" class="card__facts">
         <p v-if="lede" class="card__lede" :class="[`card__lede--${ lede.tone }`, { 'card__lede--word': lede.word }]">
           <span class="card__lede-n">{{ lede.n }}</span>
           <span class="card__lede-of">{{ lede.of }}</span>
@@ -1685,13 +1694,27 @@ a.card__ident:hover { background: var(--surface-raised); color: var(--text); tex
  * floating in the vertical middle, which reads as a card that failed rather than one that is
  * loading. `align-items` without `justify-content` is half a centring.
  */
+/*
+ * Sized by the card and clipped, though all it holds is a spinner and six words.
+ *
+ * Not defensive about its own content - it is defensive about content that should never be here
+ * at all. A branch-key collision mounted a card's whole body into this box (see the module
+ * wrapper above), and because this is a centred *row*, the body's height was a cross size that
+ * centring leaves at content size: a 16,000px diff, painting half of itself above the card and
+ * half below, through a box with no `overflow`. The structural fault is fixed where it was made,
+ * and the rules that would have contained it anyway belong here too, because this is the second
+ * time a box in this view has been asked to hold something its author never pictured.
+ */
 .card__reading {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: var(--s3);
-  flex: 1 1 auto;
+  /* `0%`, not `auto`: sized by the room the card has, never by whatever lands inside it. */
+  flex: 1 1 0%;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-faint);
   font-size: var(--t-sm);
 }

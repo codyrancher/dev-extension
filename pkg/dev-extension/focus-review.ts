@@ -154,20 +154,30 @@ function titleOf(body: string): string {
  * Line-level only: a comment on the pull request as a whole has no lines to show, and the pass
  * is about the ones that point at something.
  */
-export async function reviewNotes(pr: number, repo = DEFAULT_REPO): Promise<ReviewNote[]> {
-  const [comments, detail] = await Promise.all([
-    listComments(pr).catch(() => [] as LocalComment[]),
-    prDetail(pr, repo).catch(() => null),
-  ]);
+export async function reviewNotes(pr: number, repo = DEFAULT_REPO, withCode?: (notes: ReviewNote[]) => void): Promise<ReviewNote[]> {
+  /*
+   * The comments first, and the code they point at after.
+   *
+   * This awaited both together, so a pass with twelve findings showed none of them until GitHub
+   * had sent the whole diff of the pull request - hundreds of milliseconds to seconds, against
+   * about fifty for the comments, which are in-cluster. Only `hunk` needs the diff; the severity,
+   * the title, the path and the line are all in the comment.
+   *
+   * So a caller that passes `withCode` is handed the findings as soon as they are readable and
+   * called again with the same list once each one has its code. One that does not still gets the
+   * complete list, at the old latency, because some callers have nowhere to put a second answer.
+   */
+  const comments = await listComments(pr).catch(() => [] as LocalComment[]);
+  const pending = comments.filter((comment) => comment.status === 'pending' && comment.level === 'line' && comment.path);
+
   // Keyed on `path`, which is what this API calls it. It was `file.filename` - GitHub's own name
   // for the field, and not the one the dev API re-maps it to - so every lookup missed, every
   // comment got an empty hunk, and the pass drew no code at all. The whole claim of this surface
   // is that the code comes to the comment; it had quietly stopped being true.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const patches = new Map<string, DiffLine[]>((detail?.files || []).map((file: any) => [file.path || file.filename, parsePatch(file.patch || '')]));
+  const patchesOf = (detail: any) => new Map<string, DiffLine[]>((detail?.files || []).map((file: any) => [file.path || file.filename, parsePatch(file.patch || '')]));
 
-  return comments
-    .filter((comment) => comment.status === 'pending' && comment.level === 'line' && comment.path)
+  const build = (patches: Map<string, DiffLine[]>): ReviewNote[] => pending
     .map((comment) => {
       const lines = patches.get(comment.path) || [];
       const line = Number(comment.line || 0);
@@ -195,4 +205,18 @@ export async function reviewNotes(pr: number, repo = DEFAULT_REPO): Promise<Revi
           })),
       };
     });
+
+  const detailSoon = prDetail(pr, repo).catch(() => null);
+
+  if (!withCode) {
+    return build(patchesOf(await detailSoon));
+  }
+
+  detailSoon.then((detail) => {
+    if (detail) {
+      withCode(build(patchesOf(detail)));
+    }
+  }).catch(() => undefined);
+
+  return build(new Map());
 }

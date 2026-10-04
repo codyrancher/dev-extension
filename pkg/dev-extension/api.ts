@@ -2479,8 +2479,58 @@ async function secretStoreName(): Promise<string> {
   return `dev-secrets-${ await currentOwner() }`;
 }
 
+/**
+ * The last read of the store, briefly, so one page load does not fetch it once per GitHub call.
+ *
+ * Measured on a cold Focus deck: the same Secret fetched nine times, because `githubToken()` goes
+ * through `secretValue` and nothing between them remembered anything. Each is a round trip at the
+ * head of a chain that is already several deep, so the cost is not the bytes.
+ *
+ * The promise is cached, not the value, so calls that arrive together share one request. Short,
+ * because a token the person has just pasted into Settings has to work on the next call - and
+ * `saveSecrets` clears it outright, so the window only matters for a change made somewhere else.
+ */
+let secretStore: { at: number; what: Promise<Record<string, string>> } | null = null;
+const SECRET_STORE_TTL = 30000;
+
+/** Forget the cached store. Called after a write, and exported for a caller that knows better. */
+export function forgetSecretStore(): void {
+  secretStore = null;
+}
+
 /** The store as it is, or an empty one. Values included, since the caller is the browser. */
 export async function readSecretStore(): Promise<Record<string, string>> {
+  const now = Date.now();
+
+  if (secretStore && now - secretStore.at < SECRET_STORE_TTL) {
+    return secretStore.what;
+  }
+
+  const reading = readSecretStoreNow();
+
+  secretStore = { at: now, what: reading };
+
+  /*
+   * An empty store is never remembered.
+   *
+   * The read below swallows its own failure and answers `{}`, so a Rancher that blinked would
+   * otherwise pin "no token is set" for the whole window - which is the one wrong answer here that
+   * looks like a finished setup rather than a fault.
+   */
+  reading.then((got) => {
+    if (!Object.keys(got).length && secretStore?.what === reading) {
+      secretStore = null;
+    }
+  }).catch(() => {
+    if (secretStore?.what === reading) {
+      secretStore = null;
+    }
+  });
+
+  return reading;
+}
+
+async function readSecretStoreNow(): Promise<Record<string, string>> {
   const name = await secretStoreName();
   // Always the local cluster, never BASE: the store is one per-user Secret on this Rancher's own
   // cluster, not a per-workspace thing. BASE follows whatever workspace was last opened, so a page
@@ -2525,6 +2575,10 @@ export async function saveSecrets(changes: Record<string, string>): Promise<void
     return;
   }
 
+  // Whatever is cached is now wrong, and the next read of it would be a token the person has just
+  // replaced. Cleared before the write as well as after, so a read that races it still misses.
+  forgetSecretStore();
+
   const name = await secretStoreName();
   // The local cluster, never BASE - the store is one per-user Secret on this Rancher's own
   // cluster; writing it wherever BASE happened to point would strand it. Matches readSecretStore.
@@ -2558,6 +2612,9 @@ export async function saveSecrets(changes: Record<string, string>): Promise<void
   } else {
     await devFetch(`${ base }/v1/secrets`, { method: 'POST', body: JSON.stringify(body) });
   }
+
+  // Again, because a read that started during the write above would have cached what it replaced.
+  forgetSecretStore();
 }
 
 
@@ -3158,6 +3215,17 @@ export function podExecUrl(namespace: string, pod: string, container: string, co
 }
 
 /**
+ * How long one exec may stay quiet before its caller gets whatever arrived.
+ *
+ * The same two minutes `podExecResult` in pod.ts has always used, deliberately rather than a
+ * number of this function's own: the hang this guards against never settles, so the deadline
+ * only decides how long a *working* exec may take, and the reads here are the slow kind - a
+ * `node -e` over a whole conversation transcript. Picking something tighter would trade a rare
+ * hang for a common truncated answer.
+ */
+const EXEC_WAIT_MS = 120000;
+
+/**
  * Run one command in a pod and wait for it to finish, with nobody watching the output.
  *
  * The same exec subresource the terminals use, without the TTY and without a component around
@@ -3167,10 +3235,14 @@ export function podExecUrl(namespace: string, pod: string, container: string, co
  * It resolves rather than rejects on failure. Every caller is tidying up after something the
  * person has already done, and there is nothing useful to say to them about a pod that has gone
  * away in the meantime — the session went with it.
+ *
+ * It always settles. See the timer below for why that had to be said out loud.
  */
-export function podExecOnce(namespace: string, pod: string, container: string, command: string[], base = BASE): Promise<string> {
+export function podExecOnce(namespace: string, pod: string, container: string, command: string[], base = BASE, waitMs = EXEC_WAIT_MS): Promise<string> {
   return new Promise((resolve) => {
     let out = '';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
     // The frames carry bytes, and `atob` hands them back one character each - which is latin1,
     // so every em dash and accented letter in a command's output arrived as mojibake. Decoded
     // as UTF-8 instead, and streamed, since a character can straddle two frames.
@@ -3198,7 +3270,34 @@ export function podExecOnce(namespace: string, pod: string, container: string, c
         }
       };
 
-      const done = () => resolve(out + decoder.decode());
+      const done = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(out + decoder.decode());
+      };
+
+      /*
+       * A floor under a socket that was upgraded and then went quiet.
+       *
+       * This resolved only from `onclose` and `onerror`, and an exec the apiserver accepted for a
+       * pod that is going away produces neither: the promise never settles. Nothing here rejects,
+       * so a caller that awaited it waited for the rest of the session - and because the agent's
+       * sessions and transcripts are read through this (see conversations.ts), one such exec is
+       * enough to leave a card reading forever with no failed request to show for it.
+       *
+       * Settled before the close, because closing a socket in that state does not reliably fire
+       * `onclose` either. Whatever output did arrive is returned: these are `ls` and `cat`, and a
+       * partial listing is worth more to every caller than a promise that never answers.
+       */
+      timer = setTimeout(() => {
+        done();
+        try {
+          socket.close();
+        } catch { /* already gone, which is the case this exists for */ }
+      }, waitMs);
 
       socket.onclose = done;
       socket.onerror = done;

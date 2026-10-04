@@ -36,7 +36,7 @@
  */
 import * as vue from 'vue';
 import type { Ref } from 'vue';
-import { compileTemplate } from './card-runtime';
+import { compileTemplate, DEFAULT_BODY } from './card-runtime';
 import { componentsIn } from './card-modules';
 import type { LoadedCard } from '../../focus-cards';
 
@@ -195,6 +195,7 @@ export function componentFor(loaded: LoadedCard): any {
     return had.component;
   }
   const module = loaded.module;
+  const template = String(module?.template || DEFAULT_BODY);
   const component = module?.component ? module.component : {
     name:       `card-${ loaded.id }`,
     /*
@@ -202,7 +203,7 @@ export function componentFor(loaded: LoadedCard): any {
      * middle one is what stops a component added to the view later from being invisible to cards
      * until somebody remembers this file.
      */
-    components: { ...CARD_COMPONENTS, ...componentsIn(String(module?.template || '')), ...(module?.components || {}) },
+    components: { ...CARD_COMPONENTS, ...componentsIn(template), ...(module?.components || {}) },
     /*
      * The template, compiled here rather than in the module.
      *
@@ -211,7 +212,7 @@ export function componentFor(loaded: LoadedCard): any {
      * is in this bundle - see card-runtime.ts, where the two corrections needed to make it
      * actually draw are written down.
      */
-    render: module?.template ? compileTemplate(String(module.template), loaded.id) : () => null,
+    render: compileTemplate(template, loaded.id),
     /*
      * The api arrives as a prop, and `setup` reads it from there.
      *
@@ -224,7 +225,11 @@ export function componentFor(loaded: LoadedCard): any {
      * leaves the memo a pure function of the module.
      */
     props: { api: { type: Object, required: true } },
-    setup:  (props: any) => (typeof module?.setup === 'function' ? module.setup(props.api) : {}),
+    /*
+     * `{ api }` when the module has no `setup`, so the default body above can name it. Every card
+     * used to write that line itself; the ones that still declare a `setup` get theirs instead.
+     */
+    setup:  (props: any) => (typeof module?.setup === 'function' ? module.setup(props.api) : { api: props.api }),
   };
 
   built.set(loaded.id, { generation: loaded.generation, component });
@@ -233,6 +238,23 @@ export function componentFor(loaded: LoadedCard): any {
 }
 
 /** What a module says its buttons are, or nothing - in which case the definition's stand. */
+/**
+ * The label a verb carries when a card does not give it one.
+ *
+ * `label: 'Later'` was byte-identical on the snooze of all nineteen cards, which makes it the one
+ * thing about those buttons no card was deciding. The hours still are - they run from four to
+ * forty-eight - so a card's snooze now says the part that is its own and nothing else.
+ *
+ * Only the label defaults, never the action: a button that appears from nowhere would be a card
+ * you cannot fully read, which is the opposite of the point.
+ */
+const VERB_LABEL: Record<string, string> = { snooze: 'Later' };
+
+/** Each action as the card wrote it, plus the label its verb implies if it did not give one. */
+function labelled(actions: any[]): any[] {
+  return actions.map((a) => (a && !a.label && VERB_LABEL[a.verb] ? { ...a, label: VERB_LABEL[a.verb] } : a));
+}
+
 export function actionsFrom(loaded: LoadedCard | undefined, api: CardApi): any[] | null {
   const make = loaded?.module?.actions;
 
@@ -244,7 +266,7 @@ export function actionsFrom(loaded: LoadedCard | undefined, api: CardApi): any[]
    * A card whose buttons depend on what it loaded returns a function instead.
    */
   if (Array.isArray(make)) {
-    return make;
+    return labelled(make);
   }
   if (typeof make !== 'function') {
     return null;
@@ -252,7 +274,7 @@ export function actionsFrom(loaded: LoadedCard | undefined, api: CardApi): any[]
   try {
     const got = make(api);
 
-    return Array.isArray(got) ? got : null;
+    return Array.isArray(got) ? labelled(got) : null;
   } catch {
     /*
      * A card whose buttons throw keeps the definition's.
