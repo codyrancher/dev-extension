@@ -2029,22 +2029,49 @@ export async function installDevResources(store: Store): Promise<void> {
  * writes a module-level base every call in this file reads, and leaving it pointed somewhere else
  * makes every later call address the wrong cluster.
  */
-export async function refreshWorkspaceApis(clusters: string[]): Promise<void> {
-  const elsewhere = [...new Set(clusters.filter((cluster) => cluster && cluster !== DEFAULT_CLUSTER))];
-
-  for (const cluster of elsewhere) {
+/**
+ * Run something once per cluster, with the base pointed at each and put back afterwards.
+ *
+ * The save-and-restore is the whole point: `setCluster` writes a module-level base that every
+ * call in this file reads, so a loop that forgets to put it back leaves the rest of the session
+ * addressing whichever cluster it happened to finish on.
+ */
+async function perCluster(clusters: string[], work: (cluster: string) => Promise<void>): Promise<void> {
+  for (const cluster of [...new Set(clusters.filter(Boolean))]) {
     const previous = activeCluster();
 
     setCluster(cluster);
 
     try {
-      await ensureWorkspaceApi();
+      await work(cluster);
     } catch {
       // Quiet, like the rest of the install; see installProblems.
     } finally {
       setCluster(previous);
     }
   }
+}
+
+/**
+ * The terminal scripts, on every cluster that has workspaces rather than only this one.
+ *
+ * A workspace's scripts live in its namespace, so a re-render takes them with it and they have to
+ * be put back - which is what the sidebar's sweep is for. It only ever swept `local`, so a
+ * downstream workspace that was re-rendered lost its scripts for good: the one place that repairs
+ * them could not see it.
+ */
+export async function refreshWorkspaceScripts(byCluster: { name: string; cluster: string }[]): Promise<void> {
+  const clusters = byCluster.map((workspace) => workspace.cluster || DEFAULT_CLUSTER);
+
+  await perCluster(clusters, async(cluster) => {
+    const here = byCluster.filter((workspace) => (workspace.cluster || DEFAULT_CLUSTER) === cluster).map((workspace) => workspace.name);
+
+    await ensureWorkspaceScripts(here);
+  });
+}
+
+export async function refreshWorkspaceApis(clusters: string[]): Promise<void> {
+  await perCluster(clusters.filter((cluster) => cluster && cluster !== DEFAULT_CLUSTER), () => ensureWorkspaceApi());
 }
 
 export function installProblems(): { what: string; why: string }[] {
