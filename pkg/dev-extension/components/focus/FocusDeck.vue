@@ -743,8 +743,15 @@ watch(() => props.index, () => {
    * that was still two rows tall. On a big monitor that is a 1660px letterbox over a 127px diff.
    * Capped, the proportions are the ones the surface was budgeted against, and the deck's own
    * `place-items: stretch center` puts it in the middle of whatever room there is.
+   *
+   * Then 1100 proved too mean. On a 1512px screen it left 400px of empty desk either side of a
+   * card whose subject is a diff, and a diff is the one thing on here that is genuinely better
+   * wide: more of each line before it wraps, and the file tree beside it rather than under it.
+   * The letterbox argument was about *height* going unused, and it is answered by the surface
+   * growing with the window rather than by starving the width. Prose does not get worse either,
+   * because a paragraph is capped at 78ch where it is drawn (see Markdown.vue), not by the card.
    */
-  width: min(1100px, 100%);
+  width: min(1600px, 100%);
   min-width: 0;
   max-width: 100%;
   min-height: 0;

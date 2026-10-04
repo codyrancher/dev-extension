@@ -1601,7 +1601,17 @@ a.card__ident:hover { background: var(--surface-raised); color: var(--text); tex
 .card__surface {
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
+  /*
+   * `0%`, not `auto`.
+   *
+   * With an `auto` basis a flex item starts at its *content* size and is only then shrunk, so a
+   * surface holding a 16,000px diff asks for 16,000px and depends on every ancestor in the chain
+   * saying no. Measured on the installed plugin: `cv__rows` ended 16,257px below the bottom of the
+   * card, and the tree and the code painted over the facts strip. With a `0%` basis the item is
+   * sized by the room the card has and the diff scrolls inside it, which is what `.file` and
+   * `.hunk` were always written to do.
+   */
+  flex: 1 1 0%;
   min-width: 0;
   min-height: 120px;
 }
@@ -1807,7 +1817,9 @@ a.card__ident:hover { background: var(--surface-raised); color: var(--text); tex
 .card__bundle {
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
+  /* `0%` for the same reason as `.card__surface` above: the body is sized by the card, not by
+     the diff inside it. */
+  flex: 1 1 0%;
   min-height: 0;
   min-width: 0;
   overflow: hidden;

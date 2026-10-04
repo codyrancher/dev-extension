@@ -23,6 +23,30 @@ import { githubToken } from './api';
  */
 const POOL_REPO = 'rancher/dashboard';
 
+/**
+ * Which repositories the queue is allowed to look in.
+ *
+ * `assignee:@me` and `author:@me` mean something across the whole of GitHub, which is the reason
+ * these four searches never carried a repository - and the reason the deck filled with work from
+ * repositories nobody wanted to see. A scope is a list of `owner/name`; GitHub ORs repeated
+ * `repo:` qualifiers, so `repo:a/b repo:c/d` is "either of these".
+ *
+ * In the query rather than a filter over the results, because a filter asks GitHub for everything
+ * and throws most of it away: the page size is 25 per search, so an unscoped search can fill all
+ * 25 with work from elsewhere and the ones that matter never arrive at all. Scoping the query is
+ * the difference between a short list and a wrong one.
+ *
+ * Empty means every repository, which is what it did before and the right default for somebody
+ * who has not said otherwise.
+ */
+export function repoScope(repos: string[] | undefined): string {
+  const clean = (repos || [])
+    .map((repo) => String(repo || '').trim())
+    .filter((repo) => /^[\w.-]+\/[\w.-]+$/.test(repo));
+
+  return clean.length ? `${ clean.map((repo) => `repo:${ repo }`).join(' ') } ` : '';
+}
+
 const ENDPOINT = 'https://api.github.com/graphql';
 
 /** How many of each list to ask for. The harness shows about this many and it fits a screen. */
@@ -168,7 +192,7 @@ export interface GithubWork {
  * the login is in the same response: asking for the last few and picking yours out here costs one
  * round trip fewer than asking twice.
  */
-const QUERY = `
+const QUERY_FOR = (scope: string) => `
   fragment pr on PullRequest {
     number
     title
@@ -225,13 +249,13 @@ const QUERY = `
 
   query MyWork($page: Int!, $issues: Int!) {
     viewer { login }
-    reviewing: search(query: "is:open is:pr review-requested:@me archived:false", type: ISSUE, first: $page) {
+    reviewing: search(query: "${ scope }is:open is:pr review-requested:@me archived:false", type: ISSUE, first: $page) {
       nodes { ...pr }
     }
-    reviewed: search(query: "is:open is:pr reviewed-by:@me archived:false", type: ISSUE, first: $page) {
+    reviewed: search(query: "${ scope }is:open is:pr reviewed-by:@me archived:false", type: ISSUE, first: $page) {
       nodes { ...pr }
     }
-    mine: search(query: "is:open is:pr author:@me archived:false", type: ISSUE, first: $page) {
+    mine: search(query: "${ scope }is:open is:pr author:@me archived:false", type: ISSUE, first: $page) {
       nodes { ...pr }
     }
     # Work nobody has picked up, in the repository this product is for.
@@ -255,7 +279,7 @@ const QUERY = `
         }
       }
     }
-    issues: search(query: "is:open is:issue assignee:@me archived:false", type: ISSUE, first: $issues) {
+    issues: search(query: "${ scope }is:open is:issue assignee:@me archived:false", type: ISSUE, first: $issues) {
       nodes {
         ... on Issue {
           number
@@ -411,9 +435,9 @@ function issueFrom(node: Json): GithubIssue {
  * review queue and all. Asked separately, a missing scope costs the one column. An issue can be
  * on more than one board; the first with a status set is the one worth showing.
  */
-const STATUS_QUERY = `
+const STATUS_QUERY_FOR = (scope: string) => `
   query IssueStatuses($issues: Int!) {
-    issues: search(query: "is:open is:issue assignee:@me archived:false", type: ISSUE, first: $issues) {
+    issues: search(query: "${ scope }is:open is:issue assignee:@me archived:false", type: ISSUE, first: $issues) {
       nodes {
         ... on Issue {
           number
@@ -432,8 +456,8 @@ const STATUS_QUERY = `
   }
 `;
 
-async function issueStatuses(): Promise<Map<string, GithubBoardStatus>> {
-  const data = await graphql(STATUS_QUERY, { issues: ISSUE_PAGE });
+async function issueStatuses(repos?: string[]): Promise<Map<string, GithubBoardStatus>> {
+  const data = await graphql(STATUS_QUERY_FOR(repoScope(repos)), { issues: ISSUE_PAGE });
   const found = new Map<string, GithubBoardStatus>();
 
   for (const node of data.issues?.nodes || []) {
@@ -619,7 +643,7 @@ export async function rerunFailed(repo: string, run: GithubRun): Promise<void> {
  * review-requested the moment you review it, and one you have reviewed and are waiting on is
  * still yours to watch. GitHub has no single query for the union, so it is two and a merge.
  */
-export async function myWork(): Promise<GithubWork> {
+export async function myWork(repos?: string[]): Promise<GithubWork> {
   const token = await githubToken();
 
   if (!token) {
@@ -632,7 +656,7 @@ export async function myWork(): Promise<GithubWork> {
       authorization:  `Bearer ${ token }`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ query: QUERY, variables: { page: PAGE, issues: ISSUE_PAGE } }),
+    body: JSON.stringify({ query: QUERY_FOR(repoScope(repos)), variables: { page: PAGE, issues: ISSUE_PAGE } }),
   });
 
   if (!response.ok) {
@@ -675,7 +699,7 @@ export async function myWork(): Promise<GithubWork> {
   let projectStatusError = '';
 
   try {
-    const statuses = await issueStatuses();
+    const statuses = await issueStatuses(repos);
 
     issues.forEach((issue) => {
       issue.projectStatus = statuses.get(issue.key) || null;

@@ -961,6 +961,15 @@ async function readFocus() {
       cards:   read('cards.json'),
       weights: read('weights.json'),
       tasks:   read('tasks.json'),
+      /*
+       * Which repositories the queue may look in.
+       *
+       * The personal searches behind the queue - `author:@me`, `assignee:@me`,
+       * `review-requested:@me` - mean something across the whole of GitHub, so with nothing here
+       * the deck fills with work from every repository the person has ever touched. Empty means
+       * all of them, which is what it did before anyone could say otherwise.
+       */
+      repos:   read('repos.json'),
       version: map.metadata?.resourceVersion || '',
     };
   } catch (e) {
@@ -985,8 +994,13 @@ async function writeFocus(body) {
   if (Array.isArray(body?.tasks)) {
     data['tasks.json'] = JSON.stringify(body.tasks, null, 2);
   }
+  if (Array.isArray(body?.repos)) {
+    // `owner/name` only: anything else is a search qualifier somebody typed by accident, and a
+    // malformed one makes GitHub reject the whole query rather than ignore the bad part.
+    data['repos.json'] = JSON.stringify(body.repos.filter((repo) => /^[\w.-]+\/[\w.-]+$/.test(String(repo || '').trim())), null, 2);
+  }
   if (!Object.keys(data).length) {
-    throw failure(400, 'Nothing to write: send cards, weights or tasks.');
+    throw failure(400, 'Nothing to write: send weights, tasks or repos.');
   }
 
   const p = `/api/v1/namespaces/${ NAMESPACE }/configmaps/${ FOCUS_MAP }`;

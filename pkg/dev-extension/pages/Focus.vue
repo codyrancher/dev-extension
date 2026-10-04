@@ -90,7 +90,9 @@ const notice = ref('');
 const error = ref('');
 
 const items = ref<PriorityItem[]>([]);
-const config = ref<FocusConfig>({ cards: [], weights: {}, tasks: [] });
+const config = ref<FocusConfig>({
+  cards: [], weights: {}, tasks: [], repos: [],
+});
 
 /**
  * The cards, from the modules that are loaded.
@@ -424,6 +426,53 @@ function openWorkspace(name: string) {
 
 let readingArtifacts: Promise<void> = Promise.resolve();
 
+/**
+ * What has already been read, by task key.
+ *
+ * Turning the deck used to re-read everything: one slot, cleared on every turn, so going forward
+ * and then back fetched the same pull request twice and showed the spinner both times. A card's
+ * artifacts are a pull request's worth of calls, and the deck is a thing you turn.
+ *
+ * Bounded, because the queue can be long and a card's artifacts hold diffs and comment bodies.
+ * Oldest out first; the number is small on purpose - the value is in the neighbours you are about
+ * to reach, not in remembering the whole deck.
+ */
+const seen = new Map<string, CardArtifacts>();
+const SEEN_MAX = 12;
+
+function keepArtifacts(key: string, found: CardArtifacts) {
+  seen.set(key, found);
+  while (seen.size > SEEN_MAX) {
+    seen.delete(seen.keys().next().value as string);
+  }
+}
+
+/**
+ * Read the cards either side of this one, quietly.
+ *
+ * The next card is the one you are most likely to ask for, and its artifacts take as long to
+ * arrive as this card's did. Doing it now costs nothing you can see - the card on top is already
+ * drawn - and turns the next turn into a redraw rather than a fetch. `prDetail` keeps its own TTL
+ * cache, so this warms that too and the saving outlives the map above.
+ *
+ * Deliberately after the current card has settled, and never for a card already held: a prefetch
+ * that races the thing you are looking at is a prefetch that makes the page slower.
+ */
+function prefetchNeighbours() {
+  const around = [deck.value[index.value + 1], deck.value[index.value - 1]].filter(Boolean);
+
+  for (const task of around) {
+    const wants = task.card.wants || [];
+
+    if (!wants.length || seen.has(task.key)) {
+      continue;
+    }
+    readArtifacts(task, wants, store, me.value, work.value, alsoFrom.value)
+      .then((found) => keepArtifacts(task.key, found))
+      .catch(() => undefined);
+  }
+}
+
 function readTheArtifacts(): Promise<void> {
   const task = current.value;
   const wants = task?.card.wants || [];
@@ -441,6 +490,23 @@ function readTheArtifacts(): Promise<void> {
     return readingArtifacts;
   }
 
+  /*
+   * Already read: draw it now, with no spinner and no fetch.
+   *
+   * This is what makes turning back instant, and what the prefetch above is for.
+   */
+  const held = seen.get(task.key);
+
+  if (held) {
+    artifactsFor.value = task.key;
+    artifacts.value = held;
+    readingNow.value = false;
+    readingArtifacts = Promise.resolve();
+    prefetchNeighbours();
+
+    return readingArtifacts;
+  }
+
   artifactsFor.value = task.key;
   // Cleared first: the card is about to draw, and last card's evidence under this card's title
   // is worse than a card with nothing under it for a second.
@@ -449,10 +515,13 @@ function readTheArtifacts(): Promise<void> {
   readingArtifacts = readArtifacts(task, wants, store, me.value, work.value, alsoFrom.value)
     .catch(() => NO_ARTIFACTS)
     .then((found) => {
+      keepArtifacts(task.key, found);
       // Turned again while this was in the air; see readNotes for the same guard.
       if (artifactsFor.value === task.key) {
         artifacts.value = found;
         readingNow.value = false;
+        // Only once this card is drawn: the neighbours are never worth a slower card on top.
+        prefetchNeighbours();
       }
     });
 
@@ -639,7 +708,8 @@ async function load() {
     }).catch(() => undefined);
     const names = workspaces.map((workspace) => workspace.name);
     const [found, dependabot, cached, botReviews] = await Promise.all([
-      myWork().catch(() => null),
+      // Scoped to the repositories this person cares about; empty means all of them.
+      myWork(cfg.repos).catch(() => null),
       dependabotData(DEFAULT_REPO).catch(() => null),
       workspaceStatuses(workspaces).catch(() => ({})),
       dependabotReviews().catch(() => ({})),

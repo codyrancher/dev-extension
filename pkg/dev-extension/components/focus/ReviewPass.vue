@@ -81,7 +81,11 @@ const selected = computed(() => props.notes.find((note) => note.id === selectedI
 const verdictOf = (note: ReviewNote) => verdicts.value[note.id] ?? 'pending';
 const bodyOf = (note: ReviewNote) => bodies.value[note.id] ?? note.body;
 
-const settled = computed(() => props.notes.filter((note) => verdictOf(note) !== 'pending').length);
+/*
+ * `settled` lived here: how many findings had been decided, for the header's "N of M decided".
+ * That header is gone - see the note in the template - and `keeping` stays, because the shell's
+ * primary button is gated on it.
+ */
 const keeping = computed(() => props.notes.filter((note) => ['good', 'edited'].includes(verdictOf(note))).length);
 
 watch(keeping, (count) => emit('kept', count), { immediate: true });
@@ -236,24 +240,17 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 <template>
   <!-- `pass--few` is gone with the strip that needed it: there is one list, and it is the meter. -->
   <section v-if="selected" class="pass">
-    <header class="pass__head">
-      <span class="pass__title">
-        <AppIcon name="sparkle" :size="14" />
-        The agent's pass
-      </span>
-      <span class="pass__count">{{ settled }} of {{ notes.length }} decided</span>
+    <!--
+      No header here.
 
-      <!--
-        No meter here.
-
-        There was one: a segment per finding, its own severity, filled once decided - progress and
-        list in one control. It was correct, measured and aligned, and it was a bar restating the
-        two numbers either side of it. The list below says which findings there are and where each
-        one stands; the stepper moves between them where the list does not fit. A row of pixels
-        that only repeats its neighbours is a row you are reading past.
-      -->
-      <span class="pass__keeping">{{ keeping }} to post</span>
-    </header>
+      It said "The agent's pass", "N of M decided" and "K to post", and all three were already on
+      the card. The chip says AGENT REVIEW and the lede says "6 findings to judge", so M was the
+      lede's own number printed a second time twelve pixels away - which is what collided in the
+      top-left corner when the surface grew. What each finding's state is, the list below says per
+      finding, which is more than a tally; and whether anything is ready to post is what the
+      footer's primary button is gated on (`anyKept`), so "0 to post" was a label for a button
+      that was not there yet.
+    -->
 
     <!-- The list: what the agent found, and where each one stands. -->
     <ol class="pass__list">
@@ -454,7 +451,15 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 .pass {
   display: grid;
   grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  /*
+   * One row, not two.
+   *
+   * The first was the header's, spanning both columns. With the header gone the list and the
+   * detail would both land in that `auto` track - content-sized, so a long findings list or a
+   * 16,000px diff would size the row and the pane would grow out of the card. `grid-template-rows`
+   * has to name the rows a grid actually has: this one has one.
+   */
+  grid-template-rows: minmax(0, 1fr);
   gap: var(--s3) var(--s5);
   flex: 1 1 auto;
   min-height: 0;
@@ -952,7 +957,7 @@ function pickedRun(note: ReviewNote): [number, number] | null {
    * the code on every narrow review card. `grid-template-rows` has to name every row a grid
    * actually has; the one it leaves out is the one that breaks it.
    */
-  .pass { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); }
+  .pass { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
 
   /*
    * The code gets less of a small pane, because what is left is the sentence being judged.
