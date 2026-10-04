@@ -36,9 +36,62 @@ And in the bundle, measured from the shipped artifacts:
 | Reachable only from other pages | ~714 KB min, ~193 KB gz |
 | The runtime template compiler group | ~102 KB min, ~28 KB gz |
 
+## What the first pass measured (0.3.311)
+
+Stages 1-3 below were implemented and measured on the installed plugin. The result corrected the
+diagnosis, so it is recorded here rather than left to be rediscovered.
+
+| | 0.3.310 | 0.3.311 | 0.3.312 |
+|---|---|---|---|
+| First card | 13,111 ms | 11,442 ms | **8,053 ms** |
+| Deck → body drawn | same frame | 11 ms apart | **948 ms apart** |
+| Requests before settling | 49 | 37 | 39 |
+| Bytes | 1,390 KB | 978 KB | 1,408 KB |
+| Token Secret reads | 9 | **0** | **0** |
+| `my-work/pr/{n}` before first paint | 10 | 7 | 7 |
+
+0.3.311 was stages 1-3 as written below. 0.3.312 added item 0 - drawing before GitHub answers -
+which is where the improvement came from: 13.1s to 8.1s overall, and the first genuinely
+progressive paint (the deck and its first card at 8,053 ms, the card's body at 9,001 ms). The byte
+and request counts rise again at 0.3.312 only because the window now extends past a first paint
+that happens much earlier; nothing was added.
+
+The request and byte reductions are real and the Secret memo worked exactly as intended. **Time to
+first card barely moved**, and that is the finding: the skeleton hold was not the gate. The gate is
+one GraphQL call. Measured on a healthy run of 0.3.311: nine GraphQL calls, all HTTP 200, the main
+one **363,882 bytes in 7,717 ms**, with the deck drawing 26 cards and a correct fact strip
+(`418 files · +8083 · −8258`, which is the `stat` change below working). Clearing `loading` as soon
+as the queue exists cannot help while the queue itself is built from that call.
+
+**The gate has moved again, and not to where this spec expected.** At 0.3.312 the deck drew at
+8,053 ms while the GraphQL search finished at 8,855 ms - so the early draw works, but it is now
+waiting on `workspaceStatuses` (`workspace-status.ts:642`), the read this spec called "the cheap
+one, and the only one the first draw needs". It is not cheap: it awaits a `Promise.all` over every
+workspace, and each can call `reconcileStage` (`workspace-status.ts:663-667`), so with eight
+workspaces it accounts for most of the eight seconds. **The next change is to stop awaiting it
+too** - rank from `statuses: {}` and let both it and the search re-rank as they land - with the
+same empty-queue guard as item 0, because a queue with neither GitHub work nor workspace status may
+well have nothing in it.
+
+Two cautions for whoever measures next:
+
+- **Count failures separately.** `Network.loadingFailed` sets the same completion field as
+  `Network.loadingFinished`, so a naive harness reports a failed request as a slow 0-byte success.
+  A first reading of this showed an alarming `11,255 ms / 0 KB` call that was a harness artifact,
+  not a fault. Assert on HTTP status, and print failures as failures.
+- **A single total is not a wall-clock.** Per-endpoint totals here sum concurrent requests and will
+  exceed the elapsed time. What matters is serial depth.
+
 ## The diagnosis
 
-Three independent causes, in the order they cost the user time.
+Four causes, in the order they cost the user time. The first was found by measuring the other three.
+
+**0. The queue is built from one very large GraphQL search, and nothing can draw before it.**
+`myWork` (`github.ts:646`) is a single search returning ~364 KB in 7.7-11 s, and `priorityQueue`
+takes its result. Every other change on this page is bounded by it. It is also the one cost here
+that is not an accident of ordering - it is a genuinely expensive query against GitHub - so the
+answer is not to make it faster but to stop waiting for it, and then to stop making it at all on a
+return visit. See Stage 1 item 0 and *Beyond this spec*.
 
 **1. The skeleton is held until every request finishes.** `loading` is cleared only in `load()`'s
 `finally` (`pages/Focus.vue:849`) and `<DeckSkeleton v-if="loading" />` holds until then
@@ -78,6 +131,22 @@ Each is independently applicable and the tree builds after each. Confidence is t
 ### Stage 1 - draw before the chain finishes
 
 The whole of the measured 13.1s is gated on this stage. Nothing else matters as much.
+
+0. **Draw before GitHub answers, when there is anything to draw.** Start `myWork`,
+   `dependabotData` and `dependabotReviews` without awaiting them; await only
+   `workspaceStatuses`, which is local; rank with `work: null` (which `priorityQueue` already
+   accepts) and draw that. Re-rank when the search lands.
+   *Guard, and the reason this is not simply "draw early": most of this queue comes from GitHub, so
+   the local-only ranking can be empty - and the deck's empty state says the work is finished.
+   Telling somebody with twenty-six things waiting that they are done, for eight seconds, is a
+   wrong answer rather than a slow one. So draw early only when the local reads produced items, and
+   otherwise keep the skeleton.*
+   *Hold the card being read across the re-rank by key, but only once the person has turned the
+   deck or asked for a card by URL; before that there is nothing to disturb and the better ranking
+   should win.*
+   *Effect, measured: 11,442 ms to 8,053 ms, and the first paint that is actually progressive. The
+   local-only queue did have items, so the early draw fired. Capped by `workspaceStatuses`, which
+   is the next thing to take off this path - see the note above.*
 
 1. **Draw the deck as soon as there is a queue, not when load() returns.** Flip `loading` where
    `items.value` is assigned (`pages/Focus.vue:803`) instead of in `finally` (`:849`). The cards
@@ -210,6 +279,24 @@ Two things that look like load-time wins and are not, recorded so nobody spends 
 - **The ConfigMap watch does not block first paint.** `cardsSettled` (`focus-cards.ts:97`) is
   declared for that job and nothing reads it but a probe. Do not "fix" it.
 - **`styleFor` and the 19-card module init** land on dashboard boot, not on navigation to the deck.
+
+## Beyond this spec
+
+If item 0 does not reach the target - and it will not if the local-only queue is usually empty -
+then the remaining cost is the GraphQL search itself, and no client-side reordering touches it. The
+two candidates, in order of expected effect:
+
+1. **Persist the last queue.** The deck's shape - keys, titles, scores, rules - is small, unlike the
+   artifacts, and a return visit could draw the previous queue immediately and refresh it behind.
+   Most visits to this page are return visits. This is the only change that makes a cold load fast
+   rather than merely faster, and it is the natural companion to the in-memory artifact cache in
+   Stage 3.
+2. **Cache `myWork` server-side in the dev API.** One search shared by every tab and every reload,
+   with the freshness decision made once and explicitly, instead of each page paying 7.7 s for its
+   own copy.
+
+Both change where the queue comes from, which is a bigger decision than anything above, and neither
+should be started before item 0 has been measured.
 
 ## How to verify
 

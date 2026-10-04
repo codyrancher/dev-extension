@@ -378,7 +378,28 @@ function reviewWork(d: Json, agent: AgentState): Work {
     // the viewer's identity came back blank - a degraded read - that distinction is not trustworthy,
     // so it is marked soft and the store keeps whatever it already had rather than dropping, say, a
     // stored Approved to Submitted for one bad read.
-    if (pushed || replied) {
+    /*
+     * A reply is always a response; a bare push is one only while you are owed an answer.
+     *
+     * `pushed` is the head commit's committer date against your review's, and a timestamp cannot
+     * tell an answer from a rebase or a merge of main - the same comparison that put "Pushed since"
+     * on a pull request with nothing being asked, and was narrowed there (`asksAgain`,
+     * priority.ts). That narrowing does not run for a pull request being reviewed in a workspace:
+     * `priorityQueue` claims those by number and `fromReviewing` skips them, so this path ranks
+     * them instead - at 80, which is higher than the 58 that was fixed.
+     *
+     * The approval gate above already catches the approve-then-push case. What was left was a
+     * review you left as comments: any push afterwards returned "Review the new commits" at the
+     * second-highest score in the deck, for a pull request that was not waiting on you.
+     * `myLatestOpinion` is computed above and says the thing GitHub's pull-request-wide decision
+     * cannot: whether the change request is *yours* and still standing.
+     *
+     * A push with nothing outstanding falls through to `submitted` below, and `REVIEW_NEEDS` has
+     * no `submitted` key - so it produces no card at all, which is the point.
+     */
+    const owedToMe = myLatestOpinion?.state === 'CHANGES_REQUESTED';
+
+    if (replied || (pushed && owedToMe)) {
       return {
         label: pushed ? 'new commits to review' : 'replied to your comments', tone: 'attention', stage: 'response', reviewed: true, round: rounds, soft: !viewer,
       };

@@ -1757,8 +1757,10 @@ async function discussNote({ note, text }: { note: ReviewNote; text: string }) {
 
   try {
     await askHere(task, discussPrompt(
-      { id: note.commentId, path: note.path, line: note.line, body: note.body } as never,
       note.pr,
+      {
+        id: note.commentId, path: note.path, line: note.line, body: note.body,
+      },
       text,
     ));
   } catch (e) {

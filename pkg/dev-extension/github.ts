@@ -95,6 +95,14 @@ export interface GithubPr {
   draft: boolean;
   /** Whether the review the PR is waiting on has been given, from GitHub's own decision. */
   approved: boolean;
+  /**
+   * GitHub's own decision, unreduced: `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED` or ''.
+   *
+   * `approved` is this flattened to a boolean, which cannot tell "nobody has decided" from "the
+   * change was asked for and not yet given" - and the difference is whether a pull request is
+   * blocked on the reader. The queue needs the second one; see `reviewing-pushed`.
+   */
+  reviewDecision: string;
   /** The issue this closes, where the PR says so. Null is the ordinary case, not an error. */
   issue: { number: number; url: string } | null;
   /**
@@ -409,6 +417,7 @@ function prFrom(node: Json, login: string, reviewRequested = false): GithubPr {
       ? null
       : { files: node.changedFiles || 0, added: node.additions || 0, removed: node.deletions || 0 },
     approved:        node.reviewDecision === 'APPROVED',
+    reviewDecision:  node.reviewDecision || '',
     issue:           node.closingIssuesReferences?.nodes?.[0] || null,
     checks:          checksOf(node),
     runs:            failedRuns(node),

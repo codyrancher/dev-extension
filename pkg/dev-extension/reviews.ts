@@ -641,7 +641,22 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
 export async function openConversation(workspace: string, title = 'Conversation', onNote?: (note: string) => void): Promise<ProjectConversation> {
   const existing = await listConversations(workspace).catch(() => [] as ProjectConversation[]);
 
-  return existing[0] || openWith(workspace, title, '', undefined, onNote);
+  /*
+   * The one with this title, or a new one with it - never just the first.
+   *
+   * It was `existing[0]`, and `projectSessions` sorts ascending by the numeric suffix
+   * (agent.ts:699), so the first is the OLDEST conversation in the workspace. In a `pr-<n>`
+   * workspace made by `startPrReview` that is the pane running the review itself, so "Ask the
+   * agent" and the Focus bar were typing into a review mid-pass - and the `title` every caller
+   * already passes ('Focus' from focus-agent.ts, 'Conversation' from the rail) was read only when
+   * creating one, never when finding it again.
+   *
+   * Matching on it is also what lets a conversation belong to one thing: a card, or a single review
+   * comment, found again by the same name on the next visit rather than joining whatever ran first.
+   */
+  const found = existing.find((conversation) => conversation.title === title);
+
+  return found || openWith(workspace, title, '', undefined, onNote);
 }
 
 export interface Started {
@@ -818,7 +833,21 @@ export async function startCiTriage(store: Store, pr: { number: number; title?: 
 }
 
 /** The opening prompt of a discussion about one pending comment: the harness's, with this API in it. */
-export function discussPrompt(num: number, comment: LocalComment, message: string, repo = DEFAULT_REPO): string {
+/**
+ * Typed to the four fields it reads, so a caller that has a note rather than a comment can pass one.
+ *
+ * It took a whole `LocalComment`, and the Focus deck's Discuss has a `ReviewNote` - so that call
+ * site cast with `as never`, and the cast silenced the argument check as well as the shape check.
+ * Its arguments were the wrong way round: the comment went in as `num` and the pull request number
+ * went in as `comment`. Every Discuss on every review card sent the agent "pending review comment
+ * #undefined on rancher/dashboard PR #[object Object] - a PR-level comment: \"undefined\"", with a
+ * `curl` for PR `[object Object]` and a `PUT` to `comments/undefined`. Nothing it was told was
+ * true, and the type that would have said so had been cast away.
+ *
+ * A `Pick` rather than the whole interface is what lets the cast go, which is the part that
+ * matters: the other two callers were always correct, so it was never the order that was fragile.
+ */
+export function discussPrompt(num: number, comment: Pick<LocalComment, 'id' | 'body' | 'path' | 'line'>, message: string, repo = DEFAULT_REPO): string {
   const oneline = String(comment.body).replace(/\s+/g, ' ').slice(0, 400);
   const where = comment.path ? `file ${ comment.path }${ comment.line ? `, line ${ comment.line }` : '' }` : 'a PR-level comment';
   const opener = message
