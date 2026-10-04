@@ -56,7 +56,9 @@ import type { PriorityItem } from '../priority';
 import { listAllWorkspaces, currentOwner, workspaceProxyUrl } from '../api';
 import type { DevWorkspace } from '../api';
 import { listRanchers, deleteRancherInstance } from '../ranchers';
-import { WORKSPACE_ROUTE } from '../config/constants';
+import {
+  WORKSPACE_ROUTE, SETTINGS_ROUTE, DEV_PRODUCT, BLANK_CLUSTER
+} from '../config/constants';
 import type { RancherTarget } from '../ranchers';
 import {
   myWork, assignToMe, requestReviewers, describePr, createPullRequest, markReadyForReview
@@ -237,6 +239,27 @@ const artifactsFor = ref('');
 
 /** A read is in flight for the card on top, so it can say so instead of filling in. */
 const readingNow = ref(false);
+
+/**
+ * Why the deck is empty, when the reason is that nothing is connected.
+ *
+ * Empty for a new install and empty for somebody who is finished look identical from here, and
+ * the wrong one of those is a screen telling a person who has not started that they are done.
+ * The queue is built from GitHub, so no token means nothing was ever read.
+ */
+const setupNeeded = ref('');
+
+/**
+ * To Settings, where the token goes.
+ *
+ * Through `self.proxy.$router` and not `useRouter()`: a UMD-loaded extension gets its own copy of
+ * vue-router, so the composable's injection never reaches the host's instance and resolves to
+ * `undefined` - which works on the dev server and is silently dead in the installed plugin. The
+ * card-in-URL was lost that way once already.
+ */
+function toSettings() {
+  (self?.proxy as any)?.$router?.push({ name: SETTINGS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } });
+}
 
 /** The advisories and the bot's pull requests the queue was built from; see readArtifacts. */
 const alsoFrom = ref<{ alerts: Json[]; botPrs: Json[]; botReviews: Json }>({ alerts: [], botPrs: [], botReviews: null });
@@ -751,7 +774,20 @@ async function load() {
     const names = workspaces.map((workspace) => workspace.name);
     const [found, dependabot, cached, botReviews] = await Promise.all([
       // Scoped to the repositories this person cares about; empty means all of them.
-      myWork(cfg.repos).catch(() => null),
+      myWork(cfg.repos).catch((e) => {
+        /*
+         * The one failure that is not a failure: nothing has been set up yet.
+         *
+         * `myWork` throws with that sentence when there is no token, and everything downstream
+         * treats a null as "nothing waiting" - so a fresh install was told it was finished. The
+         * deck says what is missing instead; see `setupNeeded`.
+         */
+        if (/no github token/i.test(String((e as Error)?.message || e))) {
+          setupNeeded.value = 'The queue is built from GitHub, and no token is set yet. Add one and this fills with what is waiting on you.';
+        }
+
+        return null;
+      }),
       dependabotData(DEFAULT_REPO).catch(() => null),
       workspaceStatuses(workspaces).catch(() => ({})),
       dependabotReviews().catch(() => ({})),
@@ -842,6 +878,11 @@ onMounted(() => {
   // Where a probe can see what the watch is doing. See focus-cards.ts.
   (window as any).__focusCards = {
     cards: loadedCards, watch: cardsWatch, settled: cardsSettled, store,
+  };
+
+  /* The reading state, so a stuck spinner can be told from a slow fetch. */
+  (window as any).__focusRead = {
+    now: readingNow, forKey: artifactsFor, current: () => current.value?.key || '', held: () => [...seen.keys()],
   };
 });
 
@@ -1944,6 +1985,8 @@ onBeforeUnmount(closeSettings);
           :notes="notes"
           :artifacts="artifacts"
           :reading="readingNow"
+          :setup="setupNeeded"
+          @settings="toSettings"
           @go="go"
           @jump="jumpTo"
           @act="act"
