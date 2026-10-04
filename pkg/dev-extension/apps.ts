@@ -1470,10 +1470,30 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
   if (!appsPlusAvailable(store)) {
     await ensureAppsPlusCrds().catch(() => false);
 
-    // Steve learns about a new type on its next schema refresh, not on this tick, so the Apps
-    // below wait for the reload that follows. Nothing is lost: the CRDs are the part that had
-    // to be done out of band, and it is done now.
-    return;
+    /*
+     * Wait for Steve to learn the type, rather than leaving it to the next page load.
+     *
+     * It used to return here: the CRDs were made and the Apps that go in them were left for
+     * whenever somebody reloaded. On a Rancher that has just had this extension installed that
+     * is the whole of the first experience - open the product, go to make a workspace, and there
+     * are no templates to make one from, with nothing saying why or that reloading would fix it.
+     *
+     * Steve picks a new type up on its next schema refresh, which is seconds away, so this asks
+     * it to refresh and then watches for the schema to appear. Bounded, and it gives up quietly:
+     * failing to wait leaves exactly the behaviour that was here before.
+     */
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await store.dispatch('management/loadSchemas', true).catch(() => undefined);
+
+      if (appsPlusAvailable(store)) {
+        break;
+      }
+    }
+
+    if (!appsPlusAvailable(store)) {
+      return;
+    }
   }
 
   const apps = await store.dispatch('management/findAll', { type: APP }).catch(() => null);
