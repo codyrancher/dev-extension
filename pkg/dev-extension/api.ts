@@ -951,6 +951,31 @@ async function workspaceNameConflict(name: string): Promise<string> {
  * and a static import the other way round is a cycle. This runs once per create, so the cost is
  * nothing.
  */
+/**
+ * The name Fleet knows a cluster by, given the id its API is addressed by.
+ *
+ * These are two different strings for every cluster but `local`, which is why nothing noticed:
+ * the management id is `c-m-2thwgh4t` and the Fleet cluster is `otter`. Apps Plus places a
+ * workspace's Bundle in the Fleet workspace of the cluster whose *name* the target matches, so a
+ * management id matches nothing, falls back to fleet-local, and the workspace deploys nowhere -
+ * silently, because a Bundle that targets no cluster is not an error.
+ *
+ * `createWorkspace` used to assume the two were the same whenever a cluster was named outright,
+ * with a comment saying that was safe because it "is only ever local". The create-workspace page
+ * has a cluster picker whose values are management ids, so it had not been true for some time.
+ */
+async function fleetTargetFor(clusterId: string): Promise<string> {
+  if (!clusterId || clusterId === 'local') {
+    return clusterId || 'local';
+  }
+
+  const response = await devFetch('/v3/clusters').catch(() => null);
+  const match = (response?.data || []).find((cluster: Json) => cluster.id === clusterId);
+
+  // The id itself if the lookup fails: no worse than before, and the Bundle is visible either way.
+  return String(match?.name || clusterId);
+}
+
 async function resolveWorkspaceCluster(store: Store, values: Record<string, unknown>): Promise<{ cluster: string; target: string }> {
   const rancherUrl = String(values.rancherUrl || '').replace(/\/$/, '');
   // The local cluster is the same string both ways, which is why the bug below never showed
@@ -1002,11 +1027,40 @@ export async function createWorkspace(store: Store, name: string, appId: string,
   // this is the whole of the move.
   // `cluster` is the management id the workspace's API is addressed by; `target` is the Fleet
   // cluster name its Bundle is aimed at. The same for local, different for a downstream - see
-  // resolveWorkspaceCluster. An explicit `cluster` argument names both (it is only ever local).
-  const resolved = cluster ? { cluster, target: cluster } : await resolveWorkspaceCluster(store, values);
+  // resolveWorkspaceCluster. An explicit `cluster` is a management id too (the create page's
+  // picker uses them), so its Fleet name is looked up rather than assumed; see fleetTargetFor.
+  const resolved = cluster
+    ? { cluster, target: await fleetTargetFor(cluster) }
+    : await resolveWorkspaceCluster(store, values);
+
+  /*
+   * Point the calls that follow at the cluster this workspace lands on, and put it back after.
+   *
+   * `setCluster` writes a module-level base that every call in this file reads, so without the
+   * restore below, creating one workspace on a downstream cluster left the whole browser session
+   * addressing that cluster - every later list, every later ensure, until the page was reloaded.
+   * Nothing failed loudly; things were simply read from, and created on, the wrong cluster.
+   */
+  const previousCluster = activeCluster();
 
   setCluster(resolved.cluster);
 
+  try {
+    await createWorkspaceOn(store, name, appId, resolved, values, title);
+  } finally {
+    setCluster(previousCluster);
+  }
+}
+
+/** The making itself, with the cluster already pointed at the target. See createWorkspace. */
+async function createWorkspaceOn(
+  store: Store,
+  name: string,
+  appId: string,
+  resolved: { cluster: string; target: string },
+  values: Record<string, unknown>,
+  title: string,
+): Promise<void> {
   const app = await appById(store, appId);
 
   if (!app) {
