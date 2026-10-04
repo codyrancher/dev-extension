@@ -403,7 +403,26 @@ function fromReviewing(prs: GithubPr[], seen: Set<number>): PriorityItem[] {
     const base = {
       key: `pr:${ pr.key }`, what: `PR #${ pr.number }`, title: pr.title, workspace: '', url: pr.url, since: pr.pushedAt || pr.createdAt || '',
     };
-    const pushedSince = pr.reviewedAt && pr.pushedAt && Date.parse(pr.pushedAt) > Date.parse(pr.reviewedAt);
+    /*
+     * A push after your review is only yours if something is being asked of you.
+     *
+     * This was the timestamp comparison alone, and a timestamp cannot tell a re-review from a
+     * rebase. Approve a pull request, let the author merge main into it or fix a typo, and it came
+     * back at score 58 saying "Review the new commits" with a list of commit messages and nothing
+     * to do - reported from the live deck as a card that "doesn't appear to need my input", which
+     * was exactly right. Nothing was blocked on the reader; GitHub was not asking; the card existed
+     * because a date moved.
+     *
+     * Every card in this deck has to need a person to move it forward. So the push counts when
+     * GitHub is asking by name - `reviewRequested` is true the moment an author re-requests you
+     * after changes - or when the pull request still sits on a change request, where the push is
+     * the answer to yours and the follow-up look is the thing releasing it. An approved pull
+     * request that was pushed to is not a task: if the author wants another look they re-request
+     * it, and that sets the flag above. One that falls through here produces no item at all, which
+     * is the point.
+     */
+    const asksAgain = pr.reviewRequested || (pr.reviewDecision === 'CHANGES_REQUESTED' && !pr.approved);
+    const pushedSince = pr.reviewedAt && pr.pushedAt && Date.parse(pr.pushedAt) > Date.parse(pr.reviewedAt) && asksAgain;
 
     if (pushedSince) {
       out.push({

@@ -635,12 +635,13 @@ watch(() => props.index, () => {
     -->
     <nav v-if="cards.length" class="deck__rail" aria-label="Deck position">
       <!--
-        The chevrons say how many, not just which way.
+        Which way, and how many only on hover.
         
-        The window has room for about thirteen of the twenty-six dots and the dots scroll inside the
-        rail, which is right - but a scroller with no number on it says nothing about there being a
-        second half, and these two were the only hint. The count is what makes the rail a position
-        rather than a decoration.
+        The chevrons carried the counts beside them - the window has room for about thirteen of
+        twenty-six dots, so a rail with no number on it says little about there being a second
+        half. But two digits in a 28px control next to a column of dots is three things competing
+        in a strip whose whole job is one glance, and the dots already say roughly where you are.
+        The counts live in the titles, where they answer the question when it is actually asked.
       -->
       <button
         class="deck__step"
@@ -650,7 +651,6 @@ watch(() => props.index, () => {
         @click="go(-1)"
       >
         <AppIcon name="chevron-up" :size="16" />
-        <span v-if="index" class="deck__step-n">{{ index }}</span>
       </button>
 
       <ol ref="dots" class="deck__dots">
@@ -675,7 +675,6 @@ watch(() => props.index, () => {
         @click="go(1)"
       >
         <AppIcon name="chevron-down" :size="16" />
-        <span v-if="cards.length - index - 1" class="deck__step-n">{{ cards.length - index - 1 }}</span>
       </button>
     </nav>
   </section>
@@ -1009,12 +1008,6 @@ watch(() => props.index, () => {
 }
 
 /* How many are that way, under the arrow: tabular so the two counts do not jitter as you turn. */
-.deck__step-n {
-  font-size: var(--t-2xs);
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-
 .deck__step:hover { color: var(--text); border-color: var(--border-strong); transform: scale(1.06); }
 
 /*
