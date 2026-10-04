@@ -36,6 +36,10 @@ MINE = [
   'components/focus/CardFacts.vue',
   'components/focus/CardPool.vue',
   'components/focus/CardReviewers.vue',
+  # The failing checks, which draw three pressable things this never read: the row that opens a
+  # run, the chip that switches which check's output the pane is showing, and the control that
+  # reveals the annotations past the third.
+  'components/focus/CheckList.vue',
   'components/focus/ChangeSet.vue',
   'components/focus/FocusDeck.vue',
   'components/focus/FocusDock.vue',

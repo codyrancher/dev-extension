@@ -282,7 +282,17 @@ function jobIdFrom(url) {
   return m ? Number(m[1]) : null;
 }
 
-async function jobLogTail(repo, jobId, keepBytes = 256_000, capBytes = 25_000_000) {
+/**
+ * How much of a job's log is kept, in characters.
+ *
+ * Named rather than written twice because two answers have to agree about it: the excerpt below
+ * marks a line by its position in the retained tail, and the dialog that opens the whole log has
+ * to number the same lines the same way. A second read of a *finished* job's log retains the same
+ * tail only while both reads keep the same amount of it, so this is the one place it is decided.
+ */
+const LOG_TAIL_BYTES = 256_000;
+
+async function jobLogTail(repo, jobId, keepBytes = LOG_TAIL_BYTES, capBytes = 25_000_000) {
   const token = await githubToken();
   const response = await fetch(`https://api.github.com/repos/${ repo }/actions/jobs/${ jobId }/logs`, {
     headers: { authorization: `Bearer ${ token }`, 'user-agent': 'dev-extension' }, redirect: 'follow',
@@ -322,8 +332,79 @@ async function jobLogTail(repo, jobId, keepBytes = 256_000, capBytes = 25_000_00
 const FAILURE_RE = /(^|\s)(✕|✗|×|●|FAIL\b|AssertionError|Assertion(Error)?:|Error:|Expected\b.*Received\b|Timed out|expected .* to |\bat .+:\d+:\d+\))/i;
 const ANSI_RE = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g');
 
+/**
+ * A job log as lines, with the two things GitHub puts in front of every one of them taken off.
+ *
+ * Every line of an Actions log is prefixed `2026-10-03T12:11:09.1234567Z `, and most of what a
+ * test runner prints is wrapped in ANSI colour besides - so 29 characters of a 120-character
+ * terminal are a timestamp nobody reads and the rest draws as mojibake anywhere but a terminal.
+ *
+ * Both come off here rather than in each caller, because the excerpt and the whole log have to be
+ * numbered the same way: the card marks a line by its position in this array and the dialog that
+ * opens the whole log has to agree about which line that is.
+ */
+function cleanLines(log) {
+  return String(log || '').split('\n')
+    .map((l) => l.replace(/\r$/, '').replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?/, '').replace(ANSI_RE, ''));
+}
+
+/** Which of these lines the matcher hit, 1-based, capped so a 4,000-line log stays a JSON reply. */
+function failureHits(lines, cap = 500) {
+  const hits = [];
+
+  for (let i = 0; i < lines.length && hits.length < cap; i++) {
+    if (FAILURE_RE.test(lines[i])) {
+      hits.push(i + 1);
+    }
+  }
+
+  return hits;
+}
+
+/**
+ * Blank lines off both ends, and where what is left actually starts.
+ *
+ * `.trim()` on the joined text did the first half of this and lost the second, which was harmless
+ * only for as long as nobody numbered the result: the card draws these lines with the log's own
+ * line numbers, so a window that silently begins two lines later than it claims puts every number
+ * - and the whole-log dialog's scroll position - two lines out.
+ */
+function trimEnds(lines, from) {
+  let a = 0;
+  let b = lines.length;
+
+  while (a < b && !lines[a].trim()) {
+    a++;
+  }
+  while (b > a && !lines[b - 1].trim()) {
+    b--;
+  }
+
+  return { lines: lines.slice(a, b), at: from + a + 1 };
+}
+
+/**
+ * The failure and its neighbourhood, out of a log that is mostly installs and passes.
+ *
+ * `at`, `hits` and `lines` are what make this readable on a card rather than only by an agent,
+ * and all three are additive - `text` and `matched` are what they were, because the harness's own
+ * skills read this route too.
+ *
+ *   - `at` is where the window starts in the retained log, 1-based, so the lines can carry the
+ *     log's own numbers instead of 1..n of a slice nobody can locate again.
+ *   - `hits` are the lines inside the window the matcher fired on. The card marks those rows; a
+ *     window with no marks in it is a window of context with the point somewhere off screen.
+ *   - `lines` is how long the whole log is, so the card can say how much of it this is.
+ *
+ * **The window is contiguous now.** It used to keep the first hundred lines and the last twenty
+ * with a `...` between them, which was fine while the lines were anonymous and is not once they
+ * are numbered: everything after the elision would be numbered as though nothing had been cut.
+ * A window only exceeds 120 lines when the matches are spread over a hundred of them - a suite
+ * with several failures - and the first failure in full is the better first look of the two. The
+ * rest is one press away on the whole log.
+ */
 function failureExcerpt(log, maxLines = 120) {
-  const clean = log.split('\n').map((l) => l.replace(/\r$/, '').replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?/, '').replace(ANSI_RE, ''));
+  const clean = cleanLines(log);
   let first = -1;
   let last = -1;
 
@@ -337,15 +418,21 @@ function failureExcerpt(log, maxLines = 120) {
   });
 
   if (first === -1) {
-    return { text: clean.slice(-40).join('\n').trim(), matched: false };
+    const from = Math.max(0, clean.length - 40);
+    const tail = trimEnds(clean.slice(from), from);
+
+    return {
+      text: tail.lines.join('\n'), matched: false, at: tail.at, hits: [], lines: clean.length,
+    };
   }
 
   const start = Math.max(0, first - 4);
   const end = Math.min(clean.length, Math.max(last + 6, start + 20));
-  const window = clean.slice(start, end);
-  const text = (window.length > maxLines ? [...window.slice(0, maxLines - 20), '...', ...window.slice(-20)] : window).join('\n').trim();
+  const kept = trimEnds(clean.slice(start, Math.min(end, start + maxLines)), start);
 
-  return { text, matched: true };
+  return {
+    text: kept.lines.join('\n'), matched: true, at: kept.at, hits: failureHits(kept.lines), lines: clean.length,
+  };
 }
 
 async function ciFailures(repo, num) {
@@ -412,6 +499,47 @@ async function ciFailureDetail(repo, num, checkId) {
     },
     annotations,
     log,
+  };
+}
+
+/**
+ * The whole of the log the excerpt came out of.
+ *
+ * The card shows the failure and the twenty lines around it; this is the second look, behind a
+ * press. A route of its own rather than a flag on the detail call, because of what it costs: a
+ * quarter of a megabyte of text where the detail call is made for every red card the deck draws
+ * and prefetched for the two either side of it.
+ *
+ * Numbered the same way as the excerpt - same tail, same cleaning, same `LOG_TAIL_BYTES` - so the
+ * line the card marked is the line this opens on. `truncated` says the job printed more than is
+ * kept, in which case line 1 here is wherever the retained tail happens to begin rather than the
+ * start of the job.
+ */
+async function ciFailureLog(repo, num, checkId) {
+  const run = await ghRest('GET', `/repos/${ repo }/check-runs/${ checkId }`);
+  const jobId = jobIdFrom(run.details_url || run.html_url);
+  const about = {
+    pr: num, check: checkId, name: run.name || null, url: run.html_url || null,
+  };
+
+  // A check that is not an Actions job - a status context posted by a bot, a required review -
+  // has no log anywhere to fetch. Said rather than 404'd: the caller asked a reasonable question.
+  if (!jobId) {
+    return {
+      ...about, jobId: null, text: '', lines: 0, hits: [], truncated: false,
+    };
+  }
+
+  const tail = await jobLogTail(repo, jobId).catch(() => '');
+  const lines = cleanLines(tail);
+
+  return {
+    ...about,
+    jobId,
+    text:      lines.join('\n'),
+    lines:     lines.length,
+    hits:      failureHits(lines),
+    truncated: tail.length >= LOG_TAIL_BYTES,
   };
 }
 
@@ -964,6 +1092,80 @@ const OPENAPI = {
         operationId: 'deleteCard',
         summary:     'Drop the edit and go back to the card the extension ships.',
         responses:   { 200: { description: 'Dropped.' } },
+      },
+    },
+    /*
+     * The three CI routes, described because the third one is new and the other two are what it
+     * is reached through: an agent - or a card - that has a pull request number and nothing else
+     * has to get from "it is red" to a check id to a job's log, and that is three calls in order.
+     */
+    '/my-work/pr/{num}/ci': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' }, description: 'The pull request number.',
+      }, {
+        name: 'repo', in: 'query', schema: { type: 'string' }, description: 'owner/name. Defaults to rancher/dashboard.',
+      }],
+      get: {
+        operationId: 'ciFailures',
+        summary:     'Every failing check on the head commit, with what each one said about itself.',
+        description: [
+          'Failures only: a passing check has nothing to report and forty of them said at length is',
+          'noise. `id` is what the two routes below take. `jobId` is the Actions job behind the',
+          'check where there is one, and a check with one has a log to read; a `status` context -',
+          'posted by a bot rather than run as a job - has neither a job nor a log.',
+        ].join('\n'),
+        responses: { 200: { description: '{ pr, sha, checks: [{ id, kind, name, conclusion, url, title, summary, annotations, jobId }] }' } },
+      },
+    },
+    '/my-work/pr/{num}/ci/{checkId}': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' }, description: 'The pull request number.',
+      }, {
+        name: 'checkId', in: 'path', required: true, schema: { type: 'integer' }, description: "A check run's id, as /ci lists it.",
+      }, {
+        name: 'repo', in: 'query', schema: { type: 'string' }, description: 'owner/name. Defaults to rancher/dashboard.',
+      }],
+      get: {
+        operationId: 'ciFailureDetail',
+        summary:     'What one failing check actually printed: its annotations, and the failure out of its log.',
+        description: [
+          'The log is not returned whole - a CI log is megabytes of installs and passes - but as the',
+          'window around the first thing that looks like a failure. In `log`:',
+          '',
+          '  text      the window, timestamps and ANSI colour already stripped',
+          '  at        where the window starts in the retained log, 1-based',
+          '  hits      lines of `text`, 1-based, that look like the failure itself',
+          '  lines     how long the whole retained log is, so `text` can be placed in it',
+          '  matched   false where nothing looked like a failure and `text` is the last lines instead',
+          '',
+          '`annotations` is GitHub\'s own idea of where it broke - a path, a line and a message -',
+          'with the "Process completed with exit code 1" rows dropped, and the failures sorted first.',
+          'Null `log` means the check is not an Actions job, in which case `summary` is all there is.',
+        ].join('\n'),
+        responses: { 200: { description: '{ pr, check, annotations, log }' } },
+      },
+    },
+    '/my-work/pr/{num}/ci/{checkId}/log': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' }, description: 'The pull request number.',
+      }, {
+        name: 'checkId', in: 'path', required: true, schema: { type: 'integer' }, description: "A check run's id, as /ci lists it.",
+      }, {
+        name: 'repo', in: 'query', schema: { type: 'string' }, description: 'owner/name. Defaults to rancher/dashboard.',
+      }],
+      get: {
+        operationId: 'ciFailureLog',
+        summary:     "The whole of the job's log, cleaned and numbered the same way the excerpt is.",
+        description: [
+          'For reading past the excerpt. Up to a quarter of a megabyte - the *end* of the log, which',
+          'is where a failure is - so ask for it when somebody is going to read it, not for every',
+          'failing check on a page. The line numbers agree with the `at` and `hits` of the excerpt',
+          'above, which is what lets a reader open this on the line they were already looking at.',
+          '`truncated` says the job printed more than is kept, so line 1 is wherever the kept tail',
+          'begins rather than the start of the job. `jobId` is null, and the text empty, for a check',
+          'that is not an Actions job.',
+        ].join('\n'),
+        responses: { 200: { description: '{ pr, check, name, url, jobId, text, lines, hits, truncated }' } },
       },
     },
     '/workspace/{name}/media': {
@@ -2833,6 +3035,7 @@ const routes = [
   }],
   ['GET', /^\/my-work\/pr\/(\d+)\/ci$/, (m, url) => ciFailures(repoOf(url), Number(m[1]))],
   ['GET', /^\/my-work\/pr\/(\d+)\/ci\/(\d+)$/, (m, url) => ciFailureDetail(repoOf(url), Number(m[1]), Number(m[2]))],
+  ['GET', /^\/my-work\/pr\/(\d+)\/ci\/(\d+)\/log$/, (m, url) => ciFailureLog(repoOf(url), Number(m[1]), Number(m[2]))],
   ['GET', /^\/my-work\/dependabot$/, (m, url) => fetchDependabot(repoOf(url))],
   ['GET', /^\/my-work\/dependabot\/pr\/(\d+)\/review-context$/, (m, url) => dependabotReviewContext(repoOf(url), Number(m[1]))],
   ['GET', /^\/my-work\/dependabot\/reviews$/, async() => ({ reviews: (await readDoc('dev-review-dependabot', 'reviews.json')) || {} })],

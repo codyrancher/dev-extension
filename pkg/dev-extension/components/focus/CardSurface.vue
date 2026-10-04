@@ -18,6 +18,7 @@
  */
 import { computed, watch } from 'vue';
 import type { CardSurface } from '../../focus';
+import { subjectOf } from '../../focus-artifacts';
 import type { CardApi } from './card-api';
 
 import CardAgent from './CardAgent.vue';
@@ -39,6 +40,16 @@ const notes = computed(() => api.notes.value || []);
 const task = computed(() => api.task.value);
 const busy = computed(() => api.busy.value);
 const claimed = computed(() => api.claimed.value);
+
+/*
+ * Which pull request this card is about.
+ *
+ * Handed to the `checks` surface so it can read the output of the five failing checks whose logs
+ * were not loaded with the card - one request, on the press that asks for it. Worked out here
+ * rather than passed through the artifacts because it is a fact about the *task*, which the
+ * surface has no other reach into; `subjectOf` is the one place that parses `PR #19212`.
+ */
+const pr = computed(() => (task.value ? subjectOf(task.value).pr : 0));
 
 function hasFor(which: CardSurface): boolean {
   const a = art.value;
@@ -152,18 +163,24 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
       />
 
       <!--
-        The failures, for the card whose whole subject is a red build.
+        What is failing, and what it printed, for the card whose whole subject is a red build.
 
         `red-pr` wants `checks`, `stat` and `files` and the surface ladder had a rung for `files`
         only, so the card headed "6 of 46 checks failing" drew a 45-file diff and the three red
         e2e suites were readable in a 26px popover and nowhere else. The names and their own
         one-line reports were already on the card. The diff stays one press away on "Open it".
+
+        And then the names were not enough either: `e2e-test (admin, @adminUser, @explorer2)` is
+        not something anybody decides anything on. `report` is the failing output of one of them -
+        see `CardArtifacts.report` - and `pr` is how CheckList reads the others on a press.
       -->
       <CheckList
         v-else-if="shown === 'checks' && art.ci"
         surface
         :checks="art.checks"
         :failing="art.ci.failing"
+        :report="art.report"
+        :pr="pr"
         :claimed="claimed"
       />
 

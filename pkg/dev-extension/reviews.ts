@@ -193,6 +193,18 @@ export async function ciFailureDetail(num: number, checkId: number, repo = DEFAU
   return api(`/my-work/pr/${ num }/ci/${ checkId }?repo=${ encodeURIComponent(repo) }`);
 }
 
+/**
+ * The whole of one failing job's log, for reading past the excerpt on the card.
+ *
+ * Up to a quarter of a megabyte of text, so this is behind a press and never part of what a card
+ * loads: `ciFailureDetail` above is the one that is called for every red card the deck draws, and
+ * it returns the window around the failure instead. Same cleaning and the same line numbering, so
+ * the line the card marked is the line this can be opened on.
+ */
+export async function ciFailureLog(num: number, checkId: number, repo = DEFAULT_REPO): Promise<Json> {
+  return api(`/my-work/pr/${ num }/ci/${ checkId }/log?repo=${ encodeURIComponent(repo) }`);
+}
+
 // ── GitHub, from the browser ────────────────────────────────────────────────────────────────
 
 async function gh(method: string, path: string, body?: Json): Promise<Json> {
