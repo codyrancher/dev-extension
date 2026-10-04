@@ -1081,13 +1081,19 @@ async function createWorkspaceOn(
    * an API and no identities to run as and no browser to upload through - and the API itself
    * failed to appear, because it writes into a namespace `ensureDevRbac` creates.
    *
-   * In order: the identities and the namespace first, then the API that writes into it, then the
-   * browser. Each is create-if-missing, so this is a few GETs on a cluster that has them already,
-   * which is every call after the first.
+   * In order: the identities and the namespace first, then the API that writes into it. Each is
+   * create-if-missing, so this is a few GETs on a cluster that has them already, which is every
+   * call after the first.
+   *
+   * **Not** the browser. There is one shared Chromium and it lives on `local`; a downstream
+   * workspace cannot resolve its Service, so the agent pod tunnels it into that pod's
+   * localhost:9223 instead - see GITHUB_BROWSER_CDP_DOWNSTREAM, and workspace-tools.ts, which
+   * hands a downstream workspace the tunnel and only a local one the in-cluster address. Creating
+   * a second browser per cluster was mine, added with the other two and verified by watching it
+   * come up on otter serving nobody: a Chromium image on a cluster with 7.9 GiB to its name.
    */
   await ensureDevRbac();
   await ensureWorkspaceApi();
-  await ensureGithubBrowser();
 
   // The Installation is the workspace. Apps Plus renders the App's templates into a Fleet
   // Bundle when it is saved, and Fleet makes the namespace, the Deployment and the Service on
@@ -2004,6 +2010,41 @@ export async function installDevResources(store: Store): Promise<void> {
   const { ensureDefaultApp } = await import('./apps');
 
   await ensureDefaultApp(store).catch(() => undefined);
+}
+
+/**
+ * Bring the API on every cluster that has workspaces up to the source this bundle carries.
+ *
+ * `installDevResources` runs against the cluster the dashboard is on, which is `local`. A
+ * downstream cluster's dev-api was therefore only ever written when somebody created a workspace
+ * there - so a fix to the server reached it on the next create and not before, and a cluster
+ * nobody had added to lately ran whatever it was first given. That is the exact failure
+ * `ensure.ts` was written about, one cluster over.
+ *
+ * Bounded on purpose: only clusters that already have a workspace, which is where an API is doing
+ * anything. Each one is a GET of a ConfigMap that usually matches, and `ensureWorkspaceApi` only
+ * writes and restarts the pod when it does not.
+ *
+ * The cluster is put back after each, for the same reason `createWorkspace` does it: `setCluster`
+ * writes a module-level base every call in this file reads, and leaving it pointed somewhere else
+ * makes every later call address the wrong cluster.
+ */
+export async function refreshWorkspaceApis(clusters: string[]): Promise<void> {
+  const elsewhere = [...new Set(clusters.filter((cluster) => cluster && cluster !== DEFAULT_CLUSTER))];
+
+  for (const cluster of elsewhere) {
+    const previous = activeCluster();
+
+    setCluster(cluster);
+
+    try {
+      await ensureWorkspaceApi();
+    } catch {
+      // Quiet, like the rest of the install; see installProblems.
+    } finally {
+      setCluster(previous);
+    }
+  }
 }
 
 export function installProblems(): { what: string; why: string }[] {

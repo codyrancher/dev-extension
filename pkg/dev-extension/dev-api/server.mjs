@@ -2726,7 +2726,20 @@ function readBody(req) {
 }
 
 const routes = [
-  ['GET', /^\/$/, async() => ({ api: 'ok', templates: (await apps()).map((app) => app.id) })],
+  /*
+   * The health check, and nothing else.
+   *
+   * This is what the readiness probe GETs, and it used to answer with the list of Apps Plus
+   * templates - so the probe depended on another product's CRDs being installed on this cluster.
+   * On a downstream cluster they are not: Apps Plus lives on `local`, `apps()` got HTML back from
+   * the apiserver, the route threw, and the probe failed every ten seconds forever. The pod ran
+   * perfectly and was never Ready, so nothing could route to it and a workspace there waited on a
+   * service that was up the whole time.
+   *
+   * A readiness probe answers one question: is this process able to serve. Templates moved to
+   * /templates, which is where the only caller was already looking.
+   */
+  ['GET', /^\/$/, async() => ({ api: 'ok' })],
   ['GET', /^\/templates$/, async() => ({ templates: await apps() })],
   // What a workspace is laid out from: the extension's own files, with the skills, rules and
   // CLAUDE.md from codyrancher/ai-skills over them. Served because an exec command is URL
