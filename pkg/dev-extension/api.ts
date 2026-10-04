@@ -1979,6 +1979,33 @@ async function ensureRules(type: string, name: string, body: Json): Promise<void
  */
 const installFailures = new Map<string, string>();
 
+/**
+ * Everything this extension needs on a cluster, in the order it has to happen.
+ *
+ * It was four calls fired side by side from `product.ts`, each with its own `.catch(() => {})`,
+ * in no order and with no relationship to each other - which is how `dev-system` came to be
+ * created by one of them while two others wrote into it. Side by side also meant the three
+ * namespace-creators raced on every fresh cluster, so two of them always lost.
+ *
+ * In order, and sequential: identities and the namespace, the API that writes into it, the
+ * browser that uploads through it, and the template a new Rancher needs so there is something to
+ * make a workspace from. Each step is create-if-missing, so on a cluster that has them this is a
+ * handful of GETs.
+ *
+ * Never throws. It runs on every dashboard load for every user, including ones with no permission
+ * to create any of it; what went wrong is in `installProblems()` rather than in front of somebody
+ * reading a pull request.
+ */
+export async function installDevResources(store: Store): Promise<void> {
+  await ensureDevRbac().catch(() => undefined);
+  await ensureWorkspaceApi().catch(() => undefined);
+  await ensureGithubBrowser().catch(() => undefined);
+
+  const { ensureDefaultApp } = await import('./apps');
+
+  await ensureDefaultApp(store).catch(() => undefined);
+}
+
 export function installProblems(): { what: string; why: string }[] {
   return [...installFailures.entries()].map(([what, why]) => ({ what, why }));
 }
