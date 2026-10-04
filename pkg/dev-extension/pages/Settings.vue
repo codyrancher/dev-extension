@@ -28,7 +28,7 @@ import { LabeledInput } from '@components/Form/LabeledInput';
 import BrandImage from '@shell/components/BrandImage';
 import {
   setSecretKeys, saveSecrets, secretValue, migrateGithubToken,
-  listCloudCredentials, setCloudCredentialPropagate
+  listCloudCredentials, setCloudCredentialPropagate, installProblems
 } from '../api';
 import { GLOBAL_SECRETS, SECRET_GROUPS } from '../secrets';
 import { listApps } from '../apps';
@@ -51,6 +51,13 @@ export default {
 
   data() {
     return {
+      /*
+       * What the install could not create, read once when this page opens.
+       *
+       * Not reactive, and it does not need to be: the install runs on page load, well before
+       * anybody navigates here, so by the time this is read it has finished trying.
+       */
+      installTrouble: installProblems(),
       keys:     [],
       // Every App, and which of them this person has hidden. See prefs.ts.
       apps:         [],
@@ -354,6 +361,31 @@ export default {
         writes only the fields you changed.
       </p>
     </div>
+
+    <!--
+      What the install could not create.
+
+      Everything this extension needs is made on every dashboard load, quietly, because it runs
+      for every user including ones who may create none of it - so a failure cannot be a toast.
+      Quiet is right; invisible is not: a cluster can be missing its API with nothing anywhere
+      saying so, and the symptom is a workspace that waits forever on a service that was never
+      created. This is where somebody looking for the reason would look.
+    -->
+    <Banner
+      v-if="installTrouble.length"
+      color="warning"
+      class="dev-settings__install"
+    >
+      <p>
+        Some of what this extension installs could not be created on this cluster. Workspaces and
+        the queue need these; the most likely reason is that your account cannot create them.
+      </p>
+      <ul>
+        <li v-for="problem in installTrouble" :key="problem.what">
+          <code>{{ problem.what }}</code> &mdash; {{ problem.why }}
+        </li>
+      </ul>
+    </Banner>
 
     <!-- Skills lives here now rather than as a rail shortcut of its own: it is something you set
          up, like the secrets and the apps below it, not somewhere you go often. -->
