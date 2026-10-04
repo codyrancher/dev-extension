@@ -3,7 +3,8 @@ export type IconName =
   | 'settings' | 'tasks' | 'send' | 'chevron-up' | 'chevron-down'
   | 'check' | 'cross' | 'spinner' | 'play' | 'sparkle' | 'clock' | 'arrow-right'
   | 'pencil' | 'expand' | 'chevron-left' | 'chevron-right' | 'plus' | 'minus'
-  | 'pin' | 'snooze' | 'scales' | 'copy' | 'trash' | 'server';
+  | 'pin' | 'snooze' | 'scales' | 'copy' | 'trash' | 'server'
+  | 'grid' | 'image';
 
 export const iconPaths: Record<IconName, string> = {
   // A pin, pointing down-left, as a drawing pin seen from the side.
@@ -40,6 +41,10 @@ export const iconPaths: Record<IconName, string> = {
   trash: 'M4.6 6.6h10.8M8.2 6.6V4.8h3.6v1.8M6.2 6.6l.7 9.2h6.2l.7-9.2M8.8 9.4v3.8M11.2 9.4v3.8',
   // A stack of two boxes with a light on each: a running thing, as against a static one.
   server: 'M3.6 4.4h12.8v4.4H3.6zM3.6 11.2h12.8v4.4H3.6zM6.2 6.6h.01M6.2 13.4h.01',
+  // Four panes: the set, as against the one of it you are looking at. The media viewer's way back.
+  grid: 'M3.6 3.6h5.4v5.4H3.6zM11 3.6h5.4v5.4H11zM3.6 11h5.4v5.4H3.6zM11 11h5.4v5.4H11z',
+  // A frame with a horizon and a sun in it: a still, as against the `play` of a recording.
+  image: 'M3.6 4.4h12.8v11.2H3.6zM3.6 12.6l3.4-3 2.8 2.4 2.8-3 3.8 3.6M12.8 7.8h.01',
 };
 
 /** The ones drawn as a solid shape rather than a stroked line. */

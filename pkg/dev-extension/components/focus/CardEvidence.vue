@@ -73,7 +73,13 @@ const emit = defineEmits<{ (e: 'read'): void; (e: 'talk'): void }>();
  * and a `position: fixed` child of a transform is fixed to the transform rather than to the
  * window. The deck transforms every card it holds.
  */
-const viewerAt = ref<number | null>(null);
+/*
+ * Open with no `start`, which is how the viewer is asked for the tiled view of the set rather
+ * than the first artifact with arrows under it. This pill says `4 recordings`, so the thing it
+ * was pressed to answer is "which four" - it used to open the first one and make you click
+ * through the rest to find out. See MediaViewer.
+ */
+const shots = ref(false);
 
 /** The overflow, when there are more things to go and look at than fit on a 26px line. */
 const moreOpen = ref(false);
@@ -204,7 +210,7 @@ const over = computed(() => goes.value.slice(shown.value.length));
 function pressed(go: Go) {
   moreOpen.value = false;
   if (go.key === 'shots') {
-    viewerAt.value = 0;
+    shots.value = true;
   } else if (go.key === 'prose') {
     emit('read');
   } else if (go.key === 'talk') {
@@ -300,10 +306,9 @@ const more = ref<HTMLElement | null>(null);
     <Teleport to="body">
       <div class="dev-focus">
         <MediaViewer
-          v-if="viewerAt !== null"
+          v-if="shots"
           :items="artifacts.media"
-          :start="viewerAt"
-          @close="viewerAt = null"
+          @close="shots = false"
         />
       </div>
     </Teleport>
