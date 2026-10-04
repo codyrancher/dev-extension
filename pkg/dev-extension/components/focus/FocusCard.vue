@@ -876,6 +876,18 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           Keyed on `generation`, which is what turns "the module reloaded" into "the card
           redrew": re-evaluating a module after an edit gives a new component, and a new component
           alone is not enough - Vue keeps the mounted one until something it keys on changes.
+
+          The key is on the component rather than on this `v-else-if`, which matters more than it
+          looks. A key the compiler finds on a branch root *replaces* the branch key it would
+          have injected, because `injectProp` leaves an existing `key` alone. So this branch was
+          keyed `1` by `generation` - a module's first evaluation - and the `v-if="reading"`
+          branch above is keyed `1` by its position among its siblings. Same key, same tag, so
+          Vue patched the spinner's div into this one instead of replacing it: the class stayed
+          `card__reading`, the cached "Reading what this needs..." span was never visited, and
+          the module mounted inside the spinner. That is a card that reads forever with its own
+          body behind the text, and no `.card__bundle` for the rules below to size. It only
+          showed in the built plugin: in dev these comments join the branch, which makes it a
+          Fragment, and the Fragment carries the injected key out of harm's way.
         -->
         <!--
           A real element around the module, owned by the shell.
@@ -891,12 +903,12 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           Transparent to layout on purpose - see the flex rule - because the surfaces were direct
           children of `.card__body` before this and they size themselves against their parent.
         -->
-        <div
-          v-else-if="bundleBody"
-          :key="bundle.generation"
-          class="card__bundle"
-        >
-          <component :is="bundleBody" :api="cardApi" />
+        <div v-else-if="bundleBody" class="card__bundle">
+          <component
+            :is="bundleBody"
+            :key="bundle.generation"
+            :api="cardApi"
+          />
         </div>
 
         <!--
@@ -1801,17 +1813,13 @@ a.card__ident:hover { background: var(--surface-raised); color: var(--text); tex
 /* ── A card held outside the bundle ───────────────────────────────────────── */
 
 /*
- * The module's body gets what a surface gets: the remaining height, and permission to scroll
- * inside itself rather than push the footer down. Every built-in surface is bounded this way and
- * a card from a ConfigMap is not a different kind of card.
- */
-/*
  * The module's body gets what a surface got: the remaining height, and permission to scroll inside
- * itself rather than push the footer down.
+ * itself rather than push the footer down. Every built-in surface is bounded this way and a card
+ * from a ConfigMap is not a different kind of card.
  *
- * A flex column that takes the leftover, because every surface in this view sets `flex: 1 1 auto`
- * on itself and was a direct child of `.card__body` until this wrapper existed. Without the
- * column, a surface's own flex rule has nothing to resolve against and it collapses to its
+ * A flex column that takes the leftover, because the surfaces were direct children of
+ * `.card__body` until this wrapper existed and they size themselves against their parent. Without
+ * the column a surface's own flex rule has nothing to resolve against and it collapses to its
  * content - which is the fault that has produced "overlapping elements" four times in this view.
  */
 .card__bundle {
@@ -1823,6 +1831,23 @@ a.card__ident:hover { background: var(--surface-raised); color: var(--text); tex
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+}
+
+/*
+ * The floor under whatever the module drew.
+ *
+ * A flex item's automatic minimum is its content, so a surface holding a 16,000px diff refuses to
+ * shrink and leaves its rows painting over the footer however bounded this wrapper is - the box
+ * clips, but the `minmax(0, 1fr)` row inside it has no definite height to resolve against, so
+ * nothing ever starts scrolling. Zeroing the minimum is what lets a tall surface come down to the
+ * room it has and hand a real height to the scrollers inside it.
+ *
+ * Only the minimums: the basis is left alone on purpose. Sizing these from the container instead
+ * would stretch the short surfaces - `facts`, `said` - to the full height of the card.
+ */
+.card__bundle > * {
+  min-height: 0;
+  min-width: 0;
 }
 
 .card__broke {
