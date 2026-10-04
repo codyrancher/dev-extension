@@ -1,6 +1,5 @@
 import { IPlugin } from '@shell/core/types';
-import { ensureDevRbac, ensureWorkspaceApi, ensureGithubBrowser } from './api';
-import { ensureDefaultApp } from './apps';
+import { installDevResources } from './api';
 import { BLANK_CLUSTER, DEV_PRODUCT, WORKSPACES_ROUTE } from './config/constants';
 
 // `store` is the raw Vuex store the extension manager hands to every product init, and
