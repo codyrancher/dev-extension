@@ -1206,6 +1206,46 @@ export function subjectOf(task: { what: string; workspace: string; rule: string 
  * read in parallel and every one of them is allowed to fail on its own: a card with no CI is a
  * card without that part, not a card that failed to load.
  */
+/**
+ * What has already been read, by task key, for as long as the tab lives.
+ *
+ * It was a `Map` declared inside Focus.vue's `setup`, which means it was rebuilt on every mount -
+ * and the URL restores which card you were on, so leaving the deck and coming back read the same
+ * pull request again and showed the spinner again. Most visits to this page are return visits.
+ *
+ * Here rather than in the page for exactly that reason: a module outlives a component. Not in
+ * storage, though - these hold whole diffs and comment bodies, and a diff read yesterday is not
+ * something to draw today without asking.
+ *
+ * Bounded, oldest out first. The number is small on purpose: the value is in the neighbours you
+ * are about to reach and the card you just left, not in remembering the whole deck.
+ */
+const seen = new Map<string, CardArtifacts>();
+const SEEN_MAX = 12;
+
+/** What was read for this key, if it still is. */
+export function keptArtifacts(key: string): CardArtifacts | undefined {
+  return seen.get(key);
+}
+
+/** Whether this key has been read, without handing back what was read. */
+export function haveArtifacts(key: string): boolean {
+  return seen.has(key);
+}
+
+/** Remember what was read for a key, forgetting the oldest to stay bounded. */
+export function keepArtifacts(key: string, found: CardArtifacts): void {
+  seen.set(key, found);
+  while (seen.size > SEEN_MAX) {
+    seen.delete(seen.keys().next().value as string);
+  }
+}
+
+/** The keys held, for the probe the page exposes. */
+export function keptKeys(): string[] {
+  return [...seen.keys()];
+}
+
 export async function readArtifacts(
   task: { key?: string; what: string; workspace: string; rule: string },
   wants: Artifact[],
@@ -1236,20 +1276,56 @@ export async function readArtifacts(
     return out;
   }
 
-  // One read of the pull request behind everything that comes off it. `prDetail` keeps its
-  // answer for a few seconds, but the point here is that four artifacts share one await rather
-  // than racing four of them through the same cache.
-  const needsPr = subject.pr && ['stat', 'checks', 'logs', 'files', 'comments', 'body', 'reviewers', 'commits'].some((kind) => want.has(kind as Artifact));
-  const detail = needsPr ? await prDetail(subject.pr).catch(() => null) : null;
+  /*
+   * One read of the pull request behind everything that comes off it, started but not waited for.
+   *
+   * `prDetail` keeps its answer for a few seconds, and the point of one read is that the artifacts
+   * which come off it share an await rather than racing four of them through the same cache. But
+   * this was awaited *here*, so every branch below started at `t=prDetail` - including the eight
+   * that never look at it. A card wanting `media` or `conversation` or an `advisory` waited on a
+   * GitHub round trip for a pull request it does not read.
+   *
+   * So the read starts here and each branch awaits it only if it needs it. The ones that do are no
+   * slower; the ones that do not now start at once.
+   */
+  /*
+   * The queue's own entry for this pull request, which already holds some of what is wanted.
+   *
+   * `stat` is the clear case: the three numbers on the fact strip come back with the search that
+   * built the deck, so a card asking for them was reading a whole pull request for integers it had
+   * already been told. Where that is the *only* detail a card wants - a `bump` card, say - there is
+   * now nothing to read at all, which is why this is settled before `needsPr`.
+   */
+  const entry: Json = subject.pr ? [...(work?.mine || []), ...(work?.reviewing || [])].find((e: Json) => e.number === subject.pr) : null;
+  const statFromQueue = (entry?.stat || null) as CardStat | null;
+
+  const DETAIL_KINDS: Artifact[] = ['stat', 'checks', 'logs', 'files', 'comments', 'body', 'reviewers', 'commits'];
+  const needsPr = subject.pr && DETAIL_KINDS.some((kind) => want.has(kind) && !(kind === 'stat' && statFromQueue));
+  const detailSoon: Promise<Json | null> = needsPr ? prDetail(subject.pr).catch(() => null) : Promise.resolve(null);
 
   await Promise.all([
     (async() => {
-      if (want.has('stat') && detail) {
+      if (!want.has('stat')) {
+        return;
+      }
+
+      // What the search already answered, or the pull request where it had no entry for it.
+      if (statFromQueue) {
+        out.stat = statFromQueue;
+
+        return;
+      }
+
+      const detail = await detailSoon;
+
+      if (detail) {
         out.stat = statOf(detail);
       }
     })(),
 
     (async() => {
+      const detail = await detailSoon;
+
       /*
        * `logs` on its own is enough to ask: a card that wants the failing output wants the names
        * and the counts it is placed among, and the one call behind all three is the same.
@@ -1263,13 +1339,20 @@ export async function readArtifacts(
       }
     })(),
 
-    (async() => {
-      if (want.has('notes') && subject.pr) {
-        out.notes = await reviewNotes(subject.pr).catch(() => []);
-      }
-    })(),
+    /*
+     * No `notes` read here.
+     *
+     * This called `reviewNotes(subject.pr)` and wrote `out.notes`, and nothing has ever read that
+     * field - the notes a card draws arrive as a prop from the page's own `readNotes`, which calls
+     * the same function. So it was a second fetch of the same comments, on the review-pass card
+     * that is usually the first one in the deck, for a field with no readers. The field stays on
+     * `CardArtifacts` as the empty array it already is for every other kind of card, so a card in
+     * a ConfigMap that names it still finds it.
+     */
 
     (async() => {
+      const detail = await detailSoon;
+
       if (want.has('files') && detail) {
         out.files = (detail.files || [])
           .slice(0, 40)
@@ -1287,6 +1370,8 @@ export async function readArtifacts(
     })(),
 
     (async() => {
+      const detail = await detailSoon;
+
       if (want.has('comments') && detail && subject.pr) {
         out.comments = commentsOf(subject.pr, detail, viewer);
       }
@@ -1301,6 +1386,8 @@ export async function readArtifacts(
      * primary button creates a pull request on GitHub. See `branchDiff`.
      */
     (async() => {
+      const detail = await detailSoon;
+
       if (detail || !subject.workspace || !(want.has('files') || want.has('stat'))) {
         return;
       }
@@ -1357,12 +1444,16 @@ export async function readArtifacts(
     })(),
 
     (async() => {
+      const detail = await detailSoon;
+
       if (want.has('reviewers') && detail && subject.pr) {
         out.reviewers = reviewersOf(subject.pr, detail, work, viewer);
       }
     })(),
 
     (async() => {
+      const detail = await detailSoon;
+
       if (!want.has('commits')) {
         return;
       }
@@ -1377,6 +1468,8 @@ export async function readArtifacts(
     })(),
 
     (async() => {
+      const detail = await detailSoon;
+
       if (!want.has('body')) {
         return;
       }

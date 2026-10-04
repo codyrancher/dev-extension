@@ -97,6 +97,13 @@ export interface GithubPr {
   approved: boolean;
   /** The issue this closes, where the PR says so. Null is the ordinary case, not an error. */
   issue: { number: number; url: string } | null;
+  /**
+   * How big the change is, which the search that built the queue already knows.
+   *
+   * Here so a card wanting the fact strip does not read the pull request for three integers it
+   * has already been told. Null only if GitHub did not answer with them.
+   */
+  stat: { files: number; added: number; removed: number } | null;
   checks: GithubChecks | null;
   /** The failing workflow runs, which is what Rerun acts on. Empty when nothing is red. */
   runs: GithubRun[];
@@ -200,6 +207,12 @@ const QUERY_FOR = (scope: string) => `
     isDraft
     createdAt
     updatedAt
+    # The fact strip's three numbers, on the request that is already being made. Every card
+    # wanting a stat used to read the whole pull request for them - see readArtifacts.
+    # No backticks in here: this fragment lives in a template literal.
+    changedFiles
+    additions
+    deletions
     author { login }
     repository { nameWithOwner }
     reviewDecision
@@ -392,6 +405,9 @@ function prFrom(node: Json, login: string, reviewRequested = false): GithubPr {
     repo,
     author:          node.author?.login || '',
     draft:           !!node.isDraft,
+    stat:            node.changedFiles === undefined || node.changedFiles === null
+      ? null
+      : { files: node.changedFiles || 0, added: node.additions || 0, removed: node.deletions || 0 },
     approved:        node.reviewDecision === 'APPROVED',
     issue:           node.closingIssuesReferences?.nodes?.[0] || null,
     checks:          checksOf(node),
@@ -650,6 +666,21 @@ export async function myWork(repos?: string[]): Promise<GithubWork> {
     throw new Error('No GitHub token is set. Add one in Settings.');
   }
 
+  /*
+   * The board statuses, started now rather than after the search below has been read.
+   *
+   * These were two serial round trips to GitHub: this query, and then `issueStatuses`. The second
+   * needs nothing from the first - it is annotating issues by key, and it runs its own search - so
+   * the only thing making it second was the `await`. Measured on a cold deck: nine GraphQL calls
+   * totalling 12.5s, at the head of a chain that is already four deep.
+   *
+   * Its rejection is handled where it is awaited, below. The idle `catch` here is only so a
+   * failure that lands before then is not an unhandled rejection.
+   */
+  const statusesSoon = issueStatuses(repos);
+
+  statusesSoon.catch(() => undefined);
+
   const response = await fetch(ENDPOINT, {
     method:  'POST',
     headers: {
@@ -699,7 +730,7 @@ export async function myWork(repos?: string[]): Promise<GithubWork> {
   let projectStatusError = '';
 
   try {
-    const statuses = await issueStatuses(repos);
+    const statuses = await statusesSoon;
 
     issues.forEach((issue) => {
       issue.projectStatus = statuses.get(issue.key) || null;

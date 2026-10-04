@@ -82,6 +82,22 @@ export function evalModule(source: string, resolve: CardResolve = resolveForCard
  * the same way a module is, with the runtime helpers passed in rather than imported, because the
  * code it generates expects them under `Vue` when compiled in function mode.
  */
+/**
+ * The body a card gets when it does not draw its own.
+ *
+ * All nineteen bundled cards declared this same line, under the same seven-line comment, because a
+ * card picks its surface by declaration and `CardSurface` is the dispatch that reads it. Nineteen
+ * copies of one line is not a decision any of those cards was making, and it put the least
+ * interesting text in each file at the place where the most interesting text should be. A card
+ * that wants a body of its own still says so; one that does not now says nothing at all.
+ *
+ * It lives here, next to the compiler that consumes it, rather than in card-api.ts beside the
+ * component registry: the card registry validates the template a card will actually be drawn with,
+ * and importing card-api.ts to learn one string would pull its twenty-five component imports into
+ * whatever chunk loads the registry. This module has no such weight, and both already import it.
+ */
+export const DEFAULT_BODY = '<CardSurface :api="api" />';
+
 export function compileTemplate(template: string, name = 'card'): any {
   /*
    * No `prefixIdentifiers`. It is what the compiler's *bundler* build wants, and what this bundle

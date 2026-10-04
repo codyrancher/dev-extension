@@ -1,14 +1,3 @@
-/**
- * Findings waiting for your pass
- *
- * A card, whole: what it claims, what it reads, what it shows and what its buttons do. Ported from
- * the definition that used to be compiled into the bundle, where a card was a declaration in one
- * file and one of eleven hard-wired bodies in another - so a card somebody wanted to change was
- * neither of them.
- *
- * Plain CommonJS. It imports nothing: `api.vue` is the Vue drawing the page, and `require` reaches
- * anything in the extension. See components/focus/card-api.ts for what the api carries.
- */
 module.exports = {
 
     id:      'review-pass',
@@ -47,20 +36,6 @@ module.exports = {
        */
       { label: 'Which ones matter?', verb: 'ask', prompt: 'For {what} in {workspace}: go through the findings the review agent produced and tell me which are worth filing and which are noise, with a line of reasoning each. Do not file anything.' },
       { label: 'Open the review', verb: 'open' },
-      { label: 'Later', verb: 'snooze', hours: 8 },
+      { verb: 'snooze', hours: 8 },
     ],
-
-  /*
-   * The body.
-   *
-   * `CardSurface` is the dispatch the shell used to hold, and it reads the `surface` declared
-   * above - so this card draws exactly what it drew before. The moment it wants something none of
-   * the eleven surfaces are, this line is where it says so, and it can compose the same pieces
-   * they do.
-   */
-  template: '<CardSurface :api="api" />',
-
-  setup(api) {
-    return { api };
-  },
 };
