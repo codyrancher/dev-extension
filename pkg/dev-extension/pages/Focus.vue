@@ -536,7 +536,7 @@ function readTheArtifacts(): Promise<void> {
  * deck is behind the one control the bar already had.
  */
 const settings = ref(false);
-const section = ref<'queue' | 'weights' | 'cards' | 'new'>('queue');
+const section = ref<'queue' | 'weights' | 'cards' | 'new' | 'repos'>('queue');
 
 /** The four, with what each one is for: the dialog draws the rail and the heading from this. */
 const sections = computed(() => [
@@ -552,7 +552,49 @@ const sections = computed(() => [
   {
     id: 'new', label: 'Yours', count: (config.value.tasks || []).length, about: 'Anything no system knows about. It is ranked with everything else, which is the point.',
   },
+  {
+    id:    'repos',
+    label: 'Repos',
+    count: (config.value.repos || []).length,
+    about: 'Where to look. The searches behind the queue are personal - work assigned to you, authored by you, waiting on your review - and those mean something across the whole of GitHub, so with nothing here the deck carries every repository you have ever touched.',
+  },
 ]);
+
+/* ── Which repositories the queue may look in ─────────────────────────────────────────────── */
+
+const repoDraft = ref('');
+
+/** `owner/name`, which is the only thing GitHub will take as a `repo:` qualifier. */
+const repoOk = computed(() => /^[\w.-]+\/[\w.-]+$/.test(repoDraft.value.trim()));
+
+async function saveRepos(repos: string[]) {
+  busy.value = true;
+  try {
+    await saveFocusConfig({ repos });
+    config.value = { ...config.value, repos };
+    // Re-read, because this changes what the queue is allowed to contain rather than how it is
+    // drawn: leaving the old items up under a new scope would be the wrong deck with a right
+    // setting.
+    await load();
+    say(repos.length ? `Looking in ${ repos.length } ${ repos.length === 1 ? 'repository' : 'repositories' }.` : 'Looking everywhere again.');
+  } catch (e) {
+    error.value = (e as Error)?.message || String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+function addRepo() {
+  const repo = repoDraft.value.trim();
+
+  if (!repoOk.value || (config.value.repos || []).includes(repo)) {
+    return;
+  }
+  repoDraft.value = '';
+  saveRepos([...(config.value.repos || []), repo]);
+}
+
+const dropRepo = (repo: string) => saveRepos((config.value.repos || []).filter((one) => one !== repo));
 
 /** The conversation the bar *is*, made the first time somebody opens, types or asks. */
 const chatOpen = ref(false);
@@ -2037,7 +2079,7 @@ onBeforeUnmount(closeSettings);
       <WeightsChart
         v-else-if="section === 'weights'"
         :rows="rows"
-        :cards="config.cards"
+        :cards="cards"
         :top="top"
         @set="({ id, score }) => setWeight(id, score)"
       />
@@ -2045,11 +2087,42 @@ onBeforeUnmount(closeSettings);
       <!-- ── What a card looks like ─────────────────────────────────────────────────────────── -->
       <CardGallery
         v-else-if="section === 'cards'"
-        :cards="config.cards"
+        :cards="cards"
         :counts="counts"
         @edit="editCard"
         @add="newCard"
       />
+
+      <!-- ── Where to look ──────────────────────────────────────────────────────────────────── -->
+      <template v-else-if="section === 'repos'">
+        <div class="form">
+          <label class="field field--wide">
+            <span class="field__label">Add a repository</span>
+            <span class="repo__add">
+              <input
+                v-model="repoDraft"
+                class="field__input"
+                type="text"
+                placeholder="rancher/dashboard"
+                @keydown.enter.prevent="addRepo"
+              >
+              <AppButton variant="kind" size="md" :disabled="!repoOk" @click="addRepo">Add</AppButton>
+            </span>
+          </label>
+        </div>
+
+        <p v-if="!(config.repos || []).length" class="repo__all">
+          Looking everywhere. Every repository you have an issue or a pull request in can reach the
+          deck, which is usually more than you want.
+        </p>
+
+        <ul v-else class="repo__list">
+          <li v-for="repo in config.repos" :key="repo" class="repo">
+            <code class="repo__name">{{ repo }}</code>
+            <button type="button" class="repo__drop" :disabled="busy" @click="dropRepo(repo)">Remove</button>
+          </li>
+        </ul>
+      </template>
 
       <!-- ── Something of your own ──────────────────────────────────────────────────────────── -->
       <template v-else>
@@ -2515,4 +2588,69 @@ onBeforeUnmount(closeSettings);
   .focus__pins { display: none; }
   .focus__name { display: none; }
 }
+
+/* ── Where to look ────────────────────────────────────────────────────────── */
+.repo__add {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.repo__all {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+  line-height: 1.6;
+  max-width: 72ch;
+}
+
+.repo__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.repo {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  /* Never squeezed: a list of these scrolls, and a flex child shrinks by default. */
+  flex: 0 0 auto;
+  min-height: var(--control-h);
+  padding: 0 var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-sunk);
+}
+
+.repo__name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo__drop {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  margin-left: auto;
+  padding: 0 var(--s2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--t-xs);
+  cursor: pointer;
+}
+
+.repo__drop:hover:not(:disabled) { color: var(--danger); }
+.repo__drop:disabled { opacity: 0.5; cursor: default; }
 </style>
