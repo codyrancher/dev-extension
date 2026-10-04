@@ -49,16 +49,72 @@ async function k8s(path, init = {}) {
     },
   });
   const text = await response.text();
-  const body = text ? JSON.parse(text) : {};
+  let body = {};
+  let parsed = true;
+
+  /*
+   * Parsed after the status is checked, not before.
+   *
+   * It used to `JSON.parse` first, so any error response that was not JSON threw a SyntaxError
+   * and the HTTP status was thrown away with it. A 404 for a type this cluster does not have came
+   * back through the proxy as an error page and surfaced as `Unexpected non-whitespace character
+   * after JSON at position 4` - which is how three reconcilers came to log that, every tick,
+   * forever, on every downstream cluster, while the actual answer was "that type is not installed
+   * here". The status is what the caller needs to tell one failure from another.
+   */
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    parsed = false;
+  }
 
   if (!response.ok) {
-    const error = new Error(body.message || `${ response.status } from ${ path }`);
+    const detail = body.message || (parsed ? '' : text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120));
+    const error = new Error(detail ? `${ response.status } from ${ path }: ${ detail }` : `${ response.status } from ${ path }`);
 
     error.status = response.status;
     throw error;
   }
 
+  if (!parsed) {
+    throw new Error(`${ path } answered ${ response.status } with something that is not JSON: ${ text.slice(0, 120) }`);
+  }
+
   return body;
+}
+
+/**
+ * The Apps Plus installations, or null when there are none to be had.
+ *
+ * Three reconcilers want this list, and every one of them is right to do nothing when it cannot
+ * be read: an empty list would read as "every workspace is gone" and tear all of them down. But
+ * on a downstream cluster the type is not installed at all - Apps Plus lives on `local` - so the
+ * answer will never arrive, and all three logged a failure on every tick of their loops.
+ *
+ * A 404 is not doubt, it is an answer: there are no installations here and there never will be.
+ * It is said once per reconciler and then not asked again.
+ */
+const noInstallations = new Set();
+
+async function installations(who) {
+  if (noInstallations.has(who)) {
+    return null;
+  }
+
+  try {
+    return await k8s(INSTANCES);
+  } catch (e) {
+    if (e.status === 404) {
+      noInstallations.add(who);
+      console.log(`[dev-api] ${ who }: this cluster has no Apps Plus installations type, so there is nothing to reconcile; not asking again.`);
+
+      return null;
+    }
+    // Doubt rather than an answer: say so and wait for the next tick.
+    console.error(`[dev-api] ${ who }: could not list installations, skipping tick:`, e.message || e);
+
+    return null;
+  }
 }
 
 /** The same call, for a response that is not JSON: a pod's log. */
@@ -2655,18 +2711,13 @@ async function stopTool(workspace, kind) {
  * a half rather than the rest of the week.
  */
 async function reapTools() {
-  let live;
+  const instances = await installations('tools');
 
-  try {
-    const instances = await k8s(INSTANCES);
-
-    live = new Set((instances.items || []).map((i) => i.metadata?.name).filter(Boolean));
-  } catch (e) {
-    // The same rule as the teardown sweep: an empty set would read as "every workspace is gone".
-    console.error('[dev-api] tools: could not list installations, skipping tick:', e.message || e);
-
+  if (!instances) {
     return;
   }
+
+  const live = new Set((instances.items || []).map((i) => i.metadata?.name).filter(Boolean));
 
   const namespaces = await k8s(`/api/v1/namespaces?labelSelector=${ encodeURIComponent(LABEL_TOOL) }`).catch(() => null);
   const now = Date.now();
@@ -3108,19 +3159,13 @@ const BUNDLES = '/apis/fleet.cattle.io/v1alpha1/bundles';
 const BUNDLE_DEPLOYMENTS = '/apis/fleet.cattle.io/v1alpha1/bundledeployments';
 
 async function reconcileTeardown() {
-  let live;
+  const instances = await installations('reconcile');
 
-  try {
-    const instances = await k8s(INSTANCES);
-
-    live = new Set((instances.items || []).map((i) => i.metadata?.name).filter(Boolean));
-  } catch (e) {
-    // The apiserver did not answer. An empty set would read as "every workspace is gone" and
-    // tear all of them down, so on any doubt this tick does nothing and waits for the next.
-    console.error('[dev-api] reconcile: could not list installations, skipping tick:', e.message || e);
-
+  if (!instances) {
     return;
   }
+
+  const live = new Set((instances.items || []).map((i) => i.metadata?.name).filter(Boolean));
 
   // The Fleet layer, read before anything is removed. `apps-plus-<name>` Bundles say which
   // workspaces Fleet still means to deploy; the BundleDeployments are what actually reinstall
@@ -3470,14 +3515,9 @@ async function finishDeletes(instances, bundles) {
 // The fast loop: finish deletes and refresh the registrar. Separate from reconcileTeardown so the
 // nav stays fresh and deletes finish promptly without running the heavier orphan sweep as often.
 async function reconcileWorkspaces() {
-  let instances;
+  const instances = await installations('reconcileWorkspaces');
 
-  try {
-    instances = await k8s(INSTANCES);
-  } catch (e) {
-    // An empty list would read as "everything is gone"; on any doubt do nothing this tick.
-    console.error('[dev-api] reconcileWorkspaces: could not list installations, skipping tick:', e.message || e);
-
+  if (!instances) {
     return;
   }
   const bundles = await k8s(BUNDLES).catch(() => null);
