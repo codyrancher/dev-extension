@@ -210,6 +210,16 @@ export interface FocusConfig {
   cards: CardDef[];
   weights: Weights;
   tasks: ManualTask[];
+  /**
+   * Which repositories the queue may look in, as `owner/name`. Empty means all of them.
+   *
+   * The searches the queue is built from are personal, not repository-scoped - `author:@me` means
+   * something everywhere - so without this the deck carries work from every repository the person
+   * has ever touched. See `repoScope` in github.ts, which puts these into the query rather than
+   * filtering the answer: the page size is 25 a search, so an unscoped search can fill all 25
+   * with work from elsewhere and the ones that matter never arrive.
+   */
+  repos: string[];
 }
 
 // ── Where the cards are ─────────────────────────────────────────────────────────────────────
@@ -235,6 +245,7 @@ export async function readFocusConfig(): Promise<FocusConfig> {
     cards:   [],
     weights: got?.weights && typeof got.weights === 'object' ? got.weights : {},
     tasks:   Array.isArray(got?.tasks) ? got.tasks : [],
+    repos:   Array.isArray(got?.repos) ? got.repos.map(String) : [],
   };
 }
 
