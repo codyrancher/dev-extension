@@ -22,13 +22,25 @@ module.exports = {
     lede:    'checks',
     rules:   ['mine-red'],
     summary: '{why}',
-    wants:   ['checks', 'stat', 'files'],
+    /*
+     * `logs` is the failing output itself: the window out of one failing job's log around the
+     * thing that looks like the failure. It is opt-in because it costs a check-run read plus a
+     * streamed log tail, and six other cards want `checks` for the badge on their fact line and
+     * should not pay for it; see `CardArtifacts.report`. This is the one card whose whole subject
+     * is the failure, so it is the one card that asks.
+     */
+    wants:   ['checks', 'logs', 'stat', 'files'],
     /*
      * The failures, not the diff. The card's subject is "6 of 46 checks failing" and its 173px
      * surface was "What it changed, first 40 of 45 files" - a diff you cannot work out three red
      * e2e suites from. The names and their own one-line reports are already fetched (`ciOf`), and
      * the ladder had no rung for them, so `files` always won. The diff is one press away on
      * "Open it".
+     *
+     * And the names turned out not to be the answer either: `e2e-test (admin, @adminUser,
+     * @explorer2)` is a label, not a reason. The surface draws what the check printed now - the
+     * assertion and the frames under it, marked - with the other failures as chips above it and
+     * the whole log a press away. See CheckList.
      */
     surface: 'checks',
     /*

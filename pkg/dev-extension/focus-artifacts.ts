@@ -18,7 +18,9 @@
 // pull requests fetched to draw one. See `wants` on CardDef for what each card asks for, and
 // Focus.vue for the one place that asks.
 
-import { DEFAULT_REPO, prDetail, ciFailures, artifactUrl } from './reviews';
+import {
+  DEFAULT_REPO, prDetail, ciFailures, ciFailureDetail, artifactUrl
+} from './reviews';
 import type { LocalComment, LocalAttachment } from './reviews';
 import { issueBody } from './github';
 import { reviewNotes, parsePatch, hunkAround } from './focus-review';
@@ -65,18 +67,75 @@ const SHARE_OF_LABEL = 'dev.rancher.io/share-of';
  */
 
 export type Artifact =
-  | 'stat' | 'checks' | 'notes' | 'files' | 'comments' | 'media' | 'live' | 'body'
+  | 'stat' | 'checks' | 'logs' | 'notes' | 'files' | 'comments' | 'media' | 'live' | 'body'
   | 'pool' | 'reviewers' | 'commits' | 'conversation' | 'advisory' | 'bump' | 'bumps';
 
 /** How big the change is. Three numbers, because they are the three everybody asks for. */
 export interface CardStat { files: number; added: number; removed: number }
 
 export interface CardCheck {
+  /**
+   * The check run's id on GitHub, or 0 where it has none.
+   *
+   * 0 means a *status context* - something a bot posted against the commit rather than a job
+   * that ran - and the difference is not cosmetic: a status has no log and no annotations, so
+   * `Description` and `validate` on this repository's pull requests are rows you can only read
+   * on GitHub. Anything with an id has its own output, which is what `CheckReport` is.
+   */
+  id: number;
   name: string;
   state: 'passed' | 'failed' | 'running';
   /** What it said, when it said anything: the check's own one-line summary. */
   detail: string;
   url: string;
+}
+
+/** One place GitHub itself says a check broke: a file, a line, and what it said there. */
+export interface CheckAnnotation {
+  path: string;
+  line: number;
+  endLine: number;
+  /** `failure`, `warning` or `notice`. The failures are sorted first; see `ciFailureDetail`. */
+  level: string;
+  message: string;
+  title: string;
+}
+
+/**
+ * What one failing check actually printed.
+ *
+ * The thing the red-pr card was missing. It had the *names* of the failing jobs - which is not
+ * information anybody decides anything on - and the only way to the assertion that failed was to
+ * leave the card for GitHub and come back to a deck that had moved on.
+ *
+ * A CI log is megabytes of `yarn install` and passes, so this is never the log: it is the window
+ * around the first thing in it that looks like a failure, with the lines the matcher fired on
+ * called out so they can be marked rather than hunted for. `dev-api`'s `failureExcerpt` picks the
+ * window - the regex for what a failure looks like belongs next to the log, not in the browser -
+ * and `/ci/{id}/log` has the whole thing for the second look.
+ */
+export interface CheckReport {
+  /** Which check this is the output of. Matches `CardCheck.id`. */
+  id: number;
+  name: string;
+  url: string;
+  /** The check's own headline, which is often the whole answer: "3 of 48 specs failed". */
+  title: string;
+  /** And its own body, which is all there is when the check kept no log. */
+  summary: string;
+  annotations: CheckAnnotation[];
+  /** The window: the failure and its neighbourhood, timestamps and ANSI colour already off. */
+  text: string;
+  /** Lines of `text`, 1-based, that look like the failure itself. What the card marks. */
+  hits: number[];
+  /** Where `text` begins in the whole log, 1-based, so its lines carry the log's own numbers. */
+  at: number;
+  /** How long the whole retained log is, so the card can say how much of it this is. */
+  lines: number;
+  /** False where nothing looked like a failure and `text` is the log's last lines instead. */
+  matched: boolean;
+  /** The Actions job behind it, for saying where the lines are from. 0 for a status context. */
+  jobId: number;
 }
 
 export interface CardMedia {
@@ -313,6 +372,17 @@ export interface CardArtifacts {
   ci: CardCi | null;
   /** The failures, by name, capped at six. How many there are is `ci`. */
   checks: CardCheck[];
+  /**
+   * And what one of them printed, for the card whose whole subject is a red build.
+   *
+   * One, not six. Each of these costs a check-run read plus a streamed log tail, and the deck
+   * prefetches the two cards either side of the one you are looking at - so six would be
+   * eighteen log fetches to draw one card. The one picked is the first failure with an Actions
+   * job behind it; the other five are a press away, and `CheckList` reads them on that press.
+   * Only the cards that ask for `logs` pay for it; the six that ask for `checks` for the badge
+   * alone do not. Null where the read failed or nothing failing has a log.
+   */
+  report: CheckReport | null;
   notes: ReviewNote[];
   files: CardFile[];
   comments: CardComment[];
@@ -342,6 +412,7 @@ export const NO_ARTIFACTS: CardArtifacts = {
   stat:   null,
   ci:     null,
   checks: [],
+  report: null,
   notes:  [],
   files:  [],
   comments: [],
@@ -417,12 +488,15 @@ function statOf(detail: Json): CardStat | null {
  * `checks.filter(passed).length` was 1 on one where 40 passed. The card's 36px lede and its badge
  * row both read those, and both were wrong on every card with a build. So the counts leave here
  * as counts, in their own shape, and the list is only ever the failures by name.
+ *
+ * `withLog` is the second artifact: what one of them printed. See `CardArtifacts.report` for why
+ * it is one and why it is opt-in.
  */
-async function ciOf(pr: number, detail: Json): Promise<{ ci: CardCi | null; checks: CardCheck[] }> {
+async function ciOf(pr: number, detail: Json, withLog = false): Promise<{ ci: CardCi | null; checks: CardCheck[]; report: CheckReport | null }> {
   const meta = detail?.meta?.ci;
 
   if (!meta || !meta.total) {
-    return { ci: null, checks: [] };
+    return { ci: null, checks: [], report: null };
   }
   const ci: CardCi = {
     total:   meta.total || 0,
@@ -431,12 +505,17 @@ async function ciOf(pr: number, detail: Json): Promise<{ ci: CardCi | null; chec
     passed:  Math.max(0, (meta.total || 0) - (meta.failing || 0) - (meta.pending || 0)),
   };
   const checks: CardCheck[] = [];
+  let report: CheckReport | null = null;
 
   if (ci.failing) {
     const failures = await ciFailures(pr).catch(() => null);
+    const raw: Json[] = (failures?.checks || []).slice(0, 6);
 
-    for (const check of (failures?.checks || []).slice(0, 6)) {
+    for (const check of raw) {
       checks.push({
+        // Only a check *run* has output to go and read; a status context's id is a status id and
+        // would 404 against /check-runs. See `CardCheck.id`.
+        id:     check.kind === 'check' ? Number(check.id) || 0 : 0,
         name:   check.name || 'check',
         state:  'failed',
         detail: String(check.title || check.summary || '').split('\n')[0].slice(0, 120),
@@ -447,12 +526,71 @@ async function ciOf(pr: number, detail: Json): Promise<{ ci: CardCi | null; chec
     // onto a list, and an empty list under a red badge reads as a card that lost the answer.
     if (!checks.length) {
       checks.push({
-        name: `${ ci.failing } failing`, state: 'failed', detail: '', url: meta.failingUrl || '',
+        id: 0, name: `${ ci.failing } failing`, state: 'failed', detail: '', url: meta.failingUrl || '',
       });
+    }
+
+    /*
+     * The one worth reading, of up to six.
+     *
+     * A job with a log first, because that is the only kind with a failure to show: on this
+     * repository's red pull requests the six failures are three or four `e2e-test (...)` jobs
+     * plus `Description` and `validate`, and the last two are status contexts that kept nothing.
+     * Picking the list's first row regardless would have drawn the card's whole surface off
+     * `Description`, which is a bot saying the description is too short.
+     */
+    if (withLog) {
+      const pick = raw.find((c) => c.kind === 'check' && c.jobId) || raw.find((c) => c.kind === 'check');
+
+      if (pick?.id) {
+        report = await ciFailureDetail(pr, Number(pick.id)).then(checkReportFrom).catch(() => null);
+      }
     }
   }
 
-  return { ci, checks };
+  return { ci, checks, report };
+}
+
+/**
+ * One `/ci/{id}` reply as a `CheckReport`.
+ *
+ * Exported because two callers map it and they must map it the same way: this file reads the one
+ * report a card arrives with, and `CheckList` reads the others when somebody presses for them.
+ * Every field is defaulted rather than trusted - the dev-api runs from a ConfigMap and can be a
+ * version behind the extension, in which case `at`, `hits` and `lines` are simply absent and the
+ * card draws the excerpt without marks instead of drawing nothing.
+ */
+export function checkReportFrom(data: Json): CheckReport | null {
+  const check = data?.check;
+
+  if (!check) {
+    return null;
+  }
+  const log = data.log || {};
+
+  return {
+    id:          Number(check.id) || 0,
+    name:        String(check.name || ''),
+    url:         String(check.url || ''),
+    title:       String(check.title || ''),
+    summary:     String(check.summary || ''),
+    // Eight. They are two lines each and the pane they sit above is the point of the card; a
+    // check with fifty annotations is a lint run, and the eight at the top are the failures.
+    annotations: (Array.isArray(data.annotations) ? data.annotations : []).slice(0, 8).map((a: Json) => ({
+      path:    String(a.path || ''),
+      line:    Number(a.line) || 0,
+      endLine: Number(a.endLine) || 0,
+      level:   String(a.level || ''),
+      message: String(a.message || ''),
+      title:   String(a.title || ''),
+    })),
+    text:    String(log.text || ''),
+    hits:    (Array.isArray(log.hits) ? log.hits : []).map(Number).filter((n: number) => n > 0),
+    at:      Number(log.at) || 1,
+    lines:   Number(log.lines) || 0,
+    matched: Boolean(log.matched),
+    jobId:   Number(log.jobId) || 0,
+  };
 }
 
 const MEDIA_KIND = (type: string, name: string): 'image' | 'video' => (
@@ -1101,7 +1239,7 @@ export async function readArtifacts(
   // One read of the pull request behind everything that comes off it. `prDetail` keeps its
   // answer for a few seconds, but the point here is that four artifacts share one await rather
   // than racing four of them through the same cache.
-  const needsPr = subject.pr && ['stat', 'checks', 'files', 'comments', 'body', 'reviewers', 'commits'].some((kind) => want.has(kind as Artifact));
+  const needsPr = subject.pr && ['stat', 'checks', 'logs', 'files', 'comments', 'body', 'reviewers', 'commits'].some((kind) => want.has(kind as Artifact));
   const detail = needsPr ? await prDetail(subject.pr).catch(() => null) : null;
 
   await Promise.all([
@@ -1112,11 +1250,16 @@ export async function readArtifacts(
     })(),
 
     (async() => {
-      if (want.has('checks') && detail && subject.pr) {
-        const found = await ciOf(subject.pr, detail).catch(() => ({ ci: null, checks: [] }));
+      /*
+       * `logs` on its own is enough to ask: a card that wants the failing output wants the names
+       * and the counts it is placed among, and the one call behind all three is the same.
+       */
+      if ((want.has('checks') || want.has('logs')) && detail && subject.pr) {
+        const found = await ciOf(subject.pr, detail, want.has('logs')).catch(() => ({ ci: null, checks: [], report: null }));
 
         out.ci = found.ci;
         out.checks = found.checks;
+        out.report = found.report;
       }
     })(),
 
