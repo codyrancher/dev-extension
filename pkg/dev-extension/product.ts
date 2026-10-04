@@ -46,23 +46,14 @@ function devProduct($plugin: IPlugin, store: any) {
   // (see components/DevSidebar.vue and pages/DevShell.vue), and registering entries that
   // nothing renders would leave two descriptions of the same list.
 
-  // The identities the terminals run as, and the namespace holding the credentials they share.
-  // Create-if-missing, so a cluster that already has them keeps what it has, and quiet, for the
-  // same reason the fetch above is: this runs for every user on every load.
-  ensureDevRbac().catch(() => {});
-
-  // The workspace API, for everything that is not a person: an action with no browser and no
-  // Rancher session can still ask for a workspace. Same rule as above - create if missing, quiet
-  // if the person looking cannot create any of it. See ensureWorkspaceApi.
-  ensureWorkspaceApi().catch(() => {});
-
-  // The one shared Chromium with a github.com login, which every agent's media upload goes through.
-  // This extension owns it now (it was hand-applied in extension-studio); create if missing, quiet.
-  ensureGithubBrowser().catch(() => {});
-
-  // The App a fresh Rancher gets, so there is a template on day one. Templates are Apps Plus
-  // apps (see apps.ts); this one is what the built-in rancher template used to be. Create if
-  // missing and never overwrite, so an edit made in Apps Plus is kept.
-  ensureDefaultApp(store).catch(() => {});
+  /*
+   * Everything this extension needs on this cluster, in one ordered pass.
+   *
+   * This was four calls side by side, each quietly catching its own failure: the identities, the
+   * workspace API, the shared browser, and the default template. Three of them write into
+   * `dev-system` and only one created it, so on a cluster that did not have it already the order
+   * they happened to run in decided whether the other two worked. See installDevResources.
+   */
+  installDevResources(store).catch(() => {});
 
 }
