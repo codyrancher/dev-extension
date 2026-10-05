@@ -392,7 +392,7 @@ export interface AgentSession {
 }
 
 /** The raw signals `sessions.sh states` reports for one conversation, before they become a word. */
-interface SessionActivity {
+export interface SessionActivity {
   /** Whether the conversation's tmux session exists in the pod. */
   alive: boolean;
   /** The last hook event the pane recorded (chat-hook.mjs), and its notification and time. */
@@ -445,7 +445,7 @@ const SPEAKS_LAST = new Set(['Stop', 'SessionEnd', 'Notification']);
  * this pod's own conversations, letting it know halves the samples where a working conversation
  * was showing an idle dot.
  */
-function activityState(a: SessionActivity): AgentActivity {
+export function activityState(a: SessionActivity): AgentActivity {
   if (!a.alive) {
     return 'finished';
   }

@@ -102,4 +102,35 @@ try {
   // A hook must never fail the turn it is observing.
 }
 
+/**
+ * Tell the watcher to look now, on the three events that settle a turn.
+ *
+ * The state file above is the record; this is the doorbell. dev-api watches these conversations on
+ * a thirty-second timer (server.mjs, the conversation listing), which is fine for a dot on a tab
+ * and too slow for the one thing this is really for: a card the person put aside until its agent
+ * stopped, which should come back when it stopped and not up to half a minute later.
+ *
+ * It carries no state. The listing re-reads everything itself, and it must - the two facts that
+ * decide a conversation's state are tmux liveness and the transcript's mtime, and a hook can see
+ * neither. So this says "look", never "here is what happened", and there is nothing to trust.
+ *
+ * Addressed by service DNS rather than by an environment variable, because `CLAUDE_HARNESS_API` is
+ * set for a workspace's tool commands and is empty in this pod - and adding it to the agent
+ * Deployment would reach no cluster that already has one, since that body is only ever created,
+ * never patched.
+ *
+ * Bounded and swallowed, because of the rule above: one second, no retry, every failure ignored. A
+ * dev-api that is rolling - which happens on every release - must not add a second to somebody's
+ * turn, and the thirty-second sweep is what makes losing this harmless.
+ */
+const NOTIFY = new Set(['Stop', 'Notification', 'SessionEnd']);
+
+if (NOTIFY.has(event.event)) {
+  const api = process.env.CLAUDE_HARNESS_API || 'http://dev-api.dev-system.svc.cluster.local:8080';
+
+  try {
+    await fetch(`${ api }/conversations/refresh`, { method: 'POST', signal: AbortSignal.timeout(1000) });
+  } catch { /* the sweep will find it */ }
+}
+
 process.exit(0);

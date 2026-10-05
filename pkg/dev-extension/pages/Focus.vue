@@ -502,7 +502,7 @@ function prefetchNeighbours() {
     if (!wants.length || haveArtifacts(task.key)) {
       continue;
     }
-    readArtifacts(task, wants, store, me.value, work.value, alsoFrom.value)
+    readArtifacts(task, wants, store, me.value, work.value, { ...alsoFrom.value, agents: agents.value })
       .then((found) => keepArtifacts(task.key, found))
       .catch(() => undefined);
   }
@@ -547,7 +547,7 @@ function readTheArtifacts(): Promise<void> {
   // is worse than a card with nothing under it for a second.
   artifacts.value = NO_ARTIFACTS;
   readingNow.value = true;
-  readingArtifacts = readArtifacts(task, wants, store, me.value, work.value, alsoFrom.value)
+  readingArtifacts = readArtifacts(task, wants, store, me.value, work.value, { ...alsoFrom.value, agents: agents.value })
     .catch(() => NO_ARTIFACTS)
     .then((found) => {
       keepArtifacts(task.key, found);
