@@ -2839,6 +2839,23 @@ export async function ensureWorkspaceApi(): Promise<void> {
         apiGroups: [''], resources: ['services'], verbs: ['get', 'list', 'create', 'patch']
       },
       { apiGroups: [''], resources: ['pods', 'pods/log'], verbs: ['get', 'list'] },
+      /*
+       * One exec, into one pod: `sessions.sh states-all` in the agent pod, on the watcher's timer.
+       * It is the only thing this service needs that cannot be answered from the apiserver or from
+       * its own mount - a tmux server is per user and answers only to a process inside its own pod,
+       * so whether a conversation's pane is alive is a question only a command in there can ask.
+       *
+       * This role did not have it. There is a `pods/exec` rule further up this file and it belongs
+       * to `dev-global-terminal`, the account the browser's terminals run as - so granting it there
+       * granted it to nothing that runs in this pod. Worth saying because the failure is silent:
+       * `podExec` reads channel 1 and discards the apiserver's status frame, so a 403 arrives as an
+       * empty string and reads exactly like a pod holding no conversations.
+       *
+       * `resourceNames` cannot narrow it, because a pod's name changes on every roll. What keeps it
+       * honest is that the watcher's argv is a literal in server.mjs and no route takes a command
+       * from a caller. Nothing must ever make that untrue.
+       */
+      { apiGroups: [''], resources: ['pods/exec'], verbs: ['create', 'get'] },
       {
         apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list', 'create', 'patch']
       },

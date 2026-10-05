@@ -19,7 +19,7 @@
 // drawn with. Nothing here holds a credential or opens a socket of its own.
 
 import {
-  workspaceNamespace, workspacePod, WORKSPACE_CONTAINER, podExecOnce, clusterBase
+  workspaceNamespace, workspacePod, WORKSPACE_CONTAINER, podExecOnce, clusterBase, devFetch
 } from './api';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -148,7 +148,94 @@ export interface ConversationState {
  * (`<sessions>/<id>.state.json`) and whether its tmux session exists. The state file is one
  * short JSON line, so the whole listing is small however many conversations there are.
  */
+/** The in-cluster API, addressed from here rather than through reviews.ts, which imports this file. */
+const DEV_API = `${ clusterBase(STUDIO_CLUSTER) }/api/v1/namespaces/dev-system/services/http:dev-api:8080/proxy`;
+
+export interface ConversationNow {
+  id: string;
+  kind: string;
+  workspace: string;
+  state: 'working' | 'input' | 'idle' | 'finished' | 'none' | 'gone';
+  was: string;
+  note: string;
+  stops: number;
+  asks: number;
+  bornAt: string;
+  changedAt: string;
+  alive: boolean;
+  wroteAgo: number;
+  event: string;
+  message: string;
+  said: string;
+  question: { tool: string; header: string; options: string[] } | null;
+}
+
+export interface ConversationSnapshot {
+  epoch: string;
+  /** The loop has stopped; everything here is history. Not the same as a failed exec. */
+  stale: boolean;
+  /** The last listing failed. The states are old rather than wrong - say so, do not act on it. */
+  ok: boolean;
+  detail: string;
+  podSettled: boolean;
+  conversations: Record<string, ConversationNow>;
+}
+
+/**
+ * Every conversation's state, from the in-cluster watcher rather than from an exec of our own.
+ *
+ * This was one exec per read, issued by whichever tab happened to be open - which is both the
+ * expensive half (four a minute here, four more in the rail, four more in the strip) and the half
+ * that cannot answer anything at all about the hours the page was shut. dev-api watches the pod now
+ * (server.mjs, reconcileConversations) and keeps a document, so this is a GET.
+ *
+ * null when the watcher has nothing to say, which is a real case and not an error: for the twenty
+ * seconds after every publish dev-api is being replaced. Every caller falls back to the exec, and
+ * the fallback is why the rail does not go blank on a release.
+ */
+export async function conversationSnapshot(): Promise<ConversationSnapshot | null> {
+  const answer = await devFetch(`${ DEV_API }/conversations`).catch(() => null);
+
+  if (!answer?.conversations || answer.stale) {
+    return null;
+  }
+
+  return {
+    epoch:         String(answer.epoch || ''),
+    stale:         false,
+    ok:            answer.ok !== false,
+    detail:        String(answer.detail || ''),
+    podSettled:    answer.podSettled !== false,
+    conversations: Object.fromEntries((answer.conversations as Json[]).map((c) => [String(c.id), c as ConversationNow])),
+  };
+}
+
 export async function conversationStates(): Promise<ConversationState[]> {
+  const snapshot = await conversationSnapshot();
+
+  if (snapshot) {
+    return Object.values(snapshot.conversations)
+      .filter((c) => c.kind === 'workspace' && c.state !== 'gone')
+      .map((c) => ({
+        id:           c.id,
+        workspace:    c.workspace,
+        alive:        !!c.alive,
+        event:        c.event || '',
+        notification: c.note || '',
+        at:           c.changedAt || '',
+        wroteAgo:     Number(c.wroteAgo ?? -1),
+      }));
+  }
+
+  return conversationStatesByExec();
+}
+
+/** Look now, for a caller that has just changed something. One call, best effort. */
+export function refreshConversations(): Promise<void> {
+  return devFetch(`${ DEV_API }/conversations/refresh`, { method: 'POST' }).then(() => undefined).catch(() => undefined);
+}
+
+async function conversationStatesByExec(): Promise<ConversationState[]> {
   const api = await requireAgents();
   const pod = await api.agent.pod().catch(() => null);
 

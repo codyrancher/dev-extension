@@ -27,6 +27,7 @@ import type { FocusPrefs } from './prefs';
 import { RULES, weightOf } from './priority';
 import type { PriorityItem, Weights } from './priority';
 import type { Artifact } from './focus-artifacts';
+import type { ConversationSnapshot } from './conversations';
 
 /** The five kinds of thing that can want you, each with a hue. See design/focus.css. */
 export type FocusKind = 'review' | 'issue' | 'agent' | 'question' | 'signal';
@@ -290,6 +291,9 @@ export function sweepState(state: FocusState): FocusState {
     pinned:  state.pinned,
     snoozed: Object.fromEntries(Object.entries(state.snoozed).filter(([, at]) => Date.parse(at) > now)),
     done:    Object.fromEntries(Object.entries(state.done).filter(([, at]) => keep(at, DONE_HOURS))),
+    // Bounded like the rest: a card put aside for an agent that never stopped must not hide for
+    // ever, and AWAIT_HOURS is long enough to cover a weekend.
+    awaiting: Object.fromEntries(Object.entries(state.awaiting || {}).filter(([, held]) => keep(held.at, AWAIT_HOURS))),
   };
 }
 
@@ -380,7 +384,135 @@ export function manualItem(task: ManualTask): PriorityItem {
  * front of you is what you are doing - and pinned ones are kept, marked, for the rail beside
  * the deck to show. Everything else is the queue in the queue's own order.
  */
-export function focusDeck(items: PriorityItem[], config: FocusConfig, state: FocusState): FocusTask[] {
+/** Long enough to cover a weekend: a card put aside on Friday is still waiting on Monday. */
+const AWAIT_HOURS = 72;
+
+/** The states that mean it has stopped and the work is yours again. `gone` counts: it is news. */
+const SETTLED_STATES = new Set(['input', 'idle', 'finished', 'gone']);
+
+/**
+ * How long a card stays aside before the snapshot has to justify it.
+ *
+ * Between pressing the button and the agent actually picking the prompt up there are seconds -
+ * sometimes a minute, if the workspace pod is still coming up - in which the conversation is still
+ * exactly as it was. Without this the card comes straight back on top of somebody who has just
+ * dealt with it. `POST /conversations/refresh` shortens the window; this closes it. The signal the
+ * window is waiting for is the state going to `working`, which the disk tick sees within five
+ * seconds of the prompt landing.
+ */
+const HANDOVER_GRACE_MS = 45_000;
+
+/**
+ * Whether this card is waiting on an agent rather than on a person.
+ *
+ * The deck's premise is that every card is something only you can move, and the moment you press
+ * "Fix it" the card in front of you stops being one: nothing about it can move until the agent
+ * stops. So pressing it records the conversation and its counters, and the card is held back until
+ * one of those counters moves - which is exactly "the agent finished or has a question", because
+ * entering idle/finished is the only thing that moves `stops` and entering input is the only thing
+ * that moves `asks`.
+ *
+ * The counters and not a revision. A revision moves when the agent *starts*, which is the opposite
+ * of what this predicate wants: a card hidden until "something changed" would come back five
+ * seconds after the agent picked the work up. `stops` and `asks` move on the way out of a turn and
+ * never on the way in, which is the whole reason they are what is stored.
+ *
+ * Six ways back out, and every one of them errs towards showing the card:
+ *
+ *   - either counter moved;
+ *   - the conversation has settled whatever the counters say, because a prompt that was queued and
+ *     never started never moves one, and a card held on that would be held for ever;
+ *   - the loop has stopped (`stale`), because a watcher that has quietly died must not be able to
+ *     hide work for a week. Note: NOT on a failed exec - that is a busy cluster, which is when the
+ *     cards should stay hidden;
+ *   - the epoch is not the one the counters came from, so a document somebody deleted releases
+ *     every card instead of stranding them;
+ *   - `bornAt` differs, because `sessions.sh new` reuses the lowest free ordinal and the id you
+ *     handed work to may now be somebody else's conversation;
+ *   - the snapshot has never heard of the conversation at all.
+ *
+ * What it cannot tell is which way the news went. Two transitions inside one tick are one change,
+ * and a conversation that finished and was asked again looks like one that was only asked unless
+ * the counters happen to disagree. It is paid where it is cheapest: the card comes back either way,
+ * and what it is about is read off the conversation when the card is drawn.
+ */
+export function awaitingAgent(key: string, state: FocusState, agents: ConversationSnapshot | null): boolean {
+  const held = state.awaiting?.[key];
+
+  if (!held) {
+    return false;
+  }
+  if (!agents || agents.stale || (held.epoch && agents.epoch && held.epoch !== agents.epoch)) {
+    return false;
+  }
+
+  const now = agents.conversations[held.conversation];
+
+  if (!now || SETTLED_STATES.has(now.state)) {
+    return false;
+  }
+  if (held.bornAt && now.bornAt && held.bornAt !== now.bornAt) {
+    return false;
+  }
+  if (now.stops !== held.stops || now.asks !== held.asks) {
+    return false;
+  }
+
+  // Inside the grace window nothing has to be true yet; after it, only a conversation that is
+  // actually working earns the card's absence.
+  return Date.now() - Date.parse(held.at) < HANDOVER_GRACE_MS || now.state === 'working';
+}
+
+/**
+ * What happened to a card's agent while nobody was looking, from the counters alone.
+ *
+ * The whole of what a snapshot can say about the past, and worth saying on the card that comes
+ * back: "it stopped twice and asked you something" is a different thing to walk into than "it
+ * stopped". How many, never what - for that there is /conversations/{id}/events.
+ */
+export function agentNews(key: string, state: FocusState, agents: ConversationSnapshot | null): { stops: number; asks: number } | null {
+  const held = state.awaiting?.[key];
+  const now = held && agents?.conversations?.[held.conversation];
+
+  if (!held || !now) {
+    return null;
+  }
+
+  return { stops: Math.max(0, now.stops - held.stops), asks: Math.max(0, now.asks - held.asks) };
+}
+
+/**
+ * The rule a released card re-enters the deck under.
+ *
+ * Nothing else in the queue can say this, because nothing else knows the card was put aside: the
+ * queue is built from GitHub and from the workspaces' own stages, and "you asked to be told when
+ * this stopped" is a fact about one person's prefs. Two rules rather than one, because the two
+ * endings want different things of you - a question is answered here, a stop is read - and because
+ * a stop that is a dead pane is a different sentence again.
+ */
+function released(item: PriorityItem, state: FocusState, agents: ConversationSnapshot | null): PriorityItem {
+  const held = state.awaiting?.[item.key];
+  const now = held && agents?.conversations?.[held.conversation];
+
+  if (!held || !now || !SETTLED_STATES.has(now.state)) {
+    return item;
+  }
+
+  const asking = now.state === 'input';
+
+  return {
+    ...item,
+    since: now.changedAt || item.since,
+    rule:  asking ? 'agent-question' : 'agent-stopped',
+    needs: asking ? 'Answer the agent' : 'Read what the agent did and say what happens next',
+    why:   asking
+      ? (now.message || 'the agent asked something and stopped until it hears back')
+      : (now.state === 'finished' ? 'the agent stopped and its pane has gone' : 'the agent you set working here finished while you were away'),
+    score: weightOf(asking ? 'agent-question' : 'agent-stopped'),
+  };
+}
+
+export function focusDeck(items: PriorityItem[], config: FocusConfig, state: FocusState, agents: ConversationSnapshot | null = null): FocusTask[] {
   const now = Date.now();
 
   return items
@@ -390,6 +522,9 @@ export function focusDeck(items: PriorityItem[], config: FocusConfig, state: Foc
 
       return !until || Date.parse(until) <= now;
     })
+    // Set an agent working and the card goes; it comes back when the agent stops. See awaitingAgent.
+    .filter((item) => !awaitingAgent(item.key, state, agents))
+    .map((item) => released(item, state, agents))
     .map((item) => {
       const card = cardFor(config.cards, item.rule);
       const since = Date.parse(item.since || '');
@@ -404,12 +539,48 @@ export function focusDeck(items: PriorityItem[], config: FocusConfig, state: Foc
         pinned:       state.pinned.includes(item.key),
         snoozedUntil: '',
       } as FocusTask & { summary: string };
-    });
+    })
+    /*
+     * Re-sorted, because `released` changes what an item is worth.
+     *
+     * A card somebody put aside until an agent finished is the one thing in this deck they
+     * explicitly asked to be told about, and the rule that put it there knows nothing about that:
+     * a finished fix falls through to `stalled` at 45 and lands tenth. The rest of the order is
+     * `priorityQueue`'s and is untouched - this is a stable sort over scores it already set.
+     */
+    .sort((a, b) => b.score - a.score);
 }
 
 /** What a button says, with the item's own words in it. */
 export function actionPrompt(action: CardAction, task: FocusTask): string {
   return fill(action.prompt || '', task);
+}
+
+/**
+ * The verbs that set an agent working, which is what the sparkle means.
+ *
+ * What the handlers DO, not what they are called. `ask-all` is the one whose name misleads: it is
+ * `requestReviewers`, a write to GitHub that asks *people* for a review, and it is not on this
+ * list. `review` and `fix` are, because both make a workspace and start a conversation in it.
+ *
+ * `describe` is the one that cannot be decided from the verb alone - it writes a description
+ * through GitHub when there is one to write and asks an agent when there is not - so the caller
+ * resolves that branch and this list does not pretend to.
+ *
+ * Here rather than in the card shell because the pool, the agent rows and the footer all draw
+ * buttons for these, and a marking that three files maintain separately is one that goes out of
+ * step the first time a verb is added - which is how "Fix it" came to be the only unmarked agentic
+ * action on its own card.
+ */
+export const AGENTIC_VERBS = new Set(['ask', 'review', 'fix', 'describe']);
+
+/** Whether pressing this sets an agent working. `describe` needs the card's own answer. */
+export function isAgentic(action: CardAction | null | undefined, describeAsks = false): boolean {
+  if (!action) {
+    return false;
+  }
+
+  return action.verb === 'describe' ? describeAsks : AGENTIC_VERBS.has(action.verb);
 }
 
 // ── The weights, as something to look at ────────────────────────────────────────────────────

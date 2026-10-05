@@ -68,7 +68,8 @@ import { workspaceBranch, startDevServer, stopDevServer } from '../workspace-too
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
 import { conversationFor, panelConversation, queueForLater } from '../focus-agent';
-import { sendToPane, paneCommand } from '../conversations';
+import { sendToPane, paneCommand, conversationSnapshot, refreshConversations } from '../conversations';
+import type { ConversationSnapshot } from '../conversations';
 import { reviewNotes } from '../focus-review';
 import type { ReviewNote } from '../focus-review';
 import { readArtifacts, NO_ARTIFACTS, subjectOf, keepArtifacts, keptArtifacts, haveArtifacts, keptKeys } from '../focus-artifacts';
@@ -277,6 +278,9 @@ function toSettings() {
 
 /** The advisories and the bot's pull requests the queue was built from; see readArtifacts. */
 const alsoFrom = ref<{ alerts: Json[]; botPrs: Json[]; botReviews: Json }>({ alerts: [], botPrs: [], botReviews: null });
+
+/** What every conversation in the agent pod is doing, from the watcher. Null until it answers. */
+const agents = ref<ConversationSnapshot | null>(null);
 
 /**
  * The read in flight, handed back to every caller.
@@ -690,7 +694,7 @@ async function askHere(task: FocusTask | null, prompt: string): Promise<string> 
 }
 
 /** Everything the queue has, drawn: pinned ones are marked and then held back from the deck. */
-const all = computed<FocusTask[]>(() => focusDeck(items.value, { ...config.value, cards: cards.value }, state.value));
+const all = computed<FocusTask[]>(() => focusDeck(items.value, { ...config.value, cards: cards.value }, state.value, agents.value));
 const pinned = computed(() => all.value.filter((task) => task.pinned));
 const deck = computed(() => all.value.filter((task) => !task.pinned));
 const current = computed(() => deck.value[index.value] || null);
@@ -757,6 +761,77 @@ const top = computed(() => deck.value.slice(0, 5).map((task) => ({
 
 /* ── Loading ──────────────────────────────────────────────────────────────────────────────── */
 
+/*
+ * The snapshot, re-read on a timer and on coming back to the tab.
+ *
+ * Ten seconds, and a GET rather than an exec - which is why this can exist at all. The deck had no
+ * interval of any kind: every card on it was as of the moment the page loaded, so an agent that
+ * finished while you were reading the card above it stayed finished and invisible. Assigning the
+ * ref is enough; `all` is a computed over it, so the card returns without a re-rank.
+ *
+ * `document.hidden` is checked because a background tab moving cards is a background tab moving
+ * them under somebody who will come back to it, and because there is no reason to pay for it.
+ */
+const SNAPSHOT_POLL_MS = 10_000;
+
+onMounted(() => {
+  const tick = async() => {
+    if (document.hidden) {
+      return;
+    }
+    const seen = await conversationSnapshot().catch(() => null);
+
+    if (seen) {
+      agents.value = seen;
+    }
+  };
+  const timer = setInterval(tick, SNAPSHOT_POLL_MS);
+
+  document.addEventListener('visibilitychange', tick);
+  onBeforeUnmount(() => {
+    clearInterval(timer);
+    document.removeEventListener('visibilitychange', tick);
+  });
+});
+
+/**
+ * Put the card aside until the agent it has just set working has something to say.
+ *
+ * Every agentic verb ends the same way - an agent is now working and the card is not yours to move
+ * - and the deck's own answer to that was nothing: the card stayed on top, with a primary button
+ * that would have started a second conversation in the same workspace.
+ *
+ * What is stored is the counters, not a time. See `awaitingAgent` in focus.ts.
+ */
+async function handToAgent(task: FocusTask, conversation: string) {
+  if (!conversation) {
+    return;
+  }
+
+  const seen = agents.value?.conversations?.[conversation];
+
+  await remember({
+    ...state.value,
+    awaiting: {
+      ...state.value.awaiting,
+      [task.key]: {
+        conversation,
+        epoch:  agents.value?.epoch || '',
+        bornAt: seen?.bornAt || '',
+        stops:  seen?.stops ?? 0,
+        asks:   seen?.asks ?? 0,
+        at:     new Date().toISOString(),
+      },
+    },
+  });
+  // The listing runs every thirty seconds and the pane has just been typed into, so ask it to look
+  // now: without this the deck is comparing against counters the agent is about to leave behind.
+  void refreshConversations().then(() => conversationSnapshot()).then((fresh) => {
+    agents.value = fresh || agents.value;
+  });
+  say('Put aside until the agent stops.');
+}
+
 async function load() {
   error.value = '';
   try {
@@ -768,12 +843,17 @@ async function load() {
      * none of the later ones used a result of the earlier ones. Serial by accident, which is the
      * cheapest kind of slow to fix.
      */
-    const [cfg, st, who, workspaces] = await Promise.all([
+    const [cfg, st, who, workspaces, seen] = await Promise.all([
       readFocusConfig(),
       readFocusState(),
       currentOwner().catch(() => ''),
       listAllWorkspaces().catch(() => []),
+      // One GET, not an exec, so it rides with the rest of the load rather than behind the
+      // fifteen-second throttle an exec had to have.
+      conversationSnapshot().catch(() => null),
     ]);
+
+    agents.value = seen;
 
     config.value = cfg;
     state.value = st;
@@ -1196,14 +1276,17 @@ async function act({ task, action }: { task: FocusTask; action: CardAction }) {
         say('There is nowhere to open this: it has no workspace and no link.');
       }
     } else if (action.verb === 'ask') {
-      await askHere(task, actionPrompt(action, task));
-      say('Asked — the reply arrives in the bar.');
+      // `askHere` answers with the conversation it put the prompt in, which is the one this card
+      // is now waiting on. Nothing about the card can move until that agent stops, so it goes.
+      await handToAgent(task, await askHere(task, actionPrompt(action, task)));
     } else if (action.verb === 'share') {
       await openTheBuild(task, action.kind || 'dashboard');
     } else if (action.verb === 'review') {
-      await pickUpTheReview(task);
+      // Makes a workspace and starts an agent in it, so the card is the agent's until it stops.
+      await handToAgent(task, await pickUpTheReview(task));
     } else if (action.verb === 'fix') {
-      await pickUpTheIssue(task);
+      // Makes a workspace and starts an agent in it, so the card is the agent's until it stops.
+      await handToAgent(task, await pickUpTheIssue(task));
     } else if (action.verb === 'post') {
       await postTheReview(task);
     } else if (action.verb === 'merge') {
@@ -1434,31 +1517,36 @@ async function openTheBuild(task: FocusTask, kind: 'dashboard' | 'storybook') {
 }
 
 /** Pick up a review: the workspace, the checkout and the agent, as the Create page would. */
-async function pickUpTheReview(task: FocusTask) {
+async function pickUpTheReview(task: FocusTask): Promise<string> {
   const { pr } = subjectOf(task);
 
   if (!pr) {
     say('Nothing here to review.');
 
-    return;
+    return '';
   }
   const started = await startPrReview(store, { number: pr, title: task.title });
 
   say(`Review started in ${ started.workspace }.`);
+
+  // The conversation it started, so the card can be put aside until that agent stops.
+  return started.conversation?.id || '';
 }
 
 /** The same for an issue: a fix workspace, on a branch, with the issue in front of it. */
-async function pickUpTheIssue(task: FocusTask) {
+async function pickUpTheIssue(task: FocusTask): Promise<string> {
   const { issue } = subjectOf(task);
 
   if (!issue) {
     say('Nothing here to fix.');
 
-    return;
+    return '';
   }
   const started = await startIssueFix(store, { number: issue, title: task.title });
 
   say(`Fix started in ${ started.workspace }.`);
+
+  return started.conversation?.id || '';
 }
 
 /**

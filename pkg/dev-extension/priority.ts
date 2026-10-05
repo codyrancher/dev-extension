@@ -93,6 +93,11 @@ export const RULES: Record<string, PriorityRule> = {
     about: 'It has stopped until it hears back, so nothing else about that work can move.',
     score: 100,
   },
+  'agent-stopped': {
+    label: 'An agent you were waiting on has stopped',
+    about: 'You put this card aside until it finished and it has, so it is yours again - and it is the one thing in this deck you explicitly asked to be told about.',
+    score: 95,
+  },
   'review-findings': {
     label: 'Findings waiting for your pass',
     about: 'The agent finished a review and its comments cannot go out until you have been through them.',
