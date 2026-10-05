@@ -118,6 +118,95 @@ async function installations(who) {
 }
 
 /** The same call, for a response that is not JSON: a pod's log. */
+/**
+ * How long one exec may stay quiet before its caller gets whatever arrived.
+ *
+ * The same two minutes the browser's `podExecOnce` uses. The hang this guards against never
+ * settles, so the deadline only decides how long a *working* exec may take.
+ */
+const EXEC_WAIT_MS = 120000;
+
+/** base64url, for the bearer-token subprotocol below. */
+function b64url(text) {
+  return Buffer.from(text, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/**
+ * Run one command in a pod and hand back its stdout.
+ *
+ * The browser has had this for a long time (`podExecOnce`, api.ts) but it reaches the apiserver
+ * through Rancher's proxy, which carries the session cookie for it. From in here there is no proxy
+ * and no cookie, and the WebSocket Node exposes is the WHATWG one, which **cannot set an
+ * Authorization header** - so the token goes where Kubernetes accepts it for exactly this reason,
+ * as a subprotocol: `base64url.bearer.authorization.k8s.io.<base64url token>` alongside the channel
+ * protocol. This is the same mechanism a browser uses against a bare apiserver, and it is why this
+ * needs no dependency: adding `ws` to get a header would be a package for one call, which this file
+ * has already declined once (see the CDP note).
+ *
+ * Every frame is a channel digit then base64. 1 is stdout, which is all any caller here wants; 2 is
+ * stderr and 3 is the apiserver's own status, and a command that writes to either has nothing to
+ * say to a caller that asked for output.
+ *
+ * It always settles. An exec the apiserver upgrades and then abandons - a pod going away, a node
+ * that stopped answering - fires neither `close` nor `error`, and a promise that never settles in a
+ * reconcile loop is a loop that never ticks again.
+ */
+function podExec(namespace, pod, container, command, waitMs = EXEC_WAIT_MS) {
+  return new Promise((resolve) => {
+    const params = new URLSearchParams({ container, stdout: 'true', stderr: 'true', stdin: 'false', tty: 'false' });
+
+    // Repeated, not comma-joined: this is argv, and a command with a space in an argument has to
+    // arrive as that one argument.
+    for (const arg of command) {
+      params.append('command', arg);
+    }
+
+    const url = `${ ROOT.replace(/^http/, 'ws') }/api/v1/namespaces/${ namespace }/pods/${ pod }/exec?${ params }`;
+    const decoder = new TextDecoder('utf-8');
+    let out = '';
+    let settled = false;
+    let timer;
+
+    const done = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(out + decoder.decode());
+    };
+
+    try {
+      const socket = new WebSocket(url, [`base64url.bearer.authorization.k8s.io.${ b64url(TOKEN) }`, 'base64.channel.k8s.io']);
+
+      timer = setTimeout(() => {
+        done();
+        try {
+          socket.close();
+        } catch { /* already gone, which is the case this exists for */ }
+      }, waitMs);
+
+      socket.addEventListener('message', (event) => {
+        const frame = String(event.data || '');
+
+        if (!frame.startsWith('1')) {
+          return;
+        }
+
+        try {
+          // Streamed, because a character can straddle two frames.
+          out += decoder.decode(Buffer.from(frame.slice(1), 'base64'), { stream: true });
+        } catch { /* a frame that is not base64 is not output */ }
+      });
+
+      socket.addEventListener('close', done);
+      socket.addEventListener('error', done);
+    } catch {
+      done();
+    }
+  });
+}
+
 async function k8sText(path) {
   const response = await fetch(`${ ROOT }${ path }`, { headers: { authorization: `Bearer ${ TOKEN }` } });
   const text = await response.text();
@@ -1096,6 +1185,49 @@ const OPENAPI = {
     description: 'Workspaces, the harness my-work routes, and the Focus deck\'s cards. Served by the dev-api Deployment in dev-system.',
   },
   paths: {
+    '/conversations': {
+      get: {
+        operationId: 'readConversations',
+        summary:     'Every conversation in the Studio\'s agent pod, and what it is doing.',
+        description: [
+          'Written by a loop in this pod (reconcileConversations), not by a browser - which is the',
+          'point, since every other read of a conversation is an exec a tab issues. So this is also',
+          'the answer to "what finished while nothing was open".',
+          '',
+          '`stops` and `asks` are how many times each conversation has ended a turn and asked for',
+          'something, ever. Store them, compare them, and you know how many you missed. They say how',
+          'many and never what; for that, read /conversations/{id}/events.',
+          '',
+          '`stale: true` means the loop has stopped and the states are history. `ok: false` means the',
+          'last listing failed, so every state is as the listing before it left them: old rather',
+          'than wrong, and `watchedAt` says how old.',
+        ].join('\n'),
+        parameters: [
+          { name: 'workspace', in: 'query', schema: { type: 'string' }, description: 'Only that workspace\'s conversations.' },
+          { name: 'state', in: 'query', schema: { type: 'string' }, description: 'Comma separated: working, input, idle, finished, none, gone.' },
+        ],
+        responses: { 200: { description: 'The conversations, newest change first, and the watcher\'s own freshness.' } },
+      },
+    },
+    '/conversations/{id}/events': {
+      parameters: [{
+        name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: '`agent-<n>` or `p-<workspace>-<n>`.',
+      }],
+      get: {
+        operationId: 'readConversationEvents',
+        summary:     'One conversation\'s hook firings, newest first.',
+        description: 'Read off the hook\'s own log in the agent pod\'s volume, which it already keeps and already trims. `mount: false` means this API cannot see that volume.',
+        responses:   { 200: { description: 'The firings.' } },
+      },
+    },
+    '/conversations/refresh': {
+      post: {
+        operationId: 'refreshConversations',
+        summary:     'Run one listing now rather than waiting for the next tick.',
+        description: 'For a caller that has just started or ended a conversation. One listing in flight at a time, however many callers press it.',
+        responses:   { 200: { description: 'The snapshot, after the listing.' } },
+      },
+    },
     '/focus': {
       get: {
         operationId: 'readFocus',
@@ -2776,6 +2908,771 @@ function readBody(req) {
   });
 }
 
+// -- Conversations ---------------------------------------------------------------------------
+//
+// What the browser could only ask while a tab was open, asked here instead. Every read of a
+// conversation's state used to be an exec issued BY THE BROWSER (conversations.ts, through
+// podExecOnce), so with no tab open nothing observed anything: an agent could finish at four in
+// the morning and the only record of it was a hook file nobody would read until somebody loaded
+// a page.
+//
+// The expensive half of that question and the cheap half are different questions, and separating
+// them is the whole of this loop's cost.
+//
+//   The listing - which conversations exist, and whether each pane is alive - is one exec, because
+//   `sessions.sh` owns the first and only a process inside that pod can answer the second.
+//
+//   The fields that move every few seconds - the hook's last event, the transcript's mtime - are
+//   files, and this pod already has them: it mounts the agent pod's /workspace read-only at
+//   AGENT_ROOT so a review's evidence can be served out of it, and the same mount holds
+//   sessions/<id>.state.json.
+//
+// So: one exec every thirty seconds. The listing carries the whole state head, so that one read is
+// sufficient by itself - which is why the five-second refresh off that mount was dropped rather
+// than kept as an accelerator. The mount is still read on demand, for a conversation's own event
+// log and for what it last said, where a stale or absent answer costs one response and not a tick.
+
+const AGENT_NAMESPACE = process.env.AGENT_NAMESPACE || 'extension-studio';
+const AGENT_APP = process.env.AGENT_APP || 'extension-studio-agent';
+const AGENT_CONTAINER = process.env.AGENT_CONTAINER || 'agent';
+/** Where the agent pod's conversations are, as this pod sees them. See AGENT_ROOT. */
+const AGENT_SESSIONS = `${ AGENT_ROOT }/sessions`;
+
+const CONVERSATIONS_DOC = process.env.DEV_CONVERSATIONS_MAP || 'dev-conversations';
+const CONVERSATIONS_KEY = 'conversations.json';
+const CONVERSATION_LABELS = { 'dev.rancher.io/kind': 'conversations' };
+
+/**
+ * One exec, every thirty seconds, and nothing else.
+ *
+ * There was a second tick at five seconds that re-stat'ed each conversation's hook file off the
+ * mount this pod has of the agent pod's volume, to beat thirty-second freshness. It is gone, and
+ * thirty seconds is the answer: the listing's own output carries the whole state head, so the exec
+ * was always sufficient on its own, and the mount never was - both hostPaths are node-local and
+ * neither Deployment pins a node, so on a multi-node cluster that mount is a different, empty
+ * directory which throws nothing and refreshes nothing. A cadence that is right everywhere beats
+ * one that is six times faster on a single-node cluster and silently stale on any other.
+ */
+const LISTING_MS = 30_000;
+/** Five missed listings. Past this the loop has stopped and the states are history. */
+const STALE_MS = 5 * LISTING_MS;
+
+/**
+ * How long after a new agent pod appears a dead pane is not news.
+ *
+ * Measured, and the reason this guard exists: tmux is empty for the first minute after the agent
+ * pod restarts, while every conversation is still there on the hostPath with its transcript and
+ * its name intact - the note at the top of sessions.sh is about exactly this. dev-api is rolled by
+ * the same publish that rolls that pod, so without this the first tick after every release would
+ * declare every conversation in the cluster finished at once.
+ */
+const POD_SETTLE_MS = 120_000;
+
+/**
+ * How long a conversation is kept after its directory has gone.
+ *
+ * Not dropped the moment it disappears, because disappearing is itself the news: a deck holding a
+ * card until a conversation moved, and told nothing, holds it for ever. `sessions.sh end` removes
+ * the directory as well as the session, so this is the only record that it ever existed.
+ */
+const GONE_TTL_MS = 6 * 3600_000;
+
+/** Entries kept, oldest change dropped first. Five times anything observed; see the doc. */
+const ITEM_CAP = 400;
+const SAID_MAX = 500;
+/** Several turns of transcript. A transcript itself runs to many megabytes. */
+const TAIL_BYTES = 128 * 1024;
+
+/**
+ * How recently the transcript must have moved for a conversation to count as working.
+ *
+ * The same ninety seconds the browser used when it made this judgement itself. Long enough to
+ * cover a subagent thinking between writes, short enough that a conversation nobody is in stops
+ * claiming to be busy. Kept identical on purpose: the point of moving the derivation here is that
+ * one answer is given, not that a third one is invented.
+ */
+const WORKING_WINDOW_S = 90;
+
+/**
+ * The hook events that are the last word on a conversation, when they are the latest thing to
+ * have happened.
+ *
+ * `Stop` and `SessionEnd` say the turn is over and both fire after that turn's final writes land,
+ * so for a few seconds afterwards the transcript still looks like it is moving. `Notification`
+ * fires right after the tool call it is asking permission for was written down. Each has to be
+ * able to overrule a transcript that has only just stopped, which is the five-second margin below.
+ *
+ * `SessionStart` and `UserPromptSubmit` are not on this list, and that is the point of having one:
+ * neither says anything about whether claude is busy now. SessionStart is the case that was wrong
+ * for longest - the CLI fires it the moment it finishes an auto-compact and then carries straight
+ * on with the rest of the turn, while the transcript, quiet all through the compaction, is the only
+ * thing that knows. Letting it know halved the samples where a working conversation showed an idle
+ * dot (agent.ts, activityState, which this is ported from).
+ */
+const SPEAKS_LAST = new Set(['Stop', 'SessionEnd', 'Notification']);
+
+/** The states that mean it has stopped and the work is a person's again. */
+const SETTLED = new Set(['input', 'idle', 'finished']);
+const QUESTION_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
+const CONVERSATION_ID = /^(agent-\d+|p-[a-z0-9-]+-\d+)$/;
+
+/** Which agent pod the last listing came from, and when this process first saw that one. */
+let agentSeen = { pod: '', since: 0 };
+/** What this process knows about its own looking. In memory: a write per tick to say "nothing
+ * happened" is the cost this design exists to avoid, and what a client wants from this is whether
+ * THIS process is still looking, which only this process knows. */
+let watch = { at: 0, ms: 0, ok: true, detail: '', first: true };
+/** One tick at a time, whichever kind. See `once`. */
+let ticking = null;
+let noAgentPod = false;
+/** A short memo, so a dozen browser tabs polling do not each cost an apiserver read. */
+let memo = { at: 0, doc: null };
+
+
+/**
+ * The bucket a conversation falls in, from what the pod reported about it.
+ *
+ * Ported verbatim from `activityState` (agent.ts:448) - the newer of the two browser copies, the
+ * one that carries the SessionStart fix - and it is here because this is the judgement that has to
+ * be made when nobody is looking. `agentStateOf` (workspace-status.ts) is deleted in the same
+ * change; it was the drifted copy, with neither SPEAKS_LAST nor that fix, which is why the same
+ * conversation read `idle` in the sidebar and `working` in the conversation strip after a compact.
+ *
+ * The transcript outranks the hook: a hook fires only at a turn's edges, so a turn spent inside
+ * subagents reads as finished to it while the subagents write all the while, and a permission
+ * prompt answered in the terminal leaves the last Notification standing over an agent that is
+ * working again.
+ *
+ * '' is returned for "nothing believable", which the caller folds in as no change at all. A state
+ * file caught between the hook's write and its rename, and an `alive: no` from a pod that has only
+ * just started, are both doubt rather than news.
+ */
+function conversationState(a, podStartedMs = 0) {
+  // Neither a hook file nor a transcript: a conversation nobody has ever opened. Which is what
+  // leaves a fresh tab with no dot rather than a misleading one.
+  if (!a.event && a.wroteAgo < 0) {
+    return 'none';
+  }
+
+  const hookMs = Date.parse(a.at) || 0;
+
+  if (!a.alive) {
+    /*
+     * A pane that is not there, which is only believable twice over.
+     *
+     * For the first two minutes after the agent pod changes there is no tmux server at all while
+     * every conversation is still on the hostPath waiting to be reattached. And a hook event
+     * written before this container started was written by a claude that no longer exists, so its
+     * pane being absent says nothing that was not already true - and that holds however long ago
+     * the pod came up, which is what stops a conversation last touched a week ago becoming
+     * `finished` news the moment the settle window passes.
+     */
+    if (!podStartedMs || Date.now() - podStartedMs < POD_SETTLE_MS || (hookMs && hookMs < podStartedMs)) {
+      return '';
+    }
+
+    return 'finished';
+  }
+
+  const hookAgo = (Date.now() - hookMs) / 1000;
+  const overruled = SPEAKS_LAST.has(a.event) && hookAgo <= a.wroteAgo + 5;
+
+  if (a.wroteAgo >= 0 && a.wroteAgo <= WORKING_WINDOW_S && !overruled) {
+    return 'working';
+  }
+  // claude said it exited. The pane may well still be there - the loop that owns it restarts
+  // claude in a moment - but nothing is running in it now. Below the transcript window on purpose:
+  // a `/clear` fires SessionEnd too, and the SessionStart a second later takes this back.
+  if (a.event === 'SessionEnd') {
+    return 'finished';
+  }
+  if (a.event === 'Notification' && a.notification && a.notification !== 'idle_prompt') {
+    return 'input';
+  }
+  switch (a.event) {
+  case 'UserPromptSubmit':
+  case 'PreToolUse':
+  case 'PostToolUse':
+  case 'SubagentStop':
+    return 'working';
+  case 'Notification':
+    return a.notification === 'idle_prompt' ? 'idle' : 'input';
+  default:
+    return 'idle';
+  }
+}
+
+
+const freshDoc = () => ({
+  v: 1, epoch: `${ Date.now().toString(36) }${ Math.random().toString(36).slice(2, 6) }`, at: '', pod: '', items: {},
+});
+
+/**
+ * The document, read rather than cached between ticks.
+ *
+ * Two watchers exist for a few seconds of every publish: the dev-api Deployment has replicas 1 and
+ * no `strategy`, so Kubernetes defaults to RollingUpdate with maxSurge 1, and `ensure` in api.ts is
+ * create-if-missing so `strategy: Recreate` cannot be retrofitted to a cluster that already has
+ * one. `writeDoc` is a merge-patch with no precondition, so the answer is not to serialise but to
+ * be idempotent: both watchers read the same base, both compute the same fold from the same inputs
+ * (see `foldOne`), and the clobber is harmless. Caching the document in a module variable is what
+ * would make it harmful.
+ *
+ * The memo is two seconds, for the browser tabs polling this through the service proxy; a tick
+ * passes `true` and reads through it.
+ */
+async function conversationDoc(force = false) {
+  if (!force && memo.doc && Date.now() - memo.at < 2_000) {
+    return memo.doc;
+  }
+  const held = await readDoc(CONVERSATIONS_DOC, CONVERSATIONS_KEY).catch(() => null);
+  const doc = held?.items ? held : freshDoc();
+
+  memo = { at: Date.now(), doc };
+
+  return doc;
+}
+
+async function writeConversations(doc, changed) {
+  memo = { at: Date.now(), doc };
+  if (!changed) {
+    return;
+  }
+
+  await writeDoc(CONVERSATIONS_DOC, CONVERSATIONS_KEY, doc, CONVERSATION_LABELS);
+}
+
+
+/** The running agent pod, or null. `Running` rather than `Ready`: this pod has no probes. */
+async function agentPod() {
+  const pods = await k8s(`/api/v1/namespaces/${ AGENT_NAMESPACE }/pods?labelSelector=app%3D${ AGENT_APP }`).catch((e) => {
+    /*
+     * No such namespace, said once.
+     *
+     * dev-api runs on every cluster a workspace can land on and the agent pod is only ever on
+     * `local`, so downstream this is the normal and permanent answer. The three reconcilers above
+     * each learned the expensive way that a failure logged every tick, forever, on every downstream
+     * cluster is worse than no feature; see `installations`.
+     */
+    if (e.status === 404) {
+      noAgentPod = true;
+      console.log(`[dev-api] conversations: no ${ AGENT_NAMESPACE } namespace on this cluster, so there is no agent pod to watch; not asking again.`);
+    } else {
+      watch = { ...watch, ok: false, detail: `the agent pod could not be looked up: ${ e.message || e }` };
+    }
+
+    return null;
+  });
+
+  return (pods?.items || []).find((pod) => pod.status?.phase === 'Running' && !pod.metadata?.deletionTimestamp) || null;
+}
+
+/**
+ * When the claude side of this pod started, which is what decides whether `alive: no` means
+ * anything. The container's own start, not the pod's: a pod scheduled an hour ago whose container
+ * restarted ninety seconds ago has an empty tmux server either way.
+ */
+function agentStartedMs(pod) {
+  const container = (pod.status?.containerStatuses || []).find((c) => c.name === AGENT_CONTAINER);
+
+  return Date.parse(container?.state?.running?.startedAt || pod.status?.startTime || '') || 0;
+}
+
+/**
+ * The listing: one exec, and the only thing here allowed to decide what a conversation IS.
+ *
+ * `sessions.sh states-all` owns that. A conversation is a directory under /workspace/sessions and
+ * not a tmux session, a distinction two earlier versions of this question got wrong in two
+ * different ways, and that script is also the only place that can say whether a pane is alive.
+ */
+async function listingTick() {
+  return once(async() => {
+    if (noAgentPod) {
+      return;
+    }
+    const started = Date.now();
+    const pod = await agentPod();
+
+    if (!pod) {
+      // Not "no conversations": every one of them is still on the hostPath. Record that the tick
+      // could not look, and change nothing.
+      return note('the agent pod is not running, so the conversations could not be listed', started);
+    }
+    if (pod.metadata.name !== agentSeen.pod) {
+      agentSeen = { pod: pod.metadata.name, since: Date.now() };
+    }
+
+    const out = await podExec(AGENT_NAMESPACE, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '/seed/sessions.sh', 'states-all'], 30_000);
+
+    /*
+     * The sentinel, and why it is not `out.trim()`.
+     *
+     * `podExec` hands back stdout and throws away stderr and the exit status (see its note), so an
+     * exec that failed - a 403 because the pods/exec rule has not reached this cluster, a pod going
+     * away mid-tick, a socket the apiserver abandoned - is indistinguishable from a pod holding no
+     * conversations, and from a listing cut off halfway. Folding any of those in as the truth would
+     * mark conversations gone and bump counters, which is the one mistake this loop can make that a
+     * client cannot recover from. So the script says it ran to the end.
+     */
+    if (!out.includes('@@end')) {
+      return note('the listing did not run to the end; keeping the last snapshot. If this persists, check that the pods/exec rule in api.ts has reached this cluster', started);
+    }
+
+    const rows = [];
+
+    for (const line of out.split('\n')) {
+      const [id, alive, wrote, head] = line.replace(/\r$/, '').split('\t');
+
+      if (!id || !CONVERSATION_ID.test(id)) {
+        continue;
+      }
+      rows.push({ ...rowOf(id, head), alive: alive === 'yes', wroteAgo: Number(wrote ?? -1) });
+    }
+
+    await absorb(rows, pod.metadata.name, agentStartedMs(pod), true, started);
+  });
+}
+
+/** One row, from an id and the 800-byte head of its state file. */
+function rowOf(id, head) {
+  let hook = {};
+
+  try {
+    hook = JSON.parse(head || '{}');
+  } catch { /* a state file caught between the hook's write and its rename; next tick reads it whole */ }
+
+  return {
+    id,
+    kind:         id.startsWith('agent-') ? 'drawer' : 'workspace',
+    workspace:    id.startsWith('agent-') ? '' : id.replace(/^p-/, '').replace(/-\d+$/, ''),
+    event:        String(hook.event || ''),
+    notification: String(hook.notification || ''),
+    message:      String(hook.message || '').slice(0, 500),
+    reason:       String(hook.reason || '').slice(0, 80),
+    at:           String(hook.at || ''),
+    transcript:   String(hook.transcript || ''),
+  };
+}
+
+
+/**
+ * Fold one observation in, and move a counter where something moved.
+ *
+ * `stops` and `asks` are the whole of the contract with a client: it holds what they were when it
+ * handed work over and compares. So they must move exactly once per turn boundary and never for
+ * the clock - `changedAt` and `wroteAgo` change on every tick, and a counter that moved with them
+ * would be one no client could ever match.
+ *
+ * Derived from the stored values rather than incremented in memory, and keyed on the hook's own
+ * `at`: two watchers folding the same observation onto the same base reach the same answer, which
+ * is what makes the merge-patch clobber during a rollout harmless. The same property is what makes
+ * a tick that re-reads an unchanged state file a no-op.
+ */
+function foldOne(before, seen, state, now) {
+  if (!before || before.state === 'gone') {
+    return {
+      ...seen,
+      state,
+      was:       '',
+      // Adopted, not announced: a conversation seen for the first time has a history this watcher
+      // did not observe, and counting it would mean installing this feature credited every
+      // conversation in the cluster with a stop it never saw.
+      stops:     0,
+      asks:      0,
+      bornAt:    now,
+      changedAt: now,
+      hookAt:    seen.at,
+    };
+  }
+
+  const moved = before.state !== state || before.hookAt !== seen.at || before.alive !== seen.alive;
+
+  if (!moved) {
+    return { ...before, ...seen, state, hookAt: seen.at };
+  }
+
+  const ended = SETTLED.has(state) && state !== 'input';
+  const wasEnded = SETTLED.has(before.state) && before.state !== 'input';
+
+  return {
+    ...before,
+    ...seen,
+    state,
+    was:       before.state,
+    stops:     before.stops + (ended && !wasEnded ? 1 : 0),
+    asks:      before.asks + (state === 'input' && before.state !== 'input' ? 1 : 0),
+    changedAt: now,
+    hookAt:    seen.at,
+  };
+}
+
+/** `listing` says this came from the exec, which is the only thing allowed to call one gone. */
+async function absorb(rows, pod, podStartedMs, listing, started) {
+  const doc = await conversationDoc(true);
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
+  const items = { ...(doc.items || {}) };
+  const seen = new Set();
+  let changed = false;
+
+  for (const row of rows) {
+    seen.add(row.id);
+    const before = items[row.id] || null;
+    const state = conversationState(row, podStartedMs);
+
+    // Doubt rather than news: a state file caught mid-rename, or a pane whose absence cannot yet
+    // be believed. Nothing moves, so nothing anybody put aside comes back on a publish.
+    if (!state) {
+      continue;
+    }
+
+    const gap = watch.first && before && before.hookAt && before.hookAt !== row.at ? hookGap(row.id, before.hookAt, row.at) : null;
+    const base = gap ? { ...before, stops: before.stops + gap.stops, asks: before.asks + gap.asks } : before;
+    const next = foldOne(base, row, state, now);
+
+    if (SETTLED.has(state) && (!before || before.state !== state)) {
+      // What it last said, read once, here. `agentTurnOf` in the browser costs up to five execs
+      // for this and the deck prefetches two neighbours; the transcript is on this mount already.
+      Object.assign(next, detailOf(row));
+    }
+    changed = changed || !before || next.stops !== before.stops || next.asks !== before.asks ||
+      next.state !== before.state || next.alive !== before.alive;
+    items[row.id] = next;
+  }
+
+  if (listing) {
+    for (const [id, held] of Object.entries(items)) {
+      if (held.state === 'gone') {
+        if (nowMs - Date.parse(held.changedAt || '') > GONE_TTL_MS) {
+          delete items[id];
+          changed = true;
+        }
+        continue;
+      }
+      if (seen.has(id)) {
+        continue;
+      }
+      /*
+       * Its directory has gone, which `end` does deliberately - it is what `new` allocates
+       * against. News, and it gets an entry of its own rather than simply disappearing: a client
+       * holding a card until this conversation moved would otherwise hold it until somebody
+       * noticed. The counters stop here; a reused id gets a new `bornAt` and starts again.
+       */
+      items[id] = {
+        ...held, state: 'gone', was: held.state, alive: false, changedAt: now, said: '', question: null,
+      };
+      changed = true;
+    }
+  }
+
+  // The ceiling, enforced on write. A dropped entry is rediscovered by the next listing with fresh
+  // counters, which releases anything held against it - the safe direction.
+  const ids = Object.keys(items);
+
+  if (ids.length > ITEM_CAP) {
+    for (const id of ids.sort((a, b) => Date.parse(items[a].changedAt || '') - Date.parse(items[b].changedAt || '')).slice(0, ids.length - ITEM_CAP)) {
+      delete items[id];
+    }
+    changed = true;
+  }
+
+  watch = {
+    at: nowMs, ms: nowMs - started, ok: true, detail: '', first: false,
+  };
+  await writeConversations({ ...doc, at: now, pod, startedAt: podStartedMs, items }, changed);
+
+  for (const row of rows) {
+    const next = items[row.id];
+    const before = (doc.items || {})[row.id];
+
+    if (next && (!before || before.state !== next.state)) {
+      console.log(`[dev-api] conversation ${ row.id }: ${ before?.state || 'new' } -> ${ next.state }${ next.note ? ` (${ next.note })` : '' } (stops ${ next.stops }, asks ${ next.asks })`);
+    }
+  }
+}
+
+
+/**
+ * The hook firings a conversation recorded between the last one this watcher saw and the one it is
+ * looking at now.
+ *
+ * For the gap a restart leaves. dev-api is replaced by every publish and the roll takes up to a
+ * minute; a turn that both begins and ends inside that minute leaves the document saying `idle`
+ * before and the listing saying `idle` after, so the fold sees no transition and the person who was
+ * away for all of it is told nothing happened. The hook's own log is the record that survives - it
+ * appends every firing to `<id>.events.jsonl` for exactly this kind of question, trimmed at 512
+ * KiB - and this pod has that volume mounted already, so reading it costs nothing.
+ *
+ * Only the two firings that are worth a count: a Stop (the turn ended) and a Notification that is
+ * not an idle prompt (it is waiting). Strictly between the two timestamps, so the firing that
+ * produced the state being folded in is counted by the fold and not twice.
+ *
+ * Once per conversation, on the first tick of a process, and only where the hook has moved since.
+ * Zero when the file cannot be read, which includes the case where this pod is on a different node
+ * from the agent pod: recovering nothing is the right failure, because these are events that are
+ * already over and inventing one is worse than missing one.
+ */
+function hookGap(id, fromAt, toAt) {
+  const from = Date.parse(fromAt || '') || 0;
+  const to = Date.parse(toAt || '') || 0;
+
+  if (!from || !to || to <= from) {
+    return null;
+  }
+
+  const out = { stops: 0, asks: 0 };
+
+  try {
+    const lines = fs.readFileSync(`${ AGENT_SESSIONS }/${ id }.events.jsonl`, 'utf8').split('\n');
+
+    // Backwards, and stopped at the first one old enough: the file holds up to five hundred lines
+    // and only its tail can be newer than what the document already recorded.
+    for (let n = lines.length - 1; n >= 0; n--) {
+      if (!lines[n].trim()) {
+        continue;
+      }
+      let event;
+
+      try {
+        event = JSON.parse(lines[n]);
+      } catch {
+        continue;
+      }
+      const at = Date.parse(event.at || '') || 0;
+
+      if (at <= from) {
+        break;
+      }
+      if (at >= to) {
+        continue;
+      }
+      if (event.event === 'Stop') {
+        out.stops++;
+      }
+      if (event.event === 'Notification' && event.notification && event.notification !== 'idle_prompt') {
+        out.asks++;
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return out.stops || out.asks ? out : null;
+}
+
+/** The same file, as the sequence a person can read. See GET /conversations/{id}/events. */
+function hookEvents(id, limit) {
+  const want = Math.min(Math.max(1, limit || 50), 200);
+
+  try {
+    const lines = fs.readFileSync(`${ AGENT_SESSIONS }/${ id }.events.jsonl`, 'utf8').split('\n');
+    const out = [];
+
+    for (let n = lines.length - 1; n >= 0 && out.length < want; n--) {
+      if (!lines[n].trim()) {
+        continue;
+      }
+      try {
+        const event = JSON.parse(lines[n]);
+
+        out.push({
+          event:        String(event.event || ''),
+          at:           String(event.at || ''),
+          notification: String(event.notification || ''),
+          message:      String(event.message || '').slice(0, 500),
+          reason:       String(event.reason || ''),
+          prompt:       String(event.prompt || '').slice(0, 300),
+        });
+      } catch { /* a line cut mid-write */ }
+    }
+
+    return { mount: true, events: out };
+  } catch {
+    return { mount: false, events: [] };
+  }
+}
+
+
+/**
+ * The two things a stopped conversation's card needs that the state file does not carry: what
+ * claude last said, and what it is actually asking.
+ *
+ * Read off the mount, once, when the conversation enters a settled state - not per tick. The hook
+ * writes the transcript's absolute path in the pod's own spelling, so `/workspace/...` there is
+ * `/agent-workspace/...` here, which also means this never has to guess which project directory it
+ * is under: a drawer conversation's is `-workspace-conversations` and a workspace's is
+ * `-workspaces-<name>-dashboard`, and `ai_title_of` in sessions.sh only knows the first.
+ *
+ * The last 128 KiB - several turns - because a transcript runs to many megabytes, and the first
+ * line of that is dropped because it was cut in the middle.
+ */
+function detailOf(row) {
+  const local = row.transcript.startsWith(AGENT_PREFIX) ? `${ AGENT_ROOT }/${ row.transcript.slice(AGENT_PREFIX.length) }` : '';
+  const detail = { said: '', question: null };
+
+  if (!local) {
+    return detail;
+  }
+
+  const entries = [];
+
+  for (const line of tailLines(local)) {
+    try {
+      entries.push(JSON.parse(line));
+    } catch { /* a line cut mid-write */ }
+  }
+
+  const blocksOf = (e) => {
+    const content = e?.message?.content;
+
+    if (typeof content === 'string') {
+      return [{ type: 'text', text: content }];
+    }
+
+    return Array.isArray(content) ? content : [];
+  };
+  const answered = new Set();
+
+  // Backwards, and the same rule `pendingQuestion` uses in chat-state.mjs: a question tool with no
+  // result yet is pending. A side chain is a subagent's and is not what the conversation waits on.
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+
+    if (entry.type === 'user') {
+      for (const block of blocksOf(entry)) {
+        if (block.type === 'tool_result') {
+          answered.add(block.tool_use_id);
+        }
+      }
+      continue;
+    }
+    if (entry.type !== 'assistant' || entry.isSidechain) {
+      continue;
+    }
+    if (!detail.question) {
+      for (const block of blocksOf(entry)) {
+        if (block.type !== 'tool_use' || answered.has(block.id)) {
+          continue;
+        }
+        detail.question = QUESTION_TOOLS.has(block.name) ? {
+          tool:    block.name,
+          header:  String(block.input?.questions?.[0]?.header || (block.name === 'ExitPlanMode' ? 'A plan to approve' : '')).slice(0, 120),
+          options: (block.input?.questions?.[0]?.options || []).slice(0, 4).map((o) => String(o?.label || o).slice(0, 80)),
+        } : null;
+        break;
+      }
+    }
+    if (!detail.said) {
+      const text = blocksOf(entry).filter((b) => b.type === 'text').map((b) => String(b.text || '')).join('\n').trim();
+
+      // Not a tag: `latestAgentReport` skips these too - the CLI's own furniture reads as the
+      // agent's last word and it is not.
+      if (text && !/^</.test(text)) {
+        detail.said = text.slice(0, SAID_MAX);
+      }
+    }
+    if (detail.said && detail.question) {
+      break;
+    }
+  }
+
+  return detail;
+}
+
+/** The tail of a file as lines, without the first one, which was cut in the middle. */
+function tailLines(file, bytes = TAIL_BYTES) {
+  let fd = 0;
+
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const take = Math.min(size, bytes);
+    const buffer = Buffer.alloc(take);
+
+    fs.readSync(fd, buffer, 0, take, size - take);
+    const lines = buffer.toString('utf8').split('\n');
+
+    return take < size ? lines.slice(1) : lines;
+  } catch {
+    return [];
+  } finally {
+    if (fd) {
+      try {
+        fs.closeSync(fd);
+      } catch { /* already closed */ }
+    }
+  }
+}
+
+
+/**
+ * One tick at a time, whichever kind.
+ *
+ * The listing and the refresh write the same key, and `writeDoc` is a merge-patch with no
+ * precondition - so a refresh that read the document before the listing's write and wrote after it
+ * would silently undo a transition. Serialising them inside this process costs nothing (the disk
+ * tick is a handful of stats) and removes the only race this design can actually prevent. The
+ * overlap between two processes cannot be prevented, which is what the idempotent fold is for.
+ */
+function once(work) {
+  if (!ticking) {
+    ticking = work().finally(() => {
+      ticking = null;
+    });
+  }
+
+  return ticking;
+}
+
+function note(detail, started) {
+  watch = {
+    at: Date.now(), ms: Date.now() - started, ok: false, detail, first: watch.first,
+  };
+  console.error(`[dev-api] conversations: ${ detail }`);
+}
+
+/**
+ * The freshness a consumer needs, and the two halves of it that must not be confused.
+ *
+ * `stale` is about the loop: `at` is stamped by every tick whatever happened, so this is "nothing
+ * is looking any more", and a client releases everything it was holding on it.
+ *
+ * `ok`/`detail` are about the last listing only. An exec that failed changes nothing - the states
+ * stand as the listing before it left them, old rather than wrong, with `watchedAt` saying how
+ * old. A client must NOT release the cards it is holding on `ok: false`: a busy cluster with
+ * several working agents is exactly when an exec is most likely to time out, and that is the
+ * moment releasing everything would be most wrong.
+ *
+ * `at: ''` is "has not looked yet", the few seconds after a publish, and is not stale: the counters
+ * were read back from the document and are correct.
+ */
+function freshness() {
+  const doc = memo.doc || freshDoc();
+
+  return {
+    epoch:      doc.epoch || '',
+    pod:        doc.pod || '',
+    podSettled: !agentSeen.since || Date.now() - agentSeen.since > POD_SETTLE_MS,
+    watchedAt:  watch.at ? new Date(watch.at).toISOString() : '',
+    ageMs:      watch.at ? Date.now() - watch.at : -1,
+    stale:      !!watch.at && Date.now() - watch.at > STALE_MS,
+    ok:         watch.ok,
+    detail:     watch.detail,
+  };
+}
+
+async function conversationsAnswer(url) {
+  const doc = await conversationDoc();
+  const workspace = url.searchParams.get('workspace') || '';
+  const states = (url.searchParams.get('state') || '').split(',').filter(Boolean);
+  const conversations = Object.values(doc.items || {})
+    .filter((c) => !workspace || c.workspace === workspace)
+    .filter((c) => !states.length || states.includes(c.state))
+    .sort((a, b) => String(b.changedAt).localeCompare(String(a.changedAt)));
+
+  return { conversations, ...freshness() };
+}
+
 const routes = [
   /*
    * The health check, and nothing else.
@@ -2791,6 +3688,43 @@ const routes = [
    * /templates, which is where the only caller was already looking.
    */
   ['GET', /^\/$/, async() => ({ api: 'ok' })],
+  // -- Conversations -------------------------------------------------------------------------
+  //
+  // What every claude in the Studio's agent pod is doing, and how many times each has stopped
+  // and asked. Watched here (reconcileConversations) rather than read by a browser, which is the
+  // whole of the change: every read of this used to be an exec issued BY a tab, so with no tab
+  // open nothing observed anything - and the two moments worth knowing about, "it finished" and
+  // "it is asking you something", are by definition moments when nobody is watching.
+  //
+  // A snapshot and two counters rather than a log. `stops` and `asks` are what a client compares
+  // against what it last acted on; what they cannot say is which way the news went, and that is
+  // paid where it is cheapest - the card comes back either way, and what it is about is read off
+  // the conversation when the card is drawn. The sequence, when somebody wants it, is the hook's
+  // own events.jsonl: see /conversations/{id}/events.
+  ['GET', /^\/conversations$/, async(m, url) => conversationsAnswer(url)],
+  ['GET', /^\/conversations\/(agent-\d+|p-[a-z0-9-]+-\d+)$/, async(m) => {
+    const held = (await conversationDoc()).items?.[m[1]];
+
+    if (!held) {
+      throw failure(404, `No conversation called ${ m[1] }.`);
+    }
+
+    return { conversation: held, ...freshness() };
+  }],
+  // The sequence, read off the hook's own log rather than from a log of our own. The id pattern
+  // is spelled out rather than `[^/]+` because this one interpolates into a path.
+  ['GET', /^\/conversations\/(agent-\d+|p-[a-z0-9-]+-\d+)\/events$/, async(m, url) => ({
+    id: m[1], ...hookEvents(m[1], Number(url.searchParams.get('limit') || 50)),
+  })],
+  // Look now rather than at the next tick. One caller: a page that has just set an agent
+  // working. Without it the card it put aside comes back for one tick at the counters it was put
+  // aside at, on top of somebody who has just dealt with it. At most one listing in flight
+  // however many tabs press it.
+  ['POST', /^\/conversations\/refresh$/, async() => {
+    await listingTick();
+
+    return conversationsAnswer(new URL('http://dev-api/conversations'));
+  }],
   ['GET', /^\/templates$/, async() => ({ templates: await apps() })],
   // What a workspace is laid out from: the extension's own files, with the skills, rules and
   // CLAUDE.md from codyrancher/ai-skills over them. Served because an exec command is URL
@@ -3782,4 +4716,15 @@ http.createServer(async(req, res) => {
 
   setTimeout(tools, 20_000);
   setInterval(tools, 60_000);
+
+  // The conversations in the agent pod: what finished, and what is asking, while no page was open.
+  //
+  // Thirty seconds for the listing, which is the one exec; five for the refresh, which is a stat
+  // per conversation on a mount this pod already has. Five is below the browser's own fifteen
+  // (workspace-status.ts, AGENTS_EVERY_MS), so nothing reading this is ever staler than what the
+  // sidebar managed by itself. Staggered off the three loops above the way they are off each other.
+  const listing = () => listingTick().catch((e) => console.error('[dev-api] conversation listing tick failed:', e.message || e));
+  setTimeout(listing, 5_000);
+  setInterval(listing, LISTING_MS);
+
 });

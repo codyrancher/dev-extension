@@ -23,6 +23,18 @@ export interface FocusPrefs {
   snoozed: Record<string, string>;
   /** Queue key to when it was dealt with, so it does not come straight back. */
   done: Record<string, string>;
+  /**
+   * Cards put aside until an agent stops, by queue key.
+   *
+   * The person's, not the browser's, because it changes the deck's ranking and has to be the same
+   * on every tab and after a reload - which is the whole point of it. What is stored is the
+   * conversation and the counters it was at when the work was handed over: the card is held back
+   * until one of them moves, and `stops`/`asks` move on the way OUT of a turn and never on the way
+   * in, which is why they are what is kept rather than a revision. `epoch` and `bornAt` are the two
+   * ways the thing being counted can be replaced underneath - a deleted document, and
+   * `sessions.sh new` handing the same ordinal to somebody else's conversation.
+   */
+  awaiting?: Record<string, { conversation: string; stops: number; asks: number; epoch: string; bornAt: string; at: string }>;
 }
 
 export interface DevPrefs {

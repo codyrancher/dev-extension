@@ -19,6 +19,7 @@
  */
 import { computed, ref, watch } from 'vue';
 import type { FocusTask, CardAction, CardSurface } from '../../focus';
+import { isAgentic } from '../../focus';
 import AppButton from './AppButton.vue';
 import KindChip from './KindChip.vue';
 import AppIcon from './AppIcon.vue';
@@ -335,6 +336,16 @@ const navs = computed(() => others.value
 const asked = computed(() => others.value.find((action) => action.verb === 'ask') || null);
 
 const offersAsk = computed(() => Boolean(asked.value) || primary.value?.verb === 'ask');
+
+/*
+ * Whether the primary sets an agent working, and so carries the sparkle the ghost beside it has.
+ *
+ * The ghost has always had it and the primary never did, so a card whose first move was an agent -
+ * "Fix it" over "Why is it red?" - marked the smaller of its two agentic buttons and left the
+ * larger bare. `describe` is resolved here because only the card knows which way it goes: with no
+ * description to write it asks an agent, and with one it writes to GitHub.
+ */
+const agenticPrimary = computed(() => isAgentic(primary.value, !String(art.value.body || '').trim()));
 
 /** Putting it off: the far end of the row, because it is the opposite of the primary. */
 const later = computed(() => others.value.find((action) => action.verb === 'snooze') || null);
@@ -967,6 +978,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         v-if="primary"
         variant="kind"
         size="lg"
+        :icon="agenticPrimary ? 'sparkle' : undefined"
         icon-after="arrow-right"
         :busy="busy || reading"
         :class="{ 'card__sure': confirming === primary.label }"

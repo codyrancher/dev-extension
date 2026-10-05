@@ -55,6 +55,9 @@ PROJECT=''
 
 case "$VERB" in
   list|new|states) PROJECT=$2; ID='' ;;
+  # Every conversation this pod holds, both kinds at once, so one caller can have the lot in one
+  # exec rather than one per project. It takes no project by definition.
+  states-all) PROJECT=''; ID='' ;;
 esac
 
 case "$PROJECT" in
@@ -156,7 +159,7 @@ case "$VERB" in
     done
     ;;
 
-  states)
+  states|states-all)
     # What each conversation's pane is doing, for the status dot on its tab.
     #
     # Computed in the pod because the two facts that decide it are reachable from nowhere else.
@@ -177,16 +180,38 @@ case "$VERB" in
     # the last event.
     now=$(date +%s)
 
-    for state in "$SESSIONS/$PREFIX"*.state.json; do
+    # `states` walks one prefix; `states-all` walks every state file and tells the two kinds apart
+    # by their shape. One body, because the expensive half - the stat of each transcript and its
+    # subagents - is identical and must stay identical: three browser parsers read `states`, and
+    # its output has to go on being byte for byte what it was.
+    if [ "$VERB" = states-all ]; then
+      GLOB="$SESSIONS"/*.state.json
+    else
+      GLOB="$SESSIONS/$PREFIX"*.state.json
+    fi
+
+    for state in $GLOB; do
       [ -f "$state" ] || continue
 
       id=$(basename "$state" .state.json)
 
-      # Same guard as `list`: the prefix is a glob, so what follows it must be nothing but the
-      # ordinal, or project `foo` swallows project `foo-bar`.
-      case "${id#"$PREFIX"}" in
-        ''|*[!0-9]*) continue ;;
-      esac
+      # Whether this id is one of the kind this run is listing.
+      #
+      # With a prefix, what follows it must be nothing but the ordinal - the prefix is a glob, and
+      # a glob for project `foo` also matches project `foo-bar`. With no prefix both kinds are
+      # being listed at once, so the shape itself is the test: `agent-<n>`, or `p-<project>-<n>`
+      # whose project may itself contain dashes.
+      if [ "$VERB" = states-all ]; then
+        case "$id" in
+          agent-*) case "${id#agent-}" in ''|*[!0-9]*) continue ;; esac ;;
+          p-*-*)   case "${id##*-}"    in ''|*[!0-9]*) continue ;; esac ;;
+          *) continue ;;
+        esac
+      else
+        case "${id#"$PREFIX"}" in
+          ''|*[!0-9]*) continue ;;
+        esac
+      fi
 
       alive=no
       tmux has-session -t "mc-$id" 2>/dev/null && alive=yes
@@ -213,6 +238,15 @@ case "$VERB" in
       # line per conversation.
       printf '%s\t%s\t%s\t%s\n' "$id" "$alive" "$wrote" "$(head -c 800 "$state" | tr -d '\n\t')"
     done
+
+    # The sentinel, and only on `states-all`.
+    #
+    # Its one caller reads the exec subresource's channel 1 and nothing else, so a 403, a pod that
+    # went away mid-exec and a pod holding no conversations all arrive as the same empty string.
+    # A reader that has not seen this line did not get an answer, and must not record one - see
+    # "never publish a guess" in the registrar reconciler. `states` does not print it, because
+    # three browser parsers read that output and it has to stay exactly what it was.
+    [ "$VERB" = states-all ] && echo '@@end'
     ;;
 
   new)
@@ -284,7 +318,7 @@ case "$VERB" in
     ;;
 
   *)
-    echo "unknown verb: $VERB (list [project], states [project], new [project], end ID, rename ID TITLE)" >&2
+    echo "unknown verb: $VERB (list [project], states [project], states-all, new [project], end ID, rename ID TITLE)" >&2
     exit 2
     ;;
 esac
