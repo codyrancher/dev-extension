@@ -499,15 +499,27 @@ function released(item: PriorityItem, state: FocusState, agents: ConversationSna
   }
 
   const asking = now.state === 'input';
+  /*
+   * How much happened while the card was away, when it was more than one thing.
+   *
+   * The counters are all a snapshot can say about the past, and the difference between "it
+   * stopped" and "it stopped twice and asked you something" is the difference between walking
+   * into one answer and walking into a conversation. How many, never what - for that the card's
+   * own chat is one press away, and /conversations/{id}/events has the sequence.
+   */
+  const news = agentNews(item.key, state, agents);
+  const extra = news && (news.stops + news.asks) > 1
+    ? ` (${ [news.stops > 1 && `stopped ${ news.stops } times`, news.asks && `asked ${ news.asks === 1 ? 'something' : `${ news.asks } things` }`].filter(Boolean).join(', ') })`
+    : '';
 
   return {
     ...item,
     since: now.changedAt || item.since,
     rule:  asking ? 'agent-question' : 'agent-stopped',
     needs: asking ? 'Answer the agent' : 'Read what the agent did and say what happens next',
-    why:   asking
+    why:   (asking
       ? (now.message || 'the agent asked something and stopped until it hears back')
-      : (now.state === 'finished' ? 'the agent stopped and its pane has gone' : 'the agent you set working here finished while you were away'),
+      : (now.state === 'finished' ? 'the agent stopped and its pane has gone' : 'the agent you set working here finished while you were away')) + extra,
     score: weightOf(asking ? 'agent-question' : 'agent-stopped'),
   };
 }

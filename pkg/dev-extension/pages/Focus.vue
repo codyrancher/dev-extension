@@ -2168,6 +2168,19 @@ onBeforeUnmount(closeSettings);
 
       <main class="focus__deck">
         <DeckSkeleton v-if="loading" />
+        <!--
+          A watcher that cannot read the pod says so here rather than in a log nobody reads.
+
+          `ok: false` is not `stale`: the loop is still running and every state stands as the
+          previous listing left them - old rather than wrong. So this is a note and not a warning,
+          and the cards it is holding stay held: a busy cluster is exactly when an exec times out,
+          which is the worst moment to release everything somebody set working.
+        -->
+        <div v-if="agents && !agents.ok" class="deck__watch">
+          The agent watcher could not read the pod, so what each one is doing may be out of date.
+          <span v-if="agents.detail" class="deck__watch-why">{{ agents.detail }}</span>
+        </div>
+
         <FocusDeck
           v-else
           ref="deckRef"
@@ -2443,6 +2456,22 @@ onBeforeUnmount(closeSettings);
 </template>
 
 <style scoped>
+.deck__watch {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  margin-bottom: var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--warning);
+  border-radius: var(--r-sm);
+  background: var(--warning-wash, transparent);
+  color: var(--text-dim);
+  font-size: var(--t-sm);
+}
+
+.deck__watch-why { color: var(--text-faint); font-size: var(--t-xs); }
+
 /*
  * The page is the prototype's: a ground with two soft lights on it, a row across the top, and
  * the deck taking everything that is left. What it does not have is the prototype's chat bar -
