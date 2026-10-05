@@ -20,6 +20,8 @@ export { setManualStage, clearManualStage, isManual } from './stages';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
+import { activityState } from './agent';
+
 export type AgentState = 'working' | 'input' | 'idle' | 'finished' | 'none';
 export type Tone = 'green' | 'attention' | 'waiting' | 'working' | 'muted';
 /** Where the work is, on the rail: a fix's stages, or a review's. */
@@ -204,13 +206,6 @@ export function agentLabel(state: AgentState): string {
 
 const GITHUB_EVERY_MS = 5 * 60_000;
 const AGENTS_EVERY_MS = 15_000;
-/**
- * How recently the transcript must have been written for the conversation to count as working.
- * Long enough to cover a subagent thinking between writes, short enough that a conversation
- * nobody is in stops claiming to be busy.
- */
-const WORKING_WINDOW_S = 90;
-
 const STORE_KEY = 'dev-extension.workspace-status';
 const statuses = new Map<string, WorkspaceStatus>(hydrate());
 let agents: Record<string, AgentState> = {};
@@ -254,38 +249,28 @@ const RANK: Record<AgentState, number> = {
 
 /** One conversation's state from the last hook event its pane recorded, and whether the pane is there. */
 export function agentStateOf(c: ConversationState): AgentState {
-  if (!c.alive) {
-    return 'finished';
-  }
-  // The transcript, when it has moved since the hook last spoke.
-  //
-  // A hook fires at the edges of a turn, so a turn spent inside subagents - twenty minutes of
-  // them - reads as finished to it while the subagents write their transcripts all the while.
-  // And there is no hook at all for "the question was answered": a permission prompt answered
-  // in the terminal leaves the last Notification standing, so the question mark sat on a
-  // workspace whose agent had been working again for ten minutes.
-  //
-  // Writing since the hook spoke settles both: the agent is doing something, whatever it last
-  // said. A question with nothing written since it was asked is still a question.
-  const hookAgo = (Date.now() - (Date.parse(c.at) || 0)) / 1000;
-
-  if (c.wroteAgo >= 0 && c.wroteAgo <= WORKING_WINDOW_S && c.wroteAgo + 5 < hookAgo) {
-    return 'working';
-  }
-  if (c.event === 'Notification' && c.notification && c.notification !== 'idle_prompt') {
-    return 'input';
-  }
-  switch (c.event) {
-  case 'UserPromptSubmit':
-  case 'PreToolUse':
-  case 'PostToolUse':
-  case 'SubagentStop':
-    return 'working';
-  case 'Notification':
-    return c.notification === 'idle_prompt' ? 'idle' : 'input';
-  default:
-    return 'idle';
-  }
+  /*
+   * One derivation, and this is no longer it.
+   *
+   * There were two copies of this judgement and they had drifted: the one here had neither the
+   * five-second margin that lets a hook overrule a transcript which has only just stopped, nor the
+   * SessionStart fix - the CLI fires SessionStart the moment it finishes an auto-compact and then
+   * carries straight on, so treating it as "idle" was wrong every time a conversation compacted.
+   * The same conversation therefore read `idle` in this sidebar and `working` in the conversation
+   * strip, which is how the drift was found.
+   *
+   * `activityState` in agent.ts is the surviving copy, and dev-api's watcher was ported from it, so
+   * delegating here leaves one algorithm with two call sites rather than two algorithms. The
+   * snapshot already carries a state decided that same way; this path is what answers when the
+   * watcher cannot be reached.
+   */
+  return activityState({
+    alive:        c.alive,
+    event:        c.event,
+    notification: c.notification,
+    at:           c.at,
+    wroteAgo:     c.wroteAgo,
+  }) as AgentState;
 }
 
 async function refreshAgents(): Promise<void> {

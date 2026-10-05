@@ -23,6 +23,7 @@ import {
 } from './reviews';
 import type { LocalComment, LocalAttachment } from './reviews';
 import { issueBody } from './github';
+import type { ConversationSnapshot } from './conversations';
 import { reviewNotes, parsePatch, hunkAround } from './focus-review';
 import type { DiffLine, ReviewNote } from './focus-review';
 import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from './api';
@@ -1246,6 +1247,32 @@ export function keptKeys(): string[] {
   return [...seen.keys()];
 }
 
+/** The states that mean a conversation has stopped and the work is a person's again. */
+const SETTLED_STATES = new Set(['input', 'idle', 'finished', 'gone']);
+
+/** The stopped conversation in this workspace as the `conversation` artifact, or null. */
+export function turnFromSnapshot(agents: ConversationSnapshot | null, workspace: string): AgentTurn | null {
+  const found = Object.values(agents?.conversations || {})
+    .filter((c) => c.workspace === workspace && SETTLED_STATES.has(c.state) && c.state !== 'gone')
+    .sort((a, b) => String(b.changedAt).localeCompare(String(a.changedAt)))[0];
+
+  if (!found || (!found.said && !found.question)) {
+    return null;
+  }
+
+  return {
+    conversation: found.id,
+    question:     found.question?.header || found.message || '',
+    options:      (found.question?.options || []).map((label, i) => ({ key: String(i), label, selected: false })),
+    wants:        found.question ? (found.question.tool === 'ExitPlanMode' ? 'plan' : 'choice') : (found.state === 'finished' ? '' : 'text'),
+    said:         found.said,
+    status:       '',
+    tail:         '',
+    title:        '',
+    reachable:    true,
+  };
+}
+
 export async function readArtifacts(
   task: { key?: string; what: string; workspace: string; rule: string },
   wants: Artifact[],
@@ -1254,7 +1281,7 @@ export async function readArtifacts(
   /** What the queue was built from, for the artifacts that are already in it. See poolFrom. */
   work: Json = null,
   /** The other two things the queue was built from: the advisories and the bot's pull requests. */
-  extra: { alerts?: Json[]; botPrs?: Json[]; botReviews?: Json } | null = null,
+  extra: { alerts?: Json[]; botPrs?: Json[]; botReviews?: Json; agents?: ConversationSnapshot | null } | null = null,
 ): Promise<CardArtifacts> {
   const want = new Set(wants || []);
   const subject = subjectOf(task);
@@ -1421,7 +1448,23 @@ export async function readArtifacts(
 
     (async() => {
       if (want.has('conversation')) {
-        out.agent = await agentTurnOf(subject.workspace).catch(() => null);
+        /*
+         * The watcher's own read first.
+         *
+         * `agentTurnOf` is up to five execs - a conversation listing, three pane reads and a `node
+         * -e` over a transcript - and the deck prefetches the two cards either side of the one on
+         * screen, so one deck move was up to fifteen. When a conversation has stopped, dev-api has
+         * already read its last word and its pending question off the mount, for nothing, so this
+         * is the same answer for no execs at all.
+         *
+         * What is lost is `status` and `tail`, both of which come from the pane's own text.
+         * `status` is the spinner's verb and is '' for a conversation that has stopped - which
+         * every one of these is - so nothing is lost there. `tail` is the pane's last six lines,
+         * against `said`, the last thing claude wrote in the transcript: for a crash those differ,
+         * which is what the `finished` wording is for.
+         */
+        out.agent = turnFromSnapshot(extra?.agents || null, subject.workspace) ||
+          await agentTurnOf(subject.workspace).catch(() => null);
       }
     })(),
 
