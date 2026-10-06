@@ -196,7 +196,22 @@ export interface ConversationSnapshot {
 export async function conversationSnapshot(): Promise<ConversationSnapshot | null> {
   const answer = await devFetch(`${ DEV_API }/conversations`).catch(() => null);
 
-  if (!answer?.conversations || answer.stale) {
+  /*
+   * Nothing to say is not the same as nothing there, and this is where standard mode breaks.
+   *
+   * The rail, the conversations page and every workspace's status all read `conversationStates`,
+   * which prefers this and falls back to an exec. The guard used to be `!answer?.conversations`,
+   * and an empty array is truthy - so for the half minute after dev-api restarts, before its first
+   * listing has run, this answered "a snapshot with no conversations" and every one of those
+   * surfaces drew an empty list instead of asking the pod itself. A restart happens on every
+   * release, and while two tabs were rewriting its ConfigMap it happened every few minutes.
+   *
+   * So: a snapshot is only used when it is actually saying something. Empty, stale, or a listing
+   * that failed all fall through to the exec, which is slower and always right. Focus keeps the
+   * snapshot for what it is for - what happened while nothing was watching - and standard never
+   * waits on it to be healthy.
+   */
+  if (!answer?.conversations?.length || answer.stale || answer.ok === false) {
     return null;
   }
 
