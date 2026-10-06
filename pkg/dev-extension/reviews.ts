@@ -642,19 +642,25 @@ export async function openConversation(workspace: string, title = 'Conversation'
   const existing = await listConversations(workspace).catch(() => [] as ProjectConversation[]);
 
   /*
-   * The one with this title, or a new one with it - never just the first.
+   * The one with this title if there is one, and otherwise the conversation that is already here.
    *
-   * It was `existing[0]`, and `projectSessions` sorts ascending by the numeric suffix
-   * (agent.ts:699), so the first is the OLDEST conversation in the workspace. In a `pr-<n>`
-   * workspace made by `startPrReview` that is the pane running the review itself, so "Ask the
-   * agent" and the Focus bar were typing into a review mid-pass - and the `title` every caller
-   * already passes ('Focus' from focus-agent.ts, 'Conversation' from the rail) was read only when
-   * creating one, never when finding it again.
+   * This matched on the title alone for a while, creating a new conversation when none matched -
+   * and in a workspace whose conversations are called `Review #19153` or `Discuss comment #8`,
+   * nothing ever matches `Conversation`. So asking the agent minted an empty conversation and the
+   * pane switched to it: what you were reading flashed and was replaced by a blank one, which is
+   * how it was reported and exactly what it was.
    *
-   * Matching on it is also what lets a conversation belong to one thing: a card, or a single review
-   * comment, found again by the same name on the next visit rather than joining whatever ran first.
+   * The title is still preferred, because a caller that names one means it. What changed back is
+   * the fallback: an existing conversation is reused rather than a new one made. Creating is the
+   * last resort it always was, for a workspace that genuinely has none.
+   *
+   * The hazard that prompted the title match is real but much smaller than this was: `existing[0]`
+   * is the oldest, which in a `pr-<n>` workspace is the review's own pane, so a general question
+   * can land in a review mid-pass. That is worth fixing where the conversation is chosen for a
+   * specific purpose - `startPrReview` and `startIssueFix` already match on title themselves - and
+   * is not worth a new conversation on every ask.
    */
-  const found = existing.find((conversation) => conversation.title === title);
+  const found = existing.find((conversation) => conversation.title === title) || existing[0];
 
   return found || openWith(workspace, title, '', undefined, onNote);
 }
