@@ -2095,7 +2095,28 @@ export async function installDevResources(store: Store): Promise<void> {
  * addressing whichever cluster it happened to finish on.
  */
 async function perCluster(clusters: string[], work: (cluster: string) => Promise<void>): Promise<void> {
-  for (const cluster of [...new Set(clusters.filter(Boolean))]) {
+  const wanted = [...new Set(clusters.filter(Boolean))];
+  /*
+   * Which of these this Rancher still has, asked once for the whole sweep.
+   *
+   * A workspace left behind on a Rancher that was deleted keeps its cluster id, and that id
+   * arrives here like any other. Sweeping it is not merely wasted: every call against a cluster
+   * that is gone hangs and then answers 500, and for the whole of that window the module-level
+   * base points at it - which `podExecUrl`, `workspaceMediaBase` and the service proxy all read
+   * at call time. So a terminal opened while this ran built its websocket against a cluster that
+   * does not exist, and so did the media list and the namespace reads. One stale workspace was
+   * doing that to every page in the session, on every load.
+   *
+   * A list that did not arrive proves nothing, so when it fails nothing is skipped - the same
+   * rule missingCluster() follows.
+   */
+  const known = await devFetch('/v3/clusters', { timeoutMs: 8000 }).catch(() => null);
+  const have: Set<string> | null = known?.data ? new Set(known.data.map((cluster: Json) => String(cluster.id))) : null;
+
+  for (const cluster of wanted) {
+    if (have && !have.has(cluster)) {
+      continue;
+    }
     const previous = activeCluster();
 
     setCluster(cluster);
