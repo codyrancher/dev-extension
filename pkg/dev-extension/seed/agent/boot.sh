@@ -88,7 +88,22 @@ HOME_DIR="$AGENT_HOME" /bin/sh /seed/terminal-tools.sh >"$WORKSPACE/.terminal-to
   /bin/sh /seed/registrar-state.sh
 ) >"$WORKSPACE/.registrar.log" 2>&1 &
 
-# The container's only remaining job is to stay up so there is something to exec into. `tail -f`
-# on /dev/null is the smallest thing that does that and says nothing; a `sleep` with a number on
-# it would end, and a pod that ends is a pod Kubernetes restarts for no reason.
-exec tail -f /dev/null
+# The container's only remaining job is to stay up so there is something to exec into - and to
+# reap. The daemons started above poll with kubectl every ten or fifteen seconds and leave the
+# odd orphan behind; an orphan is reparented to PID 1, and `tail -f`, which never calls wait(),
+# turned every one of them into a permanent zombie - two thousand of them, climbing by ten a
+# minute, each holding a PID.
+#
+# Ignoring SIGCHLD is the whole fix: a process that ignores it has its children reaped by the
+# kernel, reparented ones included, so nothing has to call wait() at all. SIGTERM is handled
+# explicitly because PID 1 is exempt from default signal dispositions - without a handler the
+# signal is discarded, and every delete of this pod sat out its full grace period before the
+# kill. python3 is in this image; tini is not.
+exec python3 -c '
+import signal, sys, time
+signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+while True:
+    time.sleep(3600)
+'
