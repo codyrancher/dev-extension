@@ -396,6 +396,19 @@ function csrfHeader(): Record<string, string> {
  * Rancher rejects a write without it, and the value is the CSRF cookie the session already
  * set, so this needs nothing the page does not have.
  */
+/**
+ * The statuses a service that is coming back up answers with, as opposed to a real refusal.
+ *
+ * 502/503/504 from Rancher's proxy mean "nothing is listening behind this yet", which is what the
+ * proxy says for the seconds a Deployment takes to replace a pod. 404 is NOT here: the proxy
+ * answers that for a service that does not exist, and retrying it would only slow down the honest
+ * answer.
+ */
+const COMING_BACK = new Set([502, 503, 504]);
+
+/** How long to wait for a service to come back before giving the caller the failure. */
+const RETRY_PAUSE_MS = [400, 1200, 2500];
+
 export async function devFetch(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<Json> {
   const { timeoutMs, ...rest } = init || {};
   const write = !!rest.method && rest.method !== 'GET';
@@ -426,6 +439,37 @@ export async function devFetch(path: string, init?: RequestInit & { timeoutMs?: 
   const data = await resp.json().catch(() => ({}));
 
   if (!resp.ok) {
+    /*
+     * A service that is restarting is not a service that said no.
+     *
+     * Every open tab rewrites the dev-api ConfigMap on load with the `server.mjs` its own bundle
+     * carries, and deletes the pod to pick it up - so two tabs on different releases roll that
+     * Deployment between them, and for the ten or twenty seconds each roll takes, the proxy in
+     * front of it answers 503 with no endpoints. Measured on a cluster with tabs on four releases
+     * open: the pod killed and replaced every couple of minutes, and in that window `my-work`
+     * answered 500 on a fix, a workspace page said its pod was not answering while the pod was
+     * perfectly healthy, and every page had to be loaded twice.
+     *
+     * A version stamp on that ConfigMap stops the rolling (ensureWorkspaceApi), but only between
+     * tabs that both carry it - a tab older than that change cannot be taught anything. So the
+     * read side gives up more slowly than the restart takes, which makes the whole class of
+     * failure invisible rather than merely rarer. Reads only: a retried write is a write that may
+     * happen twice.
+     */
+    const retriable = !write && COMING_BACK.has(resp.status) && (rest as { retried?: number }).retried === undefined;
+
+    if (retriable) {
+      for (const pause of RETRY_PAUSE_MS) {
+        await new Promise((done) => setTimeout(done, pause));
+
+        try {
+          return await devFetch(path, { ...init, retried: 1 } as RequestInit & { timeoutMs?: number });
+        } catch {
+          // Still coming back; the next pause is longer, and the last failure is thrown below.
+        }
+      }
+    }
+
     throw new Error(data.message || data.error || `HTTP ${ resp.status }`);
   }
 
