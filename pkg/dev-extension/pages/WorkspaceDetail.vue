@@ -68,6 +68,8 @@ export default {
       restarting: false,
       /** The cluster the rest of the product was on before this page pointed BASE at its own. */
       cameFromCluster: undefined,
+      /** What this page last pointed BASE at, so the restore can tell whether it still owns it. */
+      pointedAtCluster: undefined,
       /** Its cluster is not registered here any more: there is no pod to wait for. */
       clusterGone: false,
       /** Whether its dev server was stopped on purpose, which is not the same as not being up. */
@@ -269,8 +271,16 @@ export default {
   beforeUnmount() {
     clearInterval(this.refreshTimer);
     setViewing('');
-    // Put it back, so the next page is not reading this workspace's cluster.
-    if (this.cameFromCluster !== undefined) {
+    /*
+     * Put it back, but only if this page is still the one that moved it.
+     *
+     * Restoring unconditionally assumes this page is the last to have touched BASE, and during a
+     * navigation that is not guaranteed: the page being opened may resolve its own cluster before
+     * this one is torn down, and an unconditional restore would then point the new page's requests
+     * at the old page's cluster - the very fault this restore exists to prevent, with the sign
+     * reversed. Checking first makes the restore safe in any order.
+     */
+    if (this.cameFromCluster !== undefined && activeCluster() === this.pointedAtCluster) {
       setCluster(this.cameFromCluster);
     }
   },
@@ -339,6 +349,7 @@ export default {
           return;
         }
         setCluster(cluster);
+        this.pointedAtCluster = cluster;
       } catch { /* leave BASE as it is; a local workspace is found there anyway */ }
     },
 
@@ -390,6 +401,7 @@ export default {
             this.restarting = false;
             if (this.workspace.cluster) {
               setCluster(this.workspace.cluster);
+              this.pointedAtCluster = this.workspace.cluster;
             }
           } else {
             // A workspace already on screen missed a lookup - a re-render, a flap. Keep it and say

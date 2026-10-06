@@ -1459,7 +1459,28 @@ export default {
     },
 
     async loadConversations() {
-      this.conversations = await listConversations(this.workspace.name).catch(() => []);
+      /*
+       * A read that failed is not a workspace with no conversations.
+       *
+       * This was `.catch(() => [])`, and this runs on a timer - so one failed request emptied the
+       * list on screen and, worse, took `currentConversation` with it: the id no longer matched
+       * anything, so it was reset to the last of an empty list, which closed whatever was open.
+       * The next poll put it all back. What that looks like is a section of recordings or a
+       * conversation that appears, vanishes, and returns - and during navigation, when these reads
+       * are most likely to be interrupted, a page that shows nothing until it is reloaded.
+       *
+       * The page already reasons this way about the workspace itself ("absence is only believed
+       * when the Installation lookup itself succeeded"); the lists it draws did not. An empty
+       * answer is still honoured - a workspace really can have no conversations - but a failure
+       * leaves what is on screen alone and waits for the next poll.
+       */
+      const found = await listConversations(this.workspace.name).catch(() => null);
+
+      if (!found) {
+        return;
+      }
+
+      this.conversations = found;
       if (!this.conversations.some((c) => c.id === this.currentConversation)) {
         this.currentConversation = this.conversations[this.conversations.length - 1]?.id || '';
       }
@@ -1654,12 +1675,18 @@ export default {
       this.approving = { message: '', attached: [], error: '' };
       // What is worth attaching: the recordings and screenshots, newest first - not the
       // thousands of single frames a recording leaves behind while it is being made.
-      this.media = await devFetch(workspaceMediaListUrl(this.workspace.name))
+      // Same rule as loadConversations: a failed read leaves the recordings that are already
+      // listed alone rather than replacing them with nothing.
+      const files = await devFetch(workspaceMediaListUrl(this.workspace.name))
         .then((d) => (d?.files || [])
           .filter((f) => !/(^|\/)(tmp-frames|frames|\.cache)[^/]*\//.test(f.path) && !/\/f\d+\.(png|jpe?g)$/.test(f.path))
           .sort((a, b) => Number(/video/.test(b.type || '')) - Number(/video/.test(a.type || '')) || (b.mtimeMs || 0) - (a.mtimeMs || 0))
           .slice(0, 20))
-        .catch(() => []);
+        .catch(() => null);
+
+      if (files) {
+        this.media = files;
+      }
     },
 
     /** One of the workspace's own recordings onto the PR, and into the message. */
