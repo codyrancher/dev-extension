@@ -38,7 +38,7 @@ import WorkspaceTools from '../components/WorkspaceTools.vue';
 import { workspaceInstance } from '../apps';
 import { devServerState } from '../workspace-tools';
 import {
-  getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster, workspaceFromInstance, missingCluster
+  getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster, activeCluster, workspaceFromInstance, missingCluster
 } from '../api';
 import {
   rememberWorkspace, rememberTab, lastTab, workspaceView, rememberWorkspaceView
@@ -66,6 +66,8 @@ export default {
     return {
       /** The namespace is gone but the Installation stands: a re-render in progress, not a deletion. */
       restarting: false,
+      /** The cluster the rest of the product was on before this page pointed BASE at its own. */
+      cameFromCluster: undefined,
       /** Its cluster is not registered here any more: there is no pod to wait for. */
       clusterGone: false,
       /** Whether its dev server was stopped on purpose, which is not the same as not being up. */
@@ -246,12 +248,31 @@ export default {
     // watched is the one a stop would be felt on. See setViewing / autoStopIdle.
     setViewing(this.name);
     this.seen[this.tab] = true;
+    /*
+     * Where the rest of the product was pointed before this page moved it.
+     *
+     * `setCluster` writes a module-global BASE that every request in this extension is built
+     * from, and this page points it at its workspace's cluster - which is right while the page
+     * is open and wrong the moment it is not. It was never put back, so opening a workspace on a
+     * downstream cluster and then going to My Work sent My Work's reads to that cluster: a 500
+     * per request when the cluster has since been unregistered, and the page drawing nothing
+     * until it was reloaded, because a reload is what resets a module global. That is the whole
+     * of "every page needs refreshing once".
+     *
+     * The two callers in api.ts already save and restore around their own switch; this is the
+     * third, and it is the one that outlives its own call.
+     */
+    this.cameFromCluster = activeCluster();
     this.refreshTimer = setInterval(() => this.refresh(), REFRESH_MS);
   },
 
   beforeUnmount() {
     clearInterval(this.refreshTimer);
     setViewing('');
+    // Put it back, so the next page is not reading this workspace's cluster.
+    if (this.cameFromCluster !== undefined) {
+      setCluster(this.cameFromCluster);
+    }
   },
 
   methods: {
