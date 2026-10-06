@@ -260,9 +260,15 @@ async function readBranch(workspace: string): Promise<Branch | null> {
     'git diff --name-only "$base" 2>/dev/null | head -80',
     'echo "@@END"',
   ].join('\n');
-  const out = await readInWorkspace(workspace, script).catch(() => '');
+  // Not caught to '': an exec that did not land is not a workspace without a branch, and the
+  // two were the same `null` here - so "The change" disappeared whenever the workspace pod was
+  // busy. `@@NOREPO` is the real nothing-here, and it arrives as an answer, not as a failure.
+  const out = await readInWorkspace(workspace, script);
 
-  if (!out || out.includes('@@NOREPO')) {
+  if (!out.trim()) {
+    throw new Error('The workspace did not answer the branch read.');
+  }
+  if (out.includes('@@NOREPO')) {
     return null;
   }
   const section = (name: string, next: string) => out.slice(out.indexOf(`@@${ name }`) + name.length + 3, out.indexOf(`@@${ next }`)).trim();
@@ -282,7 +288,11 @@ async function readBranch(workspace: string): Promise<Branch | null> {
 }
 
 async function readMedia(workspace: string): Promise<{ label: string; url: string; video: boolean; at: string; path: string }[]> {
-  const data = await devFetch(workspaceMediaListUrl(workspace)).catch(() => null);
+  // Not caught to an empty list. The route answers 200 with `files: []` for a workspace that
+  // has no recordings, so every failure here is the API being away - and an empty list is
+  // drawn as "there are none", which deleted the recordings section out from under whoever
+  // was watching one. Thrown instead, and the column keeps what it already had.
+  const data = await devFetch(workspaceMediaListUrl(workspace));
   const files: Json[] = data?.files || [];
 
   return files
@@ -402,7 +412,7 @@ const pushedAt = (d: Json) => Math.max(0, ...(d.commits || []).map((c: Json) => 
  * What there is to look at for one stage of a workspace's work - the current one, or one that
  * has passed. Everything is read fresh: the branch, the recordings, the PR, the agent's report.
  */
-export async function gatherEvidence(workspace: string, status: WorkspaceStatus, stage: Stage, onUpdate?: (sections: EvidenceSection[], done: boolean) => void): Promise<EvidenceSection[]> {
+export async function gatherEvidence(workspace: string, status: WorkspaceStatus, stage: Stage, onUpdate?: (sections: EvidenceSection[], done: boolean) => void, out?: { failed: Failed }): Promise<EvidenceSection[]> {
   // Each source arrives when it does - the checkout in a second, GitHub in a few - and the
   // column is redrawn from whatever has arrived so far rather than waiting for the slowest.
   const issue = Number(/(?:^|-)issue-(\d+)(?:-|$)/.exec(workspace)?.[1]) || 0;
@@ -414,25 +424,48 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
     return v;
   });
   have.failed = {};
+  // A read that threw is not a read that found nothing. Caught to null and handed to compose,
+  // the two are indistinguishable, and every section helper below drops its section on falsy
+  // data - so one slow minute from the in-cluster API deleted the report, the recordings and
+  // the change out from under whoever was reading them. Each read now says which it was.
+  const tried = async<T>(name: string, p: Promise<T>): Promise<{ ok: boolean; v: T | null }> => {
+    try {
+      return { ok: true, v: await timed(name, p) };
+    } catch {
+      return { ok: false, v: null };
+    }
+  };
   const reads: Promise<void>[] = [
-    timed('report', latestAgentReport(workspace).catch(() => null)).then((v) => { have.report = v; }),
-    timed('branch', readBranch(workspace).catch(() => null)).then((v) => {
-      have.branch = v;
+    tried('report', latestAgentReport(workspace)).then((r) => {
+      have.report = r.v;
+      have.failed = { ...have.failed, report: !r.ok };
+    }),
+    tried('branch', readBranch(workspace)).then((r) => {
+      have.branch = r.v;
+      have.failed = { ...have.failed, branch: !r.ok };
       // The status module learns from here whether the branch has commits (assess vs code),
       // whatever stage's column is being composed.
-      if (v) {
-        noteCoded(workspace, !!v.commits.length);
+      if (r.v) {
+        noteCoded(workspace, !!r.v.commits.length);
       }
     }),
-    timed('media', readMedia(workspace).catch(() => [])).then((v) => { have.media = v; }),
-    timed('pr', status.pr ? prDetail(status.pr).catch(() => null) : Promise.resolve(null)).then((v) => {
-      have.d = v;
-      have.failed = { ...have.failed, pr: !!status.pr && !v };
+    tried('media', readMedia(workspace)).then((r) => {
+      have.media = r.v || [];
+      have.failed = { ...have.failed, media: !r.ok };
     }),
-    timed('issue', issue && status.kind === 'fix' ? issueBody(DEFAULT_REPO, issue).catch(() => null) : Promise.resolve(null)).then((v) => { have.issue = v; }),
+    tried('pr', status.pr ? prDetail(status.pr) : Promise.resolve(null)).then((r) => {
+      have.d = r.v;
+      have.failed = { ...have.failed, pr: !!status.pr && !r.v };
+    }),
+    tried('issue', issue && status.kind === 'fix' ? issueBody(DEFAULT_REPO, issue) : Promise.resolve(null)).then((r) => { have.issue = r.v; }),
   ];
   let pending = reads.length;
-  const emit = (done: boolean) => onUpdate?.(compose(status, stage, have), done);
+  const emit = (done: boolean) => {
+    if (out) {
+      out.failed = have.failed || {};
+    }
+    onUpdate?.(compose(status, stage, have), done);
+  };
 
   // What the comments' attachments are, once the PR is here: asked in parallel, kept, and
   // drawn as images or players when the column is composed again.
@@ -468,7 +501,19 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
     have.ci = await ciFailures(status.pr).catch(() => null);
   }
 
+  if (out) {
+    out.failed = have.failed || {};
+  }
+
   return compose(status, stage, have);
+}
+
+/** Which of the reads behind a column threw, as opposed to finding nothing. */
+export interface Failed {
+  pr?: boolean;
+  report?: boolean;
+  branch?: boolean;
+  media?: boolean;
 }
 
 interface Sources {
@@ -479,7 +524,7 @@ interface Sources {
   issue?: { title: string; body: string; url: string } | null;
   ci?: Json;
   /** Which reads failed, so the column says so rather than quietly leaving a section out. */
-  failed?: { pr?: boolean };
+  failed?: Failed;
   /** Attachment URL -> content type, for the bodies. */
   kinds?: Record<string, string>;
 }
