@@ -406,8 +406,19 @@ function csrfHeader(): Record<string, string> {
  */
 const COMING_BACK = new Set([502, 503, 504]);
 
-/** How long to wait for a service to come back before giving the caller the failure. */
-const RETRY_PAUSE_MS = [400, 1200, 2500];
+/**
+ * One short retry, and only for the one service this is about.
+ *
+ * It was three, backing off to 4.1 seconds in total, and that was the wrong trade. A page load
+ * makes many of these calls, so while dev-api really was rolling every few minutes each one of
+ * them stopped failing fast and started hanging - and the page that used to draw with a gap drew
+ * nothing for tens of seconds. Masking a blip is worth about a third of a second; past that the
+ * honest answer, drawn quickly, is better than the right answer nobody waited for.
+ */
+const RETRY_PAUSE_MS = [300];
+
+/** The in-cluster API, which is the only thing here that is replaced underneath a page. */
+const PROXIED_API = '/services/http:dev-api:8080/proxy';
 
 export async function devFetch(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<Json> {
   const { timeoutMs, ...rest } = init || {};
@@ -456,7 +467,10 @@ export async function devFetch(path: string, init?: RequestInit & { timeoutMs?: 
      * failure invisible rather than merely rarer. Reads only: a retried write is a write that may
      * happen twice.
      */
-    const retriable = !write && COMING_BACK.has(resp.status) && (rest as { retried?: number }).retried === undefined;
+    const retriable = !write
+      && COMING_BACK.has(resp.status)
+      && path.includes(PROXIED_API)
+      && (rest as { retried?: number }).retried === undefined;
 
     if (retriable) {
       for (const pause of RETRY_PAUSE_MS) {
