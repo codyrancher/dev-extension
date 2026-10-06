@@ -318,10 +318,14 @@ export interface AgentReport {
  */
 export async function latestAgentReport(workspace: string): Promise<AgentReport | null> {
   const api = await requireAgents();
-  const pod = await api.agent.pod().catch(() => null);
+  // Neither the pod lookup nor the exec is caught here any more. Both used to come back as
+  // `null`, which the callers cannot tell from "the agent has not said anything yet" - so a
+  // minute of the API being away read as the report not existing, and the section vanished
+  // under whoever was reading it. The one caller that wants absence still catches its own.
+  const pod = await api.agent.pod();
 
   if (!pod) {
-    return null;
+    throw new Error('The agent pod is not there to read the report from.');
   }
   const dir = `${ AGENT_HOME }/.claude/projects/${ workspaceWorkdir(workspace).replace(/\//g, '-') }`;
   const js = [
@@ -339,7 +343,13 @@ export async function latestAgentReport(workspace: string): Promise<AgentReport 
     `echo "@@FILE $f"`,
     `node -e '${ js.replace(/'/g, "'\\''") }' "$f"`,
   ].join('\n');
-  const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE).catch(() => '');
+  const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE);
+
+  // The script always says something - `null` when there is no transcript, `@@FILE` when there
+  // is. Nothing at all means the exec itself did not land.
+  if (!out.trim()) {
+    throw new Error('The agent pod did not answer the report read.');
+  }
   const file = /@@FILE (\S+)/.exec(out)?.[1] || '';
   const json = out.slice(out.lastIndexOf('\n') + 1).trim();
 

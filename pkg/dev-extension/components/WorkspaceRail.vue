@@ -695,6 +695,8 @@ export default {
       this.reading = true;
       try {
         const fresh = this.evidenceStage !== stage;
+        // Which of the reads threw, filled in by the read itself.
+        const out = { failed: {} };
 
         const sections = await gatherEvidence(this.workspace.name, this.status, stage, (partial) => {
           console.debug(`[rail] evidence ${ seq } ${ stage } partial: ${ partial.map((s) => s.title).join(' | ') } current=${ current() }`); // eslint-disable-line no-console
@@ -704,14 +706,21 @@ export default {
             this.evidence = partial;
             this.evidenceStage = stage;
           }
-        });
-        if (current()) {
+        }, out);
+        // A section that says it could not be read is asked for again in a few seconds, a
+        // few times: the usual cause is the in-cluster API restarting, which is a minute.
+        const failed = Object.values(out.failed || {}).some(Boolean) || sections.some((x) => x.title === 'The pull request could not be read');
+
+        // The same rule the partials follow, which this line used to skip - and skipping it is
+        // what made the report and the recordings vanish mid-read: a read whose source was
+        // away composes fewer sections, and this wrote those over the ones being read. A stage
+        // already on the page is never replaced by less than it has; the failed read is tried
+        // again below, and the fuller answer lands then. Not `!failed`, deliberately: a PR that
+        // stays unreadable would freeze the column on its first draw for as long as it is open.
+        if (current() && (fresh || sections.length >= this.evidence.length)) {
           this.evidence = sections;
           this.evidenceStage = stage;
         }
-        // A section that says it could not be read is asked for again in a few seconds, a
-        // few times: the usual cause is the in-cluster API restarting, which is a minute.
-        const failed = sections.some((x) => x.title === 'The pull request could not be read');
 
         clearTimeout(this.evidenceRetryTimer);
         if (failed && this.evidenceRetry < 5) {
