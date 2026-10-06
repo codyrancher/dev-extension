@@ -105,6 +105,23 @@
   }
 
   /*
+   * The floor belongs on the tab, not only on the anchor inside it.
+   *
+   * The rule below sizes `li.tab a`, which is the shell's own markup - a line of text in an
+   * anchor. A strip whose tab is drawn by a slot instead has no anchor, so nothing sized it:
+   * measured on the conversations page at 390px, `ul.tabs` was **4px** tall and each `li.tab`
+   * **3px**, while the header component inside each one was a correct 44px and simply hung out
+   * of it. What that looks like on a phone is a thin blue line where the conversation switcher
+   * should be - every tab present in the page, none of them visible or reachable, so there is no
+   * way to see which conversation you are in or move to another.
+   *
+   * On the tab itself, so it holds whatever draws the header; `stretch` is what makes the row
+   * take the height rather than leaving the tab to float in a 4px strip.
+   */
+  .dev-root .tabs { align-items: stretch; min-height: 44px; }
+  .dev-root .tabs li.tab { min-height: 44px; }
+
+  /*
    * 44px, because the rule this replaces made the strip 18px.
    *
    * The shell's anchor has no height of its own - it is padding around a line of text - and the
@@ -177,4 +194,46 @@
 
   .dev-root .growl-list,
   .dev-root .growl { max-width: 100%; }
+
+  /* ── The composer, which is the one control you hold a conversation with ── */
+
+  /*
+   * Sixteen pixels, and the reason is not legibility.
+   *
+   * Mobile Safari zooms the whole page when a text field smaller than 16px takes focus, and it
+   * does not zoom back out - so tapping the message box on an iPhone left the conversation
+   * magnified and scrolled sideways, and the only way back was a reload. The field is `--t-sm`
+   * (13px) everywhere else, which is right on a desktop and is exactly the trigger here.
+   *
+   * On the field only. Making the whole view 16px would reflow every turn.
+   */
+  .dev-root .box__field,
+  .dev-root textarea,
+  .dev-root input[type='text'] { font-size: 16px; }
+
+  /*
+   * A thumb is not a mouse pointer.
+   *
+   * The composer is a 30px row with two 30px round buttons in it, which is the floor this view
+   * uses for anything pressable with a cursor. Apple's own minimum is 44 and Material's is 48;
+   * measured on the conversations page at 390px the field came out 29px tall, which is a target
+   * you miss. The max-height stays where it was, so a pasted essay still scrolls rather than
+   * pushing the page off the top.
+   */
+  .dev-root .box__field { min-height: 44px; }
+  .dev-root .box--single .box__field { max-height: 44px; }
+
+  .dev-root .box__grow,
+  .dev-root .box__send {
+    width: 44px;
+    height: 44px;
+  }
+
+  /*
+   * The row grows with them, and keeps its own alignment.
+   *
+   * `align-items: center` on a 44px row with a 44px field is what stops the send button drifting
+   * up when the field has grown to several lines.
+   */
+  .dev-root .box__row { align-items: flex-end; }
 }
