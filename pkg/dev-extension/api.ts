@@ -3171,6 +3171,13 @@ export async function ensureGithubBrowser(): Promise<void> {
           containers: [{
             name:  name,
             image: GITHUB_BROWSER_IMAGE,
+            // Not left to Kubernetes to decide. The default for a `:latest` tag is `Always`, so
+            // every recreation of this pod re-pulled - and linuxserver rebuild that image often
+            // enough that a pull lands a new digest, which leaves the previous one untagged in
+            // containerd with nothing to remove it. Six of them had collected at 1.18GB each,
+            // plus their extracted snapshots, because this pod was being recreated every minute
+            // or so. The image is wanted when it is genuinely absent, not on every restart.
+            imagePullPolicy: 'IfNotPresent',
             ports: [
               { name: 'http', containerPort: 3000 },
               { name: 'cdp', containerPort: 9222 },
