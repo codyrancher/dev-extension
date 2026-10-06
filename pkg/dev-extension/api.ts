@@ -2752,6 +2752,28 @@ async function gzipBase64(text: string): Promise<string> {
   return btoa(binary);
 }
 
+/**
+ * This extension's own version, as the ConfigMaps it owns record it.
+ *
+ * `require` rather than an import because that is how index.ts already reads it, and because the
+ * JSON has to survive the UMD build.
+ */
+const OUR_VERSION = String((require('./package.json') as { version?: string }).version || '0.0.0');
+
+/** Whether `a` is a later release than `b`. Three numbers; anything unparsable sorts as 0. */
+function laterThan(a: string, b: string): boolean {
+  const left = String(a || '').split('.').map((n) => Number(n) || 0);
+  const right = String(b || '').split('.').map((n) => Number(n) || 0);
+
+  for (let i = 0; i < 3; i++) {
+    if ((left[i] || 0) !== (right[i] || 0)) {
+      return (left[i] || 0) > (right[i] || 0);
+    }
+  }
+
+  return false;
+}
+
 export async function ensureWorkspaceApi(): Promise<void> {
   const namespace = DEV_SYSTEM_NAMESPACE;
   const labels = { app: API_NAME };
@@ -2767,7 +2789,7 @@ export async function ensureWorkspaceApi(): Promise<void> {
     // to the agent pod as one document (see workspace-tools.ts for why not exec).
     // Gzipped: the seed is the harness's whole skill set, which is close to a ConfigMap's
     // megabyte on its own, and the script rides in the same one.
-    [API_NAME, { 'server.mjs': WORKSPACE_API_SERVER, 'seed.json.gz.b64': await gzipBase64(JSON.stringify(AGENT_SEED)) }],
+    [API_NAME, { 'server.mjs': WORKSPACE_API_SERVER, 'seed.json.gz.b64': await gzipBase64(JSON.stringify(AGENT_SEED)), version: OUR_VERSION }],
   ] as [string, Record<string, string>][]) {
     const url = `${ BASE }/v1/configmaps/${ namespace }/${ name }`;
     const existing = await devFetch(url).catch(() => null);
@@ -2779,6 +2801,23 @@ export async function ensureWorkspaceApi(): Promise<void> {
           apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace, name, labels }, data,
         }),
       }).catch(() => null);
+    } else if (laterThan(String((existing.data || {}).version || ''), OUR_VERSION)) {
+      /*
+       * A newer release wrote this; leave it alone.
+       *
+       * Every open tab runs `ensureWorkspaceApi` on load, with the `server.mjs` ITS bundle was
+       * built from - so a tab still on an older release would rewrite what a newer one had just
+       * put there and delete the pod to pick it up. Two versions open at once is not an edge
+       * case, it is what happens for as long as somebody leaves a tab open across a release, and
+       * the result is dev-api rolling every few minutes for ever. Measured: a pod created, killed
+       * three minutes later, and replaced, over and over - which is a 500 from `my-work` whenever
+       * a request lands in the gap, a workspace page that says its pod is not answering, and a
+       * conversation that takes an age to start.
+       *
+       * The version is the one thing here that is ordered, so it decides. An older tab now reads
+       * what is there, sees a later release, and changes nothing; it still talks to the service,
+       * which is a newer API serving the same routes.
+       */
     } else if (Object.keys(data).some((key) => (existing.data || {})[key] !== data[key]) || Object.keys(existing.data || {}).some((key) => !(key in data))) {
       // Key by key: the apiserver hands the keys back sorted, so comparing the two objects as
       // JSON said "changed" on every load - and deleted the pod every time, which is where the
