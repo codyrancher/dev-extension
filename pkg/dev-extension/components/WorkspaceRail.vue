@@ -325,6 +325,14 @@ export default {
           // draft PR. It is the primary while nothing is being worked, and a tool while the agent is
           // mid-assessment so it does not cut across a conversation already going. The assessment
           // skills (reproduce, root cause) sit beside it under "Ask the agent".
+          // A developer workspace not named for an issue has nothing for "Fix it" to start from.
+          if (!this.issue) {
+            return s.agent === 'input' ? {
+              headline: 'The agent is waiting for an answer', detail: 'It asked something in its conversation and stopped until it hears back.', primary: { label: 'Answer it', run: 'openTab', arg: 'conversations' }, tools: [],
+            } : {
+              headline: s.agent === 'working' ? 'The agent is working' : 'Nothing is on this branch yet', detail: 'This workspace is not for an issue: say what it is for in its conversation.', primary: conversation, tools: [],
+            };
+          }
           if (s.agent === 'input') {
             return {
               headline: 'The agent is waiting for an answer', detail: 'It asked something in its conversation and stopped until it hears back.', primary: { label: 'Answer it', run: 'openTab', arg: 'conversations' }, tools: [{ label: 'Fix it', run: 'startFix' }],
