@@ -187,6 +187,8 @@ export default {
       liveShown: '',
       /** Which conversation is being brought back up right now, by id, so its button can wait. */
       resuming:  '',
+      /** A conversation is being started from the strip's + button. */
+      starting:  false,
     };
   },
 
@@ -1438,6 +1440,32 @@ export default {
       await this.refreshLive();
     },
 
+    /**
+     * A new, empty conversation from the strip's + button, started and shown. Through
+     * ensureWorkspaceReady like every other way in, so its pane has a dev-shell to run in.
+     */
+    async newConversation() {
+      if (this.starting) {
+        return;
+      }
+      this.starting = true;
+      this.error = '';
+      try {
+        await ensureWorkspaceReady(this.workspace.name);
+        const started = await startConversation(this.workspace.name);
+
+        await startPaneDetached(this.workspace.name, started.id);
+        await this.loadConversations();
+        this.liveShown = started.id;
+        this.currentConversation = started.id;
+        await this.refreshLive();
+      } catch (e) {
+        this.noteError(e);
+      } finally {
+        this.starting = false;
+      }
+    },
+
     /** Close a live conversation from its tab header; the next tick drops it from the strip. */
     async closeLive(conversation) {
       await endConversation(conversation.workspace || this.workspace.name, conversation.id).catch(() => {});
@@ -2110,11 +2138,11 @@ export default {
         Each tab carries its own title, agent status and open-larger/close in its header (the
         `tab-header` slot), so one running conversation still shows as a single tab rather than as
         a bar of its own.
+
+        The strip is here whether or not there is a conversation yet: its + starts one, the way
+        the Agents drawer's does, so a workspace nobody has spoken to is not a dead end.
       -->
-      <section
-        v-if="railConversations.length"
-        class="workspace-rail__live"
-      >
+      <section class="workspace-rail__live">
         <ConversationTabbed
           class="workspace-rail__live-tabs"
           :default-tab="shownConversation ? shownConversation.id : ''"
@@ -2130,6 +2158,20 @@ export default {
               @popout="popLive"
               @close="closeLive(byTab(tab.name))"
             />
+          </template>
+          <template #tab-row-extras>
+            <li class="workspace-rail__new">
+              <button
+                type="button"
+                class="workspace-rail__new-button"
+                aria-label="New conversation"
+                title="New conversation"
+                :disabled="starting"
+                @click="newConversation"
+              >
+                <i :class="starting ? 'icon icon-spinner icon-spin' : 'icon icon-plus'" />
+              </button>
+            </li>
           </template>
           <Tab
             v-for="(c, i) in railConversations"
@@ -2166,6 +2208,21 @@ export default {
             </div>
           </Tab>
         </ConversationTabbed>
+        <div
+          v-if="!railConversations.length"
+          class="workspace-rail__resume"
+        >
+          <div class="workspace-rail__resume-text">
+            No conversation has been started in this workspace yet.
+          </div>
+          <RcButton
+            primary
+            :disabled="starting"
+            @click="newConversation"
+          >
+            {{ starting ? 'Starting…' : 'New conversation' }}
+          </RcButton>
+        </div>
       </section>
 
       <div class="workspace-rail__columns">
@@ -3420,6 +3477,30 @@ export default {
   // A conversation that is not running: shown in the terminal's place so the strip keeps its
   // shape, with the one button that brings it back up. No box of its own - the tab panel around
   // it is the only frame - just the text and the button, centred.
+  &__new {
+    display: flex;
+    align-items: center;
+    list-style: none;
+  }
+
+  &__new-button {
+    padding: 4px 10px;
+    border: 0;
+    background: transparent;
+    color: var(--body-text);
+    cursor: pointer;
+
+    &:hover:not(:disabled),
+    &:focus-visible {
+      color: var(--link);
+    }
+
+    &:disabled {
+      cursor: default;
+      opacity: 0.6;
+    }
+  }
+
   &__resume {
     display:         flex;
     flex-direction:  column;
