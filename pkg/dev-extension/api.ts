@@ -2840,6 +2840,9 @@ async function gzipBase64(text: string): Promise<string> {
 const OUR_VERSION = String((require('./package.json') as { version?: string }).version || '0.0.0');
 
 /** Whether `a` is a later release than `b`. Three numbers; anything unparsable sorts as 0. */
+/** The release that wrote a ConfigMap, as a label so it can be read without the data. */
+const VERSION_LABEL = 'dev.rancher.io/version';
+
 function laterThan(a: string, b: string): boolean {
   const left = String(a || '').split('.').map((n) => Number(n) || 0);
   const right = String(b || '').split('.').map((n) => Number(n) || 0);
@@ -2871,13 +2874,41 @@ export async function ensureWorkspaceApi(): Promise<void> {
     [API_NAME, { 'server.mjs': WORKSPACE_API_SERVER, 'seed.json.gz.b64': await gzipBase64(JSON.stringify(AGENT_SEED)), version: OUR_VERSION }],
   ] as [string, Record<string, string>][]) {
     const url = `${ BASE }/v1/configmaps/${ namespace }/${ name }`;
-    const existing = await devFetch(url).catch(() => null);
+    /*
+     * The cheap read first, because this runs on every page load of every tab.
+     *
+     * This ConfigMap carries `server.mjs` and the gzipped agent seed, and the whole object comes
+     * to 489KB over the wire - 276KB of `data` and, absurdly, a 204KB
+     * `kubectl.kubernetes.io/last-applied-configuration` annotation holding a second copy of the
+     * same thing. Measured on a dashboard load: this one object fetched twice, about a megabyte,
+     * before the page had drawn. Off a local network that is most of a second on its own.
+     *
+     * None of it is needed to answer the only question asked first - whose release wrote this.
+     * So the version is a label as well as a data key, and labels survive both excludes: the
+     * same read is 3.4KB. The full object is fetched only when this tab is actually the one that
+     * has to write, which in the steady state is never.
+     */
+    const slim = await devFetch(`${ url }?exclude=data&exclude=metadata.annotations`).catch(() => null);
+    const stamped = String(slim?.metadata?.labels?.[VERSION_LABEL] || '');
+
+    // Same release wrote it: the bundle is the same bundle, so the content is the same content.
+    // Comparing it key by key meant pulling all 489KB to prove nothing had changed.
+    if (slim && stamped === OUR_VERSION) {
+      continue;
+    }
+    // A later release wrote it; see the note below. Decided here, off the slim read, so an older
+    // tab costs 3.4KB per load rather than a megabyte.
+    if (slim && stamped && laterThan(stamped, OUR_VERSION)) {
+      continue;
+    }
+
+    const existing = slim ? await devFetch(url).catch(() => null) : null;
 
     if (!existing) {
       await devFetch(`${ BASE }/v1/configmaps`, {
         method: 'POST',
         body:   JSON.stringify({
-          apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace, name, labels }, data,
+          apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace, name, labels: { ...labels, [VERSION_LABEL]: OUR_VERSION } }, data,
         }),
       }).catch(() => null);
     } else if (laterThan(String((existing.data || {}).version || ''), OUR_VERSION)) {
@@ -2901,7 +2932,14 @@ export async function ensureWorkspaceApi(): Promise<void> {
       // Key by key: the apiserver hands the keys back sorted, so comparing the two objects as
       // JSON said "changed" on every load - and deleted the pod every time, which is where the
       // minute of "no endpoints available" after every dashboard load came from.
-      await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data }) }).catch(() => null);
+      // Stamped with the label the slim read above looks for, and stripped of the
+      // `last-applied-configuration` annotation: kubectl wrote that once and every PUT since has
+      // carried it forward, so the object has been storing a 204KB copy of itself in its own
+      // metadata - paid for on every read, and twice over in etcd.
+      const metadata = { ...existing.metadata, labels: { ...(existing.metadata?.labels || {}), ...labels, [VERSION_LABEL]: OUR_VERSION } };
+
+      delete (metadata.annotations || {})['kubectl.kubernetes.io/last-applied-configuration'];
+      await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, metadata, data }) }).catch(() => null);
       // node read the old script at start: the pod is replaced, and the new one mounts the
       // ConfigMap as it is now. Quiet like the rest; a user who may not do this changes nothing.
       const pods = await devFetch(`${ BASE }/v1/pods/${ namespace }?labelSelector=app%3D${ API_NAME }`).catch(() => null);
