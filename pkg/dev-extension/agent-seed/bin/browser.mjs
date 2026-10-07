@@ -368,8 +368,8 @@ async function record(url, out, durationMs, opts) {
 }
 
 // Deterministic PRNG. Every "human" variation below draws from this, so a
-// rerun of the same script produces the same path curvature, the same
-// overshoots and the same keystroke cadence. Override with $RECORD_SEED.
+// rerun of the same script produces the same settles and the same keystroke
+// cadence. Override with $RECORD_SEED.
 function mulberry32(seed) {
   let a = seed >>> 0
   return () => {
@@ -400,11 +400,27 @@ const reachProfile = (t) => {
 // where reading time matters most. If a beat computes to something absurd the
 // answer is shorter text, not a shorter hold, so the cap sits far above any
 // sane banner and `say()` warns before it bites.
+//
+// WORD_MS is the one number that sets it: milliseconds of hold per word shown.
+// Every piece of text the recorder puts on screen - a banner, a highlight's
+// label - is held for `base + words * WORD_MS`. 240 is 250 words a minute.
+// `RECORD_WORD_MS` changes it for a whole recording; `{ wordMs }` (or the older
+// `{ wpm }`) changes it for one call.
+const WORD_MS = Number(process.env.RECORD_WORD_MS) > 0 ? Number(process.env.RECORD_WORD_MS) : 240
 function readingTime(text, opts = {}) {
-  const { wpm = 250, base = 350, min = 650, max = 12_000 } = opts
+  const { base = 350, min = 650, max = 12_000 } = opts
+  const wordMs = opts.wordMs ?? (opts.wpm ? 60_000 / opts.wpm : WORD_MS)
   const words = (String(text ?? '').trim().match(/\S+/g) || []).length
-  return Math.round(clamp(base + (words / wpm) * 60_000, min, max))
+  return Math.round(clamp(base + words * wordMs, min, max))
 }
+
+// The two fixed beats around an action. The pointer arrives, holds still for
+// PRE_CLICK_MS, and only then presses: a click that lands the instant the
+// cursor stops is over before the viewer has seen where it is. And after a
+// click has moved the focus into a field, PRE_TYPE_MS passes before the first
+// character, so the caret is seen in the field before text appears in it.
+const PRE_CLICK_MS = 250
+const PRE_TYPE_MS = 250
 
 // Longest hold that is not tied to text or to a UI condition before `pause`
 // complains. The symmetric guard to `say`'s 6.5s reading warning: `say` catches
@@ -431,9 +447,9 @@ const LOCATOR_PATCHES = new Map()   // Locator.prototype -> { raw, own, live }
 
 // Build interaction helpers for record-script.
 //
-// Pointer motion is interpolated: every gesture is a curved, eased path made
-// of many small mouse-move steps, with an occasional overshoot-and-correct and
-// a short settle before the button goes down. Typing has variable inter-key
+// Pointer motion is interpolated: every gesture is a straight, eased path made
+// of many small mouse-move steps, ending on the target, with a quarter-second
+// hold before the button goes down. Typing has variable inter-key
 // timing that slows at word boundaries and punctuation. Waits are expressed as
 // "wait for the condition, then hold only as long as a person needs to read
 // what appeared" rather than as fixed sleeps.
@@ -511,29 +527,24 @@ function buildHelpers(page) {
     primed = true
   }
 
-  // One eased, slightly curved traversal from the current pointer position to
-  // (tx, ty). Driven by wall time rather than step index so CDP round-trip
-  // latency does not stretch the gesture.
+  // One eased traversal from the current pointer position to (tx, ty), in a
+  // straight line: every step is on the segment between the two, so the cursor
+  // goes directly at its target. It used to bow sideways by up to 45px and, on
+  // longer travel, sail past and pull back; together with a detour before a
+  // scroll that read as the pointer going across and then down rather than
+  // toward anything. The pace is unchanged - same duration for the distance,
+  // same quick start and long deceleration. Driven by wall time rather than
+  // step index so CDP round-trip latency does not stretch the gesture.
   async function glide(tx, ty, opts = {}) {
     // `opts.rng` lets a caller whose own loop count depends on the page (see
     // `scrollTo`) run this gesture off a local stream, so the main stream's
     // draw count stays a function of the script and not of the machine.
-    const R = opts.rng ?? rand
-    const Rnd = (a, b) => a + R() * (b - a)
     const from = { ...ptr }
     const dist = Math.hypot(tx - from.x, ty - from.y)
     if (!primed) { await moveTo(from.x, from.y) }
     if (dist < 1.5) { await moveTo(tx, ty); return }
 
     const duration = clamp(180 + 0.6 * dist, 240, 800) * (opts.speed ?? 1)
-    // Control point: midpoint pushed sideways so the path bows instead of
-    // running dead straight. Bigger travel bows more, capped so it stays sane.
-    const nx = -(ty - from.y) / dist
-    const ny = (tx - from.x) / dist
-    const bow = Math.min(45, dist * Rnd(0.05, 0.13)) * (R() < 0.5 ? -1 : 1)
-    const cx = (from.x + tx) / 2 + nx * bow
-    const cy = (from.y + ty) / 2 + ny * bow
-
     // Stepping is paced by the CDP round trip, not by this sleep. Measured
     // in-page under a live screencast (mousemove timestamps over six
     // full-width glides): a step every 14-17ms, 15-16ms overall - about twice
@@ -552,11 +563,7 @@ function buildHelpers(page) {
       for (;;) {
         const raw = (Date.now() - t0) / duration
         const t = raw >= 1 ? 1 : reachProfile(raw)
-        const u = 1 - t
-        await moveTo(
-          u * u * from.x + 2 * u * t * cx + t * t * tx,
-          u * u * from.y + 2 * u * t * cy + t * t * ty,
-        )
+        await moveTo(from.x + (tx - from.x) * t, from.y + (ty - from.y) * t)
         if (raw >= 1) break
         await sleep(4)
       }
@@ -829,12 +836,9 @@ function buildHelpers(page) {
       if (box.y < margin) dy = box.y - margin
       else if (box.y + box.height > vp.height - margin) dy = box.y + box.height - (vp.height - margin)
       if (Math.abs(dy) < 8) return
-      // Put the pointer over the region that owns the scroll before wheeling,
-      // the way a person moves toward what they are about to look at.
-      if (attempt === 1) {
-        await glide(clamp(box.x + box.width / 2, 60, vp.width - 60), vp.height / 2, { rng })
-        await sleep(50 + rng() * 60)
-      }
+      // The pointer stays where it is while the page scrolls. It used to be
+      // taken to the middle of the viewport above the target first, which made
+      // the move that followed a second leg at right angles to the first.
       await wheel(dy, { at: { x: box.x + box.width / 2, y: box.y + box.height / 2 }, rng })
       const after = await box2()
       if (!after || Math.abs(after.y - box.y) < 4) {
@@ -843,17 +847,9 @@ function buildHelpers(page) {
     }
   }
 
-  // Full reach: on longer travel a person frequently sails slightly past the
-  // target and pulls back, so do the same about half the time.
+  // The whole of a move: one straight glide that ends on the target. No
+  // overshoot and correction - the cursor stops where it is going.
   async function reach(tx, ty) {
-    const dist = Math.hypot(tx - ptr.x, ty - ptr.y)
-    if (dist > 220 && rand() < 0.45) {
-      const ux = (tx - ptr.x) / dist
-      const uy = (ty - ptr.y) / dist
-      const over = rnd(7, 18)
-      await glide(tx + ux * over + rnd(-4, 4), ty + uy * over + rnd(-4, 4))
-      await sleep(rnd(45, 95))
-    }
     await glide(tx, ty)
   }
 
@@ -868,17 +864,19 @@ function buildHelpers(page) {
     return { box, x: box.x + box.width / 2, y: box.y + box.height / 2 }
   }
 
-  async function move(target) {
+  async function move(target, opts = {}) {
     const p = await centreOf(target)
     if (!p) { await loc(target).hover(); await sleep(MOVE_DELAY); primed = true; return }
     await reach(p.x, p.y)
-    await sleep(rnd(60, 130))   // settle: the hand arrives before the finger acts
+    await sleep(opts.settle ?? rnd(60, 130))   // settle: the hand arrives before the finger acts
   }
 
   async function click(target, opts = {}) {
     const l = loc(target)
-    await move(target)
-    await sleep(rnd(40, 100))
+    await move(target, { settle: 0 })
+    // Arrived; hold still for the beat before the press. A dead sleep on
+    // purpose - this is the one hold where the cursor must not move.
+    await sleep(PRE_CLICK_MS)
     // Playwright runs its own actionability wait *inside* `click()`, with the
     // pointer wherever it was. Do the visibility half of that wait out here,
     // with the ramble underneath, so the only frozen part is the press itself
@@ -897,8 +895,10 @@ function buildHelpers(page) {
 
   async function type(target, text, opts = {}) {
     await click(target)
-    await sleep(rnd(90, 180))    // look at the field before the first keystroke
-    await typeText(text, opts)
+    // The click moved the focus; the caret sits in the field for the beat
+    // before the first character. `lead: false` because this is that beat.
+    await sleep(PRE_TYPE_MS)
+    await typeText(text, { ...opts, lead: false })
   }
 
   // Variable-cadence typing. The first keystroke lands after a beat (the hand
@@ -1018,7 +1018,23 @@ function buildHelpers(page) {
     }
   }
 
+  // Text put on screen is held long enough to read, every time, whichever
+  // helper put it there. `say` and `point` are the whole beat (show, hold,
+  // remove); `banner` and a labelled `highlight` show the text, hold for its
+  // reading time and return with it still up, for the script to act under and
+  // remove. `{ hold: 0 }` opts out, for text something else is about to hold.
+  async function holdFor(text, opts, defaults = {}) {
+    const hold = opts.hold ?? (text ? readingTime(text, { ...defaults, ...opts }) : 0)
+    if (hold > 0) await pause(hold, { tied: true })
+  }
+
   async function highlight(target, label, opts = {}) {
+    const id = await drawHighlight(target, label, opts)
+    await holdFor(label, opts, { base: 550, min: 1000 })
+    return id
+  }
+
+  async function drawHighlight(target, label, opts = {}) {
     const color = opts.color || '#ff3333'
     return overlayCall('highlight', (el, { label, color }) => (
       typeof window.__highlight === 'function'
@@ -1041,6 +1057,12 @@ function buildHelpers(page) {
   }
 
   async function banner(text, opts = {}) {
+    const id = await drawBanner(text, opts)
+    await holdFor(text, opts)
+    return id
+  }
+
+  async function drawBanner(text, opts = {}) {
     return overlayCall('banner', ({ text, opts }) => (
       typeof window.__banner === 'function' ? window.__banner(text, opts) : '__hn_no_overlay'
     ), { text, opts })
@@ -1065,7 +1087,7 @@ function buildHelpers(page) {
     if (hold > 6500 && opts.hold === undefined) {
       console.error(`say(): "${String(text).slice(0, 40)}..." needs ${hold}ms to read. Shorten the banner rather than holding the frame that long.`)
     }
-    const id = await banner(text, { color: opts.color })
+    const id = await drawBanner(text, { color: opts.color })
     await read(hold, opts)
     // `id` is null only if the banner never went up. Do not fall through to
     // `removeBanner()`'s clear-everything branch on the strength of that.
@@ -1083,7 +1105,7 @@ function buildHelpers(page) {
       await reach(p.x, p.y)
       await sleep(rnd(60, 130))
     }
-    const id = await highlight(target, label, opts)
+    const id = await drawHighlight(target, label, opts)
     await read(opts.hold ?? readingTime(label ?? '', { base: 550, min: 1000, ...opts }), opts)
     await removeHighlight(id)
   }
@@ -1264,7 +1286,7 @@ function buildHelpers(page) {
     // Added: explicit pointer ownership for a script that drives the cursor by
     // hand across several calls. Single `page.mouse.*` calls do not need it.
     ownPointer,
-    MOVE_DELAY, TYPE_DELAY,
+    MOVE_DELAY, TYPE_DELAY, WORD_MS, PRE_CLICK_MS, PRE_TYPE_MS,
   }
 }
 
