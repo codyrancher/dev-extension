@@ -719,14 +719,15 @@ function bakedSeed() {
   }
 }
 
-// ── Skills, rules and CLAUDE.md: codyrancher/ai-skills ──────────────────────────────────────
+// ── What a workspace is laid out from: a private repository ─────────────────────────────────
 //
-// None of them are in this extension. They live in one repository, and this service pulls its
-// branch, so a commit there reaches every workspace without a release here: the sidebar polls
-// /agent-seed/version, which carries the repository's commit, and lays the seed out again when it
-// moves. The seed a workspace gets is three layers: what the extension ships (the layout step,
-// scripts, git hooks, settings), the repository's files over that, and the Skills page's
-// overrides over those. An edit saved on that page is an override until it is committed, and
+// Skills, rules, CLAUDE.md, and the workspace's own scripts (the layout step, bin/, the git hook,
+// settings). None of them are in this extension. They live in one private repository, and this
+// service pulls its branch, so a commit there reaches every workspace without a release here: the
+// sidebar polls /agent-seed/version, which carries the repository's commit, and lays the seed out
+// again when it moves. The seed a workspace gets is three layers: the one file the extension
+// ships (CLAUDE.dev.md, what CLAUDE.md says about this environment), the repository's files, and
+// the Skills page's overrides over those. An edit saved on that page is an override until it is committed, and
 // committing writes it to the repository, where it replaces the override.
 
 const SKILLS_MAP = process.env.DEV_SKILLS_MAP || 'dev-skills';
@@ -737,9 +738,12 @@ const AI_SKILLS_SNAPSHOT = 'dev-ai-skills';
 const AI_SKILLS_CHECK_MS = 60_000;
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,60}$/;
 
+/** The one seed key this extension ships. Every other key is the repository's. */
+const SHIPPED_KEY = 'CLAUDE.dev.md';
+
 /** The seed keys the repository owns. The extension's own seed must not carry any of these. */
 function repoOwnsKey(key) {
-  return key.startsWith('skills/') || key.startsWith('rules/') || /^CLAUDE(\.dev)?\.md(\.hbs)?$/.test(key);
+  return key !== SHIPPED_KEY;
 }
 
 /** Where a path in the repository lands in the seed, or null for a file that is not the seed's. */
@@ -753,7 +757,14 @@ function seedKeyFor(repoPath) {
     return rel.slice('.claude/'.length);
   }
 
-  return rel === 'CLAUDE.md' || rel === 'CLAUDE.dev.md' ? rel : null;
+  // The workspace's scripts, under seed/ there and at the seed's root here: seed/bin/x is bin/x.
+  if (rel.startsWith('seed/')) {
+    const key = rel.slice('seed/'.length);
+
+    return key && key !== SHIPPED_KEY ? key : null;
+  }
+
+  return rel === 'CLAUDE.md' ? rel : null;
 }
 
 /**
@@ -808,8 +819,11 @@ let aiSkillsInFlight = null;
 async function aiSkillsSnapshot() {
   try {
     const map = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ AI_SKILLS_SNAPSHOT }`);
+    const snapshot = JSON.parse(zlib.gunzipSync(Buffer.from(map.data['snapshot.json.gz.b64'], 'base64')).toString('utf8'));
 
-    return JSON.parse(zlib.gunzipSync(Buffer.from(map.data['snapshot.json.gz.b64'], 'base64')).toString('utf8'));
+    // A copy kept by a release that still shipped the scripts itself has no layout step in it,
+    // and one of this extension's own keys. It is not a seed any more; fetch instead.
+    return snapshot?.files?.['layout.mjs'] && !(SHIPPED_KEY in snapshot.files) ? snapshot : null;
   } catch {
     return null;
   }
@@ -886,6 +900,11 @@ async function aiSkillsFiles(force = false) {
       }
       if (!Object.keys(files).some((k) => /^skills\/[^/]+\/SKILL\.md$/.test(k))) {
         throw failure(502, `${ AI_SKILLS_REPO }@${ sha.slice(0, 12) } has no skills under ${ AI_SKILLS_ROOT }/.claude/skills.`);
+      }
+      // The step that lays a workspace out is one of the repository's files now. A seed without
+      // it cannot be laid out at all, so a commit that lost it is refused like one with no skills.
+      if (!files['layout.mjs']) {
+        throw failure(502, `${ AI_SKILLS_REPO }@${ sha.slice(0, 12) } has no ${ AI_SKILLS_ROOT }/seed/layout.mjs.`);
       }
       aiSkills = { sha, files, checkedAt: Date.now() };
       await saveAiSkillsSnapshot({ sha, files }).catch((e) => console.error('[dev-api] could not keep the ai-skills snapshot:', e.message || e));

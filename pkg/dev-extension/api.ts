@@ -2872,10 +2872,9 @@ export async function ensureWorkspaceApi(): Promise<void> {
   // already exists. It carries no templates of its own any more: those are Apps Plus apps, which
   // it reads from the cluster when asked.
   for (const [name, data] of [
-    // The agent seed rides along: the skills a review or fix agent needs, which the API serves
-    // to the agent pod as one document (see workspace-tools.ts for why not exec).
-    // Gzipped: the seed is the harness's whole skill set, which is close to a ConfigMap's
-    // megabyte on its own, and the script rides in the same one.
+    // The one seed file this extension ships rides along (CLAUDE.dev.md); the API adds the rest
+    // from the private repository and serves the whole seed to a workspace as one document (see
+    // workspace-tools.ts for why not exec). Gzipped because it always was; it is small now.
     [API_NAME, { 'server.mjs': WORKSPACE_API_SERVER, 'seed.json.gz.b64': await gzipBase64(JSON.stringify(AGENT_SEED)), version: OUR_VERSION }],
   ] as [string, Record<string, string>][]) {
     const url = `${ BASE }/v1/configmaps/${ namespace }/${ name }`;

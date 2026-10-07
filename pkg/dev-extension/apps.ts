@@ -679,7 +679,7 @@ export function rancherWorkspaceApp(): Json {
         // What the browser container installs for accessibility work, and what it calls the
         // tier it is on. `a11y tier` changes them on the Deployment; these are the defaults a
         // new workspace starts with - the AT-SPI bridge and speech, which is what showing a
-        // screen-reader fix needs. See agent-seed/bin/a11y.
+        // screen-reader fix needs. See the workspace's `a11y` command.
         a11yTier:    'speech',
         a11yPackages: 'at-spi2-core|dbus-x11|gir1.2-atspi-2.0|python3-gi|python3-pyatspi|espeak-ng|speech-dispatcher|speech-dispatcher-espeak-ng|pulseaudio-utils|sox|xdotool|x11-apps',
         // The dashboard's dev server serves TLS (its own vue.config.js), which is what the

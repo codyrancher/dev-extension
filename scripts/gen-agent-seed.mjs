@@ -1,9 +1,10 @@
 // Pack pkg/dev-extension/agent-seed/ into agent-seed.generated.ts.
 //
-// The seed is what this extension ships into every workspace: the layout step, the scripts in
-// bin/, the git hooks, the browser's accessibility stack and the settings. It is NOT the skills,
-// the rules or CLAUDE.md. Those live in codyrancher/ai-skills and nowhere else; dev-api pulls
-// that repository and serves it over this seed (see dev-api/server.mjs, aiSkillsFiles).
+// The seed this extension ships is one file: CLAUDE.dev.md, what a workspace's CLAUDE.md says
+// about this environment. It is here because it describes this extension's workspaces and changes
+// with them. Everything else a workspace is laid out from - the layout step, the scripts, the
+// skills, the rules, CLAUDE.md itself - is in a private repository that dev-api pulls (see
+// dev-api/server.mjs, aiSkillsFiles), and must not be committed here.
 //
 //   node scripts/gen-agent-seed.mjs
 //
@@ -34,12 +35,12 @@ function walk(dir, prefix = '') {
 
 const files = walk(ROOT);
 
-// Refuse to pack a skill, a rule or CLAUDE.md back into the extension: an edit made here would ship
-// in a release and be silently replaced by the repository's copy in every workspace.
-const strays = Object.keys(files).filter((rel) => rel.startsWith('skills/') || rel.startsWith('rules/') || /^CLAUDE(\.dev)?\.md(\.hbs)?$/.test(rel));
+// Refuse to pack anything else: scripts, skills and rules are not this repository's to publish.
+const ALLOWED = new Set(['CLAUDE.dev.md']);
+const strays = Object.keys(files).filter((rel) => !ALLOWED.has(rel));
 
 if (strays.length) {
-  console.error(`agent-seed/ holds files that belong in codyrancher/ai-skills (rancher-dashboard/.claude/skills, .claude/rules, CLAUDE.md):\n  ${ strays.join('\n  ') }\nCommit them there instead; dev-api pulls that repository into every workspace.`);
+  console.error(`agent-seed/ may hold only ${ [...ALLOWED].join(', ') }. These belong in the private repository dev-api pulls:\n  ${ strays.join('\n  ') }`);
   process.exit(1);
 }
 const body = Object.entries(files)
