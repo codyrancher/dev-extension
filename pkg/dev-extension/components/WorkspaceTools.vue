@@ -339,6 +339,9 @@ export default {
       gap:            2px 28px;
     }
 
+    // The same width as the rail's group labels, so the rows line up down the page.
+    .workspace-tools__label { flex: 0 0 96px; }
+
     .workspace-tools__name { min-width: 0; }
 
     .workspace-tools__state { flex: 0 1 auto; }
