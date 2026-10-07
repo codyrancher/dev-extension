@@ -35,6 +35,7 @@ const LTE_PREFIX = 'lte-';
 const LABEL_WORKSPACE = 'dev.rancher.io/workspace';
 const LABEL_APP = 'dev.rancher.io/app';
 const LABEL_CLUSTER = 'dev.rancher.io/cluster';
+const LABEL_ROLE = 'dev.rancher.io/role';
 const SECRET_KIND_LABEL = 'dev.rancher.io/kind';
 
 // -- Kubernetes ------------------------------------------------------------------------------
@@ -4385,6 +4386,7 @@ async function reconcileRegistrar(instances) {
       }
     }
     if (inst.metadata?.deletionTimestamp) ws.state = 'removing';
+    ws.role = labels[LABEL_ROLE] || '';
     workspaces.push(ws);
   }
   workspaces.sort((a, b) => a.name.localeCompare(b.name));

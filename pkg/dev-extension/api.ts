@@ -24,7 +24,7 @@ import {
 import { endWorkspaceConversations } from './conversations';
 import {
   DEV_POD_NAMESPACE as POD_NAMESPACE, DEV_POD_SERVICE as POD_SERVICE,
-  LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, workspaceRoot, workspaceWorkdir, workspaceHome,
+  LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, LABEL_ROLE, workspaceRoot, workspaceWorkdir, workspaceHome,
   WORKSPACE_PORT_ANNOTATION, WORKSPACE_SCHEME_ANNOTATION, WORKSPACE_TITLE_ANNOTATION, DEFAULT_WORKSPACE_PORT, DEFAULT_WORKSPACE_SCHEME, PREVIEW_ANNOTATION,
   APP_INSTANCE, lteName,
 } from './config/constants';
@@ -341,6 +341,8 @@ export interface DevWorkspace {
   namespace: string;
   /** The Apps Plus App it is an installation of. Kept even when that App no longer exists. */
   app: string;
+  /** The sidebar role its Installation asks for, over the one its name implies. See LABEL_ROLE. */
+  role?: string;
   /** What it serves, and how to speak to it. From the namespace's annotations; see constants. */
   port: number;
   scheme: string;
@@ -653,6 +655,7 @@ export function workspaceFromInstance(instance: Json): DevWorkspace {
     namespace: instance?.spec?.namespace || `dev-${ name }`,
     cluster:   labels[LABEL_CLUSTER] || activeCluster(),
     app:       labels[LABEL_APP] || '',
+    role:      labels[LABEL_ROLE] || '',
     port:      Number(values.port) || DEFAULT_WORKSPACE_PORT,
     scheme:    values.scheme === 'https' ? 'https' : DEFAULT_WORKSPACE_SCHEME,
     preview:   false,
@@ -787,20 +790,20 @@ const workspacesByCluster = new Map<string, DevWorkspace[]>();
  * Returns null when even this read fails, so the caller keeps its previous list rather than trusting
  * an empty answer.
  */
-async function liveInstanceClusters(): Promise<Map<string, string> | null> {
+async function liveInstanceClusters(): Promise<Map<string, { cluster: string, role: string }> | null> {
   const response = await devFetch(`${ clusterBase(DEFAULT_CLUSTER) }/v1/${ APP_INSTANCE }`).catch(() => null);
 
   if (!response) {
     return null;
   }
 
-  const byWorkspace = new Map<string, string>();
+  const byWorkspace = new Map<string, { cluster: string, role: string }>();
 
   for (const instance of (response.data || []) as Json[]) {
     const workspace = instance.metadata?.labels?.[LABEL_WORKSPACE];
 
     if (workspace && !instance.metadata?.deletionTimestamp) {
-      byWorkspace.set(workspace, instance.metadata?.labels?.[LABEL_CLUSTER] || DEFAULT_CLUSTER);
+      byWorkspace.set(workspace, { cluster: instance.metadata?.labels?.[LABEL_CLUSTER] || DEFAULT_CLUSTER, role: instance.metadata?.labels?.[LABEL_ROLE] || '' });
     }
   }
 
@@ -892,7 +895,7 @@ async function listAllWorkspacesLive(): Promise<DevWorkspace[]> {
       if (instances) {
         const present = new Set(fresh.map((workspace) => workspace.name));
         const retained = (workspacesByCluster.get(id) || [])
-          .filter((workspace) => !present.has(workspace.name) && instances.get(workspace.name) === id);
+          .filter((workspace) => !present.has(workspace.name) && instances.get(workspace.name)?.cluster === id);
 
         workspacesByCluster.set(id, [...fresh, ...retained]);
       } else {
@@ -916,7 +919,9 @@ async function listAllWorkspacesLive(): Promise<DevWorkspace[]> {
     }
   }
 
-  return [...workspacesByCluster.values()].flat().sort((a, b) => a.name.localeCompare(b.name));
+  return [...workspacesByCluster.values()].flat()
+    .map((workspace) => ({ ...workspace, role: instances?.get(workspace.name)?.role || workspace.role || '' }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
