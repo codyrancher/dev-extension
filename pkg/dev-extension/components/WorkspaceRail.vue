@@ -2049,18 +2049,6 @@ export default {
               </RcButton>
             </div>
           </div>
-          <!--
-            What this workspace has attached, and for how long. The same component the tabbed
-            view uses, so a workspace with no pull request or issue in its name - which has no
-            rail at all - still has its tools.
-          -->
-          <WorkspaceTools
-            v-if="leased"
-            :workspace="workspace.name"
-            :idle-stage="idleStage"
-            @notice="notice = $event"
-            @error="noteError"
-          />
           <div
             v-if="actionsFor('you').length || (!leased && devServer.running)"
             class="workspace-rail__group workspace-rail__group--decide"
@@ -2121,6 +2109,21 @@ export default {
           </div>
         </div>
       </div>
+
+      <!--
+        What this workspace has attached, and for how long: a row of its own, directly above the
+        conversation that uses them. It was a box among the stage's buttons, where it was the
+        widest thing in a panel about what to press next - and it went away with that panel on a
+        stage with nothing to press.
+      -->
+      <WorkspaceTools
+        v-if="leased"
+        inline
+        :workspace="workspace.name"
+        :idle-stage="idleStage"
+        @notice="notice = $event"
+        @error="noteError"
+      />
 
       <!--
         The running agent, under the button that started it.
