@@ -135,6 +135,8 @@ export const LEGACY_WORKSPACE_APPS = ['rancher-workspace'];
 export const LABEL_WORKSPACE = 'dev.rancher.io/workspace';
 export const LABEL_APP = 'dev.rancher.io/app';
 export const LABEL_CLUSTER = 'dev.rancher.io/cluster';
+/** On an Installation: `developer`, `reviewer` or `other`, overriding the role its name implies. */
+export const LABEL_ROLE = 'dev.rancher.io/role';
 
 /**
  * How to reach what a workspace serves, on its namespace, because the namespace is the one
