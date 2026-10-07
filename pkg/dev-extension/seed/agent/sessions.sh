@@ -224,6 +224,24 @@ case "$VERB" in
       if [ -n "$transcript" ] && [ -f "$transcript" ]; then
         mtime=$(stat -c %Y "$transcript" 2>/dev/null || echo 0)
 
+        # Unless the turn in it is over, in which case its mtime says nothing.
+        #
+        # The CLI keeps a few lines of its own at the end of a transcript - the title, the mode,
+        # the permission mode - and rewrites them when somebody so much as types in the pane. That
+        # moves the mtime of a conversation that is doing nothing, and for the next minute and a
+        # half its dot said working. Those lines carry no timestamp, so the last line that has one
+        # is the last thing that happened: when that is the end of a turn, the file moving since
+        # is housekeeping. Subagents still count below - a turn can end with one still running.
+        #
+        # Matched on the unescaped form, which only a line that IS one has: the same words quoted
+        # inside a message are written with their quotes escaped. The tail is by bytes, not lines,
+        # because one line can be a pasted image.
+        last=$(tail -c 65536 "$transcript" 2>/dev/null | grep '"timestamp":"' | tail -n 1)
+
+        case "$last" in
+          *'"type":"system","subtype":"turn_duration"'*|*'"type":"system","subtype":"stop_hook_summary"'*|*'"type":"system","subtype":"away_summary"'*) mtime=0 ;;
+        esac
+
         for sub in "${transcript%.jsonl}"/subagents/*.jsonl; do
           [ -f "$sub" ] || continue
 

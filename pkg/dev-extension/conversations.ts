@@ -272,6 +272,10 @@ async function conversationStatesByExec(): Promise<ConversationState[]> {
     '  t=$(sed -n \'s/.*"transcript":"\\([^"]*\\)".*/\\1/p\' "$f" | head -1); m=0',
     '  if [ -n "$t" ] && [ -f "$t" ]; then',
     '    m=$(stat -c %Y "$t" 2>/dev/null || echo 0)',
+    // A transcript whose last dated line ends a turn moved for the CLI's own housekeeping, not
+    // for work: see `states` in seed/agent/sessions.sh, which this has to agree with.
+    '    l=$(tail -c 65536 "$t" 2>/dev/null | grep \'"timestamp":"\' | tail -n 1)',
+    '    case "$l" in *\'"type":"system","subtype":"turn_duration"\'*|*\'"type":"system","subtype":"stop_hook_summary"\'*|*\'"type":"system","subtype":"away_summary"\'*) m=0 ;; esac',
     '    for s in "${t%.jsonl}"/subagents/*.jsonl; do',
     '      [ -f "$s" ] || continue',
     '      sm=$(stat -c %Y "$s" 2>/dev/null || echo 0); [ "$sm" -gt "$m" ] && m=$sm',
