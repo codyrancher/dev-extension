@@ -208,6 +208,24 @@ export default {
       this.$nextTick(() => this.scrollToEnd(true));
     },
 
+    /**
+     * A message just sent, which is drawn the moment it is sent rather than when the transcript
+     * catches up with it. It goes to the bottom wherever the person was reading, without waiting
+     * for the poll that `grew` counts - that is half a second behind the message.
+     */
+    'pending.length'(now, before) {
+      if (now > before) {
+        this.$nextTick(() => this.scrollToEnd(true));
+      }
+    },
+
+    /** The working row is one more row at the bottom, and it arrives between polls too. */
+    working(now) {
+      if (now) {
+        this.$nextTick(() => this.scrollToEnd());
+      }
+    },
+
     /** Every poll, not only on a change: this is what PodTerminal's status line reads. */
     polledAt() {
       this.$emit('state', this.attached ? 'open' : 'waiting');
