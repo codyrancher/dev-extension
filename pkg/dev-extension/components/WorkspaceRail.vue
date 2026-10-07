@@ -3231,29 +3231,25 @@ export default {
   &__step-label { font-size: 12px; }
 
   // The one thing to press
+  // No box of its own: what it says and each group under it is a row on the page, the way the
+  // tools and the conversations below are. The tone that used to colour the box's border is a
+  // stripe beside the sentence it is about.
   &__action {
-    display:         flex;
-    align-items:     center;
-    justify-content: space-between;
-    gap:             32px;
-    flex-wrap:       wrap;
-    padding:         18px 20px;
-    border:          1px solid var(--border);
-    border-radius:   var(--border-radius);
-    background:      var(--box-bg);
+    display:        flex;
+    flex-direction: column;
+    gap:            16px;
 
-    &--attention { border-color: var(--warning); }
-    &--green { border-color: var(--success); }
-    &--working { border-color: var(--primary); }
+    &--attention .workspace-rail__action-text { border-left-color: var(--warning); }
+    &--green .workspace-rail__action-text { border-left-color: var(--success); }
+    &--working .workspace-rail__action-text { border-left-color: var(--primary); }
   }
 
   &__action-text {
     display:        flex;
     flex-direction: column;
     gap:            4px;
-    min-width:      260px;
-    max-width:      440px;
-    flex:           0 1 auto;
+    padding-left:   12px;
+    border-left:    3px solid var(--border);
   }
 
   &__looking-back {
@@ -3276,26 +3272,21 @@ export default {
   }
 
   &__buttons {
-    display:     flex;
-    gap:         16px;
-    flex:        1 1 auto;
-    align-items: stretch;
-    justify-content: flex-end;
-    flex-wrap:   wrap;
-  }
-
-  // Two fenced groups: what to ask the agent for, and what to decide. The fence is what says
-  // they are different kinds of thing - a gap alone did not.
-  &__group {
     display:        flex;
     flex-direction: column;
-    gap:            8px;
-    align-items:    flex-start;
-    justify-content: flex-start;
-    padding:        10px 12px;
-    border:         1px solid var(--pr-border);
-    border-radius:  var(--border-radius);
-    background:     var(--pr-bg);
+    gap:            16px;
+  }
+
+  // One row each: what to ask the agent for, what to check, and what to decide. Fenced the way
+  // the tools row is, so the four read as the same kind of thing.
+  &__group {
+    display:       flex;
+    align-items:   center;
+    gap:           20px;
+    padding:       8px 14px;
+    border:        1px solid var(--border);
+    border-radius: var(--border-radius);
+    background:    var(--box-bg);
 
     &--decide { border-color: var(--pr-accent); }
   }
@@ -3319,6 +3310,8 @@ export default {
     letter-spacing: .06em;
     text-transform: uppercase;
     color:          var(--pr-muted);
+    // The same width as the tools row's label, so what follows starts on one line down the page.
+    flex:           0 0 96px;
   }
 
   &__group-buttons {
