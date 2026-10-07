@@ -35,6 +35,12 @@ export default {
       type:    Boolean,
       default: false,
     },
+
+    /** Laid out as one row across the page rather than as a box of rows. */
+    inline: {
+      type:    Boolean,
+      default: false,
+    },
   },
 
   emits: ['notice', 'error'],
@@ -178,7 +184,10 @@ export default {
 </script>
 
 <template>
-  <div class="workspace-tools">
+  <div
+    class="workspace-tools"
+    :class="{ 'workspace-tools--inline': inline }"
+  >
     <span class="workspace-tools__label">Tools</span>
     <div class="workspace-tools__rows">
       <div
@@ -314,6 +323,25 @@ export default {
       opacity: .5;
       cursor:  default;
     }
+  }
+
+  // One row across the page: the label, then each tool with its state and its links beside it.
+  // It wraps rather than scrolls, so a narrow window gets two lines and not a clipped fourth tool.
+  &--inline {
+    flex-direction: row;
+    align-items:    center;
+    gap:            20px;
+    padding:        8px 14px;
+
+    .workspace-tools__rows {
+      flex-direction: row;
+      flex-wrap:      wrap;
+      gap:            2px 28px;
+    }
+
+    .workspace-tools__name { min-width: 0; }
+
+    .workspace-tools__state { flex: 0 1 auto; }
   }
 }
 </style>
