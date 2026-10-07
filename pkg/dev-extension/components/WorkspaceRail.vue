@@ -1987,6 +1987,8 @@ export default {
             Two groups, and the gap between them is the point: what to ask the agent to do
             here, then what to decide. Each skill is a prompt into this workspace's
             conversation, so what it starts is watched and talked to below.
+            Every button on the agent's side carries the mark the Focus cards put on theirs:
+            pressing it starts or continues a conversation rather than doing the thing itself.
           -->
           <div
             v-if="skillButtons().length || actionsFor('agent').length"
@@ -2008,6 +2010,10 @@ export default {
                   v-if="busy === a.run"
                   class="icon icon-spinner icon-spin"
                 />
+                <i
+                  v-else
+                  class="icon icon-ai workspace-rail__group-ai"
+                />
                 {{ a.label }}
               </RcButton>
               <RcButton
@@ -2023,6 +2029,10 @@ export default {
                 <i
                   v-if="busy === button.skill"
                   class="icon icon-spinner icon-spin"
+                />
+                <i
+                  v-else
+                  class="icon icon-ai workspace-rail__group-ai"
                 />
                 {{ button.label }}
               </RcButton>
@@ -3279,7 +3289,8 @@ export default {
   }
 
   // One row each: what to ask the agent for, what to check, and what to decide. Fenced the way
-  // the tools row is, so the four read as the same kind of thing.
+  // the tools row is, so the four read as the same kind of thing. The same border on all of them:
+  // an accent on one made it look selected rather than different.
   &__group {
     display:       flex;
     align-items:   center;
@@ -3288,9 +3299,10 @@ export default {
     border:        1px solid var(--border);
     border-radius: var(--border-radius);
     background:    var(--box-bg);
-
-    &--decide { border-color: var(--pr-accent); }
   }
+
+  // The mark of a button that talks to the agent, with the gap a glyph needs before a label.
+  &__group-ai { margin-right: 6px; }
 
   // Every button the same size, whatever it does - and its label in the middle of it: the
   // shared button styles align text to the start, which reads as shifted once a minimum width
