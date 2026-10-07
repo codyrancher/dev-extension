@@ -1888,7 +1888,11 @@ export default {
         </div>
       </div>
 
-      <!-- The rail. A passed step is a way back to what it left behind. -->
+      <!--
+        The rail. A passed step is a way back to what it left behind. The pencil at its end sets
+        the stage by hand: it was a "Wrong stage?" link in a row of its own under the rail.
+      -->
+      <div class="workspace-rail__steps-row">
       <ol class="workspace-rail__steps">
         <li
           v-for="(step, index) in steps"
@@ -1923,13 +1927,26 @@ export default {
           </button>
         </li>
       </ol>
+      <button
+        v-if="steps.length && !lookingBack && !manual"
+        v-clean-tooltip="'Set the stage by hand'"
+        type="button"
+        class="workspace-rail__stage-edit"
+        :class="{ 'workspace-rail__stage-edit--on': stagePicker }"
+        aria-label="Set the stage by hand"
+        :aria-expanded="stagePicker ? 'true' : 'false'"
+        @click="stagePicker = !stagePicker"
+      >
+        <i class="icon icon-edit" />
+      </button>
+      </div>
 
       <!--
         Set the stage by hand when the heuristics get it wrong. A held stage stands against the
         agent-state guesses; a hard GitHub fact (a merge, a real PR, a review) still moves it on.
       -->
       <div
-        v-if="steps.length && !lookingBack"
+        v-if="steps.length && !lookingBack && (manual || stagePicker)"
         class="workspace-rail__manual"
       >
         <template v-if="manual">
@@ -1956,12 +1973,6 @@ export default {
             @click="stagePicker = false"
           >cancel</button>
         </template>
-        <button
-          v-else
-          type="button"
-          class="workspace-rail__manual-btn"
-          @click="stagePicker = true"
-        >Wrong stage?</button>
       </div>
 
       <!-- The one thing to press. Stays on the current stage while a past one is being read. -->
@@ -3102,11 +3113,44 @@ export default {
   }
 
   // The rail
+  // The rail and the pencil that edits it, on one line.
+  &__steps-row {
+    display:     flex;
+    align-items: flex-start;
+    gap:         8px;
+  }
+
   &__steps {
     display:    flex;
+    flex:       1 1 auto;
+    min-width:  0;
     list-style: none;
     margin:     8px 0 4px;
     padding:    0 8px;
+  }
+
+  // Level with the dots rather than with the labels under them.
+  &__stage-edit {
+    flex:          0 0 auto;
+    display:       inline-flex;
+    align-items:   center;
+    justify-content: center;
+    width:         26px;
+    height:        26px;
+    margin-top:    7px;
+    padding:       0;
+    border:        0;
+    border-radius: var(--border-radius);
+    background:    transparent;
+    color:         var(--muted);
+    cursor:        pointer;
+
+    &:hover,
+    &:focus-visible,
+    &--on {
+      background: var(--box-bg);
+      color:      var(--body-text);
+    }
   }
 
   &__step {
