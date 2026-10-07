@@ -50,7 +50,8 @@ const REFRESH_MS = 5000;
 /**
  * The three parts there are to play. A workspace named for an issue is yours to fix and ship;
  * one named for a PR is somebody else's change to judge; anything else is a workspace someone
- * made for a reason of their own.
+ * made for a reason of their own. A workspace whose Installation carries a `dev.rancher.io/role`
+ * label plays that part whatever it is called.
  */
 const ROLES = [
   { id: 'developer', label: 'Developer', icon: 'icon-code' },
@@ -58,7 +59,11 @@ const ROLES = [
   { id: 'other', label: 'Other', icon: 'icon-folder' },
 ];
 
-function roleOf(name) {
+function roleOf({ name, role }) {
+  if (ROLES.some(({ id }) => id === role)) {
+    return role;
+  }
+
   if (/(^|-)pr-\d+(-|$)/.test(name)) {
     return 'reviewer';
   }
@@ -533,7 +538,7 @@ export default {
 
     /** A list's workspaces under the part you play in each: Developer, Reviewer, Other. */
     rolesIn(workspaces) {
-      return ROLES.map((role) => ({ ...role, rows: this.rowsFor(workspaces.filter((workspace) => roleOf(workspace.name) === role.id)) }));
+      return ROLES.map((role) => ({ ...role, rows: this.rowsFor(workspaces.filter((workspace) => roleOf(workspace) === role.id)) }));
     },
 
     /** A workspace as a row: its name, its state, and the page it opens. */
