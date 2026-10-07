@@ -2148,6 +2148,7 @@ export default {
       <section class="workspace-rail__live">
         <ConversationTabbed
           class="workspace-rail__live-tabs"
+          flat
           :default-tab="shownConversation ? shownConversation.id : ''"
           @changed="onLiveTab"
         >
