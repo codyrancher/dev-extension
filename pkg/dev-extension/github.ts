@@ -827,6 +827,33 @@ const LINKED_PR_QUERY = `
   }
 `;
 
+const BRANCH_PR_QUERY = `
+  query BranchPullRequest($owner: String!, $name: String!, $branch: String!) {
+    viewer { login }
+    repository(owner: $owner, name: $name) {
+      pullRequests(headRefName: $branch, last: 20) {
+        nodes { number state author { login } }
+      }
+    }
+  }
+`;
+
+/**
+ * The viewer's own pull request from a branch of this name, or 0. For a workspace that is not
+ * named for an issue, where linkedPullRequest has nothing to start from. The open one when there
+ * is one, else the latest.
+ */
+export async function branchPullRequest(repo: string, branch: string): Promise<number> {
+  if (!branch || ['HEAD', 'master', 'main'].includes(branch)) {
+    return 0;
+  }
+  const data = await graphql(BRANCH_PR_QUERY, { ...splitRepo(repo), branch });
+  const login = data.viewer?.login;
+  const mine: Json[] = (data.repository?.pullRequests?.nodes || []).filter((pr: Json) => pr?.number && pr.author?.login === login);
+
+  return (mine.find((pr) => pr.state === 'OPEN') || mine[mine.length - 1])?.number || 0;
+}
+
 async function graphql(query: string, variables: Record<string, unknown>): Promise<Json> {
   const token = await githubToken();
 
