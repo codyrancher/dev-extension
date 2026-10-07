@@ -74,7 +74,17 @@ watch(() => props.grew, () => nextTick(() => scrollToEnd()));
 watch(() => props.restarted, () => nextTick(() => scrollToEnd(true)));
 // The turns themselves, for anything that changes the height without the transcript growing:
 // a thumbnail arriving, a tool row opened, the bar going from one line to a panel.
-watch(() => props.turns.length, () => nextTick(() => scrollToEnd()));
+//
+// A message the person has just sent goes to the bottom wherever they were reading: it is drawn
+// the moment it is sent, and the poll that would otherwise bring it into view is half a second
+// behind it.
+watch(() => props.turns.length, (now, before) => {
+  const sent = now > before && !!props.turns[now - 1]?.queued;
+
+  nextTick(() => scrollToEnd(sent));
+});
+// The working row is one more row at the bottom, and it arrives between polls too.
+watch(() => props.working, (now) => now && nextTick(() => scrollToEnd()));
 
 defineExpose({ scrollToEnd, atBottom });
 </script>
