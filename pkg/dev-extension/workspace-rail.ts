@@ -19,7 +19,7 @@ import {
 import type { DiffRow } from './components/pr/diff';
 import { latestAgentReport } from './conversations';
 import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from './api';
-import { noteCoded, isBot, STAGE_LABELS } from './workspace-status';
+import { noteCoded, noteBranch, isBot, STAGE_LABELS } from './workspace-status';
 import type { WorkspaceStatus, Stage } from './workspace-status';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -447,6 +447,7 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
       // whatever stage's column is being composed.
       if (r.v) {
         noteCoded(workspace, !!r.v.commits.length);
+        noteBranch(workspace, r.v.branch);
       }
     }),
     tried('media', readMedia(workspace)).then((r) => {

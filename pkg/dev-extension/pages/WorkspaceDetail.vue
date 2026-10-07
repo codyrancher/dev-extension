@@ -44,9 +44,9 @@ import {
   rememberWorkspace, rememberTab, lastTab, workspaceView, rememberWorkspaceView
 } from '../recent';
 import {
-  WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB, LABEL_CLUSTER, isLte
+  WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB, LABEL_CLUSTER, LABEL_ROLE, isLte
 } from '../config/constants';
-import { setViewing } from '../workspace-status';
+import { setViewing, noteRole, knownStatus } from '../workspace-status';
 
 const REFRESH_MS = 5000;
 
@@ -72,6 +72,10 @@ export default {
       pointedAtCluster: undefined,
       /** Its cluster is not registered here any more: there is no pod to wait for. */
       clusterGone: false,
+      /** The role its Installation asks for, over the one its name implies. See LABEL_ROLE. */
+      role:        '',
+      /** A developer's workspace not named for an issue: the PR found from its branch, or 0. */
+      workPr:      0,
       /** Whether its dev server was stopped on purpose, which is not the same as not being up. */
       devPaused:   false,
       devPausedAt: 0,
@@ -122,7 +126,7 @@ export default {
 
       return WORKSPACE_TABS.filter((name) => (
         (name !== 'browser' || (!preview && this.framable)) &&
-        (name !== 'pr' || this.prNumber || this.issueNumber) &&
+        (name !== 'pr' || this.prNumber || this.issueNumber || this.workPr) &&
         (name !== 'preview' || preview) &&
         (name !== 'share' || !preview) &&
         (name !== 'review' || !preview) &&
@@ -209,14 +213,14 @@ export default {
       return this.workspace?.state === 'stopped';
     },
 
-    /** The rail is for a workspace named for an issue or a PR; anything else opens on its tabs. */
+    /** The rail is for a workspace named for an issue or a PR, or labelled a developer's; anything else opens on its tabs. */
     /** Whether this is a leased workspace: it runs nothing, and its tools are attached to it. */
     leased() {
       return isLte(this.name || '');
     },
 
     railable() {
-      return !!this.workspace && !this.workspace.preview && (this.prNumber > 0 || this.issueNumber > 0);
+      return !!this.workspace && !this.workspace.preview && (this.prNumber > 0 || this.issueNumber > 0 || this.role === 'developer');
     },
 
     showRail() {
@@ -335,6 +339,9 @@ export default {
         const instance = await workspaceInstance(this.$store, this.name);
         const cluster = instance?.metadata?.labels?.[LABEL_CLUSTER];
 
+        this.role = instance?.metadata?.labels?.[LABEL_ROLE] || '';
+        noteRole(this.name, this.role);
+
         if (!cluster) {
           return;
         }
@@ -418,6 +425,8 @@ export default {
       }
       this.restarting = false;
       this.workspace = fresh;
+      // A developer's workspace not named for an issue: its PR is the one its status found by branch.
+      this.workPr = this.role === 'developer' && !this.issueNumber && !this.prNumber ? knownStatus(this.name)?.pr || 0 : 0;
 
       // Point everything that follows at the cluster this workspace is actually on. It is set
       // here rather than by the router because a page is about one workspace and every request
@@ -732,7 +741,7 @@ export default {
         for the reason the Browser tab is absent rather than empty.
       -->
       <Tab
-        v-if="prNumber || issueNumber"
+        v-if="prNumber || issueNumber || workPr"
         name="pr"
         label="PR"
         :weight="2.5"
@@ -740,7 +749,7 @@ export default {
         <WorkspacePr
           v-if="seen.pr"
           :workspace="workspace"
-          :pr="prNumber"
+          :pr="prNumber || workPr"
           :issue="issueNumber"
         />
       </Tab>

@@ -7,7 +7,7 @@
 // calls per workspace, so each workspace is read every five minutes, one at a time, in the
 // background; the sidebar shows whatever was last read and never waits on it.
 import { prDetail, DEFAULT_REPO } from './reviews';
-import { linkedPullRequest, issueBody } from './github';
+import { linkedPullRequest, branchPullRequest, issueBody } from './github';
 import { conversationStates, ConversationState } from './conversations';
 import { setWorkspaceRunning } from './api';
 import { isLte } from './config/constants';
@@ -239,6 +239,30 @@ function numbers(name: string): { pr: number; issue: number } {
     pr:    Number(/(?:^|-)pr-(\d+)(?:-|$)/.exec(name)?.[1]) || 0,
     issue: Number(/(?:^|-)issue-(\d+)(?:-|$)/.exec(name)?.[1]) || 0,
   };
+}
+
+/**
+ * The role each workspace's Installation asks for (LABEL_ROLE), told by whoever read it: the
+ * sidebar's list, the workspace's own page. `developer` makes a workspace a fix whatever it is
+ * called; with no issue in its name, its PR is the one from its checkout's branch.
+ */
+const roles: Record<string, string> = {};
+const branches: Record<string, string> = {};
+
+export function noteRole(name: string, role: string): void {
+  roles[name] = role || '';
+}
+
+/** The branch a workspace's checkout is on - told by the page, which reads the checkout. */
+export function noteBranch(name: string, branch: string): void {
+  branches[name] = branch || '';
+}
+
+/** Whether a workspace is its owner's own work: named for an issue, or labelled a developer's. */
+function isFix(name: string): boolean {
+  const { pr, issue } = numbers(name);
+
+  return !pr && (issue > 0 || roles[name] === 'developer');
 }
 
 // ── The agents ──────────────────────────────────────────────────────────────────────────────
@@ -522,8 +546,8 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
       ...display(rec, w), ...ciOf(d), title: d.meta?.title || '', links, kind: 'review', pr,
     };
   }
-  if (issue) {
-    const n = await linkedPullRequest(DEFAULT_REPO, issue).catch(() => 0);
+  if (isFix(name)) {
+    const n = await (issue ? linkedPullRequest(DEFAULT_REPO, issue) : branchPullRequest(DEFAULT_REPO, branches[name] || '')).catch(() => 0);
     const d = n ? await prDetail(n) : null;
 
     if (n) {
@@ -534,7 +558,7 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
     // The PR's title once there is one; until then the issue's own title, so a fix reads as the work
     // it is rather than its `issue-<n>` name. Without this a fix with no PR yet had no title at all,
     // and the row fell back to the bare number.
-    const title = d?.meta?.title || (await issueBody(DEFAULT_REPO, issue).catch(() => ({ title: '' })).then((i) => i.title)) || '';
+    const title = d?.meta?.title || (issue ? await issueBody(DEFAULT_REPO, issue).catch(() => ({ title: '' })).then((i) => i.title) : '') || '';
 
     return {
       ...display(rec, w), ...ciOf(d), title, links, kind: 'fix', pr: n,
@@ -564,7 +588,7 @@ export function provisionalStatus(name: string): WorkspaceStatus {
   }
 
   return {
-    ...empty(), kind: pr ? 'review' : issue ? 'fix' : 'other', links, pr,
+    ...empty(), kind: pr ? 'review' : isFix(name) ? 'fix' : 'other', links, pr,
   };
 }
 
@@ -586,13 +610,12 @@ export async function readStatusNow(name: string, github = true): Promise<Worksp
   const before = statuses.get(name) || empty();
   const [work] = await Promise.all([github ? readWork(name) : Promise.resolve({}), refreshAgents()]);
   const agent = agents[name] || 'none';
-  const { pr, issue } = numbers(name);
   // A fix with no PR yet moves between Assess and Code on what the checkout says and what the
   // agent is doing, which the tick knows without GitHub - still through the store, so the move only
   // ever goes forward and never undoes a stored stage.
   let rewrite: Partial<WorkspaceStatus> = {};
 
-  if (!github && before.readAt && !pr && issue && !before.pr) {
+  if (!github && before.readAt && isFix(name) && !before.pr) {
     const w = fixWork(null, agent, coded[name] || false);
 
     rewrite = display(await reconcileStage(name, toDerived('fix', w, 0)), w);
@@ -645,13 +668,14 @@ async function readStale(names: string[]): Promise<void> {
  * more than fifteen seconds old, the work's read in the background when more than five
  * minutes old. Returns at once with what there is.
  */
-export async function workspaceStatuses(workspaces: { name: string; cluster?: string; preview?: boolean }[]): Promise<Record<string, WorkspaceStatus>> {
+export async function workspaceStatuses(workspaces: { name: string; cluster?: string; preview?: boolean; role?: string }[]): Promise<Record<string, WorkspaceStatus>> {
   // Every workspace, not only local ones. The status is GitHub work (read by PR/issue number, the
   // same from any cluster) plus the agent state (read from the one agent pod, which tracks a
   // conversation by workspace name whatever cluster it runs on) - neither is cluster-scoped, so a
   // downstream-hosted workspace gets its status line and dot like any other. Previews have none.
   const names = workspaces.filter((w) => !w.preview).map((w) => w.name);
 
+  workspaces.forEach((w) => noteRole(w.name, w.role || ''));
   void refreshAgents();
   void readStale(names);
 
@@ -663,10 +687,9 @@ export async function workspaceStatuses(workspaces: { name: string; cluster?: st
     // The work's wording depends on the agent too, and the agent moves more often than
     // GitHub is read: a fix workspace whose agent has just gone idle says so now. Through the store,
     // so this soft move only carries Assess to Code and never undoes a stored stage.
-    const { pr, issue } = numbers(name);
     let rewrite: Partial<WorkspaceStatus> = {};
 
-    if (known.readAt && !pr && issue && !known.links.some((l) => l.label.startsWith('PR'))) {
+    if (known.readAt && isFix(name) && !known.links.some((l) => l.label.startsWith('PR'))) {
       const w = fixWork(null, agent, coded[name] || false);
 
       rewrite = display(await reconcileStage(name, toDerived('fix', w, 0)), w);
