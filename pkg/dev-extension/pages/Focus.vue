@@ -2078,47 +2078,18 @@ onBeforeUnmount(closeSettings);
         <span class="focus__name">Focus</span>
       </div>
 
+      <!--
+        No position in the deck. "8 of 26 waiting" counted the queue at you on every card, and a
+        number that large is discouraging rather than informative: the deck is one card at a
+        time by design, and how many are behind it is not a thing to act on. What is left is
+        the two states that are worth a sentence - still gathering, and nothing to do.
+      -->
       <p class="focus__count">
         <template v-if="loading">Gathering what needs you…</template>
-        <template v-else-if="deck.length">
-          <strong>{{ index + 1 }}</strong> of {{ deck.length }} waiting
-          <span v-if="snoozedCount" class="focus__aside">· {{ snoozedCount }} put off</span>
-        </template>
-        <template v-else>Nothing in the deck</template>
+        <template v-else-if="!deck.length">Nothing in the deck</template>
+        <template v-else-if="snoozedCount">{{ snoozedCount }} put off</template>
       </p>
 
-      <!--
-        What is running behind the one card on screen: the workspaces, and the Ranchers they are
-        pointed at.
-
-        In the page's own top-right corner rather than fixed to the bottom-left one. Both docks
-        were in that corner - at x20 and x84, each 55x34 - and the chat bar was `left: 50%` with a
-        980px body, which at this width put its own left edge at x22 and its first 42px button
-        straight over the first dock, higher z-index winning. Two fixed layers were competing for
-        the same forty pixels. Here they are in the flow, beside the count, where nothing can
-        land on them at any width. (The bar is inset by `--pins-w` now and starts at the card's own
-        left edge, so it would no longer reach them either.)
-      -->
-      <div class="focus__docks">
-        <FocusDock
-          label="Workspaces"
-          icon="tasks"
-          :rows="workspaceRows"
-          :here="current?.workspace || ''"
-          empty="No workspaces. A card that needs one offers to make it."
-          @open="openWorkspace"
-          @act="({ row, action }) => actOnRow(row, action)"
-        />
-
-        <FocusDock
-          label="Ranchers"
-          icon="scales"
-          :rows="rancherRows"
-          empty="No Rancher instances."
-          @open="(url) => url && window.open(url, '_blank', 'noopener')"
-          @act="({ row, action }) => actOnRow(row, action)"
-        />
-      </div>
     </header>
 
     <div class="focus__main">
@@ -2259,6 +2230,41 @@ onBeforeUnmount(closeSettings);
       asking for a conversation because somebody started typing into it before there was one.
       See components/focus/FocusChatBar.vue.
     -->
+    <!--
+      What is running behind the one card on screen: the workspaces, and the Ranchers they are
+      pointed at. Fixed in the bottom-left corner.
+
+      They were moved up into the header once because two fixed layers were fighting over the
+      same forty pixels: the chat bar was `left: 50%` with a 980px body, which put its first
+      button straight over the first dock. That is no longer true - the bar is inset by
+      `--pins-w` and starts at the card's own left edge - so the corner is free again, and it
+      is where a thing you glance at rather than read belongs.
+
+      The marks open upward from here, which FocusDock works out for itself: it measures the
+      room above and below its own button and picks the side with space, so nothing had to be
+      told about the move.
+    -->
+    <div class="focus__docks">
+        <FocusDock
+          label="Workspaces"
+          icon="tasks"
+          :rows="workspaceRows"
+          :here="current?.workspace || ''"
+          empty="No workspaces. A card that needs one offers to make it."
+          @open="openWorkspace"
+          @act="({ row, action }) => actOnRow(row, action)"
+        />
+
+        <FocusDock
+          label="Ranchers"
+          icon="scales"
+          :rows="rancherRows"
+          empty="No Rancher instances."
+          @open="(url) => url && window.open(url, '_blank', 'noopener')"
+          @act="({ row, action }) => actOnRow(row, action)"
+        />
+      </div>
+
     <FocusChatBar
       ref="bar"
       :open="chatOpen"
@@ -2268,7 +2274,6 @@ onBeforeUnmount(closeSettings);
       :command="chatWorkspace ? paneCommand(chatWorkspace, conversation) : null"
       @update:open="onChatOpen"
       @wake="wakeChat"
-      @settings="openSettings('queue')"
       @queue="openSettings('queue')"
     />
 
@@ -2665,10 +2670,15 @@ onBeforeUnmount(closeSettings);
  * step with the bar's offsets. See the markup for what the overlap measured.
  */
 .focus__docks {
+  position: fixed;
+  left: var(--s3, 16px);
+  bottom: var(--s3, 16px);
   display: flex;
   align-items: center;
   flex: 0 0 auto;
   gap: var(--s2);
+  /* Above the page, below the chat bar's veil: opening the conversation should dim these too. */
+  z-index: 30;
 }
 
 /* ── What the page says to you ────────────────────────────────────────────────────────────── */

@@ -66,7 +66,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:open', open: boolean): void;
-  (e: 'settings'): void;
   (e: 'queue'): void;
   /** Somebody typed into the shut bar before the page had made a conversation. */
   (e: 'wake'): void;
@@ -319,8 +318,6 @@ defineExpose({ ask, focus: focusBox });
   </Transition>
 
   <section class="bar" :class="{ 'bar--open': open }" aria-label="The conversation">
-    <IconButton name="settings" label="Settings" class="bar__end" @click="emit('settings')" />
-
     <div class="bar__middle">
       <Transition name="history">
         <div v-if="open" class="bar__history">

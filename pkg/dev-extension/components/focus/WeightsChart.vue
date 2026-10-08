@@ -210,7 +210,7 @@ function nudge(row: WeightRow, by: number) {
 .wc__rank { color: var(--text-faint); font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
 .wc__item-text { display: flex; flex-direction: column; min-width: 0; }
 .wc__item-title { color: var(--text); font-size: var(--t-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wc__item-needs { color: var(--text-faint); font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wc__item-needs { color: var(--text-muted); font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wc__item-score { color: var(--kind-c); font-size: var(--t-sm); font-weight: 650; font-variant-numeric: tabular-nums; }
 
 .wc__item--review   { --kind-c: var(--kind-review); }
@@ -233,7 +233,7 @@ function nudge(row: WeightRow, by: number) {
   font-variant-numeric: tabular-nums;
 }
 
-.wc__band-about { margin: 0 0 var(--s2); color: var(--text-faint); font-size: var(--t-xs); }
+.wc__band-about { margin: 0 0 var(--s2); color: var(--text-muted); font-size: var(--t-xs); }
 
 /* ── One rule ─────────────────────────────────────────────────────────────────────────────── */
 .rule {
@@ -241,7 +241,12 @@ function nudge(row: WeightRow, by: number) {
   border-top: 1px solid var(--border);
 }
 
-.rule--idle { opacity: 0.45; }
+/*
+ * Idle, not invisible. At 0.45 the label and its description were below the point where the
+ * text could be read at all, and "this rule is holding nothing right now" is worth saying
+ * quietly rather than by making the row illegible.
+ */
+.rule--idle { opacity: 0.7; }
 .rule__line { display: flex; align-items: baseline; gap: var(--s2); }
 .rule__label { color: var(--text); font-size: var(--t-sm); }
 
@@ -306,7 +311,7 @@ function nudge(row: WeightRow, by: number) {
   pointer-events: none;
 }
 
-.rule__about { margin: 0; color: var(--text-faint); font-size: var(--t-xs); }
+.rule__about { margin: 0; color: var(--text-muted); font-size: var(--t-xs); }
 
 .rule--review   { --kind-c: var(--kind-review); }
 .rule--issue    { --kind-c: var(--kind-issue); }

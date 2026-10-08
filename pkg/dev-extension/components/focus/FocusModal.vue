@@ -228,6 +228,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true));
   display: flex;
   align-items: flex-start;
   gap: var(--s4);
+  /*
+   * Never shrink. This is a flex column whose body scrolls, and a flex item's default is
+   * `shrink: 1` - so with a long panel the header gave up its own height and its second line
+   * of description was drawn over the first thing in the body, with the close button sitting
+   * on the end of the text. The footer already said this; the header had been missed.
+   */
+  flex: 0 0 auto;
   padding: var(--s5) var(--s5) var(--s4);
   border-bottom: 1px solid var(--border);
 }
