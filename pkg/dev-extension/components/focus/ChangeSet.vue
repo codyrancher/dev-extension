@@ -469,6 +469,29 @@ const statusWord: Record<string, string> = {
         >
           <template #after="{ index }">
             <!--
+              The box that asks, under the run of lines it would ask about.
+
+              It was a bar across the bottom of the pane, which meant the lines were up here and
+              the question was down there with the file and the range repeated in it so you knew
+              what you were typing about. Here there is nothing to repeat: it is under the rows
+              it belongs to, the thread opens in its place, and continuing is the thread's own
+              box rather than this one.
+            -->
+            <div v-if="pick && pick.hunk === h && pick.range[1] === index" class="ask">
+              <form class="ask__form" @submit.prevent="ask()">
+                <input
+                  v-model="question"
+                  class="ask__field"
+                  placeholder="Ask the agent about this code…"
+                  aria-label="Ask the agent about the selected lines"
+                >
+                <AppButton variant="quiet" size="sm" :busy="busy" title="Ask what these lines do" @click="ask(SUMMARISE)">Summarise</AppButton>
+                <AppButton variant="kind" size="sm" icon="sparkle" :busy="busy" @click="ask()">Ask</AppButton>
+                <AppButton variant="quiet" size="sm" @click="pick = null">Clear</AppButton>
+              </form>
+            </div>
+
+            <!--
               What has already been said about this line: the pull request's comments and the
               agent's own, unsent ones. Above the questions, because a comment is the record and
               a question is something happening now.
@@ -521,32 +544,6 @@ const statusWord: Record<string, string> = {
       </div>
     </article>
 
-    <!-- What you picked, and the box that asks about it. -->
-    <Transition name="ask">
-      <div v-if="picked" class="ask">
-        <!--
-          Which lines is not said here any more. The thread opens against the lines themselves
-          and carries the label, the picked rows are already marked in the diff, and this box
-          sits directly under both - so naming the file and the range a third time was the one
-          part of the row that had to be read to be ignored.
-        -->
-        <form class="ask__form" @submit.prevent="ask()">
-          <input
-            v-model="question"
-            class="ask__field"
-            placeholder="Ask the agent about this code…"
-            aria-label="Ask the agent about the selected lines"
-          >
-          <!--
-            The question that gets asked of a diff more than any other, without typing it. It
-            asks straight away rather than filling the box: the point of it is one press.
-          -->
-          <AppButton variant="quiet" size="sm" :busy="busy" title="Ask what these lines do" @click="ask(SUMMARISE)">Summarise</AppButton>
-          <AppButton variant="kind" size="sm" icon="sparkle" :busy="busy" @click="ask()">Ask</AppButton>
-          <AppButton variant="quiet" size="sm" @click="pick = null">Clear</AppButton>
-        </form>
-      </div>
-    </Transition>
   </section>
 </template>
 
@@ -754,27 +751,20 @@ const statusWord: Record<string, string> = {
 .anchored__field:focus-visible,
 .ask__field:focus-visible { outline: 2px solid var(--kind); outline-offset: 1px; }
 
-/* ── The bar that asks ───────────────────────────────────────────────────── */
+/* ── The box that asks, in among the code ────────────────────────────────── */
 .ask {
-  grid-column: 1 / -1;
+  /* Inset to the same place a thread sits, so asking and the answer line up. */
+  margin: var(--s2) 0;
   display: flex;
   align-items: center;
   gap: var(--s3);
   padding: var(--s2) var(--s3);
-  border: 1px solid color-mix(in srgb, var(--kind) 40%, var(--border));
-  border-radius: var(--r-pill);
+  border-left: 2px solid var(--kind);
   background: color-mix(in srgb, var(--kind) 9%, var(--surface-sunk));
+  border-radius: 0 var(--r-sm, 4px) var(--r-sm, 4px) 0;
 }
 
-.ask__what { color: var(--text-dim); font-size: var(--t-sm); white-space: nowrap; }
-.ask__what strong { color: var(--text); }
-.ask__what code { color: var(--text-muted); font-family: var(--mono); font-size: var(--t-xs); }
 .ask__form { display: flex; align-items: center; gap: var(--s2); flex: 1; min-width: 0; }
-
-.ask-enter-active,
-.ask-leave-active { transition: opacity var(--fast) var(--ease-out), transform var(--fast) var(--ease-out); }
-.ask-enter-from,
-.ask-leave-to { opacity: 0; transform: translateY(6px); }
 
 
 @keyframes dot {
@@ -826,7 +816,7 @@ const statusWord: Record<string, string> = {
   .tree::-webkit-scrollbar { height: 0; }
   .tree__dir { display: none; }
   .tree__file { width: auto; flex: none; }
-  .ask { flex-wrap: wrap; border-radius: var(--r-md); }
+  .ask { flex-wrap: wrap; }
 }
 
 /* A conversation under the lines it is about, inset so the diff still reads as the subject. */
