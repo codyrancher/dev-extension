@@ -21,6 +21,8 @@ import { latestAgentReport } from './conversations';
 import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from './api';
 import { noteCoded, noteBranch, isBot, STAGE_LABELS } from './workspace-status';
 import type { WorkspaceStatus, Stage } from './workspace-status';
+import { artifactKind } from './artifact-kind';
+import type { ArtifactKind } from './artifact-kind';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -46,7 +48,8 @@ export function stepsFor(kind: WorkspaceStatus['kind']): RailStep[] {
 export type EvidenceItem =
   | { kind: 'text'; text: string; html?: string; at?: string; who?: string }
   | { kind: 'kv'; rows: { k: string; v: string; tone?: string }[] }
-  | { kind: 'media'; items: { label: string; url: string; video: boolean; at: string }[] }
+  /** The workspace's artifacts directory: every top-level directory in it, and the loose files. */
+  | { kind: 'artifacts'; groups: ArtifactGroup[]; total: number; truncated: boolean; lead: string[] }
   | { kind: 'comments'; items: Comment[]; paged?: boolean }
   | { kind: 'commits'; pr: number; items: { sha: string; message: string; who: string; at: string }[]; since?: string }
   | { kind: 'files'; items: { path: string; note: string }[]; open?: boolean }
@@ -54,6 +57,26 @@ export type EvidenceItem =
   | { kind: 'review'; label: string }
   | { kind: 'links'; items: { label: string; url: string }[] }
   | { kind: 'empty'; text: string };
+
+/** One file under a workspace's artifacts. `path` is from the artifacts root; `label` is its path inside its group. */
+export interface Artifact {
+  path: string;
+  label: string;
+  url: string;
+  type: ArtifactKind;
+  size: number;
+  at: string;
+}
+
+/** A top-level directory of the artifacts (`dir: ''` is the files beside them), with its newest files. */
+export interface ArtifactGroup {
+  dir: string;
+  /** How many files it holds in all, however deep - `files` is only the newest of them. */
+  count: number;
+  size: number;
+  at: string;
+  files: Artifact[];
+}
 
 export interface EvidenceSection {
   title: string;
@@ -287,24 +310,68 @@ async function readBranch(workspace: string): Promise<Branch | null> {
   };
 }
 
-async function readMedia(workspace: string): Promise<{ label: string; url: string; video: boolean; at: string; path: string }[]> {
-  // Not caught to an empty list. The route answers 200 with `files: []` for a workspace that
-  // has no recordings, so every failure here is the API being away - and an empty list is
-  // drawn as "there are none", which deleted the recordings section out from under whoever
-  // was watching one. Thrown instead, and the column keeps what it already had.
-  const data = await devFetch(workspaceMediaListUrl(workspace));
-  const files: Json[] = data?.files || [];
+/** How many of a group's newest files arrive with the listing; the rest are read a page at a time. */
+const ARTIFACTS_PER_GROUP = 12;
 
-  return files
-    .filter((f) => !/^a11y\//.test(f.path))
-    .sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0))
-    .slice(0, 80)
-    .map((f) => ({
-      label: f.path, url: workspaceMediaFileUrl(workspace, f.path), video: /video/.test(f.type || ''), at: new Date(f.mtimeMs || 0).toISOString(), path: f.path,
-    }));
+const artifact = (workspace: string, dir: string, f: Json): Artifact => ({
+  path:  f.path,
+  label: dir ? String(f.path).slice(dir.length + 1) : f.path,
+  url:   workspaceMediaFileUrl(workspace, f.path),
+  type:  artifactKind(f.path),
+  size:  Number(f.size) || 0,
+  at:    new Date(f.mtimeMs || 0).toISOString(),
+});
+
+async function readArtifacts(workspace: string): Promise<{ groups: ArtifactGroup[]; total: number; truncated: boolean }> {
+  // Not caught to an empty list. The route answers 200 with nothing in it for a workspace that
+  // has no artifacts, so every failure here is the API being away - and an empty list is drawn
+  // as "there are none", which deleted the section out from under whoever was watching a
+  // recording in it. Thrown instead, and the column keeps what it already had.
+  const data = await devFetch(`${ workspaceMediaListUrl(workspace) }?groups=${ ARTIFACTS_PER_GROUP }`);
+  let groups: Json[] = data?.groups;
+
+  // An in-cluster API from before the directory was listed as one answers with its flat list,
+  // which is the same files without the counts: grouped here, for the minute until it restarts.
+  if (!groups) {
+    const byDir = new Map<string, Json>();
+
+    for (const f of (data?.files || []) as Json[]) {
+      const dir = String(f.path).includes('/') ? String(f.path).split('/')[0] : '';
+      const g = byDir.get(dir) || {
+        dir, count: 0, size: 0, mtimeMs: 0, files: [],
+      };
+
+      g.count++;
+      g.size += Number(f.size) || 0;
+      g.mtimeMs = Math.max(g.mtimeMs, f.mtimeMs || 0);
+      g.files.push(f);
+      byDir.set(dir, g);
+    }
+    groups = [...byDir.values()].map((g) => ({ ...g, files: g.files.sort((a: Json, b: Json) => (b.mtimeMs || 0) - (a.mtimeMs || 0)).slice(0, ARTIFACTS_PER_GROUP) }));
+  }
+
+  return {
+    groups: groups.map((g) => ({
+      dir: g.dir || '', count: Number(g.count) || 0, size: Number(g.size) || 0, at: new Date(g.mtimeMs || 0).toISOString(), files: (g.files || []).map((f: Json) => artifact(workspace, g.dir || '', f)),
+    })),
+    total:     Number(data?.total) || groups.reduce((n, g) => n + (Number(g.count) || 0), 0),
+    truncated: !!data?.truncated,
+  };
 }
 
-const mediaUnder = (media: Awaited<ReturnType<typeof readMedia>>, ...dirs: string[]) => media.filter((m) => dirs.some((d) => m.path.startsWith(`${ d }/`))).slice(0, 8);
+/**
+ * More of one group than the listing carried: its newest `limit` files, and how many there are.
+ * Asked for when somebody opens a directory up, so a recording's frames cost nothing until then.
+ */
+export async function artifactsIn(workspace: string, dir: string, limit: number): Promise<{ files: Artifact[]; count: number }> {
+  const data = await devFetch(`${ workspaceMediaListUrl(workspace) }?dir=${ encodeURIComponent(dir) }&offset=0&limit=${ limit }`);
+
+  if (!Array.isArray(data?.files) || typeof data?.count !== 'number') {
+    throw new Error('The in-cluster API is restarting; try again in a moment.');
+  }
+
+  return { files: data.files.map((f: Json) => artifact(workspace, dir, f)), count: data.count };
+}
 
 function checklist(body: string): { ticked: number; total: number } {
   const ticked = (body.match(/- \[x\]/gi) || []).length;
@@ -450,8 +517,8 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
         noteBranch(workspace, r.v.branch);
       }
     }),
-    tried('media', readMedia(workspace)).then((r) => {
-      have.media = r.v || [];
+    tried('artifacts', readArtifacts(workspace)).then((r) => {
+      have.artifacts = r.v;
       have.failed = { ...have.failed, media: !r.ok };
     }),
     tried('pr', status.pr ? prDetail(status.pr) : Promise.resolve(null)).then((r) => {
@@ -520,7 +587,7 @@ export interface Failed {
 interface Sources {
   report?: Awaited<ReturnType<typeof latestAgentReport>>;
   branch?: Branch | null;
-  media?: Awaited<ReturnType<typeof readMedia>>;
+  artifacts?: Awaited<ReturnType<typeof readArtifacts>> | null;
   d?: Json;
   issue?: { title: string; body: string; url: string } | null;
   ci?: Json;
@@ -533,7 +600,7 @@ interface Sources {
 function compose(status: WorkspaceStatus, stage: Stage, have: Sources): EvidenceSection[] {
   const report = have.report || null;
   const branch = have.branch || null;
-  const media = have.media || [];
+  const artifacts = have.artifacts || null;
   const d = have.d || null;
   const kinds = have.kinds || {};
   const sections: EvidenceSection[] = [];
@@ -545,7 +612,20 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     sections.push({ title: 'The pull request could not be read', items: [{ kind: 'empty', text: 'GitHub or the in-cluster API did not answer. Trying again in a moment.' }] });
   }
   const reportSection = (title = 'Agent\'s report') => report && sections.push({ title, items: [{ kind: 'text', text: report.text, html: renderMd(report.text), at: report.at }] });
-  const mediaSection = (title: string, items: ReturnType<typeof mediaUnder>) => items.length && sections.push({ title, items: [{ kind: 'media', items }] });
+  // Everything in the workspace's artifacts directory, as the directory it is. The directories
+  // this stage's own work writes into come first; then the loose files; then the rest, the most
+  // recently written first.
+  const artifactsSection = (...first: string[]) => {
+    if (!artifacts?.groups.length) {
+      return;
+    }
+    const rank = (g: ArtifactGroup) => (first.includes(g.dir) ? first.indexOf(g.dir) : g.dir ? first.length + 1 : first.length);
+    const groups = [...artifacts.groups].sort((a, b) => rank(a) - rank(b) || (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
+
+    sections.push({ title: 'Artifacts', items: [{
+        kind: 'artifacts', groups, total: artifacts.total, truncated: artifacts.truncated, lead: first,
+      }] });
+  };
   const branchSection = () => {
     if (!branch) {
       return;
@@ -587,7 +667,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     switch (stage) {
     case 'assess':
       reportSection(report && branch?.commits.length ? 'Agent\'s latest report' : 'Agent\'s assessment');
-      mediaSection('Reproduced', mediaUnder(media, 'reproduce'));
+      artifactsSection('reproduce');
       if (have.issue) {
         issueSection();
       } else {
@@ -596,13 +676,13 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       break;
     case 'code':
       branchSection();
-      mediaSection('Before and after', [...mediaUnder(media, 'verify'), ...mediaUnder(media, 'reproduce')]);
+      artifactsSection('verify', 'reproduce');
       reportSection();
       break;
     case 'draft':
       prSection();
       branchSection();
-      mediaSection('Recorded', [...mediaUnder(media, 'verify'), ...mediaUnder(media, 'reproduce')]);
+      artifactsSection('verify', 'reproduce');
       reportSection();
       break;
     case 'review':

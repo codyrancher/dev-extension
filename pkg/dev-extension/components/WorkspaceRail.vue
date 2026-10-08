@@ -22,6 +22,7 @@ import PrButton from './pr/PrButton.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
 import ArtifactViewer from './pr/ArtifactViewer.vue';
+import WorkspaceArtifacts from './WorkspaceArtifacts.vue';
 import CodeView from './code/CodeView.vue';
 import { fromRailRows } from './code/rows';
 import {
@@ -34,7 +35,7 @@ import { prFile, openConversation } from '../reviews';
 import {
   listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates, sendToPane, renameConversation, endConversation
 } from '../conversations';
-import { ensureWorkspaceReady, putArtifact, devServerState, stopDevServer, startDevServer} from '../workspace-tools';
+import { ensureWorkspaceReady, putArtifact, saveArtifact, devServerState, stopDevServer, startDevServer} from '../workspace-tools';
 import WorkspaceTools from './WorkspaceTools.vue';
 import { isLte } from '../config/constants';
 import {
@@ -63,7 +64,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceTools, CodeView,
+    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView,
   },
 
   props: {
@@ -93,7 +94,10 @@ export default {
       evidence:    [],
       /** The stage being looked at: the current one unless a past step was clicked. */
       viewing:     '',
-      /** The screenshot or recording open in the pan-and-zoom viewer, if any. */
+      /**
+       * The file open in the viewer, if any: `{ src, name, caption }`, and `path` when it is one
+       * of the workspace's own artifacts - which is what makes it something that can be saved.
+       */
       shot:        null,
       /** Whether this visit has already made sure the workspace can be worked in. */
       tunnelChecked: false,
@@ -802,6 +806,11 @@ export default {
      * Developer responded are behind you as well as ahead, so they keep their ticks rather than
      * going back to being plain numbers.
      */
+    /** An edit made in the viewer, written back to the file it was opened from. */
+    saveShot(text, was) {
+      return saveArtifact(this.workspace.name, this.shot.path, text, was);
+    },
+
     /**
      * A click on a screenshot inside a rendered body: open it in the viewer.
      *
@@ -2427,47 +2436,21 @@ export default {
                   {{ item.label }}
                 </PrButton>
               </div>
-              <div
-                v-if="item.kind === 'media'"
-                class="workspace-rail__media"
-              >
-                <!--
-                  Thumbnails, not the media itself. A report with eight screenshots in it is a
-                  page of screenshots you scroll past to read the report; at this size the set
-                  is legible at a glance and any one of them opens in the viewer that pans and
-                  zooms, which is where a screenshot is actually read.
-                -->
-                <figure
-                  v-for="m in item.items"
-                  :key="m.url"
-                  class="workspace-rail__figure"
-                >
-                  <button
-                    type="button"
-                    class="workspace-rail__thumb"
-                    :title="`${ m.label } · open`"
-                    @click="shot = { src: m.url, name: m.label, caption: ago(m.at) }"
-                  >
-                    <video
-                      v-if="m.video"
-                      :src="m.url"
-                      preload="metadata"
-                      muted
-                    />
-                    <img
-                      v-else
-                      :src="m.url"
-                      :alt="m.label"
-                      loading="lazy"
-                    >
-                    <span
-                      v-if="m.video"
-                      class="workspace-rail__thumb-play"
-                    >▶</span>
-                  </button>
-                  <figcaption>{{ m.label }} · {{ ago(m.at) }}</figcaption>
-                </figure>
-              </div>
+              <!--
+                The workspace's artifacts directory, all of it: a group per directory, a
+                thumbnail per file whatever kind of file it is. One opens in the viewer below,
+                which is kept at the page's root so that a refresh of this column cannot take an
+                editor with unsaved work in it away.
+              -->
+              <WorkspaceArtifacts
+                v-if="item.kind === 'artifacts'"
+                :workspace="workspace.name"
+                :groups="item.groups"
+                :total="item.total"
+                :truncated="item.truncated"
+                :lead="item.lead"
+                @open="shot = $event"
+              />
               <div
                 v-else-if="item.kind === 'comments'"
                 class="workspace-rail__comments"
@@ -2716,13 +2699,19 @@ export default {
         </section>
 
       </div>
-      <!-- A screenshot or a recording, in the viewer that pans and zooms. -->
+      <!--
+        A screenshot, a recording, a script, a report: whatever it is, in the viewer that shows
+        it. One of the workspace's own files can be edited there and is saved back into it.
+      -->
       <Teleport to="body">
         <ArtifactViewer
           v-if="shot"
+          :key="shot.src"
           :src="shot.src"
           :name="shot.name"
           :caption="shot.caption"
+          :save="shot.path ? saveShot : null"
+          @saved="refreshEvidence"
           @close="shot = null"
         />
       </Teleport>
@@ -3943,45 +3932,6 @@ export default {
   }
 
   /*
-   * One thumbnail: a fixed box the media is fitted into, so a set of screenshots is a row
-   * rather than a column of full-width pictures. Clicking opens the viewer that pans and
-   * zooms, which is where a screenshot is actually read.
-   */
-  &__thumb {
-    position:      relative;
-    display:       block;
-    width:         148px;
-    height:        96px;
-    padding:       0;
-    border:        1px solid var(--border);
-    border-radius: var(--border-radius);
-    background:    var(--box-bg);
-    overflow:      hidden;
-    cursor:        zoom-in;
-    min-height:    0;
-
-    img,
-    video {
-      width:      100%;
-      height:     100%;
-      object-fit: cover;
-      display:    block;
-    }
-
-    &:hover { border-color: var(--link); }
-  }
-
-  &__thumb-play {
-    position:      absolute;
-    inset:         auto 4px 4px auto;
-    padding:       0 5px;
-    border-radius: 3px;
-    background:    rgba(0, 0, 0, .55);
-    color:         #fff;
-    font-size:     10px;
-  }
-
-  /*
    * A screenshot inside a report or a comment is the same size, and opens the same way. These
    * are markdown images, so the rule reaches them by element rather than by class; `:deep`,
    * because a scoped stylesheet does not stamp its attribute on v-html content.
@@ -3995,27 +3945,6 @@ export default {
     border-radius:  var(--border-radius);
     cursor:         zoom-in;
     vertical-align: middle;
-  }
-
-  &__media {
-    display:               grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap:                   10px;
-  }
-
-  &__figure {
-    margin: 0;
-
-    video, img {
-      width:         100%;
-      border-radius: var(--border-radius);
-      background:    #000;
-    }
-
-    figcaption {
-      font-size: 12px;
-      color:     var(--muted);
-    }
   }
 
   &__comments {

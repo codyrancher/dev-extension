@@ -1,0 +1,29 @@
+// highlight.js, in the dashboard's colours: one theme for the chat's code blocks, the file
+// viewer's and an artifact's, following light and dark through the tokens. Imported into an
+// unscoped <style> by each component that draws highlighted code, because the code arrives
+// through v-html.
+.mc-chat, .pfv, .artifact-code {
+  .hljs { color: var(--body-text); }
+  .hljs-comment, .hljs-quote { color: var(--muted); font-style: italic; }
+  .hljs-keyword, .hljs-selector-tag, .hljs-meta, .hljs-doctag, .hljs-section { color: #c678dd; }
+  .hljs-string, .hljs-attr, .hljs-template-variable, .hljs-regexp { color: #98c379; }
+  .hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet, .hljs-link { color: #d19a66; }
+  .hljs-title, .hljs-name, .hljs-selector-id, .hljs-selector-class, .hljs-type, .hljs-built_in { color: #61afef; }
+  .hljs-variable, .hljs-attribute, .hljs-property, .hljs-params { color: #e06c75; }
+  .hljs-addition { color: #98c379; background: rgba(152, 195, 121, .12); display: inline-block; width: 100%; }
+  .hljs-deletion { color: #e06c75; background: rgba(224, 108, 117, .12); display: inline-block; width: 100%; }
+  .hljs-emphasis { font-style: italic; }
+  .hljs-strong { font-weight: 700; }
+}
+
+body.theme-light {
+  .mc-chat, .pfv, .artifact-code {
+    .hljs-keyword, .hljs-selector-tag, .hljs-meta, .hljs-doctag, .hljs-section { color: #a626a4; }
+    .hljs-string, .hljs-attr, .hljs-template-variable, .hljs-regexp { color: #50a14f; }
+    .hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet, .hljs-link { color: #986801; }
+    .hljs-title, .hljs-name, .hljs-selector-id, .hljs-selector-class, .hljs-type, .hljs-built_in { color: #4078f2; }
+    .hljs-variable, .hljs-attribute, .hljs-property, .hljs-params { color: #e45649; }
+    .hljs-addition { color: #50a14f; }
+    .hljs-deletion { color: #e45649; }
+  }
+}

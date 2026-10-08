@@ -845,3 +845,74 @@ export async function putArtifact(workspace: string, name: string, base64: strin
   return rel;
 }
 
+/** Base64 goes into the pod this many characters at a time: an exec's command is its URL, and a URL has a length. */
+const SAVE_CHUNK = 3072;
+/** How many of those are in flight at once. */
+const SAVE_PARALLEL = 6;
+
+/** The file is not what it was when it was opened: an agent wrote it in the meantime. */
+export class ArtifactChanged extends Error {
+  /** Read by the viewer, which is not this module's and does not import its classes. */
+  code = 'changed';
+}
+
+/**
+ * Write text over a file under a workspace's artifacts, as the workspace's own user.
+ *
+ * Through the workspace's pod, not the in-cluster API: that has the tree mounted read-only, and
+ * is meant to. So it is an exec, and an exec carries its command in the URL - the text goes in
+ * as numbered pieces, several at a time, and is put together, counted and only then written
+ * over the file, so a piece that did not arrive leaves the file as it was.
+ *
+ * `was` is the SHA-256 of the bytes the editor opened. An agent is usually still working in
+ * this tree, and a save that silently replaced what it wrote a minute ago would be a save that
+ * loses work; when the file no longer hashes to that, this throws ArtifactChanged instead.
+ */
+export async function saveArtifact(workspace: string, relPath: string, text: string, was = ''): Promise<void> {
+  const rel = String(relPath || '').replace(/^\/+/, '');
+
+  if (!rel || rel.split('/').some((part) => !part || part === '.' || part === '..') || /['\0\n\r]/.test(rel) || !/^[0-9a-f]*$/.test(was)) {
+    throw new Error(`${ relPath } is not a file under the workspace's artifacts.`);
+  }
+  const target = await workspaceTarget(workspace);
+  const file = `"$WS"/artifacts/'${ rel }'`;
+  const stage = `/tmp/.dev-save-${ Date.now().toString(36) }${ Math.random().toString(36).slice(2, 8) }`;
+  const encoded = b64(text);
+  const bytes = new TextEncoder().encode(text).length;
+  const ready = await asNode(target, [
+    `f=${ file }`,
+    '[ -f "$f" ] || { echo SAVE-MISSING; exit 0; }',
+    // A link out of the tree is not a file in it, whatever its path says.
+    'case "$(realpath -- "$f")" in "$(realpath -- "$WS/artifacts")"/*) ;; *) echo SAVE-MISSING; exit 0 ;; esac',
+    was ? `[ "$(sha256sum < "$f" | cut -d' ' -f1)" = ${ was } ] || { echo SAVE-CHANGED; exit 0; }` : '',
+    `mkdir -p ${ stage } && echo SAVE-READY`,
+  ].join('\n'));
+
+  if (ready.includes('SAVE-CHANGED')) {
+    throw new ArtifactChanged(`${ rel } changed in the workspace after it was opened here.`);
+  }
+  if (!ready.includes('SAVE-READY')) {
+    throw new Error(ready.includes('SAVE-MISSING') ? `${ rel } is not in the workspace any more.` : `${ workspace } did not answer: ${ ready.trim().slice(-200) || 'nothing came back' }`);
+  }
+
+  const pieces: string[] = [];
+
+  for (let i = 0; i < encoded.length; i += SAVE_CHUNK) {
+    pieces.push(encoded.slice(i, i + SAVE_CHUNK));
+  }
+  for (let i = 0; i < pieces.length; i += SAVE_PARALLEL) {
+    await Promise.all(pieces.slice(i, i + SAVE_PARALLEL).map((piece, n) => asNode(target, `printf %s '${ piece }' > ${ stage }/part-${ String(i + n).padStart(6, '0') }`)));
+  }
+
+  const out = await asNode(target, [
+    `f=${ file }`,
+    `cat ${ stage }/part-* 2>/dev/null | base64 -d > ${ stage }/whole`,
+    // Counted before it is written: a piece that never arrived must not become the file.
+    `if [ "$(wc -c < ${ stage }/whole)" = ${ bytes } ]; then cat ${ stage }/whole > "$f" && echo SAVE-OK; else echo SAVE-SHORT; fi`,
+    `rm -rf ${ stage }`,
+  ].join('\n'));
+
+  if (!out.includes('SAVE-OK')) {
+    throw new Error(out.includes('SAVE-SHORT') ? `${ rel } did not reach the workspace whole, so it was left as it was. Save again.` : `${ rel } could not be written: ${ out.trim().slice(-200) || 'nothing came back' }`);
+  }
+}
