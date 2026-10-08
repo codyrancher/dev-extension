@@ -40,6 +40,14 @@ const notes = computed(() => api.notes.value || []);
 const task = computed(() => api.task.value);
 const busy = computed(() => api.busy.value);
 const claimed = computed(() => api.claimed.value);
+/*
+ * Whether this card is the one on top.
+ *
+ * The deck renders the cards behind the current one too, and a conversation on each of those
+ * would be an exec into the agent pod every 1.5 seconds for a card nobody is looking at. The
+ * shell already works this out for clicks; the chat reads it for polling.
+ */
+const interactive = computed(() => api.interactive.value !== false);
 
 /*
  * Which pull request this card is about.
@@ -159,6 +167,8 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
         v-if="shown === 'agent' && art.agent"
         :agent="art.agent"
         :busy="busy"
+        :workspace="task.workspace"
+        :live="interactive"
         @answer="api.emit('answer', $event)"
       />
 

@@ -18,11 +18,20 @@
  */
 import { computed } from 'vue';
 import AppButton from './AppButton.vue';
+import InlineChat from './InlineChat.vue';
+import { paneCommand } from '../../conversations';
 import SectionHead from './SectionHead.vue';
 import Markdown from './Markdown.vue';
 import type { AgentTurn } from '../../focus-artifacts';
 
-const props = defineProps<{ agent: AgentTurn; busy?: boolean }>();
+const props = defineProps<{
+  agent: AgentTurn;
+  busy?: boolean;
+  /** The workspace the conversation runs in, so the chat below can be that conversation. */
+  workspace?: string;
+  /** Whether this card is the one being looked at. A chat off screen reads nothing. */
+  live?: boolean;
+}>();
 
 const emit = defineEmits<{
   (e: 'answer', value: { key: string; label: string }): void;
@@ -30,6 +39,19 @@ const emit = defineEmits<{
 }>();
 
 const asking = computed(() => Boolean(props.agent.question || props.agent.options.length));
+
+/**
+ * Its own conversation, on the card.
+ *
+ * This card is the top of the queue because an agent stopped and nothing it is doing can move
+ * until it hears back - and the answer to that was a button that left Focus for the workspace
+ * page. The conversation it is waiting in is named on the turn (`conversation`, "so a card can
+ * open exactly that one"), so it can simply be here. The choice buttons above stay: when the
+ * answer is a number in a dialog, pressing it is faster than typing.
+ */
+const chatCommand = computed(() => (props.workspace && props.agent.conversation
+  ? paneCommand(props.workspace, props.agent.conversation)
+  : null));
 
 /** What it wants, said plainly, since `options`/`yes-no`/`text` is its vocabulary and not yours. */
 const wants = computed(() => ({
@@ -94,8 +116,23 @@ const wants = computed(() => ({
     </p>
 
     <p v-else-if="!asking && !agent.said" class="ag__quiet">
-      Its pane is up but it has not said anything. Open the conversation to see what it is doing.
+      Its pane is up but it has not said anything. Say something below to find out what it is doing.
     </p>
+
+    <!--
+      The conversation itself, here rather than through a button that leaves the deck.
+
+      Only when the card knows which workspace it is in: the conversation runs in that
+      workspace's checkout, and without it there is no pane to address.
+    -->
+    <InlineChat
+      v-if="agent.conversation && chatCommand"
+      class="ag__chat"
+      :session="agent.conversation"
+      :command="chatCommand"
+      :live="live !== false"
+      :title="agent.title || 'This conversation'"
+    />
   </section>
 </template>
 
@@ -152,4 +189,11 @@ const wants = computed(() => ({
 }
 
 .ag__quiet { margin: 0; max-width: 70ch; color: var(--text-muted); font-size: var(--t-sm); line-height: 1.55; }
+
+/* The conversation, set off from what the agent said above it. */
+.ag__chat {
+  margin-top: var(--s2);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border);
+}
 </style>
