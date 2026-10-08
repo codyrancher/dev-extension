@@ -24,9 +24,18 @@ import AppIcon from './AppIcon.vue';
 import SectionHead from './SectionHead.vue';
 import CodeView from '../code/CodeView.vue';
 import { fromDiffLines, highlighted } from '../code/rows';
+import InlineChat from './InlineChat.vue';
+import { listConversations, startConversation, queuePrompt, paneCommand } from '../../conversations';
+import { linesPrompt } from '../../reviews';
 
 const props = withDefaults(defineProps<{
   files: CardFile[];
+  /** The workspace whose agent answers questions about this change. */
+  workspace?: string;
+  /** The pull request, when there is one, so the question names it. */
+  pr?: number;
+  /** False on a card that is not on top: its conversations read nothing. */
+  live?: boolean;
   busy?: boolean;
   /**
    * How many files the change really has, where that is more than were fetched.
@@ -45,7 +54,7 @@ const props = withDefaults(defineProps<{
    * 157 files" says the list is not the change - which is the one case this head was written for.
    */
   claimed?: string;
-}>(), { busy: false, total: 0, claimed: '' });
+}>(), { busy: false, total: 0, claimed: '', workspace: '', pr: 0, live: true });
 
 /** The count beside the head's label, or nothing where the lede has already said it. */
 const subset = computed(() => {
@@ -70,6 +79,19 @@ interface CodeThread {
   to: number;
   label: string;
   text: string;
+  /**
+   * The conversation this question has, which is its own.
+   *
+   * Asking used to hand the question to whatever thread the deck's bar was on, and leave a note
+   * under the lines saying "sent to the conversation below" - so the answer was somewhere else
+   * on the page, mixed in with whatever had been asked about the card before it. A question
+   * about four lines of a diff is its own subject; it gets its own thread, named for the lines,
+   * and the thread is drawn where the question was asked.
+   */
+  session: string;
+  /** While the conversation is being found or made. */
+  opening: boolean;
+  error: string;
 }
 
 /**
@@ -97,6 +119,16 @@ const folded = ref<Record<string, boolean>>({});
 const pick = ref<{ hunk: number; range: [number, number] } | null>(null);
 const question = ref('');
 const threads = ref<CodeThread[]>([]);
+
+/** The question people ask of a run of lines most often, as a button. */
+const SUMMARISE = 'In one or two lines, what do these lines do?';
+
+/** Offered inside a thread that is already open, for the next question rather than the first. */
+const SHORTCUTS = [
+  { label: 'Summarise', prompt: SUMMARISE },
+  { label: 'Why?', prompt: 'Why is this written this way rather than the obvious alternative?' },
+  { label: 'Risks', prompt: 'What could go wrong with this, and what is not covered by a test?' },
+];
 
 const root = ref<HTMLElement>();
 
@@ -170,26 +202,69 @@ function threadAt(hunk: number, index: number) {
   return threads.value.filter((t) => t.path === openPath.value && t.hunk === hunk && t.to === index);
 }
 
-function ask() {
-  const text = question.value.trim();
+/**
+ * The conversation for one run of lines: the one already named for them, or a new one.
+ *
+ * Named rather than found by position, so coming back to the same lines tomorrow opens what was
+ * said about them yesterday. `openConversation` is not used because its fallback is "any
+ * conversation in this workspace", which is right for "talk to the agent" and wrong here: a
+ * question about these four lines must not land in the thread about the last four.
+ */
+async function conversationFor(title: string): Promise<{ id: string; attach: unknown }> {
+  const existing = await listConversations(props.workspace).catch(() => []);
+  const found = existing.find((c) => c.title === title);
 
+  return found || await startConversation(props.workspace, title);
+}
+
+async function openThread(thread: CodeThread, code: string): Promise<void> {
+  const title = `${ thread.path.split('/').pop() } ${ thread.label }`;
+
+  try {
+    const conversation = await conversationFor(title);
+    const prompt = props.pr
+      ? linesPrompt(props.pr, {
+        path: thread.path, line: thread.to, startLine: thread.from === thread.to ? null : thread.from, side: 'RIGHT', code,
+      }, thread.text)
+      : `About ${ thread.path } ${ thread.label }:\n\n\`\`\`\n${ code }\n\`\`\`\n\n${ thread.text }`;
+
+    await queuePrompt((conversation as { attach: never }).attach, prompt).catch(() => {});
+    thread.session = conversation.id;
+  } catch (e) {
+    thread.error = (e as Error)?.message || String(e);
+  } finally {
+    thread.opening = false;
+  }
+}
+
+function ask(text = question.value.trim()) {
   if (!text || !pick.value || !picked.value || !file.value) {
     return;
   }
   const thread: CodeThread = {
-    id:    `c-${ Date.now().toString(36) }`,
-    path:  file.value.path,
-    hunk:  pick.value.hunk,
-    from:  pick.value.range[0],
-    to:    pick.value.range[1],
-    label: picked.value.label,
+    id:      `c-${ Date.now().toString(36) }`,
+    path:    file.value.path,
+    hunk:    pick.value.hunk,
+    from:    pick.value.range[0],
+    to:      pick.value.range[1],
+    label:   picked.value.label,
     text,
+    session: '',
+    opening: true,
+    error:   '',
   };
 
   threads.value = [...threads.value, thread];
-  emit('ask', {
-    path: thread.path, label: thread.label, code: picked.value.code, text,
-  });
+  if (props.workspace) {
+    openThread(thread, picked.value.code);
+  } else {
+    // No workspace, no agent: the question goes where it used to, so a card without one is no
+    // worse off than before.
+    thread.opening = false;
+    emit('ask', {
+      path: thread.path, label: thread.label, code: picked.value.code, text,
+    });
+  }
   question.value = '';
 
   // The mark lands under the lines it is about, which can be off the bottom of a short pane.
@@ -292,7 +367,23 @@ const statusWord: Record<string, string> = {
                 <span class="anchored__who">You asked</span>
                 {{ thread.text }}
               </p>
-              <p class="anchored__sent">
+              <p v-if="thread.opening" class="anchored__sent">
+                <AppIcon name="spinner" :size="11" />
+                Opening a conversation about these lines…
+              </p>
+              <p v-else-if="thread.error" class="anchored__sent">{{ thread.error }}</p>
+
+              <!-- The conversation itself, here, about these lines and nothing else. -->
+              <InlineChat
+                v-else-if="thread.session"
+                class="anchored__chat"
+                :session="thread.session"
+                :command="paneCommand(workspace, thread.session)"
+                :live="live !== false"
+                :shortcuts="SHORTCUTS"
+              />
+
+              <p v-else class="anchored__sent">
                 <AppIcon name="send" :size="11" />
                 Sent to the conversation below.
               </p>
@@ -317,7 +408,12 @@ const statusWord: Record<string, string> = {
             placeholder="Ask the agent about this code…"
             aria-label="Ask the agent about the selected lines"
           >
-          <AppButton variant="kind" size="sm" icon="sparkle" :busy="busy" @click="ask">Ask</AppButton>
+          <!--
+            The question that gets asked of a diff more than any other, without typing it. It
+            asks straight away rather than filling the box: the point of it is one press.
+          -->
+          <AppButton variant="quiet" size="sm" :busy="busy" title="Ask what these lines do" @click="ask(SUMMARISE)">Summarise</AppButton>
+          <AppButton variant="kind" size="sm" icon="sparkle" :busy="busy" @click="ask()">Ask</AppButton>
           <AppButton variant="quiet" size="sm" @click="pick = null">Clear</AppButton>
         </form>
       </div>
@@ -602,5 +698,12 @@ const statusWord: Record<string, string> = {
   .tree__dir { display: none; }
   .tree__file { width: auto; flex: none; }
   .ask { flex-wrap: wrap; border-radius: var(--r-md); }
+}
+
+/* A conversation under the lines it is about, inset so the diff still reads as the subject. */
+.anchored__chat {
+  margin-top: var(--s2);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--border);
 }
 </style>

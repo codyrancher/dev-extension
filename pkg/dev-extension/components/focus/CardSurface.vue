@@ -247,6 +247,9 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
         :total="art.stat?.files || 0"
         :busy="busy"
         :claimed="claimed"
+        :workspace="task.workspace || ''"
+        :pr="pr"
+        :live="interactive"
         @ask="api.emit('ask-code', $event)"
         @expand="api.emit('expand', $event)"
       />
