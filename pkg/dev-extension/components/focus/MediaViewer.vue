@@ -68,7 +68,17 @@ const MIN = 1;
 const MAX = 6;
 
 /** What a tile says it is. The card calls the set "recordings"; a tile has to be exact. */
-const KIND = { image: 'Image', video: 'Recording' } as const;
+const KIND = { image: 'Image', video: 'Recording', text: 'Text' } as const;
+
+/** A text file says what it is by its extension, which is more use than the word "Text". */
+const TEXT_LABEL: Record<string, string> = {
+  md: 'Markdown', markdown: 'Markdown', txt: 'Text', log: 'Log', json: 'JSON',
+  yml: 'YAML', yaml: 'YAML', diff: 'Diff', patch: 'Patch', csv: 'CSV', tsv: 'TSV',
+};
+
+const extOf = (name: string) => (/\.([a-z0-9]+)$/i.exec(name)?.[1] || '').toLowerCase();
+const kindLabel = (shot: CardMedia) => (shot.kind === 'text' ? (TEXT_LABEL[extOf(shot.label)] || extOf(shot.label).toUpperCase() || 'Text') : KIND[shot.kind]);
+const kindIcon = (kind: CardMedia['kind']) => (kind === 'video' ? 'play' : kind === 'text' ? 'document' : 'image');
 
 function reset() {
   scale.value = 1;
@@ -91,6 +101,44 @@ function openOne(n: number) {
 const showAll = () => { grid.value = true; };
 
 watch(at, reset);
+
+/* ── Reading one ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * A text file is fetched when it is opened, and only then.
+ *
+ * Not on the tile: a directory of notes would be a request each on a page that may never open
+ * any of them. Opened, it is the whole point of the file, so it is read in full and shown as
+ * what it is - monospaced, scrolling, unwrapped - rather than handed to an `<img>`.
+ */
+const body = ref('');
+const reading = ref(false);
+const unreadable = ref('');
+
+async function readText() {
+  const shot = item.value;
+
+  body.value = '';
+  unreadable.value = '';
+  if (!shot || shot.kind !== 'text') {
+    return;
+  }
+  reading.value = true;
+  try {
+    const response = await fetch(shot.src, { credentials: 'same-origin' });
+
+    if (!response.ok) {
+      throw new Error(`the file came back ${ response.status }`);
+    }
+    body.value = await response.text();
+  } catch (e) {
+    unreadable.value = (e as Error)?.message || String(e);
+  } finally {
+    reading.value = false;
+  }
+}
+
+watch(item, readText, { immediate: true });
 
 /**
  * A recording's still, in two steps, because one of them is not enough.
@@ -290,6 +338,18 @@ onBeforeUnmount(() => {
             playsinline
             @loadedmetadata="still"
           />
+          <!--
+            A text file is drawn as a page, not fetched and not stretched into the frame. The
+            browser cannot make a thumbnail of a `.md`, so asking it to produced the broken
+            image this replaces; the extension is the thing worth saying at this size anyway.
+          -->
+          <span
+            v-else-if="shot.kind === 'text'"
+            class="shot__doc"
+          >
+            <AppIcon name="document" :size="26" />
+            <span class="shot__ext">{{ extOf(shot.label) || 'txt' }}</span>
+          </span>
           <img
             v-else
             class="shot__media"
@@ -308,8 +368,8 @@ onBeforeUnmount(() => {
         -->
         <span class="shot__name">{{ shot.label }}</span>
         <span class="shot__meta">
-          <AppIcon :name="shot.kind === 'video' ? 'play' : 'image'" :size="11" />
-          {{ KIND[shot.kind] }}<template v-if="when(shot.at)"> · {{ when(shot.at) }}</template>
+          <AppIcon :name="kindIcon(shot.kind)" :size="11" />
+          {{ kindLabel(shot) }}<template v-if="when(shot.at)"> · {{ when(shot.at) }}</template>
         </span>
       </button>
     </div>
@@ -335,6 +395,17 @@ onBeforeUnmount(() => {
         @pointercancel="onUp"
         @dblclick="scale > 1 ? reset() : zoomAt(2.4, $event.clientX, $event.clientY)"
       >
+
+      <!-- The file itself, read rather than looked at. -->
+      <div
+        v-else-if="item.kind === 'text'"
+        class="viewer__text"
+        @click.stop
+      >
+        <p v-if="reading" class="viewer__note">Reading…</p>
+        <p v-else-if="unreadable" class="viewer__note">This file could not be read: {{ unreadable }}</p>
+        <pre v-else class="viewer__pre">{{ body }}</pre>
+      </div>
 
       <video
         v-else
@@ -622,5 +693,49 @@ onBeforeUnmount(() => {
    * fits two columns of 232px there and still four across 860px.
    */
   .viewer__grid { grid-template-columns: repeat(auto-fill, minmax(min(160px, 100%), 1fr)); gap: var(--s3); }
+}
+
+/* A text artifact: a page on the tile, and the file itself when it is opened. */
+.shot__doc {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  color: var(--dev-muted, #9aa3b2);
+}
+
+.shot__ext {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.viewer__text {
+  max-width: min(900px, 92vw);
+  max-height: 82vh;
+  overflow: auto;
+  padding: 18px 20px;
+  border-radius: 8px;
+  background: var(--dev-panel, #1b1f27);
+  border: 1px solid var(--dev-line, #2b3240);
+}
+
+.viewer__pre {
+  margin: 0;
+  font-family: var(--dev-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+  color: var(--dev-text, #e6e9ef);
+}
+
+.viewer__note {
+  margin: 0;
+  color: var(--dev-muted, #9aa3b2);
+  font-size: 13px;
 }
 </style>

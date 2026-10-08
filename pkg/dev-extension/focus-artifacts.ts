@@ -140,7 +140,15 @@ export interface CheckReport {
 }
 
 export interface CardMedia {
-  kind: 'image' | 'video';
+  /**
+   * Not everything an agent leaves behind is a picture.
+   *
+   * The artifacts directory holds its notes and briefs as well as its screenshots, and with only
+   * two kinds here every one of those was drawn as an image: a broken \`<img>\` where the preview
+   * should be, under the word "Image". `text` is the third kind, so a file that is read rather
+   * than looked at can be drawn as one.
+   */
+  kind: 'image' | 'video' | 'text';
   label: string;
   src: string;
   caption: string;
@@ -594,9 +602,26 @@ export function checkReportFrom(data: Json): CheckReport | null {
   };
 }
 
-const MEDIA_KIND = (type: string, name: string): 'image' | 'video' => (
-  /video/.test(type || '') || /\.(webm|mp4|mov)$/i.test(name) ? 'video' : 'image'
-);
+/**
+ * What a file is, from what the API said and what it is called.
+ *
+ * The name decides when the type is unhelpful, which it often is: the media listing types a
+ * `.md` as `text/markdown` but an unknown extension as nothing at all, and "nothing at all" used
+ * to fall through to `image`. Images are the default still - that is what most of this directory
+ * is - but only after text has had its say.
+ */
+const TEXT_NAME = /\.(md|markdown|txt|log|json|ya?ml|diff|patch|csv|tsv|html?|xml|ts|js|mjs|cjs|vue|css|sh|py|go|sql|ini|conf|toml)$/i;
+
+const MEDIA_KIND = (type: string, name: string): 'image' | 'video' | 'text' => {
+  if (/video/.test(type || '') || /\.(webm|mp4|mov)$/i.test(name)) {
+    return 'video';
+  }
+  if (/^text\/|json|yaml|xml|markdown/.test(type || '') || TEXT_NAME.test(name)) {
+    return 'text';
+  }
+
+  return 'image';
+};
 
 /** What an agent recorded while it worked: the screenshots and the recordings in its workspace. */
 async function mediaOf(workspace: string): Promise<CardMedia[]> {
