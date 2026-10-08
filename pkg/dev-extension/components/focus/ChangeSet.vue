@@ -280,6 +280,23 @@ async function conversationFor(title: string): Promise<{ id: string; attach: unk
   return found || await startConversation(props.workspace, title);
 }
 
+/**
+ * Update a thread through the array, not through the object that was pushed into it.
+ *
+ * `threads` is a deep ref, so what the template renders is a proxy of the object - and the
+ * local `thread` handed around here is the raw one. Writing `thread.session` on the raw object
+ * changes the data and tells Vue nothing, which is why the first version of this sat on
+ * "Opening a conversation about these lines…" for ever while the conversation behind it was
+ * perfectly ready.
+ */
+function patch(id: string, fields: Partial<CodeThread>): void {
+  const found = threads.value.find((t) => t.id === id);
+
+  if (found) {
+    Object.assign(found, fields);
+  }
+}
+
 async function openThread(thread: CodeThread, code: string): Promise<void> {
   const title = `${ thread.path.split('/').pop() } ${ thread.label }`;
 
@@ -292,11 +309,11 @@ async function openThread(thread: CodeThread, code: string): Promise<void> {
       : `About ${ thread.path } ${ thread.label }:\n\n\`\`\`\n${ code }\n\`\`\`\n\n${ thread.text }`;
 
     await queuePrompt((conversation as { attach: never }).attach, prompt).catch(() => {});
-    thread.session = conversation.id;
+    patch(thread.id, { session: conversation.id });
   } catch (e) {
-    thread.error = (e as Error)?.message || String(e);
+    patch(thread.id, { error: (e as Error)?.message || String(e) });
   } finally {
-    thread.opening = false;
+    patch(thread.id, { opening: false });
   }
 }
 
@@ -323,7 +340,7 @@ function ask(text = question.value.trim()) {
   } else {
     // No workspace, no agent: the question goes where it used to, so a card without one is no
     // worse off than before.
-    thread.opening = false;
+    patch(thread.id, { opening: false });
     emit('ask', {
       path: thread.path, label: thread.label, code: picked.value.code, text,
     });
@@ -507,12 +524,13 @@ const statusWord: Record<string, string> = {
     <!-- What you picked, and the box that asks about it. -->
     <Transition name="ask">
       <div v-if="picked" class="ask">
-        <span class="ask__what">
-          <strong>{{ picked.count }}</strong> {{ picked.count === 1 ? 'line' : 'lines' }} ·
-          <code>{{ nameOf(file.path) }}</code> {{ picked.label }}
-        </span>
-
-        <form class="ask__form" @submit.prevent="ask">
+        <!--
+          Which lines is not said here any more. The thread opens against the lines themselves
+          and carries the label, the picked rows are already marked in the diff, and this box
+          sits directly under both - so naming the file and the range a third time was the one
+          part of the row that had to be read to be ignored.
+        -->
+        <form class="ask__form" @submit.prevent="ask()">
           <input
             v-model="question"
             class="ask__field"
