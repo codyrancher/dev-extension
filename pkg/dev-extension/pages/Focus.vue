@@ -31,6 +31,7 @@ import DeckSkeleton from '../components/focus/DeckSkeleton.vue';
 import FocusModal from '../components/focus/FocusModal.vue';
 import KindChip from '../components/focus/KindChip.vue';
 import AppIcon from '../components/focus/AppIcon.vue';
+import IconButton from '../components/focus/IconButton.vue';
 import AppButton from '../components/focus/AppButton.vue';
 import WeightsChart from '../components/focus/WeightsChart.vue';
 import MiniCard from '../components/focus/MiniCard.vue';
@@ -2265,6 +2266,21 @@ onBeforeUnmount(closeSettings);
         />
       </div>
 
+    <!--
+      Everything waiting, in the right-hand corner.
+
+      It was the last thing inside the bar, which is the width of a card - so it sat at the
+      card's right edge with a strip of empty page beyond it, while the workspace marks were
+      out at the true left edge. Two corners, one row: the marks at one end and this at the
+      other, neither of them bounded by the cards between them.
+    -->
+    <IconButton
+      name="tasks"
+      label="Everything waiting"
+      class="focus__corner"
+      @click="openSettings('queue')"
+    />
+
     <FocusChatBar
       ref="bar"
       :open="chatOpen"
@@ -2274,7 +2290,6 @@ onBeforeUnmount(closeSettings);
       :command="chatWorkspace ? paneCommand(chatWorkspace, conversation) : null"
       @update:open="onChatOpen"
       @wake="wakeChat"
-      @queue="openSettings('queue')"
     />
 
     <FocusModal
@@ -2505,7 +2520,12 @@ onBeforeUnmount(closeSettings);
    * card whose own surface was 173px. The bar's height is a number this view knows; it does not
    * need to be guessed at with a viewport unit.
    */
-  padding-bottom: calc(var(--bar-h) + var(--s5));
+  /*
+   * The bar's height, how far it floats off the floor, and a gap between the two. Reserving
+   * only the height left the bottom card sitting against the top of the bar, because the
+   * offset is space the bar occupies too.
+   */
+  padding-bottom: calc(var(--bar-h) + var(--bar-bottom) + var(--s4));
   background:
     radial-gradient(1200px 680px at 12% -8%, rgba(91, 140, 255, 0.10), transparent 62%),
     radial-gradient(900px 560px at 92% 4%, rgba(184, 166, 255, 0.07), transparent 58%),
@@ -2677,6 +2697,17 @@ onBeforeUnmount(closeSettings);
  * chat bar is. In the flow, so nothing can be drawn on top of them and nothing has to be kept in
  * step with the bar's offsets. See the markup for what the overlap measured.
  */
+/* The other end of the same row: fixed to the window, not to the card's box. */
+.focus__corner {
+  position: fixed;
+  right: var(--s3, 16px);
+  bottom: var(--bar-bottom);
+  height: var(--bar-h);
+  width: var(--bar-h);
+  z-index: 30;
+  box-shadow: var(--shadow-2);
+}
+
 .focus__docks {
   position: fixed;
   left: var(--s3, 16px);

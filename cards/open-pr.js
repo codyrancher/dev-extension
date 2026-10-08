@@ -7,6 +7,15 @@ module.exports = {
     lede:    'commits',
     rules:   ['fix-no-pr'],
     summary: '{why}',
+    /*
+     * The diff, said rather than inferred.
+     *
+     * This card asks for `comments` so the change can show what has been said on each line - and
+     * `talk` is tested above `files` in the surface ladder, so asking for them silently replaced
+     * the whole surface with the comment list. The file tree and the diff disappeared from the
+     * card whose entire job is reading a change. Declaring it is what the `surface` field is for.
+     */
+    surface: 'files',
     wants:   ['commits', 'files', 'stat', 'media', 'live', 'comments'],
     actions: [
       /*

@@ -32,6 +32,15 @@ module.exports = {
      * is what makes the thing that button wanted; until it has been pressed there is nothing to
      * open, and an offer that cannot be taken is worse than no offer.
      */
+    /*
+     * The diff, said rather than inferred.
+     *
+     * This card asks for `comments` so the change can show what has been said on each line - and
+     * `talk` is tested above `files` in the surface ladder, so asking for them silently replaced
+     * the whole surface with the comment list. The file tree and the diff disappeared from the
+     * card whose entire job is reading a change. Declaring it is what the `surface` field is for.
+     */
+    surface: 'files',
     wants:   ['files', 'stat', 'checks', 'body', 'comments'],
     actions: [
       { label: 'Start a review workspace', verb: 'review' },

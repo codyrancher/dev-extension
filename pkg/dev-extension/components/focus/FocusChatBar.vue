@@ -66,7 +66,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:open', open: boolean): void;
-  (e: 'queue'): void;
   /** Somebody typed into the shut bar before the page had made a conversation. */
   (e: 'wake'): void;
 }>();
@@ -436,7 +435,6 @@ defineExpose({ ask, focus: focusBox });
       </div>
     </div>
 
-    <IconButton name="tasks" label="Everything waiting" class="bar__end" @click="emit('queue')" />
   </section>
 </template>
 
