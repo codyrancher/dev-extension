@@ -27,6 +27,7 @@ import { fromDiffLines, highlighted } from '../code/rows';
 import InlineChat from './InlineChat.vue';
 import Markdown from './Markdown.vue';
 import { listConversations, startConversation, queuePrompt, paneCommand } from '../../conversations';
+import { startAgentSession } from '../../agent';
 import { linesPrompt, discussPrompt } from '../../reviews';
 
 const props = withDefaults(defineProps<{
@@ -249,6 +250,30 @@ async function discuss(comment: CardComment): Promise<void> {
   }
 }
 
+/**
+ * Every line this file's loaded hunks actually draw.
+ *
+ * A pull request's patch is hunks, not the file - so a comment on line 1528 of a file whose
+ * diff touches 205-213 has no row to sit on. It was listed in the tree and drawn nowhere, and
+ * pressing it scrolled to nothing at all, which is worse than not offering the press.
+ */
+const drawnLines = computed(() => {
+  const out = new Set<number>();
+
+  for (const hunk of file.value?.hunks || []) {
+    for (const line of hunk.lines || []) {
+      if (line.new) {
+        out.add(line.new);
+      }
+    }
+  }
+
+  return out;
+});
+
+/** The threads with nowhere in the diff to go, drawn under it rather than lost. */
+const elsewhere = computed(() => hereThreads.value.filter((t) => !t.line || !drawnLines.value.has(t.line)));
+
 /** Bring one into view, from the list in the tree. */
 function showComment(comment: CardComment): void {
   if (comment.path !== openPath.value) {
@@ -352,6 +377,20 @@ function threadAt(hunk: number, index: number) {
  * question about these four lines must not land in the thread about the last four.
  */
 async function conversationFor(title: string): Promise<{ id: string; attach: unknown }> {
+  /*
+   * No workspace, no checkout - but still an agent.
+   *
+   * A review-asked card has no workspace until somebody makes one, and that is exactly the card
+   * with other people's comments on it. Gating "Discuss" on a workspace meant the button was
+   * missing from the one place it was asked for. The agent pod has conversations of its own,
+   * which is what the deck's bar falls back to; this uses the same thing. They have no title to
+   * find them by, so this is one per press rather than one per comment for ever.
+   */
+  if (!props.workspace) {
+    const id = await startAgentSession('panel');
+
+    return { id, attach: { session: id } };
+  }
   const existing = await listConversations(props.workspace).catch(() => []);
   const found = existing.find((c) => c.title === title);
 
@@ -443,35 +482,13 @@ const statusWord: Record<string, string> = {
 
 <template>
   <section v-if="file" ref="root" class="changes">
-    <SectionHead
-      class="changes__head"
-      label="What it changed"
-      :count="subset"
-    >
-      <!--
-        No `+added −removed` here. It was the sum over the shown subset, not over the change, so it
-        sat 26px under the authoritative totals on the facts strip as a second unlabelled pair that
-        contradicted them: "157 FILES +13281 ADDED −507 REMOVED" on the strip against "+268 −139"
-        on this head, on the same card; "+1725 −1426" against "+1502 −1402" on another; "+2819 −5"
-        against "+1620 −5" on a third. The count beside the label does its job - it says the list
-        is the first 40 of 157 - and is the one number here that is about the subset on purpose.
-      -->
-      <!--
-        The file being read, named here rather than in a header of its own.
-
-        `.file__head` was a second heading inside the pane, and on nine of the eleven cards with a
-        diff it measured 0px tall against a scrollHeight of 16 - so the path of the file you were
-        looking at was not drawn at all, and the 38px it wanted when it did draw came off the code.
-        One header per surface, which is what SectionHead is for.
-      -->
-      <code class="changes__path" :title="file.path">{{ file.path }}</code>
-      <span v-if="statusWord[file.status]" class="u-badge">{{ statusWord[file.status] }}</span>
-      <span class="changes__stat changes__stat--add">+{{ file.added }}</span>
-      <span class="changes__stat changes__stat--del">−{{ file.removed }}</span>
-      <span class="changes__hint">
-        {{ threads.length ? `${ threads.length } asked about` : 'Click a line to ask about it' }}
-      </span>
-    </SectionHead>
+    <!--
+      No header row. It carried the file's path, its own +/- pair, and a hint to click a line -
+      and every one of those is said better somewhere else on the card: the path is on the file
+      in the tree beside it, the totals are on the facts strip above (where they were the
+      authoritative ones that this row's subset-sums contradicted), and clicking a line is
+      discovered by clicking a line. A full-width row to say none of it.
+    -->
 
     <!-- The explorer. -->
     <nav class="tree" aria-label="Files the agent changed">
@@ -595,7 +612,7 @@ const statusWord: Record<string, string> = {
                   <span v-else-if="n > 0" class="said__line">replied</span>
                   <span class="said__spacer" />
                   <button
-                    v-if="workspace && !talking[String(comment.id)]"
+                    v-if="!talking[String(comment.id)]"
                     type="button"
                     class="said__discuss"
                     title="Talk about this comment with the agent"
@@ -614,7 +631,7 @@ const statusWord: Record<string, string> = {
                   v-else-if="talking[String(comment.id)]?.session"
                   class="said__chat"
                   :session="talking[String(comment.id)].session"
-                  :command="paneCommand(workspace, talking[String(comment.id)].session)"
+                  :command="workspace ? paneCommand(workspace, talking[String(comment.id)].session) : null"
                   :live="live !== false"
                 />
               </div>
@@ -651,6 +668,58 @@ const statusWord: Record<string, string> = {
           </template>
         </CodeView>
       </div>
+
+      <!--
+        What was said about parts of this file the diff does not show.
+
+        A patch is hunks, so a comment on a line outside them has no row to attach to. It was
+        listed in the tree and drawn nowhere, which made the tree lie: pressing it scrolled to
+        nothing. Here they are, under the diff, with the line they are on - readable, and
+        something for that press to land on.
+      -->
+      <section v-if="elsewhere.length" class="away">
+        <p class="away__head">
+          Said about lines this diff does not show
+        </p>
+        <div v-for="thread in elsewhere" :key="`e-${ thread.comments[0].id }`" class="said">
+          <div
+            v-for="(comment, n) in thread.comments"
+            :key="comment.id"
+            :data-comment="comment.id"
+            class="said__item"
+            :class="{ 'said__item--reply': n > 0, 'said__item--mine': comment.mine || comment.pending }"
+          >
+            <p class="said__who">
+              <AppIcon :name="n > 0 ? 'chevron-right' : 'comment'" :size="11" />
+              <strong>{{ comment.pending ? 'Yours, not sent yet' : comment.mine ? 'You' : comment.author }}</strong>
+              <span v-if="n === 0 && comment.line" class="said__line">line {{ comment.line }}</span>
+              <span v-else-if="n > 0" class="said__line">replied</span>
+              <span class="said__spacer" />
+              <button
+                v-if="!talking[String(comment.id)]"
+                type="button"
+                class="said__discuss"
+                title="Talk about this comment with the agent"
+                @click="discuss(comment)"
+              >
+                <AppIcon name="sparkle" :size="11" />
+                Discuss
+              </button>
+            </p>
+            <Markdown class="said__body" :text="comment.body" />
+
+            <p v-if="talking[String(comment.id)]?.opening" class="said__note">Opening a conversation about this comment…</p>
+            <p v-else-if="talking[String(comment.id)]?.error" class="said__note">{{ talking[String(comment.id)].error }}</p>
+            <InlineChat
+              v-else-if="talking[String(comment.id)]?.session"
+              class="said__chat"
+              :session="talking[String(comment.id)].session"
+              :command="workspace ? paneCommand(workspace, talking[String(comment.id)].session) : null"
+              :live="live !== false"
+            />
+          </div>
+        </div>
+      </section>
     </article>
 
   </section>
@@ -982,31 +1051,40 @@ const statusWord: Record<string, string> = {
  * row. It was flush to the gutter and the same weight as a line of context, which is why it
  * disappeared into the diff it was commenting on.
  */
+/*
+ * The thread is the stack, and each message is its own box.
+ *
+ * It was one rounded, clipping container with the messages as bare rows inside it, and an
+ * indent on the reply - so the reply's left corners were square while its right ones were
+ * rounded by the parent clipping them. Every corner matches now because every corner belongs
+ * to the message it is on, and the indent is a margin on a box rather than a crop.
+ */
 .said {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
   margin: var(--s3) var(--s3) var(--s3) var(--s5);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface-raised);
-  box-shadow: var(--shadow-1, 0 1px 2px rgba(0, 0, 0, 0.25));
-  overflow: hidden;
 }
 
 .said__item {
   padding: var(--s3);
-  border-left: 2px solid var(--border-strong, var(--border));
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-1, 0 1px 2px rgba(0, 0, 0, 0.25));
 }
 
 /* Yours reads as yours, the way the deck marks anything of your own. */
-.said__item--mine { border-left-color: var(--accent); }
+.said__item--mine { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 
 /*
- * A reply, as a reply. Indented, divided from what it answers, and on a quieter ground - which
- * is the whole difference between an exchange and two remarks that share a line number.
+ * A reply, as a reply: stepped in from what it answers and on a quieter ground, which is the
+ * difference between an exchange and two remarks that share a line number.
  */
 .said__item--reply {
-  margin-left: var(--s4);
-  border-top: 1px solid var(--border);
+  margin-left: var(--s5);
   background: var(--surface-sunk);
+  box-shadow: none;
 }
 
 .said__who {
@@ -1045,5 +1123,14 @@ const statusWord: Record<string, string> = {
   margin-top: var(--s2);
   padding-top: var(--s2);
   border-top: 1px solid var(--border);
+}
+
+/* Comments about parts of the file the patch does not include. */
+.away { margin-top: var(--s4); }
+
+.away__head {
+  margin: 0 var(--s3) var(--s2) var(--s5);
+  color: var(--text-muted);
+  font-size: var(--t-xs);
 }
 </style>
