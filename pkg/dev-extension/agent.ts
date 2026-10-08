@@ -20,6 +20,7 @@ import {
 import type { InstallStep } from './ensure';
 import { VERSION_ANNOTATION, contentVersion, ensureCurrent } from './ensure';
 import { AGENT_FILES } from './seed.generated';
+import { MCP_GUIDANCE, mcpSeedFiles, withMcpBoot } from './agent-mcp';
 import { rancherFetch } from './agents-api';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -77,9 +78,24 @@ const WORKSPACES_MOUNT = '/workspaces';
  */
 const AGENT_EXT_MOUNT = `${ AGENT_WORKSPACE }/extensions`;
 
-/** The source this pod runs, taken out of the bundle it travels in. */
+/**
+ * The source this pod runs, taken out of the bundle it travels in - plus what the extension
+ * adds to it.
+ *
+ * The seed itself is generated from another repository and says not to edit it, so the MCP
+ * servers are added here instead: two files of their own, a line spliced into boot, and a
+ * section appended to what the agent is told. See agent-mcp.ts.
+ */
 export function agentSourceFiles(): Record<string, string> {
-  return { ...AGENT_FILES };
+  const files: Record<string, string> = { ...AGENT_FILES, ...mcpSeedFiles() };
+
+  files['boot.sh'] = withMcpBoot(files['boot.sh'] || '');
+  // Appended rather than replaced: the file is the agent's, and this is one more thing in it.
+  if (files['session-claude.md'] && !files['session-claude.md'].includes('## Figma')) {
+    files['session-claude.md'] += MCP_GUIDANCE;
+  }
+
+  return files;
 }
 
 /**
