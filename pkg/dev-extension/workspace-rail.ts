@@ -626,24 +626,25 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         kind: 'artifacts', groups, total: artifacts.total, truncated: artifacts.truncated, lead: first,
       }] });
   };
+  /**
+   * The way into the change, and nothing else.
+   *
+   * This used to list the commits, then the branch name, the diff stat and every test file
+   * touched - four facts above one button. None of them is what somebody opening "The change"
+   * came for: the branch name is in the header, the stat is in the card's own lede, and a list
+   * of test paths is the longest line on the page and the least use. The button is the section.
+   *
+   * Nothing is lost that is not somewhere else: the review tool it opens shows the file tree,
+   * the whole-file context and the diff options, which is where all of this reads properly.
+   */
   const branchSection = () => {
-    if (!branch) {
+    if (!branch?.files.length) {
       return;
     }
-    const tests = branch.files.filter((f) => /\.(test|spec)\.[jt]sx?$|__tests__\//.test(f));
-    const items: EvidenceItem[] = [];
-
-    if (branch.commits.length) {
-      items.push({ kind: 'commits', pr: status.pr, items: branch.commits });
-    }
-    items.push({ kind: 'kv', rows: [{ k: 'Branch', v: branch.branch }, { k: 'Diff', v: branch.stat || 'no changes over upstream' }, { k: 'Tests', v: tests.length ? tests.join(', ') : 'none added', tone: tests.length ? 'ok' : 'warn' }] });
-    if (branch.files.length) {
-      // Not a list of paths: thirty-one of them filled the column and none of them was the
-      // change. The review tool is what reads a branch - file tree, whole-file context, the
-      // diff options - so the change's section is a way into it.
-      items.push({ kind: 'review', label: `Review the change: ${ branch.files.length } file${ branch.files.length === 1 ? '' : 's' }` });
-    }
-    sections.push({ title: 'The change', items });
+    sections.push({
+      title: 'The change',
+      items: [{ kind: 'review', label: `Review the change: ${ branch.files.length } file${ branch.files.length === 1 ? '' : 's' }` }],
+    });
   };
   const prSection = () => {
     if (!d) {
