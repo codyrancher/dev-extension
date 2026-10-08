@@ -27,7 +27,7 @@ import { fromDiffLines, highlighted } from '../code/rows';
 import InlineChat from './InlineChat.vue';
 import Markdown from './Markdown.vue';
 import { listConversations, startConversation, queuePrompt, paneCommand } from '../../conversations';
-import { linesPrompt } from '../../reviews';
+import { linesPrompt, discussPrompt } from '../../reviews';
 
 const props = withDefaults(defineProps<{
   files: CardFile[];
@@ -169,6 +169,84 @@ function commentsAt(hunkIndex: number, rowIndex: number): CardComment[] {
   }
 
   return hereComments.value.filter((comment) => comment.line === line);
+}
+
+/**
+ * The comments on one line, as the exchange they are.
+ *
+ * Two people on line 636 is a reply, not two remarks that happen to share a number - and drawn
+ * as siblings that is exactly what it looked like. The first is the thread; everything after it
+ * answers it, which is worth showing with an indent and a line rather than leaving to be
+ * inferred from the order and the names.
+ */
+const threadsOn = (hunkIndex: number, rowIndex: number) => {
+  const list = commentsAt(hunkIndex, rowIndex);
+
+  return list.length ? [{ line: list[0].line, comments: list }] : [];
+};
+
+/** The open file's comments as threads, one per line, for the list in the tree. */
+const hereThreads = computed(() => {
+  const byLine = new Map<number, CardComment[]>();
+
+  for (const comment of hereComments.value) {
+    const line = comment.line || 0;
+
+    byLine.set(line, [...(byLine.get(line) || []), comment]);
+  }
+
+  return [...byLine.entries()].sort((a, b) => a[0] - b[0]).map(([line, comments]) => ({ line, comments }));
+});
+
+/**
+ * Talking about one comment, in a conversation of its own.
+ *
+ * Keyed by the comment rather than by the lines, because that is the subject: two comments on
+ * the same line are two conversations, and coming back to either opens what was said about it.
+ */
+const talking = ref<Record<string, { session: string; opening: boolean; error: string }>>({});
+
+async function discuss(comment: CardComment): Promise<void> {
+  const id = String(comment.id);
+
+  if (talking.value[id]) {
+    return;
+  }
+  talking.value = { ...talking.value, [id]: { session: '', opening: true, error: '' } };
+  const set = (fields: Partial<{ session: string; opening: boolean; error: string }>) => {
+    talking.value = { ...talking.value, [id]: { ...talking.value[id], ...fields } };
+  };
+
+  try {
+    const who = comment.pending ? 'your note' : comment.author;
+    const title = `${ comment.path.split('/').pop() }${ comment.line ? ` line ${ comment.line }` : '' } · ${ who }`;
+    const conversation = await conversationFor(title);
+    /*
+     * Two prompts, because the comment is not always yours to change. `discussPrompt` tells the
+     * agent how to reword or drop the comment, which is right for one of your own that has not
+     * been sent and quite wrong for somebody else's: nobody wants an agent helpfully editing a
+     * reviewer's words.
+     */
+    const prompt = comment.pending && props.pr
+      ? discussPrompt(props.pr, {
+        id: comment.id, body: comment.body, path: comment.path, line: comment.line,
+      }, '')
+      : [
+        `The user is reading ${ props.pr ? `${ DEFAULT_REPO } PR #${ props.pr }` : 'a change' } and wants to talk about a review comment`,
+        `${ comment.mine ? 'they' : comment.author } left on ${ comment.path }${ comment.line ? ` line ${ comment.line }` : '' }:`,
+        `\n\n"${ String(comment.body).replace(/\s+/g, ' ').slice(0, 600) }"\n\n`,
+        'Read that part of the change and say whether the comment holds up, what it would take to address it, and anything it misses.',
+        'This is somebody else\'s comment: discuss it, do not edit or resolve it.',
+        'Anything after this sentence is their question - answer that first if there is one.',
+      ].join(' ');
+
+    await queuePrompt((conversation as { attach: never }).attach, prompt).catch(() => {});
+    set({ session: conversation.id });
+  } catch (e) {
+    set({ error: (e as Error)?.message || String(e) });
+  } finally {
+    set({ opening: false });
+  }
 }
 
 /** Bring one into view, from the list in the tree. */
@@ -440,12 +518,14 @@ const statusWord: Record<string, string> = {
               to be a map of where to go next.
             -->
             <ul v-if="entry.path === openPath && hereComments.length" class="tree__lines">
-              <li v-for="comment in hereComments" :key="comment.id">
-                <button type="button" class="tree__line" @click="showComment(comment)">
-                  <span class="tree__line-n">{{ comment.line ? `line ${ comment.line }` : 'on the file' }}</span>
-                  <span v-if="comment.pending" class="tree__line-tag">yours, unsent</span>
-                  <span v-else-if="comment.mine" class="tree__line-tag">yours</span>
-                  <span v-else class="tree__line-who">{{ comment.author }}</span>
+              <li v-for="thread in hereThreads" :key="thread.line">
+                <button type="button" class="tree__line" @click="showComment(thread.comments[0])">
+                  <span class="tree__line-n">{{ thread.line ? `line ${ thread.line }` : 'on the file' }}</span>
+                  <!-- One row per exchange, not per message: "line 636" twice was one thread. -->
+                  <span v-if="thread.comments.length > 1" class="tree__line-tag">{{ thread.comments.length }} replies</span>
+                  <span v-else-if="thread.comments[0].pending" class="tree__line-tag">yours, unsent</span>
+                  <span v-else-if="thread.comments[0].mine" class="tree__line-tag">yours</span>
+                  <span v-else class="tree__line-who">{{ thread.comments[0].author }}</span>
                 </button>
               </li>
             </ul>
@@ -497,18 +577,47 @@ const statusWord: Record<string, string> = {
               a question is something happening now.
             -->
             <div
-              v-for="comment in commentsAt(h, index)"
-              :key="`k-${ comment.id }`"
-              :data-comment="comment.id"
+              v-for="thread in threadsOn(h, index)"
+              :key="`k-${ thread.comments[0].id }`"
               class="said"
-              :class="{ 'said--mine': comment.mine || comment.pending }"
             >
-              <p class="said__who">
-                <AppIcon name="comment" :size="11" />
-                <strong>{{ comment.pending ? 'Yours, not sent yet' : comment.mine ? 'You' : comment.author }}</strong>
-                <span v-if="comment.line" class="said__line">line {{ comment.line }}</span>
-              </p>
-              <Markdown class="said__body" :text="comment.body" />
+              <div
+                v-for="(comment, n) in thread.comments"
+                :key="comment.id"
+                :data-comment="comment.id"
+                class="said__item"
+                :class="{ 'said__item--reply': n > 0, 'said__item--mine': comment.mine || comment.pending }"
+              >
+                <p class="said__who">
+                  <AppIcon :name="n > 0 ? 'chevron-right' : 'comment'" :size="11" />
+                  <strong>{{ comment.pending ? 'Yours, not sent yet' : comment.mine ? 'You' : comment.author }}</strong>
+                  <span v-if="n === 0 && comment.line" class="said__line">line {{ comment.line }}</span>
+                  <span v-else-if="n > 0" class="said__line">replied</span>
+                  <span class="said__spacer" />
+                  <button
+                    v-if="workspace && !talking[String(comment.id)]"
+                    type="button"
+                    class="said__discuss"
+                    title="Talk about this comment with the agent"
+                    @click="discuss(comment)"
+                  >
+                    <AppIcon name="sparkle" :size="11" />
+                    Discuss
+                  </button>
+                </p>
+                <Markdown class="said__body" :text="comment.body" />
+
+                <!-- Talking about this one, in a conversation of its own. -->
+                <p v-if="talking[String(comment.id)]?.opening" class="said__note">Opening a conversation about this comment…</p>
+                <p v-else-if="talking[String(comment.id)]?.error" class="said__note">{{ talking[String(comment.id)].error }}</p>
+                <InlineChat
+                  v-else-if="talking[String(comment.id)]?.session"
+                  class="said__chat"
+                  :session="talking[String(comment.id)].session"
+                  :command="paneCommand(workspace, talking[String(comment.id)].session)"
+                  :live="live !== false"
+                />
+              </div>
             </div>
 
             <!-- A question and its answer, under the lines they belong to. -->
@@ -865,27 +974,76 @@ const statusWord: Record<string, string> = {
 .tree__line-tag { color: var(--accent); }
 .tree__line-who { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* A comment where the line is. */
+/* ── What was said, where it was said ────────────────────────────────────── */
+
+/*
+ * A thread sits inside the diff rather than between two halves of it: inset from both edges and
+ * raised off the code, so it reads as something laid on the file rather than another kind of
+ * row. It was flush to the gutter and the same weight as a line of context, which is why it
+ * disappeared into the diff it was commenting on.
+ */
 .said {
-  margin: var(--s2) 0;
-  padding: var(--s2) var(--s3);
-  border-left: 2px solid var(--border-strong, var(--border));
+  margin: var(--s3) var(--s3) var(--s3) var(--s5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
   background: var(--surface-raised);
-  border-radius: 0 var(--r-sm, 4px) var(--r-sm, 4px) 0;
+  box-shadow: var(--shadow-1, 0 1px 2px rgba(0, 0, 0, 0.25));
+  overflow: hidden;
+}
+
+.said__item {
+  padding: var(--s3);
+  border-left: 2px solid var(--border-strong, var(--border));
 }
 
 /* Yours reads as yours, the way the deck marks anything of your own. */
-.said--mine { border-left-color: var(--accent); }
+.said__item--mine { border-left-color: var(--accent); }
+
+/*
+ * A reply, as a reply. Indented, divided from what it answers, and on a quieter ground - which
+ * is the whole difference between an exchange and two remarks that share a line number.
+ */
+.said__item--reply {
+  margin-left: var(--s4);
+  border-top: 1px solid var(--border);
+  background: var(--surface-sunk);
+}
 
 .said__who {
   display: flex;
   align-items: center;
   gap: var(--s2);
-  margin: 0 0 2px;
+  margin: 0 0 var(--s2);
   color: var(--text-muted);
   font-size: var(--t-xs);
 }
 
+.said__who strong { color: var(--text); }
 .said__line { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.said__spacer { flex: 1 1 auto; }
+
+.said__discuss {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--t-xs);
+  cursor: pointer;
+}
+
+.said__discuss:hover { color: var(--text); border-color: var(--accent); }
+
 .said__body { font-size: var(--t-sm); }
+.said__note { margin: var(--s2) 0 0; color: var(--text-muted); font-size: var(--t-xs); }
+
+.said__chat {
+  margin-top: var(--s2);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--border);
+}
 </style>
