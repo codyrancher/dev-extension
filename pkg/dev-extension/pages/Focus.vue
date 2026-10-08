@@ -2576,6 +2576,14 @@ onBeforeUnmount(closeSettings);
  */
 .dev-focus {
   --pins-w: 196px;
+  /*
+   * The bar's own height and how far off the floor it sits, named here because three things in
+   * two components have to agree on them: the bar, the marks in the corner beside it, and the
+   * marks' own buttons. They were 34px against the bar's 40 and sitting lower, so the corner
+   * read as a different row of furniture rather than the other end of the same one.
+   */
+  --bar-h: 40px;
+  --bar-bottom: clamp(var(--s3), 2.4vh, var(--s5));
   --deck-pad-l: clamp(var(--s3), 2vw, var(--s6));
   --deck-pad-r: 62px;
 }
@@ -2672,7 +2680,9 @@ onBeforeUnmount(closeSettings);
 .focus__docks {
   position: fixed;
   left: var(--s3, 16px);
-  bottom: var(--s3, 16px);
+  /* On the bar's own line, at the bar's own height: one row, two ends. */
+  bottom: var(--bar-bottom);
+  height: var(--bar-h);
   display: flex;
   align-items: center;
   flex: 0 0 auto;

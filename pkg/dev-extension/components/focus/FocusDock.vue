@@ -249,7 +249,8 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
   align-items: center;
   gap: 6px;
   /* 34px: a corner control, and above the 30px the prototype's smallest button sets. */
-  height: 34px;
+  /* The bar's height: these sit on its line and must not be a different size. */
+  height: var(--bar-h, 34px);
   min-width: 34px;
   padding: 0 10px;
   border: 1px solid var(--border);

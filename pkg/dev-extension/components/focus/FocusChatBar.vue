@@ -472,7 +472,7 @@ defineExpose({ ask, focus: focusBox });
   z-index: 50;
   left: calc(var(--pins-w, 0px) + var(--deck-pad-l, var(--s4)));
   right: var(--deck-pad-r, var(--s4));
-  bottom: clamp(var(--s3), 2.4vh, var(--s5));
+  bottom: var(--bar-bottom, clamp(var(--s3), 2.4vh, var(--s5)));
   display: flex;
   /*
    * Shut, the three pieces are one row and they line up on their middles. Open, the middle one
@@ -481,9 +481,12 @@ defineExpose({ ask, focus: focusBox });
    */
   align-items: center;
   gap: var(--s3);
-  /* The card's own box: `min(1680px, 100%)`, centred in whatever the insets leave. */
+  /*
+   * The card's own box, which is `min(1600px, 100%)` - not 1680. The eighty pixels of
+   * difference put the bar's right-hand button past the right edge of every card above it.
+   */
   width: auto;
-  max-width: min(1680px, 100%);
+  max-width: min(1600px, 100%);
   margin-inline: auto;
 }
 
