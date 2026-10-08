@@ -1397,7 +1397,7 @@ const OPENAPI = {
       get: {
         operationId: 'listArtifacts',
         summary:     "Everything under a workspace's artifacts directory, newest first.",
-        description: "What an agent left behind: recordings, screenshots, logs, reports. `?media=1` returns only the images and videos, which is what the review panel asks for. One file is fetched from the same path plus `/<its path>`.",
+        description: "What an agent left behind: recordings, screenshots, logs, reports. `?media=1` returns only the images and videos, which is what the review panel asks for. `?groups=<n>` answers with the directory as a directory instead - `{ groups: [{ dir, count, size, mtimeMs, files }], total, truncated }`, one group per top-level directory (`dir: ''` for the loose files) carrying its newest n files - and `?dir=<name>&offset=&limit=` with one group a page at a time, `{ files, count }`. One file is fetched from the same path plus `/file?path=<its path>`, and a `Range` is honoured.",
         responses:   { 200: { description: '{ files: [{ path, name, type, size, mtimeMs }] }' } },
       },
     },
@@ -1701,7 +1701,18 @@ const ARTIFACT_TYPES = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
   '.svg': 'image/svg+xml', '.webm': 'video/webm', '.mp4': 'video/mp4', '.mov': 'video/quicktime',
   '.log': 'text/plain', '.txt': 'text/plain', '.json': 'application/json', '.md': 'text/markdown',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.flac': 'audio/flac',
+  '.pdf': 'application/pdf', '.bmp': 'image/bmp', '.ico': 'image/x-icon', '.mkv': 'video/x-matroska',
 };
+
+// Source and prose an agent leaves beside its recordings: the script that drove the browser, a
+// PR body, a patch. Served as plain text whatever they are - an `.html` or `.svg` from this tree
+// opened in a tab is on the dashboard's own origin, and must be read there, not run.
+for (const ext of ['.js', '.mjs', '.cjs', '.jsx', '.ts', '.mts', '.cts', '.tsx', '.vue', '.css', '.scss', '.html', '.htm', '.xml',
+  '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.sh', '.bash', '.zsh', '.py', '.go', '.rb', '.rs', '.java', '.sql',
+  '.diff', '.patch', '.csv', '.tsv', '.out', '.err', '.map', '.lock', '.markdown', '.mdx', '.har', '.ndjson', '.jsonl']) {
+  ARTIFACT_TYPES[ext] = 'text/plain';
+}
 
 function extOf(name) {
   const dot = name.lastIndexOf('.');
@@ -4548,6 +4559,127 @@ function listWorkspaceMedia(ws, mediaOnly = false) {
   return found.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
+/** How many files one walk of an artifacts tree will stat before it says the rest is uncounted. */
+const ARTIFACT_WALK_MAX = 20000;
+
+/**
+ * Every file under one directory of a workspace's artifacts, however deep, as `{ path, name,
+ * type, size, mtimeMs }` with `path` relative to the artifacts root. `deep` false keeps to the
+ * directory's own files, which is what the root's group is: its subdirectories are groups of
+ * their own. Only regular files - a link is not followed out of the tree.
+ */
+function walkArtifacts(root, rel, deep, each) {
+  let seen = 0;
+  const walk = (dir, at) => {
+    let entries = [];
+
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (seen >= ARTIFACT_WALK_MAX) {
+        return;
+      }
+      const abs = path.join(dir, entry.name);
+      const relPath = at ? `${ at }/${ entry.name }` : entry.name;
+
+      if (entry.isDirectory()) {
+        if (deep) {
+          walk(abs, relPath);
+        }
+      } else if (entry.isFile()) {
+        let stat;
+
+        try {
+          stat = fs.statSync(abs);
+        } catch {
+          continue; // raced deletion
+        }
+        seen++;
+        each({
+          path: relPath, name: entry.name, type: ARTIFACT_TYPES[extOf(entry.name)] || 'application/octet-stream', size: stat.size, mtimeMs: stat.mtimeMs,
+        });
+      }
+    }
+  };
+
+  walk(rel ? path.join(root, rel) : root, rel);
+
+  return seen >= ARTIFACT_WALK_MAX;
+}
+
+/** The whole-tree answer is asked for by every open workspace page once a minute; kept a few seconds. */
+const artifactGroupCache = new Map();
+
+/**
+ * A workspace's artifacts as the directory it is: one group per top-level directory, and one
+ * for the files that sit loose beside them (`dir: ''`). Each group says how many files it holds
+ * in all, how large they are together and when the newest was written, and carries its newest
+ * `per` files - enough to draw the group, without a recording's six thousand frames costing a
+ * megabyte of JSON on every poll. The rest of a group is read a page at a time (pageArtifacts).
+ */
+function groupArtifacts(ws, per = 12) {
+  const root = workspaceArtifactsRoot(ws);
+
+  if (!root) {
+    return { groups: [], total: 0, truncated: false };
+  }
+  const key = `${ ws }:${ per }`;
+  const hit = artifactGroupCache.get(key);
+
+  if (hit && Date.now() - hit.at < 5000) {
+    return hit.value;
+  }
+  const groups = new Map();
+  const truncated = walkArtifacts(root, '', true, (file) => {
+    const slash = file.path.indexOf('/');
+    const dir = slash === -1 ? '' : file.path.slice(0, slash);
+    let group = groups.get(dir);
+
+    if (!group) {
+      group = {
+        dir, count: 0, size: 0, mtimeMs: 0, files: [],
+      };
+      groups.set(dir, group);
+    }
+    group.count++;
+    group.size += file.size;
+    group.mtimeMs = Math.max(group.mtimeMs, file.mtimeMs);
+    group.files.push(file);
+    // Only the newest are kept, trimmed as the walk goes so a directory of frames is never held whole.
+    if (group.files.length > per * 8) {
+      group.files = group.files.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, per);
+    }
+  });
+  const list = [...groups.values()].map((g) => ({ ...g, files: g.files.sort((a, b) => b.mtimeMs - a.mtimeMs || a.path.localeCompare(b.path)).slice(0, per) }))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const value = { groups: list, total: list.reduce((n, g) => n + g.count, 0), truncated };
+
+  artifactGroupCache.set(key, { at: Date.now(), value });
+  if (artifactGroupCache.size > 200) {
+    artifactGroupCache.delete(artifactGroupCache.keys().next().value);
+  }
+
+  return value;
+}
+
+/** One group's files, newest first, a page at a time. `dir` is a top-level directory, or '' for the loose files. */
+function pageArtifacts(ws, dir, offset = 0, limit = 48) {
+  const root = workspaceArtifactsRoot(ws);
+
+  if (!root || dir.includes('/') || dir === '.' || dir === '..') {
+    return { files: [], count: 0 };
+  }
+  const files = [];
+
+  walkArtifacts(root, dir, !!dir, (file) => files.push(file));
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs || a.path.localeCompare(b.path));
+
+  return { files: files.slice(offset, offset + limit), count: files.length };
+}
+
 /**
  * Resolve one artifact's absolute path, or '' if it escapes the tree or is gone.
  *
@@ -4639,6 +4771,17 @@ http.createServer(async(req, res) => {
   const mediaList = /^\/workspace\/([a-z0-9][a-z0-9-]*)\/media$/.exec(url.pathname);
 
   if (mediaList && req.method === 'GET') {
+    const count = (name, fallback, max) => Math.min(max, Math.max(0, parseInt(url.searchParams.get(name) || '', 10) || fallback));
+
+    // The directory as a directory: `?groups=<n>` is every top-level directory with its newest
+    // n files, and `?dir=<name>&offset=&limit=` is one of them a page at a time.
+    if (url.searchParams.has('groups')) {
+      return send(res, 200, groupArtifacts(mediaList[1], count('groups', 12, 48) || 12));
+    }
+    if (url.searchParams.has('dir')) {
+      return send(res, 200, pageArtifacts(mediaList[1], url.searchParams.get('dir') || '', count('offset', 0, ARTIFACT_WALK_MAX), count('limit', 48, 500) || 48));
+    }
+
     // `?media=1` keeps the old answer for the review panel; everything else gets the whole tree.
     return send(res, 200, { files: listWorkspaceMedia(mediaList[1], url.searchParams.get('media') === '1') });
   }
@@ -4686,13 +4829,34 @@ http.createServer(async(req, res) => {
       return send(res, 404, { error: 'No such media in the workspace.' });
     }
 
-    res.writeHead(200, {
-      'content-type':                ARTIFACT_TYPES[extOf(file)] || 'application/octet-stream',
-      'content-length':              fs.statSync(file).size,
+    const type = ARTIFACT_TYPES[extOf(file)] || 'application/octet-stream';
+    const { size } = fs.statSync(file);
+    const headers = {
+      'content-type':                /^text\/|json$/.test(type) ? `${ type }; charset=utf-8` : type,
       'access-control-allow-origin': '*',
       'accept-ranges':               'bytes',
       'cache-control':               'private, max-age=60',
-    });
+      'x-content-type-options':      'nosniff',
+    };
+    // One range, which is all a browser asks for: a player seeking, or a thumbnail that wants
+    // the first screenful of a log rather than the log. Anything else gets the whole file.
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+
+    if (range && (range[1] || range[2]) && size > 0) {
+      const start = range[1] ? parseInt(range[1], 10) : Math.max(0, size - parseInt(range[2], 10));
+      const end = range[1] && range[2] ? Math.min(size - 1, parseInt(range[2], 10)) : size - 1;
+
+      if (start > end || start >= size) {
+        res.writeHead(416, { ...headers, 'content-range': `bytes */${ size }` });
+
+        return res.end();
+      }
+      res.writeHead(206, { ...headers, 'content-length': end - start + 1, 'content-range': `bytes ${ start }-${ end }/${ size }` });
+      fs.createReadStream(file, { start, end }).pipe(res);
+
+      return;
+    }
+    res.writeHead(200, { ...headers, 'content-length': size });
     fs.createReadStream(file).pipe(res);
 
     return;
