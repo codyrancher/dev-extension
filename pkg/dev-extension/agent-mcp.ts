@@ -41,8 +41,16 @@ mkdir -p "$IMAGES" 2>/dev/null || true
 
 # No telemetry: this runs on somebody's own machine against their own designs, and the usage
 # ping is not theirs to send.
+# A cache of its own, and a pinned version below.
+#
+# Shared with the agent's own npm cache this breaks the moment anything runs npm as root in that
+# HOME: the cache fills with root-owned files and every later run as node fails EACCES, which
+# reaches claude as a server that will not start rather than as a permissions error.
+export npm_config_cache=/workspace/.npm-mcp
+mkdir -p "$npm_config_cache" 2>/dev/null || true
+
 FIGMA_API_KEY="$KEY" DO_NOT_TRACK=1 FRAMELINK_TELEMETRY=off \
-  exec npx -y figma-developer-mcp --stdio --image-dir="$IMAGES"
+  exec npx -y figma-developer-mcp@0.13.2 --stdio --image-dir="$IMAGES"
 `;
 
 /**
