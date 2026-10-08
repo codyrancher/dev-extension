@@ -55,6 +55,13 @@ export const GLOBAL_SECRETS: DevSecret[] = [
     group:    'access',
   },
   {
+    key:      'FIGMA_API_KEY',
+    label:    'Figma personal access token',
+    help:     'A Figma personal access token with at least File content read access (Figma: Settings -> Security -> Personal access tokens). An agent reviewing a design reads the file through Figma\'s API with it, so a design link in a comment can be opened rather than guessed at.',
+    required: false,
+    group:    'access',
+  },
+  {
     key:      'LETSENCRYPT_EMAIL',
     label:    'Account email',
     help:     'The contact address for the ACME account; no registration needed, just an address you own. Empty means no share asks for a certificate.',
