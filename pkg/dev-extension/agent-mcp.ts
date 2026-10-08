@@ -24,6 +24,18 @@ export const FIGMA_MCP_WRAPPER = `#!/bin/sh
 # Started by claude as an MCP server; speaks stdio, so nothing may be printed on stdout.
 set -e
 
+# Assume nothing about the environment. An MCP client may hand a server a bare one, and this
+# script needs three things that are normally inherited: a PATH that has kubectl and npx on it,
+# a HOME for npx to work in, and the two variables kubectl reads to find the apiserver from
+# inside a pod. Without them the key lookup below fails and the server exits before it speaks,
+# which the client reports as the connection closing rather than as anything diagnosable.
+PATH="\${PATH:-}:/workspace/.home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+: "\${HOME:=/workspace/.home}"
+: "\${KUBERNETES_SERVICE_HOST:=kubernetes.default.svc}"
+: "\${KUBERNETES_SERVICE_PORT:=443}"
+export HOME KUBERNETES_SERVICE_HOST KUBERNETES_SERVICE_PORT
+
 KEY=$(kubectl get secrets -n dev-system -l dev.rancher.io/kind=secrets \\
   -o jsonpath='{.items[0].data.FIGMA_API_KEY}' 2>/dev/null | base64 -d 2>/dev/null || true)
 
@@ -77,7 +89,11 @@ const CONFIG = path.join(HOME, '.claude.json');
 const EVERY_MS = 60000;
 
 const SERVERS = {
-  figma: { command: '/bin/sh', args: ['/seed/figma-mcp.sh'], env: {} },
+  // No \`env\` key. Given one, claude hands the server that environment and only that, so an
+  // empty object means a server spawned with no PATH, no HOME and none of the Kubernetes
+  // service variables - which is a wrapper that cannot find kubectl, exits 1, and reaches
+  // claude as CONNECTION_CLOSED. The wrapper now also stands on its own; this is the other half.
+  figma: { command: '/bin/sh', args: ['/seed/figma-mcp.sh'] },
 };
 
 /** Which servers have the secret they need. Nothing is read but the presence of a key. */
