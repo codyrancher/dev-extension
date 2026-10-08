@@ -1889,10 +1889,10 @@ export default {
       </div>
 
       <!--
-        The rail. A passed step is a way back to what it left behind. The pencil at its end sets
-        the stage by hand: it was a "Wrong stage?" link in a row of its own under the rail.
+        The rail. A passed step is a way back to what it left behind. The stage the work is at
+        carries a pencil on the corner of its number, there while the stage is under the pointer
+        or has the keyboard's focus, which sets the stage by hand.
       -->
-      <div class="workspace-rail__steps-row">
       <ol class="workspace-rail__steps">
         <li
           v-for="(step, index) in steps"
@@ -1925,21 +1925,21 @@ export default {
               class="workspace-rail__round"
             >round {{ round }}</span>
           </button>
+          <!-- Beside the step's button, not in it: a button cannot hold another. -->
+          <button
+            v-if="index === currentIndex && !lookingBack && !manual"
+            v-clean-tooltip="'Set the stage by hand'"
+            type="button"
+            class="workspace-rail__stage-edit"
+            :class="{ 'workspace-rail__stage-edit--on': stagePicker }"
+            aria-label="Set the stage by hand"
+            :aria-expanded="stagePicker ? 'true' : 'false'"
+            @click="stagePicker = !stagePicker"
+          >
+            <i class="icon icon-edit" />
+          </button>
         </li>
       </ol>
-      <button
-        v-if="steps.length && !lookingBack && !manual"
-        v-clean-tooltip="'Set the stage by hand'"
-        type="button"
-        class="workspace-rail__stage-edit"
-        :class="{ 'workspace-rail__stage-edit--on': stagePicker }"
-        aria-label="Set the stage by hand"
-        :aria-expanded="stagePicker ? 'true' : 'false'"
-        @click="stagePicker = !stagePicker"
-      >
-        <i class="icon icon-edit" />
-      </button>
-      </div>
 
       <!--
         Set the stage by hand when the heuristics get it wrong. A held stage stands against the
@@ -3113,45 +3113,57 @@ export default {
   }
 
   // The rail
-  // The rail and the pencil that edits it, on one line.
-  &__steps-row {
-    display:     flex;
-    align-items: flex-start;
-    gap:         8px;
-  }
-
   &__steps {
     display:    flex;
-    flex:       1 1 auto;
-    min-width:  0;
     list-style: none;
     margin:     8px 0 4px;
     padding:    0 8px;
   }
 
-  // Level with the dots rather than with the labels under them.
+  /*
+   * The pencil that sets the stage by hand: a badge on the top-right corner of the current
+   * stage's number, centred on the corner so it reads as belonging to the dot. Out of sight
+   * until the stage is under the pointer or holds the keyboard's focus, and kept in sight while
+   * the picker it opened is up. Hidden by opacity, not removed, so it can still be tabbed to.
+   * `:focus-visible` and not `:focus-within`: a pencil that was clicked keeps the focus, and
+   * would stay on the dot after the pointer had left it.
+   */
   &__stage-edit {
-    flex:          0 0 auto;
-    display:       inline-flex;
-    align-items:   center;
+    position:        absolute;
+    top:             -8px;
+    left:            calc(50% + 8px);
+    z-index:         2;
+    display:         inline-flex;
+    align-items:     center;
     justify-content: center;
-    width:         26px;
-    height:        26px;
-    margin-top:    7px;
-    padding:       0;
-    border:        0;
-    border-radius: var(--border-radius);
-    background:    transparent;
-    color:         var(--muted);
-    cursor:        pointer;
+    width:           20px;
+    height:          20px;
+    min-height:      0;
+    padding:         0;
+    border:          1px solid var(--border);
+    border-radius:   50%;
+    background:      var(--body-bg);
+    color:           var(--muted);
+    line-height:     1;
+    opacity:         0;
+    cursor:          pointer;
+    transition:      opacity .12s ease;
+
+    .icon { font-size: 11px; }
 
     &:hover,
     &:focus-visible,
     &--on {
-      background: var(--box-bg);
-      color:      var(--body-text);
+      border-color: var(--link);
+      color:        var(--body-text);
     }
+
+    &:focus-visible,
+    &--on { opacity: 1; }
   }
+
+  &__step:hover &__stage-edit,
+  &__step:has(:focus-visible) &__stage-edit { opacity: 1; }
 
   &__step {
     flex:     1 1 0;
