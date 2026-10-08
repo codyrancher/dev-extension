@@ -42,6 +42,15 @@ const props = defineProps<{
   /** The card the chat would be about, for the line that says so. */
   about?: string;
   /**
+   * That card written out, for the button that puts it in the message.
+   *
+   * One conversation serves the whole deck, so a question typed here arrives with no idea which
+   * card was on screen when it was asked. Rather than prepending this to everything - most
+   * messages are a follow-up in a thread that already knows - it is a button, and what it adds
+   * is ordinary text the person can edit or delete.
+   */
+  context?: string;
+  /**
    * The conversation this bar is: the agent pod's own, or a workspace's when a card with one
    * is asked about. Empty until the page makes one, which it does on the first open or ask -
    * arriving at the Focus page should not start a conversation.
@@ -161,6 +170,18 @@ function setOpen(open: boolean): void {
  * message to go. Without this the first thing anybody typed went nowhere, which is the failure
  * this bar is meant to be the end of.
  */
+/** Put the card's own description at the top of what is being written. */
+function addContext(): void {
+  const text = props.context || '';
+
+  if (!text || draft.value.includes(text.trim().split('\n')[0])) {
+    return;
+  }
+  onDraft(text + draft.value);
+  setOpen(true);
+  nextTick(() => composer.value?.focus?.());
+}
+
 function onDraft(text: string): void {
   draft.value = text;
   if (text && !props.session) {
@@ -306,6 +327,16 @@ defineExpose({ ask, focus: focusBox });
           <div class="bar__subject">
             <AppIcon name="sparkle" :size="14" class="bar__mark" />
             <span v-if="about" class="u-pill bar__about" :title="about">about {{ about }}</span>
+            <button
+              v-if="context"
+              type="button"
+              class="bar__context"
+              title="Put this card's details into the message"
+              @click="addContext"
+            >
+              <AppIcon name="plus" :size="12" />
+              Add this card
+            </button>
             <span class="bar__spacer" />
             <button
               type="button"
@@ -689,4 +720,25 @@ defineExpose({ ask, focus: focusBox });
 .bar__out:hover { border-color: var(--accent); color: var(--accent); }
 
 .bar--open .bar__line { padding: 0 var(--s3) var(--s3); min-height: 0; }
+
+/* "Add this card": quiet beside the subject line, and the same height as the pill next to it. */
+.bar__context {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--dev-line, #2b3240);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dev-muted, #9aa3b2);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.bar__context:hover {
+  color: var(--dev-text, #e6e9ef);
+  border-color: var(--dev-accent, #4f8cff);
+}
 </style>

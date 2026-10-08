@@ -1212,6 +1212,54 @@ export interface Subject {
   rule: string;
 }
 
+/**
+ * The card, written out so a conversation can be told what it is about.
+ *
+ * The bar is one conversation across the whole deck, so a question typed into it arrives with
+ * no idea which card was on screen when it was asked - and "why did this fail?" about nothing
+ * in particular is a question the agent has to guess the subject of. This is that subject, as
+ * the few lines somebody would have typed themselves: what kind of card, which thing it is
+ * about, and where to look.
+ *
+ * Deliberately short. It goes at the top of a message a person is still writing, so it has to
+ * be readable in the composer and cheap to delete half of - not a dump of everything the card
+ * loaded. The identifiers are the valuable part: with the repository, the number and the
+ * workspace, the agent can read the rest for itself.
+ */
+export function cardContext(task: {
+  what: string; workspace: string; rule: string; title?: string;
+  needs?: string; about?: string; url?: string; card?: { label?: string; chip?: string };
+}): string {
+  const subject = subjectOf(task);
+  const lines: string[] = [];
+  const kind = task.card?.label || task.card?.chip || '';
+
+  lines.push(`Card: ${ kind || task.rule }${ kind ? ` (${ task.rule })` : '' }`);
+  if (task.title) {
+    lines.push(`Title: ${ task.title }`);
+  }
+  if (subject.pr) {
+    lines.push(`Pull request: ${ DEFAULT_REPO }#${ subject.pr }`);
+  }
+  if (subject.issue) {
+    lines.push(`Issue: ${ DEFAULT_REPO }#${ subject.issue }`);
+  }
+  if (subject.workspace) {
+    lines.push(`Workspace: ${ subject.workspace }`);
+  }
+  if (task.needs) {
+    lines.push(`What it needs: ${ task.needs }`);
+  }
+  if (task.about) {
+    lines.push(`Why it is here: ${ task.about }`);
+  }
+  if (task.url) {
+    lines.push(`Link: ${ task.url }`);
+  }
+
+  return `About the card I am looking at:\n${ lines.map((line) => `- ${ line }`).join('\n') }\n\n`;
+}
+
 export function subjectOf(task: { what: string; workspace: string; rule: string }): Subject {
   const n = numberIn(task.what);
   const isIssue = /issue/i.test(task.what);

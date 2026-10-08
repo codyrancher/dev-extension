@@ -72,7 +72,7 @@ import { sendToPane, paneCommand, conversationSnapshot, refreshConversations } f
 import type { ConversationSnapshot } from '../conversations';
 import { reviewNotes } from '../focus-review';
 import type { ReviewNote } from '../focus-review';
-import { readArtifacts, NO_ARTIFACTS, subjectOf, keepArtifacts, keptArtifacts, haveArtifacts, keptKeys } from '../focus-artifacts';
+import { readArtifacts, NO_ARTIFACTS, subjectOf, cardContext, keepArtifacts, keptArtifacts, haveArtifacts, keptKeys } from '../focus-artifacts';
 import type { CardArtifacts, CardComment, PoolIssue } from '../focus-artifacts';
 import {
   startPrReview, startIssueFix, submitReview, approveAndMerge, mergePr, prDetail, prFile, linesPrompt
@@ -2263,6 +2263,7 @@ onBeforeUnmount(closeSettings);
       ref="bar"
       :open="chatOpen"
       :about="current?.title"
+      :context="current ? cardContext(current) : ''"
       :session="conversation"
       :command="chatWorkspace ? paneCommand(chatWorkspace, conversation) : null"
       @update:open="onChatOpen"
