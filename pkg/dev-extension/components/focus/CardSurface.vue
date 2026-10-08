@@ -48,6 +48,7 @@ const claimed = computed(() => api.claimed.value);
  * shell already works this out for clicks; the chat reads it for polling.
  */
 const interactive = computed(() => api.interactive.value !== false);
+const reading = computed(() => api.reading.value === true);
 
 /*
  * Which pull request this card is about.
@@ -229,7 +230,18 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
         @ask="api.emit('ask-reviewer', $event)"
       />
 
-      <!-- The agent's review, when there is one waiting: the substance of a review card. -->
+      <!--
+        The agent's review, when there is one waiting: the substance of a review card.
+
+        ReviewPass draws nothing at all without a note to select, so a card whose notes had not
+        arrived yet - or whose read of them failed, which a dev-api restart does for twenty
+        seconds at a time - was a title, a footer, and a hole between them. Which of the two it
+        is beats an empty space that reads as a broken card.
+      -->
+      <p v-else-if="shown === 'pass' && !notes.length" class="surface__none">
+        {{ reading ? 'Reading the review…' : 'The review could not be read just now. It is on the pull request; opening it is the way through.' }}
+      </p>
+
       <ReviewPass
         v-else-if="shown === 'pass'"
         :notes="notes"
@@ -273,3 +285,13 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
         @expand="api.emit('expand', $event)"
       />
 </template>
+
+<style scoped>
+/* A surface with nothing in it says so, rather than leaving a hole in the card. */
+.surface__none {
+  margin: 0;
+  padding: var(--s4) 0;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+}
+</style>
