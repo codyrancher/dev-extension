@@ -32,7 +32,7 @@ module.exports = {
      * is what makes the thing that button wanted; until it has been pressed there is nothing to
      * open, and an offer that cannot be taken is worse than no offer.
      */
-    wants:   ['files', 'stat', 'checks', 'body'],
+    wants:   ['files', 'stat', 'checks', 'body', 'comments'],
     actions: [
       { label: 'Start a review workspace', verb: 'review' },
       { label: 'Open the pull request', verb: 'url' },

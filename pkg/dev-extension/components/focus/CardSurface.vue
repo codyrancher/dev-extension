@@ -250,6 +250,7 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
         :workspace="task.workspace || ''"
         :pr="pr"
         :live="interactive"
+        :comments="art.comments || []"
         @ask="api.emit('ask-code', $event)"
         @expand="api.emit('expand', $event)"
       />

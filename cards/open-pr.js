@@ -7,7 +7,7 @@ module.exports = {
     lede:    'commits',
     rules:   ['fix-no-pr'],
     summary: '{why}',
-    wants:   ['commits', 'files', 'stat', 'media', 'live'],
+    wants:   ['commits', 'files', 'stat', 'media', 'live', 'comments'],
     actions: [
       /*
        * Not "Open the pull request", which is what four other cards call a `url` nav to a pull

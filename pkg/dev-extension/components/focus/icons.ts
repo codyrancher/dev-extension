@@ -4,7 +4,7 @@ export type IconName =
   | 'check' | 'cross' | 'spinner' | 'play' | 'sparkle' | 'clock' | 'arrow-right'
   | 'pencil' | 'expand' | 'chevron-left' | 'chevron-right' | 'plus' | 'minus'
   | 'pin' | 'snooze' | 'scales' | 'copy' | 'trash' | 'server'
-  | 'grid' | 'image' | 'document';
+  | 'grid' | 'image' | 'document' | 'comment';
 
 export const iconPaths: Record<IconName, string> = {
   // A pin, pointing down-left, as a drawing pin seen from the side.
@@ -47,6 +47,8 @@ export const iconPaths: Record<IconName, string> = {
   image: 'M3.6 4.4h12.8v11.2H3.6zM3.6 12.6l3.4-3 2.8 2.4 2.8-3 3.8 3.6M12.8 7.8h.01',
   // A page with its corner turned, and three lines of writing on it.
   document: 'M5 2.5h6.5L15 6v11.5H5zM11.5 2.5V6H15M7.5 9.5h5M7.5 12.5h5M7.5 15h3',
+  // A speech bubble with its tail on the bottom left.
+  comment: 'M3.5 4.5h13v9h-7l-4 3v-3h-2z',
 };
 
 /** The ones drawn as a solid shape rather than a stroked line. */

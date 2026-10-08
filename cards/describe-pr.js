@@ -7,7 +7,7 @@ module.exports = {
     lede:    'files',
     rules:   ['mine-thin'],
     summary: '{why}',
-    wants:   ['body', 'stat', 'files', 'commits'],
+    wants:   ['body', 'stat', 'files', 'commits', 'comments'],
     actions: [
       { label: 'Write the description', verb: 'describe', confirm: true },
       { label: 'Open it on GitHub', verb: 'url' },

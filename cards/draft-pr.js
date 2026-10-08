@@ -7,7 +7,7 @@ module.exports = {
     lede:    'files',
     rules:   ['fix-draft', 'mine-draft-green'],
     summary: '{why}',
-    wants:   ['files', 'stat', 'checks', 'media', 'live'],
+    wants:   ['files', 'stat', 'checks', 'media', 'live', 'comments'],
     actions: [
       { label: 'Mark it ready for review', verb: 'ready', confirm: true },
       { label: 'Open the pull request', verb: 'url' },

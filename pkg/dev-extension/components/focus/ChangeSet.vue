@@ -17,7 +17,7 @@
  * lines is the question and the fact that it was asked.
  */
 import { computed, nextTick, ref, watch } from 'vue';
-import type { CardFile } from '../../focus-artifacts';
+import type { CardFile, CardComment } from '../../focus-artifacts';
 import type { DiffLine } from '../../focus-review';
 import AppButton from './AppButton.vue';
 import AppIcon from './AppIcon.vue';
@@ -25,6 +25,7 @@ import SectionHead from './SectionHead.vue';
 import CodeView from '../code/CodeView.vue';
 import { fromDiffLines, highlighted } from '../code/rows';
 import InlineChat from './InlineChat.vue';
+import Markdown from './Markdown.vue';
 import { listConversations, startConversation, queuePrompt, paneCommand } from '../../conversations';
 import { linesPrompt } from '../../reviews';
 
@@ -36,6 +37,12 @@ const props = withDefaults(defineProps<{
   pr?: number;
   /** False on a card that is not on top: its conversations read nothing. */
   live?: boolean;
+  /**
+   * Every comment on this change: the ones already on the pull request and the agent's own,
+   * still waiting for your pass. Both, because while reading a diff the question is "has
+   * anything been said about this line", and who said it is the second question.
+   */
+  comments?: CardComment[];
   busy?: boolean;
   /**
    * How many files the change really has, where that is more than were fetched.
@@ -54,7 +61,7 @@ const props = withDefaults(defineProps<{
    * 157 files" says the list is not the change - which is the one case this head was written for.
    */
   claimed?: string;
-}>(), { busy: false, total: 0, claimed: '', workspace: '', pr: 0, live: true });
+}>(), { busy: false, total: 0, claimed: '', workspace: '', pr: 0, live: true, comments: () => [] });
 
 /** The count beside the head's label, or nothing where the lede has already said it. */
 const subset = computed(() => {
@@ -119,6 +126,62 @@ const folded = ref<Record<string, boolean>>({});
 const pick = ref<{ hunk: number; range: [number, number] } | null>(null);
 const question = ref('');
 const threads = ref<CodeThread[]>([]);
+
+/* ── What has been said about this change ─────────────────────────────────────────────────── */
+
+/** Comments by the file they are on, newest-line last, so the tree can mark a file at a glance. */
+const commentsByPath = computed(() => {
+  const out = new Map<string, CardComment[]>();
+
+  for (const comment of props.comments || []) {
+    if (!comment.path) {
+      continue;
+    }
+    const list = out.get(comment.path) || [];
+
+    list.push(comment);
+    out.set(comment.path, list);
+  }
+  for (const list of out.values()) {
+    list.sort((a, b) => (a.line || 0) - (b.line || 0));
+  }
+
+  return out;
+});
+
+const commentsOn = (path: string) => commentsByPath.value.get(path) || [];
+
+/** The open file's comments, listed under its row in the tree. */
+const hereComments = computed(() => commentsOn(openPath.value));
+
+/**
+ * The comments anchored to one drawn row.
+ *
+ * A review comment names a line in the file; a row knows which line it is (`new` on the diff
+ * line). Anything whose line is not in a hunk that was loaded has nowhere to sit - it is still
+ * listed in the tree, where it can at least be read.
+ */
+function commentsAt(hunkIndex: number, rowIndex: number): CardComment[] {
+  const line = file.value?.hunks?.[hunkIndex]?.lines?.[rowIndex]?.new;
+
+  if (!line) {
+    return [];
+  }
+
+  return hereComments.value.filter((comment) => comment.line === line);
+}
+
+/** Bring one into view, from the list in the tree. */
+function showComment(comment: CardComment): void {
+  if (comment.path !== openPath.value) {
+    open(comment.path);
+  }
+  nextTick(() => {
+    const el = root.value?.querySelector(`[data-comment="${ comment.id }"]`);
+
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  });
+}
 
 /** The question people ask of a run of lines most often, as a button. */
 const SUMMARISE = 'In one or two lines, what do these lines do?';
@@ -330,18 +393,46 @@ const statusWord: Record<string, string> = {
         </button>
 
         <template v-if="!folded[group.dir]">
-          <button
-            v-for="entry in group.files"
-            :key="entry.path"
-            type="button"
-            class="tree__file"
-            :class="[`tree__file--${ entry.status }`, { 'tree__file--on': entry.path === openPath }]"
-            @click="open(entry.path)"
-          >
-            <span class="tree__name">{{ nameOf(entry.path) }}</span>
-            <span class="tree__plus">+{{ entry.added }}</span>
-            <span class="tree__minus">−{{ entry.removed }}</span>
-          </button>
+          <template v-for="entry in group.files" :key="entry.path">
+            <button
+              type="button"
+              class="tree__file"
+              :class="[`tree__file--${ entry.status }`, { 'tree__file--on': entry.path === openPath }]"
+              @click="open(entry.path)"
+            >
+              <span class="tree__name">{{ nameOf(entry.path) }}</span>
+              <!--
+                That something has been said about this file, before it is opened. Without it the
+                only way to find the commented files in a sixty-file change is to open all sixty.
+              -->
+              <span
+                v-if="commentsOn(entry.path).length"
+                class="tree__said"
+                :title="`${ commentsOn(entry.path).length } comment${ commentsOn(entry.path).length === 1 ? '' : 's' } on this file`"
+              >
+                <AppIcon name="comment" :size="11" />
+                {{ commentsOn(entry.path).length }}
+              </span>
+              <span class="tree__plus">+{{ entry.added }}</span>
+              <span class="tree__minus">−{{ entry.removed }}</span>
+            </button>
+
+            <!--
+              The open file's comments, by line, under its own row. Only the open one: a list
+              under every file is the whole review in the margin, and the point of the tree is
+              to be a map of where to go next.
+            -->
+            <ul v-if="entry.path === openPath && hereComments.length" class="tree__lines">
+              <li v-for="comment in hereComments" :key="comment.id">
+                <button type="button" class="tree__line" @click="showComment(comment)">
+                  <span class="tree__line-n">{{ comment.line ? `line ${ comment.line }` : 'on the file' }}</span>
+                  <span v-if="comment.pending" class="tree__line-tag">yours, unsent</span>
+                  <span v-else-if="comment.mine" class="tree__line-tag">yours</span>
+                  <span v-else class="tree__line-who">{{ comment.author }}</span>
+                </button>
+              </li>
+            </ul>
+          </template>
         </template>
       </template>
     </nav>
@@ -360,6 +451,26 @@ const statusWord: Record<string, string> = {
           @expand="emit('expand', { path: file.path, mark: lineSpan(hunk.lines) })"
         >
           <template #after="{ index }">
+            <!--
+              What has already been said about this line: the pull request's comments and the
+              agent's own, unsent ones. Above the questions, because a comment is the record and
+              a question is something happening now.
+            -->
+            <div
+              v-for="comment in commentsAt(h, index)"
+              :key="`k-${ comment.id }`"
+              :data-comment="comment.id"
+              class="said"
+              :class="{ 'said--mine': comment.mine || comment.pending }"
+            >
+              <p class="said__who">
+                <AppIcon name="comment" :size="11" />
+                <strong>{{ comment.pending ? 'Yours, not sent yet' : comment.mine ? 'You' : comment.author }}</strong>
+                <span v-if="comment.line" class="said__line">line {{ comment.line }}</span>
+              </p>
+              <Markdown class="said__body" :text="comment.body" />
+            </div>
+
             <!-- A question and its answer, under the lines they belong to. -->
             <div v-for="thread in threadAt(h, index)" :key="thread.id" :data-thread="thread.id" class="anchored">
               <p class="anchored__where">{{ thread.label }}</p>
@@ -706,4 +817,67 @@ const statusWord: Record<string, string> = {
   padding-top: var(--s2);
   border-top: 1px solid var(--border);
 }
+
+/* ── What has been said ───────────────────────────────────────────────────────────────────── */
+
+/* The mark on a file in the tree. */
+.tree__said {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  color: var(--accent);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Its comments, by line, under the open file. */
+.tree__lines { margin: 0 0 var(--s2) 0; padding: 0 0 0 var(--s4); list-style: none; }
+
+.tree__line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  width: 100%;
+  padding: 2px var(--s2);
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--t-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tree__line:hover { color: var(--text); border-left-color: var(--accent); background: var(--surface-raised); }
+.tree__line-n { font-variant-numeric: tabular-nums; }
+.tree__line-tag { color: var(--accent); }
+.tree__line-who { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A comment where the line is. */
+.said {
+  margin: var(--s2) 0;
+  padding: var(--s2) var(--s3);
+  border-left: 2px solid var(--border-strong, var(--border));
+  background: var(--surface-raised);
+  border-radius: 0 var(--r-sm, 4px) var(--r-sm, 4px) 0;
+}
+
+/* Yours reads as yours, the way the deck marks anything of your own. */
+.said--mine { border-left-color: var(--accent); }
+
+.said__who {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 0 2px;
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+}
+
+.said__line { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.said__body { font-size: var(--t-sm); }
 </style>

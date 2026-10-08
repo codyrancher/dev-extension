@@ -18,7 +18,7 @@ module.exports = {
      * should not pay for it; see `CardArtifacts.report`. This is the one card whose whole subject
      * is the failure, so it is the one card that asks.
      */
-    wants:   ['checks', 'logs', 'stat', 'files'],
+    wants:   ['checks', 'logs', 'stat', 'files', 'comments'],
     /*
      * The failures, not the diff. The card's subject is "6 of 46 checks failing" and its 173px
      * surface was "What it changed, first 40 of 45 files" - a diff you cannot work out three red
