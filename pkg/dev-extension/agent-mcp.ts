@@ -32,7 +32,17 @@ if [ -z "$KEY" ]; then
   exit 1
 fi
 
-FIGMA_API_KEY="$KEY" exec npx -y figma-developer-mcp --stdio
+# Images land somewhere deliberate. Without --image-dir the server writes them under its own
+# working directory, which for a server claude spawns is \`/\` - so a download would scatter
+# files into the container root. Under the workspace instead, which is the durable half of this
+# pod and already where everything else a conversation produces goes.
+IMAGES=/workspace/.figma-images
+mkdir -p "$IMAGES" 2>/dev/null || true
+
+# No telemetry: this runs on somebody's own machine against their own designs, and the usage
+# ping is not theirs to send.
+FIGMA_API_KEY="$KEY" DO_NOT_TRACK=1 FRAMELINK_TELEMETRY=off \
+  exec npx -y figma-developer-mcp --stdio --image-dir="$IMAGES"
 `;
 
 /**
@@ -50,7 +60,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-const HOME = process.env.HOME || '/workspace/.home';
+// Not \`process.env.HOME\`. boot.sh runs as root, so a process it starts inherits \`/root\`,
+// while the panes - and therefore claude, and therefore the config this has to edit - run as
+// node out of the workspace. Taking HOME on trust meant writing a file nobody reads, and
+// because the config was simply missing there, doing it silently.
+const HOME = process.env.CLAUDE_HOME || '/workspace/.home';
 const CONFIG = path.join(HOME, '.claude.json');
 const EVERY_MS = 60000;
 
@@ -159,7 +173,7 @@ export function withMcpBoot(boot: string): string {
 # nothing here waits for it, and it runs for the life of the pod. See agent-mcp.ts.
 (
   while ! command -v node >/dev/null 2>&1; do sleep 10; done
-  node /seed/mcp-refresh.mjs
+  CLAUDE_HOME="$AGENT_HOME" node /seed/mcp-refresh.mjs
 ) >"$WORKSPACE/.mcp.log" 2>&1 &
 
 exec `);
