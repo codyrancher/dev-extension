@@ -167,7 +167,12 @@ export interface CardDef {
   surface?: CardSurface;
   /** Rule ids from priority.ts. */
   rules: string[];
-  /** The line under the title. `{why}` by default, which is what the rule said. */
+  /**
+   * The line under the title. `{why}` by default, which is what the rule said.
+   *
+   * Empty when the card wrote `summary: false`, which is a card saying it wants no line there at
+   * all - not even what the work needs, which the line otherwise leads with.
+   */
   summary: string;
   /**
    * What to put in front of you, from focus-artifacts.ts.
@@ -340,7 +345,7 @@ export function cardOf(id: string, module: any): CardDef {
     lede:    module?.lede,
     surface: module?.surface,
     rules:   Array.isArray(module?.rules) ? module.rules : [],
-    summary: String(module?.summary || '{why}'),
+    summary: module?.summary === false ? '' : String(module?.summary || '{why}'),
     wants:   Array.isArray(module?.wants) ? module.wants : [],
     actions: Array.isArray(module?.actions) ? module.actions : [],
   };
@@ -546,7 +551,7 @@ export function focusDeck(items: PriorityItem[], config: FocusConfig, state: Foc
         id: item.key,
         card,
         about:        RULES[item.rule]?.about || '',
-        summary:      fill(card.summary || '{why}', item),
+        summary:      fill(card.summary, item),
         waitingHours: Number.isFinite(since) ? Math.max(0, Math.round((now - since) / 3600000)) : 0,
         pinned:       state.pinned.includes(item.key),
         snoozedUntil: '',

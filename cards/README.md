@@ -29,6 +29,9 @@ so a card with no rules claims nothing and never reaches the top of the deck. `w
 page fetches before drawing it, and asking for something a card does not show costs a round trip per
 turn for nothing.
 
+`summary` is the line under the title, after what the work needs: `{why}` unless the card says
+otherwise. `summary: false` draws no line there at all.
+
 ## The body
 
 A card does not have to say how it draws. Leave `template` out and it gets `DEFAULT_BODY` —
