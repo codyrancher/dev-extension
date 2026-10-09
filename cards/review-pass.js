@@ -36,6 +36,16 @@ module.exports = {
        * slot the footer has for links.
        */
       { label: 'Which ones matter?', verb: 'ask', prompt: 'For {what} in {workspace}: go through the findings the review agent produced and tell me which are worth filing and which are noise, with a line of reasoning each. Do not file anything.' },
+      /*
+       * The four ways a pass ends, as things the agent is set to. One control, `Finish the
+       * review`, because they are one decision. Each reaches GitHub under your name, so each asks
+       * first; and each carries only the findings marked good - the skill refuses while any is
+       * still unjudged, which is the rule this card is here for.
+       */
+      { label: 'Approve', verb: 'ask', group: 'Finish the review', confirm: true, prompt: 'Use the my-pr-review-submit skill for {what} in {workspace}: approve it with no comments. Findings that were never sent are discarded, which is what this button means.' },
+      { label: 'Approve with comments', verb: 'ask', group: 'Finish the review', confirm: true, prompt: 'Use the my-pr-review-submit skill for {what} in {workspace}: approve it, with the findings I marked good as its comments.' },
+      { label: 'Leave comments', verb: 'ask', group: 'Finish the review', confirm: true, prompt: 'Use the my-pr-review-submit skill for {what} in {workspace}: leave the findings I marked good as comments, with no verdict.' },
+      { label: 'Ask for changes', verb: 'ask', group: 'Finish the review', confirm: true, prompt: 'Use the my-pr-review-submit skill for {what} in {workspace}: ask for changes, with the findings I marked good as its comments.' },
       { label: 'Open the review', verb: 'open' },
       { verb: 'snooze', hours: 8 },
     ],

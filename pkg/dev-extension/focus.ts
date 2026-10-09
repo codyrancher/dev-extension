@@ -77,6 +77,14 @@ export interface CardAction {
   /** For `share`: which build to open. */
   kind?: 'dashboard' | 'storybook';
   /**
+   * For `ask`: the name of the menu this sits in, with every other action that says the same.
+   *
+   * A card draws one quieter question beside its primary. Where an agent can be set to one of
+   * several things that are the same kind of decision - the four ways a review ends - they are
+   * one control named for the decision, rather than four buttons or one of them standing alone.
+   */
+  group?: string;
+  /**
    * Only offer it when the work is in this state.
    *
    * Because an action that cannot be taken is worse than no action: the advisory card offered
