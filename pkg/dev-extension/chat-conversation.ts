@@ -1016,12 +1016,34 @@ export function useConversation(source: () => ConversationSource) {
     }
   }
 
+  /**
+   * Interrupt the turn: what the Stop button asks for.
+   *
+   * Two Escapes and then a poll, rather than the one Escape with no read-back this used to
+   * send. Both halves were reasons the button looked broken.
+   *
+   * One Escape is not reliable. `escapePane` below already sends two, 300ms apart, and it does
+   * that because one was not enough to get out of a picker - the same input path, the same
+   * pane. A lone `\e` arriving through `tmux send-keys` has to be disambiguated from the start
+   * of an escape sequence, and whether it is read as a bare Escape depends on what the terminal
+   * is doing when it lands. A second one costs a quarter of a second and removes the question.
+   *
+   * The poll is the other half. Every other key this sends - `choose`, `escapePane` - asks for
+   * a read 400ms later, and this did not, so even a successful interrupt left the shimmer and
+   * the Stop button on screen until the 1.5s timer came round, and longer when that tick was
+   * skipped because an exec was still in flight. Staying lit after the click is the whole of
+   * what "the Stop button doesn't work" looks like from the outside, whether or not the turn
+   * actually stopped.
+   */
   async function stop(): Promise<void> {
     try {
+      await keys('Escape');
+      await new Promise((resolve) => setTimeout(resolve, 250));
       await keys('Escape');
     } catch (e: any) {
       error.value = e.message || String(e);
     }
+    setTimeout(() => poll(), 400);
   }
 
   async function login(): Promise<void> {
