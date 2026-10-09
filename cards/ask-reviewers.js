@@ -11,7 +11,8 @@ module.exports = {
      */
     lede:    'waited',
     rules:   ['mine-unasked'],
-    summary: '{why}',
+    // No line under the title: the chip says No reviewers and the body is who to ask.
+    summary: false,
     /*
      * No `files`. The card's job is finding a reviewer, not reviewing - and `files` is tested above
      * `reviewers` in the surface ladder, so asking for it would replace the candidate rows with a

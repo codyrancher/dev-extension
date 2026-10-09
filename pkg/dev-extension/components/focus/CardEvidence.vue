@@ -47,6 +47,8 @@ const props = defineProps<{
    * count goes, because one of them earns its place and not both. See `claimed` in FocusCard.
    */
   claimed?: string;
+  /** The card's body is the diff viewer, which says how big the change is file by file. */
+  diff?: boolean;
   /** How long it has sat, in the card's own words, or '' where the lede already said it. */
   waited?: string;
   /**
@@ -120,7 +122,7 @@ const facts = computed<Fact[]>(() => {
   const a = props.artifacts;
   const out: Fact[] = [];
 
-  if (a.stat) {
+  if (a.stat && !props.diff) {
     if (props.claimed !== 'files') {
       out.push({ n: String(a.stat.files), of: a.stat.files === 1 ? 'file' : 'files', tone: '' });
     }

@@ -119,6 +119,16 @@ const noteOn = ref<ReviewNote | null>(null);
  */
 const bodyShows = ref('');
 
+/**
+ * The diff viewer is the body, so the size of the change is not said above it.
+ *
+ * `2 files changed  +81 · −1` sat directly over a tree that lists those two files, each with its
+ * own +/− pair. On any card whose body is the change itself - not only the ones whose lede is
+ * `files` - the count and the pair are left off the facts row. What CI said and what was
+ * recorded stay: the diff does not say those.
+ */
+const diffShown = computed(() => bodyShows.value === 'files');
+
 watch(() => props.notes, (found) => { noteOn.value = found?.[0] || null; }, { immediate: true });
 
 /**
@@ -563,7 +573,7 @@ const lede = computed<{ n: string; of: string; tone: 'kind' | 'good' | 'bad' | '
       : null;
 
   case 'files':
-    return a.stat?.files
+    return a.stat?.files && !diffShown.value
       ? { n: String(a.stat.files), of: a.stat.files === 1 ? 'file changed' : 'files changed', tone: 'kind' }
       : null;
 
@@ -663,7 +673,7 @@ const hasFacts = computed(() => {
     || prosePill.value
     || talk.value.length
     || (!overdue.value && props.task.waitingHours)
-    || a.stat
+    || (a.stat && !diffShown.value)
     || a.ci
     || a.live.length
     || a.media.length
@@ -835,6 +845,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         <CardEvidence
           :artifacts="art"
           :claimed="claimed"
+          :diff="diffShown"
           :waited="waitedOnLine"
           :prose="prosePill ? proseLabel : ''"
           :talk="talk.length"
