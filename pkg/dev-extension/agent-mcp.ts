@@ -145,8 +145,71 @@ function tick() {
   console.log(\`[mcp] servers now: \${ Object.keys(next).join(', ') || 'none' }\`);
 }
 
+/**
+ * The card tool and its skill, re-copied from /seed when they differ.
+ *
+ * boot.sh copies both once, at boot, and \`agentBootVersion\` hashes only boot.sh,
+ * terminal-tools.sh and tmux.conf - so editing the skill changes neither the hash nor the
+ * pod, and the copy in the agent's home stays whatever it was on the day the pod started.
+ * The ConfigMap underneath /seed *is* refreshed (the kubelet syncs it within a minute), so
+ * the new text is already sitting there, one directory away, unread.
+ *
+ * This closes that gap on the loop that was already running. Written only when the bytes
+ * differ, so it is two reads a minute in the normal case, and chowned to whoever owns the
+ * home: this runs as root out of boot.sh while claude reads these as node, and a root-owned
+ * file in node's home is a skill that cannot be read and a tool that cannot be replaced.
+ */
+const SEEDED = [
+  { from: '/seed/focus-card-skill.md', to: path.join(HOME, '.claude/skills/my-focus-card-edit/SKILL.md'), mode: 0o644 },
+  { from: '/seed/focus-card', to: path.join(HOME, '.local/bin/focus-card'), mode: 0o755 },
+];
+
+function syncSeeded() {
+  let owner = null;
+
+  try {
+    const home = fs.statSync(HOME);
+
+    owner = { uid: home.uid, gid: home.gid };
+  } catch {
+    // No home yet: nothing to copy into, and the next tick will find one.
+    return;
+  }
+
+  for (const file of SEEDED) {
+    try {
+      const want = fs.readFileSync(file.from, 'utf8');
+
+      let have = null;
+
+      try {
+        have = fs.readFileSync(file.to, 'utf8');
+      } catch {
+        have = null;
+      }
+      if (have === want) {
+        continue;
+      }
+      fs.mkdirSync(path.dirname(file.to), { recursive: true });
+      fs.writeFileSync(file.to, want, { mode: file.mode });
+      try {
+        fs.chmodSync(file.to, file.mode);
+        fs.chownSync(file.to, owner.uid, owner.gid);
+        fs.chownSync(path.dirname(file.to), owner.uid, owner.gid);
+      } catch { /* not root, and already the right owner: nothing to fix */ }
+      console.log(\`[mcp] refreshed \${ path.basename(file.to) }\`);
+    } catch {
+      // A seed without this file is an older image, which is not a reason to stop the loop.
+    }
+  }
+}
+
 tick();
-setInterval(tick, EVERY_MS);
+syncSeeded();
+setInterval(() => {
+  tick();
+  syncSeeded();
+}, EVERY_MS);
 `;
 
 /** What the agent is told about the servers, appended to its CLAUDE file. */
