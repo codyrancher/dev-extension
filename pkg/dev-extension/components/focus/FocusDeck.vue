@@ -27,6 +27,8 @@ const props = defineProps<{
   busy?: boolean;
   /** The agent's comments for the card on top, when its work is a review. See focus-review.ts. */
   notes?: unknown[];
+  /** The notes above could not be read, as opposed to there being none. Passed straight on. */
+  notesFailed?: boolean;
   /** Everything else the card on top has to show. See focus-artifacts.ts; opaque here. */
   artifacts?: unknown;
   /** Those artifacts are still being read, so the top card says so. */
@@ -574,6 +576,7 @@ watch(() => props.index, () => {
           :busy="busy"
           :pinned="current.pinned"
           :notes="(notes as any)"
+          :notes-failed="notesFailed"
           :artifacts="(artifacts as any)"
           :reading="reading"
           @act="(action) => emit('act', { task: current!, action })"

@@ -49,6 +49,7 @@ const claimed = computed(() => api.claimed.value);
  */
 const interactive = computed(() => api.interactive.value !== false);
 const reading = computed(() => api.reading.value === true);
+const notesFailed = computed(() => api.notesFailed?.value === true);
 
 /*
  * Which pull request this card is about.
@@ -151,7 +152,30 @@ const ladder = computed<CardSurface>(() => {
  */
 const named = computed<CardSurface>(() => props.surface || task.value?.card?.surface || '');
 
-const shown = computed<CardSurface>(() => (named.value && hasFor(named.value) ? named.value : ladder.value));
+/*
+ * Surfaces that would rather say they are empty than hand the slot to something else.
+ *
+ * The rule below is "draw what you were told to, if there is anything to draw it from" - right
+ * for almost all of them, because a card that asked for a diff and has none is better served by
+ * whatever it does have. `pass` is the exception, and it was already written as one: there is an
+ * empty state for it in the template, with a comment about a card being "a title, a footer, and
+ * a hole between them". It could never appear. `hasFor('pass')` is false with no notes, so a
+ * review card with none fell to the ladder - and a review card wants `notes`, `stat` and
+ * `media`, so every rung of that ladder is empty too and `shown` came out ''. The card drew
+ * nothing, which is the hole the comment describes.
+ *
+ * A review card with no findings is a real state, not a missing one: the stage that put it in
+ * the deck is the workspace's, and an agent can reach it having left a review body and no
+ * line-by-line notes at all. That card has something to say and should keep the space to say
+ * it, under a footer offering to post a review.
+ */
+const SPEAKS_WHEN_EMPTY: CardSurface[] = ['pass'];
+
+const shown = computed<CardSurface>(() => (
+  named.value && (hasFor(named.value) || SPEAKS_WHEN_EMPTY.includes(named.value))
+    ? named.value
+    : ladder.value
+));
 
 /* The frame needs to know what the body chose; see `api.shell.showing`. */
 watch(shown, (which) => api.shell.showing(which), { immediate: true });
@@ -235,11 +259,19 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
 
         ReviewPass draws nothing at all without a note to select, so a card whose notes had not
         arrived yet - or whose read of them failed, which a dev-api restart does for twenty
-        seconds at a time - was a title, a footer, and a hole between them. Which of the two it
-        is beats an empty space that reads as a broken card.
+        seconds at a time - was a title, a footer, and a hole between them. Which of the three
+        it is beats an empty space that reads as a broken card.
+
+        Three, not two. The one this was missing is the ordinary one: the read worked and the
+        agent left no line-by-line findings - it reviewed by writing a body, or by recording
+        what it did. Saying "could not be read" there is wrong in a way that sends somebody
+        looking for a fault that is not there, which is why `notesFailed` is carried down from
+        the page rather than inferred from the empty list that both cases produce.
       -->
       <p v-else-if="shown === 'pass' && !notes.length" class="surface__none">
-        {{ reading ? 'Reading the review…' : 'The review could not be read just now. It is on the pull request; opening it is the way through.' }}
+        <template v-if="reading">Reading the review…</template>
+        <template v-else-if="notesFailed">The review could not be read just now. It is on the pull request; opening it is the way through.</template>
+        <template v-else>No line-by-line findings on this one. Whatever the agent left is on the pull request itself — opening the review is the way through.</template>
       </p>
 
       <ReviewPass

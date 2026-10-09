@@ -120,6 +120,13 @@ export interface CardApi {
   notes: Ref<any[]>;
   /** Still being read. The shell draws the header either way; a body should say so. */
   reading: Ref<boolean>;
+  /**
+   * The review could not be read, rather than holding nothing.
+   *
+   * Both arrive as an empty `notes`, and they want opposite words on the card: one says try
+   * again in a moment, the other says there is nothing here to pass.
+   */
+  notesFailed: Ref<boolean>;
   /** False in the deck behind the top card: do not let a body be clicked through. */
   interactive: Ref<boolean>;
   /** An action is in flight. A surface uses it to stop offering a second press. */

@@ -81,6 +81,8 @@ const props = defineProps<{
    * right up until it does.
    */
   reading?: boolean;
+  /** The review could not be read, as opposed to holding nothing. See `api.notesFailed`. */
+  notesFailed?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -269,6 +271,7 @@ const cardApi: CardApi = {
   artifacts:   computed(() => base.value),
   notes:       computed(() => props.notes || []),
   reading:     computed(() => Boolean(props.reading)),
+  notesFailed: computed(() => Boolean(props.notesFailed)),
   interactive: computed(() => Boolean(props.interactive)),
   busy:        computed(() => Boolean(props.busy)),
   claimed:     computed(() => claimed.value),

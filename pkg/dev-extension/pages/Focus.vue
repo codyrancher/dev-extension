@@ -203,6 +203,17 @@ function slotOf(key: string): Box | null {
  * hunk, so reading them for a deck of thirty would be thirty pull requests fetched to draw one.
  */
 const notes = ref<ReviewNote[]>([]);
+
+/*
+ * Whether the last read of them failed, as opposed to finding nothing.
+ *
+ * `reviewNotes` is caught below and a failure becomes `[]`, which is byte-for-byte what a
+ * pull request with no line findings returns - so the card had no way to tell a dev-api that
+ * is restarting from an agent that left none, and said the same wrong thing about both. The
+ * two want opposite words: one is "try again in a moment", the other is "there is nothing
+ * here, go and look at the review".
+ */
+const notesFailed = ref(false);
 const notesFor = ref('');
 
 const store = useStore();
@@ -339,6 +350,7 @@ function readNotes(): Promise<void> {
    */
   if (!task || !pr || !(task.card.wants || []).includes('notes')) {
     notes.value = [];
+    notesFailed.value = false;
     notesFor.value = '';
     reading = Promise.resolve();
 
@@ -364,8 +376,17 @@ function readNotes(): Promise<void> {
     }
   };
 
+  notesFailed.value = false;
   reading = reviewNotes(pr, undefined, alsoWithCode)
-    .catch(() => [] as ReviewNote[])
+    .catch(() => {
+      // Recorded rather than swallowed. The empty list still goes to the card, because a card
+      // with stale findings on it is worse than one that says it could not read them.
+      if (notesFor.value === task.key) {
+        notesFailed.value = true;
+      }
+
+      return [] as ReviewNote[];
+    })
     .then((found) => {
       // Turned again while this was in the air. A pull request with a lot of comments can take
       // long enough that two cards are in flight at once, and the slower one landing last would
@@ -2209,6 +2230,7 @@ onBeforeUnmount(closeSettings);
           :quiet="quiet"
           :landing="dropping"
           :notes="notes"
+          :notes-failed="notesFailed"
           :artifacts="artifacts"
           :reading="readingNow"
           :loading="settling"
