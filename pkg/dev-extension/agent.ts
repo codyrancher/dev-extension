@@ -21,6 +21,7 @@ import type { InstallStep } from './ensure';
 import { VERSION_ANNOTATION, contentVersion, ensureCurrent } from './ensure';
 import { AGENT_FILES } from './seed.generated';
 import { MCP_GUIDANCE, mcpSeedFiles, withMcpBoot } from './agent-mcp';
+import { cardSeedFiles } from './agent-cards';
 import { rancherFetch } from './agents-api';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -87,7 +88,7 @@ const AGENT_EXT_MOUNT = `${ AGENT_WORKSPACE }/extensions`;
  * section appended to what the agent is told. See agent-mcp.ts.
  */
 export function agentSourceFiles(): Record<string, string> {
-  const files: Record<string, string> = { ...AGENT_FILES, ...mcpSeedFiles() };
+  const files: Record<string, string> = { ...AGENT_FILES, ...mcpSeedFiles(), ...cardSeedFiles() };
 
   files['boot.sh'] = withMcpBoot(files['boot.sh'] || '');
   // Appended rather than replaced: the file is the agent's, and this is one more thing in it.

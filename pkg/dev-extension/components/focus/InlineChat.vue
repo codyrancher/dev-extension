@@ -69,6 +69,14 @@ const {
 
 const look = ref(readLook());
 const composer = ref<InstanceType<typeof ChatComposer> | null>(null);
+const turnsView = ref<InstanceType<typeof ChatTurns> | null>(null);
+
+// Open a thread and you want its last word, not its first.
+watch(() => turns.value.length, (n, was) => {
+  if (n && !was) {
+    nextTick(() => turnsView.value?.scrollToEnd(true));
+  }
+});
 
 /** What the history says before anything has been said in it. */
 const nothing = computed(() => {
@@ -135,6 +143,7 @@ function onCode(text: string): void {
     </div>
 
     <ChatTurns
+      ref="turnsView"
       class="ic__turns"
       :turns="turns"
       :working="working"

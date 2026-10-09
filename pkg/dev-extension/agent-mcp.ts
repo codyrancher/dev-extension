@@ -200,5 +200,13 @@ export function withMcpBoot(boot: string): string {
   CLAUDE_HOME="$AGENT_HOME" node /seed/mcp-refresh.mjs
 ) >"$WORKSPACE/.mcp.log" 2>&1 &
 
+# The card tool on PATH, and the skill where claude looks for skills. Both are read from /seed,
+# which the ConfigMap keeps current, so this is a copy on every boot rather than an install.
+mkdir -p "$AGENT_HOME/.local/bin" "$AGENT_HOME/.claude/skills/my-focus-card-edit" 2>/dev/null || true
+cp /seed/focus-card "$AGENT_HOME/.local/bin/focus-card" 2>/dev/null || true
+chmod +x "$AGENT_HOME/.local/bin/focus-card" 2>/dev/null || true
+cp /seed/focus-card-skill.md "$AGENT_HOME/.claude/skills/my-focus-card-edit/SKILL.md" 2>/dev/null || true
+chown -R node:node "$AGENT_HOME/.local/bin" "$AGENT_HOME/.claude/skills/my-focus-card-edit" 2>/dev/null || true
+
 exec `);
 }

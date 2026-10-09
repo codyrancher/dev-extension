@@ -102,6 +102,9 @@ const {
 const look = ref(readLook());
 
 const composer = ref<InstanceType<typeof ChatComposer> | null>(null);
+// Not `turns`: that name is already the conversation's messages, and a template ref of
+// the same name would assign the component instance over the array.
+const turnsView = ref<InstanceType<typeof ChatTurns> | null>(null);
 
 /**
  * What the shut line says when it is empty.
@@ -241,9 +244,21 @@ function focusBox(): void {
 
 /** Opening is also focusing: the first thing anybody does with an open chat is type in it. */
 watch(() => props.open, (open) => {
-  if (open) {
-    nextTick(focusBox);
+  if (!open) {
+    return;
   }
+  nextTick(() => {
+    focusBox();
+    /*
+     * And at the bottom, where the newest message is.
+     *
+     * The history is `v-if="open"`, so every open mounts the scroller fresh at the top - which
+     * on a conversation of any length means opening it showed the beginning of a thread from
+     * hours ago. Forced, because `scrollToEnd` otherwise only follows for somebody already at
+     * the bottom, and a freshly mounted element is at the top by definition.
+     */
+    turnsView.value?.scrollToEnd(true);
+  });
 });
 
 /** An image pasted into the box: into the pod beside the pane, its path into the message. */
@@ -346,6 +361,7 @@ defineExpose({ ask, focus: focusBox });
           </div>
 
           <ChatTurns
+            ref="turnsView"
             :turns="turns"
             :working="working"
             :status="pane.status"
