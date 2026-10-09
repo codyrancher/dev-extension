@@ -370,6 +370,14 @@ export function followCards(request: Requester, cluster = 'local'): () => void {
         cardsWatch.value = {
           ...cardsWatch.value, state: 'retrying', error: String((e as Error)?.message || e).slice(0, 200),
         };
+        /*
+         * Settled, even though this failed. The deck asks this flag "have the overrides had
+         * their chance yet?", not "did the list work?" - and the honest answer after a failed
+         * attempt is yes. Set only on success, a cluster that cannot serve the list (no
+         * permission, no proxy) left the flag false through every retry, and a deck gated on
+         * it would spin for ever over the nineteen bundled cards it already had in hand.
+         */
+        cardsSettled.value = true;
         await new Promise((resolve) => setTimeout(resolve, wait));
         wait = Math.min(wait * 2, 30000);
       }

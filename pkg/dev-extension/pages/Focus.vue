@@ -103,6 +103,21 @@ const FIRST_PAINT_WAIT = 250;
 type Json = any;
 
 const loading = ref(true);
+/*
+ * Reads still in flight that can put a card on an empty deck.
+ *
+ * `loading` means "the queue is being gathered", and it is turned off as soon as the queue is
+ * ranked - correctly, because that is when the cards can be drawn. But some of what fills the
+ * deck lands *after* that: the per-workspace statuses below are read behind the drawn deck and
+ * call `reRank` when they arrive, and an item only becomes claimable once its status is in. On
+ * a deck whose first ranking claims nothing, that left a window with the queue "loaded" and no
+ * card in it, which is the one state the empty state reads as finished work - the green tick
+ * and "Nothing is waiting on you", for the second before the cards appeared.
+ *
+ * So the empty state waits for these too. Only the empty state: the deck draws a card the
+ * moment it has one, and this is read nowhere else.
+ */
+const filling = ref(0);
 const busy = ref(false);
 const notice = ref('');
 const error = ref('');
@@ -1016,12 +1031,15 @@ async function load() {
     const unread = Object.entries(statuses).filter(([, status]) => !(status as Json).readAt).map(([name]) => name);
 
     if (unread.length) {
+      filling.value += 1;
       Promise.all(unread.map(async(name) => {
         statuses[name] = await readStatusNow(name).catch(() => statuses[name]);
       })).then(() => {
         spaceStatus.value = { ...statuses } as Record<string, Json>;
         reRank();
-      }).catch(() => undefined);
+      }).catch(() => undefined).finally(() => {
+        filling.value -= 1;
+      });
     }
 
     // The top card's own detail, briefly, so a card already read draws complete.
@@ -2175,7 +2193,7 @@ onBeforeUnmount(closeSettings);
           :notes="notes"
           :artifacts="artifacts"
           :reading="readingNow"
-          :loading="loading"
+          :loading="loading || filling > 0 || !cardsSettled"
           :setup="setupNeeded"
           @settings="toSettings"
           @go="go"
