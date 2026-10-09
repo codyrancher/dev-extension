@@ -36,7 +36,7 @@ const emit = defineEmits<{
   (e: 'caret', at: number): void;
   (e: 'pick', command: ChatCommand): void;
   (e: 'paste', event: ClipboardEvent): void;
-  /** The one-line field wants to be the panel: somebody pressed the chevron, or sent. */
+  /** The one-line field wants to be the panel: somebody put the cursor in it, or sent. */
   (e: 'expand'): void;
 }>();
 
@@ -188,22 +188,15 @@ defineExpose({ focus, autoGrow });
         @click="onCaret"
         @select="onCaret"
         @paste="emit('paste', $event)"
-        @focus="focused = true"
+        @focus="focused = true; emit('expand')"
         @blur="focused = false"
       />
 
-      <!-- Shut, the chevron is how you get the conversation without saying anything. -->
-      <button
-        v-if="single"
-        type="button"
-        class="box__grow"
-        title="Show the conversation"
-        aria-label="Show the conversation"
-        @click="emit('expand')"
-      >
-        ⌃
-      </button>
-
+      <!--
+        No chevron. Putting the cursor in the box is the whole of the intention it asked you to
+        declare a second time, so focus opens the conversation and the button was one press
+        between wanting to type and typing.
+      -->
       <button
         type="button"
         class="box__send"
@@ -284,7 +277,6 @@ defineExpose({ focus, autoGrow });
 .box__field:focus { outline: none; }
 .box__field::placeholder { color: var(--text-faint); }
 
-.box__grow,
 .box__send {
   display: grid;
   place-items: center;
@@ -296,12 +288,6 @@ defineExpose({ focus, autoGrow });
   transition: background var(--fast) var(--ease-out), color var(--fast) var(--ease-out);
 }
 
-.box__grow {
-  color: var(--text-muted);
-  font-size: var(--t-md);
-}
-
-.box__grow:hover { background: var(--surface-raised); color: var(--text); }
 
 .box__send {
   background: var(--accent);

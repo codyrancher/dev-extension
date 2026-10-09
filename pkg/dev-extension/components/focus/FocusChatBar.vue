@@ -439,12 +439,19 @@ defineExpose({ ask, focus: focusBox });
 </template>
 
 <style scoped>
+/*
+ * A wash, not a frost.
+ *
+ * The blur put the card out of reach while you typed about it - and what you are typing about
+ * is usually on the card: a line of a diff, a name, a number you are quoting. Dimming is enough
+ * to say which layer has the cursor; obscuring the thing under discussion is not a thing the
+ * discussion needs.
+ */
 .veil {
   position: fixed;
   inset: 0;
   z-index: 40;
-  background: rgba(6, 8, 14, 0.55);
-  backdrop-filter: blur(3px);
+  background: rgba(6, 8, 14, 0.42);
 }
 
 .veil-enter-active,
@@ -498,7 +505,8 @@ defineExpose({ ask, focus: focusBox });
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: color-mix(in srgb, var(--surface) 86%, transparent);
-  backdrop-filter: blur(14px) saturate(1.2);
+  /* Opaque enough to read the conversation on, without frosting the card behind it. */
+  backdrop-filter: saturate(1.2);
   box-shadow: var(--shadow-2);
   overflow: hidden;
   transition: border-color var(--base) var(--ease-out), box-shadow var(--base) var(--ease-out);
