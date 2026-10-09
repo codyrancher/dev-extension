@@ -2165,6 +2165,7 @@ onBeforeUnmount(closeSettings);
           :notes="notes"
           :artifacts="artifacts"
           :reading="readingNow"
+          :loading="loading"
           :setup="setupNeeded"
           @settings="toSettings"
           @go="go"

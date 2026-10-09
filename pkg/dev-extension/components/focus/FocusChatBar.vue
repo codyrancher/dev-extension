@@ -247,18 +247,28 @@ watch(() => props.open, (open) => {
   if (!open) {
     return;
   }
-  nextTick(() => {
-    focusBox();
-    /*
-     * And at the bottom, where the newest message is.
-     *
-     * The history is `v-if="open"`, so every open mounts the scroller fresh at the top - which
-     * on a conversation of any length means opening it showed the beginning of a thread from
-     * hours ago. Forced, because `scrollToEnd` otherwise only follows for somebody already at
-     * the bottom, and a freshly mounted element is at the top by definition.
-     */
+  nextTick(focusBox);
+  /*
+   * And at the bottom, where the newest message is.
+   *
+   * The history is `v-if="open"`, so every open mounts the scroller fresh at the top - which on
+   * a conversation of any length means opening it shows a thread from hours ago.
+   *
+   * Not on `nextTick`, which is what the first attempt did and why it did nothing: the panel
+   * grows from zero through a height transition, so one tick after the open its scroller is
+   * still 0px tall and `scrollTop = scrollHeight` has nothing to move. This keeps asking until
+   * the box has a height and the scroll takes, and gives up rather than spinning.
+   */
+  let tries = 0;
+  const toEnd = () => {
     turnsView.value?.scrollToEnd(true);
-  });
+    tries += 1;
+    if (tries < 24 && !turnsView.value?.atBottom) {
+      requestAnimationFrame(toEnd);
+    }
+  };
+
+  requestAnimationFrame(toEnd);
 });
 
 /** An image pasted into the box: into the pod beside the pane, its path into the message. */
@@ -456,18 +466,16 @@ defineExpose({ ask, focus: focusBox });
 
 <style scoped>
 /*
- * A wash, not a frost.
- *
- * The blur put the card out of reach while you typed about it - and what you are typing about
- * is usually on the card: a line of a diff, a name, a number you are quoting. Dimming is enough
- * to say which layer has the cursor; obscuring the thing under discussion is not a thing the
- * discussion needs.
+ * Dimmed and frosted. Tried without the blur, and the conversation was hard to read against a
+ * diff showing through it - legibility of the thing with the cursor in it wins over seeing the
+ * card behind, which is still there, just quiet.
  */
 .veil {
   position: fixed;
   inset: 0;
   z-index: 40;
-  background: rgba(6, 8, 14, 0.42);
+  background: rgba(6, 8, 14, 0.5);
+  backdrop-filter: blur(3px);
 }
 
 .veil-enter-active,

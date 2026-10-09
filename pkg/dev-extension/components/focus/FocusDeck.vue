@@ -31,6 +31,8 @@ const props = defineProps<{
   artifacts?: unknown;
   /** Those artifacts are still being read, so the top card says so. */
   reading?: boolean;
+  /** The queue itself has not been gathered yet, which is not the same as it being empty. */
+  loading?: boolean;
   /**
    * A card is in the air between this deck and the pinned rail - see CardFlight.
    *
@@ -616,6 +618,19 @@ watch(() => props.index, () => {
         <h2>Not connected yet</h2>
         <p>{{ setup }}</p>
         <button type="button" class="deck__go" @click="emit('settings')">Open Settings</button>
+      </div>
+
+      <!--
+        Still reading: say that, rather than the congratulations.
+
+        An empty deck and a deck that has not been filled yet look identical from here, and for
+        the second or two a first load takes they were drawn the same - so arriving at Focus
+        began with a green tick and "Nothing is waiting on you", which then vanished and was
+        replaced by the queue. Reassurance that turns out to be wrong is worse than a pause.
+      -->
+      <div v-else-if="loading" :key="'loading'" class="deck__empty deck__empty--loading">
+        <span class="deck__empty-mark"><AppIcon name="spinner" :size="28" /></span>
+        <h2>Looking for what needs you</h2>
       </div>
 
       <div v-else class="deck__empty">
