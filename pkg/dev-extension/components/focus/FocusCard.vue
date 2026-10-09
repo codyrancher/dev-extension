@@ -709,7 +709,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
     <div class="card__glow card__glow--foot" aria-hidden="true" />
     <div class="card__band" aria-hidden="true" />
 
-    <header class="card__head">
+    <header class="card__head" :class="{ 'card__head--bare': !task.card.summary }">
       <!--
         One line: what this is on the left, and the one control the header owns on the right.
         Nothing in the middle claims the space between them - the pin does, which is what keeps
@@ -816,8 +816,8 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         and have not given one" directly under a summary reading "Review it". The imperative and
         its reason are one sentence, so they are written as one.
 
-        A card may ask for none (`summary: false`). The header keeps its height either way - see
-        `.card__head` - so the body still starts at the same y as on the card before it.
+        A card may ask for none (`summary: false`), and then the header does not hold the room for
+        one either: see `.card__head--bare`.
       -->
       <p v-if="task.card.summary" class="card__summary">
         {{ task.needs }}<span v-if="task.summary && task.summary !== task.needs" class="card__why"> — {{ task.summary }}</span>
@@ -1348,6 +1348,16 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
    */
   align-content: start;
 }
+
+/*
+ * A card that draws no summary line holds no room for one.
+ *
+ * The reservation above kept 23px empty under the title of a card with `summary: false`: 39px
+ * between the title and the first thing in the body, where every other card has 16px under its
+ * summary. 66 = 32 (the chip row) + 4 + 30 (one title line), so the gap is the same 16px and the
+ * body of such a card starts 23px higher than the others'.
+ */
+.card__head--bare { min-height: 66px; }
 
 /*
  * One line, and everything on it the same height.
