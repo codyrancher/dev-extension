@@ -907,11 +907,22 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           </div>
         </section>
 
-        <!-- Being read. See `reading`: a card says so rather than filling in under you. -->
-        <div v-if="reading" class="card__reading">
-          <AppIcon name="spinner" :size="20" />
-          <span>Reading what this needs…</span>
-        </div>
+        <!--
+          Being read: the card holds its space and says nothing.
+
+          This used to be a spinner and "Reading what this needs…". Both are gone because on a
+          read that finishes quickly - which is almost all of them - the sentence appeared and
+          fell in less time than it takes to read it, and a line you cannot finish reading is
+          noise rather than news. The one case it was for, a read slow enough to wonder about,
+          is not worth the flash on every other card.
+
+          The branch stays, empty. It is what keeps `reading` meaningful: without it the body
+          below would draw against half-read data and fill in under somebody, which is the
+          thing the reading state exists to prevent. `flex: 1 1 0%` sizes it from the room the
+          card has rather than its contents, so an empty one holds exactly the space the card
+          is about to use and nothing moves when the body arrives.
+        -->
+        <div v-if="reading" class="card__reading" aria-hidden="true" />
 
         <!--
           A card held outside this bundle draws its own body.
