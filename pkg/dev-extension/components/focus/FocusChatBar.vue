@@ -359,15 +359,11 @@ defineExpose({ ask, focus: focusBox });
               Add this card
             </button>
             <span class="bar__spacer" />
-            <button
-              type="button"
-              class="bar__close"
-              title="Close the conversation"
-              aria-label="Close the conversation"
-              @click="setOpen(false)"
-            >
-              <AppIcon name="chevron-down" :size="16" />
-            </button>
+            <!--
+              No collapse button. Clicking anywhere off the panel closes it, which is where a
+              hand goes anyway, and the chevron was a second way to do the same thing occupying
+              the one corner the subject line wanted.
+            -->
           </div>
 
           <ChatTurns
@@ -624,6 +620,8 @@ defineExpose({ ask, focus: focusBox });
 .bar__history {
   display: flex;
   flex-direction: column;
+  /* The scrollbar comes in to the same line the subject row and the composer sit on. */
+  --turns-gutter: var(--s3);
   /*
    * A height rather than a maximum: the panel should not resize itself as the conversation
    * grows, which it would do on every poll. `min-height: 0` so the scroller inside it is the
@@ -663,20 +661,6 @@ defineExpose({ ask, focus: focusBox });
   white-space: nowrap;
 }
 
-.bar__close {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 30px;
-  height: 30px;
-  border: 0;
-  border-radius: var(--r-pill);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: background var(--fast), color var(--fast);
-}
-
-.bar__close:hover { background: var(--surface-raised); color: var(--text); }
 
 /* One line under the conversation: what it is doing, or what it just said about a file. */
 .bar__status {

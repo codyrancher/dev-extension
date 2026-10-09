@@ -161,6 +161,12 @@ defineExpose({ scrollToEnd, atBottom });
   min-height: 0;
   overflow-y: auto;
   padding: var(--s4) var(--s4) var(--s2);
+  /*
+   * The scrollbar sits on the element's edge, outside its padding - so in a panel it rides the
+   * wall while everything else in there is inset. A host that wants it brought in sets this;
+   * zero by default, so the drawer's pane is unchanged.
+   */
+  margin-right: var(--turns-gutter, 0);
   overscroll-behavior: contain;
 }
 
