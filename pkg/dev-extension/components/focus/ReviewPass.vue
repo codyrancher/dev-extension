@@ -29,7 +29,10 @@ type NoteVerdict = 'pending' | 'good' | 'edited' | 'dropped';
 /** A turn in the conversation you can have about one of the agent's comments. */
 interface NoteReply { from: 'you' | 'agent'; text: string }
 
-const props = defineProps<{ notes: ReviewNote[] }>();
+const props = defineProps<{ notes: ReviewNote[]; body?: string }>();
+
+/** The review's own words, when it has any. See `reviewBodyOf`. */
+const body = computed(() => String(props.body || '').trim());
 
 /**
  * What the pass asks of the page it is on.
@@ -239,7 +242,26 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 
 <template>
   <!-- `pass--few` is gone with the strip that needed it: there is one list, and it is the meter. -->
-  <section v-if="selected" class="pass">
+  <section
+    v-if="selected || body"
+    class="pass"
+    :class="{ 'pass--with-body': body, 'pass--said': body && !selected }"
+  >
+    <!--
+      What the agent said about the change as a whole.
+
+      The review's body, which points at no line and so is not one of `notes`. A review can be
+      all body and no findings - an agent that reviews by recording what it did writes exactly
+      that - and this surface used to render nothing at all for one, because every branch in it
+      hung off `selected`, which is `notes[0]`. The card drew the recordings attached to this
+      very comment and none of its words.
+
+      Its own scroller, and never the thing that sizes the grid: see `pass--with-body`.
+    -->
+    <div v-if="body" class="pass__said">
+      <CommentBody :body="body" />
+    </div>
+
     <!--
       No header here.
 
@@ -253,7 +275,7 @@ function pickedRun(note: ReviewNote): [number, number] | null {
     -->
 
     <!-- The list: what the agent found, and where each one stands. -->
-    <ol class="pass__list">
+    <ol v-if="selected" class="pass__list">
       <li v-for="note in notes" :key="note.id">
         <button
           type="button"
@@ -272,7 +294,7 @@ function pickedRun(note: ReviewNote): [number, number] | null {
     </ol>
 
     <!-- The one you are on: the lines, the comment, and the four things you can do to it. -->
-    <article class="pass__detail" :class="`pass__detail--${ selected.severity }`">
+    <article v-if="selected" class="pass__detail" :class="`pass__detail--${ selected.severity }`">
       <!--
         The code, then the comment on it - the order GitHub uses and the order the work is done in:
         you read the lines, then you read what was said about them, then you decide.
@@ -465,6 +487,32 @@ function pickedRun(note: ReviewNote): [number, number] | null {
   min-height: 0;
   min-width: 0;
 }
+
+/*
+ * The body's row, added only when there is a body.
+ *
+ * `minmax(0, auto)` and not `auto`, for the reason the comment above gives about the row that
+ * used to be here: a track that sizes to its content lets a long one grow the surface out of
+ * the card. The floor of 0 plus the scroller on `.pass__said` keeps the growth inside it, and
+ * the findings keep the `1fr` they had.
+ */
+.pass--with-body { grid-template-rows: minmax(0, auto) minmax(0, 1fr); }
+
+/* Nothing but the body: one column, because there is no list to sit beside. */
+.pass--said {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.pass__said {
+  grid-column: 1 / -1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* Capped when it is sharing the surface; the findings are what the card is for. */
+.pass--with-body:not(.pass--said) .pass__said { max-height: 9.5rem; }
 
 /* ── The header: how far through the pass you are ────────────────────────── */
 .pass__head {

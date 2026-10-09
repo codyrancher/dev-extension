@@ -127,6 +127,8 @@ export interface CardApi {
    * again in a moment, the other says there is nothing here to pass.
    */
   notesFailed: Ref<boolean>;
+  /** The pending review's own body: what the agent said about the change as a whole. */
+  reviewBody: Ref<string>;
   /** False in the deck behind the top card: do not let a body be clicked through. */
   interactive: Ref<boolean>;
   /** An action is in flight. A surface uses it to stop offering a second press. */

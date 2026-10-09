@@ -29,6 +29,8 @@ const props = defineProps<{
   notes?: unknown[];
   /** The notes above could not be read, as opposed to there being none. Passed straight on. */
   notesFailed?: boolean;
+  /** The pending review's own body, for the pass surface. Passed straight on. */
+  reviewBody?: string;
   /** Everything else the card on top has to show. See focus-artifacts.ts; opaque here. */
   artifacts?: unknown;
   /** Those artifacts are still being read, so the top card says so. */
@@ -577,6 +579,7 @@ watch(() => props.index, () => {
           :pinned="current.pinned"
           :notes="(notes as any)"
           :notes-failed="notesFailed"
+          :review-body="reviewBody"
           :artifacts="(artifacts as any)"
           :reading="reading"
           @act="(action) => emit('act', { task: current!, action })"

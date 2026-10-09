@@ -214,6 +214,16 @@ const notes = ref<ReviewNote[]>([]);
  * here, go and look at the review".
  */
 const notesFailed = ref(false);
+
+/*
+ * What the agent said about the change as a whole, when it is still pending.
+ *
+ * The review's own body. It is the one part of a review that does not point at a line, so
+ * `reviewNotes` filtered it out and nothing else picked it up - on a review whose findings are
+ * all in the body, which an agent that reviewed by recording what it did produces every time,
+ * the card drew its attachments and none of its words.
+ */
+const reviewBody = ref('');
 const notesFor = ref('');
 
 const store = useStore();
@@ -351,6 +361,7 @@ function readNotes(): Promise<void> {
   if (!task || !pr || !(task.card.wants || []).includes('notes')) {
     notes.value = [];
     notesFailed.value = false;
+    reviewBody.value = '';
     notesFor.value = '';
     reading = Promise.resolve();
 
@@ -377,7 +388,16 @@ function readNotes(): Promise<void> {
   };
 
   notesFailed.value = false;
-  reading = reviewNotes(pr, undefined, alsoWithCode)
+  reviewBody.value = '';
+
+  // Guarded on the key like the two below it: the deck may have been turned while this was out.
+  const alsoTheBody = (body: string) => {
+    if (notesFor.value === task.key) {
+      reviewBody.value = body;
+    }
+  };
+
+  reading = reviewNotes(pr, undefined, alsoWithCode, alsoTheBody)
     .catch(() => {
       // Recorded rather than swallowed. The empty list still goes to the card, because a card
       // with stale findings on it is worse than one that says it could not read them.
@@ -2231,6 +2251,7 @@ onBeforeUnmount(closeSettings);
           :landing="dropping"
           :notes="notes"
           :notes-failed="notesFailed"
+          :review-body="reviewBody"
           :artifacts="artifacts"
           :reading="readingNow"
           :loading="settling"

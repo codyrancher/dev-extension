@@ -148,13 +148,34 @@ function titleOf(body: string): string {
   return first.replace(/^[*_>#\s-]+/, '').slice(0, 120);
 }
 
+/** What the agent wrote about the change as a whole, with the attachment markers taken out. */
+export function reviewBodyOf(comments: { status?: string; level?: string; body?: string }[]): string {
+  const whole = comments.find((comment) => comment.status === 'pending' && comment.level === 'pr');
+
+  /*
+   * `[[attach:...]]` is a marker, not prose. It is how a comment refers to a file in the
+   * workspace, and `reviews.ts` turns it into GitHub markdown at submit time; on the card the
+   * files themselves are already drawn, as the strip of recordings above this. Left in, the
+   * body reads "...both on the Generic import form: [[attach:demo-changes-censored.mp4]]".
+   */
+  return String(whole?.body || '').replace(/\[\[attach:[^\]]+\]\]/g, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 /**
  * Every comment the agent has written and not filed, with its code.
  *
- * Line-level only: a comment on the pull request as a whole has no lines to show, and the pass
- * is about the ones that point at something.
+ * The findings are line-level only: a comment on the pull request as a whole has no lines to
+ * show, and the pass is about the ones that point at something. What it does have to show is
+ * the review's own body, which is a pending comment like any other and was being dropped on
+ * the floor here - `onBody` hands it back, because a review that is all body and no findings
+ * is a real review and was drawing an empty card.
  */
-export async function reviewNotes(pr: number, repo = DEFAULT_REPO, withCode?: (notes: ReviewNote[]) => void): Promise<ReviewNote[]> {
+export async function reviewNotes(
+  pr: number,
+  repo = DEFAULT_REPO,
+  withCode?: (notes: ReviewNote[]) => void,
+  onBody?: (body: string) => void,
+): Promise<ReviewNote[]> {
   /*
    * The comments first, and the code they point at after.
    *
@@ -168,6 +189,9 @@ export async function reviewNotes(pr: number, repo = DEFAULT_REPO, withCode?: (n
    * complete list, at the old latency, because some callers have nowhere to put a second answer.
    */
   const comments = await listComments(pr).catch(() => [] as LocalComment[]);
+
+  onBody?.(reviewBodyOf(comments));
+
   const pending = comments.filter((comment) => comment.status === 'pending' && comment.level === 'line' && comment.path);
 
   // Keyed on `path`, which is what this API calls it. It was `file.filename` - GitHub's own name
