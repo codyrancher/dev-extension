@@ -363,6 +363,20 @@ const later = computed(() => others.value.find((action) => action.verb === 'snoo
 
 /** The places to go, open. */
 const navOpen = ref(false);
+const laterOpen = ref(false);
+
+/*
+ * What the snooze menu offers, beside the card's own default.
+ *
+ * The card decides its own `hours` (eight, unless its module says otherwise) and the icon
+ * still does exactly that - these are the two the person picks deliberately instead. Kept to
+ * two: a snooze menu is a thing you open knowing what you want, and a list of six is a
+ * decision where a reflex should be.
+ */
+const LATER_OPTIONS: { hours: number; label: string }[] = [
+  { hours: 1, label: 'In an hour' },
+  { hours: 24, label: 'Tomorrow' },
+];
 
 /*
  * The ladder, the `surface` field and the reasoning behind both are in CardSurface.vue now, with
@@ -508,7 +522,7 @@ watch(() => props.task.key, () => { readOn.value = ''; });
  */
 const confirming = ref('');
 
-watch(() => props.task.key, () => { confirming.value = ''; navOpen.value = false; });
+watch(() => props.task.key, () => { confirming.value = ''; navOpen.value = false; laterOpen.value = false; });
 
 function press(action: CardAction) {
   if (action.confirm && confirming.value !== action.label) {
@@ -754,18 +768,133 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
 
     <header class="card__head" :class="{ 'card__head--bare': !task.card.summary }">
       <!--
-        One line: what this is on the left, and the one control the header owns on the right.
-        Nothing in the middle claims the space between them - the pin does, which is what keeps
-        the right edge of the header the right edge of the card whether or not the badge is
-        there. It was the badge claiming it, so a card with nothing overdue drew its pin halfway
-        along the line.
+        What this is, on the left; what you can do to the card itself, on the right.
+
+        The identity truncates and the controls do not: the line is the flexible half of the
+        row, so a long workspace name gives way rather than pushing the pin off the card. That
+        also fixes the older fault this comment used to describe - the right edge of the header
+        is the right edge of the card now whether or not the overdue badge is there, because
+        the controls hold that end rather than whatever happened to be last on the line.
       -->
-      <div class="card__head-line">
+      <div class="card__head-top">
+        <div class="card__head-line">
+          <KindChip :kind="task.card.kind" :word="task.card.chip" />
+
+          <!--
+            Where the work lives, or the offer to give it somewhere.
+          
+            It was a grey suffix on the line above - ` · lte-pr-19153` - which said which workspace
+            but did nothing, and said nothing at all for the cards that have none. Those are the
+            ones where it matters: a review somebody asked you for, an issue to pick up, a bump.
+            Making the workspace is the first thing you would do and it was the one thing the card
+            could not do.
+          -->
+          <button
+            v-if="task.workspace"
+            type="button"
+            class="card__ws"
+            :title="`Open ${ task.workspace }`"
+            @click="emit('workspace')"
+          >
+            <AppIcon name="tasks" :size="11" />
+            {{ task.workspace }}
+          </button>
+          <button
+            v-else-if="canMakeOne"
+            type="button"
+            class="card__ws card__ws--none"
+            title="Make a workspace for this and start"
+            @click="emit('make-workspace')"
+          >
+            <AppIcon name="plus" :size="11" />
+            No workspace
+          </button>
+          <!--
+            Which thing this is, on the line that says what this is, and a link to it.
+
+            It was a block of its own under the summary - and because `@rancher/shell` styles bare
+            `code` and nothing in this view undid it, that block measured 696x31 with a border, a
+            sunk background and 5px of padding on 26 of 26 cards: an empty disabled text input
+            holding `PR #11`. 39px of a 488px card for seven characters. The reset is in
+            design/focus.css now; what is left belongs beside the chip, at the row's own height,
+            and pressing the identifier of a thing should open the thing.
+
+            And what CI says about it, joined to it. `1 failing` was a pill at the far end of the
+            facts row, a card's width from the `PR #19220` it is a statement about. The two are one
+            control with two halves: the identifier opens the thing, the failures open their names.
+          -->
+          <span class="card__pr" :class="{ 'card__pr--red': art.ci?.failing }">
+            <component
+              :is="task.url ? 'a' : 'span'"
+              class="card__ident"
+              :href="task.url || undefined"
+              :target="task.url ? '_blank' : undefined"
+              :rel="task.url ? 'noopener' : undefined"
+              :title="task.url ? `Open ${ task.what }` : task.what"
+            >{{ task.what }}</component>
+            <CardChecks v-if="art.ci?.failing" joined :ci="art.ci" :checks="art.checks" />
+          </span>
+
+          <span v-if="overdue && claimed !== 'waited'" class="card__overdue">
+            <AppIcon name="clock" :size="13" />
+            waiting {{ waited }}
+          </span>
+        </div>
+
+      <!--
+        The two controls the card owns about itself, in its top-right corner.
+
+        Both used to be somewhere else: the pin was first on the line, in the top-left, and
+        `Later` was a word at the far end of the footer among the actions. They are a pair -
+        keep this one beside the deck, put this one off - and neither is a thing you do *to*
+        the work, which is what the footer is for. Together in the corner they read as the
+        card's own controls rather than as two more buttons to weigh up.
+
+        Outside `.card__head-line`, which is the part that matters: that line is
+        `overflow: hidden` so a long workspace name truncates instead of pushing the row out,
+        and a menu opened inside it would have been clipped at the card's edge. The line keeps
+        the clipping and the width it does not need; this keeps the overflow.
+      -->
+      <div v-if="interactive || later" class="card__head-controls">
         <!--
-          First in the line, which is the card's top-left corner: what it does is to the whole
-          card. In the line rather than floated over it, so nothing underneath has to be
-          indented past it by a number nobody can derive.
+          Split, on purpose. Pressing the icon does what the word did - the card's own snooze,
+          its own number of hours - because that is the common case and it should stay one
+          press. The chevron is the only way to the menu, so nothing that used to be one click
+          became two.
         -->
+        <div v-if="later" class="card__snooze">
+          <button
+            type="button"
+            class="card__pin card__snooze-go"
+            :title="labelOf(later)"
+            @click="press(later)"
+          >
+            <AppIcon name="snooze" :size="13" />
+          </button>
+          <button
+            type="button"
+            class="card__snooze-more"
+            :aria-expanded="laterOpen ? 'true' : 'false'"
+            title="Put it off for a set time"
+            @click="laterOpen = !laterOpen"
+          >
+            <AppIcon name="chevron-down" :size="10" />
+          </button>
+
+          <div v-if="laterOpen" class="u-popover card__snooze-menu">
+            <button
+              v-for="option in LATER_OPTIONS"
+              :key="option.hours"
+              type="button"
+              class="card__menu-row"
+              @click="laterOpen = false; press({ ...later, hours: option.hours })"
+            >
+              <AppIcon name="snooze" :size="12" />
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+
         <button
           v-if="interactive"
           type="button"
@@ -777,67 +906,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         >
           <AppIcon name="pin" :size="13" />
         </button>
-        <KindChip :kind="task.card.kind" :word="task.card.chip" />
-
-        <!--
-          Where the work lives, or the offer to give it somewhere.
-          
-          It was a grey suffix on the line above - ` · lte-pr-19153` - which said which workspace
-          but did nothing, and said nothing at all for the cards that have none. Those are the
-          ones where it matters: a review somebody asked you for, an issue to pick up, a bump.
-          Making the workspace is the first thing you would do and it was the one thing the card
-          could not do.
-        -->
-        <button
-          v-if="task.workspace"
-          type="button"
-          class="card__ws"
-          :title="`Open ${ task.workspace }`"
-          @click="emit('workspace')"
-        >
-          <AppIcon name="tasks" :size="11" />
-          {{ task.workspace }}
-        </button>
-        <button
-          v-else-if="canMakeOne"
-          type="button"
-          class="card__ws card__ws--none"
-          title="Make a workspace for this and start"
-          @click="emit('make-workspace')"
-        >
-          <AppIcon name="plus" :size="11" />
-          No workspace
-        </button>
-        <!--
-          Which thing this is, on the line that says what this is, and a link to it.
-
-          It was a block of its own under the summary - and because `@rancher/shell` styles bare
-          `code` and nothing in this view undid it, that block measured 696x31 with a border, a
-          sunk background and 5px of padding on 26 of 26 cards: an empty disabled text input
-          holding `PR #11`. 39px of a 488px card for seven characters. The reset is in
-          design/focus.css now; what is left belongs beside the chip, at the row's own height,
-          and pressing the identifier of a thing should open the thing.
-
-          And what CI says about it, joined to it. `1 failing` was a pill at the far end of the
-          facts row, a card's width from the `PR #19220` it is a statement about. The two are one
-          control with two halves: the identifier opens the thing, the failures open their names.
-        -->
-        <span class="card__pr" :class="{ 'card__pr--red': art.ci?.failing }">
-          <component
-            :is="task.url ? 'a' : 'span'"
-            class="card__ident"
-            :href="task.url || undefined"
-            :target="task.url ? '_blank' : undefined"
-            :rel="task.url ? 'noopener' : undefined"
-            :title="task.url ? `Open ${ task.what }` : task.what"
-          >{{ task.what }}</component>
-          <CardChecks v-if="art.ci?.failing" joined :ci="art.ci" :checks="art.checks" />
-        </span>
-
-        <span v-if="overdue && claimed !== 'waited'" class="card__overdue">
-          <AppIcon name="clock" :size="13" />
-          waiting {{ waited }}
-        </span>
+      </div>
       </div>
 
       <!--
@@ -1149,13 +1218,10 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         </div>
       </div>
 
-      <!-- The way out, at the other end from the thing it is the opposite of. -->
-      <button
-        v-if="later"
-        type="button"
-        class="card__later"
-        @click="press(later)"
-      >{{ labelOf(later) }}</button>
+      <!--
+        No `Later` here any more. It is the snooze control in the header, beside the pin: see
+        `.card__head-controls`. The footer is for things you do to the work.
+      -->
     </footer>
 
     <!-- The description, or what was said about it, read over the card. See `prose` and `talk`. -->
@@ -1327,8 +1393,10 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
  * The buttons give; the way out does not.
  *
  * Every `.btn` in here was `flex: 0 1 auto` by default *and* `white-space: nowrap`, so nothing on
- * the row could shrink and the overflow was paid by whatever was last. `Later` is last. Measured
- * across the deck: card content ends at 938 on every card, and `.card__later`'s right edge came
+ * the row could shrink and the overflow was paid by whatever was last. `Later` was last, back
+ * when it was on this row at all - it is the snooze control in the header now, and what this
+ * rule protects is whatever ends up last in its place. Measured then: card content ends at 938
+ * on every card, and the `Later` button's right edge came
  * out 955, 975 and 983 - up to 21px of it painted outside the card's 962px border and removed by
  * `overflow: hidden`, which three screenshots show as the word "Late". It happens whenever the
  * footer has four children: 242 + 187 + 195 + 58, three 12px gaps and a 16px margin is 734 in 688.
@@ -1422,8 +1490,81 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
  * beside a 30px nav; everything that stands on it is one height now, and that height is the one
  * everything you press in this view is. See `--control-h` in design/focus.css.
  */
-.card__head-line {
+/*
+ * The header's top row: the identity on the left, the card's own controls on the right.
+ *
+ * It exists so the controls can sit beside a line that is `overflow: hidden` without being
+ * clipped by it, and so the line still truncates against them rather than under them. The
+ * alternative was absolute positioning in the corner, which needs the line padded by the width
+ * of whatever is floating over it - a number nobody can derive and nobody updates.
+ */
+.card__head-top {
+  /*
+   * Declared here, not on the line below it. The pin used to be inside that line and took its
+   * height from this; it is in `.card__head-controls` now, which is the line's sibling, and a
+   * custom property on the line is not visible from there. On the row both inherit it, so the
+   * chip, the pin and the chevron are still one height by construction.
+   */
   --head-h: var(--control-h);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+/* Never the thing that gives: the line beside it truncates instead. */
+.card__head-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* The two halves of one control, so the menu can hang off the pair. */
+.card__snooze {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/*
+ * The chevron: narrow, because it is not the button - it is the way to the menu beside the
+ * button. Full height so the pair reads as one control rather than as a control and a speck.
+ */
+.card__snooze-more {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: var(--head-h);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--fast), border-color var(--fast), background var(--fast);
+}
+
+.card__snooze-more:hover { color: var(--text); border-color: var(--border-strong); }
+
+/*
+ * Hung from the right, because the control is in the right-hand corner: opening left would
+ * put the menu off the card. `.u-popover` is the surface; this only places it.
+ */
+.card__snooze-menu {
+  position: absolute;
+  top: calc(100% + var(--s1, 4px));
+  right: 0;
+  z-index: 5;
+  min-width: 150px;
+}
+
+.card__head-line {
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   gap: var(--s2);
@@ -1436,8 +1577,9 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
 
 /* The boxes on the line are one size; the text on it is text, as it is in the prototype. */
 .card__head-line > .chip,
-.card__head-line > .card__pin,
-.card__head-line > .card__overdue { height: var(--head-h); }
+.card__head-line > .card__overdue,
+.card__head-controls > .card__pin,
+.card__snooze > .card__pin { height: var(--head-h); }
 
 /* The chip is the prototype's; only its box is told to match the row. */
 .card__head-line :deep(.chip) {
@@ -1909,7 +2051,7 @@ a.card__ident:hover { background: var(--surface-raised); color: var(--text); tex
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   background: transparent;
-  /* 2.39:1 at 11px, and it is pressed. See `.card__later` for the same number. */
+  /* 2.39:1 at 11px, and it is pressed - the same contrast fault the old `Later` button had. */
   color: var(--text-muted);
   font-family: var(--mono);
   font-size: var(--t-xs);
@@ -1945,31 +2087,6 @@ a.card__ident:hover { background: var(--surface-raised); color: var(--text); tex
  * on one card and 336px on the next, from nothing but how long the other labels were. The row ends
  * where the buttons end; the separation is a gap, and a gap is the same on every card.
  */
-.card__later {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  height: var(--control-h);
-  margin-left: var(--s4);
-  padding: 0 var(--s3);
-  /*
-   * `--text-muted` with a hairline, not `--text-faint` on the ground.
-   *
-   * Measured against the card's own background it computed to rgb(77, 85, 114) - 2.39:1 for 13px
-   * text, against a 4.5:1 requirement - so the one way out of a card was effectively not there in
-   * any screenshot. The footer ran four contrast levels across one 61px row. It is still the
-   * quietest thing on that row; it is now a thing you can see.
-   */
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: none;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: var(--t-sm);
-  cursor: pointer;
-}
-
-.card__later:hover { border-color: var(--border-strong); background: var(--surface-raised); color: var(--text); }
 
 /* The overflow, which is what keeps the row one row. `.u-popover` is the surface; this places it. */
 .card__overflow { position: relative; flex: 0 0 auto; }
