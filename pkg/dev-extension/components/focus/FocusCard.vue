@@ -124,8 +124,8 @@ const bodyShows = ref('');
  *
  * `2 files changed  +81 · −1` sat directly over a tree that lists those two files, each with its
  * own +/− pair. On any card whose body is the change itself - not only the ones whose lede is
- * `files` - the count and the pair are left off the facts row. What CI said and what was
- * recorded stay: the diff does not say those.
+ * `files` - the count and the pair are left off the facts row, and so is how many checks passed.
+ * A check that failed or is still running, and what was recorded, stay.
  */
 const diffShown = computed(() => bodyShows.value === 'files');
 
@@ -674,7 +674,7 @@ const hasFacts = computed(() => {
     || talk.value.length
     || (!overdue.value && props.task.waitingHours)
     || (a.stat && !diffShown.value)
-    || a.ci
+    || (a.ci && (!diffShown.value || a.ci.pending || a.ci.failing))
     || a.live.length
     || a.media.length
     || a.reviewers?.approved.length);

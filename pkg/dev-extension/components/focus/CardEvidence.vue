@@ -47,7 +47,11 @@ const props = defineProps<{
    * count goes, because one of them earns its place and not both. See `claimed` in FocusCard.
    */
   claimed?: string;
-  /** The card's body is the diff viewer, which says how big the change is file by file. */
+  /**
+   * The card's body is the diff viewer. The size of the change is left off this row, because the
+   * file tree says it file by file, and so is how many checks passed: one that failed has a pill
+   * of its own and one still running is still said.
+   */
   diff?: boolean;
   /** How long it has sat, in the card's own words, or '' where the lede already said it. */
   waited?: string;
@@ -132,7 +136,7 @@ const facts = computed<Fact[]>(() => {
   if (a.ci?.pending) {
     out.push({ n: String(a.ci.pending), of: 'still running', tone: 'warn' });
   }
-  if (a.ci?.passed) {
+  if (a.ci?.passed && !props.diff) {
     out.push({ n: String(a.ci.passed), of: 'passed', tone: 'good' });
   }
   for (const who of approved.value) {
