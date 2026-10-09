@@ -504,9 +504,17 @@ defineExpose({ ask, focus: focusBox });
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  background: color-mix(in srgb, var(--surface) 86%, transparent);
-  /* Opaque enough to read the conversation on, without frosting the card behind it. */
-  backdrop-filter: saturate(1.2);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  /*
+   * The panel frosts what is behind it; the veil does not.
+   *
+   * Taking the blur off both made the conversation hard to read: this is 86% of a surface
+   * colour, so a diff showed through the text sitting on it. The two layers want opposite
+   * things and are not the same decision - the veil is there to say which layer has the cursor,
+   * and the card should stay legible through it, while this is a sheet of text and wants a
+   * quiet ground under it.
+   */
+  backdrop-filter: blur(14px) saturate(1.2);
   box-shadow: var(--shadow-2);
   overflow: hidden;
   transition: border-color var(--base) var(--ease-out), box-shadow var(--base) var(--ease-out);

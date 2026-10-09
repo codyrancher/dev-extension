@@ -14,6 +14,7 @@
  */
 import { computed, nextTick, ref, watch } from 'vue';
 import type { ChatCommand } from '../../chat-conversation';
+import AppIcon from '../focus/AppIcon.vue';
 
 const props = defineProps<{
   modelValue: string;
@@ -204,7 +205,12 @@ defineExpose({ focus, autoGrow });
         :title="canSend ? 'Send' : 'Nothing to send'"
         @click="send"
       >
-        {{ sending ? '…' : '↑' }}
+        <!--
+          The paper plane that was already in the icon set and never used here: this button drew
+          a literal "↑", which is a character in whatever font the field happens to have rather
+          than a mark that matches the rest of the view.
+        -->
+        <AppIcon :name="sending ? 'spinner' : 'send'" :size="15" :class="{ 'box__spin': sending }" />
       </button>
     </div>
   </div>
@@ -298,10 +304,20 @@ defineExpose({ focus, autoGrow });
 
 .box__send:hover:not(:disabled) { background: var(--accent-hover); }
 
+/*
+ * Nothing to send is quieter, not absent. At `text-faint` on `surface-raised` the mark had all
+ * but gone, so an empty box read as a chat with no way to send at all.
+ */
 .box__send:disabled {
-  background: var(--surface-raised);
-  color: var(--text-faint);
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface-raised));
+  color: var(--text-muted);
   cursor: default;
+}
+
+.box__spin { animation: box-spin 0.9s linear infinite; }
+
+@keyframes box-spin {
+  to { transform: rotate(360deg); }
 }
 
 .box__menu {
