@@ -118,6 +118,17 @@ const loading = ref(true);
  * moment it has one, and this is read nowhere else.
  */
 const filling = ref(0);
+
+/*
+ * Not finished yet - the whole of it, not just the queue.
+ *
+ * `loading` is the queue alone, and it goes off the moment the queue is ranked. The deck can
+ * still be empty after that: the per-workspace statuses are read behind it and an item is not
+ * claimable until its status is in, and the card ConfigMaps may still be listing. One name for
+ * all three, so the skeleton and the deck's empty state agree about when the page has an
+ * answer. Read by both and nowhere else.
+ */
+const settling = computed(() => loading.value || filling.value > 0 || !cardsSettled.value);
 const busy = ref(false);
 const notice = ref('');
 const error = ref('');
@@ -2167,7 +2178,14 @@ onBeforeUnmount(closeSettings);
       </aside>
 
       <main class="focus__deck">
-        <DeckSkeleton v-if="loading" />
+        <!--
+          Only while there is nothing better to show.
+
+          Gated on the deck as well as on `settling`, because `settling` now outlasts the first
+          card: without the second half the skeleton stayed up underneath a drawn card and the
+          two were on screen together.
+        -->
+        <DeckSkeleton v-if="settling && !deck.length" />
         <!--
           A watcher that cannot read the pod says so here rather than in a log nobody reads.
 
@@ -2193,7 +2211,7 @@ onBeforeUnmount(closeSettings);
           :notes="notes"
           :artifacts="artifacts"
           :reading="readingNow"
-          :loading="loading || filling > 0 || !cardsSettled"
+          :loading="settling"
           :setup="setupNeeded"
           @settings="toSettings"
           @go="go"

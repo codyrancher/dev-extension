@@ -628,10 +628,21 @@ watch(() => props.index, () => {
         began with a green tick and "Nothing is waiting on you", which then vanished and was
         replaced by the queue. Reassurance that turns out to be wrong is worse than a pause.
       -->
-      <div v-else-if="loading" :key="'loading'" class="deck__empty deck__empty--loading">
-        <span class="deck__empty-mark"><AppIcon name="spinner" :size="28" /></span>
-        <h2>Looking for what needs you</h2>
-      </div>
+      <!--
+        Still reading, and drawing nothing for it.
+
+        This was a spinner and "Looking for what needs you", which was the second of two things
+        saying so: `DeckSkeleton` is on screen for the same stretch, above this. On a first load
+        that is quick the heading appeared and dropped out again before it could be read, over
+        the top of the card arriving underneath it.
+
+        The branch itself has to stay. It is the only thing standing between a deck that has not
+        been filled yet and the `v-else` below, which congratulates whoever is looking at it for
+        having nothing left to do - the exact wrong answer, and the one this chain was built to
+        avoid. So: no mark, no heading, no transition to notice. The skeleton says we are
+        reading; this only says we are not finished.
+      -->
+      <div v-else-if="loading" :key="'loading'" class="deck__empty deck__empty--loading" aria-hidden="true" />
 
       <div v-else class="deck__empty">
         <span class="deck__empty-mark"><AppIcon name="check" :size="28" /></span>
