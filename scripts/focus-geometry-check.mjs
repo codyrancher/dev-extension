@@ -15,7 +15,7 @@
  *   b. nothing threw while it was drawn;
  *   c. every child of `.card__body` is inside the card's right edge;
  *   d. the body does not scroll sideways;
- *   e. the title and the summary are on different lines.
+ *   e. the title and the summary are on different lines, on a card that has a summary.
  *
  * Run it in the agent pod, which can reach the browser:
  *   node --no-warnings /tmp/focus-geometry-check.mjs [dots]
@@ -106,7 +106,7 @@ const out = await ev(`(async () => {
         .filter((kid) => kid.getBoundingClientRect().right > box.right + 1)
         .map((kid) => kid.className.toString().split(' ')[0]);
       row.sideways = body ? body.scrollWidth - body.clientWidth : 0;
-      row.stacked = !!(title && summary) && title.offsetTop !== summary.offsetTop;
+      row.stacked = !!title && (!summary || title.offsetTop !== summary.offsetTop);
       row.surface = [...(body?.children || [])].map((kid) => kid.className.toString().split(' ')[0]);
     }
     rows.push(row);

@@ -6,7 +6,11 @@ module.exports = {
     kind:    'agent',
     lede:    'files',
     rules:   ['fix-draft', 'mine-draft-green'],
-    summary: '{why}',
+    /*
+     * No line under the title. The chip says Draft and the first button says "Mark it ready for
+     * review", which is what "Read the draft PR and mark it ready" had to say.
+     */
+    summary: false,
     /*
      * The diff, said rather than inferred.
      *

@@ -785,8 +785,11 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         two of which say the same thing, and on dot9 the strip read "you were asked for a review
         and have not given one" directly under a summary reading "Review it". The imperative and
         its reason are one sentence, so they are written as one.
+
+        A card may ask for none (`summary: false`). The header keeps its height either way - see
+        `.card__head` - so the body still starts at the same y as on the card before it.
       -->
-      <p class="card__summary">
+      <p v-if="task.card.summary" class="card__summary">
         {{ task.needs }}<span v-if="task.summary && task.summary !== task.needs" class="card__why"> — {{ task.summary }}</span>
       </p>
 
@@ -1295,6 +1298,13 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
   display: block;
   min-width: 0;
   min-height: 89px;
+  /*
+   * The shell's `header { align-content: center }` leaks in here too, and it applies to a block.
+   * It showed nothing while every header was exactly as tall as its reservation; a card with no
+   * summary line is 23px short of it, and its chip row and title were drawn 11px lower than on
+   * the card before it.
+   */
+  align-content: start;
 }
 
 /*
