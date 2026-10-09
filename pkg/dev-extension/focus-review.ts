@@ -192,6 +192,16 @@ export async function reviewNotes(
 
   onBody?.(reviewBodyOf(comments));
 
+  /*
+   * The review's own comment, first in the list and a note like any other.
+   *
+   * It points at no line, so it was filtered out here and the pass never saw it. Drawing it as
+   * a block above the findings fixed the blank card and lost everything else the list gives a
+   * comment: selecting it, editing it, discussing it, deciding it. It is a pending comment with
+   * an id, which is all any of those need - so it is a note, with no path, and the one thing
+   * that makes it different is that there is no code to show beside it.
+   */
+  const whole = comments.find((comment) => comment.status === 'pending' && comment.level === 'pr');
   const pending = comments.filter((comment) => comment.status === 'pending' && comment.level === 'line' && comment.path);
 
   // Keyed on `path`, which is what this API calls it. It was `file.filename` - GitHub's own name
@@ -201,7 +211,37 @@ export async function reviewNotes(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const patchesOf = (detail: any) => new Map<string, DiffLine[]>((detail?.files || []).map((file: any) => [file.path || file.filename, parsePatch(file.patch || '')]));
 
-  const build = (patches: Map<string, DiffLine[]>): ReviewNote[] => pending
+  /** The attachments of a comment, as the pass draws them. */
+  const mediaOf = (comment: LocalComment): NoteMedia[] => (comment.attachments || [])
+    .filter((item) => item.found && item.kind !== 'file')
+    .map((item) => ({
+      kind:    item.kind === 'video' ? 'video' as const : 'image' as const,
+      label:   item.name || item.path,
+      src:     artifactUrl(pr, item.path),
+      caption: item.caption || '',
+      name:    item.name || String(item.path).split('/').pop() || item.path,
+    }));
+
+  /*
+   * The review body as a note. `path: ''` is the whole of what marks it out, and the surface
+   * reads that rather than a flag: a note with nowhere to point is one about the change itself.
+   * Its text has the attachment markers taken out for the same reason `reviewBodyOf` does.
+   */
+  const rootNote = (): ReviewNote[] => (whole ? [{
+    id:        `c${ whole.id }`,
+    commentId: whole.id,
+    pr,
+    path:      '',
+    line:      0,
+    severity:  severityOf(whole.body),
+    title:     titleOf(whole.body) || 'The review',
+    body:      reviewBodyOf([whole]),
+    hunk:      [] as DiffLine[],
+    because:   whole.author && whole.author !== 'you' ? `written by ${ whole.author }` : '',
+    media:     mediaOf(whole),
+  }] : []);
+
+  const build = (patches: Map<string, DiffLine[]>): ReviewNote[] => rootNote().concat(pending
     .map((comment) => {
       const lines = patches.get(comment.path) || [];
       const line = Number(comment.line || 0);
@@ -218,17 +258,9 @@ export async function reviewNotes(
         body:      comment.body,
         hunk:      hunkAround(lines, line, comment.start_line),
         because:   comment.author && comment.author !== 'you' ? `written by ${ comment.author }` : '',
-        media:     (comment.attachments || [])
-          .filter((item) => item.found && item.kind !== 'file')
-          .map((item) => ({
-            kind:    item.kind === 'video' ? 'video' as const : 'image' as const,
-            label:   item.name || item.path,
-            src:     artifactUrl(pr, item.path),
-            caption: item.caption || '',
-            name:    item.name || String(item.path).split('/').pop() || item.path,
-          })),
+        media:     mediaOf(comment),
       };
-    });
+    }));
 
   const detailSoon = prDetail(pr, repo).catch(() => null);
 

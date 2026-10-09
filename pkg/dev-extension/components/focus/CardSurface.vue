@@ -50,7 +50,6 @@ const claimed = computed(() => api.claimed.value);
 const interactive = computed(() => api.interactive.value !== false);
 const reading = computed(() => api.reading.value === true);
 const notesFailed = computed(() => api.notesFailed?.value === true);
-const reviewBody = computed(() => String(api.reviewBody?.value || ''));
 
 /*
  * Which pull request this card is about.
@@ -71,11 +70,11 @@ function hasFor(which: CardSurface): boolean {
   case 'bumps':   return a.bumps.length > 0;
   case 'facts':   return Boolean(a.advisory || a.bump);
   /*
-   * The body counts. A review whose findings are all in its own body - what an agent that
-   * reviewed by recording what it did writes - has no line-level notes at all, and judging it
-   * by those alone sent the card to the ladder and from there to nothing.
+   * The review's own comment is one of `notes` now - see `rootNote` in focus-review - so a
+   * review that is all body and no findings has a note here like any other, and this is back
+   * to the one question it should be asking.
    */
-  case 'pass':    return Boolean(notes.value.length || reviewBody.value);
+  case 'pass':    return Boolean(notes.value.length);
   case 'talk':    return a.comments.length > 0;
   case 'files':   return a.files.length > 0;
   case 'commits': return a.commits.length > 0;
@@ -274,7 +273,7 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
         looking for a fault that is not there, which is why `notesFailed` is carried down from
         the page rather than inferred from the empty list that both cases produce.
       -->
-      <p v-else-if="shown === 'pass' && !notes.length && !reviewBody" class="surface__none">
+      <p v-else-if="shown === 'pass' && !notes.length" class="surface__none">
         <template v-if="reading">Reading the review…</template>
         <template v-else-if="notesFailed">The review could not be read just now. It is on the pull request; opening it is the way through.</template>
         <template v-else>No line-by-line findings on this one. Whatever the agent left is on the pull request itself — opening the review is the way through.</template>
@@ -283,7 +282,6 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
       <ReviewPass
         v-else-if="shown === 'pass'"
         :notes="notes"
-        :body="reviewBody"
         @kept="api.shell.keeping($event)"
         @select="api.shell.selected($event)"
         @expand="api.emit('expand', $event)"

@@ -83,8 +83,6 @@ const props = defineProps<{
   reading?: boolean;
   /** The review could not be read, as opposed to holding nothing. See `api.notesFailed`. */
   notesFailed?: boolean;
-  /** The pending review's own body, which is a finding that points at no line. */
-  reviewBody?: string;
 }>();
 
 const emit = defineEmits<{
@@ -274,7 +272,6 @@ const cardApi: CardApi = {
   notes:       computed(() => props.notes || []),
   reading:     computed(() => Boolean(props.reading)),
   notesFailed: computed(() => Boolean(props.notesFailed)),
-  reviewBody:  computed(() => String(props.reviewBody || '')),
   interactive: computed(() => Boolean(props.interactive)),
   busy:        computed(() => Boolean(props.busy)),
   claimed:     computed(() => claimed.value),
