@@ -29,6 +29,10 @@ so a card with no rules claims nothing and never reaches the top of the deck. `w
 page fetches before drawing it, and asking for something a card does not show costs a round trip per
 turn for nothing.
 
+An `ask` action may name a `group`: every action of a card that names the same one is drawn in
+one menu, under a sparkle button that says the group's name. It is for an agent being set to one
+of several answers to the same decision, such as the four ways a review ends.
+
 `summary` is the line under the title, after what the work needs: `{why}` unless the card says
 otherwise. `summary: false` draws no line there at all.
 

@@ -17,7 +17,7 @@
  * comments to answer, or the issue's own words. A card with none of them is still a card; it just
  * says less, which is honest for work that has nothing to show yet.
  */
-import { computed, ref, watch, onUnmounted } from 'vue';
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import type { FocusTask, CardAction, CardSurface } from '../../focus';
 import { isAgentic } from '../../focus';
 import AppButton from './AppButton.vue';
@@ -350,9 +350,33 @@ const navs = computed(() => others.value
  * - with the chat bar 100px below reading `Ask about "<title>"`, which is the same control a third
  * time. Where the card has already asked, the bar is the general question.
  */
-const asked = computed(() => others.value.find((action) => action.verb === 'ask') || null);
+const asked = computed(() => others.value.find((action) => action.verb === 'ask' && !action.group) || null);
 
-const offersAsk = computed(() => Boolean(asked.value) || primary.value?.verb === 'ask');
+/**
+ * The things an agent can be set to that are one decision, each set behind one control.
+ *
+ * `group` on an action is the name of the control. The review card ends four ways - approve,
+ * approve with comments, leave comments, ask for changes - and four sparkle buttons in a row is
+ * the footer this card used to have; one of them standing beside the primary while the other
+ * three went undrawn is what the single `asked` slot would have made of them.
+ */
+const groups = computed(() => {
+  const found: { label: string; actions: CardAction[] }[] = [];
+
+  for (const action of others.value.filter((other) => other.verb === 'ask' && other.group)) {
+    const group = found.find((one) => one.label === action.group);
+
+    if (group) {
+      group.actions.push(action);
+    } else {
+      found.push({ label: String(action.group), actions: [action] });
+    }
+  }
+
+  return found;
+});
+
+const offersAsk = computed(() => Boolean(asked.value) || groups.value.length > 0 || primary.value?.verb === 'ask');
 
 /*
  * Whether the primary sets an agent working, and so carries the sparkle the ghost beside it has.
@@ -370,6 +394,38 @@ const later = computed(() => others.value.find((action) => action.verb === 'snoo
 /** The places to go, open. */
 const navOpen = ref(false);
 const laterOpen = ref(false);
+/** Which group of agent actions is open, by its name. */
+const groupOpen = ref('');
+
+/**
+ * A menu that is open closes when the press lands anywhere else.
+ *
+ * All three of this card's menus opened and then stayed open until the control that opened them
+ * was pressed again: the snooze menu sat over the next card's title while you read it. Heard on
+ * the way down rather than on the way up, so a press on something that stops the event still
+ * closes them, and a press inside a menu's own box is left to the menu.
+ */
+const laterBox = ref<HTMLElement | null>(null);
+const navBox = ref<HTMLElement | null>(null);
+const footBox = ref<HTMLElement | null>(null);
+
+function away(event: MouseEvent) {
+  const at = event.target as HTMLElement | null;
+
+  if (laterOpen.value && !laterBox.value?.contains(at)) {
+    laterOpen.value = false;
+  }
+  if (navOpen.value && !navBox.value?.contains(at)) {
+    navOpen.value = false;
+  }
+  if (groupOpen.value && !(footBox.value?.contains(at) && at?.closest?.('.card__group'))) {
+    groupOpen.value = '';
+    confirming.value = '';
+  }
+}
+
+onMounted(() => window.addEventListener('click', away, true));
+onUnmounted(() => window.removeEventListener('click', away, true));
 
 /*
  * What the snooze menu offers, beside the card's own default.
@@ -528,7 +584,7 @@ watch(() => props.task.key, () => { readOn.value = ''; });
  */
 const confirming = ref('');
 
-watch(() => props.task.key, () => { confirming.value = ''; navOpen.value = false; laterOpen.value = false; });
+watch(() => props.task.key, () => { confirming.value = ''; navOpen.value = false; laterOpen.value = false; groupOpen.value = ''; });
 
 function press(action: CardAction) {
   if (action.confirm && confirming.value !== action.label) {
@@ -541,6 +597,14 @@ function press(action: CardAction) {
 }
 
 const labelOf = (action: CardAction) => (confirming.value === action.label ? `${ action.label } — sure?` : action.label);
+
+/** One of a group, pressed. The menu stays open on the first of two presses, which is the asking. */
+function pressGrouped(action: CardAction) {
+  press(action);
+  if (confirming.value !== action.label) {
+    groupOpen.value = '';
+  }
+}
 
 /**
  * The commits that arrived after your review, for the one card whose subject is a second look.
@@ -867,8 +931,11 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           its own number of hours - because that is the common case and it should stay one
           press. The chevron is the only way to the menu, so nothing that used to be one click
           became two.
+
+          One button with two halves, not two buttons: they were a disc and a sliver 2px apart,
+          which read as the snooze and some other control beside it.
         -->
-        <div v-if="later" class="card__snooze">
+        <div v-if="later" ref="laterBox" class="card__snooze">
           <button
             type="button"
             class="card__pin card__snooze-go"
@@ -1154,7 +1221,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
       30]) with the primary itself resolving to 48px on the deck's first eleven cards and 47px on
       the last fifteen.
     -->
-    <footer class="card__foot">
+    <footer ref="footBox" class="card__foot">
       <!--
         `busy || reading`: not pressable on evidence that has not arrived.
 
@@ -1193,6 +1260,36 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
       </AppButton>
 
       <!--
+        What an agent can be set to, where that is one decision with several answers. See
+        `groups`. The control says the decision and the menu holds the answers; one that asks
+        before it goes says so in the row, and the menu waits for the second press.
+      -->
+      <div v-for="group in groups" :key="group.label" class="card__overflow card__group">
+        <AppButton
+          variant="ghost"
+          size="md"
+          icon="sparkle"
+          icon-after="chevron-down"
+          :aria-expanded="groupOpen === group.label ? 'true' : 'false'"
+          @click="groupOpen = groupOpen === group.label ? '' : group.label"
+        >{{ group.label }}</AppButton>
+
+        <div v-if="groupOpen === group.label" class="u-popover card__menu">
+          <button
+            v-for="action in group.actions"
+            :key="action.label"
+            type="button"
+            class="card__menu-row"
+            :class="{ 'card__sure': confirming === action.label }"
+            @click="pressGrouped(action)"
+          >
+            <AppIcon name="sparkle" :size="12" />
+            {{ labelOf(action) }}
+          </button>
+        </div>
+      </div>
+
+      <!--
         Everywhere else this work is. One control, so the row can never become two.
 
         "Elsewhere", not "More". It was `More` over a list of whatever actions the definition had
@@ -1218,7 +1315,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         @click="press(navs[0])"
       >{{ navs[0].label }}</AppButton>
 
-      <div v-else-if="navs.length" class="card__overflow">
+      <div v-else-if="navs.length" ref="navBox" class="card__overflow">
         <AppButton
           variant="quiet"
           size="md"
@@ -1550,8 +1647,17 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
   position: relative;
   display: flex;
   align-items: center;
-  gap: 2px;
   flex: 0 0 auto;
+}
+
+/*
+ * Joined: one outline with a rule down the middle. The left half gives up its right edge and the
+ * chevron's left edge is the rule, so there is one line between them and not two. The box cannot
+ * clip to make the shape - the menu hangs out of it - so each half carries its own two corners.
+ */
+.card__snooze > .card__snooze-go {
+  border-right: 0;
+  border-radius: var(--r-pill) 0 0 var(--r-pill);
 }
 
 /*
@@ -1562,11 +1668,11 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 18px;
+  width: 22px;
   height: var(--head-h);
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: var(--r-pill);
+  border-radius: 0 var(--r-pill) var(--r-pill) 0;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
