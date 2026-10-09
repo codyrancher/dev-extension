@@ -29,6 +29,7 @@ import ReviewPass from './ReviewPass.vue';
 import ChangeSet from './ChangeSet.vue';
 import CardComments from './CardComments.vue';
 import CardEvidence from './CardEvidence.vue';
+import CardChecks from './CardChecks.vue';
 import CardPool from './CardPool.vue';
 import CardBumps from './CardBumps.vue';
 import CardReviewers from './CardReviewers.vue';
@@ -674,7 +675,8 @@ const hasFacts = computed(() => {
     || talk.value.length
     || (!overdue.value && props.task.waitingHours)
     || (a.stat && !diffShown.value)
-    || (a.ci && (!diffShown.value || a.ci.pending || a.ci.failing))
+    || a.ci?.pending
+    || (a.ci?.passed && !diffShown.value)
     || a.live.length
     || a.media.length
     || a.reviewers?.approved.length);
@@ -761,15 +763,22 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           holding `PR #11`. 39px of a 488px card for seven characters. The reset is in
           design/focus.css now; what is left belongs beside the chip, at the row's own height,
           and pressing the identifier of a thing should open the thing.
+
+          And what CI says about it, joined to it. `1 failing` was a pill at the far end of the
+          facts row, a card's width from the `PR #19220` it is a statement about. The two are one
+          control with two halves: the identifier opens the thing, the failures open their names.
         -->
-        <component
-          :is="task.url ? 'a' : 'span'"
-          class="card__ident"
-          :href="task.url || undefined"
-          :target="task.url ? '_blank' : undefined"
-          :rel="task.url ? 'noopener' : undefined"
-          :title="task.url ? `Open ${ task.what }` : task.what"
-        >{{ task.what }}</component>
+        <span class="card__pr" :class="{ 'card__pr--red': art.ci?.failing }">
+          <component
+            :is="task.url ? 'a' : 'span'"
+            class="card__ident"
+            :href="task.url || undefined"
+            :target="task.url ? '_blank' : undefined"
+            :rel="task.url ? 'noopener' : undefined"
+            :title="task.url ? `Open ${ task.what }` : task.what"
+          >{{ task.what }}</component>
+          <CardChecks v-if="art.ci?.failing" joined :ci="art.ci" :checks="art.checks" />
+        </span>
 
         <span v-if="overdue && claimed !== 'waited'" class="card__overdue">
           <AppIcon name="clock" :size="13" />
@@ -1493,6 +1502,41 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
 
 a.card__ident { cursor: pointer; }
 a.card__ident:hover { background: var(--surface-raised); color: var(--text); text-decoration: none; }
+
+/*
+ * The identifier and what CI says about it, as one control.
+ *
+ * With nothing failing this is the identifier and nothing else, drawn as it always was. With a
+ * failure it is one pill with a rule down the middle: the border, the height and the round ends
+ * are here, and the two halves inside it bring only their words - see `joined` on CardChecks.
+ */
+.card__pr {
+  display: inline-flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  height: var(--head-h, var(--control-h));
+  max-width: 60%;
+  min-width: 0;
+}
+
+.card__pr > .card__ident {
+  flex: 0 1 auto;
+  height: auto;
+  max-width: none;
+}
+
+.card__pr--red {
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, transparent);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+}
+
+.card__pr--red > .card__ident {
+  padding: 0 var(--s2) 0 var(--s3);
+  border-right: 1px solid color-mix(in srgb, var(--danger) 42%, transparent);
+  border-radius: 0;
+}
 
 /*
  * The band of numbers: the headline one, and the strip of facts beside it.
