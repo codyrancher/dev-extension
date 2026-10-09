@@ -44,6 +44,8 @@ MINE = [
   'components/focus/FocusDeck.vue',
   'components/focus/FocusDock.vue',
   'components/focus/MediaViewer.vue',
+  # The thumbnails on a card's facts row, each of which is pressed.
+  'components/focus/MediaStrip.vue',
   'components/focus/ReviewPass.vue',
   'components/focus/SectionHead.vue',
   'components/focus/StatPill.vue',
@@ -71,7 +73,7 @@ MIN_HIT = 30          # `--control-h` is 32px and the smallest hit area in the v
 # the token, and the check went blind to every one of them the moment they stopped being literals -
 # which would have let the next 22px control through under a token's name.
 TOKEN_PX = {
-    '--control-h': 32, '--primary-h': 44, '--pill-h': 26, '--head-h': 32, '--ws-dot': 7,
+    '--control-h': 32, '--primary-h': 44, '--pill-h': 26, '--head-h': 32, '--ws-dot': 7, '--shot-h': 56,
 }
 # What counts as a control: `cursor: pointer`, and nothing about its name.
 #

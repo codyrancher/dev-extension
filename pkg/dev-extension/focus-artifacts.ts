@@ -154,6 +154,17 @@ export interface CardMedia {
   caption: string;
   /** ISO, so the newest can come first and a card can say how old the evidence is. */
   at: string;
+  /**
+   * The top-level directory it was written into, which is what it was recorded for: `verify` is
+   * the fix working, `reproduce` is the bug. Empty for a loose file and for anything that did
+   * not come out of a workspace.
+   */
+  dir?: string;
+  /**
+   * Its place among the few a card draws as thumbnails, from 1. Unset on the rest, which are
+   * behind `Show all`. See `mediaOf` for how they are chosen.
+   */
+  featured?: number;
 }
 
 /**
@@ -623,27 +634,115 @@ const MEDIA_KIND = (type: string, name: string): 'image' | 'video' | 'text' => {
   return 'image';
 };
 
-/** What an agent recorded while it worked: the screenshots and the recordings in its workspace. */
+/**
+ * How many of a directory's newest files arrive with the listing. The rail's artifacts section
+ * asks for the same number, so the two share the few seconds dev-api keeps the answer for.
+ */
+const MEDIA_PER_DIR = 12;
+/** How many a card holds in all, which is what the viewer's grid shows behind `Show all`. */
+const MEDIA_MOST = 48;
+/** How many of them are drawn on the card itself. */
+const MEDIA_FEATURED = 4;
+
+/**
+ * The directories the skills record into, most telling first: the fix working, the change shown,
+ * then the bug it fixes. Any other directory comes after these, newest first.
+ */
+const MEDIA_DIRS = ['verify', 'demo-changes', 'reproduce', 'demo-issue'];
+
+/**
+ * What a browser can draw. `MEDIA_KIND` calls anything it does not recognise an image, which is
+ * right for a GitHub attachment with no extension and wrong for `.browser.lock`: a file that is
+ * neither this nor text is left off the card rather than drawn as a broken picture.
+ */
+const MEDIA_DRAWN = /\.(png|jpe?g|gif|webp|avif|svg|bmp|webm|mp4|mov)$/i;
+
+/** Working files wherever they sit: the frames a recording was checked from, scripts, logs. */
+const MEDIA_NOISE = /(^|\/)(scratch|scripts?|tmp|logs?|frames?)(\/|$)/i;
+
+/**
+ * What an agent left in its workspace while it worked, the most telling first.
+ *
+ * It was the eight newest files of any kind, and the newest files in a workspace are whatever the
+ * agent touched last: on lte-issue-13888 the card said `8 recordings` and held four markdown
+ * notes, three scripts and a JSON file out of `scratch/`, while the recording of the fix sat in
+ * `verify/` unlisted. So the listing is read a directory at a time and put in this order:
+ *
+ *   1. pictures and recordings that are not working files, by directory - `MEDIA_DIRS` first,
+ *      then the rest by which was written to last - and inside one, recordings before
+ *      screenshots and newest first;
+ *   2. the pictures that are working files, newest first;
+ *   3. everything that is read rather than looked at.
+ *
+ * `featured` goes round the directories of the first group taking one from each before taking a
+ * second from any, so the four on the card are the fix, the change, the bug and one more rather
+ * than four screenshots of the fix.
+ */
 async function mediaOf(workspace: string): Promise<CardMedia[]> {
   if (!workspace) {
     return [];
   }
-  const data = await devFetch(workspaceMediaListUrl(workspace)).catch(() => null);
-  const files: Json[] = data?.files || [];
+  const data = await devFetch(`${ workspaceMediaListUrl(workspace) }?groups=${ MEDIA_PER_DIR }`).catch(() => null);
+  // An in-cluster API from before it listed the directory as one answers with its flat list.
+  const files: Json[] = data?.groups ? data.groups.flatMap((group: Json) => group.files || []) : data?.files || [];
 
-  return files
+  interface Found { media: CardMedia; ms: number; noise: boolean }
+
+  const found: Found[] = files
     // The accessibility sweep writes hundreds of these and none of them is evidence of anything
     // in particular; the rail leaves them out for the same reason.
     .filter((f) => !/^a11y\//.test(f.path))
-    .sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0))
-    .slice(0, 8)
-    .map((f) => ({
-      kind:    MEDIA_KIND(f.type, f.name || f.path),
-      label:   String(f.name || f.path).split('/').pop() || f.path,
-      src:     workspaceMediaFileUrl(workspace, f.path),
-      caption: f.path,
-      at:      new Date(f.mtimeMs || 0).toISOString(),
-    }));
+    // An empty file is a lock or a marker, and there is nothing in it to look at.
+    .filter((f) => f.size !== 0)
+    .filter((f) => MEDIA_DRAWN.test(f.path) || /^(image|video)\//.test(f.type || '') || MEDIA_KIND(f.type, f.name || f.path) === 'text')
+    .map((f) => {
+      const path = String(f.path);
+
+      return {
+        ms:    Number(f.mtimeMs) || 0,
+        noise: MEDIA_NOISE.test(path),
+        media: {
+          kind:    MEDIA_KIND(f.type, f.name || path),
+          label:   String(f.name || path).split('/').pop() || path,
+          src:     workspaceMediaFileUrl(workspace, path),
+          caption: path,
+          at:      new Date(f.mtimeMs || 0).toISOString(),
+          dir:     path.includes('/') ? path.split('/')[0] : '',
+        },
+      };
+    });
+  const newest = (a: Found, b: Found) => b.ms - a.ms;
+  const telling = found.filter((f) => f.media.kind !== 'text' && !f.noise);
+
+  const byDir = new Map<string, Found[]>();
+
+  for (const f of telling) {
+    byDir.set(f.media.dir || '', [...(byDir.get(f.media.dir || '') || []), f]);
+  }
+  const place = (dir: string) => (MEDIA_DIRS.includes(dir) ? MEDIA_DIRS.indexOf(dir) : MEDIA_DIRS.length);
+  const dirs = [...byDir.entries()]
+    .map(([dir, list]) => ({
+      dir,
+      list: list.sort((a, b) => Number(b.media.kind === 'video') - Number(a.media.kind === 'video') || newest(a, b)),
+      ms:   Math.max(...list.map((f) => f.ms)),
+    }))
+    .sort((a, b) => place(a.dir) - place(b.dir) || b.ms - a.ms);
+
+  let picked = 0;
+
+  for (let round = 0; picked < MEDIA_FEATURED && dirs.some((d) => d.list.length > round); round++) {
+    for (const d of dirs) {
+      if (picked < MEDIA_FEATURED && d.list[round]) {
+        d.list[round].media.featured = ++picked;
+      }
+    }
+  }
+
+  return [
+    ...dirs.flatMap((d) => d.list),
+    ...found.filter((f) => f.media.kind !== 'text' && f.noise).sort(newest),
+    ...found.filter((f) => f.media.kind === 'text').sort((a, b) => Number(a.noise) - Number(b.noise) || newest(a, b)),
+  ].slice(0, MEDIA_MOST).map((f) => f.media);
 }
 
 /** The evidence an agent hung on one of its own comments, served out of its workspace. */

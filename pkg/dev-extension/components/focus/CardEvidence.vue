@@ -33,6 +33,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import AppIcon from './AppIcon.vue';
 import MediaViewer from './MediaViewer.vue';
+import MediaStrip from './MediaStrip.vue';
 import { under } from './popover';
 import type { CardArtifacts } from '../../focus-artifacts';
 
@@ -80,11 +81,13 @@ const emit = defineEmits<{ (e: 'read'): void; (e: 'talk'): void }>();
  */
 /*
  * Open with no `start`, which is how the viewer is asked for the tiled view of the set rather
- * than the first artifact with arrows under it. This pill says `4 recordings`, so the thing it
- * was pressed to answer is "which four" - it used to open the first one and make you click
- * through the rest to find out. See MediaViewer.
+ * than one artifact with arrows under it: that is `Show all`. A thumbnail names the one it is,
+ * and the viewer opens on that. See MediaStrip and MediaViewer.
  */
-const shots = ref(false);
+const viewing = ref<{ start?: number } | null>(null);
+
+/** Whether a thumbnail is drawn, which is what makes this row as tall as one. */
+const pictured = computed(() => props.artifacts.media.some((item) => item.kind !== 'text'));
 
 /** The overflow, when there are more things to go and look at than fit on a 26px line. */
 const moreOpen = ref(false);
@@ -175,16 +178,6 @@ const goes = computed<Go[]>(() => {
     title: live.detail || live.label,
   }));
 
-  if (a.media.length) {
-    out.push({
-      key:   'shots',
-      label: `${ a.media.length } ${ a.media.length === 1 ? 'recording' : 'recordings' }`,
-      icon:  'play',
-      url:   '',
-      state: '',
-      title: `Watch what it recorded: ${ a.media.map((item) => item.label).join(', ') }`,
-    });
-  }
   if (props.talk) {
     const label = `${ props.talk } ${ props.talk === 1 ? 'comment' : 'comments' }`;
 
@@ -205,25 +198,23 @@ const goes = computed<Go[]>(() => {
  * How many of them get a chip of their own.
  *
  * Three controls on a 26px line is about 390px of the ~480px this row has beside a 36px lede, and
- * the failing-checks badge is one of them where it exists. Past that the line could only grow or
+ * the thumbnails take the room of one where there are any. Past that the line could only grow or
  * scroll, and both of those are what this row was being fixed for.
  */
-const room = computed(() => (props.artifacts.ci?.failing ? 2 : 3));
+const room = computed(() => (pictured.value ? 2 : 3));
 const shown = computed(() => goes.value.slice(0, room.value));
 const over = computed(() => goes.value.slice(shown.value.length));
 
 function pressed(go: Go) {
   moreOpen.value = false;
-  if (go.key === 'shots') {
-    shots.value = true;
-  } else if (go.key === 'prose') {
+  if (go.key === 'prose') {
     emit('read');
   } else if (go.key === 'talk') {
     emit('talk');
   }
 }
 
-const has = computed(() => Boolean(facts.value.length || goes.value.length));
+const has = computed(() => Boolean(facts.value.length || goes.value.length || props.artifacts.media.length));
 
 /** Measured from the chip that opens it; see `under` for why it cannot just be absolute. */
 const moreAt = ref<Record<string, string>>({});
@@ -239,13 +230,16 @@ const more = ref<HTMLElement | null>(null);
 </script>
 
 <template>
-  <div v-if="has" ref="root" class="ev">
+  <div v-if="has" ref="root" class="ev" :class="{ 'ev--shots': pictured }">
     <!-- The numbers, as one line of text that loses its tail rather than scrolling. -->
     <p v-if="facts.length" class="ev__line">
       <template v-for="(fact, n) in facts" :key="`${ fact.n }-${ fact.of }`">
         <span v-if="n" class="ev__sep">·</span><span class="ev__fact" :class="`ev__fact--${ fact.tone || 'plain' }`"><span class="ev__n">{{ fact.n }}</span><span v-if="fact.of" class="ev__of">{{ fact.of }}</span></span>
       </template>
     </p>
+
+    <!-- What was recorded, as the few stills that say the most and a way to the rest. -->
+    <MediaStrip v-if="artifacts.media.length" :items="artifacts.media" @open="viewing = { start: $event }" />
 
     <!-- Everything you go and look at, bordered because it is pressed. -->
     <component
@@ -308,9 +302,10 @@ const more = ref<HTMLElement | null>(null);
     <Teleport to="body">
       <div class="dev-focus">
         <MediaViewer
-          v-if="shots"
+          v-if="viewing"
           :items="artifacts.media"
-          @close="shots = false"
+          :start="viewing.start"
+          @close="viewing = null"
         />
       </div>
     </Teleport>
@@ -339,13 +334,20 @@ const more = ref<HTMLElement | null>(null);
   overflow: hidden;
 }
 
+/* As tall as a thumbnail where there is one. The facts and the chips stay centred on it. */
+.ev--shots { height: var(--shot-h); }
+
 /* ── The numbers, as a sentence ──────────────────────────────────────────────────────────── */
 /*
  * The one thing on this row allowed to lose its tail, because it is the only thing on it that is
  * prose. The controls beside it are pinned: an ellipsised control is a control you cannot read.
  */
 .ev__line {
-  flex: 1 1 auto;
+  /*
+   * It gives way first: a shrink this much larger than the thumbnails' means the sentence has
+   * lost its tail entirely before the row takes a thumbnail away.
+   */
+  flex: 1 99 auto;
   min-width: 0;
   color: var(--text-muted);
   font-size: var(--t-sm);

@@ -23,6 +23,7 @@ import type { CardMedia } from '../../focus-artifacts';
 import AppIcon from './AppIcon.vue';
 import IconButton from './IconButton.vue';
 import { holdOverlay, releaseOverlay } from './overlay';
+import { firstFrame, still } from './media';
 
 const props = defineProps<{ items: CardMedia[]; start?: number }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -139,48 +140,6 @@ async function readText() {
 }
 
 watch(item, readText, { immediate: true });
-
-/**
- * A recording's still, in two steps, because one of them is not enough.
- *
- * **The fragment paints something.** `preload="metadata"` fetches the header and nothing else,
- * which is what keeps a grid of five recordings the cost of five headers rather than five
- * videos; `#t=0.1` on top of it sets the element's initial seek position, so the browser decodes
- * and paints that frame instead of leaving a tile the colour of its own background. Measured in
- * Chrome 131 against a real 18.4s agent recording: the tile paints a decoded frame, and the
- * fragment is honoured as a seek - `#t=3` and `#t=8` of the same file paint visibly different
- * pictures.
- *
- * Left alone if the caller's URL already carries a fragment: `workspaceMediaFileUrl` builds a
- * query, not a hash, but a GitHub asset URL is somebody else's string and may hold anything.
- */
-function firstFrame(src: string) {
-  return src.includes('#') ? src : `${ src }#t=0.1`;
-}
-
-/**
- * **And the nudge makes it a picture of something.** The frame a tenth of a second in is very
- * often blank: a recording of a dashboard flow opens on the page before it has painted. On the
- * same 18.4s recording, every frame up to about 2.2s was plain white - three recordings of three
- * different fixes would have been three identical white tiles, which is the grid failing at the
- * one thing it is for.
- *
- * So once the metadata is in and the duration is known, the still moves to a quarter of the way
- * in, capped at three seconds. A quarter because it has to be inside the clip whatever its
- * length, and a cap because the seek is the one thing here that costs more than a header - three
- * seconds of video, once, per recording on screen.
- *
- * It runs after the fragment has already put a frame up, so a seek that never lands leaves the
- * tile with the opening frame rather than with nothing.
- */
-function still(event: Event) {
-  const video = event.target as HTMLVideoElement;
-  const { duration } = video;
-
-  if (Number.isFinite(duration) && duration > 0) {
-    video.currentTime = Math.min(3, duration / 4);
-  }
-}
 
 /** How old the evidence is, in the deck's own shorthand. Same scale as CardCommits' `when`. */
 function when(iso: string) {
@@ -369,7 +328,7 @@ onBeforeUnmount(() => {
         <span class="shot__name">{{ shot.label }}</span>
         <span class="shot__meta">
           <AppIcon :name="kindIcon(shot.kind)" :size="11" />
-          {{ kindLabel(shot) }}<template v-if="when(shot.at)"> · {{ when(shot.at) }}</template>
+          <template v-if="shot.dir">{{ shot.dir }} · </template>{{ kindLabel(shot) }}<template v-if="when(shot.at)"> · {{ when(shot.at) }}</template>
         </span>
       </button>
     </div>
@@ -605,6 +564,12 @@ onBeforeUnmount(() => {
   position: relative;
   display: block;
   flex: 0 0 auto;
+  /*
+   * Said, not left to the stretch. A box with a ratio and no width of its own is sized from what
+   * is in it, and a text file's tile holds an icon: measured, its frame was 30x18 beside a
+   * picture's 279x174, so every note in the grid was a name with nothing above it.
+   */
+  width: 100%;
   aspect-ratio: 16 / 10;
   border-radius: var(--r-sm);
   /* A video paints its own background before a frame arrives, and an image that has not loaded

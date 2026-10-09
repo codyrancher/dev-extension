@@ -113,6 +113,11 @@
   --control-h: 32px;
   --primary-h: 44px;
   /*
+   * A still of something recorded, on a card's facts row. The one thing on that row taller than a
+   * line, which is why the row is this tall where there is one - see `.card__facts--shots`.
+   */
+  --shot-h: 56px;
+  /*
    * The chat bar, which is the one thing on the page that is not a card, and which the deck has to
    * leave room for.
    *
