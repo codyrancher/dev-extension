@@ -936,7 +936,17 @@ async function load() {
      */
     items.value = rank(statuses, null, null, {});
 
-    const drewEarly = items.value.length > 0;
+    /*
+     * `deck`, not `items` - the difference between "something was read" and "there is a card on
+     * screen".
+     *
+     * The queue is filtered on its way to the deck: pinned ones are held back, snoozed ones are
+     * gone, an item whose agent is being waited on is dropped, and an item no card claims draws
+     * nothing. So a local read could answer with twenty items and still leave the deck empty,
+     * which cleared the flag and let the empty state announce that the work was finished - the
+     * exact thing the note above guards against, measured against the wrong number.
+     */
+    const drewEarly = deck.value.length > 0;
 
     if (drewEarly) {
       askedFor();
