@@ -421,7 +421,7 @@ function pickedRun(note: ReviewNote): [number, number] | null {
       v-if="sayAll"
       :title="`${ severityWord[selected.severity] } · ${ selected.title }`"
       :text="selected.because ? `${ bodyOf(selected) }\n\n---\n\n${ selected.because }` : bodyOf(selected)"
-      :at="`${ selected.path }:${ selected.line }`"
+      :at="selected.path ? `${ selected.path }:${ selected.line }` : 'the change as a whole'"
       @close="sayAll = false"
     />
 
