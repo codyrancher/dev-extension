@@ -699,6 +699,41 @@ function addRepo() {
 
 const dropRepo = (repo: string) => saveRepos((config.value.repos || []).filter((one) => one !== repo));
 
+/*
+ * The repositories the deck is actually drawing from, and how much from each.
+ *
+ * Not the same list as `config.repos`, and that is the point. With nothing configured the
+ * searches are personal rather than repository-scoped - `author:@me` means something across
+ * the whole of GitHub - so the panel said "Looking everywhere" and listed nothing, which is
+ * true and useless: "everywhere" is the one answer that does not tell you where. The deck in
+ * front of you has already answered it, so this counts the work that came back.
+ *
+ * Read off `work` and not off the deck. The deck is filtered - pinned held back, snoozed gone,
+ * anything no card claims dropped - and a repository you are being asked to scope the search to
+ * is one the *search* reached, not one that survived the ranking afterwards.
+ */
+const reposSeen = computed<{ repo: string; count: number }[]>(() => {
+  const found = work.value;
+  const tally = new Map<string, number>();
+
+  for (const group of [found?.reviewing, found?.mine, found?.issues, found?.unassigned]) {
+    for (const item of group || []) {
+      const repo = String((item as { repo?: string }).repo || '');
+
+      if (repo) {
+        tally.set(repo, (tally.get(repo) || 0) + 1);
+      }
+    }
+  }
+
+  return [...tally.entries()]
+    .map(([repo, count]) => ({ repo, count }))
+    .sort((a, b) => b.count - a.count || a.repo.localeCompare(b.repo));
+});
+
+/** Scope the search to one of the repositories it already reached, in a press. */
+const onlyRepo = (repo: string) => saveRepos([...(config.value.repos || []), repo]);
+
 /** The conversation the bar *is*, made the first time somebody opens, types or asks. */
 const chatOpen = ref(false);
 const conversation = ref('');
@@ -2473,10 +2508,29 @@ onBeforeUnmount(closeSettings);
           </label>
         </div>
 
-        <p v-if="!(config.repos || []).length" class="repo__all">
-          Looking everywhere. Every repository you have an issue or a pull request in can reach the
-          deck, which is usually more than you want.
-        </p>
+        <template v-if="!(config.repos || []).length">
+          <p class="repo__all">
+            Looking everywhere. Every repository you have an issue or a pull request in can reach the
+            deck, which is usually more than you want.
+          </p>
+
+          <!--
+            Where "everywhere" actually reached, which is the thing the sentence above cannot say.
+            Each one is a press away from being the scope, so narrowing the search does not mean
+            typing out a name the page already knows.
+          -->
+          <p v-if="reposSeen.length" class="repo__seen-head">
+            {{ reposSeen.length }} {{ reposSeen.length === 1 ? 'repository is' : 'repositories are' }} reaching the deck right now:
+          </p>
+
+          <ul v-if="reposSeen.length" class="repo__list">
+            <li v-for="seen in reposSeen" :key="seen.repo" class="repo">
+              <code class="repo__name">{{ seen.repo }}</code>
+              <span class="repo__count">{{ seen.count }}</span>
+              <button type="button" class="repo__drop" :disabled="busy" @click="onlyRepo(seen.repo)">Only this one</button>
+            </li>
+          </ul>
+        </template>
 
         <ul v-else class="repo__list">
           <li v-for="repo in config.repos" :key="repo" class="repo">
@@ -3011,6 +3065,22 @@ onBeforeUnmount(closeSettings);
   font-size: var(--t-sm);
   line-height: 1.6;
   max-width: 72ch;
+}
+
+/* The answer "everywhere" cannot give, so it reads as a list and not as a second paragraph. */
+.repo__seen-head {
+  margin: var(--s4) 0 var(--s2);
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+}
+
+/* The tally, pushed to the far end so the column lines up down the list. */
+.repo__count {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .repo__list {

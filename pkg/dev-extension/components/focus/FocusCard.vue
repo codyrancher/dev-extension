@@ -898,6 +898,24 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
               <AppIcon name="snooze" :size="12" />
               {{ option.label }}
             </button>
+
+            <!--
+              Not a longer snooze: the other end of the same decision.
+
+              Every row above puts the card back on the deck later. This one says there is no
+              later - `done` is what the deck already uses for a card that has been dealt with,
+              and it takes it out of the queue rather than scheduling its return. Ruled off for
+              that reason: the eye should not land on it while reaching for an hour.
+            -->
+            <button
+              type="button"
+              class="card__menu-row card__menu-row--apart"
+              title="Take it out of the deck"
+              @click="laterOpen = false; press({ label: 'Skip', verb: 'done' })"
+            >
+              <AppIcon name="cross" :size="12" />
+              Skip it
+            </button>
           </div>
         </div>
 
@@ -1561,6 +1579,13 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
  * Hung from the right, because the control is in the right-hand corner: opening left would
  * put the menu off the card. `.u-popover` is the surface; this only places it.
  */
+/* The row that is not a snooze, kept off the reflex path. */
+.card__menu-row--apart {
+  margin-top: 3px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+}
+
 .card__snooze-menu {
   position: absolute;
   top: calc(100% + var(--s1, 4px));
