@@ -682,6 +682,17 @@ const hasFacts = computed(() => {
     || a.reviewers?.approved.length);
 });
 
+/**
+ * Whether the facts row holds thumbnails, which is the one thing on it taller than a line.
+ *
+ * Guessed while the card is being read, from what it asked for: a card that wants `media` for a
+ * workspace nearly always gets some, and a row that is the right height from the start and then
+ * fills in moves nothing, where one that grows a second later moves the whole surface.
+ */
+const shots = computed(() => (props.reading
+  ? Boolean(props.task.workspace && (props.task.card.wants || []).includes('media'))
+  : art.value.media.some((item) => item.kind !== 'text')));
+
 /** How long it has sat, unless that is what the lede says - in which case this is the same string. */
 const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours && claimed.value !== 'waited'
   ? `${ waited.value }`
@@ -845,7 +856,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         the rest of the card is already fixed - `.card__head` is sized from the task alone and
         `.card__surface` has a 120px floor.
       -->
-      <div v-if="hasFacts || reading" class="card__facts">
+      <div v-if="hasFacts || reading" class="card__facts" :class="{ 'card__facts--shots': shots }">
         <p v-if="lede" class="card__lede" :class="[`card__lede--${ lede.tone }`, { 'card__lede--word': lede.word }]">
           <span class="card__lede-n">{{ lede.n }}</span>
           <span class="card__lede-of">{{ lede.of }}</span>
@@ -1585,6 +1596,15 @@ a.card__ident:hover { background: var(--surface-raised); color: var(--text); tex
    */
   overflow: hidden;
 }
+
+/*
+ * And one more height, for the row that holds pictures.
+ *
+ * A still of a recording cannot be read at the height of a line of text, and the filmstrip this
+ * row once had was removed for taking 105px unasked. This is the same row with one fixed taller
+ * height - never wrapped, never three sizes - on the cards that have something recorded to show.
+ */
+.card__facts--shots { height: var(--shot-h); }
 
 .card__lede {
   display: flex;
