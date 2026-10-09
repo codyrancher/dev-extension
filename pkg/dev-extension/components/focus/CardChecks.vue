@@ -11,6 +11,10 @@
  * same row, and the facts line draws those as text beside the rest of the arithmetic - see
  * CardEvidence, which is where the row's one voice lives. A badge that states a number is a fact;
  * this one opens a list, which is the only reason it is a control.
+ *
+ * **And it is on the identifier now.** It was a pill at the far end of the facts row while the
+ * `PR #19220` it is a statement about sat in the header, a card's width away. `joined` draws it as
+ * the second half of that identifier - see `.card__pr` in FocusCard, which owns the one border.
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import AppIcon from './AppIcon.vue';
@@ -39,6 +43,8 @@ const props = defineProps<{
    * never passed to. The chevron stays - it is the only way to the names - and the number goes.
    */
   claimed?: string;
+  /** Drawn as the second half of the card's identifier, which carries the border for both. */
+  joined?: boolean;
 }>();
 
 const open = ref(false);
@@ -70,7 +76,7 @@ onBeforeUnmount(() => window.removeEventListener('click', away, true));
 </script>
 
 <template>
-  <div ref="root" class="ck">
+  <div ref="root" class="ck" :class="{ 'ck--joined': joined }">
     <button
       v-if="ci.failing"
       ref="badge"
@@ -128,6 +134,16 @@ onBeforeUnmount(() => window.removeEventListener('click', away, true));
 
 .ck__badge:hover,
 .ck__badge--on { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+
+/* Half of a control: the height, the border and the round ends are `.card__pr`'s. */
+.ck--joined { height: auto; }
+
+.ck--joined .ck__badge {
+  height: 100%;
+  padding: 0 var(--s3) 0 var(--s2);
+  border: 0;
+  border-radius: 0;
+}
 
 .ck__list { max-height: 60vh; overflow: hidden auto; }
 

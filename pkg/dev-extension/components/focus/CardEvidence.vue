@@ -33,7 +33,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import AppIcon from './AppIcon.vue';
 import MediaViewer from './MediaViewer.vue';
-import CardChecks from './CardChecks.vue';
 import { under } from './popover';
 import type { CardArtifacts } from '../../focus-artifacts';
 
@@ -47,7 +46,11 @@ const props = defineProps<{
    * count goes, because one of them earns its place and not both. See `claimed` in FocusCard.
    */
   claimed?: string;
-  /** The card's body is the diff viewer, which says how big the change is file by file. */
+  /**
+   * The card's body is the diff viewer. The size of the change is left off this row, because the
+   * file tree says it file by file, and so is how many checks passed: one that failed is on the
+   * card's identifier and one still running is still said.
+   */
   diff?: boolean;
   /** How long it has sat, in the card's own words, or '' where the lede already said it. */
   waited?: string;
@@ -132,7 +135,7 @@ const facts = computed<Fact[]>(() => {
   if (a.ci?.pending) {
     out.push({ n: String(a.ci.pending), of: 'still running', tone: 'warn' });
   }
-  if (a.ci?.passed) {
+  if (a.ci?.passed && !props.diff) {
     out.push({ n: String(a.ci.passed), of: 'passed', tone: 'good' });
   }
   for (const who of approved.value) {
@@ -148,8 +151,8 @@ const facts = computed<Fact[]>(() => {
 /**
  * Something you go and look at: a link, a recording, the description.
  *
- * The failing checks are not in here - they are CardChecks, which carries its own popover and is
- * the subject of the card whose build is red, so it is never the thing that collapses.
+ * The failing checks are not in here, or on this row at all: they are joined to the card's
+ * identifier in its header. See `.card__pr` in FocusCard.
  */
 interface Go {
   key: string;
@@ -220,7 +223,7 @@ function pressed(go: Go) {
   }
 }
 
-const has = computed(() => Boolean(facts.value.length || props.artifacts.ci?.failing || goes.value.length));
+const has = computed(() => Boolean(facts.value.length || goes.value.length));
 
 /** Measured from the chip that opens it; see `under` for why it cannot just be absolute. */
 const moreAt = ref<Record<string, string>>({});
@@ -243,9 +246,6 @@ const more = ref<HTMLElement | null>(null);
         <span v-if="n" class="ev__sep">·</span><span class="ev__fact" :class="`ev__fact--${ fact.tone || 'plain' }`"><span class="ev__n">{{ fact.n }}</span><span v-if="fact.of" class="ev__of">{{ fact.of }}</span></span>
       </template>
     </p>
-
-    <!-- The failures, which are the one thing on this row that is a card's whole subject. -->
-    <CardChecks v-if="artifacts.ci?.failing" :ci="artifacts.ci" :checks="artifacts.checks" :claimed="claimed" />
 
     <!-- Everything you go and look at, bordered because it is pressed. -->
     <component
