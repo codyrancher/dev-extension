@@ -274,15 +274,44 @@ const drawnLines = computed(() => {
 /** The threads with nowhere in the diff to go, drawn under it rather than lost. */
 const elsewhere = computed(() => hereThreads.value.filter((t) => !t.line || !drawnLines.value.has(t.line)));
 
+/**
+ * Scroll one thing into view *inside the diff*, and nowhere else.
+ *
+ * `scrollIntoView` walks every scrollable ancestor, so asking for a comment moved the diff pane,
+ * the card body and the page itself - which on a deck that is a fixed stack of cards left the
+ * viewport somewhere it cannot scroll back from. This finds the first scrollable box between
+ * the element and this component and moves only that one.
+ */
+function showInPane(el: HTMLElement | null | undefined): void {
+  if (!el) {
+    return;
+  }
+  let box: HTMLElement | null = el.parentElement;
+
+  while (box && box !== root.value) {
+    const scrolls = box.scrollHeight > box.clientHeight + 4 && /auto|scroll/.test(getComputedStyle(box).overflowY);
+
+    if (scrolls) {
+      break;
+    }
+    box = box.parentElement;
+  }
+  if (!box || box === root.value) {
+    return;
+  }
+  // Its offset within that box, less half the box, so it lands in the middle of what is visible.
+  const top = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+
+  box.scrollTo({ top: Math.max(0, top - (box.clientHeight / 2) + (el.clientHeight / 2)), behavior: 'smooth' });
+}
+
 /** Bring one into view, from the list in the tree. */
 function showComment(comment: CardComment): void {
   if (comment.path !== openPath.value) {
     open(comment.path);
   }
   nextTick(() => {
-    const el = root.value?.querySelector(`[data-comment="${ comment.id }"]`);
-
-    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    showInPane(root.value?.querySelector(`[data-comment="${ comment.id }"]`) as HTMLElement | null);
   });
 }
 
@@ -465,7 +494,7 @@ function ask(text = question.value.trim()) {
   question.value = '';
 
   // The mark lands under the lines it is about, which can be off the bottom of a short pane.
-  nextTick(() => root.value?.querySelector(`[data-thread="${ thread.id }"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+  nextTick(() => showInPane(root.value?.querySelector(`[data-thread="${ thread.id }"]`) as HTMLElement | null));
 }
 
 /**
