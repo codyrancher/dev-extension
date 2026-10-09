@@ -17,7 +17,7 @@
  * comments to answer, or the issue's own words. A card with none of them is still a card; it just
  * says less, which is honest for work that has nothing to show yet.
  */
-import { computed, ref, watch } from 'vue';
+import { computed, ref, watch, onUnmounted } from 'vue';
 import type { FocusTask, CardAction, CardSurface } from '../../focus';
 import { isAgentic } from '../../focus';
 import AppButton from './AppButton.vue';
@@ -412,6 +412,49 @@ const readsProse = computed(() => Boolean(prose.value) && (bodyShows.value === '
 const prosePill = computed(() => Boolean(prose.value) && !readsProse.value);
 
 /** Whether there is a surface at all, for the box that gives one its floor. See `.card__surface`. */
+/*
+ * Reading, for long enough to be worth saying so.
+ *
+ * `reading` itself is not what the spinner hangs on. Almost every read finishes in well under
+ * a second, and a spinner on each of those is a mark that appears and is gone again before it
+ * can be looked at - which is worse than no mark at all, because the eye catches the movement
+ * and finds nothing there. The flash was the complaint; the absence of any sign on a slow read
+ * was the complaint about the fix.
+ *
+ * So the spinner waits. Nothing is drawn for the first `READING_AFTER_MS`, and a read that
+ * finishes inside that window draws nothing at all, ever. Past it the card has clearly stopped
+ * on something and a mark is news rather than noise - and by then it stays long enough to read.
+ */
+const READING_AFTER_MS = 450;
+
+const readingLong = ref(false);
+let readingTimer: ReturnType<typeof setTimeout> | null = null;
+
+const clearReadingTimer = () => {
+  if (readingTimer) {
+    clearTimeout(readingTimer);
+    readingTimer = null;
+  }
+};
+
+watch(() => Boolean(props.reading), (now) => {
+  clearReadingTimer();
+  if (!now) {
+    readingLong.value = false;
+
+    return;
+  }
+  // False until the timer says otherwise: a card switching from one slow read straight into
+  // another must not inherit the first one's spinner and look like it never stopped.
+  readingLong.value = false;
+  readingTimer = setTimeout(() => {
+    readingLong.value = true;
+    readingTimer = null;
+  }, READING_AFTER_MS);
+}, { immediate: true });
+
+onUnmounted(clearReadingTimer);
+
 const hasSurface = computed(() => Boolean(props.reading || readsProse.value || bodyShows.value || bundleBody.value));
 
 /** What the prose is, named the way the card would name it. */
@@ -919,21 +962,28 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         </section>
 
         <!--
-          Being read: the card holds its space and says nothing.
+          Being read: the card holds its space, and says so only if the wait earns it.
 
-          This used to be a spinner and "Reading what this needs…". Both are gone because on a
-          read that finishes quickly - which is almost all of them - the sentence appeared and
-          fell in less time than it takes to read it, and a line you cannot finish reading is
-          noise rather than news. The one case it was for, a read slow enough to wonder about,
-          is not worth the flash on every other card.
+          There was a spinner and "Reading what this needs…" here, on `reading` directly. Nearly
+          every read finishes in well under a second, so on nearly every card both appeared and
+          fell again before they could be read - movement the eye catches and then finds nothing
+          behind. Removing them outright was worse in the other direction: a card that stops on a
+          slow read then sat blank with nothing to say it was working.
 
-          The branch stays, empty. It is what keeps `reading` meaningful: without it the body
-          below would draw against half-read data and fill in under somebody, which is the
-          thing the reading state exists to prevent. `flex: 1 1 0%` sizes it from the room the
-          card has rather than its contents, so an empty one holds exactly the space the card
-          is about to use and nothing moves when the body arrives.
+          So the mark is on `readingLong`, which the wait above turns on at 450ms. A quick read
+          draws nothing at all; a slow one gets a spinner that stays long enough to mean
+          something. The sentence has not come back - the spinner is the whole of the news, and
+          the words were the part nobody had time to read.
+
+          The branch itself is on `reading`, not `readingLong`, and that is the load-bearing
+          half: it is what keeps the body below from drawing against half-read data and filling
+          in under somebody. `flex: 1 1 0%` sizes it from the room the card has rather than from
+          what is inside it, so whether it holds a spinner or nothing it occupies exactly the
+          space the body is about to take, and nothing moves when that body arrives.
         -->
-        <div v-if="reading" class="card__reading" aria-hidden="true" />
+        <div v-if="reading" class="card__reading">
+          <AppIcon v-if="readingLong" name="spinner" :size="20" />
+        </div>
 
         <!--
           A card held outside this bundle draws its own body.
