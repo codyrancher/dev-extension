@@ -4,16 +4,17 @@ module.exports = {
     chip:    'Agent review',
     label:   'Findings waiting for your pass',
     kind:    'review',
-    lede:    'findings',
     rules:   ['review-findings', 'review-response', 'review-agent'],
-    summary: '{why}',
+    // No headline number and no line under the title: the body is the findings themselves.
+    summary: false,
     /*
      * No `checks`. The whole want produced one badge - `7 passed` - on a card whose job is to
      * judge two agent findings, in a strip reading "28 FILES / +3738 ADDED / -317 REMOVED / 7
-     * passed". The size of what was reviewed is context for a pass; the CI tally is not what the
-     * pass is about, and it cost a check-runs call on every turn of the deck to a review card.
+     * passed". The CI tally is not what the pass is about, and it cost a check-runs call on every
+     * turn of the deck to a review card. No `stat` either: the size of what was reviewed is not
+     * drawn on this card.
      */
-    wants:   ['notes', 'stat', 'media'],
+    wants:   ['notes', 'media'],
     /*
      * The pass is the surface, said rather than inferred: `notes` is the only thing here the
      * ladder would have picked anyway, and a card that names its subject cannot have it quietly
