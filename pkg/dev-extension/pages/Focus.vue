@@ -77,7 +77,7 @@ import type { ReviewNote } from '../focus-review';
 import { readArtifacts, NO_ARTIFACTS, subjectOf, cardContext, keepArtifacts, keptArtifacts, haveArtifacts, keptKeys } from '../focus-artifacts';
 import type { CardArtifacts, CardComment, PoolIssue } from '../focus-artifacts';
 import {
-  startPrReview, startIssueFix, submitReview, approveAndMerge, mergePr, prDetail, prFile, linesPrompt
+  startPrReview, startIssueFix, submitReview, approveWithNothing, approveAndMerge, mergePr, prDetail, prFile, linesPrompt
 } from '../reviews';
 import { previewState } from '../previews';
 import { updateComment, deleteComment, discussPrompt } from '../reviews';
@@ -1419,6 +1419,8 @@ async function act({ task, action }: { task: FocusTask; action: CardAction }) {
       await handToAgent(task, await pickUpTheIssue(task));
     } else if (action.verb === 'post') {
       await postTheReview(task);
+    } else if (action.verb === 'finish') {
+      await finishReview(task, action);
     } else if (action.verb === 'merge') {
       await mergeIt(task);
     } else if (action.verb === 'merge-green') {
@@ -1694,6 +1696,51 @@ async function postTheReview(task: FocusTask) {
   const { posted, url } = await submitReview(pr);
 
   say(posted ? `Posted ${ posted } comment${ posted === 1 ? '' : 's' } on ${ task.what }.` : 'Nothing was left to post.');
+  if (url) {
+    window.open(url, '_blank', 'noopener');
+  }
+  await done(task);
+}
+
+/**
+ * End the review: the verdict, and whether the findings go with it.
+ *
+ * These four were `ask` prompts - "use the my-pr-review-submit skill … approve it" - which is a
+ * conversation, a model and a skill lookup standing between a button and one POST to GitHub.
+ * The call was always right here: `submitReview` already resolves each finding's evidence,
+ * posts the review with its event and stamps what it sent. An agent was being asked to decide
+ * nothing and could fail at it.
+ *
+ * It also means the button can say what happened. A prompt's answer arrives in a transcript as
+ * prose; this returns a count and a URL, so the card can report "approved, 3 comments posted"
+ * and open the review.
+ */
+async function finishReview(task: FocusTask, action: CardAction) {
+  const { pr } = subjectOf(task);
+
+  if (!pr) {
+    return;
+  }
+  const event = action.event || 'COMMENT';
+
+  if (!action.withComments) {
+    const { url, unsent } = await approveWithNothing(pr);
+
+    say(unsent
+      ? `Approved ${ task.what } with nothing said. ${ unsent } finding${ unsent === 1 ? '' : 's' } stayed in the workspace unsent.`
+      : `Approved ${ task.what }.`);
+    if (url) {
+      window.open(url, '_blank', 'noopener');
+    }
+    await done(task);
+
+    return;
+  }
+
+  const { posted, url } = await submitReview(pr, undefined, event);
+  const verdict = { APPROVE: 'Approved', REQUEST_CHANGES: 'Asked for changes on', COMMENT: 'Commented on' }[event];
+
+  say(`${ verdict } ${ task.what } with ${ posted } comment${ posted === 1 ? '' : 's' }.`);
   if (url) {
     window.open(url, '_blank', 'noopener');
   }

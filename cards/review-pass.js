@@ -84,15 +84,26 @@ module.exports = {
        */
       { label: 'Which ones matter?', verb: 'ask', prompt: 'For {what} in {workspace}: go through the findings the review agent produced and tell me which are worth filing and which are noise, with a line of reasoning each. Do not file anything.' },
       /*
-       * The four ways a pass ends, as things the agent is set to. One control, `Finish the
-       * review`, because they are one decision. Each reaches GitHub under your name, so each asks
-       * first; and each carries only the findings marked good - the skill refuses while any is
-       * still unjudged, which is the rule this card is here for.
+       * The four ways a pass ends, each one a call rather than a conversation.
+       *
+       * They were `ask` prompts - "use the my-pr-review-submit skill for {what}: approve it" -
+       * which put a model, a skill lookup and a transcript between a button and one POST. The
+       * call was always available: `submitReview` resolves each finding's evidence, posts the
+       * review with its event and stamps what it sent. The agent decided nothing and could
+       * fail at it.
+       *
+       * `withComments: false` on the first is the difference between the two approvals: an
+       * approval with nothing said, which is the one case GitHub takes with no comments at all.
+       * Findings left unsent stay in the workspace - they are drafts, and a button called
+       * Approve should not delete them - and the card says how many did.
+       *
+       * One control, `Finish the review`, because they are one decision with four answers; and
+       * every one confirms, because all four are public the moment they land.
        */
-      { label: 'Approve', verb: 'ask', group: 'Finish the review', confirm: true, prompt: 'Use the my-pr-review-submit skill for {what} in {workspace}: approve it with no comments. Findings that were never sent are discarded, which is what this button means.' },
-      { label: 'Approve with comments', verb: 'ask', group: 'Finish the review', confirm: true, prompt: 'Use the my-pr-review-submit skill for {what} in {workspace}: approve it, with the findings I marked good as its comments.' },
-      { label: 'Leave comments', verb: 'ask', group: 'Finish the review', confirm: true, prompt: 'Use the my-pr-review-submit skill for {what} in {workspace}: leave the findings I marked good as comments, with no verdict.' },
-      { label: 'Ask for changes', verb: 'ask', group: 'Finish the review', confirm: true, prompt: 'Use the my-pr-review-submit skill for {what} in {workspace}: ask for changes, with the findings I marked good as its comments.' },
+      { label: 'Approve', verb: 'finish', group: 'Finish the review', confirm: true, event: 'APPROVE', withComments: false },
+      { label: 'Approve with comments', verb: 'finish', group: 'Finish the review', confirm: true, event: 'APPROVE', withComments: true },
+      { label: 'Leave comments', verb: 'finish', group: 'Finish the review', confirm: true, event: 'COMMENT', withComments: true },
+      { label: 'Ask for changes', verb: 'finish', group: 'Finish the review', confirm: true, event: 'REQUEST_CHANGES', withComments: true },
       { verb: 'snooze', hours: 8 },
     ],
 };

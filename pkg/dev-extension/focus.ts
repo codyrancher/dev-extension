@@ -56,6 +56,14 @@ export type ActionVerb =
   | 'create-pr' | 'describe' | 'ready'
   /* The two actions that are about a list rather than a subject: see the `bumps` card... */
   | 'merge-green'
+  /*
+   * How a review ends, done here rather than asked of an agent.
+   *
+   * The four ways out of a pass - approve, approve with the comments, leave them, ask for
+   * changes - were `ask` prompts telling an agent to run a skill that calls the same GitHub
+   * endpoint this calls directly. See `finishReview`.
+   */
+  | 'finish'
   /* ...and `ask-reviewers`, which asks everybody the card suggested. See CardReviewers. */
   | 'ask-all';
 
@@ -74,6 +82,10 @@ export interface CardAction {
    * a view whose whole motion is clicking through cards quickly.
    */
   confirm?: boolean;
+  /** For `finish`: the verdict GitHub is sent. `APPROVE` with no comments says only that. */
+  event?: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
+  /** For `finish`: whether the findings you kept go with the verdict. */
+  withComments?: boolean;
   /** For `share`: which build to open. */
   kind?: 'dashboard' | 'storybook';
   /**

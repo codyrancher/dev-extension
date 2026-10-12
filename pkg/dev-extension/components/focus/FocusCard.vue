@@ -361,23 +361,38 @@ const asked = computed(() => others.value.find((action) => action.verb === 'ask'
  * the footer this card used to have; one of them standing beside the primary while the other
  * three went undrawn is what the single `asked` slot would have made of them.
  */
+/*
+ * The menus a card draws, by the `group` its actions name.
+ *
+ * Any verb, not just `ask`. This filtered on `ask` because every grouped action was a prompt
+ * when it was written - and when the four ways a review ends became calls instead (`finish`),
+ * all four fell out of their own menu and the control they belonged to drew nothing. A group is
+ * "one decision with several answers"; which verb answers it is not the grouping's business.
+ *
+ * `agentic` per group, so the sparkle is a fact rather than a decoration: it used to be
+ * hardcoded on this control and said "an agent does this" about four buttons that now post to
+ * GitHub themselves.
+ */
 const groups = computed(() => {
-  const found: { label: string; actions: CardAction[] }[] = [];
+  const found: { label: string; actions: CardAction[]; agentic: boolean }[] = [];
+  const asks = !String(art.value.body || '').trim();
 
-  for (const action of others.value.filter((other) => other.verb === 'ask' && other.group)) {
+  for (const action of others.value.filter((other) => other.group)) {
     const group = found.find((one) => one.label === action.group);
 
     if (group) {
       group.actions.push(action);
+      group.agentic = group.agentic || isAgentic(action, asks);
     } else {
-      found.push({ label: String(action.group), actions: [action] });
+      found.push({ label: String(action.group), actions: [action], agentic: isAgentic(action, asks) });
     }
   }
 
   return found;
 });
 
-const offersAsk = computed(() => Boolean(asked.value) || groups.value.length > 0 || primary.value?.verb === 'ask');
+/* Only an agentic one counts: a menu of GitHub calls is not this card offering to be asked. */
+const offersAsk = computed(() => Boolean(asked.value) || groups.value.some((group) => group.agentic) || primary.value?.verb === 'ask');
 
 /*
  * Whether the primary sets an agent working, and so carries the sparkle the ghost beside it has.
@@ -1353,7 +1368,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         <AppButton
           variant="ghost"
           size="md"
-          icon="sparkle"
+          :icon="group.agentic ? 'sparkle' : undefined"
           icon-after="chevron-down"
           :aria-expanded="groupOpen === group.label ? 'true' : 'false'"
           @click="groupOpen = groupOpen === group.label ? '' : group.label"
@@ -1370,7 +1385,8 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
             @mousedown="onAux(action, $event)"
             @auxclick="onAux(action, $event)"
           >
-            <AppIcon name="sparkle" :size="12" />
+            <!-- Only where an agent is what answers: see `groups`. -->
+            <AppIcon v-if="group.agentic" name="sparkle" :size="12" />
             {{ labelOf(action) }}
           </button>
         </div>

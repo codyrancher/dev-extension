@@ -302,6 +302,25 @@ export async function submitReview(num: number, repo = DEFAULT_REPO, event: 'COM
   return { url: review?.html_url || null, posted: comments.length };
 }
 
+/**
+ * Approve with nothing said.
+ *
+ * Separate from `submitReview` because that one refuses an empty review - rightly: posting a
+ * review with no comments and no verdict is a no-op that looks like a success. Here the verdict
+ * *is* the content, so there is nothing to refuse.
+ *
+ * Findings left in the workspace are not touched. They are drafts, they are yours, and a button
+ * labelled Approve has no business deleting them - so they stay where they are and the card
+ * says they were not sent. The old prompt told an agent they were "discarded", which an agent
+ * could have read as `rm`.
+ */
+export async function approveWithNothing(num: number, repo = DEFAULT_REPO): Promise<{ url: string | null; unsent: number }> {
+  const unsent = (await listComments(num).catch(() => [] as LocalComment[])).filter((c) => !c.submitted_at).length;
+  const review = await gh('POST', `/repos/${ repo }/pulls/${ num }/reviews`, { event: 'APPROVE' });
+
+  return { url: review?.html_url || null, unsent };
+}
+
 /** Reply to a comment on GitHub. There is no draft for a reply: it lands in the thread now. */
 export async function replyToComment(num: number, commentId: number, body: string, repo = DEFAULT_REPO): Promise<{ id: number; url: string }> {
   const reply = await gh('POST', `/repos/${ repo }/pulls/${ num }/comments/${ commentId }/replies`, { body });
