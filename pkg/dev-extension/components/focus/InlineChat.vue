@@ -64,8 +64,28 @@ const chat = useConversation(() => ({
 // unwrapped in a template, only a top-level one is.
 const {
   turns, working, pane, draft, canSend, sending, slashMatches, slashSpot, caret,
-  grew, restarted, attached, error, pending,
+  grew, restarted, attached, error, pending, paneTail,
 } = chat;
+
+/*
+ * A message that went in and was never recorded, which means something in the pane ate it.
+ *
+ * The drawer has `takenOver` for this, and it would not have helped: that only fires when *you*
+ * typed a manager command like `/mcp`, so a prompt claude raised itself - the "How is Claude
+ * doing this session?" survey, a permission question the parser does not know, a recap waiting
+ * to be dismissed - is detected nowhere. The pane stops accepting messages and the chat says
+ * only "not recorded".
+ *
+ * So this hangs off the symptom rather than off a guess about what is in the pane: a turn that
+ * failed is a turn claude never saw, whatever the reason. The pane's last lines go with it,
+ * because the thing in the way is usually obvious once you can read it.
+ *
+ * Escape is offered and is not promised. Measured on the session survey, which is the one that
+ * prompted this: Escape twice left it exactly where it was, and `0` - its own Dismiss - cleared
+ * it at once. That shape is a dialog now (see `readPane`), so the common case should never
+ * reach here; this is the net under the ones that are not.
+ */
+const stuck = computed(() => turns.value.some((turn) => turn.failed));
 
 const look = ref(readLook());
 const composer = ref<InstanceType<typeof ChatComposer> | null>(null);
@@ -169,6 +189,20 @@ function onCode(text: string): void {
     <p v-if="error" class="ic__error">{{ error }}</p>
     <p v-else-if="pending.length" class="ic__pending">{{ pending.length }} waiting to go in.</p>
 
+    <!--
+      Something in the pane is eating messages. Show what, and offer the way out.
+      See `stuck`: the drawer's `takenOver` cannot see this case.
+    -->
+    <div v-if="stuck" class="ic__stuck">
+      <p class="ic__stuck-what">
+        The agent's terminal is showing something the chat cannot answer, so your message was not
+        delivered. What it says is below. Escape clears most of these; a question with its own
+        answers wants one of those instead, typed in the terminal.
+      </p>
+      <pre v-if="paneTail" class="ic__stuck-tail">{{ paneTail }}</pre>
+      <button type="button" class="ic__stuck-out" @click="chat.escapePane()">Send Escape</button>
+    </div>
+
     <ChatComposer
       ref="composer"
       :model-value="draft"
@@ -189,6 +223,48 @@ function onCode(text: string): void {
 </template>
 
 <style scoped>
+/* The pane is in the way: what it says, and the one key that gets past it. */
+.ic__stuck {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  flex: 0 0 auto;
+  margin: var(--s2) 0;
+  padding: var(--s2) var(--s3);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  border-radius: var(--r-sm);
+  background: var(--warning-wash);
+}
+
+.ic__stuck-what { margin: 0; color: var(--text); font-size: var(--t-xs); }
+
+.ic__stuck-tail {
+  max-height: 7rem;
+  margin: 0;
+  padding: var(--s2);
+  overflow: auto;
+  border-radius: var(--r-sm);
+  background: var(--ground-deep);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.ic__stuck-out {
+  align-self: flex-start;
+  padding: 3px var(--s3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-xs);
+  cursor: pointer;
+}
+
+.ic__stuck-out:hover { border-color: var(--warning); color: var(--warning); }
+
 .ic {
   display: flex;
   flex-direction: column;

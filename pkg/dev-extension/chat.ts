@@ -555,6 +555,41 @@ export function readPane(text: string): PaneState {
     };
   }
 
+  /*
+   * The same question written along one line with colons, which is a shape of its own.
+   *
+   * The loop above wants `1. Label` on a line each, with a `❯` on the current one. Claude Code
+   * also asks this way - `1: Bad    2: Fine   3: Good   0: Dismiss`, all on one row, under a
+   * `●` heading - and the session survey is the one everybody meets. Undetected, it is not a
+   * dialog, so nothing draws it and nothing can answer it; the pane sits there eating every
+   * message typed at it and the chat says only "not recorded". Escape does not clear it. Its
+   * own number does, which is exactly what a dialog is for.
+   *
+   * Deliberately strict, because a numbered colon is also how prose writes a time or a ratio.
+   * Two pairs at least, and once they are taken out the line has to be nothing but whitespace -
+   * so "1: Bad 2: Fine" is a dialog and "it took 1:30 and then 2:15" is not.
+   */
+  const ROW = /\b(\d{1,2}):\s+([^\s](?:[^\s]|\s(?!\s))*)/g;
+
+  for (const line of tail.slice(-6).reverse()) {
+    const pairs = [...line.matchAll(ROW)];
+
+    if (pairs.length < 2 || line.replace(ROW, '').trim()) {
+      continue;
+    }
+    const at = tail.lastIndexOf(line);
+    const prompt = tail.slice(Math.max(0, at - 5), at).filter((l) => l.trim() && !FURNITURE.test(l)).join('\n').trim();
+
+    return {
+      busy: false, idle: false, gone: false, status, dialog: {
+        kind:    'options',
+        prompt:  prompt || 'Claude is asking something.',
+        options: pairs.map((pair) => ({ key: pair[1], label: pair[2].trim(), selected: false })),
+        url:     '',
+      },
+    };
+  }
+
   if (/\((y\/n|Y\/n|y\/N)\)|\[y\/n\]|\[Y\/n\]/i.test(tail.slice(-6).join('\n'))) {
     const prompt = tail.slice(-6).filter((l) => l.trim() && !FURNITURE.test(l)).join('\n').trim();
 
