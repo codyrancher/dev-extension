@@ -16,7 +16,7 @@
  * Paths are handled by delegation rather than by a handler per link: `linkPaths` in chat.ts
  * writes `data-path` into the rendered HTML, and there are hundreds of them in a long log.
  */
-import { nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import ChatTurn from './ChatTurn.vue';
 import type { ConversationTurn } from '../../chat-conversation';
 
@@ -52,6 +52,49 @@ function scrollToEnd(force = false): void {
     atBottom.value = true;
   }
 }
+
+/*
+ * Your own messages, one at a time, either way.
+ *
+ * The drawer has had this for a while and it is the quickest way back to a question you asked
+ * twenty turns ago - the agent's answers are long, yours are short, and scrolling past them is
+ * most of the work of finding one. The deck's chats render through this component, so putting it
+ * here gives it to the bar and to every inline chat at once.
+ */
+const mineAt = ref(-1);
+
+/* Whether stepping is worth offering: one message of yours needs no way to find it. */
+const mineCount = computed(() => props.turns.filter((turn) => turn.role === 'user').length);
+
+function stepMine(direction: number): void {
+  const el = log.value;
+  const mine = [...(el?.querySelectorAll('.turn--user') || [])] as HTMLElement[];
+
+  if (!el || !mine.length) {
+    return;
+  }
+  const next = mineAt.value < 0
+    ? (direction > 0 ? 0 : mine.length - 1)
+    : Math.min(mine.length - 1, Math.max(0, mineAt.value + direction));
+
+  mineAt.value = next;
+  mine.forEach((one) => one.classList.remove('turn--found'));
+  mine[next].classList.add('turn--found');
+
+  /*
+   * The log's own scrollTop, not `scrollIntoView`.
+   *
+   * `scrollIntoView` walks every scrollable ancestor, and this component is inside a card
+   * inside a deck: it moved the whole page and left it somewhere it would not come back from,
+   * which is the fault `showInPane` was written for in ChangeSet. Here the scroller is known,
+   * so the sum is simple and nothing outside it moves.
+   */
+  el.scrollTop = Math.max(0, mine[next].offsetTop - el.clientHeight / 2 + mine[next].offsetHeight / 2);
+  atBottom.value = false;
+}
+
+/* A new message means the marked one is no longer where you left off. */
+watch(() => props.turns.length, () => { mineAt.value = -1; });
 
 function onScroll(): void {
   const el = log.value;
@@ -124,21 +167,44 @@ defineExpose({ scrollToEnd, atBottom });
       the transcript and the composer moves both of them, and this view has been through that
       with four other rows already.
     -->
-    <Transition name="turns-jump">
-      <button
-        v-if="!atBottom"
-        type="button"
-        class="turns__jump"
-        title="Jump to the newest"
-        @click="scrollToEnd(true)"
-      >
-        ↓ newest
-      </button>
-    </Transition>
+    <!--
+      Where you have been, and where the newest is. Only while there is something to step
+      through: a chat with one message of yours in it does not need a way to find it.
+    -->
+    <div class="turns__nav">
+      <template v-if="mineCount > 1">
+        <button type="button" class="turns__jump" title="Your previous message" @click="stepMine(-1)">↑ mine</button>
+        <button type="button" class="turns__jump" title="Your next message" @click="stepMine(1)">↓ mine</button>
+      </template>
+      <Transition name="turns-jump">
+        <button
+          v-if="!atBottom"
+          type="button"
+          class="turns__jump"
+          title="Jump to the newest"
+          @click="scrollToEnd(true)"
+        >
+          ↓ newest
+        </button>
+      </Transition>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* The two controls that find a message, kept together at the corner the jump already used. */
+.turns__nav {
+  position: absolute;
+  right: var(--turns-gutter, var(--s3));
+  bottom: var(--s3);
+  display: flex;
+  gap: var(--s1, 4px);
+  z-index: 2;
+}
+
+/* Where stepping landed. A ring, because changing the background would read as a new state. */
+.turn--found { box-shadow: 0 0 0 2px var(--accent); border-radius: var(--r-sm); }
+
 .turns {
   position: relative;
   display: flex;
@@ -229,10 +295,16 @@ defineExpose({ scrollToEnd, atBottom });
 
 .turns__stop:hover { background: var(--accent-wash); }
 
+/*
+ * The buttons themselves are in the flow now; `.turns__nav` places the row.
+ *
+ * This was `position: absolute` with its own right and bottom, which was fine while it was the
+ * only one of them - and would have stacked all three in the same corner the moment there were
+ * three, because each would have positioned against the same containing block rather than
+ * sitting beside its neighbour.
+ */
 .turns__jump {
-  position: absolute;
-  right: var(--s4);
-  bottom: var(--s3);
+  flex: 0 0 auto;
   min-height: 30px;
   padding: 0 var(--s3);
   border: 1px solid var(--border-strong);
