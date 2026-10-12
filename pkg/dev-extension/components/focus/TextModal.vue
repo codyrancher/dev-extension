@@ -23,7 +23,15 @@ const props = withDefaults(defineProps<{
   /** The prose to draw. Optional, because a caller may put its own thing in the slot instead. */
   text?: string;
   at?: string;
-}>(), { text: '', at: '' });
+  /**
+   * Size to the content rather than to the reading height.
+   *
+   * The fixed height below is right for prose - a dialog that changes size with the length of
+   * what is in it is a dialog that jumps - and wrong for a form, which has an end. The prompt
+   * editor came out 760px tall around 500px of content, most of it empty.
+   */
+  fit?: boolean;
+}>(), { text: '', at: '', fit: false });
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 
@@ -51,7 +59,7 @@ onBeforeUnmount(() => {
     <div class="dev-focus said-layer">
       <div class="said-veil" @click="emit('close')" />
 
-      <div class="said" role="dialog" :aria-label="title">
+      <div class="said" :class="{ 'said--fit': fit }" role="dialog" :aria-label="title">
         <header class="said__head">
           <span class="said__title">{{ title }}</span>
           <span v-if="at" class="said__at">{{ at }}</span>
@@ -104,12 +112,19 @@ onBeforeUnmount(() => {
   /* 78ch of prose: the width a paragraph is read at, not the width the window happens to be. */
   width: min(860px, 92vw);
   height: min(760px, 84vh);
+
   border: 1px solid var(--border-strong);
   border-radius: var(--r-xl);
   background: var(--surface);
   box-shadow: var(--shadow-3);
   overflow: hidden;
   transform: translate(-50%, -50%);
+}
+
+/* A form has an end: take the height from it, and keep the cap for one that runs long. */
+.said--fit {
+  height: auto;
+  max-height: min(760px, 84vh);
 }
 
 .said__head {

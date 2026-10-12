@@ -1438,6 +1438,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
     -->
     <TextModal
       v-if="inspecting"
+      fit
       :title="`${ inspecting.action.label || inspecting.action.verb }: what it sends`"
       @close="inspecting = null"
     >

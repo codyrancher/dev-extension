@@ -198,7 +198,49 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 </template>
 
 <style scoped>
-.pe { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/*
+ * One palette, named here and mapped per place.
+ *
+ * This started out reading the rail's tokens directly with literal fallbacks, which looked
+ * right in the rail and wrong everywhere else: inside Focus none of those names exist, so
+ * every fallback applied at once and the dialog came out in Rancher blue on greys that belong
+ * to neither design - against a card view that is purple on near-black.
+ *
+ * Fallbacks cannot fix that, because they answer "is this name defined" and the question is
+ * "which design system am I in". So the names are mapped off the ancestor that settles it:
+ * Focus puts its tokens on `.dev-focus`, and this dialog is teleported inside it.
+ */
+.pe {
+  --pe-text: var(--body-text, #d8dee9);
+  --pe-muted: var(--muted-text, #8a9099);
+  --pe-faint: var(--muted-text, #8a9099);
+  --pe-line: var(--border, #3d4450);
+  --pe-sunk: var(--input-bg, #1b1c21);
+  --pe-accent: var(--primary, #3d98d3);
+  --pe-warn: var(--warning, #d29922);
+  --pe-error: var(--error, #f85149);
+  --pe-radius: 4px;
+  --pe-mono: var(--mono, monospace);
+
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* The deck's own palette, where this dialog is drawn over a card rather than beside a rail. */
+:global(.dev-focus) .pe {
+  --pe-text: var(--text);
+  --pe-muted: var(--text-muted);
+  --pe-faint: var(--text-faint);
+  --pe-line: var(--border);
+  --pe-sunk: var(--ground-deep);
+  --pe-accent: var(--accent);
+  --pe-warn: var(--warning);
+  --pe-error: var(--danger);
+  --pe-radius: var(--r-sm);
+  --pe-mono: var(--mono);
+}
 .pe__section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 
 .pe__title {
@@ -206,16 +248,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   align-items: center;
   gap: 8px;
   margin: 0;
-  color: var(--body-text, #d8dee9);
+  color: var(--pe-text);
   font-size: 13px;
   font-weight: 600;
 }
 
 .pe__tag {
   padding: 1px 6px;
-  border-radius: 10px;
-  background: var(--primary, #3d98d3);
-  color: #fff;
+  border-radius: 999px;
+  background: var(--pe-accent);
+  color: var(--ink-on-kind, #fff);
   font-size: 10px;
   font-weight: 500;
 }
@@ -224,11 +266,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   width: 100%;
   min-height: 120px;
   padding: 8px;
-  border: 1px solid var(--border, #3d4450);
-  border-radius: 4px;
-  background: var(--input-bg, #1b1c21);
-  color: var(--body-text, #d8dee9);
-  font-family: var(--mono, monospace);
+  border: 1px solid var(--pe-line);
+  border-radius: var(--pe-radius);
+  background: var(--pe-sunk);
+  color: var(--pe-text);
+  font-family: var(--pe-mono);
   font-size: 12px;
   line-height: 1.5;
   resize: vertical;
@@ -240,45 +282,45 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 .pe__warn {
   margin: 0;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: var(--pe-radius);
   font-size: 12px;
 }
 
-.pe__error { background: rgba(248, 81, 73, 0.12); color: var(--error, #f85149); }
-.pe__warn { background: rgba(210, 153, 34, 0.12); color: var(--warning, #d29922); }
+.pe__error { background: color-mix(in srgb, var(--pe-error) 14%, transparent); color: var(--pe-error); }
+.pe__warn { background: color-mix(in srgb, var(--pe-warn) 14%, transparent); color: var(--pe-warn); }
 
 .pe__vars { width: 100%; border-collapse: collapse; font-size: 12px; }
 .pe__vars td { padding: 3px 8px 3px 0; vertical-align: top; }
 
 /* The ones this prompt actually uses, so the table reads as a checklist rather than a glossary. */
-.pe__row--on .pe__var { border-color: var(--primary, #3d98d3); color: var(--primary, #3d98d3); }
+.pe__row--on .pe__var { border-color: var(--pe-accent); color: var(--pe-accent); }
 
 .pe__var {
   padding: 1px 6px;
-  border: 1px solid var(--border, #3d4450);
-  border-radius: 4px;
+  border: 1px solid var(--pe-line);
+  border-radius: var(--pe-radius);
   background: none;
-  color: var(--muted-text, #8a9099);
-  font-family: var(--mono, monospace);
+  color: var(--pe-muted);
+  font-family: var(--pe-mono);
   font-size: 11px;
   white-space: nowrap;
   cursor: pointer;
 }
 
-.pe__var:hover { border-color: var(--primary, #3d98d3); color: var(--primary, #3d98d3); }
-.pe__value { color: var(--body-text, #d8dee9); word-break: break-word; }
-.pe__about { color: var(--muted-text, #8a9099); }
+.pe__var:hover { border-color: var(--pe-accent); color: var(--pe-accent); }
+.pe__value { color: var(--pe-text); word-break: break-word; }
+.pe__about { color: var(--pe-muted); }
 
 .pe__preview {
   max-height: 180px;
   margin: 0;
   padding: 8px;
   overflow: auto;
-  border: 1px solid var(--border, #3d4450);
-  border-radius: 4px;
-  background: var(--input-bg, #1b1c21);
-  color: var(--body-text, #d8dee9);
-  font-family: var(--mono, monospace);
+  border: 1px solid var(--pe-line);
+  border-radius: var(--pe-radius);
+  background: var(--pe-sunk);
+  color: var(--pe-text);
+  font-family: var(--pe-mono);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -288,18 +330,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 
 .pe__btn {
   padding: 6px 12px;
-  border: 1px solid var(--border, #3d4450);
-  border-radius: 4px;
+  border: 1px solid var(--pe-line);
+  border-radius: var(--pe-radius);
   background: none;
-  color: var(--body-text, #d8dee9);
+  color: var(--pe-text);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
 }
 
-.pe__btn:hover:not(:disabled) { border-color: var(--primary, #3d98d3); }
+.pe__btn:hover:not(:disabled) { border-color: var(--pe-accent); }
 .pe__btn:disabled { opacity: 0.45; cursor: default; }
-.pe__btn--go { border-color: var(--primary, #3d98d3); background: var(--primary, #3d98d3); color: #fff; }
-.pe__btn--quiet { color: var(--muted-text, #8a9099); }
-.pe__hint { margin: 0; color: var(--muted-text, #8a9099); font-size: 11px; }
+.pe__btn--go { border-color: var(--pe-accent); background: var(--pe-accent); color: var(--ink-on-kind, #fff); }
+.pe__btn--quiet { color: var(--pe-muted); }
+.pe__hint { margin: 0; color: var(--pe-muted); font-size: 11px; }
 </style>
