@@ -22,7 +22,7 @@ import type { FocusTask, CardAction, CardSurface } from '../../focus';
 import { isAgentic, promptKeyOf, promptTemplate, actionPrompt } from '../../focus';
 import PromptEditor from '../PromptEditor.vue';
 import InlineChat from './InlineChat.vue';
-import { listConversations, startConversation, paneCommand } from '../../conversations';
+import { startConversation, paneCommand } from '../../conversations';
 import { startAgentSession } from '../../agent';
 import AppButton from './AppButton.vue';
 import KindChip from './KindChip.vue';
@@ -723,16 +723,23 @@ function sendPrompt(text: string) {
  */
 const asking = ref<{ label: string; session: string; opening: boolean; error: string; draft: string } | null>(null);
 
-/** Where an AI action's conversation lives; titled per action, so pressing twice returns to it. */
+/**
+ * A new conversation, every press.
+ *
+ * It looked for one by title first and returned to it. Wrong for this: a card's question is
+ * asked about the card as it is now - a branch that has moved, a review that has had comments
+ * since - and the second asking is a second question, not a continuation of the first. Reusing
+ * one also meant the agent's own context from an earlier press silently steering the new
+ * answer. The ones worth returning to are the review findings, and Discuss keeps those.
+ */
 async function conversationFor(title: string): Promise<{ id: string }> {
   const workspace = props.task.workspace;
 
   if (!workspace) {
     return { id: await startAgentSession('panel') };
   }
-  const existing = await listConversations(workspace).catch(() => []);
 
-  return existing.find((one) => one.title === title) || await startConversation(workspace, title);
+  return startConversation(workspace, title);
 }
 
 async function askOnCard(action: CardAction) {
@@ -1212,32 +1219,8 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
 
     </header>
 
-    <!--
-      The conversation an AI action opened, in the body, where the card is.
 
-      It takes the body rather than squeezing in beside it: a card is already tight, and a chat
-      folded into a corner of one is a chat nobody can read. The surface is one press away
-      again, and the conversation stays open behind the close.
-    -->
-    <div v-if="asking" class="card__body card__body--asking">
-      <p class="card__asking-head">
-        <span class="card__asking-what">{{ asking.label }}</span>
-        <button type="button" class="card__asking-out" @click="asking = null">Back to the card</button>
-      </p>
-      <p v-if="asking.opening" class="card__asking-note">Opening a conversation…</p>
-      <p v-else-if="asking.error" class="card__asking-note">{{ asking.error }}</p>
-      <InlineChat
-        v-else-if="asking.session"
-        :key="asking.session"
-        class="card__asking-chat"
-        :session="asking.session"
-        :command="task.workspace ? paneCommand(task.workspace, asking.session) : null"
-        :draft-text="asking.draft"
-        :live="interactive"
-      />
-    </div>
-
-    <div v-else class="card__body">
+    <div class="card__body">
       <!--
         One band of numbers: the headline one, and then the things you would have gone and looked
         up - the size of the change, what CI says, what is running on a link, how many recordings
@@ -1419,6 +1402,32 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           own: the shell had the opinion about what a card shows, and a card held in a ConfigMap
           could not use the surface that already existed without redrawing it.
         -->
+      </div>
+
+      <!--
+        The conversation an AI action opened, docked under the body rather than over it.
+
+        It took the whole body first, which answered the wrong question: the reason to ask about
+        a change is that you are looking at it, and replacing it with the chat took away what
+        the question was about. A third of the height, the surface keeping the rest, and the two
+        on screen together.
+      -->
+      <div v-if="asking" class="card__ask">
+        <p class="card__ask-head">
+          <span class="card__ask-what">{{ asking.label }}</span>
+          <button type="button" class="card__ask-out" @click="asking = null">Close</button>
+        </p>
+        <p v-if="asking.opening" class="card__ask-note">Opening a conversation…</p>
+        <p v-else-if="asking.error" class="card__ask-note">{{ asking.error }}</p>
+        <InlineChat
+          v-else-if="asking.session"
+          :key="asking.session"
+          class="card__ask-chat"
+          :session="asking.session"
+          :command="task.workspace ? paneCommand(task.workspace, asking.session) : null"
+          :draft-text="asking.draft"
+          :live="interactive"
+        />
       </div>
     </div>
 
@@ -2006,15 +2015,26 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
  * this is the one place in the view where they have to be - a control sized to be hit would be
  * the largest thing on a line of 24px boxes.
  */
-/* The body given over to a conversation: one column, the chat taking what is left. */
-.card__body--asking {
+/*
+ * The conversation, docked under the body and given a third of it.
+ *
+ * `flex: 0 0 33%` and not a height: the card's body is a flex column whose own height comes
+ * from the deck, so a percentage of it follows the card rather than a number that is right on
+ * one screen. The surface above keeps the rest and shrinks into it, which it can because it
+ * already carries `min-height: 0` for its own scrollers.
+ */
+.card__ask {
   display: flex;
   flex-direction: column;
   gap: var(--s2);
+  flex: 0 0 33%;
   min-height: 0;
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border);
 }
 
-.card__asking-head {
+.card__ask-head {
   display: flex;
   align-items: center;
   gap: var(--s3);
@@ -2022,9 +2042,9 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
   margin: 0;
 }
 
-.card__asking-what { color: var(--text-muted); font-size: var(--t-sm); }
+.card__ask-what { color: var(--text-muted); font-size: var(--t-sm); }
 
-.card__asking-out {
+.card__ask-out {
   margin-left: auto;
   padding: 2px var(--s3);
   border: 1px solid var(--border);
@@ -2036,12 +2056,11 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
   cursor: pointer;
 }
 
-.card__asking-out:hover { border-color: var(--border-strong); color: var(--text); }
-.card__asking-note { margin: 0; color: var(--text-faint); font-size: var(--t-sm); }
+.card__ask-out:hover { border-color: var(--border-strong); color: var(--text); }
+.card__ask-note { margin: 0; color: var(--text-faint); font-size: var(--t-sm); }
 
-/* The chat is what scrolls, and must not be squeezed by the row above it. */
-.card__asking-chat { flex: 1 1 auto; min-height: 0; }
-
+/* The chat is what scrolls inside the band, and must not be squeezed by the row above it. */
+.card__ask-chat { flex: 1 1 auto; min-height: 0; }
 
 .card__pin {
   position: relative;

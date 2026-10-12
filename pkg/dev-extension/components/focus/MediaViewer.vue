@@ -21,6 +21,9 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type { CardMedia } from '../../focus-artifacts';
 import AppIcon from './AppIcon.vue';
+import ArtifactThumb from '../pr/ArtifactThumb.vue';
+import { highlight } from '../../highlight';
+import { artifactLanguage } from '../../artifact-kind';
 import IconButton from './IconButton.vue';
 import { holdOverlay, releaseOverlay } from './overlay';
 import { firstFrame, still } from './media';
@@ -80,6 +83,9 @@ const TEXT_LABEL: Record<string, string> = {
 const extOf = (name: string) => (/\.([a-z0-9]+)$/i.exec(name)?.[1] || '').toLowerCase();
 const kindLabel = (shot: CardMedia) => (shot.kind === 'text' ? (TEXT_LABEL[extOf(shot.label)] || extOf(shot.label).toUpperCase() || 'Text') : KIND[shot.kind]);
 const kindIcon = (kind: CardMedia['kind']) => (kind === 'video' ? 'play' : kind === 'text' ? 'document' : 'image');
+
+/** The opened file, marked up in its own language. Empty while it is still being read. */
+const bodyHtml = computed(() => (body.value ? highlight(body.value, artifactLanguage(item.value?.label || '')) : ''));
 
 function reset() {
   scale.value = 1;
@@ -298,17 +304,21 @@ onBeforeUnmount(() => {
             @loadedmetadata="still"
           />
           <!--
-            A text file is drawn as a page, not fetched and not stretched into the frame. The
-            browser cannot make a thumbnail of a `.md`, so asking it to produced the broken
-            image this replaces; the extension is the thing worth saying at this size anyway.
+            A text file gets a picture of itself, the way it does in the workspace's artifacts.
+            
+            It was a document glyph and an extension - because the browser cannot make a
+            thumbnail of a `.md` and an `<img>` pointed at one drew a broken image. But nothing
+            here had to: `ArtifactThumb` reads the first couple of kilobytes, puts them through
+            the same highlighter the diff uses, and renders markdown as the page it becomes. It
+            is lazy and it retries, which is the other half of why it exists. One component, two
+            views, rather than a glyph in this one.
           -->
-          <span
+          <ArtifactThumb
             v-else-if="shot.kind === 'text'"
-            class="shot__doc"
-          >
-            <AppIcon name="document" :size="26" />
-            <span class="shot__ext">{{ extOf(shot.label) || 'txt' }}</span>
-          </span>
+            class="shot__thumb"
+            :url="shot.src"
+            :name="shot.label"
+          />
           <img
             v-else
             class="shot__media"
@@ -363,7 +373,15 @@ onBeforeUnmount(() => {
       >
         <p v-if="reading" class="viewer__note">Reading…</p>
         <p v-else-if="unreadable" class="viewer__note">This file could not be read: {{ unreadable }}</p>
-        <pre v-else class="viewer__pre">{{ body }}</pre>
+        <!--
+          The file in its language's colours, through the same highlighter as the diff and the
+          thumbnails. It was a plain `<pre>`: correct, and no help at all on four hundred lines
+          of someone's exploration script.
+
+          `v-html` on `highlight()`'s output, which escapes what it is given before it marks it
+          up - see highlight.ts - so this is the library's spans and nothing of the file's own.
+        -->
+        <pre v-else class="viewer__pre"><code class="hljs" v-html="bodyHtml" /></pre>
       </div>
 
       <video
@@ -391,6 +409,14 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* The thumbnail fills the tile's frame, like the still and the video do. */
+.shot__thumb {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+
 .viewer {
   position: fixed;
   inset: 0;
