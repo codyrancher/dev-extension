@@ -2288,7 +2288,6 @@ onBeforeUnmount(closeSettings);
           @about-issue="current && askHere(current, `About issue #${ $event.number } (${ $event.title }): read it and tell me whether it is specified well enough to start, roughly where in the codebase it lives, and how big it looks.`).then(() => say('Asked — the reply arrives in the bar.'))"
           @ask-reviewer="current && askReviewer(current, $event)"
           @answer="current && answerTheAgent(current, $event)"
-          @workspace="current?.workspace && openWorkspace(current.workspace)"
           @make-workspace="current && makeWorkspaceFor(current)"
         />
       </main>

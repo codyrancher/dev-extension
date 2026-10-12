@@ -26,7 +26,6 @@ module.exports = {
        * fix-feedback and review-asked were an irreversible publish here.
        */
       { label: 'Put it up for review', verb: 'create-pr', confirm: true },
-      { label: 'Open the workspace', verb: 'open' },
       { label: 'Is it ready to show?', verb: 'ask', prompt: 'For the branch in {workspace}: read the commits and the diff, and tell me whether this is ready to put up as a pull request - what is unfinished, what is debug left in, and what the description should say.' },
       { verb: 'snooze', hours: 8 },
     ],

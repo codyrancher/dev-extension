@@ -98,7 +98,6 @@ const emit = defineEmits<{
   (e: 'merge-bump', row: any): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: 'about-bump', row: any): void;
-  (e: 'workspace'): void;
   (e: 'make-workspace'): void;
 }>();
 
@@ -593,7 +592,6 @@ watch(() => props.index, () => {
           @ask-reviewer="emit('ask-reviewer', $event)"
           @merge-bump="emit('merge-bump', $event)"
           @about-bump="emit('about-bump', $event)"
-          @workspace="emit('workspace')"
           @make-workspace="emit('make-workspace')"
         />
       </div>

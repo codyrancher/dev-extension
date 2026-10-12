@@ -16,7 +16,6 @@ module.exports = {
     wants:   ['conversation', 'media'],
     actions: [
       { label: 'What happened?', verb: 'ask', prompt: 'The work in {workspace} stopped. Read the end of its conversation and its last output, and tell me what it was doing, why it stopped, and what would get it going again.' },
-      { label: 'Open the workspace', verb: 'open' },
       { verb: 'snooze', hours: 4 },
     ],
 };

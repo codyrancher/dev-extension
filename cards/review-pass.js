@@ -29,11 +29,12 @@ module.exports = {
        */
       { label: 'Post the review', verb: 'post', confirm: true, when: 'anyKept' },
       /*
-       * Before `Open the review`, because the first visible action is the primary. With the post
-       * gated and a nav next, the 44px kind-coloured button on arrival was `Open the review` - a
-       * link dressed as the decision, which is the fault 'open-pr' and 'pick-up-work' were both
-       * fixed for. At nought decided the first move is reading them; the link stays, in the quiet
-       * slot the footer has for links.
+       * The first visible action, and so the primary, now that the post above it is gated.
+       *
+       * There used to be an `Open the review` after this, and on arrival - nought decided, the
+       * post not yet offered - it was the 44px kind-coloured button: a link into the workspace
+       * page dressed as the decision. It is gone with the rest of the ways out of Focus; what
+       * is left is the move that is actually first, which is reading the findings.
        */
       { label: 'Which ones matter?', verb: 'ask', prompt: 'For {what} in {workspace}: go through the findings the review agent produced and tell me which are worth filing and which are noise, with a line of reasoning each. Do not file anything.' },
       /*
@@ -46,7 +47,6 @@ module.exports = {
       { label: 'Approve with comments', verb: 'ask', group: 'Finish the review', confirm: true, prompt: 'Use the my-pr-review-submit skill for {what} in {workspace}: approve it, with the findings I marked good as its comments.' },
       { label: 'Leave comments', verb: 'ask', group: 'Finish the review', confirm: true, prompt: 'Use the my-pr-review-submit skill for {what} in {workspace}: leave the findings I marked good as comments, with no verdict.' },
       { label: 'Ask for changes', verb: 'ask', group: 'Finish the review', confirm: true, prompt: 'Use the my-pr-review-submit skill for {what} in {workspace}: ask for changes, with the findings I marked good as its comments.' },
-      { label: 'Open the review', verb: 'open' },
       { verb: 'snooze', hours: 8 },
     ],
 };

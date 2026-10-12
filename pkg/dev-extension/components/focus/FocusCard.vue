@@ -100,7 +100,6 @@ const emit = defineEmits<{
   (e: 'about-issue', issue: PoolIssue): void;
   (e: 'ask-reviewer', who: string): void;
   (e: 'answer', value: { key: string; label: string }): void;
-  (e: 'workspace'): void;
   (e: 'make-workspace'): void;
 }>();
 
@@ -856,16 +855,19 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
             Making the workspace is the first thing you would do and it was the one thing the card
             could not do.
           -->
-          <button
-            v-if="task.workspace"
-            type="button"
-            class="card__ws"
-            :title="`Open ${ task.workspace }`"
-            @click="emit('workspace')"
-          >
+          <!--
+            Which workspace, and no longer a way into it.
+
+            This was a button that pushed the router at the workspace page - the standard view -
+            and it was the last way out of Focus on a card after the `open` actions went. The
+            fact is worth keeping: which checkout the work is in is how you tell two cards about
+            the same repository apart. The exit is not, because every card in this deck is meant
+            to be finished here.
+          -->
+          <span v-if="task.workspace" class="card__ws" :title="task.workspace">
             <AppIcon name="tasks" :size="11" />
             {{ task.workspace }}
-          </button>
+          </span>
           <button
             v-else-if="canMakeOne"
             type="button"

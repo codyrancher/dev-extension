@@ -17,7 +17,6 @@ module.exports = {
     actions: [
       { label: 'Draft the replies', verb: 'ask', prompt: 'For {what} in {workspace}: go through every review comment that has not been answered, and for each one draft a reply. Say which ones need a code change and which are answered by explaining. Do not push anything.' },
       { label: 'Make the changes', verb: 'ask', prompt: 'For {what} in {workspace}: make the changes the review asked for, one commit per comment, and leave the replies for me to send. Stop and ask if a comment is ambiguous rather than guessing.' },
-      { label: 'Open the workspace', verb: 'open' },
       { label: 'Open the pull request', verb: 'url' },
       { verb: 'snooze', hours: 8 },
     ],
