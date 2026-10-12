@@ -246,6 +246,19 @@ export interface FocusConfig {
    * with work from elsewhere and the ones that matter never arrive.
    */
   repos: string[];
+  /**
+   * Repositories kept *out*, whatever else the searches find.
+   *
+   * The other side of `repos`, and not the same question. `repos` is "look only here", which
+   * means naming every repository you do want - fine when that is one or two, useless when the
+   * deck is drawing from five and exactly one of them is noise. This is "not that one", which
+   * is the shape the complaint actually has.
+   *
+   * Applied in the query rather than filtered afterwards: `-repo:` is GitHub's own, so an
+   * excluded repository costs nothing to carry and cannot arrive in a page of results that
+   * then has to be thinned.
+   */
+  without: string[];
 }
 
 // ── Where the cards are ─────────────────────────────────────────────────────────────────────
@@ -272,6 +285,7 @@ export async function readFocusConfig(): Promise<FocusConfig> {
     weights: got?.weights && typeof got.weights === 'object' ? got.weights : {},
     tasks:   Array.isArray(got?.tasks) ? got.tasks : [],
     repos:   Array.isArray(got?.repos) ? got.repos.map(String) : [],
+    without: Array.isArray(got?.without) ? got.without.map(String) : [],
   };
 }
 

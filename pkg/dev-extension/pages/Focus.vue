@@ -671,9 +671,14 @@ const sections = computed(() => [
   },
   {
     id:    'repos',
-    label: 'Repos',
-    count: (config.value.repos || []).length,
-    about: 'Where to look. The searches behind the queue are personal - work assigned to you, authored by you, waiting on your review - and those mean something across the whole of GitHub, so with nothing here the deck carries every repository you have ever touched.',
+    label: 'Data Sources',
+    /*
+     * Named for what it is rather than for its one section. Everything the deck knows comes
+     * from somewhere, and today that somewhere is GitHub repositories; a page called Repos
+     * could only ever hold repositories, and the next source would have had nowhere to go.
+     */
+    count: (config.value.repos || []).length + (config.value.without || []).length,
+    about: 'Where the deck looks. The searches behind the queue are personal - work assigned to you, authored by you, waiting on your review - and those mean something across the whole of GitHub, so with nothing set here the deck carries every repository you have ever touched.',
   },
 ]);
 
@@ -684,11 +689,11 @@ const repoDraft = ref('');
 /** `owner/name`, which is the only thing GitHub will take as a `repo:` qualifier. */
 const repoOk = computed(() => /^[\w.-]+\/[\w.-]+$/.test(repoDraft.value.trim()));
 
-async function saveRepos(repos: string[]) {
+async function saveRepos(repos: string[], without = config.value.without || []) {
   busy.value = true;
   try {
-    await saveFocusConfig({ repos });
-    config.value = { ...config.value, repos };
+    await saveFocusConfig({ repos, without });
+    config.value = { ...config.value, repos, without };
     // Re-read, because this changes what the queue is allowed to contain rather than how it is
     // drawn: leaving the old items up under a new scope would be the wrong deck with a right
     // setting.
@@ -712,6 +717,25 @@ function addRepo() {
 }
 
 const dropRepo = (repo: string) => saveRepos((config.value.repos || []).filter((one) => one !== repo));
+
+/**
+ * Keep this one out, whatever the searches find.
+ *
+ * The other half of scoping, and the half the page was missing: naming every repository you do
+ * want is fine for one or two and useless when the deck draws from five and one of them is
+ * noise. This says "not that one" - `-repo:` in the query, so it never arrives rather than
+ * arriving and being thinned.
+ */
+const excludeRepo = (repo: string) => saveRepos(
+  (config.value.repos || []).filter((one) => one !== repo),
+  [...new Set([...(config.value.without || []), repo])],
+);
+
+/** Let it back in. */
+const allowRepo = (repo: string) => saveRepos(
+  config.value.repos || [],
+  (config.value.without || []).filter((one) => one !== repo),
+);
 
 /*
  * The repositories the deck is actually drawing from, and how much from each.
@@ -742,6 +766,8 @@ const reposSeen = computed<{ repo: string; count: number }[]>(() => {
 
   return [...tally.entries()]
     .map(([repo, count]) => ({ repo, count }))
+    // An excluded one is not reaching the deck, whatever the last read said.
+    .filter((row) => !(config.value.without || []).includes(row.repo))
     .sort((a, b) => b.count - a.count || a.repo.localeCompare(b.repo));
 });
 
@@ -995,7 +1021,7 @@ async function load() {
      * the queue is built from it, so the deck was gated on it however early `loading` was flipped.
      * Nothing local needs it, so it runs while the rest of this happens.
      */
-    const workSoon = myWork(cfg.repos).catch((e) => {
+    const workSoon = myWork(cfg.repos, cfg.without).catch((e) => {
       /*
        * The one failure that is not a failure: nothing has been set up yet.
        *
@@ -2537,6 +2563,9 @@ onBeforeUnmount(closeSettings);
 
       <!-- ── Where to look ──────────────────────────────────────────────────────────────────── -->
       <template v-else-if="section === 'repos'">
+        <!-- One section today. The page is named for the question, not for its only answer. -->
+        <h4 class="repo__head">Repos</h4>
+
         <div class="form">
           <label class="field field--wide">
             <span class="field__label">Add a repository</span>
@@ -2573,6 +2602,8 @@ onBeforeUnmount(closeSettings);
               <code class="repo__name">{{ seen.repo }}</code>
               <span class="repo__count">{{ seen.count }}</span>
               <button type="button" class="repo__drop" :disabled="busy" @click="onlyRepo(seen.repo)">Only this one</button>
+              <!-- The other way round: everything except this. See `excludeRepo`. -->
+              <button type="button" class="repo__drop" :disabled="busy" @click="excludeRepo(seen.repo)">Remove</button>
             </li>
           </ul>
         </template>
@@ -2583,6 +2614,23 @@ onBeforeUnmount(closeSettings);
             <button type="button" class="repo__drop" :disabled="busy" @click="dropRepo(repo)">Remove</button>
           </li>
         </ul>
+
+        <!--
+          Kept out, shown whichever way the scope is set: an exclusion applies to a named list
+          as much as to "everywhere", and a repository that has silently stopped appearing is
+          one somebody will come here to look for.
+        -->
+        <template v-if="(config.without || []).length">
+          <p class="repo__seen-head">
+            {{ config.without.length }} kept out, whatever the searches find:
+          </p>
+          <ul class="repo__list">
+            <li v-for="repo in config.without" :key="repo" class="repo repo--out">
+              <code class="repo__name">{{ repo }}</code>
+              <button type="button" class="repo__drop" :disabled="busy" @click="allowRepo(repo)">Let it back in</button>
+            </li>
+          </ul>
+        </template>
       </template>
 
       <!-- ── Something of your own ──────────────────────────────────────────────────────────── -->
@@ -3111,6 +3159,18 @@ onBeforeUnmount(closeSettings);
   line-height: 1.6;
   max-width: 72ch;
 }
+
+/* The page's one section today, so its heading reads as a heading and not as a sentence. */
+.repo__head {
+  margin: 0 0 var(--s3);
+  color: var(--text);
+  font-size: var(--t-md);
+  font-weight: 600;
+}
+
+/* Kept out: still legible, visibly not in play. */
+.repo--out { opacity: 0.72; }
+.repo--out .repo__name { text-decoration: line-through; }
 
 /* The answer "everywhere" cannot give, so it reads as a list and not as a second paragraph. */
 .repo__seen-head {

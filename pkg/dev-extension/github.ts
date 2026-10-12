@@ -39,12 +39,23 @@ const POOL_REPO = 'rancher/dashboard';
  * Empty means every repository, which is what it did before and the right default for somebody
  * who has not said otherwise.
  */
-export function repoScope(repos: string[] | undefined): string {
-  const clean = (repos || [])
+/**
+ * Where the searches may look, and where they may not.
+ *
+ * `repos` is an allow-list and empty means everywhere. `without` is subtracted either way -
+ * both from "everywhere" and from a list, since excluding something you also named is a
+ * contradiction GitHub resolves the sensible way and we need not argue with.
+ */
+export function repoScope(repos: string[] | undefined, without: string[] | undefined = []): string {
+  const named = (list: string[]) => list
     .map((repo) => String(repo || '').trim())
     .filter((repo) => /^[\w.-]+\/[\w.-]+$/.test(repo));
 
-  return clean.length ? `${ clean.map((repo) => `repo:${ repo }`).join(' ') } ` : '';
+  const only = named(repos || []).map((repo) => `repo:${ repo }`);
+  const not = named(without || []).map((repo) => `-repo:${ repo }`);
+  const all = [...only, ...not];
+
+  return all.length ? `${ all.join(' ') } ` : '';
 }
 
 const ENDPOINT = 'https://api.github.com/graphql';
@@ -481,8 +492,8 @@ const STATUS_QUERY_FOR = (scope: string) => `
   }
 `;
 
-async function issueStatuses(repos?: string[]): Promise<Map<string, GithubBoardStatus>> {
-  const data = await graphql(STATUS_QUERY_FOR(repoScope(repos)), { issues: ISSUE_PAGE });
+async function issueStatuses(repos?: string[], without?: string[]): Promise<Map<string, GithubBoardStatus>> {
+  const data = await graphql(STATUS_QUERY_FOR(repoScope(repos, without)), { issues: ISSUE_PAGE });
   const found = new Map<string, GithubBoardStatus>();
 
   for (const node of data.issues?.nodes || []) {
@@ -668,7 +679,7 @@ export async function rerunFailed(repo: string, run: GithubRun): Promise<void> {
  * review-requested the moment you review it, and one you have reviewed and are waiting on is
  * still yours to watch. GitHub has no single query for the union, so it is two and a merge.
  */
-export async function myWork(repos?: string[]): Promise<GithubWork> {
+export async function myWork(repos?: string[], without?: string[]): Promise<GithubWork> {
   const token = await githubToken();
 
   if (!token) {
@@ -686,7 +697,7 @@ export async function myWork(repos?: string[]): Promise<GithubWork> {
    * Its rejection is handled where it is awaited, below. The idle `catch` here is only so a
    * failure that lands before then is not an unhandled rejection.
    */
-  const statusesSoon = issueStatuses(repos);
+  const statusesSoon = issueStatuses(repos, without);
 
   statusesSoon.catch(() => undefined);
 
@@ -696,7 +707,7 @@ export async function myWork(repos?: string[]): Promise<GithubWork> {
       authorization:  `Bearer ${ token }`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ query: QUERY_FOR(repoScope(repos)), variables: { page: PAGE, issues: ISSUE_PAGE } }),
+    body: JSON.stringify({ query: QUERY_FOR(repoScope(repos, without)), variables: { page: PAGE, issues: ISSUE_PAGE } }),
   });
 
   if (!response.ok) {
