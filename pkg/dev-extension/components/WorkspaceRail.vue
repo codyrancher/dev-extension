@@ -18,6 +18,7 @@ import WorkspacePr from './WorkspacePr.vue';
 import WorkspaceBrowser from './WorkspaceBrowser.vue';
 import WorkspaceShare from './WorkspaceShare.vue';
 import DevModal from './DevModal.vue';
+import PromptEditor from './PromptEditor.vue';
 import PrButton from './pr/PrButton.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
@@ -64,7 +65,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView,
+    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView,
   },
 
   props: {
@@ -1022,6 +1023,23 @@ export default {
     /** A variable as it is written in a template, and putting one into the draft. */
     varToken(v) {
       return `{${ '{' } ${ v.name } }${ '}' }`;
+    },
+
+    /** What this button shipped with, ignoring any edit - the target of "back to the shipped". */
+    shippedPrompt(action) {
+      return action?.skill ? skillTemplate(action) : ACTION_TEMPLATES[action?.run] || '';
+    },
+
+    /** The dialect, for the editor's preview. Bound as a prop, so it has to be a plain value. */
+    expandForEditor(template, vars) {
+      return expandPrompt(template, vars);
+    },
+
+    /** The skill section's two buttons, which differ only in whether the save is committed. */
+    onSaveSkill(text, commit) {
+      this.skillDraft = text;
+
+      return this.saveInspected(commit === true);
     },
 
     insertVar(v) {
@@ -2828,131 +2846,37 @@ export default {
       </DevModal>
 
       <!-- What a button sends, and the skill it runs, editable for every workspace. -->
+      <!--
+        The editor is `PromptEditor` now, not 120 lines of markup here.
+
+        Focus has these buttons too and had no way to see what they send; rather than write a
+        second editor that drifts from this one, this one moved out. What stayed behind is what
+        is actually the rail's: where a prompt is stored, how a variable is written in this
+        dialect (`{{ name }}`), and what the skill section saves to.
+      -->
       <DevModal
         v-if="inspecting"
         :title="`${ inspecting.label }: what it runs`"
         @close="inspecting = null"
       >
-        <div class="workspace-rail__inspect">
-          <Banner
-            v-if="inspecting.error"
-            color="error"
-            :label="inspecting.error"
-          />
-          <section class="workspace-rail__section">
-            <h4 class="workspace-rail__section-title">
-              The prompt
-              <span
-                v-if="inspecting.edited"
-                class="workspace-rail__tag"
-              >edited here</span>
-            </h4>
-            <textarea
-              v-model="promptDraft"
-              class="workspace-rail__prompt-edit"
-              spellcheck="false"
-            />
-            <p class="workspace-rail__detail">It goes to this workspace's conversation, so the run is watched and talked to like any other.</p>
-
-            <h4 class="workspace-rail__section-title">What goes in</h4>
-            <table class="workspace-rail__vars">
-              <tbody>
-                <tr
-                  v-for="v in varsNow()"
-                  :key="v.name"
-                >
-                  <td>
-                    <button
-                      type="button"
-                      class="workspace-rail__var"
-                      title="Put this in the prompt"
-                      @click="insertVar(v)"
-                    >{{ varToken(v) }}</button>
-                  </td>
-                  <td class="workspace-rail__var-value">{{ v.value || '—' }}</td>
-                  <td class="workspace-rail__var-about">{{ v.about }}</td>
-                </tr>
-              </tbody>
-            </table>
-            <p class="workspace-rail__detail">Anything else is left alone, so a shell variable like <code>$CLAUDE_HARNESS_API</code> reaches the agent as it is written and is expanded in the workspace.</p>
-
-            <h4 class="workspace-rail__section-title">As it will be sent</h4>
-            <pre class="workspace-rail__prompt">{{ promptPreview() }}</pre>
-            <div class="workspace-rail__group-buttons">
-              <RcButton
-                variant="primary"
-                :disabled="!!promptSaving || !promptDraft.trim()"
-                @click="sendDraft"
-              >
-                <i
-                  v-if="promptSaving === 'send'"
-                  class="icon icon-spinner icon-spin"
-                />
-                Send this now
-              </RcButton>
-              <RcButton
-                variant="secondary"
-                :disabled="!!promptSaving || promptDraft === templateOf(inspecting.action)"
-                @click="savePrompt"
-              >
-                <i
-                  v-if="promptSaving === 'save'"
-                  class="icon icon-spinner icon-spin"
-                />
-                Save as what this button sends
-              </RcButton>
-              <RcButton
-                v-if="inspecting.edited"
-                variant="tertiary"
-                :disabled="!!promptSaving"
-                @click="resetPrompt"
-              >
-                Back to the shipped prompt
-              </RcButton>
-            </div>
-          </section>
-          <section
-            v-if="inspecting.skill"
-            class="workspace-rail__section"
-          >
-            <h4 class="workspace-rail__section-title">
-              {{ inspecting.skill }}/SKILL.md
-              <span
-                v-if="inspecting.overridden"
-                class="workspace-rail__tag"
-              >edited here</span>
-            </h4>
-            <textarea
-              v-model="skillDraft"
-              class="workspace-rail__skill"
-              spellcheck="false"
-            />
-            <div class="workspace-rail__group-buttons">
-              <RcButton
-                variant="secondary"
-                :disabled="!!skillSaving || skillDraft === inspecting.content"
-                @click="saveInspected(false)"
-              >
-                <i
-                  v-if="skillSaving === 'save'"
-                  class="icon icon-spinner icon-spin"
-                />
-                Save to all workspaces
-              </RcButton>
-              <RcButton
-                variant="primary"
-                :disabled="!!skillSaving || skillDraft === inspecting.content"
-                @click="saveInspected(true)"
-              >
-                <i
-                  v-if="skillSaving === 'commit'"
-                  class="icon icon-spinner icon-spin"
-                />
-                Save and commit
-              </RcButton>
-            </div>
-          </section>
-        </div>
+        <PromptEditor
+          :label="inspecting.label"
+          :template="promptDraft"
+          :shipped="shippedPrompt(inspecting.action)"
+          :vars="varsNow()"
+          :token="(name) => `{${ '{' } ${ name } }${ '}' }`"
+          :expand="expandForEditor"
+          :skill="inspecting.skill || ''"
+          :skill-content="inspecting.content || ''"
+          :skill-overridden="!!inspecting.overridden"
+          :busy="promptSaving || skillSaving || ''"
+          :error="inspecting.error || ''"
+          @close="inspecting = null"
+          @send="promptDraft = $event; sendDraft()"
+          @save="promptDraft = $event; savePrompt()"
+          @reset="resetPrompt"
+          @save-skill="onSaveSkill"
+        />
       </DevModal>
 
       <DevModal

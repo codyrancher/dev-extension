@@ -29,6 +29,8 @@ const props = defineProps<{
   notes?: unknown[];
   /** The notes above could not be read, as opposed to there being none. Passed straight on. */
   notesFailed?: boolean;
+  /** Edited prompts by key, for the editor a middle click opens. Passed straight on. */
+  prompts?: Record<string, string>;
   /** Everything else the card on top has to show. See focus-artifacts.ts; opaque here. */
   artifacts?: unknown;
   /** Those artifacts are still being read, so the top card says so. */
@@ -63,6 +65,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** Nothing is connected: take them to where the token goes. */
   (e: 'settings'): void;
+  (e: 'prompt-save', value: { key: string; text: string }): void;
+  (e: 'prompt-reset', key: string): void;
   (e: 'go', step: 1 | -1): void;
   (e: 'jump', index: number): void;
   (e: 'act', payload: { task: FocusTask; action: CardAction }): void;
@@ -576,6 +580,9 @@ watch(() => props.index, () => {
           :pinned="current.pinned"
           :notes="(notes as any)"
           :notes-failed="notesFailed"
+          :prompts="prompts"
+          @prompt-save="emit('prompt-save', $event)"
+          @prompt-reset="emit('prompt-reset', $event)"
           :artifacts="(artifacts as any)"
           :reading="reading"
           @act="(action) => emit('act', { task: current!, action })"

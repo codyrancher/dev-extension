@@ -46,8 +46,9 @@ import { runtimeFacts } from '../components/focus/card-runtime';
 import { followCards, loadedCards, cardsWatch, cardsSettled } from '../focus-cards';
 import {
   readFocusConfig, saveFocusConfig, readFocusState, saveFocusState, focusDeck, manualItem,
-  weightRows, actionPrompt, cardOf, KINDS
+  weightRows, actionPrompt, promptKeyOf, cardOf, KINDS
 } from '../focus';
+import { readPrompts, savePromptTemplate, resetPromptTemplate } from '../skills';
 import type {
   FocusConfig, FocusState, FocusTask, CardAction, ManualTask, FocusKind, WeightRow
 } from '../focus';
@@ -118,6 +119,38 @@ const loading = ref(true);
  * moment it has one, and this is read nowhere else.
  */
 const filling = ref(0);
+
+/*
+ * The prompts somebody has edited, by key, shared with the workspace rail.
+ *
+ * Middle-clicking a button that sets an agent working opens what it sends; saving there writes
+ * here and to the same store the rail reads, so a prompt is edited once and both places send
+ * it. Read once for the page rather than per card: the deck mounts several cards at a time and
+ * every one of them has these buttons.
+ */
+const promptEdits = ref<Record<string, string>>({});
+
+onMounted(() => {
+  readPrompts().then((found) => {
+    promptEdits.value = found || {};
+  }).catch(() => undefined);
+});
+
+/** Save what a button sends from now on, and keep sending it here without a reload. */
+async function savePromptFor({ key, text }: { key: string; text: string }) {
+  await savePromptTemplate(key, text);
+  promptEdits.value = { ...promptEdits.value, [key]: text };
+  say('Saved — that is what the button sends from now on.');
+}
+
+/** Put a button back on the prompt it shipped with. */
+async function resetPromptFor(key: string) {
+  await resetPromptTemplate(key);
+  const { [key]: gone, ...rest } = promptEdits.value;
+
+  promptEdits.value = rest;
+  say('Back to the shipped prompt.');
+}
 
 /*
  * Not finished yet - the whole of it, not just the queue.
@@ -1375,7 +1408,7 @@ async function act({ task, action }: { task: FocusTask; action: CardAction }) {
     } else if (action.verb === 'ask') {
       // `askHere` answers with the conversation it put the prompt in, which is the one this card
       // is now waiting on. Nothing about the card can move until that agent stops, so it goes.
-      await handToAgent(task, await askHere(task, actionPrompt(action, task)));
+      await handToAgent(task, await askHere(task, actionPrompt(action, task, promptEdits.value)));
     } else if (action.verb === 'share') {
       await openTheBuild(task, action.kind || 'dashboard');
     } else if (action.verb === 'review') {
@@ -2266,12 +2299,15 @@ onBeforeUnmount(closeSettings);
           :quiet="quiet"
           :landing="dropping"
           :notes="notes"
+          :prompts="promptEdits"
           :notes-failed="notesFailed"
           :artifacts="artifacts"
           :reading="readingNow"
           :loading="settling"
           :setup="setupNeeded"
           @settings="toSettings"
+          @prompt-save="savePromptFor($event)"
+          @prompt-reset="resetPromptFor($event)"
           @go="go"
           @jump="jumpTo"
           @act="act"

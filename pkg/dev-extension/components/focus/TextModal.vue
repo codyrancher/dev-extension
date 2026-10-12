@@ -18,7 +18,12 @@ import AppIcon from './AppIcon.vue';
 import Markdown from './Markdown.vue';
 import { holdOverlay, releaseOverlay } from './overlay';
 
-const props = defineProps<{ title: string; text: string; at?: string }>();
+const props = withDefaults(defineProps<{
+  title: string;
+  /** The prose to draw. Optional, because a caller may put its own thing in the slot instead. */
+  text?: string;
+  at?: string;
+}>(), { text: '', at: '' });
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 
@@ -63,8 +68,17 @@ onBeforeUnmount(() => {
           the same evening. What is left here is the scroll container and the padding, which is
           the only part a dialog has an opinion about.
         -->
+        <!--
+          Prose by default, and whatever the caller gives instead.
+
+          The dialog's chrome - the veil, the teleport out of the deck's transform, the header,
+          the scroller - is the same whatever is inside it, and the prompt editor needed all of
+          it. A slot is cheaper than a second dialog that drifts from this one.
+        -->
         <div class="said__body">
-          <Markdown :text="props.text" />
+          <slot>
+            <Markdown :text="props.text" />
+          </slot>
         </div>
       </div>
     </div>

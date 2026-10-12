@@ -576,9 +576,26 @@ export function focusDeck(items: PriorityItem[], config: FocusConfig, state: Foc
     .sort((a, b) => b.score - a.score);
 }
 
+/**
+ * Where an edited prompt for this button is kept.
+ *
+ * The card and the label, because that pair is what somebody means by "this button": the same
+ * words on two cards are two buttons, and a card's buttons do not change their labels without
+ * becoming different buttons. It is the key the rail's own edits use too - one store, so a
+ * prompt edited in either place is the prompt both send.
+ */
+export function promptKeyOf(cardId: string, action: CardAction): string {
+  return `focus:${ cardId }:${ action.label || action.verb }`;
+}
+
+/** What a button sends: the shipped prompt, or the one somebody edited in its place. */
+export function promptTemplate(action: CardAction, cardId: string, edits?: Record<string, string>): string {
+  return edits?.[promptKeyOf(cardId, action)] || action.prompt || '';
+}
+
 /** What a button says, with the item's own words in it. */
-export function actionPrompt(action: CardAction, task: FocusTask): string {
-  return fill(action.prompt || '', task);
+export function actionPrompt(action: CardAction, task: FocusTask, edits?: Record<string, string>): string {
+  return fill(promptTemplate(action, task.card?.id || '', edits), task);
 }
 
 /**

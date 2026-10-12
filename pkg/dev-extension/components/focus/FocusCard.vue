@@ -19,7 +19,8 @@
  */
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import type { FocusTask, CardAction, CardSurface } from '../../focus';
-import { isAgentic } from '../../focus';
+import { isAgentic, promptKeyOf, promptTemplate } from '../../focus';
+import PromptEditor from '../PromptEditor.vue';
 import AppButton from './AppButton.vue';
 import KindChip from './KindChip.vue';
 import AppIcon from './AppIcon.vue';
@@ -83,10 +84,14 @@ const props = defineProps<{
   reading?: boolean;
   /** The review could not be read, as opposed to holding nothing. See `api.notesFailed`. */
   notesFailed?: boolean;
+  /** Edited prompts by key; what a button sends if its key is in here. */
+  prompts?: Record<string, string>;
 }>();
 
 const emit = defineEmits<{
   (e: 'act', action: CardAction): void;
+  (e: 'prompt-save', value: { key: string; text: string }): void;
+  (e: 'prompt-reset', key: string): void;
   (e: 'ask'): void;
   (e: 'pin'): void;
   (e: 'resolve', value: { note: ReviewNote; verdict: string; body?: string }): void;
@@ -581,6 +586,83 @@ watch(() => props.task.key, () => { readOn.value = ''; });
 const confirming = ref('');
 
 watch(() => props.task.key, () => { confirming.value = ''; navOpen.value = false; laterOpen.value = false; groupOpen.value = ''; });
+
+/**
+ * The prompt editor, opened by middle-clicking a button that sets an agent working.
+ *
+ * The same gesture as the workspace rail, because it is the same question - what does this
+ * button actually send - and somebody who has learned it there should not have to learn it
+ * again here. `PromptEditor` is the rail's editor, lifted out so both use one.
+ */
+const inspecting = ref<{ action: CardAction; key: string; template: string; shipped: string } | null>(null);
+const promptBusy = ref('');
+const promptError = ref('');
+
+/*
+ * Middle click on `mousedown`, so the browser's autoscroll never starts, and swallowed again
+ * on `auxclick`, which is where the click itself lands. Only on buttons that set an agent
+ * working: the others send no prompt, and offering to edit one would be offering nothing.
+ */
+function onAux(action: CardAction, event: MouseEvent) {
+  if (event.button !== 1 || !isAgentic(action, !String(art.value.body || '').trim())) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.type !== 'mousedown') {
+    return;
+  }
+  const key = promptKeyOf(props.task.card?.id || '', action);
+
+  promptError.value = '';
+  inspecting.value = {
+    action,
+    key,
+    template: promptTemplate(action, props.task.card?.id || '', props.prompts),
+    shipped:  action.prompt || '',
+  };
+}
+
+/** What goes into this card's prompts, with the values this card would send. */
+const promptVars = computed(() => [
+  { name: 'what', value: String(props.task.what || ''), about: 'The thing this card is about' },
+  { name: 'workspace', value: String(props.task.workspace || ''), about: 'The checkout it runs in' },
+  { name: 'needs', value: String(props.task.needs || ''), about: 'What the card says is wanted' },
+  { name: 'url', value: String(props.task.url || ''), about: 'Where it is on GitHub' },
+]);
+
+async function savePrompt(text: string) {
+  if (!inspecting.value) {
+    return;
+  }
+  promptBusy.value = 'save';
+  promptError.value = '';
+  try {
+    emit('prompt-save', { key: inspecting.value.key, text });
+    inspecting.value = { ...inspecting.value, template: text };
+  } catch (e) {
+    promptError.value = (e as Error)?.message || String(e);
+  } finally {
+    promptBusy.value = '';
+  }
+}
+
+function resetPrompt() {
+  if (!inspecting.value) {
+    return;
+  }
+  emit('prompt-reset', inspecting.value.key);
+  inspecting.value = { ...inspecting.value, template: inspecting.value.shipped };
+}
+
+/** Run the draft once, without saving it: the usual reason to open this. */
+function sendPrompt(text: string) {
+  if (!inspecting.value) {
+    return;
+  }
+  emit('act', { ...inspecting.value.action, prompt: text });
+  inspecting.value = null;
+}
 
 function press(action: CardAction) {
   if (action.confirm && confirming.value !== action.label) {
@@ -1237,6 +1319,8 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         :busy="busy || reading"
         :class="{ 'card__sure': confirming === primary.label }"
         @click="press(primary)"
+        @mousedown="onAux(primary, $event)"
+        @auxclick="onAux(primary, $event)"
       >{{ labelOf(primary) }}</AppButton>
 
       <!-- The question this card offers, or the general one where it offers none. -->
@@ -1247,6 +1331,8 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         icon="sparkle"
         :class="{ 'card__sure': confirming === asked.label }"
         @click="press(asked)"
+        @mousedown="onAux(asked, $event)"
+        @auxclick="onAux(asked, $event)"
       >{{ labelOf(asked) }}</AppButton>
       <AppButton
         v-else-if="!offersAsk"
@@ -1281,6 +1367,8 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
             class="card__menu-row"
             :class="{ 'card__sure': confirming === action.label }"
             @click="pressGrouped(action)"
+            @mousedown="onAux(action, $event)"
+            @auxclick="onAux(action, $event)"
           >
             <AppIcon name="sparkle" :size="12" />
             {{ labelOf(action) }}
@@ -1343,6 +1431,31 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         `.card__head-controls`. The footer is for things you do to the work.
       -->
     </footer>
+
+    <!--
+      What a button sends, from a middle click on it. The dialog is TextModal's - the veil, the
+      teleport out of the deck's transform, the scroller - with the shared editor in its slot.
+    -->
+    <TextModal
+      v-if="inspecting"
+      :title="`${ inspecting.action.label || inspecting.action.verb }: what it sends`"
+      @close="inspecting = null"
+    >
+      <PromptEditor
+        :label="inspecting.action.label || inspecting.action.verb"
+        :template="inspecting.template"
+        :shipped="inspecting.shipped"
+        :vars="promptVars"
+        :token="(name) => `{${ name }}`"
+        :expand="(text, vars) => vars.reduce((out, v) => out.split(`{${ v.name }}`).join(v.value), text)"
+        :busy="promptBusy"
+        :error="promptError"
+        @close="inspecting = null"
+        @send="sendPrompt($event)"
+        @save="savePrompt($event)"
+        @reset="resetPrompt"
+      />
+    </TextModal>
 
     <!-- The description, or what was said about it, read over the card. See `prose` and `talk`. -->
     <TextModal
