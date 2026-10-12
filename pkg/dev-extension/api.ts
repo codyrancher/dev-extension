@@ -2848,6 +2848,61 @@ const OUR_VERSION = String((require('./package.json') as { version?: string }).v
 /** The release that wrote a ConfigMap, as a label so it can be read without the data. */
 const VERSION_LABEL = 'dev.rancher.io/version';
 
+/**
+ * Stamped on the API's pod template to roll it, in place of deleting its pod.
+ *
+ * On the template rather than on the Deployment: changing the template is what makes a new
+ * ReplicaSet, and a new ReplicaSet is what makes Kubernetes do the replacing. An annotation on
+ * the Deployment's own metadata changes nothing about the pods.
+ */
+const RESTART_ANNOTATION = 'dev.rancher.io/restarted-at';
+
+/**
+ * Put the API on its new script without a gap in service.
+ *
+ * This used to delete the pod. With one replica that means the Service has no endpoints at all
+ * until a new pod is scheduled, pulls, starts node, and passes a readiness probe that runs every
+ * ten seconds - about twenty seconds in which every call the dashboard makes answers 503. It
+ * happened on every release, and the whole page is built out of those calls.
+ *
+ * A rolling update has the same effect and no gap: the new pod is created first, and the old one
+ * is not touched until the new one is Ready, so the Service always has somewhere to send a
+ * request. The strategy is set in the same patch and not left to the default, which is 25% of one
+ * replica - that rounds to maxUnavailable 0 and maxSurge 1 and happens to be exactly right, but
+ * it is right by arithmetic nobody should have to redo, and a Deployment created before this with
+ * any other strategy would not be.
+ *
+ * Two of this API running for those few seconds is a thing the design already allows for. It
+ * cannot assume one writer in any case - `replicas: 1` is not a lock, and the watcher's documents
+ * are written to be idempotent for precisely this - see docs/conversation-watcher.md.
+ *
+ * Best effort, and it falls back to the delete it replaces. A roll that cannot be asked for is
+ * better ended as an API running the old script for twenty seconds than as one running it until
+ * somebody notices.
+ */
+async function rollWorkspaceApi(namespace: string): Promise<void> {
+  const rolled = await devFetch(`${ BASE }/v1/apps.deployments/${ namespace }/${ API_NAME }`, {
+    method:  'PATCH',
+    headers: { 'Content-Type': 'application/merge-patch+json' },
+    body:    JSON.stringify({
+      spec: {
+        strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } },
+        template: { metadata: { annotations: { [RESTART_ANNOTATION]: new Date().toISOString() } } },
+      },
+    }),
+  }).then(() => true).catch(() => false);
+
+  if (rolled) {
+    return;
+  }
+
+  const pods = await devFetch(`${ BASE }/v1/pods/${ namespace }?labelSelector=app%3D${ API_NAME }`).catch(() => null);
+
+  for (const pod of pods?.data || []) {
+    await devFetch(`${ BASE }/v1/pods/${ namespace }/${ pod.metadata.name }`, { method: 'DELETE' }).catch(() => null);
+  }
+}
+
 function laterThan(a: string, b: string): boolean {
   const left = String(a || '').split('.').map((n) => Number(n) || 0);
   const right = String(b || '').split('.').map((n) => Number(n) || 0);
@@ -2944,13 +2999,11 @@ export async function ensureWorkspaceApi(): Promise<void> {
 
       delete (metadata.annotations || {})['kubectl.kubernetes.io/last-applied-configuration'];
       await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, metadata, data }) }).catch(() => null);
-      // node read the old script at start: the pod is replaced, and the new one mounts the
-      // ConfigMap as it is now. Quiet like the rest; a user who may not do this changes nothing.
-      const pods = await devFetch(`${ BASE }/v1/pods/${ namespace }?labelSelector=app%3D${ API_NAME }`).catch(() => null);
-
-      for (const pod of pods?.data || []) {
-        await devFetch(`${ BASE }/v1/pods/${ namespace }/${ pod.metadata.name }`, { method: 'DELETE' }).catch(() => null);
-      }
+      // node read the old script at start, so the pod has to be replaced for the new one to be
+      // run; the replacement mounts the ConfigMap as it is now. Rolled rather than deleted, so
+      // the Service is never without an endpoint - see `rollWorkspaceApi`. Quiet like the rest;
+      // a user who may not do this changes nothing.
+      await rollWorkspaceApi(namespace);
     }
   }
 
@@ -3061,6 +3114,14 @@ export async function ensureWorkspaceApi(): Promise<void> {
     metadata:   { namespace, name: API_NAME, labels },
     spec:       {
       replicas: 1,
+      /*
+       * Said rather than inherited. The default is 25% of one replica, which rounds to
+       * maxUnavailable 0 and maxSurge 1 - the right answer, reached by arithmetic that is not
+       * obvious and would change if this ever ran more than one. A release rolls this
+       * Deployment (`rollWorkspaceApi`), and the whole point of rolling it is that the new pod
+       * is Ready before the old one goes.
+       */
+      strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } },
       selector: { matchLabels: labels },
       template: {
         metadata: { labels },
