@@ -342,6 +342,23 @@ const navs = computed(() => others.value
   .filter((action) => !(props.task.url && target(action) === props.task.url)));
 
 /**
+ * The decisions beside the primary, each as its own button.
+ *
+ * The footer had no place for these. It drew the primary, one question, the grouped menus, the
+ * links and the snooze - so an action that was none of those, like the three ways of finishing a
+ * review that are not the first one, rendered nowhere at all. They were only visible while they
+ * were inside a `group`, which is a menu: a decision you have to open something to find.
+ *
+ * Not links (`navs` has those), not the snooze, not a question, and not something already in a
+ * menu. What is left is a verb that does something to the work, which is what a button in this
+ * row is for.
+ */
+const decisions = computed(() => others.value.filter((action) => !action.group
+  && action.verb !== 'snooze'
+  && action.verb !== 'ask'
+  && !navs.value.includes(action)));
+
+/**
  * The one quieter question, beside the primary - and nothing where the primary is itself a question.
  *
  * The `v-else` under this used to draw a generic `Ask about this` whenever the definition offered
@@ -1336,6 +1353,23 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         @mousedown="onAux(primary, $event)"
         @auxclick="onAux(primary, $event)"
       >{{ labelOf(primary) }}</AppButton>
+
+      <!--
+        The rest of the decisions, in the row rather than behind a chevron. See `decisions`.
+        Each carries its own confirm where the definition asked for one, which for anything that
+        reaches GitHub it does.
+      -->
+      <AppButton
+        v-for="action in decisions"
+        :key="action.label"
+        variant="ghost"
+        size="md"
+        :busy="busy"
+        :class="{ 'card__sure': confirming === action.label }"
+        @click="press(action)"
+        @mousedown="onAux(action, $event)"
+        @auxclick="onAux(action, $event)"
+      >{{ labelOf(action) }}</AppButton>
 
       <!-- The question this card offers, or the general one where it offers none. -->
       <AppButton

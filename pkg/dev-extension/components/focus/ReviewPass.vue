@@ -88,7 +88,19 @@ const discussingId = ref('');
 const saving = ref('');
 
 const selected = computed(() => props.notes.find((note) => note.id === selectedId.value) ?? props.notes[0]);
-const verdictOf = (note: ReviewNote) => verdicts.value[note.id] ?? 'pending';
+/*
+ * What has been decided about a finding: this session's answer, or the stored one.
+ *
+ * The local map wins because it is newer - you just pressed the button - but it is empty on a
+ * fresh mount, and `approved` in the store is a decision somebody already made. Reading only
+ * the map is what made a reload look like nothing had been judged.
+ *
+ * `approved` maps to `good` and not to `edited`: the store keeps one state for both, and the
+ * difference between them is whether the wording was changed, which the card cannot tell after
+ * the fact. `good` is the one that does not claim something untrue.
+ */
+const verdictOf = (note: ReviewNote): NoteVerdict => verdicts.value[note.id]
+  ?? (note.status === 'approved' ? 'good' : 'pending');
 const bodyOf = (note: ReviewNote) => bodies.value[note.id] ?? note.body;
 
 /*
@@ -372,6 +384,16 @@ function pickedRun(note: ReviewNote): [number, number] | null {
         to its other edge: a 56px track with a fade, cutting the agent's sentence mid-word. The
         fault was the track, not the order. The hunk is capped and the comment takes the rest.
       -->
+      <!--
+        The code and the comment in one scroller, not two.
+
+        They were separate tracks with a scrollbar each: the hunk capped at half the pane, the
+        comment taking the rest, and a finding whose code was long and whose argument was longer
+        gave you two short windows to read it through instead of one body. They are one thing -
+        the claim and the lines it is about - so they scroll as one, and only the verdict row is
+        pinned.
+      -->
+      <div class="detail__scroll">
       <div v-if="selected.path" class="hunk">
         <CodeView
           :rows="rowsFor(selected)"
@@ -441,6 +463,8 @@ function pickedRun(note: ReviewNote): [number, number] | null {
           :asset-url="ghAssetUrl"
           @open="viewer = $event"
         />
+      </div>
+
       </div>
 
       <div class="detail__actions">
@@ -572,14 +596,11 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 }
 
 /*
- * A note with nowhere to point: the review's own comment.
- *
- * Three tracks become two. The first exists to hold the code beside the claim, and this claim
- * is about the change as a whole - there is no hunk, the `.hunk` child is not rendered, and a
- * grid told to lay out three rows with two children leaves the verdicts stranded in the middle
- * track with a gap beneath them.
+ * `--nocode` used to retrack the grid for a note with no hunk. The grid is two tracks for
+ * everything now - one scroller and the verdict row - so a missing hunk is simply one less
+ * child inside the scroller, and there is nothing left for the modifier to change. The class
+ * is still set; it is a hook for anything that wants to know, not a layout any more.
  */
-.pass__detail--nocode { grid-template-rows: minmax(0, 1fr) auto; }
 
 /* ── The header: how far through the pass you are ────────────────────────── */
 .pass__head {
@@ -794,7 +815,15 @@ function pickedRun(note: ReviewNote): [number, number] | null {
    * the track it sits in. `fit-content(50%)` is min(max-content, half the pane) applied to the
    * track, which is what "capped at half the pane" was supposed to mean both times.
    */
-  grid-template-rows: fit-content(50%) minmax(0, 1fr) auto;
+  /*
+   * The body, and the row that stays put.
+   *
+   * It was three tracks - `fit-content(50%)` for the code, `1fr` for the comment, `auto` for
+   * the verdicts - with the first two scrolling independently. The long note below records what
+   * that cost and how the tracks were tuned; none of it applies now, because there is one box
+   * and the content decides its own proportions.
+   */
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: var(--s2);
   min-height: 0;
   min-width: 0;
@@ -877,9 +906,31 @@ function pickedRun(note: ReviewNote): [number, number] | null {
  * cap did nothing but guarantee the hunk ate everything the sentence above it needed. It is a
  * track now and it takes the remainder, whatever that is.
  */
-.hunk {
+/* The one scroller: the code, then the claim about it. */
+.detail__scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
   min-height: 0;
-  overflow: auto;
+  min-width: 0;
+  overflow-y: auto;
+  padding-right: var(--s2);
+}
+
+/*
+ * Natural height, and never less.
+ *
+ * This is a flex column that is shorter than its content - that is what makes it scroll - and a
+ * flex item defaults to `flex-shrink: 1`. So both children would be squeezed to fit instead of
+ * overflowing, and CodeView's root is `overflow: hidden` for its own rounded corners, which
+ * turns that squeeze into the code being *cut off* rather than scrolled. The hunk's own
+ * `min-height: 0` made it worse by allowing the floor to be zero.
+ */
+.detail__scroll > * { flex: 0 0 auto; }
+
+.hunk {
+  /* Not `auto`: this is inside `.detail__scroll` now, and a scroller in a scroller is a trap. */
+  overflow: visible;
   border-radius: var(--r-md);
   /*
    * `max-height: 50%` lived here, and once the track became `fit-content(50%)` it capped the hunk
@@ -905,8 +956,6 @@ function pickedRun(note: ReviewNote): [number, number] | null {
 .detail__say {
   min-height: 0;
   min-width: 0;
-  padding-right: var(--s2);
-  overflow-y: auto;
 }
 
 .detail__body { min-width: 0; }

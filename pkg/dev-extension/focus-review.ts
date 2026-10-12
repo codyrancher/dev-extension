@@ -38,6 +38,13 @@ export interface ReviewNote {
   hunk: DiffLine[];
   /** Where it came from, shown under the comment. */
   because?: string;
+  /**
+   * What the store says about it: `pending`, or `approved` once it has been marked good.
+   *
+   * Carried so a decision survives a reload. The verdict is otherwise component state, and the
+   * component is remounted by every refresh and every turn of the deck.
+   */
+  status?: string;
   /** What the agent hung on it to prove it: the screenshot, the recording. */
   media: NoteMedia[];
 }
@@ -201,8 +208,20 @@ export async function reviewNotes(
    * an id, which is all any of those need - so it is a note, with no path, and the one thing
    * that makes it different is that there is no code to show beside it.
    */
-  const whole = comments.find((comment) => comment.status === 'pending' && comment.level === 'pr');
-  const pending = comments.filter((comment) => comment.status === 'pending' && comment.level === 'line' && comment.path);
+  /*
+   * Everything not yet sent, not merely everything undecided.
+   *
+   * This asked for `status === 'pending'`, and marking a finding good writes `approved` - so
+   * the moment you decided one it left this list, and after a refresh the card drew the
+   * findings you had not got to yet and none of the ones you had. The decisions were invisible
+   * and the count behind `Post the review` was built from what was left.
+   *
+   * `submitted_at` is the fact that means "this is on GitHub and no longer yours to judge";
+   * everything before it belongs on the card, whatever it has been marked.
+   */
+  const unsent = (comment: LocalComment) => !comment.submitted_at;
+  const whole = comments.find((comment) => unsent(comment) && comment.level === 'pr');
+  const pending = comments.filter((comment) => unsent(comment) && comment.level === 'line' && comment.path);
 
   // Keyed on `path`, which is what this API calls it. It was `file.filename` - GitHub's own name
   // for the field, and not the one the dev API re-maps it to - so every lookup missed, every
@@ -238,6 +257,7 @@ export async function reviewNotes(
     body:      reviewBodyOf([whole]),
     hunk:      [] as DiffLine[],
     because:   whole.author && whole.author !== 'you' ? `written by ${ whole.author }` : '',
+    status:    String(whole.status || 'pending'),
     media:     mediaOf(whole),
   }] : []);
 
@@ -258,6 +278,7 @@ export async function reviewNotes(
         body:      comment.body,
         hunk:      hunkAround(lines, line, comment.start_line),
         because:   comment.author && comment.author !== 'you' ? `written by ${ comment.author }` : '',
+        status:    String(comment.status || 'pending'),
         media:     mediaOf(comment),
       };
     }));

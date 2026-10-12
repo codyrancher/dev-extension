@@ -9,12 +9,18 @@
  * Nothing is read here. Everything comes off `PrSummary`, which `readArtifacts` fills from the
  * `meta` that already comes back with the diff, so a card drawing this pays for no extra call.
  */
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import type { PrSummary } from '../../focus-artifacts';
-import Markdown from './Markdown.vue';
+import CommentBody from './CommentBody.vue';
 import AppIcon from './AppIcon.vue';
+import MediaViewer from './MediaViewer.vue';
+import { ghAssetUrl } from '../../reviews';
+import type { NoteMedia } from '../../focus-review';
 
 const props = defineProps<{ pr: PrSummary }>();
+
+/** What a recording in the description opens into. The same viewer the findings use. */
+const viewer = ref<{ items: NoteMedia[]; at: number } | null>(null);
 
 /**
  * The one word GitHub puts in the badge, and it is not `state` alone.
@@ -83,10 +89,18 @@ const blocked = computed(() => {
       Its own scroller: a pull request body on this repository is a filled-in template running
       to several screens, and the tab it is in is one pane of a card.
     -->
+    <!-- Through CommentBody, so a recording in the description is a player. See GithubIssue. -->
     <div v-if="pr.body" class="gh__body">
-      <Markdown :text="pr.body" />
+      <CommentBody :body="pr.body" :asset-url="ghAssetUrl" @open="viewer = $event" />
     </div>
     <p v-else class="gh__none">No description.</p>
+
+    <MediaViewer
+      v-if="viewer"
+      :items="viewer.items"
+      :at="viewer.at"
+      @close="viewer = null"
+    />
   </article>
 </template>
 

@@ -75,15 +75,6 @@ module.exports = {
        */
       { label: 'Post the review', verb: 'post', confirm: true, when: 'anyKept' },
       /*
-       * The first visible action, and so the primary, now that the post above it is gated.
-       *
-       * There used to be an `Open the review` after this, and on arrival - nought decided, the
-       * post not yet offered - it was the 44px kind-coloured button: a link into the workspace
-       * page dressed as the decision. It is gone with the rest of the ways out of Focus; what
-       * is left is the move that is actually first, which is reading the findings.
-       */
-      { label: 'Which ones matter?', verb: 'ask', prompt: 'For {what} in {workspace}: go through the findings the review agent produced and tell me which are worth filing and which are noise, with a line of reasoning each. Do not file anything.' },
-      /*
        * The four ways a pass ends, each one a call rather than a conversation.
        *
        * They were `ask` prompts - "use the my-pr-review-submit skill for {what}: approve it" -
@@ -97,13 +88,15 @@ module.exports = {
        * Findings left unsent stay in the workspace - they are drafts, and a button called
        * Approve should not delete them - and the card says how many did.
        *
-       * One control, `Finish the review`, because they are one decision with four answers; and
-       * every one confirms, because all four are public the moment they land.
+       * In the row rather than behind `Finish the review`. They were one control with four
+       * answers in a menu, which is a decision you have to open something to find - and the
+       * question this card asks is which of the four you want. Every one confirms, because all
+       * four are public the moment they land.
        */
-      { label: 'Approve', verb: 'finish', group: 'Finish the review', confirm: true, event: 'APPROVE', withComments: false },
-      { label: 'Approve with comments', verb: 'finish', group: 'Finish the review', confirm: true, event: 'APPROVE', withComments: true },
-      { label: 'Leave comments', verb: 'finish', group: 'Finish the review', confirm: true, event: 'COMMENT', withComments: true },
-      { label: 'Ask for changes', verb: 'finish', group: 'Finish the review', confirm: true, event: 'REQUEST_CHANGES', withComments: true },
+      { label: 'Approve', verb: 'finish', confirm: true, event: 'APPROVE', withComments: false },
+      { label: 'Approve with comments', verb: 'finish', confirm: true, event: 'APPROVE', withComments: true },
+      { label: 'Leave comments', verb: 'finish', confirm: true, event: 'COMMENT', withComments: true },
+      { label: 'Ask for changes', verb: 'finish', confirm: true, event: 'REQUEST_CHANGES', withComments: true },
       { verb: 'snooze', hours: 8 },
     ],
 };

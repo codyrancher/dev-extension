@@ -8,10 +8,17 @@
  * one is the whole issue on a pane of its own, body included, and that one is a line on a card.
  */
 import type { PoolIssue } from '../../focus-artifacts';
-import Markdown from './Markdown.vue';
+import CommentBody from './CommentBody.vue';
 import IssueMarks from './IssueMarks.vue';
+import MediaViewer from './MediaViewer.vue';
+import { ghAssetUrl } from '../../reviews';
+import type { NoteMedia } from '../../focus-review';
+import { ref } from 'vue';
 
 defineProps<{ issue: PoolIssue }>();
+
+/** What a recording in the body opens into, full size. The same viewer the findings use. */
+const viewer = ref<{ items: NoteMedia[]; at: number } | null>(null);
 </script>
 
 <template>
@@ -36,10 +43,27 @@ defineProps<{ issue: PoolIssue }>();
     <!-- The area labels, the age, how much was said, and whether somebody else has it. -->
     <IssueMarks :issue="issue" />
 
+    <!--
+      The body through CommentBody, not Markdown.
+      
+      An issue is written with its evidence in it - a screenshot of the bug, a recording of the
+      thing not working - and GitHub writes a recording as a bare `user-attachments` URL on a
+      line of its own, which is a player there and was a line of blue text here. CommentBody
+      already knows that shape, and knows the `[[attach:]]` marker the agents write, so this is
+      the one component in the view that draws a body with what is in it.
+    -->
     <div v-if="issue.body" class="gh__body">
-      <Markdown :text="issue.body" />
+      <CommentBody :body="issue.body" :asset-url="ghAssetUrl" @open="viewer = $event" />
     </div>
     <p v-else class="gh__none">No description on the issue.</p>
+
+    <!-- Teleports itself; the deck transforms every card it holds. -->
+    <MediaViewer
+      v-if="viewer"
+      :items="viewer.items"
+      :at="viewer.at"
+      @close="viewer = null"
+    />
   </article>
 </template>
 
