@@ -181,6 +181,8 @@ export interface CardApi {
   shell: {
     /** How many findings this card is keeping. Gates the `anyKept` action; see `visible`. */
     keeping: (count: number) => void;
+    /** How many of its findings are still undecided. Gates the `allKept` actions. */
+    undecided: (count: number) => void;
     /** Which note the evidence strip follows. The one field `art` adds to `base`. */
     selected: (note: any) => void;
     /** Open the long prose over the card: `'prose'`, `'talk'`, or `''` to close it. */

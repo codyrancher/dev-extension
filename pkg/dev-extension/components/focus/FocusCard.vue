@@ -184,6 +184,8 @@ const overdue = computed(() => props.task.waitingHours >= 48);
  * `visible`, and the comment there for what it cost not to know.
  */
 const kept = ref(0);
+/** Findings still undecided, reported by the pass. See `allKept`. */
+const undecided = ref(0);
 
 watch(() => props.task.key, () => { kept.value = 0; bodyShows.value = ''; });
 
@@ -246,6 +248,15 @@ function visible(action: CardAction): boolean {
     unpatched: !a.advisory?.patched,
     mergeable: a.bumps.some((row) => row.state === 'green' && !row.major),
     anyKept:   kept.value > 0,
+    /*
+     * Every finding decided, which is when a review can actually be submitted.
+     *
+     * Not `kept === all`: a dropped finding is decided and not kept, so that would never come
+     * true once one was dropped and the buttons would stay hidden with nothing left to do. The
+     * pass reports what is still pending, and `submitReview` refuses on exactly that - so the
+     * buttons now appear when they would succeed and not before.
+     */
+    allKept:   (props.notes || []).length > 0 && undecided.value === 0,
     suggested: Boolean(a.reviewers?.suggested.length),
   };
 
@@ -286,6 +297,7 @@ const cardApi: CardApi = {
   components:  CARD_COMPONENTS,
   shell:       {
     keeping:  (count: number) => { kept.value = Number(count) || 0; },
+    undecided: (count: number) => { undecided.value = Number(count) || 0; },
     selected: (note: any) => { noteOn.value = note || null; },
     openText: (what: string) => { readOn.value = String(what || '') as typeof readOn.value; },
     showing:  (name: string) => { bodyShows.value = String(name || ''); },

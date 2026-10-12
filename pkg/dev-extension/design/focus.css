@@ -262,6 +262,20 @@ body.theme-light .dev-focus {
  * this repository's own style blocks. A reset is the only place a rule from outside can be
  * answered once.
  */
+/*
+ * `display: inline` here is load-bearing for `code` and `kbd` and a trap for `pre`.
+ *
+ * A component that paints a code block - border, radius, padding, a background - out-specifies
+ * the rest of this reset and almost never thinks to set `display`, so the box stays inline and
+ * all four are painted on every wrapped line instead of once around the block: each line in its
+ * own rounded rectangle, overlapping its neighbours by the padding. It cost three wrong
+ * diagnoses in review comments before anybody looked here.
+ *
+ * Left as it is, because this reset's whole job is to answer `@rancher/shell`'s rules on bare
+ * `pre` and `code` and narrowing it invites those back. Anything styling a `pre` as a block
+ * inside `.dev-focus` says `display: block` itself - Markdown.vue, ChatTurn.vue and
+ * MediaViewer.vue all do, each with a line pointing here.
+ */
 .dev-focus code,
 .dev-focus pre,
 .dev-focus kbd {

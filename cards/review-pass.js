@@ -77,12 +77,6 @@ module.exports = {
     `,
     actions: [
       /*
-       * Gated, because it arrives ungateable. Every one of these cards is `0 of 2 decided · 0 to
-       * post` on arrival, and this button posted nothing and then dismissed the card. See
-       * `anyKept`.
-       */
-      { label: 'Post the review', verb: 'post', confirm: true, when: 'anyKept' },
-      /*
        * The four ways a pass ends, each one a call rather than a conversation.
        *
        * They were `ask` prompts - "use the my-pr-review-submit skill for {what}: approve it" -
@@ -96,15 +90,22 @@ module.exports = {
        * Findings left unsent stay in the workspace - they are drafts, and a button called
        * Approve should not delete them - and the card says how many did.
        *
+       * Shown only once every finding is decided (`allKept`), and `Post the review` is gone.
+       *
+       * It did the same job as `Leave comments` with a worse name - it posted the kept findings
+       * with no verdict - and it was the one button of the five that was live while findings
+       * were still pending, which `submitReview` refuses anyway. So: judge them all, then
+       * choose how the review ends. Until then the card's question is which ones matter.
+       *
        * In the row rather than behind `Finish the review`. They were one control with four
        * answers in a menu, which is a decision you have to open something to find - and the
        * question this card asks is which of the four you want. Every one confirms, because all
        * four are public the moment they land.
        */
-      { label: 'Approve', verb: 'finish', confirm: true, event: 'APPROVE', withComments: false },
-      { label: 'Approve with comments', verb: 'finish', confirm: true, event: 'APPROVE', withComments: true },
-      { label: 'Leave comments', verb: 'finish', confirm: true, event: 'COMMENT', withComments: true },
-      { label: 'Ask for changes', verb: 'finish', confirm: true, event: 'REQUEST_CHANGES', withComments: true },
+      { label: 'Approve', verb: 'finish', confirm: true, when: 'allKept', event: 'APPROVE', withComments: false },
+      { label: 'Approve with comments', verb: 'finish', confirm: true, when: 'allKept', event: 'APPROVE', withComments: true },
+      { label: 'Leave comments', verb: 'finish', confirm: true, when: 'allKept', event: 'COMMENT', withComments: true },
+      { label: 'Ask for changes', verb: 'finish', confirm: true, when: 'allKept', event: 'REQUEST_CHANGES', withComments: true },
       { verb: 'snooze', hours: 8 },
     ],
 };

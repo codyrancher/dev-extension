@@ -183,6 +183,21 @@ const drawn = (text: string) => alerted(renderMd(embedded(text)));
 }
 
 .md-body :deep(pre) {
+  /*
+   * A block, said here because something else says otherwise.
+   *
+   * `design/focus.css` resets `.dev-focus pre` to `display: inline` - it is answering
+   * `@rancher/shell`, which styles bare `pre` and `code` for its own pages. The rule below
+   * out-specifies that reset for everything it names, and `display` was not among them: so a
+   * code block kept its border, radius, padding and background *and* stayed inline, which
+   * paints all four on every line fragment instead of once on the box. Each line came out in
+   * its own rounded rectangle, overlapping its neighbours by the padding.
+   *
+   * That is the overlapping code block in review comments. It was not the markdown - `marked`
+   * emits one `<pre><code>` for a fenced block, checked against the real comment - and it was
+   * not flex-shrink either.
+   */
+  display: block;
   margin: 0 0 var(--s3);
   padding: var(--s3);
   border: 1px solid var(--border);

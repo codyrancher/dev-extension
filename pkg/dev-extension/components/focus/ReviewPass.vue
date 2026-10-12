@@ -70,6 +70,8 @@ const emit = defineEmits<{
    * this one is read and not drawn.
    */
   (e: 'kept', count: number): void;
+  /** How many are still undecided; see `undecided`. Gates the submission buttons. */
+  (e: 'undecided', count: number): void;
 }>();
 
 /** The comment's lines, syntax-highlighted, in the shape every code view in here takes. */
@@ -111,6 +113,19 @@ const bodyOf = (note: ReviewNote) => bodies.value[note.id] ?? note.body;
 const keeping = computed(() => props.notes.filter((note) => ['good', 'edited'].includes(verdictOf(note))).length);
 
 watch(keeping, (count) => emit('kept', count), { immediate: true });
+
+/*
+ * How many findings are still undecided, which is a different question from how many are kept.
+ *
+ * A dropped finding is decided and not kept, so "kept === all" would never come true once one
+ * was dropped - the submission buttons would stay hidden with nothing left to do. This counts
+ * what is still pending, which is also the rule `submitReview` enforces at the other end: it
+ * refuses while any comment is pending, naming the number. The buttons now appear exactly when
+ * they would succeed.
+ */
+const undecided = computed(() => props.notes.filter((note) => verdictOf(note) === 'pending').length);
+
+watch(undecided, (count) => emit('undecided', count), { immediate: true });
 
 /** The agent's words, read over the card, when three lines of them are not the argument. */
 const sayAll = ref(false);

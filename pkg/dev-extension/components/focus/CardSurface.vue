@@ -286,6 +286,7 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
         :pr="pr"
         :live="api.interactive.value"
         @kept="api.shell.keeping($event)"
+        @undecided="api.shell.undecided($event)"
         @select="api.shell.selected($event)"
         @expand="api.emit('expand', $event)"
         @resolve="api.emit('resolve', $event)"

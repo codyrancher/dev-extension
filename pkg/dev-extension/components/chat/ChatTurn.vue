@@ -317,6 +317,8 @@ const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) =>
 }
 
 .turn__body pre {
+  /* A block: `.dev-focus pre` resets to `display: inline`. See Markdown.vue for what that does. */
+  display: block;
   max-height: 300px;
   margin: 0 0 var(--s2);
   overflow: auto;

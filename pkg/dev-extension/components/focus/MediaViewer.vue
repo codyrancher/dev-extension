@@ -343,13 +343,22 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
+    <!--
+      Only an image takes the wheel.
+
+      This was `@wheel.prevent`, and a Vue event modifier is not conditional: the handler ran
+      for an image and the `preventDefault` ran for everything, so on a text file the wheel was
+      cancelled by a listener that then did nothing with it - four hundred lines of script in a
+      box that would not scroll. `onWheel` calls `preventDefault` itself, which is where it
+      belongs: zooming is the case that means to swallow the event.
+    -->
     <div
       v-else
       ref="stage"
       class="viewer__stage"
       :class="{ 'viewer__stage--grab': scale > 1, 'viewer__stage--held': dragging }"
       @click.self="emit('close')"
-      @wheel.prevent="item.kind === 'image' ? onWheel($event) : undefined"
+      @wheel="item.kind === 'image' ? onWheel($event) : undefined"
     >
       <img
         v-if="item.kind === 'image'"
@@ -407,6 +416,16 @@ onBeforeUnmount(() => {
     </footer>
   </div>
 </template>
+
+<!--
+  The highlighter's palette, unscoped and shared.
+
+  `highlight()` emits `.hljs-*` classes and nothing more; the colours for them live in one
+  stylesheet that ArtifactThumb, ArtifactViewer and ChatPane each pull in the same way. Without
+  it the spans are all there and all the same colour, which is what this preview was - and a
+  scoped block could not have fixed it, because `v-html` content carries no scope attribute.
+-->
+<style lang="scss" src="../hljs-theme.scss"></style>
 
 <style scoped>
 /* The thumbnail fills the tile's frame, like the still and the video do. */
@@ -716,6 +735,14 @@ onBeforeUnmount(() => {
 }
 
 .viewer__pre {
+  /*
+   * A block, and for a second reason as well as the paint.
+   *
+   * `.dev-focus pre` resets to `display: inline` (see Markdown.vue). This rule paints nothing
+   * boxy, so it never showed the per-line rectangles - but an inline box cannot scroll either,
+   * and a four-hundred-line script is the whole case for this pane.
+   */
+  display: block;
   margin: 0;
   font-family: var(--dev-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12.5px;

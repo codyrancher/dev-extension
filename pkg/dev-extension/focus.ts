@@ -118,7 +118,7 @@ export interface CardAction {
    * card's one decision dismissed the work. With nothing kept the primary falls through to "Which
    * ones matter?", which is the right first move at nought decided.
    */
-  when?: 'patched' | 'unpatched' | 'mergeable' | 'anyKept' | 'suggested';
+  when?: 'patched' | 'unpatched' | 'mergeable' | 'anyKept' | 'allKept' | 'suggested';
 }
 
 /**
