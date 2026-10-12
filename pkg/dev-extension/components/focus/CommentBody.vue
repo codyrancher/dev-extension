@@ -157,6 +157,21 @@ const open = (item: NoteMedia) => emit('open', { items: shown.value, at: Math.ma
   line-height: 1.6;
 }
 
+/*
+ * Natural height, and never less.
+ *
+ * This is a flex column, and a flex item defaults to `flex-shrink: 1`: put it anywhere shorter
+ * than its content and every part is squeezed to fit instead of overflowing. A paragraph
+ * absorbs that - it rewraps. A `<pre>` cannot: its height is its line count times its line
+ * height, so being handed less draws the same lines in less room, and they overlap and clip.
+ * That is the code block that has been unreadable in these comments, and it was never the code
+ * block's own styling.
+ *
+ * Whatever is short of room, the answer is for the scroller around this to scroll. These parts
+ * keep the height they need.
+ */
+.md > * { flex: 0 0 auto; }
+
 /* ── The evidence, where the comment put it ───────────────────────────────────────────────── */
 .md__media { margin: 0; min-width: 0; }
 
