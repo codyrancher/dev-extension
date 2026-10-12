@@ -14,13 +14,59 @@ module.exports = {
      * turn of the deck to a review card. No `stat` either: the size of what was reviewed is not
      * drawn on this card.
      */
-    wants:   ['notes', 'media'],
+    /*
+     * `pr` and `issue` join the two that draw the pass itself: this card now has three tabs and
+     * they are three views of one subject. Both come off the `prDetail` the notes already read,
+     * so the only new call is the issue's own body, and only on a pull request that names one.
+     */
+    wants:   ['notes', 'media', 'pr', 'issue'],
     /*
      * The pass is the surface, said rather than inferred: `notes` is the only thing here the
      * ladder would have picked anyway, and a card that names its subject cannot have it quietly
      * outranked by an artifact somebody adds to `wants` later.
      */
     surface: 'pass',
+    /*
+     * The first card with a body of its own rather than the default `<CardSurface />`.
+     *
+     * Three views of one pull request: the review waiting on you, the issue it is for, and the
+     * change itself as GitHub states it. They were never all on the card - the review was the
+     * whole body, and judging it meant leaving to read what it was supposed to do.
+     *
+     * `CardTabs` is in CARD_COMPONENTS, so this is a composition rather than a new surface, and
+     * the next card that wants tabs writes these six lines instead of touching the shell.
+     */
+    setup(api) {
+      const { computed } = api.vue;
+
+      /* Unwrapped here, because a ref *inside* an object is not unwrapped in a template. */
+      const issue = computed(() => api.artifacts.value.issue);
+      const pr = computed(() => api.artifacts.value.pr);
+
+      /*
+       * Comments always; the other two only when there is something behind them.
+       *
+       * A tab that opens on "nothing here" is worse than no tab: it is a place the eye has to
+       * go to learn there was nothing to learn. A pull request with no `Fixes` has no Issue
+       * tab at all, and the strip is two.
+       */
+      const tabs = computed(() => [
+        { id: 'comments', label: 'Comments', count: api.notes.value.length },
+        ...(issue.value ? [{ id: 'issue', label: 'Issue' }] : []),
+        ...(pr.value ? [{ id: 'pr', label: 'PR' }] : []),
+      ]);
+
+      return {
+        api, tabs, issue, pr,
+      };
+    },
+    template: `
+      <CardTabs :tabs="tabs">
+        <template #comments><CardSurface :api="api" /></template>
+        <template #issue><GithubIssue v-if="issue" :issue="issue" /></template>
+        <template #pr><GithubPr v-if="pr" :pr="pr" /></template>
+      </CardTabs>
+    `,
     actions: [
       /*
        * Gated, because it arrives ungateable. Every one of these cards is `0 of 2 decided · 0 to

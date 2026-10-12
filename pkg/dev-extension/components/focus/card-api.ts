@@ -52,6 +52,9 @@ import CheckList from './CheckList.vue';
 import CommentBody from './CommentBody.vue';
 import MediaViewer from './MediaViewer.vue';
 import ReviewPass from './ReviewPass.vue';
+import CardTabs from './CardTabs.vue';
+import GithubPr from './GithubPr.vue';
+import GithubIssue from './GithubIssue.vue';
 import ChangeSet from './ChangeSet.vue';
 import CardComments from './CardComments.vue';
 import CardEvidence from './CardEvidence.vue';
@@ -82,6 +85,16 @@ export const CARD_COMPONENTS: Record<string, any> = {
    * cards their bodies.
    */
   CardSurface,
+  /*
+   * The tab strip, and the two summaries that gave it something worth a second tab.
+   *
+   * Here rather than in one card, because the division they draw is not special to any card: a
+   * card is about one thing, and a pull request, the issue it closes and the review of it are
+   * three views of that thing. Any card whose template asks for `CardTabs` gets it.
+   */
+  CardTabs,
+  GithubPr,
+  GithubIssue,
   AppButton,
   AppIcon,
   KindChip,

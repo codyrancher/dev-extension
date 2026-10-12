@@ -69,10 +69,43 @@ const SHARE_OF_LABEL = 'dev.rancher.io/share-of';
 
 export type Artifact =
   | 'stat' | 'checks' | 'logs' | 'notes' | 'files' | 'comments' | 'media' | 'live' | 'body'
-  | 'pool' | 'reviewers' | 'commits' | 'conversation' | 'advisory' | 'bump' | 'bumps';
+  | 'pool' | 'reviewers' | 'commits' | 'conversation' | 'advisory' | 'bump' | 'bumps'
+  /** The pull request itself, as GitHub describes it: state, author, branches, body. */
+  | 'pr'
+  /** The issue this pull request says it closes, for a card whose subject is the change. */
+  | 'issue';
 
 /** How big the change is. Three numbers, because they are the three everybody asks for. */
 export interface CardStat { files: number; added: number; removed: number }
+
+/**
+ * A pull request as GitHub itself describes it, for drawing a summary of one.
+ *
+ * Everything here comes off the `meta` the dev API already returns with the pull request, so a
+ * card asking for this adds no round trip to one that was reading the diff or the checks
+ * anyway - it is the same `prDetail` the rest of them share.
+ */
+export interface PrSummary {
+  number: number;
+  repo: string;
+  title: string;
+  url: string;
+  /** `OPEN`, `CLOSED` or `MERGED`, as GitHub spells it. `draft` and `merged` refine it. */
+  state: string;
+  draft: boolean;
+  merged: boolean;
+  author: string;
+  baseRef: string;
+  headRef: string;
+  /** The description, markdown as written. */
+  body: string;
+  stat: CardStat;
+  approved: boolean;
+  approvedBy: string[];
+  mergeable: boolean;
+  /** `clean`, `blocked`, `dirty`… what GitHub says is standing in the way. */
+  mergeableState: string;
+}
 
 export interface CardCheck {
   /**
@@ -243,6 +276,15 @@ export interface PoolIssue {
    * live deck has exactly one of: `MSpencer87 also has it` on #13888.
    */
   assignee: string;
+  /**
+   * The issue's own description, where a card is going to draw it.
+   *
+   * Optional, and absent for the pool: thirty issues are offered there and not one of them is
+   * read, so carrying thirty bodies to draw thirty rows of labels would be the search paying
+   * for a surface nobody opened. Set where an issue is the thing on screen - the card whose
+   * subject is one, and the Issue tab of a card about the change that closes it.
+   */
+  body?: string;
   /** And whether the viewer is one of them, which is what makes it "also". */
   mine?: boolean;
 }
@@ -419,6 +461,8 @@ export interface CardArtifacts {
    * once. Same shape as a pool row, so IssueMarks draws either.
    */
   issue: PoolIssue | null;
+  /** The pull request itself; see `PrSummary`. Null unless the card asked for `pr`. */
+  pr: PrSummary | null;
   pool: PoolIssue[];
   reviewers: Reviewers | null;
   commits: CardCommit[];
@@ -440,6 +484,7 @@ export const NO_ARTIFACTS: CardArtifacts = {
   live:   [],
   body:   '',
   issue:  null,
+  pr:     null,
   pool:   [],
   reviewers: null,
   commits: [],
@@ -1498,7 +1543,7 @@ export async function readArtifacts(
   const entry: Json = subject.pr ? [...(work?.mine || []), ...(work?.reviewing || [])].find((e: Json) => e.number === subject.pr) : null;
   const statFromQueue = (entry?.stat || null) as CardStat | null;
 
-  const DETAIL_KINDS: Artifact[] = ['stat', 'checks', 'logs', 'files', 'comments', 'body', 'reviewers', 'commits'];
+  const DETAIL_KINDS: Artifact[] = ['stat', 'checks', 'logs', 'files', 'comments', 'body', 'reviewers', 'commits', 'pr', 'issue'];
   const needsPr = subject.pr && DETAIL_KINDS.some((kind) => want.has(kind) && !(kind === 'stat' && statFromQueue));
   const detailSoon: Promise<Json | null> = needsPr ? prDetail(subject.pr).catch(() => null) : Promise.resolve(null);
 
@@ -1664,6 +1709,94 @@ export async function readArtifacts(
       if (want.has('reviewers') && detail && subject.pr) {
         out.reviewers = reviewersOf(subject.pr, detail, work, viewer);
       }
+    })(),
+
+    /*
+     * The pull request as GitHub describes it, off the `meta` that came with the diff.
+     *
+     * No round trip of its own: `detailSoon` is the one read every branch here shares, and
+     * everything a summary needs is in the block beside the files.
+     */
+    (async() => {
+      const detail = await detailSoon;
+      const meta = detail?.meta as Json | undefined;
+
+      if (!want.has('pr') || !meta) {
+        return;
+      }
+      out.pr = {
+        number:         Number(meta.number || subject.pr),
+        repo:           String(meta.repo || DEFAULT_REPO),
+        title:          String(meta.title || ''),
+        url:            String(meta.url || ''),
+        state:          String(meta.state || ''),
+        draft:          !!meta.draft,
+        merged:         !!meta.merged,
+        author:         String(meta.author || ''),
+        baseRef:        String(meta.baseRef || ''),
+        headRef:        String(meta.headRef || ''),
+        body:           capBody(String(meta.body || '')),
+        stat:           {
+          files:   Number(meta.changedFiles || 0),
+          added:   Number(meta.additions || 0),
+          removed: Number(meta.deletions || 0),
+        },
+        approved:       !!meta.approved,
+        approvedBy:     Array.isArray(meta.approvedBy) ? meta.approvedBy.map(String) : [],
+        mergeable:      !!meta.mergeable,
+        mergeableState: String(meta.mergeableState || ''),
+      };
+    })(),
+
+    /*
+     * The issue this pull request says it closes.
+     *
+     * `issue` was only ever filled for a card whose *subject* is an issue (see `body` below).
+     * A card about a change has no issue number of its own, and the one it is for is the thing
+     * that says what the change is supposed to do - which is most of what you need to judge it.
+     *
+     * Taken from the description, because that is where GitHub takes it from too: a `Fixes`,
+     * `Closes` or `Resolves` followed by a number is what makes GitHub close the issue on merge,
+     * so a pull request that has one has stated its subject. The branch name is the fallback
+     * and nothing more than a convention here - `iss17682-2` - so it is only read when the
+     * description said nothing, and never trusted over it.
+     */
+    (async() => {
+      const detail = await detailSoon;
+      const meta = detail?.meta as Json | undefined;
+
+      if (!want.has('issue') || !subject.pr || !meta || out.issue) {
+        return;
+      }
+
+      const said = /\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s*:?\s*#(\d+)/i.exec(String(meta.body || ''));
+      const named = /^iss(?:ue)?[-_]?(\d+)/i.exec(String(meta.headRef || ''));
+      const number = Number(said?.[1] || named?.[1] || 0);
+
+      if (!number) {
+        return;
+      }
+
+      const issue = await issueBody(DEFAULT_REPO, number).catch(() => null);
+
+      if (!issue) {
+        return;
+      }
+      const whoElse = issue.assignees.filter((who) => who.toLowerCase() !== viewer.toLowerCase());
+
+      out.issue = {
+        number,
+        title:    issue.title,
+        url:      issue.url,
+        repo:     DEFAULT_REPO,
+        labels:   issue.labels,
+        comments: issue.comments,
+        // Days, the way the card above works it out: `issueBody` gives the date, not the span.
+        age:      Math.max(0, Math.round((Date.now() - Date.parse(issue.createdAt || '')) / 86_400_000)) || 0,
+        assignee: whoElse.join(', '),
+        mine:     issue.assignees.length !== whoElse.length,
+        body:     capBody(issue.body),
+      };
     })(),
 
     (async() => {
