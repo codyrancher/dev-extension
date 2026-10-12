@@ -1135,6 +1135,15 @@ async function readFocus() {
        * all of them, which is what it did before anyone could say otherwise.
        */
       repos:   read('repos.json'),
+      /*
+       * And which it may not, which is the other half of the same question.
+       *
+       * Separate from `repos` because they are not opposites of one shape: that one is "only
+       * here" and needs every repository you want named, this one is "not there" and needs one.
+       * A deck drawing from five repositories where one is noise is the ordinary case, and it
+       * is the case the allow-list cannot express without naming the other four.
+       */
+      without: read('without.json'),
       version: map.metadata?.resourceVersion || '',
     };
   } catch (e) {
@@ -1159,13 +1168,27 @@ async function writeFocus(body) {
   if (Array.isArray(body?.tasks)) {
     data['tasks.json'] = JSON.stringify(body.tasks, null, 2);
   }
+  // `owner/name` only, both ways: anything else is a search qualifier somebody typed by
+  // accident, and a malformed one makes GitHub reject the whole query rather than ignore the
+  // bad part.
+  const named = (list) => list.filter((repo) => /^[\w.-]+\/[\w.-]+$/.test(String(repo || '').trim()));
+
   if (Array.isArray(body?.repos)) {
-    // `owner/name` only: anything else is a search qualifier somebody typed by accident, and a
-    // malformed one makes GitHub reject the whole query rather than ignore the bad part.
-    data['repos.json'] = JSON.stringify(body.repos.filter((repo) => /^[\w.-]+\/[\w.-]+$/.test(String(repo || '').trim())), null, 2);
+    data['repos.json'] = JSON.stringify(named(body.repos), null, 2);
+  }
+  /*
+   * The exclusions, which this route used to drop on the floor.
+   *
+   * It wrote `weights`, `tasks` and `repos` and ignored anything else, silently - so Remove in
+   * the UI sent `{ repos, without }`, got an `ok: true` for the half it understood, and the
+   * page re-read a document that had never heard of the other half. The button looked broken
+   * because nothing it did survived the round trip.
+   */
+  if (Array.isArray(body?.without)) {
+    data['without.json'] = JSON.stringify(named(body.without), null, 2);
   }
   if (!Object.keys(data).length) {
-    throw failure(400, 'Nothing to write: send weights, tasks or repos.');
+    throw failure(400, 'Nothing to write: send weights, tasks, repos or without.');
   }
 
   const p = `/api/v1/namespaces/${ NAMESPACE }/configmaps/${ FOCUS_MAP }`;

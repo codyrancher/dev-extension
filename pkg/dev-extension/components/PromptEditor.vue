@@ -49,7 +49,7 @@ const emit = defineEmits<{
 
 const draft = ref(props.template);
 const skillDraft = ref(props.skillContent);
-const box = ref<HTMLTextAreaElement | null>(null);
+const boxEl = ref<HTMLTextAreaElement | null>(null);
 
 watch(() => props.template, (next) => { draft.value = next; });
 watch(() => props.skillContent, (next) => { skillDraft.value = next; });
@@ -84,11 +84,71 @@ const unknown = computed(() => {
   return [...new Set([...draft.value.matchAll(pattern)].map((m) => m[1]).filter((name) => !known.has(name)))];
 });
 
+/**
+ * The draft cut into what is literal and what is a variable, scanned once.
+ *
+ * Two things read it. The box shows where a token *is*; the preview shows what it *became*. They
+ * were a plain string each, so the one question this dialog exists to answer - which words got
+ * replaced - had to be answered by eye, comparing two blocks of text line by line.
+ *
+ * Built from `token`, which is the only thing here that knows the dialect, so it marks exactly
+ * the names the host will substitute and nothing that merely looks like one.
+ */
+const segments = computed<{ text: string; name: string; value: string }[]>(() => {
+  const shape = props.token('\u0000').split('\u0000');
+  const text = draft.value;
+
+  if (shape.length !== 2) {
+    return [{ text, name: '', value: '' }];
+  }
+  const out: { text: string; name: string; value: string }[] = [];
+  let at = 0;
+
+  while (at < text.length) {
+    // The earliest known token from here, so `{what}` before `{workspace}` whatever order the
+    // list is in.
+    let best = -1;
+    let found: { name: string; value: string } | null = null;
+
+    for (const v of props.vars) {
+      const i = text.indexOf(props.token(v.name), at);
+
+      if (i >= 0 && (best < 0 || i < best)) {
+        best = i;
+        found = { name: v.name, value: v.value };
+      }
+    }
+    if (best < 0 || !found) {
+      out.push({ text: text.slice(at), name: '', value: '' });
+      break;
+    }
+    if (best > at) {
+      out.push({ text: text.slice(at, best), name: '', value: '' });
+    }
+    out.push({ text: props.token(found.name), name: found.name, value: found.value });
+    at = best + props.token(found.name).length;
+  }
+
+  return out;
+});
+
 const preview = computed(() => props.expand(draft.value, props.vars));
+
+/* The box and its ghost scroll as one; the ghost is what paints the token's background. */
+const ghost = ref<HTMLElement | null>(null);
+
+function syncGhost(): void {
+  const box = boxEl.value;
+
+  if (box && ghost.value) {
+    ghost.value.scrollTop = box.scrollTop;
+    ghost.value.scrollLeft = box.scrollLeft;
+  }
+}
 
 /** Put a variable where the cursor is, rather than at the end of whatever was typed. */
 function insert(name: string) {
-  const el = box.value;
+  const el = boxEl.value;
   const text = props.token(name);
 
   if (!el) {
@@ -133,12 +193,31 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         The prompt
         <span v-if="edited" class="pe__tag">edited here</span>
       </h4>
-      <textarea
-        ref="box"
-        v-model="draft"
-        class="pe__box"
-        spellcheck="false"
-      />
+      <!--
+        The box, with a ghost behind it that paints the tokens.
+        
+        A textarea cannot colour part of its own text, so the usual arrangement: a block with
+        the same metrics sits underneath holding the same string, its characters invisible and
+        only the token spans given a background; the real textarea lies on top, transparent,
+        so what you see and what you edit are the same glyphs in the same places. The two
+        scroll together - see `syncGhost` - because a ghost that does not follow is worse than
+        no highlight at all.
+      -->
+      <div class="pe__box-wrap">
+        <div ref="ghost" class="pe__ghost" aria-hidden="true"><span
+          v-for="(part, n) in segments"
+          :key="n"
+          :class="{ 'pe__ghost-hit': part.name }"
+        >{{ part.text }}</span><span>&#8203;</span></div>
+        <textarea
+          ref="boxEl"
+          v-model="draft"
+          class="pe__box"
+          spellcheck="false"
+          @scroll="syncGhost"
+          @input="syncGhost"
+        />
+      </div>
 
       <!-- The one mistake this editor can catch: a name that will never be filled in. -->
       <p v-if="unknown.length" class="pe__warn">
@@ -163,7 +242,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
       </table>
 
       <h4 class="pe__title">As it will be sent</h4>
-      <pre class="pe__preview">{{ preview }}</pre>
+      <!-- The same marking, on the other side of the substitution: what each token became. -->
+      <pre class="pe__preview"><template
+        v-for="(part, n) in segments"
+        :key="n"
+      ><span v-if="part.name" class="pe__hit">{{ part.value || '—' }}</span><template v-else>{{ part.text }}</template></template></pre>
 
       <div class="pe__buttons">
         <button type="button" class="pe__btn pe__btn--go" :disabled="!!busy || !draft.trim()" @click="emit('send', draft)">
@@ -217,6 +300,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   --pe-line: var(--border, #3d4450);
   --pe-sunk: var(--input-bg, #1b1c21);
   --pe-accent: var(--primary, #3d98d3);
+  /* The rail fills its primary. See the Focus block for why this is a token and not a colour. */
+  --pe-go-bg: var(--primary, #3d98d3);
+  --pe-go-ink: #fff;
+  --pe-wash: color-mix(in srgb, var(--primary, #3d98d3) 16%, transparent);
   --pe-warn: var(--warning, #d29922);
   --pe-error: var(--error, #f85149);
   --pe-radius: 4px;
@@ -236,6 +323,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   --pe-line: var(--border);
   --pe-sunk: var(--ground-deep);
   --pe-accent: var(--accent);
+  /*
+   * Not a solid fill of it.
+   *
+   * `--accent` is #5b8cff, and the deck spends it on a ring, a link, an underline - never on a
+   * 120px block of colour. Filled, one button was the brightest thing on a dark card by a
+   * wide margin, which is the "blinding" part; the hue was never the problem. So in here the
+   * primary is the wash with accent ink, which is how every other control in this view marks
+   * itself as the one that is on.
+   */
+  --pe-go-bg: var(--accent-wash);
+  --pe-go-ink: var(--accent);
+  --pe-wash: var(--accent-wash);
   --pe-warn: var(--warning);
   --pe-error: var(--danger);
   --pe-radius: var(--r-sm);
@@ -253,30 +352,83 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   font-weight: 600;
 }
 
+/* The same restraint as the button: a wash with accent ink, not a block of accent. */
 .pe__tag {
   padding: 1px 6px;
+  border: 1px solid var(--pe-accent);
   border-radius: 999px;
-  background: var(--pe-accent);
-  color: var(--ink-on-kind, #fff);
+  background: var(--pe-wash);
+  color: var(--pe-accent);
   font-size: 10px;
   font-weight: 500;
 }
 
-.pe__box {
-  width: 100%;
+/*
+ * The box and its ghost, stacked.
+ *
+ * Every metric that decides where a glyph lands is declared once, on this wrapper, and
+ * inherited by both children: font, size, line height, and the wrapping rules. The two drift
+ * apart the moment one of them is set on only one, and a drifting highlight is worse than
+ * none - it marks the wrong words.
+ */
+.pe__box-wrap {
+  position: relative;
   min-height: 120px;
-  padding: 8px;
-  border: 1px solid var(--pe-line);
-  border-radius: var(--pe-radius);
-  background: var(--pe-sunk);
-  color: var(--pe-text);
   font-family: var(--pe-mono);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.pe__ghost,
+.pe__box {
+  /* One box, one set of metrics. `border` counts: it moves the text inside by its width. */
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 120px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid transparent;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* Behind, painting only the tokens: its own characters are never seen. */
+.pe__ghost {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 4px;
+  color: transparent;
+  pointer-events: none;
+}
+
+.pe__ghost-hit {
+  border-radius: 3px;
+  background: var(--pe-wash);
+  box-shadow: 0 0 0 1px var(--pe-accent) inset;
+}
+
+.pe__box {
+  position: relative;
+  /* Transparent, so the ghost's marks show through under the real glyphs. */
+  background: transparent;
+  border-color: var(--pe-line);
+  border-radius: var(--pe-radius);
+  color: var(--pe-text);
   resize: vertical;
 }
 
-.pe__box--tall { min-height: 220px; }
+/* The ground is on the wrapper, so it sits under both. */
+.pe__box-wrap { background: var(--pe-sunk); border-radius: var(--pe-radius); }
+
+/* The skill's box is a plain one: no tokens in it, so no ghost and its own ground. */
+.pe__box--tall {
+  min-height: 220px;
+  border: 1px solid var(--pe-line);
+  background: var(--pe-sunk);
+}
 
 .pe__error,
 .pe__warn {
@@ -326,6 +478,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   word-break: break-word;
 }
 
+/* What a token became, marked the way the token itself is. */
+.pe__hit {
+  border-radius: 3px;
+  padding: 0 2px;
+  background: var(--pe-wash);
+  box-shadow: 0 0 0 1px var(--pe-accent) inset;
+  color: var(--pe-text);
+}
+
 .pe__buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .pe__btn {
@@ -341,7 +502,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 
 .pe__btn:hover:not(:disabled) { border-color: var(--pe-accent); }
 .pe__btn:disabled { opacity: 0.45; cursor: default; }
-.pe__btn--go { border-color: var(--pe-accent); background: var(--pe-accent); color: var(--ink-on-kind, #fff); }
+.pe__btn--go { border-color: var(--pe-accent); background: var(--pe-go-bg); color: var(--pe-go-ink); }
 .pe__btn--quiet { color: var(--pe-muted); }
 .pe__hint { margin: 0; color: var(--pe-muted); font-size: 11px; }
 </style>

@@ -19,8 +19,11 @@
  */
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import type { FocusTask, CardAction, CardSurface } from '../../focus';
-import { isAgentic, promptKeyOf, promptTemplate } from '../../focus';
+import { isAgentic, promptKeyOf, promptTemplate, actionPrompt } from '../../focus';
 import PromptEditor from '../PromptEditor.vue';
+import InlineChat from './InlineChat.vue';
+import { listConversations, startConversation, paneCommand } from '../../conversations';
+import { startAgentSession } from '../../agent';
 import AppButton from './AppButton.vue';
 import KindChip from './KindChip.vue';
 import AppIcon from './AppIcon.vue';
@@ -367,7 +370,18 @@ const decisions = computed(() => others.value.filter((action) => !action.group
  * - with the chat bar 100px below reading `Ask about "<title>"`, which is the same control a third
  * time. Where the card has already asked, the bar is the general question.
  */
-const asked = computed(() => others.value.find((action) => action.verb === 'ask' && !action.group) || null);
+/*
+ * The questions a card offers, all of them.
+ *
+ * This took the *first* ungrouped `ask` and drew that one, which was right while every card had
+ * at most one - and silently dropped the second the moment a card wanted two: not in a menu,
+ * not in `decisions` (which excludes `ask`), not anywhere. A card that declares an action and
+ * sees nothing is the worst kind of missing.
+ */
+const asks = computed(() => others.value.filter((action) => action.verb === 'ask' && !action.group));
+
+/** The first of them, for the places that only care whether there is one. */
+const asked = computed(() => asks.value[0] || null);
 
 /**
  * The things an agent can be set to that are one decision, each set behind one control.
@@ -695,6 +709,54 @@ function sendPrompt(text: string) {
   inspecting.value = null;
 }
 
+/*
+ * An AI action's conversation, on the card.
+ *
+ * It used to go to the bar at the bottom: the prompt was posted there, the card was marked as
+ * waiting on that agent, and the answer arrived somewhere else entirely - so pressing a button
+ * on a card sent you off the card to read what it did. One conversation at a time here, because
+ * a card has one body and that is where this is drawn.
+ *
+ * Seeded and not sent. The prompt goes into the chat's own box as a draft, the way Discuss
+ * does: a card's prompt is a good opening and rarely the whole question, and the press that
+ * opens it should not also commit it.
+ */
+const asking = ref<{ label: string; session: string; opening: boolean; error: string; draft: string } | null>(null);
+
+/** Where an AI action's conversation lives; titled per action, so pressing twice returns to it. */
+async function conversationFor(title: string): Promise<{ id: string }> {
+  const workspace = props.task.workspace;
+
+  if (!workspace) {
+    return { id: await startAgentSession('panel') };
+  }
+  const existing = await listConversations(workspace).catch(() => []);
+
+  return existing.find((one) => one.title === title) || await startConversation(workspace, title);
+}
+
+async function askOnCard(action: CardAction) {
+  const label = action.label || action.verb;
+
+  asking.value = {
+    label, session: '', opening: true, error: '', draft: '',
+  };
+
+  const set = (fields: Partial<{ session: string; opening: boolean; error: string; draft: string }>) => {
+    asking.value = asking.value ? { ...asking.value, ...fields } : null;
+  };
+
+  try {
+    const made = await conversationFor(`${ label } · ${ props.task.what }`.slice(0, 80));
+
+    set({ session: made.id, draft: actionPrompt(action, props.task, props.prompts) });
+  } catch (e) {
+    set({ error: (e as Error)?.message || String(e) });
+  } finally {
+    set({ opening: false });
+  }
+}
+
 function press(action: CardAction) {
   if (action.confirm && confirming.value !== action.label) {
     confirming.value = action.label;
@@ -702,6 +764,16 @@ function press(action: CardAction) {
     return;
   }
   confirming.value = '';
+  /*
+   * An `ask` is answered here; everything else is the page's. `describe` is the one verb whose
+   * branch the card cannot decide - it writes through GitHub when there is a description to
+   * write and asks an agent when there is not - so it stays with the page.
+   */
+  if (action.verb === 'ask') {
+    askOnCard(action);
+
+    return;
+  }
   emit('act', action);
 }
 
@@ -1140,7 +1212,32 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
 
     </header>
 
-    <div class="card__body">
+    <!--
+      The conversation an AI action opened, in the body, where the card is.
+
+      It takes the body rather than squeezing in beside it: a card is already tight, and a chat
+      folded into a corner of one is a chat nobody can read. The surface is one press away
+      again, and the conversation stays open behind the close.
+    -->
+    <div v-if="asking" class="card__body card__body--asking">
+      <p class="card__asking-head">
+        <span class="card__asking-what">{{ asking.label }}</span>
+        <button type="button" class="card__asking-out" @click="asking = null">Back to the card</button>
+      </p>
+      <p v-if="asking.opening" class="card__asking-note">Opening a conversation…</p>
+      <p v-else-if="asking.error" class="card__asking-note">{{ asking.error }}</p>
+      <InlineChat
+        v-else-if="asking.session"
+        :key="asking.session"
+        class="card__asking-chat"
+        :session="asking.session"
+        :command="task.workspace ? paneCommand(task.workspace, asking.session) : null"
+        :draft-text="asking.draft"
+        :live="interactive"
+      />
+    </div>
+
+    <div v-else class="card__body">
       <!--
         One band of numbers: the headline one, and then the things you would have gone and looked
         up - the size of the change, what CI says, what is running on a link, how many recordings
@@ -1371,17 +1468,26 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         @auxclick="onAux(action, $event)"
       >{{ labelOf(action) }}</AppButton>
 
-      <!-- The question this card offers, or the general one where it offers none. -->
-      <AppButton
-        v-if="asked"
-        variant="ghost"
-        size="md"
-        icon="sparkle"
-        :class="{ 'card__sure': confirming === asked.label }"
-        @click="press(asked)"
-        @mousedown="onAux(asked, $event)"
-        @auxclick="onAux(asked, $event)"
-      >{{ labelOf(asked) }}</AppButton>
+      <!--
+        The questions this card offers, or the general one where it offers none.
+
+        The loop is inside a `template v-if` so the `v-else-if` below it still has a partner:
+        swapping this element's own `v-if` for a `v-for` left that one dangling, which the SFC
+        compiler reports as `Cannot read properties of null` and no line number.
+      -->
+      <template v-if="asks.length">
+        <AppButton
+          v-for="action in asks"
+          :key="action.label"
+          variant="ghost"
+          size="md"
+          icon="sparkle"
+          :class="{ 'card__sure': confirming === action.label }"
+          @click="press(action)"
+          @mousedown="onAux(action, $event)"
+          @auxclick="onAux(action, $event)"
+        >{{ labelOf(action) }}</AppButton>
+      </template>
       <AppButton
         v-else-if="!offersAsk"
         variant="ghost"
@@ -1900,6 +2006,43 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
  * this is the one place in the view where they have to be - a control sized to be hit would be
  * the largest thing on a line of 24px boxes.
  */
+/* The body given over to a conversation: one column, the chat taking what is left. */
+.card__body--asking {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-height: 0;
+}
+
+.card__asking-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.card__asking-what { color: var(--text-muted); font-size: var(--t-sm); }
+
+.card__asking-out {
+  margin-left: auto;
+  padding: 2px var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--t-xs);
+  cursor: pointer;
+}
+
+.card__asking-out:hover { border-color: var(--border-strong); color: var(--text); }
+.card__asking-note { margin: 0; color: var(--text-faint); font-size: var(--t-sm); }
+
+/* The chat is what scrolls, and must not be squeezed by the row above it. */
+.card__asking-chat { flex: 1 1 auto; min-height: 0; }
+
+
 .card__pin {
   position: relative;
   display: grid;

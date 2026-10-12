@@ -26,6 +26,15 @@ module.exports = {
       { label: 'Open the pull request', verb: 'url' },
       { label: 'Open the build', verb: 'share', kind: 'dashboard' },
       { label: 'Walk me through it', verb: 'ask', prompt: 'For {what} in {workspace}: walk me through what the agent changed, file by file, and tell me what you would want a human to check before this goes up for review.' },
+      /*
+       * The other half of reading a draft: having read it, wanting it different.
+       *
+       * It asks before it changes anything, because the changes are the reader's and the card
+       * cannot know them - a prompt that guessed would be an agent rewriting a branch on a
+       * hunch. So one question first, then the work, and explicitly not marking it ready: that
+       * is the button beside this one and it is the reader's to press.
+       */
+      { label: 'Request changes', verb: 'ask', prompt: 'For {what} in {workspace}: I want changes before this goes up for review. Ask me what to change, in one question, and wait for the answer. Then make them, a commit each, re-run what you can, and report what is left. Do not mark it ready for review.' },
       { verb: 'snooze', hours: 8 },
     ],
 };
