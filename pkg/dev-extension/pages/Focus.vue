@@ -2016,22 +2016,6 @@ async function resolveNote({ note, verdict, body }: { note: ReviewNote; verdict:
   }
 }
 
-/** Arguing with the agent about one of its own comments, in the conversation. */
-async function discussNote({ note, text }: { note: ReviewNote; text: string }) {
-  const task = current.value;
-
-  try {
-    await askHere(task, discussPrompt(
-      note.pr,
-      {
-        id: note.commentId, path: note.path, line: note.line, body: note.body,
-      },
-      text,
-    ));
-  } catch (e) {
-    error.value = (e as Error)?.message || String(e);
-  }
-}
 
 /* ── The weights ──────────────────────────────────────────────────────────────────────────── */
 
@@ -2361,7 +2345,6 @@ onBeforeUnmount(closeSettings);
           @ask="ask"
           @pin="pin"
           @resolve="resolveNote"
-          @discuss="discussNote"
           @ask-code="current && askAboutCode(current, $event)"
           @reply="current && replyTo(current, $event)"
           @expand="current && openWholeFile(current, $event)"

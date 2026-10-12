@@ -53,7 +53,6 @@ const props = withDefaults(defineProps<{
  */
 const emit = defineEmits<{
   (e: 'resolve', value: { note: ReviewNote; verdict: NoteVerdict; body?: string }): void;
-  (e: 'ask', value: { note: ReviewNote; text: string }): void;
   /** Which one you are on, so the card can show that comment's evidence and not the workspace's. */
   (e: 'select', note: ReviewNote): void;
   /** Open the whole file on the lines this comment is about. See FileModal. */
@@ -86,8 +85,6 @@ const selectedId = ref(props.notes[0]?.id ?? '');
 const editingId = ref('');
 const draft = ref('');
 const discussingId = ref('');
-const question = ref('');
-const sending = ref(false);
 const saving = ref('');
 
 const selected = computed(() => props.notes.find((note) => note.id === selectedId.value) ?? props.notes[0]);
@@ -203,10 +200,73 @@ async function saveEdit(note: ReviewNote) {
   saving.value = '';
 }
 
-function discuss(note: ReviewNote) {
-  discussingId.value = discussingId.value === note.id ? '' : note.id;
+/**
+ * Open or close the conversation about this finding. Nothing is sent.
+ *
+ * It used to be a gate: Discuss showed a box of its own, and the first thing typed into it was
+ * sent as one message with the context stapled in front. Three things were wrong with that. You
+ * could not see what was being sent on your behalf; the box was a second place to type, beside
+ * the one the chat already has; and because the conversation did not exist until you sent
+ * something, closing and reopening started a new one.
+ *
+ * So the press does what the label says. The conversation is made on the first open and kept,
+ * so reopening returns to it. The context goes into the chat's own box as a draft - editable,
+ * and not sent until you send it.
+ */
+async function discuss(note: ReviewNote) {
+  const id = String(note.id);
+
   editingId.value = '';
-  question.value = '';
+  if (discussingId.value === note.id) {
+    discussingId.value = '';
+
+    return;
+  }
+  discussingId.value = note.id;
+  if (talking.value[id]) {
+    return;
+  }
+
+  talking.value = { ...talking.value, [id]: { session: '', opening: true, error: '', draft: '' } };
+
+  const set = (fields: Partial<{ session: string; opening: boolean; error: string; draft: string }>) => {
+    talking.value = { ...talking.value, [id]: { ...talking.value[id], ...fields } };
+  };
+
+  try {
+    const where = note.path ? `${ note.path.split('/').pop() }${ note.line ? ` line ${ note.line }` : '' }` : 'the change as a whole';
+    const conversation = await conversationFor(`${ where } · ${ note.severity }`);
+
+    set({ session: conversation.id, draft: contextFor(note) });
+  } catch (e) {
+    set({ error: (e as Error)?.message || String(e) });
+  } finally {
+    set({ opening: false });
+  }
+}
+
+/**
+ * What the box is pre-filled with: the finding, and what the agent may do about it.
+ *
+ * A draft rather than a sent message, so it is read before it goes and edited if it is not the
+ * question you wanted. `discussPrompt` is the same text the agent used to be handed - it tells
+ * it how to reword or drop this comment, which is only right because a finding is the agent's
+ * own - and without a pull request number there is nothing to reword against, so that falls
+ * back to a plain reading of it.
+ */
+function contextFor(note: ReviewNote): string {
+  if (props.pr) {
+    return discussPrompt(props.pr, {
+      id: note.commentId, body: note.body, path: note.path, line: note.line,
+    }, '');
+  }
+
+  return [
+    'About this review finding',
+    note.path ? `on ${ note.path }${ note.line ? ` line ${ note.line }` : '' }` : 'about the change as a whole',
+    `:\n\n"${ String(note.body).replace(/\s+/g, ' ').slice(0, 600) }"\n\n`,
+    'Does it hold up, and what would it take to address it?',
+  ].join(' ');
 }
 
 /**
@@ -216,7 +276,7 @@ function discuss(note: ReviewNote) {
  * list of findings and judging one often means asking about the one before it. They are
  * separate conversations, so the answers do not arrive interleaved in one transcript.
  */
-const talking = ref<Record<string, { session: string; opening: boolean; error: string }>>({});
+const talking = ref<Record<string, { session: string; opening: boolean; error: string; draft: string }>>({});
 
 /**
  * Where a conversation about a finding goes.
@@ -239,60 +299,6 @@ async function conversationFor(title: string): Promise<{ id: string; attach: unk
   return found || await startConversation(props.workspace, title);
 }
 
-/**
- * Talk about this finding, here.
- *
- * It used to hand the question to the deck's bar and write "Asked in the conversation - the
- * answer is in the bar at the bottom" where the answer should have been. That is a card
- * telling you to look somewhere else at the moment you asked it something, and it made the one
- * conversation at the bottom the only one: a second question about a second finding landed in
- * the same transcript as the first.
- */
-async function ask(note: ReviewNote) {
-  const text = question.value.trim();
-  const id = String(note.id);
-
-  if (sending.value || talking.value[id]) {
-    return;
-  }
-  sending.value = true;
-  question.value = '';
-  talking.value = { ...talking.value, [id]: { session: '', opening: true, error: '' } };
-
-  const set = (fields: Partial<{ session: string; opening: boolean; error: string }>) => {
-    talking.value = { ...talking.value, [id]: { ...talking.value[id], ...fields } };
-  };
-
-  try {
-    const where = note.path ? `${ note.path.split('/').pop() }${ note.line ? ` line ${ note.line }` : '' }` : 'the change as a whole';
-    const conversation = await conversationFor(`${ where } · ${ note.severity }`);
-
-    /*
-     * A finding is the agent's own, not somebody else's, so rewording and dropping it are on
-     * the table - which is what `discussPrompt` is for. Without a pull request number there is
-     * nothing to reword against, so that one falls back to a plain reading of it.
-     */
-    const prompt = props.pr
-      ? discussPrompt(props.pr, {
-        id: note.commentId, body: note.body, path: note.path, line: note.line,
-      }, text)
-      : [
-        'The user is judging a review finding and wants to talk about it',
-        note.path ? `on ${ note.path }${ note.line ? ` line ${ note.line }` : '' }` : 'about the change as a whole',
-        `:\n\n"${ String(note.body).replace(/\s+/g, ' ').slice(0, 600) }"\n\n`,
-        'Say whether it holds up and what it would take to address it.',
-        text ? `Their question: ${ text }` : '',
-      ].filter(Boolean).join(' ');
-
-    await queuePrompt((conversation as { attach: never }).attach, prompt).catch(() => {});
-    set({ session: conversation.id });
-  } catch (e) {
-    set({ error: (e as Error)?.message || String(e) });
-  } finally {
-    set({ opening: false });
-    sending.value = false;
-  }
-}
 
 /**
  * The comment's own selection, as indexes into the hunk.
@@ -492,24 +498,23 @@ function pickedRun(note: ReviewNote): [number, number] | null {
           <span class="turn__who">Agent</span>
           {{ talking[String(selected.id)].error }}
         </p>
+        <!--
+          The conversation, with the context already in its box and not yet sent.
+
+          No second input beside it: this has one, and a box of our own above it was a second
+          place to type the same thing - and the one that sent before you could read what it was
+          sending. `draft-text` is read when the chat first appears, which is why the component
+          is keyed on the note: a different finding is a different chat, not this one reused.
+        -->
         <InlineChat
           v-else-if="talking[String(selected.id)]?.session"
           :key="String(selected.id)"
           class="thread__chat"
           :session="talking[String(selected.id)].session"
           :command="workspace ? paneCommand(workspace, talking[String(selected.id)].session) : null"
+          :draft-text="talking[String(selected.id)].draft"
           :live="live"
         />
-
-        <form v-else class="thread__ask" @submit.prevent="ask(selected)">
-          <input
-            v-model="question"
-            class="thread__field"
-            placeholder="Ask why, or tell it what to change…"
-            aria-label="Ask the agent about this comment"
-          >
-          <AppButton variant="kind" size="sm" :busy="sending" @click="ask(selected)">Send</AppButton>
-        </form>
       </div>
     </article>
     <!-- The whole of the agent's argument, over the card. TextModal teleports itself. -->

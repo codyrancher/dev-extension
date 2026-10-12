@@ -75,7 +75,6 @@ const emit = defineEmits<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: 'resolve', value: any): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (e: 'discuss', value: any): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: 'ask-code', value: any): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -589,7 +588,6 @@ watch(() => props.index, () => {
           @ask="emit('ask', current!)"
           @pin="emit('pin', current!)"
           @resolve="emit('resolve', $event)"
-          @discuss="emit('discuss', $event)"
           @ask-code="emit('ask-code', $event)"
           @reply="emit('reply', $event)"
           @expand="emit('expand', $event)"

@@ -289,7 +289,6 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
         @select="api.shell.selected($event)"
         @expand="api.emit('expand', $event)"
         @resolve="api.emit('resolve', $event)"
-        @ask="api.emit('discuss', $event)"
       />
 
       <!-- Or the change itself, file by file, when reading it is the job. -->

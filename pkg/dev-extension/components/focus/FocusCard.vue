@@ -95,7 +95,6 @@ const emit = defineEmits<{
   (e: 'ask'): void;
   (e: 'pin'): void;
   (e: 'resolve', value: { note: ReviewNote; verdict: string; body?: string }): void;
-  (e: 'discuss', value: { note: ReviewNote; text: string }): void;
   (e: 'ask-code', value: { path: string; label: string; code: string; text: string }): void;
   (e: 'reply', value: { comment: CardComment }): void;
   (e: 'expand', value: { path: string; mark: [number, number] }): void;
