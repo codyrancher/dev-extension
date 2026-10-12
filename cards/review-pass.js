@@ -19,7 +19,12 @@ module.exports = {
      * they are three views of one subject. Both come off the `prDetail` the notes already read,
      * so the only new call is the issue's own body, and only on a pull request that names one.
      */
-    wants:   ['notes', 'media', 'pr', 'issue'],
+    /*
+     * `files` is the fourth: the change itself, in the viewer the draft card reads a change in.
+     * It comes off that same `prDetail`. Not `stat` and not `comments`, which the viewer would
+     * take: both also draw on the facts row, and this card's was cleared on purpose.
+     */
+    wants:   ['notes', 'media', 'pr', 'issue', 'files'],
     /*
      * The pass is the surface, said rather than inferred: `notes` is the only thing here the
      * ladder would have picked anyway, and a card that names its subject cannot have it quietly
@@ -29,9 +34,9 @@ module.exports = {
     /*
      * The first card with a body of its own rather than the default `<CardSurface />`.
      *
-     * Three views of one pull request: the review waiting on you, the issue it is for, and the
-     * change itself as GitHub states it. They were never all on the card - the review was the
-     * whole body, and judging it meant leaving to read what it was supposed to do.
+     * Four views of one pull request: the review waiting on you, the issue it is for, the change
+     * as GitHub states it, and the change as code. They were never all on the card - the review
+     * was the whole body, and judging it meant leaving to read what it was supposed to do.
      *
      * `CardTabs` is in CARD_COMPONENTS, so this is a composition rather than a new surface, and
      * the next card that wants tabs writes these six lines instead of touching the shell.
@@ -42,9 +47,10 @@ module.exports = {
       /* Unwrapped here, because a ref *inside* an object is not unwrapped in a template. */
       const issue = computed(() => api.artifacts.value.issue);
       const pr = computed(() => api.artifacts.value.pr);
+      const files = computed(() => api.artifacts.value.files || []);
 
       /*
-       * Comments always; the other two only when there is something behind them.
+       * Comments always; the others only when there is something behind them.
        *
        * A tab that opens on "nothing here" is worse than no tab: it is a place the eye has to
        * go to learn there was nothing to learn. A pull request with no `Fixes` has no Issue
@@ -54,6 +60,7 @@ module.exports = {
         { id: 'comments', label: 'Comments', count: api.notes.value.length },
         ...(issue.value ? [{ id: 'issue', label: 'Issue' }] : []),
         ...(pr.value ? [{ id: 'pr', label: 'PR' }] : []),
+        ...(files.value.length ? [{ id: 'diffs', label: 'Diffs' }] : []),
       ]);
 
       return {
@@ -65,6 +72,7 @@ module.exports = {
         <template #comments><CardSurface :api="api" /></template>
         <template #issue><GithubIssue v-if="issue" :issue="issue" /></template>
         <template #pr><GithubPr v-if="pr" :pr="pr" /></template>
+        <template #diffs><CardSurface surface="files" :api="api" /></template>
       </CardTabs>
     `,
     actions: [
