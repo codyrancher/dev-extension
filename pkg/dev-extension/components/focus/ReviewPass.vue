@@ -20,8 +20,11 @@ import { fromDiffLines, highlighted } from '../code/rows';
 import CommentBody from './CommentBody.vue';
 import TextModal from './TextModal.vue';
 import MediaViewer from './MediaViewer.vue';
-import { ghAssetUrl } from '../../reviews';
+import { ghAssetUrl, discussPrompt } from '../../reviews';
 import type { NoteMedia } from '../../focus-review';
+import InlineChat from './InlineChat.vue';
+import { listConversations, startConversation, queuePrompt, paneCommand } from '../../conversations';
+import { startAgentSession } from '../../agent';
 
 /** What you decided about one comment. The prototype's word for it, and its four states. */
 type NoteVerdict = 'pending' | 'good' | 'edited' | 'dropped';
@@ -29,7 +32,17 @@ type NoteVerdict = 'pending' | 'good' | 'edited' | 'dropped';
 /** A turn in the conversation you can have about one of the agent's comments. */
 interface NoteReply { from: 'you' | 'agent'; text: string }
 
-const props = defineProps<{ notes: ReviewNote[] }>();
+const props = withDefaults(defineProps<{
+  notes: ReviewNote[];
+  /** Where a conversation about a finding is opened. Empty is allowed; see `conversationFor`. */
+  workspace?: string;
+  /** The pull request these findings are on, for the prompt that offers to reword one. */
+  pr?: number;
+  /** Only the card on top polls. See InlineChat. */
+  live?: boolean;
+}>(), {
+  workspace: '', pr: 0, live: true,
+});
 
 /**
  * What the pass asks of the page it is on.
@@ -196,23 +209,89 @@ function discuss(note: ReviewNote) {
   question.value = '';
 }
 
+/**
+ * The conversation open about each finding, by note id.
+ *
+ * Keyed rather than single, because the point is that several can be open at once: a pass is a
+ * list of findings and judging one often means asking about the one before it. They are
+ * separate conversations, so the answers do not arrive interleaved in one transcript.
+ */
+const talking = ref<Record<string, { session: string; opening: boolean; error: string }>>({});
+
+/**
+ * Where a conversation about a finding goes.
+ *
+ * Titled per finding and reused, so pressing Discuss twice on the same one returns to what was
+ * already said rather than starting again. A card with no workspace - a review somebody asked
+ * for before anybody made a checkout - still gets an agent: the pod has conversations of its
+ * own, which is the same fallback the deck's bar uses. Those have no title to find them by, so
+ * there it is one per press.
+ */
+async function conversationFor(title: string): Promise<{ id: string; attach: unknown }> {
+  if (!props.workspace) {
+    const id = await startAgentSession('panel');
+
+    return { id, attach: { session: id } };
+  }
+  const existing = await listConversations(props.workspace).catch(() => []);
+  const found = existing.find((c) => c.title === title);
+
+  return found || await startConversation(props.workspace, title);
+}
+
+/**
+ * Talk about this finding, here.
+ *
+ * It used to hand the question to the deck's bar and write "Asked in the conversation - the
+ * answer is in the bar at the bottom" where the answer should have been. That is a card
+ * telling you to look somewhere else at the moment you asked it something, and it made the one
+ * conversation at the bottom the only one: a second question about a second finding landed in
+ * the same transcript as the first.
+ */
 async function ask(note: ReviewNote) {
   const text = question.value.trim();
+  const id = String(note.id);
 
-  if (!text || sending.value) {
+  if (sending.value || talking.value[id]) {
     return;
   }
   sending.value = true;
   question.value = '';
-  threads.value = { ...threads.value, [note.id]: [...(threads.value[note.id] || []), { from: 'you', text }] };
-  // The answer does not come back here. It goes to the conversation, where everything else
-  // this product asks goes - and where it is still there tomorrow.
-  emit('ask', { note, text });
-  threads.value = {
-    ...threads.value,
-    [note.id]: [...(threads.value[note.id] || []), { from: 'agent', text: 'Asked in the conversation — the answer is in the bar at the bottom.' }],
+  talking.value = { ...talking.value, [id]: { session: '', opening: true, error: '' } };
+
+  const set = (fields: Partial<{ session: string; opening: boolean; error: string }>) => {
+    talking.value = { ...talking.value, [id]: { ...talking.value[id], ...fields } };
   };
-  sending.value = false;
+
+  try {
+    const where = note.path ? `${ note.path.split('/').pop() }${ note.line ? ` line ${ note.line }` : '' }` : 'the change as a whole';
+    const conversation = await conversationFor(`${ where } · ${ note.severity }`);
+
+    /*
+     * A finding is the agent's own, not somebody else's, so rewording and dropping it are on
+     * the table - which is what `discussPrompt` is for. Without a pull request number there is
+     * nothing to reword against, so that one falls back to a plain reading of it.
+     */
+    const prompt = props.pr
+      ? discussPrompt(props.pr, {
+        id: note.commentId, body: note.body, path: note.path, line: note.line,
+      }, text)
+      : [
+        'The user is judging a review finding and wants to talk about it',
+        note.path ? `on ${ note.path }${ note.line ? ` line ${ note.line }` : '' }` : 'about the change as a whole',
+        `:\n\n"${ String(note.body).replace(/\s+/g, ' ').slice(0, 600) }"\n\n`,
+        'Say whether it holds up and what it would take to address it.',
+        text ? `Their question: ${ text }` : '',
+      ].filter(Boolean).join(' ');
+
+    await queuePrompt((conversation as { attach: never }).attach, prompt).catch(() => {});
+    set({ session: conversation.id });
+  } catch (e) {
+    set({ error: (e as Error)?.message || String(e) });
+  } finally {
+    set({ opening: false });
+    sending.value = false;
+  }
 }
 
 /**
@@ -394,18 +473,35 @@ function pickedRun(note: ReviewNote): [number, number] | null {
         </span>
       </div>
 
-      <!-- The agent, under the comment it wrote, about that comment only. -->
-      <div v-if="discussingId === selected.id" class="thread">
-        <p v-for="(turn, n) in threads[selected.id] ?? []" :key="n" class="turn" :class="`turn--${ turn.from }`">
-          <span class="turn__who">{{ turn.from === 'you' ? 'You' : 'Agent' }}</span>
-          {{ turn.text }}
-        </p>
-        <p v-if="sending" class="turn turn--agent turn--waiting">
-          <span class="turn__who">Agent</span>
-          <span class="dots"><i /><i /><i /></span>
-        </p>
+      <!--
+        The agent, under the comment it wrote, about that comment only - and here rather than
+        in the bar at the bottom of the page.
 
-        <form class="thread__ask" @submit.prevent="ask(selected)">
+        The ask box is only there until there is a conversation: once there is, `InlineChat` has
+        one of its own and a second box above it would be two places to type the same thing.
+        Keyed on the note so each finding gets its own component and its own poll; several can
+        be open at once, which is the point - judging one finding often means asking about the
+        one before it, and those answers should not arrive interleaved in one transcript.
+      -->
+      <div v-if="discussingId === selected.id" class="thread">
+        <p v-if="talking[String(selected.id)]?.opening" class="turn turn--agent">
+          <span class="turn__who">Agent</span>
+          Opening a conversation about this finding…
+        </p>
+        <p v-else-if="talking[String(selected.id)]?.error" class="turn turn--agent">
+          <span class="turn__who">Agent</span>
+          {{ talking[String(selected.id)].error }}
+        </p>
+        <InlineChat
+          v-else-if="talking[String(selected.id)]?.session"
+          :key="String(selected.id)"
+          class="thread__chat"
+          :session="talking[String(selected.id)].session"
+          :command="workspace ? paneCommand(workspace, talking[String(selected.id)].session) : null"
+          :live="live"
+        />
+
+        <form v-else class="thread__ask" @submit.prevent="ask(selected)">
           <input
             v-model="question"
             class="thread__field"

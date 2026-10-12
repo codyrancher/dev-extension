@@ -282,6 +282,9 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
       <ReviewPass
         v-else-if="shown === 'pass'"
         :notes="notes"
+        :workspace="task?.workspace || ''"
+        :pr="pr"
+        :live="api.interactive.value"
         @kept="api.shell.keeping($event)"
         @select="api.shell.selected($event)"
         @expand="api.emit('expand', $event)"

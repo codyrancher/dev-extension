@@ -326,6 +326,33 @@ const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) =>
   white-space: pre;
 }
 
+/*
+ * Pasted text wraps; code does not.
+ *
+ * The rule above keeps `white-space: pre` for a code block, which is right - wrapped code reads
+ * worse than scrolled code, and its indentation is information. A pasted line is prose, and one
+ * that is 400 characters long simply left the card.
+ */
+.turn__body .mc-chat__paste pre {
+  white-space: pre-wrap;
+  /* A 300-character token with no spaces in it still has to break somewhere. */
+  overflow-wrap: anywhere;
+}
+
+/*
+ * One pasted line, and the hanging indent that says where the wrap was.
+ *
+ * Every real line starts hard against the left edge; anything indented is the browser
+ * continuing the line above. That is the whole signal, and it is the only one CSS can give -
+ * there is no way to put a glyph at a soft wrap - so the line is a block of its own to make
+ * `text-indent` apply per line rather than once per `pre`.
+ */
+.turn__body .mc-chat__ln {
+  display: block;
+  padding-left: 1.4em;
+  text-indent: -1.4em;
+}
+
 .turn__body pre code {
   background: none;
   padding: 0;

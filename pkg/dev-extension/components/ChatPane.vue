@@ -1944,6 +1944,20 @@ export default {
   :deep(.mc-chat__paste > summary:hover) { color: var(--link); border-color: color-mix(in srgb, var(--link) 40%, var(--border)); }
   :deep(.mc-chat__paste[open] > summary) { margin-bottom: 2px; }
 
+  /*
+   * The marker the wrap never had.
+   *
+   * This pane already wrapped pasted text, so nothing ran off the edge here - but a wrapped
+   * line and two real lines looked the same, which for a paste is a change of meaning. Each
+   * line is its own block now (see `chat.ts`), so the indent hangs per line: flush left is a
+   * real line, indented is the one above continuing.
+   */
+  :deep(.mc-chat__ln) {
+    display:     block;
+    padding-left: 1.4em;
+    text-indent: -1.4em;
+  }
+
   :deep(.mc-chat__paste > pre) {
     margin:        0;
     padding:       6px 8px;

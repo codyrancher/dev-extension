@@ -636,7 +636,22 @@ export function renderPlain(text: string, parts?: PromptPart[]): string {
       return plain(part.text);
     }
 
-    return `<details class="mc-chat__paste"><summary>Pasted text · ${ lines } line${ lines === 1 ? '' : 's' }</summary><pre>${ escapeHtml(part.text) }</pre></details>`;
+    /*
+     * One element per line, so a wrap can be told from a newline.
+     *
+     * A pasted line is often one very long line - a prompt, a stack trace, a summary written as
+     * a paragraph - and it ran off the right edge of the Focus chat, which draws these `pre`
+     * with `white-space: pre`. Wrapping it is the easy half. The hard half is that a wrapped
+     * line and two real lines then look identical, which for pasted text is a change of meaning.
+     *
+     * CSS cannot mark a soft wrap: there is no selector for "where the browser broke this", and
+     * `text-indent` hangs the first line of a *block*, not of each line inside one. So each
+     * physical line becomes its own block and gets the hanging indent, and a continuation is
+     * the only thing that ever appears indented. See `.mc-chat__ln`.
+     */
+    const body = part.text.split('\n').map((line) => `<span class="mc-chat__ln">${ escapeHtml(line) || '&#8203;' }</span>`).join('');
+
+    return `<details class="mc-chat__paste"><summary>Pasted text · ${ lines } line${ lines === 1 ? '' : 's' }</summary><pre>${ body }</pre></details>`;
   }).join('');
 }
 
