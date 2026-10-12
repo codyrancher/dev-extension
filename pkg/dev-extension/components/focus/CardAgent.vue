@@ -107,12 +107,17 @@ const wants = computed(() => ({
 
     <!--
       Its pane could not be read at all, which is not the same claim as "it has not said
-      anything" - and saying the wrong one of the two is worse than saying neither. The card
-      still names the conversation, so the button under it goes somewhere.
+      anything" - and saying the wrong one of the two is worse than saying neither.
+
+      It used to end "Open the conversation to see where it got to", pointing at the button of
+      that name on the card. That button is gone with the rest of the ways out of Focus, and a
+      sentence telling somebody to press something that is not there is worse than the silence
+      it was written to avoid. Naming the conversation is the part that was carrying the
+      weight; asking it something is what you can still do from here.
     -->
     <p v-else-if="!agent.reachable" class="ag__quiet">
       Its pane could not be read{{ agent.title ? ` - the conversation is ${ agent.title }` : '' }}.
-      Open the conversation to see where it got to.
+      Ask it something below and the answer comes back here.
     </p>
 
     <p v-else-if="!asking && !agent.said" class="ag__quiet">
