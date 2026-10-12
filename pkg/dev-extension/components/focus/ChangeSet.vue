@@ -16,7 +16,7 @@
  * card would be an answer you could not find again once the card was dealt. What stays under the
  * lines is the question and the fact that it was asked.
  */
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch, onMounted } from 'vue';
 import type { CardFile, CardComment } from '../../focus-artifacts';
 import type { DiffLine } from '../../focus-review';
 import AppButton from './AppButton.vue';
@@ -151,6 +151,43 @@ const commentsByPath = computed(() => {
 });
 
 const commentsOn = (path: string) => commentsByPath.value.get(path) || [];
+
+/*
+ * The conversations already started about this change, by file.
+ *
+ * Starting a new one each time is right for asking; it would be wrong for *finding*, and this
+ * is the other half of that trade. Every conversation a card opened about a file carries the
+ * file's name at the front of its title - that is the one convention `discuss` and `ask` have
+ * always followed - so the workspace's own list is enough to say which belong where, with no
+ * second store to keep in step.
+ *
+ * Matched on the base name, because that is what the title holds: two files called `index.ts`
+ * in different directories would share a bubble. Worth it against carrying a path through a
+ * title that has eighty characters to live in, and the conversation names itself when opened.
+ */
+const priorTalks = ref<{ id: string; title: string }[]>([]);
+
+async function readPriorTalks(): Promise<void> {
+  if (!props.workspace) {
+    priorTalks.value = [];
+
+    return;
+  }
+  priorTalks.value = (await listConversations(props.workspace).catch(() => [])) as { id: string; title: string }[];
+}
+
+const talksOn = (path: string) => {
+  const name = path.split('/').pop() || '';
+
+  return name ? priorTalks.value.filter((one) => String(one.title || '').startsWith(name)) : [];
+};
+
+/** A conversation reopened from the tree, read rather than restarted. */
+const reading = ref<{ id: string; title: string } | null>(null);
+
+onMounted(readPriorTalks);
+/* Re-read when a conversation is started here, so the bubble counts it without a reload. */
+watch(() => props.workspace, readPriorTalks);
 
 /** The open file's comments, listed under its row in the tree. */
 const hereComments = computed(() => commentsOn(openPath.value));
@@ -420,10 +457,19 @@ async function conversationFor(title: string): Promise<{ id: string; attach: unk
 
     return { id, attach: { session: id } };
   }
-  const existing = await listConversations(props.workspace).catch(() => []);
-  const found = existing.find((c) => c.title === title);
-
-  return found || await startConversation(props.workspace, title);
+  /*
+   * A new one, not the last one with this name.
+   *
+   * It found a conversation by title and returned to it, which reads as thrift and is a
+   * mistake: the question is about the code as it is now - a branch that has moved, comments
+   * that have arrived since - so the second asking is a second question. Returning to the
+   * first also hands the agent its own earlier context to be steered by, invisibly.
+   *
+   * The ones worth going back to are not lost: they are the workspace's conversations, and the
+   * file tree lists the ones started on each file so they can be opened and read. See
+   * `talksOn`.
+   */
+  return startConversation(props.workspace, title);
 }
 
 /**
@@ -554,9 +600,40 @@ const statusWord: Record<string, string> = {
                 <AppIcon name="comment" :size="11" />
                 {{ commentsOn(entry.path).length }}
               </span>
+              <!--
+                Conversations started about this file, so one can be read again later.
+
+                A separate mark from the comment count beside it: a comment is on the pull
+                request and everybody sees it, a conversation is what was asked about the file
+                here. Each press now starts a fresh one, so without this the old ones were
+                findable only by knowing they existed.
+              -->
+              <span
+                v-if="talksOn(entry.path).length"
+                class="tree__said tree__said--talk"
+                :title="`${ talksOn(entry.path).length } conversation${ talksOn(entry.path).length === 1 ? '' : 's' } about this file`"
+              >
+                <AppIcon name="sparkle" :size="11" />
+                {{ talksOn(entry.path).length }}
+              </span>
               <span class="tree__plus">+{{ entry.added }}</span>
               <span class="tree__minus">−{{ entry.removed }}</span>
             </button>
+
+            <!-- The ones started here, named, under the file they were about. -->
+            <ul v-if="entry.path === openPath && talksOn(entry.path).length" class="tree__lines">
+              <li v-for="talk in talksOn(entry.path)" :key="talk.id">
+                <button
+                  type="button"
+                  class="tree__line"
+                  :class="{ 'tree__line--on': reading && reading.id === talk.id }"
+                  @click="reading = reading && reading.id === talk.id ? null : talk"
+                >
+                  <AppIcon name="sparkle" :size="10" />
+                  <span class="tree__line-n">{{ talk.title }}</span>
+                </button>
+              </li>
+            </ul>
 
             <!--
               The open file's comments, by line, under its own row. Only the open one: a list
@@ -582,6 +659,27 @@ const statusWord: Record<string, string> = {
 
     <!-- The file. -->
     <article class="file u-fade-y">
+      <!--
+        A conversation opened from the tree, read where the file is.
+
+        Not a new one: this is the one that was started here before, so the point is to read
+        what the agent said. It sits above the hunks rather than replacing them, because the
+        reason to go back to it is usually to check it against the code it was about.
+      -->
+      <div v-if="reading" class="said said--read">
+        <p class="said__who">
+          <span>{{ reading.title }}</span>
+          <button type="button" class="said__edit" @click="reading = null">Close</button>
+        </p>
+        <InlineChat
+          :key="reading.id"
+          class="said__chat"
+          :session="reading.id"
+          :command="workspace ? paneCommand(workspace, reading.id) : null"
+          :live="live !== false"
+        />
+      </div>
+
       <div v-for="(hunk, h) in file.hunks" :key="h" class="file__hunk">
         <CodeView
           :rows="highlighted(fromDiffLines(hunk.lines), file.path)"
@@ -755,6 +853,11 @@ const statusWord: Record<string, string> = {
 </template>
 
 <style scoped>
+/* A conversation being read back, and the mark that says which file tree row opened it. */
+.said--read { margin-bottom: var(--s3); }
+.tree__said--talk { color: var(--accent); }
+.tree__line--on { color: var(--text); border-color: var(--accent); }
+
 /*
  * Two columns, at the width this view actually runs at.
  *

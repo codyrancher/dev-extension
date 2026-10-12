@@ -305,10 +305,19 @@ async function conversationFor(title: string): Promise<{ id: string; attach: unk
 
     return { id, attach: { session: id } };
   }
-  const existing = await listConversations(props.workspace).catch(() => []);
-  const found = existing.find((c) => c.title === title);
-
-  return found || await startConversation(props.workspace, title);
+  /*
+   * A new one, not the last one with this name.
+   *
+   * It found a conversation by title and returned to it, which reads as thrift and is a
+   * mistake: the question is about the code as it is now - a branch that has moved, comments
+   * that have arrived since - so the second asking is a second question. Returning to the
+   * first also hands the agent its own earlier context to be steered by, invisibly.
+   *
+   * The ones worth going back to are not lost: they are the workspace's conversations, and the
+   * file tree lists the ones started on each file so they can be opened and read. See
+   * `talksOn`.
+   */
+  return startConversation(props.workspace, title);
 }
 
 
