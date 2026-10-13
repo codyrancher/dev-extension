@@ -592,6 +592,11 @@ export function provisionalStatus(name: string): WorkspaceStatus {
   };
 }
 
+/** The agent state last read for a workspace. For a ranking that outlives the read it was built on. */
+export function agentOf(name: string): AgentState {
+  return agents[name] || 'none';
+}
+
 /** What was last read for a workspace, if anything - the page draws this first and reads behind it. */
 export function knownStatus(name: string): WorkspaceStatus | null {
   const known = statuses.get(name);
@@ -676,7 +681,20 @@ export async function workspaceStatuses(workspaces: { name: string; cluster?: st
   const names = workspaces.filter((w) => !w.preview).map((w) => w.name);
 
   workspaces.forEach((w) => noteRole(w.name, w.role || ''));
-  void refreshAgents();
+  /*
+   * Awaited, where the other two reads are not, because the statuses it fills are read back
+   * synchronously below - and whoever reads them ranks on what is there at that moment.
+   *
+   * Fire-and-forget made every caller's answer depend on a race. The sidebar polls this call for
+   * as long as standard mode is on screen, so `agents` is warm by the time anything else asks;
+   * a page loaded cold asks first and is told every agent is `none`. Focus ranks its deck from
+   * exactly this - so the same queue came out two different ways, one deck for a click out of
+   * standard mode and another for a reload, decided by which call got there first.
+   *
+   * It costs one GET, and only sometimes: fifteen-second throttle, and one in-flight refresh
+   * shared by every caller. The sidebar's poll pays nothing for it.
+   */
+  await refreshAgents();
   void readStale(names);
 
   const out: Record<string, WorkspaceStatus> = {};

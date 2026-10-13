@@ -68,7 +68,7 @@ import {
 import type { GithubWork } from '../github';
 import { workspaceBranch, startDevServer, stopDevServer } from '../workspace-tools';
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
-import { workspaceStatuses, readStatusNow } from '../workspace-status';
+import { workspaceStatuses, readStatusNow, agentOf } from '../workspace-status';
 import { conversationFor, panelConversation, queueForLater } from '../focus-agent';
 import { sendToPane, paneCommand, conversationSnapshot, refreshConversations } from '../conversations';
 import type { ConversationSnapshot } from '../conversations';
@@ -1047,7 +1047,18 @@ async function load() {
     /* The ranking, from whatever is known at the time it is called. */
     const rank = (known: Record<string, Json>, found: Json, dependabot: Json, botReviews: Json) => priorityQueue({
       work:       found,
-      statuses:   known as Record<string, never>,
+      /*
+       * The agent state read at ranking time, not the one that came with the status.
+       *
+       * `statuses` is a copy taken once, and an agent moves far more often than the work it is
+       * working on: it starts, it asks something, it stops. Ranking the copy meant the deck kept
+       * whatever was true when the page loaded - and since a cold load is the case where the
+       * least is known, a reload was ranked as though every agent were absent, for good. The
+       * rules that read `agent` are the loudest ones here (a question outranks everything), so
+       * this is the difference between a card and no card, not a reordering.
+       */
+      statuses:   Object.fromEntries(Object.entries(known)
+        .map(([name, status]) => [name, { ...(status as Record<string, unknown>), agent: agentOf(name) }])) as Record<string, never>,
       workspaces: names,
       alerts:     (dependabot?.groups || []).map((group: Record<string, unknown>) => ({ ...group, key: group.slug })),
       botPrs:     (dependabot?.prs || []).map((pr: Record<string, unknown>) => ({ ...pr, key: pr.number, repo: DEFAULT_REPO })),
