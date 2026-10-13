@@ -184,6 +184,24 @@ const talksOn = (path: string) => {
 
 /** A conversation reopened from the tree, read rather than restarted. */
 const reading = ref<{ id: string; title: string } | null>(null);
+const readBox = ref<HTMLElement | null>(null);
+
+/**
+ * Open a conversation started here, and go to it.
+ *
+ * Setting the ref was the whole of this, which opened it and left you where you were. It is
+ * inserted above the hunks - that is where it belongs, because the reason to go back to it is to
+ * check it against the code it was about - so on a diff scrolled anywhere at all it opened off
+ * the top of the pane and nothing appeared to happen. Pressing the row again closes it, as
+ * before. At the top rather than centred: a conversation is taller than half the pane.
+ */
+function readTalk(talk: { id: string; title: string }): void {
+  reading.value = reading.value?.id === talk.id ? null : talk;
+
+  if (reading.value) {
+    nextTick(() => showInPane(readBox.value, 'top'));
+  }
+}
 
 onMounted(readPriorTalks);
 /* Re-read when a conversation is started here, so the bubble counts it without a reload. */
@@ -319,7 +337,7 @@ const elsewhere = computed(() => hereThreads.value.filter((t) => !t.line || !dra
  * viewport somewhere it cannot scroll back from. This finds the first scrollable box between
  * the element and this component and moves only that one.
  */
-function showInPane(el: HTMLElement | null | undefined): void {
+function showInPane(el: HTMLElement | null | undefined, place: 'middle' | 'top' = 'middle'): void {
   if (!el) {
     return;
   }
@@ -338,8 +356,15 @@ function showInPane(el: HTMLElement | null | undefined): void {
   }
   // Its offset within that box, less half the box, so it lands in the middle of what is visible.
   const top = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+  /*
+   * Centred for a comment, which is a line or two; at the top for a conversation, which is not.
+   *
+   * Centring something taller than half the pane puts its own first line above the fold, so the
+   * thing you asked to read opens scrolled past its beginning.
+   */
+  const offset = place === 'top' ? 8 : (box.clientHeight / 2) - (el.clientHeight / 2);
 
-  box.scrollTo({ top: Math.max(0, top - (box.clientHeight / 2) + (el.clientHeight / 2)), behavior: 'smooth' });
+  box.scrollTo({ top: Math.max(0, top - offset), behavior: 'smooth' });
 }
 
 /** Bring one into view, from the list in the tree. */
@@ -627,7 +652,7 @@ const statusWord: Record<string, string> = {
                   type="button"
                   class="tree__line"
                   :class="{ 'tree__line--on': reading && reading.id === talk.id }"
-                  @click="reading = reading && reading.id === talk.id ? null : talk"
+                  @click="readTalk(talk)"
                 >
                   <AppIcon name="sparkle" :size="10" />
                   <span class="tree__line-n">{{ talk.title }}</span>
@@ -666,7 +691,7 @@ const statusWord: Record<string, string> = {
         what the agent said. It sits above the hunks rather than replacing them, because the
         reason to go back to it is usually to check it against the code it was about.
       -->
-      <div v-if="reading" class="said said--read">
+      <div v-if="reading" ref="readBox" class="said said--read">
         <p class="said__who">
           <span>{{ reading.title }}</span>
           <button type="button" class="said__edit" @click="reading = null">Close</button>
