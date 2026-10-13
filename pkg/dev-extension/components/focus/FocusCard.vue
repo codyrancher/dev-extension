@@ -446,8 +446,21 @@ const offersAsk = computed(() => Boolean(asked.value) || groups.value.some((grou
  */
 const agenticPrimary = computed(() => isAgentic(primary.value, !String(art.value.body || '').trim()));
 
-/** Putting it off: the far end of the row, because it is the opposite of the primary. */
-const later = computed(() => others.value.find((action) => action.verb === 'snooze') || null);
+/**
+ * Putting it off, on every card.
+ *
+ * This was the card's own snooze action or nothing, so the control existed only on the cards
+ * whose module happened to list one - and a card you cannot put off is a card that has to be
+ * dealt with now, which is not a thing the deck should decide for you. It belongs with the pin
+ * beside it: both are things you do to a card's place in the deck rather than to the work, and
+ * neither is the card's business to offer.
+ *
+ * A card that names its own snooze keeps it, hours and label and all - several mean something
+ * by it, like the four hours on a card about an agent that has just stopped. The rest get this,
+ * and `act` reads a snooze with no hours as eight.
+ */
+const later = computed<CardAction>(() => others.value.find((action) => action.verb === 'snooze')
+  || { label: 'Later', verb: 'snooze' });
 
 /** The places to go, open. */
 const navOpen = ref(false);
@@ -1128,7 +1141,7 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         and a menu opened inside it would have been clipped at the card's edge. The line keeps
         the clipping and the width it does not need; this keeps the overflow.
       -->
-      <div v-if="interactive || later" class="card__head-controls">
+      <div v-if="interactive" class="card__head-controls">
         <!--
           Split, on purpose. Pressing the icon does what the word did - the card's own snooze,
           its own number of hours - because that is the common case and it should stay one
@@ -1138,11 +1151,11 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           One button with two halves, not two buttons: they were a disc and a sliver 2px apart,
           which read as the snooze and some other control beside it.
         -->
-        <div v-if="later" ref="laterBox" class="card__snooze">
+        <div ref="laterBox" class="card__snooze">
           <button
             type="button"
             class="card__pin card__snooze-go"
-            :title="labelOf(later)"
+            :title="labelOf(later) || 'Put it off'"
             @click="press(later)"
           >
             <AppIcon name="snooze" :size="13" />
@@ -1190,7 +1203,6 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
         </div>
 
         <button
-          v-if="interactive"
           type="button"
           class="card__pin"
           :class="{ 'card__pin--on': pinned }"
