@@ -332,13 +332,14 @@ function label(status: WorkspaceStatus, name: string): { what: string; url: stri
  *
  * The agent's own state overrides the stage in one case and one only: a conversation that asked
  * a question is blocked on an answer whatever stage it is at, and that is the most direct claim
- * on a person's attention there is.
+ * on a person's attention there is. That claim is also the one thing read for a workspace of no
+ * known kind, which is why the question is tested before the kind is.
  */
 function fromWorkspaces(statuses: Record<string, WorkspaceStatus>): PriorityItem[] {
   const out: PriorityItem[] = [];
 
   for (const [name, status] of Object.entries(statuses || {})) {
-    if (!status || status.kind === 'other') {
+    if (!status) {
       continue;
     }
 
@@ -347,6 +348,10 @@ function fromWorkspaces(statuses: Record<string, WorkspaceStatus>): PriorityItem
       key: `ws:${ name }`, what, title: status.title || '', workspace: name, url, since: '',
     };
 
+    // Read before the `other` skip below, and deliberately: a question is blocked on an answer
+    // whatever the workspace is. `kind` is read off the name alone - a workspace called for its
+    // branch rather than `pr-<n>`/`issue-<n>` is `other` however real its work - so skipping
+    // `other` first dropped a stopped agent out of the deck entirely, reachable only by its URL.
     if (status.agent === 'input') {
       out.push({
         ...base,
@@ -355,6 +360,11 @@ function fromWorkspaces(statuses: Record<string, WorkspaceStatus>): PriorityItem
         rule:  'agent-question',
         score: weightOf('agent-question'),
       });
+      continue;
+    }
+
+    // Everything past here is read off the stage, and `other` has none.
+    if (status.kind === 'other') {
       continue;
     }
 
