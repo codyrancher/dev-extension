@@ -13,7 +13,22 @@
  * are a second, softer system - one per kind of work, pastel at rest, saturated for accents -
  * so a deck read at a glance says what is coming before a word of it is read.
  */
-.dev-focus {
+/*
+ * `.cv` is listed beside it, and that is the one exception to the paragraph above.
+ *
+ * CodeView is styled entirely out of these tokens - border, surface, mono, the type scale - and
+ * it is the diff on the Focus deck *and* the diff in the workspace rail. One element away they
+ * do not exist, which is exactly what the rail got: every declaration naming one was invalid, so
+ * the panel lost its border, its ground, its radius and its monospace, and the rows drew
+ * full-width in the page's own font. The component was never the difference between the two
+ * diffs - the tokens were.
+ *
+ * So the block is declared on the component's own root as well as on the view, and CodeView
+ * imports this file unscoped. Every other rule here is prefixed `.dev-focus` and stays inside
+ * Focus, so what travels with the component is this block and nothing else.
+ */
+.dev-focus,
+.cv {
   /* ── Ground and surfaces ─────────────────────────────────────────────── */
   --ground:        #0d0f16;
   --ground-deep:   #080a10;
@@ -178,7 +193,8 @@
  * white a pastel is already legible, and the washes have to come down or every card looks
  * selected.
  */
-body.theme-light .dev-focus {
+body.theme-light .dev-focus,
+body.theme-light .cv {
   --ground:        #f4f6fb;
   --ground-deep:   #e9edf6;
   --surface:       #ffffff;

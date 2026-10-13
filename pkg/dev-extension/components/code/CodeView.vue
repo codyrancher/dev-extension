@@ -315,3 +315,12 @@ defineExpose({
 .cv--pickable .cv__row--picked:hover { background: color-mix(in srgb, var(--kind, var(--accent)) 17%, transparent); }
 .cv__row--picked .cv__no { color: color-mix(in srgb, var(--kind, var(--accent)) 55%, var(--text-muted)); }
 </style>
+
+<!--
+  The tokens this component is written in, so it looks the same wherever it is used.
+
+  Unscoped and by `src`, because what it needs is a custom-property block on `.cv` and a scoped
+  style would stamp it with this component's own id. design/focus.css prefixes every other rule
+  with `.dev-focus`, so outside the deck this adds the token block and nothing more.
+-->
+<style lang="css" src="../../design/focus.css"></style>
