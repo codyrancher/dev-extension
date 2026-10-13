@@ -330,10 +330,11 @@ function label(status: WorkspaceStatus, name: string): { what: string; url: stri
 /**
  * The workspaces, read through their stages.
  *
- * The agent's own state overrides the stage in one case and one only: a conversation that asked
- * a question is blocked on an answer whatever stage it is at, and that is the most direct claim
- * on a person's attention there is. That claim is also the one thing read for a workspace of no
- * known kind, which is why the question is tested before the kind is.
+ * The stage is what a workspace's card is built from, and the agent's own state is read after it
+ * rather than over it: a question is a claim on a person's attention, but so is the work the
+ * question is about, and a question that displaced the work left the deck shorter than the work
+ * waiting on it. Where the stage says nothing - a workspace of no known kind has no stage at all
+ * - the agent's state is the whole of what can be said, and the question is the card.
  */
 function fromWorkspaces(statuses: Record<string, WorkspaceStatus>): PriorityItem[] {
   const out: PriorityItem[] = [];
@@ -348,10 +349,41 @@ function fromWorkspaces(statuses: Record<string, WorkspaceStatus>): PriorityItem
       key: `ws:${ name }`, what, title: status.title || '', workspace: name, url, since: '',
     };
 
-    // Read before the `other` skip below, and deliberately: a question is blocked on an answer
-    // whatever the workspace is. `kind` is read off the name alone - a workspace called for its
-    // branch rather than `pr-<n>`/`issue-<n>` is `other` however real its work - so skipping
-    // `other` first dropped a stopped agent out of the deck entirely, reachable only by its URL.
+    /*
+     * The stage first, and the agent's own state only where the stage has nothing to say.
+     *
+     * This was the other way round, and it cost a deck. A question displaced whatever the
+     * workspace's stage claimed, so a review with findings waiting on it came out as "Answer
+     * the agent" and the findings card was gone - one workspace yields one item, and the
+     * question had taken the slot. The two were never alternatives: the work is still there
+     * to be done once the question is answered, and the card that says what the work needs is
+     * the one worth keeping on a deck built to be read.
+     *
+     * A question still reaches the deck by the two paths that do not cost anything: a card you
+     * set working comes back as one when its agent stops (`released`, focus.ts), and a
+     * workspace whose stage claims nothing falls through to it just below.
+     */
+    const rule = status.kind === 'fix' ? FIX_NEEDS[status.stage] : status.kind === 'review' ? REVIEW_NEEDS[status.stage] : undefined;
+
+    if (rule) {
+      // A first look and a second look are different jobs, and the rail already counts the
+      // rounds - so a pass that is somebody's third says so rather than reading as a new one.
+      const round = status.round > 1 ? ` (round ${ status.round })` : '';
+
+      out.push({
+        ...base, needs: `${ rule.needs }${ round }`, why: rule.why, rule: rule.rule, score: weightOf(rule.rule),
+      });
+      continue;
+    }
+
+    /*
+     * Nothing from the stage, so the agent speaks - and for one sort of workspace it is the only
+     * thing that can.
+     *
+     * `kind` is read off the name alone: no `pr-<n>` or `issue-<n>` segment and no `developer`
+     * role makes a workspace `other`, however real the work in it, and `other` has no stage.
+     * A workspace named for its branch therefore has exactly this one way into the deck.
+     */
     if (status.agent === 'input') {
       out.push({
         ...base,
@@ -365,19 +397,6 @@ function fromWorkspaces(statuses: Record<string, WorkspaceStatus>): PriorityItem
 
     // Everything past here is read off the stage, and `other` has none.
     if (status.kind === 'other') {
-      continue;
-    }
-
-    const rule = status.kind === 'fix' ? FIX_NEEDS[status.stage] : REVIEW_NEEDS[status.stage];
-
-    if (rule) {
-      // A first look and a second look are different jobs, and the rail already counts the
-      // rounds - so a pass that is somebody's third says so rather than reading as a new one.
-      const round = status.round > 1 ? ` (round ${ status.round })` : '';
-
-      out.push({
-        ...base, needs: `${ rule.needs }${ round }`, why: rule.why, rule: rule.rule, score: weightOf(rule.rule),
-      });
       continue;
     }
 
