@@ -115,8 +115,27 @@ const ISSUE_COLUMNS = [
   {
     name: 'status', label: 'Status', value: 'statusRank', sort: ['statusRank', 'createdAt:desc'], width: 130
   },
+  /*
+   * The milestone, sorted with the issues that have none at the end rather than the front.
+   *
+   * Most of these have no milestone, and an ascending sort that opens with forty blanks is not
+   * the sort anybody pressed for. The rank is a field on the row for the same reason the board
+   * status is one - SortableTable sorts the value it is given - see issueRows.
+   */
+  {
+    name: 'milestone', label: 'Milestone', value: 'milestone', sort: ['milestoneSort', 'createdAt:desc'], width: 150
+  },
   {
     name: 'age', label: 'Age', value: 'createdAt', sort: ['createdAt'], width: 90
+  },
+  /*
+   * When it became yours, which is not when it was raised: the oldest issue here was assigned
+   * four months ago and opened four years ago, and only one of those is a fact about you.
+   *
+   * Newest first, because the question this column answers is "what have I just been handed".
+   */
+  {
+    name: 'assigned', label: 'Assigned', value: 'assignedAt', sort: ['assignedAt:desc'], width: 110
   },
   {
     name: 'workspace', label: 'Workspace', value: 'key', width: 130
@@ -430,6 +449,9 @@ export default {
       return (this.work?.issues || []).map((issue) => ({
         ...issue,
         statusRank: String(statusRank(issue.projectStatus)).padStart(2, '0'),
+        // The last code point there is, so an issue with no milestone sorts after every issue
+        // that has one instead of ahead of all of them.
+        milestoneSort: issue.milestone || '\uffff',
       }));
     },
 
@@ -928,6 +950,21 @@ export default {
     /** How severe, in the one word GitHub uses, coloured the way the rest of the page is. */
     statusHue(status) {
       return STATUS_HUE[(status?.color || '').toUpperCase()] || 'muted';
+    },
+
+    /**
+     * The milestone's due date, for the column's tooltip.
+     *
+     * A title alone does not say whether the date it is named for has passed, and `25.01` means
+     * nothing to anybody who does not already know the release calendar.
+     */
+    milestoneDue(row) {
+      if (!row.milestoneDue) {
+        return row.milestone ? `${ row.milestone } - no due date` : '';
+      }
+      const due = new Date(row.milestoneDue);
+
+      return `${ row.milestone } - due ${ due.toLocaleDateString() }${ due.getTime() < Date.now() ? ' (overdue)' : '' }`;
     },
 
     severityTone(severity) {
@@ -1519,8 +1556,44 @@ export default {
                 :title="projectStatusError || 'Not on a project board'"
               >—</span>
             </template>
+            <template #cell:milestone="{ row }">
+              <a
+                v-if="row.milestone && row.milestoneUrl"
+                :href="row.milestoneUrl"
+                target="_blank"
+                rel="noopener noreferrer"
+                :title="milestoneDue(row)"
+              >{{ row.milestone }}</a>
+              <span
+                v-else-if="row.milestone"
+                :title="milestoneDue(row)"
+              >{{ row.milestone }}</span>
+              <span
+                v-else
+                class="text-muted"
+                title="Not in a milestone"
+              >—</span>
+            </template>
             <template #cell:age="{ row }">
               {{ ago(row.createdAt) }}
+            </template>
+            <!--
+              An em dash where nothing says, rather than `ago('')`.
+
+              `ago` reads an unparseable date as now - `Date.parse('') || Date.now()` - so an
+              issue whose timeline carries no assignment event would have read "just now", which
+              is the one answer that is certainly wrong.
+            -->
+            <template #cell:assigned="{ row }">
+              <span
+                v-if="row.assignedAt"
+                :title="row.assignedAt"
+              >{{ ago(row.assignedAt) }}</span>
+              <span
+                v-else
+                class="text-muted"
+                title="Nothing in the issue's timeline says when it was assigned"
+              >—</span>
             </template>
             <template #cell:workspace="{ row }">
               <RcButton

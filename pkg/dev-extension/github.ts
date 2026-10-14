@@ -167,6 +167,20 @@ export interface GithubIssue {
   /** The labels, which is what the harness calls Area. */
   labels: string[];
   createdAt: string;
+  /** The milestone's title, or '' for an issue on none. */
+  milestone: string;
+  /** Its page on GitHub, so the column can be a link where there is one. */
+  milestoneUrl: string;
+  /** When the milestone is due, or '' - a title alone does not say whether it has passed. */
+  milestoneDue: string;
+  /**
+   * When this issue became yours, from the timeline's last ASSIGNED_EVENT naming you.
+   *
+   * '' when nothing says: an issue older than GitHub's timeline, or one assigned by a route
+   * that logs no event. Distinct from a date, so a column can draw an em dash rather than
+   * claim an issue was assigned at the epoch.
+   */
+  assignedAt: string;
   /** Null when the issue is on no board - or when the token cannot read boards; see GithubWork. */
   projectStatus: GithubBoardStatus | null;
   /** How much has been said on it, which is the cheapest signal of whether it is well specified. */
@@ -308,6 +322,7 @@ const QUERY_FOR = (scope: string) => `
           repository { nameWithOwner }
           labels(first: 10) { nodes { name } }
           comments { totalCount }
+          milestone { title url dueOn }
         }
       }
     }
@@ -320,6 +335,24 @@ const QUERY_FOR = (scope: string) => `
           createdAt
           repository { nameWithOwner }
           labels(first: 10) { nodes { name } }
+          milestone { title url dueOn }
+          # When it became yours, which the issue itself does not record - only the timeline
+          # does. Filtered to the one event type, so this is a short list however long the
+          # issue's history is, and read from the end because the last time you were assigned
+          # is the one that counts: an issue assigned, unassigned and assigned again became
+          # yours on the third event, not the first.
+          #
+          # last, not first, for the same reason. An issue that pre-dates GitHub's timeline, or
+          # that was assigned at creation by a route that logs no event, has none of these and
+          # reads as unknown rather than as the epoch; see issueFrom.
+          timelineItems(last: 20, itemTypes: [ASSIGNED_EVENT]) {
+            nodes {
+              ... on AssignedEvent {
+                createdAt
+                assignee { ... on User { login } }
+              }
+            }
+          }
         }
       }
     }
@@ -447,8 +480,19 @@ function prFrom(node: Json, login: string, reviewRequested = false): GithubPr {
   };
 }
 
-function issueFrom(node: Json): GithubIssue {
+/**
+ * One issue. `login` is the viewer, and is only read to find when the issue became theirs.
+ *
+ * Passed rather than closed over because this is also the pool's mapper, where there is no
+ * assignee to date - and passed explicitly at each call site rather than handed to `.map`, which
+ * would give it the index as a login and quietly date every issue to nothing.
+ */
+function issueFrom(node: Json, login = ''): GithubIssue {
   const repo = node.repository?.nameWithOwner || '';
+  // The last time this issue was assigned to this person. GitHub returns the filtered timeline
+  // oldest-first, so the last match is the most recent - see the note on the query.
+  const mine = (node.timelineItems?.nodes || [])
+    .filter((event: Json) => event?.assignee?.login && event.assignee.login === login);
 
   return {
     key:       `${ repo }#${ node.number }`,
@@ -458,6 +502,10 @@ function issueFrom(node: Json): GithubIssue {
     repo,
     labels:        (node.labels?.nodes || []).map((label: Json) => label.name),
     createdAt:     node.createdAt || '',
+    milestone:     node.milestone?.title || '',
+    milestoneUrl:  node.milestone?.url || '',
+    milestoneDue:  node.milestone?.dueOn || '',
+    assignedAt:    mine.length ? (mine[mine.length - 1].createdAt || '') : '',
     projectStatus: null,
     comments:      node.comments?.totalCount ?? undefined,
   };
@@ -746,7 +794,7 @@ export async function myWork(repos?: string[], without?: string[]): Promise<Gith
     }
   }
 
-  const issues: GithubIssue[] = (body.data?.issues?.nodes || []).map(issueFrom);
+  const issues: GithubIssue[] = (body.data?.issues?.nodes || []).map((node: Json) => issueFrom(node, login));
   let projectStatusError = '';
 
   try {
@@ -766,7 +814,7 @@ export async function myWork(repos?: string[], without?: string[]): Promise<Gith
     reviewing,
     mine: (body.data?.mine?.nodes || []).map((node: Json) => prFrom(node, login)),
     issues,
-    unassigned: (body.data?.unassigned?.nodes || []).map(issueFrom),
+    unassigned: (body.data?.unassigned?.nodes || []).map((node: Json) => issueFrom(node)),
     projectStatusError,
   };
 }
