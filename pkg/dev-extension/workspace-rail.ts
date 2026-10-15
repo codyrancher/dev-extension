@@ -144,6 +144,18 @@ export interface Comment {
 }
 
 /**
+ * How much of the file to show around a commented line.
+ *
+ * Three each way. It was a window of thirty - eighteen above and twelve below - and the whole
+ * hunk whenever the hunk was under forty rows, which on a Vue template is most of them: a
+ * comment about one attribute opened with a hundred-odd lines of code above the sentence making
+ * the claim, and the claim itself below the fold. The lines either side are there to place the
+ * one being talked about, not to re-read the change - and `more above` / `more below` are right
+ * there for when they are not enough.
+ */
+const CONTEXT_ROWS = 3;
+
+/**
  * The hunk of a file's patch that holds one line - the code a review comment is about, with
  * the lines around it, numbered on both sides and highlighted in the file's language, the
  * commented line marked. New-side numbers for a comment on the right, old-side on the left.
@@ -161,8 +173,7 @@ export function hunkRows(path: string, patch: string, line: number, side = 'RIGH
   }
   highlightRows(path, hit.rows);
   const at = hit.rows.findIndex((r) => (side === 'LEFT' ? r.oldN : r.newN) === line);
-  // The whole hunk when it is short; otherwise a generous window around the line.
-  const rows = hit.rows.length <= 40 ? hit.rows : hit.rows.slice(Math.max(0, at - 18), at + 12);
+  const rows = hit.rows.slice(Math.max(0, at - CONTEXT_ROWS), at + CONTEXT_ROWS + 1);
 
   return rows.map((r) => ({
     type: r.type, oldN: r.oldN, newN: r.newN, html: r.type === 'hunk' ? escapeHtml(r.text) : hl(r), marked: (side === 'LEFT' ? r.oldN : r.newN) === line && r.type !== 'hunk',
@@ -179,7 +190,9 @@ export function ownHunkRows(path: string, diffHunk: string): CodeRow[] {
   });
   const last = [...rows].reverse().find((r) => r.type !== 'hunk');
 
-  return rows.slice(-40).map((r) => ({
+  // There is nothing below the commented line in a diff_hunk - GitHub ends it there - so the
+  // whole window goes above it.
+  return rows.slice(-((CONTEXT_ROWS * 2) + 1)).map((r) => ({
     type: r.type, oldN: r.oldN, newN: r.newN, html: r.type === 'hunk' ? escapeHtml(r.text) : hl(r), marked: r === last,
   }));
 }
