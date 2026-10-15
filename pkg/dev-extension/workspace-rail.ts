@@ -9,8 +9,9 @@
 // stage can be looked at again after it has passed: the evidence is composed per stage, from
 // what that stage left behind, so a past step on the rail is a way back to its artifacts.
 import {
-  prDetail, commitsDiff, ciFailures, ghAssetUrl, ghAssetKind, DEFAULT_REPO
+  prDetail, commitsDiff, ciFailures, ghAssetUrl, ghAssetKind, artifactUrl, DEFAULT_REPO
 } from './reviews';
+import type { LocalAttachment } from './reviews';
 import { issueBody } from './github';
 import { readInWorkspace } from './workspace-tools';
 import {
@@ -754,9 +755,14 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       items: list.map((c): Comment => {
         const file = files.findIndex((f) => f.path === c.path);
         const body = String(c.body || '');
+        // Placed inline by the body, so the list underneath is what is left over rather than the
+        // same picture a second time.
+        const placed = new Set(attachedNames(body));
+        const attachments: LocalAttachment[] = c.attachments || [];
+        const evidence = { pr: status.pr, attachments };
 
         return {
-          local: !c.submitted_at, status: c.status || 'pending', attachments: c.attachments || [], id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderBody(body, kinds), at: c.created_at || '', isNew: false }], replied: false, mine: true, headSha: d?.meta?.headSha || '', position: 0, context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
+          local: !c.submitted_at, status: c.status || 'pending', attachments: attachments.filter((a) => !(placed.has(a.name) || placed.has(a.path)) || !a.found), id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderBody(body, kinds, evidence), at: c.created_at || '', isNew: false }], replied: false, mine: true, headSha: d?.meta?.headSha || '', position: 0, context: '', rows: hunkRows(c.path || '', files[file]?.patch || '', Number(c.line) || 0, c.side), noPatch: !!c.path && file >= 0 && !files[file]?.patch, url: '', order: file < 0 ? 9999 : file,
         };
       }).sort((a, b) => a.order - b.order || a.line - b.line),
     });
@@ -851,8 +857,59 @@ export function assetUrls(text: string): string[] {
  * its own is what GitHub turns into a player, and it is turned into one here too, when the
  * API said it is a video; an unknown one stays a link.
  */
-export function renderBody(text: string, kinds: Record<string, string> = {}): string {
+/** The marker an agent writes to place its own evidence in a comment: `[[attach:name.png]]`. */
+const ATTACHED = /\[\[attach:([^\]]+)\]\]/g;
+
+/** The names a body places inline, so whatever draws the rest can leave those out. */
+export function attachedNames(text: string): string[] {
+  return [...new Set([...String(text || '').matchAll(ATTACHED)].map((m) => m[1].trim()))];
+}
+
+/**
+ * The agent's own evidence, drawn where the comment put it.
+ *
+ * `[[attach:name.png]]` is a marker, not prose: it is how a comment says "the screenshot goes
+ * here". Nothing read it, so it reached the reader as its own source text - six words of
+ * punctuation in the middle of a sentence - while the file it names was drawn in a list
+ * underneath, away from the claim it was evidence for.
+ *
+ * Not wrapped in a link, deliberately. The click that opens the viewer is delegated from the
+ * body (see openShot in WorkspaceRail), and it ignores an image inside an `a` so that a picture
+ * which is genuinely a link still navigates. The caption rides along on the element, because by
+ * the time that handler runs the only thing it has is the element it was clicked on.
+ *
+ * A marker naming something the agent never wrote, or a file that has since gone, keeps its own
+ * text: an empty space where evidence was promised says less than the promise does.
+ */
+function placeAttached(html: string, pr: number, attachments: LocalAttachment[]): string {
+  return html.replace(ATTACHED, (whole, raw) => {
+    const name = String(raw).trim();
+    const found = attachments.find((a) => a.name === name || a.path === name);
+
+    if (!found || !found.found) {
+      return whole;
+    }
+    const url = artifactUrl(pr, found.path);
+    const caption = escapeHtml(found.caption || '');
+    const alt = escapeHtml(found.name || name);
+
+    if (found.kind === 'video') {
+      return `<video controls preload="metadata" src="${ url }"></video>`;
+    }
+    if (found.kind === 'image') {
+      return `<img src="${ url }" alt="${ alt }" data-caption="${ caption }" loading="lazy">`;
+    }
+
+    return `<a target="_blank" rel="noopener" href="${ url }">${ alt }</a>`;
+  });
+}
+
+export function renderBody(text: string, kinds: Record<string, string> = {}, evidence?: { pr: number; attachments: LocalAttachment[] }): string {
   let html = linkRefs(renderMd(text || ''));
+
+  if (evidence && evidence.pr) {
+    html = placeAttached(html, evidence.pr, evidence.attachments || []);
+  }
 
   html = html.replace(/<img([^>]*?)\ssrc="(https:\/\/[^"]+)"/g, (m, attrs, src) => (isAsset(src) ? `<img${ attrs } src="${ ghAssetUrl(src) }" loading="lazy"` : m));
   // A bare attachment URL on its own - what GitHub itself turns into a player or a picture.

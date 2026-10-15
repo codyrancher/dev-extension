@@ -826,7 +826,9 @@ export default {
         return;
       }
       event.preventDefault();
-      this.shot = { src: img.src, name: img.alt || 'screenshot', caption: '' };
+      // The caption rides on the element: a body is `v-html`, so by the time this runs the only
+      // thing it has is the image that was clicked. See placeAttached in workspace-rail.ts.
+      this.shot = { src: img.src, name: img.alt || 'screenshot', caption: img.dataset?.caption || '' };
     },
 
     /** Whether a section is folded: what was chosen for it here, else what it asked for. */

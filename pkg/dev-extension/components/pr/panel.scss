@@ -866,6 +866,14 @@
 }
 
 .md-body :deep(img) { max-width: 100%; height: auto; }
+/*
+ * Only the ones that open in the viewer.
+ *
+ * A picture wrapped in a link navigates - that is what `openShot` steps aside for - so the
+ * zoom cursor would be a promise the click does not keep. `:not(a) > img` is the same test the
+ * handler makes, written in CSS.
+ */
+.md-body :deep(:not(a) > img) { cursor: zoom-in; }
 
 /* A recording in a comment: as wide as the comment and no wider, never taller than a screenful. */
 .md-body :deep(video) {
