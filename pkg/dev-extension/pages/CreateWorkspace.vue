@@ -242,7 +242,7 @@ export default {
         <RcButton
           variant="secondary"
           size="small"
-          :to="madeTo"
+          @click="$router.push(madeTo)"
         >
           Open it
         </RcButton>
@@ -336,7 +336,7 @@ export default {
     <div class="dev-create__actions">
       <RcButton
         variant="secondary"
-        :to="cancelTo"
+        @click="$router.push(cancelTo)"
       >
         Cancel
       </RcButton>

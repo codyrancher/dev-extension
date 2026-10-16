@@ -1232,7 +1232,7 @@ export default {
         <RcButton
           variant="secondary"
           size="small"
-          :to="settingsTo"
+          @click="$router.push(settingsTo)"
         >
           Go to Settings
         </RcButton>
@@ -1326,7 +1326,7 @@ export default {
                 v-if="hasWorkspace(row)"
                 variant="tertiary"
                 size="small"
-                :to="workspaceTo(row)"
+                @click="$router.push(workspaceTo(row))"
               >
                 Workspace
               </RcButton>
@@ -1432,7 +1432,7 @@ export default {
                 v-if="hasWorkspace(row)"
                 variant="tertiary"
                 size="small"
-                :to="workspaceTo(row)"
+                @click="$router.push(workspaceTo(row))"
               >
                 Workspace
               </RcButton>
@@ -1600,7 +1600,7 @@ export default {
                 v-if="hasIssueWorkspace(row)"
                 variant="tertiary"
                 size="small"
-                :to="issueWorkspaceTo(row)"
+                @click="$router.push(issueWorkspaceTo(row))"
               >
                 Workspace
               </RcButton>

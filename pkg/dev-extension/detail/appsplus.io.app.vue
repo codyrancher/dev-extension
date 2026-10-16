@@ -69,7 +69,7 @@ export default {
     <rc-button
       variant="secondary"
       class="mb-20"
-      :to="value.createInstanceLocation"
+      @click="$router.push(value.createInstanceLocation)"
     >
       {{ t('appsPlus.action.createInstance') }}
     </rc-button>

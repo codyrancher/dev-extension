@@ -192,7 +192,7 @@ export default {
       </div>
       <RcButton
         variant="primary"
-        :to="createTo"
+        @click="$router.push(createTo)"
       >
         Create
       </RcButton>
@@ -250,7 +250,7 @@ export default {
             variant="tertiary"
             size="small"
             left-icon="terminal"
-            :to="workspaceTo(row)"
+            @click="$router.push(workspaceTo(row))"
           >
             Open
           </RcButton>

@@ -475,7 +475,7 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
     <div class="agent-edit__actions">
       <RcButton
         variant="tertiary"
-        :to="backTo"
+        @click="$router.push(backTo)"
       >
         Cancel
       </RcButton>

@@ -259,7 +259,7 @@ export default {
             v-if="appFor(group.group)"
             variant="secondary"
             class="mr-5"
-            :to="appFor(group.group).createInstanceLocation"
+            @click="$router.push(appFor(group.group).createInstanceLocation)"
           >
             {{ t('appsPlus.action.createInstance') }}
           </rc-button>
