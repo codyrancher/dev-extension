@@ -44,9 +44,26 @@ export default {
 
   mixins: [CreateEditView],
 
+  /*
+   * Four reads, none of which may take the form down with it.
+   *
+   * Two of these were awaited bare. A `fetch` that rejects leaves `$fetchState.error` set and
+   * the form renders nothing at all - so a management store that cannot answer, which is what
+   * a socket resyncing from `resourceversion too old` looks like from here, turned the install
+   * page into a blank one with the reason only in the console. The other two were already
+   * caught for a smaller version of the same reason.
+   *
+   * The apps list is the one thing this form cannot be useful without, so losing it is said on
+   * the page rather than swallowed; the rest degrade to what the fields can do without them.
+   */
   async fetch() {
-    this.apps = await this.$store.dispatch('management/findAll', { type: APP });
-    this.clusters = await this.$store.dispatch('management/findAll', { type: FLEET_CLUSTER });
+    this.loadError = '';
+    this.apps = await this.$store.dispatch('management/findAll', { type: APP }).catch((e) => {
+      this.loadError = `The apps could not be read: ${ e?.message || e }`;
+
+      return [];
+    });
+    this.clusters = await this.$store.dispatch('management/findAll', { type: FLEET_CLUSTER }).catch(() => []);
 
     // Both only feed the namespace suggestions, and neither is worth failing the form over: a
     // person who cannot list namespaces can still type one, which is what taggable is for.
@@ -89,6 +106,7 @@ export default {
       clusters: [],
       namespaces: [],
       instances:  [],
+      loadError:  '',
     };
   },
 
@@ -345,6 +363,12 @@ export default {
     @finish="save"
     @cancel="done"
   >
+    <!-- Said on the page, because the alternative was a blank one. See fetch. -->
+    <Banner
+      v-if="loadError"
+      color="error"
+      :label="loadError"
+    />
     <!--
       No description. An installation is named after what it is a deployment of and where it
       goes, and both are on this form already; a free-text box under them was one more thing to
