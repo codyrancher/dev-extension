@@ -18,6 +18,7 @@
 
 import { highlight } from './highlight';
 import { splitPasted } from './chat-state.mjs';
+import { transcriptKind, parseAgyTranscript } from './agent-clis.mjs';
 
 export interface ChatToolCall {
   id: string;
@@ -62,6 +63,14 @@ export interface PromptPart {
  * they answer, so a turn reads as: what was said, what was done, what came back.
  */
 export function parseTranscript(lines: string[]): ChatMessage[] {
+  // Which CLI wrote this, asked of the lines themselves rather than configured: a conversation
+  // knows what wrote it. Everything below is claude's format; another CLI's reader turns its
+  // file into the same ChatMessages, so nothing downstream learns a second vocabulary. See
+  // agent-clis.mjs.
+  if (transcriptKind(lines) === 'agy') {
+    return parseAgyTranscript(lines) as ChatMessage[];
+  }
+
   const messages: ChatMessage[] = [];
   const calls = new Map<string, ChatToolCall>();
 
