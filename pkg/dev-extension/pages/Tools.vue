@@ -15,9 +15,11 @@
  */
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
+import { inject } from 'vue';
 import {
-  TOOLS, TOOL_ORDER, WORKSPACE_TOOL, allTools, stopTool, renewTool, toolHref
+  TOOLS, TOOL_ORDER, WORKSPACE_TOOL, toolHref
 } from '../tools';
+import { DEV_SOURCES, restSources } from '../ioc';
 import { TOOL_APPS } from '../config/constants';
 import { APP, PRODUCT_NAME, BLANK_CLUSTER } from '../config/types';
 import { toolDefinitions } from '../lte';
@@ -27,6 +29,18 @@ export default {
   name: 'DevTools',
 
   components: { Banner, RcButton },
+
+  /**
+   * Where this page's data comes from, asked for rather than imported.
+   *
+   * `restSources()` as the default is the whole of it: with no provider above it, this page
+   * talks to dev-api exactly as it did when it imported the functions. With one, it talks to
+   * whatever the host gave it - a fixture, a second Rancher - without a line changing here.
+   * See ioc.ts.
+   */
+  setup() {
+    return { sources: inject(DEV_SOURCES, restSources()) };
+  },
 
   data() {
     return {
@@ -96,7 +110,7 @@ export default {
       this.loading = true;
 
       try {
-        this.running = await allTools();
+        this.running = await this.sources.allTools();
       } catch (e) {
         this.error = e.message || String(e);
       } finally {
@@ -108,7 +122,7 @@ export default {
       this.busy = `${ tool.workspace }/${ tool.kind }`;
 
       try {
-        await renewTool(tool.workspace, tool.kind);
+        await this.sources.renewTool(tool.workspace, tool.kind);
         await this.refresh();
       } catch (e) {
         this.error = e.message || String(e);
@@ -121,7 +135,7 @@ export default {
       this.busy = `${ tool.workspace }/${ tool.kind }`;
 
       try {
-        await stopTool(tool.workspace, tool.kind);
+        await this.sources.stopTool(tool.workspace, tool.kind);
         await this.refresh();
       } catch (e) {
         this.error = e.message || String(e);
