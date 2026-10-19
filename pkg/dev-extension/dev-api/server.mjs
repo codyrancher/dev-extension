@@ -270,15 +270,58 @@ async function writeDoc(name, key, value, labels = {}) {
 
 let tokenCache = { at: 0, token: '' };
 
-/** The GH_TOKEN of the first per-person secret store in dev-system: this harness is one person's. */
+/**
+ * One key out of the per-person secret stores in dev-system.
+ *
+ * There is one store per person, and this service has no idea which person is calling. It
+ * cannot have one on the path it is reached by: the browser reaches it through Kubernetes'
+ * service proxy, which authenticates the user at the apiserver and then opens its own
+ * connection - the caller's bearer token is not forwarded, and the only header this server has
+ * ever read is `range`. An agent reaches it from inside the cluster with no user at all.
+ *
+ * So while there is exactly one store the answer is unambiguous, and that is the situation this
+ * was written for - "this harness is one person's". With two it is a coin toss, and a coin toss
+ * between two people's credentials is the wrong kind of quiet: it would act as the wrong person
+ * and look like it worked.
+ *
+ * `DEV_SECRET_OWNER` names the store to use when there is more than one, and without it a second
+ * store is refused rather than guessed at. That is the honest state of per-user identity here:
+ * not solved, but no longer silent. Solving it needs an identity the caller can prove, which
+ * needs a path that carries one.
+ */
+async function secretFromStores(key) {
+  const list = await k8s(`/api/v1/namespaces/${ NAMESPACE }/secrets?labelSelector=${ SECRET_KIND_LABEL }%3Dsecrets`);
+  const holding = (list.items || []).filter((secret) => secret.data?.[key]);
+
+  if (!holding.length) {
+    return '';
+  }
+
+  const owner = (process.env.DEV_SECRET_OWNER || '').trim();
+
+  if (owner) {
+    const named = holding.find((secret) => secret.metadata?.name === owner || secret.metadata?.name === `dev-secrets-${ owner }`);
+
+    return named ? Buffer.from(named.data[key], 'base64').toString('utf8').trim() : '';
+  }
+
+  if (holding.length > 1) {
+    throw failure(409, [
+      `${ holding.length } secret stores hold ${ key } and this service cannot tell which person is calling.`,
+      `Set DEV_SECRET_OWNER on the dev-api Deployment to one of: ${ holding.map((s) => s.metadata?.name).join(', ') }.`,
+    ].join(' '));
+  }
+
+  return Buffer.from(holding[0].data[key], 'base64').toString('utf8').trim();
+}
+
+/** The GitHub token, cached for a minute. See secretFromStores for whose it is. */
 async function githubToken() {
   if (Date.now() - tokenCache.at < 60_000 && tokenCache.token) {
     return tokenCache.token;
   }
 
-  const list = await k8s(`/api/v1/namespaces/${ NAMESPACE }/secrets?labelSelector=${ SECRET_KIND_LABEL }%3Dsecrets`);
-  const found = (list.items || []).find((secret) => secret.data?.GH_TOKEN);
-  const token = found ? Buffer.from(found.data.GH_TOKEN, 'base64').toString('utf8').trim() : '';
+  const token = await secretFromStores('GH_TOKEN');
 
   tokenCache = { at: Date.now(), token };
 
@@ -307,9 +350,7 @@ async function jiraToken() {
     return jiraTokenCache.token;
   }
 
-  const list = await k8s(`/api/v1/namespaces/${ NAMESPACE }/secrets?labelSelector=${ SECRET_KIND_LABEL }%3Dsecrets`);
-  const found = (list.items || []).find((secret) => secret.data?.JIRA_TOKEN);
-  const token = found ? Buffer.from(found.data.JIRA_TOKEN, 'base64').toString('utf8').trim() : '';
+  const token = await secretFromStores('JIRA_TOKEN');
 
   jiraTokenCache = { at: Date.now(), token };
 
