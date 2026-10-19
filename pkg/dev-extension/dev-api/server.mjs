@@ -285,6 +285,70 @@ async function githubToken() {
   return token;
 }
 
+// ── Jira ────────────────────────────────────────────────────────────────────────────────────
+//
+// jira.suse.com, lifted from the harness (api-service/src/jira.ts), which reached it the same
+// way: a Jira *Server* personal access token is a bearer token, not Jira Cloud's
+// `email:token` basic auth.
+//
+// Proxied here rather than called from the page, for the reason the GitHub asset route exists:
+// Jira Server sends no CORS headers, so a browser fetch to it fails before it is sent. This pod
+// has the token and the page does not, which is also the arrangement the harness chose - "the
+// token never leaves this container".
+//
+// The token is read exactly as `githubToken` reads its own, including the same limitation: the
+// first per-person store in the namespace. See the note there.
+const JIRA_BASE = process.env.DEV_JIRA_BASE || 'https://jira.suse.com';
+
+let jiraTokenCache = { at: 0, token: '' };
+
+async function jiraToken() {
+  if (Date.now() - jiraTokenCache.at < 60_000 && jiraTokenCache.token) {
+    return jiraTokenCache.token;
+  }
+
+  const list = await k8s(`/api/v1/namespaces/${ NAMESPACE }/secrets?labelSelector=${ SECRET_KIND_LABEL }%3Dsecrets`);
+  const found = (list.items || []).find((secret) => secret.data?.JIRA_TOKEN);
+  const token = found ? Buffer.from(found.data.JIRA_TOKEN, 'base64').toString('utf8').trim() : '';
+
+  jiraTokenCache = { at: Date.now(), token };
+
+  return token;
+}
+
+/**
+ * One Jira call, with the token attached.
+ *
+ * `pathAndQuery` is everything after the host and must start with `/rest/` - this is a proxy for
+ * Jira's own API, not a general outbound fetch, and a path that does not start there is refused
+ * rather than forwarded. Jira answers 204 on a successful transition, which is not JSON.
+ */
+async function jiraFetch(pathAndQuery, init = {}) {
+  const token = await jiraToken();
+
+  if (!token) {
+    throw failure(400, 'No Jira token. Add JIRA_TOKEN in Settings.');
+  }
+  if (!/^\/rest\//.test(pathAndQuery)) {
+    throw failure(400, 'Only Jira REST paths can be proxied.');
+  }
+
+  const answer = await fetch(`${ JIRA_BASE }${ pathAndQuery }`, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${ token }`,
+      accept:        'application/json',
+      ...(init.body ? { 'content-type': 'application/json' } : {}),
+    },
+  });
+
+  if (!answer.ok) {
+    throw failure(answer.status, `Jira answered ${ answer.status }: ${ (await answer.text()).slice(0, 300) }`);
+  }
+
+  return answer.status === 204 ? null : answer.json();
+}
+
 function failure(status, message) {
   const error = new Error(message);
 
@@ -4837,6 +4901,28 @@ http.createServer(async(req, res) => {
   // person's GitHub session, which a cross-site <img> does not carry. Fetched here with the
   // token and streamed back; `?meta=1` answers with the type alone, for choosing <img> or
   // <video> before anything is loaded. Only GitHub's own asset hosts.
+  /*
+   * Jira, proxied. `/jira/rest/...` is forwarded to jira.suse.com with the token attached.
+   *
+   * The path after `/jira` is passed through whole, so this is Jira's own API rather than a
+   * hand-written subset that would need extending for every new call. `jiraFetch` refuses
+   * anything that is not a `/rest/` path, so it cannot be used to fetch arbitrary hosts.
+   *
+   * GET, PUT and POST, because triage both reads and writes: moving a bug to In Triage is a
+   * POST to its transitions and PUT to its fields. DELETE is not forwarded - nothing the team
+   * does to a bug removes it.
+   */
+  if (url.pathname.startsWith('/jira/') && ['GET', 'PUT', 'POST'].includes(req.method)) {
+    const rest = url.pathname.slice('/jira'.length) + (url.search || '');
+    const body = req.method === 'GET' ? undefined : await readBody(req);
+
+    try {
+      return send(res, 200, { answer: await jiraFetch(rest, { method: req.method, ...(body ? { body } : {}) }) });
+    } catch (e) {
+      return send(res, e.status || 502, { error: e.message || String(e) });
+    }
+  }
+
   if (url.pathname === '/my-work/gh-asset' && req.method === 'GET') {
     const asset = url.searchParams.get('url') || '';
 
