@@ -36,6 +36,19 @@ import { readPrefs, savePrefs } from '../prefs';
 import { log } from '../dev-log.mjs';
 import { DEV_PRODUCT, BLANK_CLUSTER, SKILLS_ROUTE } from '../config/constants';
 
+/**
+ * The CLIs a conversation can be held with.
+ *
+ * Two, and the second is new, so what each one is worth saying: claude is what every pane has
+ * always run and the only one the state dot, the queue and the hooks were written against;
+ * Antigravity runs in the same pane with the same resume-by-id, and the chat reads its
+ * transcript (agent-clis.mjs), but nothing reads its pane for a question yet.
+ */
+const CLI_CHOICES = [
+  { id: 'claude', label: 'Claude Code', what: 'What every conversation has been held with. Hooks, the queue and the state dot all understand it.' },
+  { id: 'agy', label: 'Antigravity', what: 'Google\'s agy, in the same kind of pane. The conversation is read and resumed; its pane is not watched for questions yet.' },
+];
+
 export default {
   name: 'DevSettings',
 
@@ -79,6 +92,8 @@ export default {
        * Shut by default - it is an answer to a question, not part of the page.
        */
       activity:     [],
+      /** Which CLI new conversations are held with. '' reads as claude. */
+      cli:          '',
       showActivity: false,
       unwatch:      null,
       keys:     [],
@@ -110,6 +125,9 @@ export default {
   },
 
   computed: {
+    /** The CLIs to choose between; a module constant is not visible to the template. */
+    CLI_CHOICES: () => CLI_CHOICES,
+
     /** Where the Skills page is - a link here now, rather than its own shortcut in the rail. */
     skillsTo() {
       return { name: SKILLS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } };
@@ -146,6 +164,14 @@ export default {
   },
 
   methods: {
+    /** Hold new conversations with this CLI from now on. */
+    async setCli(id) {
+      this.cli = id;
+      await savePrefs({ cli: id }).catch((e) => {
+        this.error = e.message || String(e);
+      });
+    },
+
     /** A log line's time, as the clock reads it: the log keeps epoch ms. */
     logTime(at) {
       return new Date(at).toLocaleTimeString();
@@ -207,6 +233,7 @@ export default {
       this.keys = keys;
       this.apps = apps.filter((app) => app.workspace);
       this.hiddenApps = [...prefs.hiddenApps];
+      this.cli = prefs.cli || '';
       this.hiddenSaved = [...prefs.hiddenApps];
       this.credentials = credentials.map((cred) => ({ ...cred }));
       this.credsSaved = credentials.map((cred) => ({ ...cred }));
@@ -703,6 +730,37 @@ export default {
           :disabled="!appsChanged()"
           @click="saveApps"
         />
+      </div>
+    </section>
+
+    <!--
+      Which CLI a conversation is held with. A preference rather than a per-conversation choice:
+      a pane is its CLI for as long as it lives, so this decides what the next one opens with.
+    -->
+    <section class="dev-settings__card">
+      <div class="dev-settings__card-head">
+        <i class="dev-settings__card-icon icon icon-terminal" />
+        <div class="dev-settings__card-title">
+          <h3>Agent CLI</h3>
+          <p>What a new conversation is held with. One already running keeps the CLI it was opened with, including after a pod restart.</p>
+        </div>
+      </div>
+
+      <div class="dev-settings__apps">
+        <label
+          v-for="choice in CLI_CHOICES"
+          :key="choice.id"
+          class="dev-settings__app"
+        >
+          <input
+            type="radio"
+            name="dev-cli"
+            :checked="(cli || 'claude') === choice.id"
+            @change="setCli(choice.id)"
+          >
+          <span class="dev-settings__app-name">{{ choice.label }}</span>
+          <span class="dev-settings__app-desc">{{ choice.what }}</span>
+        </label>
       </div>
     </section>
 

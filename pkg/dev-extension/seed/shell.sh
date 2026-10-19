@@ -220,6 +220,11 @@ fi
 #
 #   claude  (default) - the assistant's pane, attached. What the Studio's
 #                       assistant talks to.
+#   agy               - the same, held with Antigravity instead. A second CLI
+#                       rather than a second kind of pane: the tmux session, the
+#                       queue file, the id file and the restart loop are the
+#                       same, and only the program in the pane differs. See
+#                       agy-session.sh.
 #   shell             - a plain login shell, attached. The Terminal tab is a
 #                       terminal: somebody opening it wants a prompt in the
 #                       extension's tree, not a second view of the assistant's
@@ -231,6 +236,18 @@ fi
 #                       and every prompt queued against a session that would
 #                       never exist.
 MODE=${4:-claude}
+
+# Which CLI holds the conversation: `claude` (the default, and what every pane was before this)
+# or `agy`, Antigravity. Separate from MODE because MODE says how the pane runs - attached,
+# detached, or a plain shell - and the two were one thing, which is why `start` could only ever
+# bring a pane back as claude however it was opened. `agy` as a MODE is accepted as shorthand
+# for the attached pane of that CLI, which is what a caller naturally passes.
+CLI=${6:-claude}
+
+if [ "$MODE" = agy ]; then
+  CLI=agy
+  MODE=claude
+fi
 
 # The pane's environment, spelled out on the pane itself rather than inherited. A tmux server
 # hands every new session the environment it was started with, which is whichever pane came
@@ -276,7 +293,13 @@ else
     chown node:node "$(dirname "$MC_CONVERSATION")" 2>/dev/null || true
   fi
 
-  PANE="$PANE_ENV /bin/bash /seed/claude-session.sh '$MC_QUEUE' '$MC_CONVERSATION'"
+  # Both session scripts take the same two arguments - what was queued for this conversation,
+  # and where the pane records which conversation is its own - because both have the same job.
+  if [ "$CLI" = agy ]; then
+    PANE="$PANE_ENV /bin/bash /seed/agy-session.sh '$MC_QUEUE' '$MC_CONVERSATION'"
+  else
+    PANE="$PANE_ENV /bin/bash /seed/claude-session.sh '$MC_QUEUE' '$MC_CONVERSATION'"
+  fi
 fi
 
 # Recorded, so that a pod restart brings the pane back: boot.sh reads these and starts each
@@ -286,7 +309,10 @@ fi
 if [ "$MODE" != shell ]; then
   PANES_DIR="$(dirname "$HOME_DIR")/.panes"
   mkdir -p "$PANES_DIR" 2>/dev/null || true
-  if printf '%s\n' "$SESSION" "$WORKDIR" "$HOME_DIR" start "$SHELL_PREFIX" > "$PANES_DIR/$SESSION.tmp" 2>/dev/null; then
+  # `start` is the mode boot.sh uses to bring a pane back detached; the sixth line is which CLI
+  # it was held with, so a pod restart reopens an Antigravity conversation as one. An older file
+  # has five lines and reads as claude, which is what every pane was when it was written.
+  if printf '%s\n' "$SESSION" "$WORKDIR" "$HOME_DIR" start "$SHELL_PREFIX" "$CLI" > "$PANES_DIR/$SESSION.tmp" 2>/dev/null; then
     mv -f "$PANES_DIR/$SESSION.tmp" "$PANES_DIR/$SESSION" 2>/dev/null || true
   fi
   if [ "$(id -u)" = 0 ]; then

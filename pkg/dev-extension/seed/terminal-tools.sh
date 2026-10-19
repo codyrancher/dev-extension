@@ -191,6 +191,27 @@ elif [ ! -x "$CLAUDE_BIN" ]; then
   fi
 fi
 
+# Antigravity, for a pane held with it instead.
+#
+# Only when asked for (TOOLS_AGY=1), and not at all where claude is skipped: it is another
+# couple of hundred megabytes per pod of a CLI most panes will not run, and the pods that skip
+# claude skip it because nothing in them executes a CLI at all. Its installer is the same shape
+# as claude's - a script that drops a single static binary into the pane's own durable home -
+# so it lands beside it on the hostPath and survives a pod restart the same way.
+#
+# A failure here is not fatal: agy-session.sh says so in the pane and drops to a shell, which
+# is a better answer than a pod that will not start.
+if [ "${TOOLS_NO_CLAUDE:-0}" = 1 ] || [ "${TOOLS_AGY:-0}" != 1 ]; then
+  :
+elif [ ! -x "$APP_HOME/.local/bin/agy" ]; then
+  echo "[tools] installing the antigravity cli (this takes a moment)"
+  as_node "curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --skip-aliases --skip-path" || true
+
+  if [ ! -x "$APP_HOME/.local/bin/agy" ]; then
+    echo "[tools] the antigravity installer did not land; panes asking for it will say so"
+  fi
+fi
+
 # A pod that was started before this change keeps its npm copy in the container filesystem until
 # it restarts, and `claude doctor` calls that a leftover - correctly, since two claudes on one
 # PATH is a coin toss about which one a pane gets. Only when the native one is actually there,

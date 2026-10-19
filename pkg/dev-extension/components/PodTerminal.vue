@@ -24,6 +24,7 @@ import Socket, {
 } from '@shell/utils/socket';
 import { execUrl, writeImageToPod, EXT_NS, AGENT_CONTAINER } from '../pod';
 import { agentPod, sessionCommand } from '../agent';
+import { readPrefs } from '../prefs';
 import ChatPane from './ChatPane.vue';
 
 /** Which face of a pane somebody last chose, per conversation. */
@@ -179,11 +180,17 @@ export default {
       default: 'agent-1',
     },
 
-    // What the pane runs: the assistant's claude session, or a plain login shell.
+    /**
+     * What the pane runs: the assistant, or a plain login shell.
+     *
+     * Empty means "whatever this person holds conversations with", which is the preference
+     * (prefs.cli) and claude when they have not said. A caller that means a particular one -
+     * the Terminal tab, which means a shell - says so and is not overridden.
+     */
     mode: {
       type:      String,
-      default:   'claude',
-      validator: (value) => ['claude', 'shell'].includes(value),
+      default:   '',
+      validator: (value) => ['', 'claude', 'agy', 'shell'].includes(value),
     },
 
     // What to exec, spelled out, instead of the session/mode pair above. Another extension
@@ -253,6 +260,8 @@ export default {
 
   data() {
     return {
+      /** Which CLI this person holds conversations with, when the caller did not say. */
+      prefCli: '',
       KEY_BAR,
       // 'waiting' (no pod yet) | 'connecting' | 'open' | 'closed'
       state:        'waiting',
@@ -287,6 +296,16 @@ export default {
   },
 
   computed: {
+    /**
+     * What this pane actually runs.
+     *
+     * The prop when a caller meant a particular thing, the person's preference otherwise, and
+     * claude when neither says - which is every pane that existed before there was a choice.
+     */
+    runs() {
+      return this.mode || this.prefCli || 'claude';
+    },
+
     /** Which pod this pane is for, as the file viewer and the image writer address it. */
     podTarget() {
       return {
@@ -304,6 +323,12 @@ export default {
   },
 
   async mounted() {
+    // Which CLI to open with, before anything is exec'd. A read that fails leaves it claude,
+    // which is what it has always been.
+    if (!this.mode) {
+      this.prefCli = await readPrefs().then((p) => (p.cli === 'agy' ? 'agy' : '')).catch(() => '');
+    }
+
     // A handle for looking at what this pane believes: which images it has read, which it gave
     // up on, what the grid is. Cheap, and the alternative is guessing from the outside.
     if (this.$el) {
@@ -597,7 +622,7 @@ export default {
     },
 
     connect(pod) {
-      const argv = this.command?.length ? this.command : sessionCommand(this.session, this.mode);
+      const argv = this.command?.length ? this.command : sessionCommand(this.session, this.runs);
       const url = execUrl(pod, argv, true, this.container, this.namespace);
       const socket = new Socket(url, false, 0, 'base64.channel.k8s.io');
 
@@ -1143,7 +1168,7 @@ export default {
       v-if="view === 'chat'"
       class="mc-terminal__chat"
       :session="session"
-      :mode="mode"
+      :mode="runs"
       :command="command"
       :find-pod="findPod"
       :namespace="namespace"

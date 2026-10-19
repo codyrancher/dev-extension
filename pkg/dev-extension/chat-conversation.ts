@@ -45,6 +45,7 @@ import {
   podExecOnce, statPodPath, readPodFileBase64, type PodTarget,
 } from './pod';
 import { agentPod, sessionCommand } from './agent';
+import type { SessionMode } from './agent';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -52,7 +53,8 @@ import { agentPod, sessionCommand } from './agent';
 export interface ConversationSource {
   /** The conversation id, for the Studio's default argv. */
   session: string;
-  mode?: 'claude' | 'shell';
+  /** Which CLI holds this conversation, and how the pane runs. See sessionCommand. */
+  mode?: SessionMode;
   /** The argv the pane runs, when it is not one of the agent pod's own conversations. */
   command?: string[] | null;
   namespace: string;

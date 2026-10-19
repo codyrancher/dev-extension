@@ -51,11 +51,23 @@ export interface DevPrefs {
    * everybody else you had picked it up.
    */
   trackedIssues: string[];
+  /**
+   * Which CLI holds a conversation: '' or 'claude' for Claude Code, 'agy' for Antigravity.
+   *
+   * A preference rather than a per-conversation choice, for now, because it is a decision about
+   * how you want to work rather than about one piece of work - and because a conversation
+   * already running cannot change its mind: the pane is the CLI. A conversation opened while
+   * this says `agy` stays an Antigravity conversation for its whole life, including after a pod
+   * restart, which is what the sixth line of the pane record is for (seed/shell.sh).
+   */
+  cli: string;
   focus: FocusPrefs;
 }
 
 const EMPTY_FOCUS: FocusPrefs = { pinned: [], snoozed: {}, done: {} };
-const EMPTY: DevPrefs = { hiddenApps: [], defaultRancher: '', trackedIssues: [], focus: EMPTY_FOCUS };
+const EMPTY: DevPrefs = {
+  hiddenApps: [], defaultRancher: '', trackedIssues: [], cli: '', focus: EMPTY_FOCUS,
+};
 
 /** A record of strings, or an empty one: what came out of JSON is whatever was written. */
 function strings(value: unknown): Record<string, string> {

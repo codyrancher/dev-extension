@@ -51,9 +51,12 @@ HOME_DIR="$AGENT_HOME" /bin/sh /seed/terminal-tools.sh >"$WORKSPACE/.terminal-to
   for f in "$WORKSPACE"/.panes/*; do
     [ -f "$f" ] || continue
     S=$(sed -n 1p "$f"); W=$(sed -n 2p "$f"); H=$(sed -n 3p "$f"); P=$(sed -n 5p "$f")
+    # Which CLI the conversation was held with. A file written before panes could be held with
+    # anything else has five lines, and an empty sixth reads as claude - which is what it was.
+    C=$(sed -n 6p "$f")
     [ -n "$S" ] || continue
-    echo "$(date -u +%FT%TZ) restoring pane $S in $W"
-    /bin/sh /seed/shell.sh "$S" "$W" "$H" start "$P" || echo "  could not restore $S"
+    echo "$(date -u +%FT%TZ) restoring pane $S in $W with ${C:-claude}"
+    /bin/sh /seed/shell.sh "$S" "$W" "$H" start "$P" "${C:-claude}" || echo "  could not restore $S"
     sleep 2
   done
   echo "$(date -u +%FT%TZ) done"

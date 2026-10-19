@@ -46,6 +46,7 @@ export default {
      * and a page that asks for none is byte-for-byte what it was.
      */
     skin:      { type: String, default: '' },
+    /** Which CLI holds this conversation: the pane resolves it, this is told. */
     mode:      { type: String, default: 'claude' },
     command:   { type: Array, default: null },
     findPod:   { type: Function, default: null },

@@ -790,9 +790,20 @@ export async function queueSessionPrompt(id: string, prompt: string): Promise<vo
  * positional and all required, and a caller that copied them would be a caller that stopped
  * matching the first time they changed.
  */
-export function sessionCommand(id: string, mode: 'claude' | 'shell' = 'claude'): string[] {
+/**
+ * What to exec for a conversation's pane.
+ *
+ * `mode` is how the pane runs - the assistant attached, a plain shell, or created detached -
+ * and `agy` is the shorthand shell.sh accepts for the assistant held with Antigravity instead
+ * of claude. The script takes the CLI as a sixth argument too, which is how a pane restored
+ * after a pod restart comes back on the one it was opened with; see seed/shell.sh.
+ */
+export function sessionCommand(id: string, mode: SessionMode = 'claude'): string[] {
   return ['/bin/sh', '/seed/shell.sh', id, sharedWorkdir(), `${ AGENT_WORKSPACE }/.home`, mode];
 }
+
+/** The ways a pane can be opened. See sessionCommand. */
+export type SessionMode = 'claude' | 'agy' | 'shell' | 'start';
 
 /**
  * What a conversation's pane is showing, stripped to printable text.
