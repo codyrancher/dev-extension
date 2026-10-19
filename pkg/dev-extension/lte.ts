@@ -368,11 +368,65 @@ const WORK_VOLUME = { name: 'work', hostPath: { path: '/var/lib/rancher/dev-work
  * container with everything else, so it could not be allowed to take the container down with
  * it; this pod *is* the server, so a crash is a restart and the kubelet does it.
  */
+/*
+ * What a tool is, beyond the objects it deploys: whether two pieces of work can share one, and
+ * how to talk to it.
+ *
+ * On annotations rather than in the App's spec, deliberately. `ensureAppsPlusCrds` is
+ * create-if-missing - "a CRD that is already there is left exactly as it is" - so a new field in
+ * the schema would exist only on clusters that had none of these types yet, and be pruned on
+ * every cluster that already does. Annotations are unconstrained, so they arrive on the
+ * clusters this already runs on, which is all of them.
+ *
+ * `multitenant` is the fact a lease has to act on. A tool whose instance is per workspace can be
+ * handed to any number of them; one that is not has to be shared, and something has to know
+ * which before it hands out the second. Every tool here is per-workspace - its namespace is
+ * `dev-<workspace>-<kind>` - so all three are multitenant, and saying so is what makes the next
+ * tool that is not a special case rather than a surprise.
+ *
+ * `openapi` is how to interact with the thing once it is up, and it is a description rather than
+ * a served document: these tools are a dev server, a storybook and a Rancher, and none of them
+ * publishes a spec of its own. What a caller needs is the port, the scheme, and what answers.
+ */
+const TOOL_MULTITENANT = 'dev.rancher.io/multitenant';
+const TOOL_OPENAPI = 'dev.rancher.io/openapi';
+
+function toolMeta(name: string, multitenant: boolean, openapi: string): Json {
+  return {
+    name,
+    annotations: {
+      [TOOL_MULTITENANT]: multitenant ? 'true' : 'false',
+      [TOOL_OPENAPI]:     openapi.trim(),
+    },
+  };
+}
+
+/** The minimal OpenAPI for a tool that serves a web application rather than an API. */
+function serviceSpec(title: string, port: number, scheme: string, what: string): string {
+  return [
+    'openapi: 3.1.0',
+    'info:',
+    `  title: ${ title }`,
+    '  version: "1"',
+    `  description: ${ what }`,
+    'servers:',
+    `  - url: ${ scheme }://<node ip>:<node port>`,
+    `    description: The tool's Service, published per workspace. Port inside the pod is ${ port }.`,
+    'paths:',
+    '  /:',
+    '    get:',
+    `      summary: ${ what }`,
+    '      responses:',
+    '        "200":',
+    '          description: The application.',
+  ].join('\n');
+}
+
 function devServerToolApp(): Json {
   return {
     apiVersion: 'appsplus.io/v1alpha1',
     kind:       'App',
-    metadata:   { name: TOOL_APPS['dev-server'] },
+    metadata:   toolMeta(TOOL_APPS['dev-server'], true, serviceSpec('Dashboard dev server', 8005, 'https', 'The rancher/dashboard dev server on the checkout of this workspace.')),
     spec:       {
       description: 'A rancher/dashboard dev server on a leased workspace\'s checkout, pointed at a Rancher. Its own pod, so it can be released the moment the work stops needing it.',
       values:      {
@@ -438,7 +492,7 @@ function storybookToolApp(): Json {
   return {
     apiVersion: 'appsplus.io/v1alpha1',
     kind:       'App',
-    metadata:   { name: TOOL_APPS.storybook },
+    metadata:   toolMeta(TOOL_APPS.storybook, true, serviceSpec('Dashboard Storybook', 6006, 'http', 'The dashboard Storybook on the checkout of this workspace.')),
     spec:       {
       description: 'The dashboard\'s Storybook on a leased workspace\'s checkout. Its own pod, released when the work stops needing it.',
       values:      { workspace: '', image: 'node:24', port: 6006 },
@@ -512,7 +566,7 @@ function rancherToolApp(): Json {
   return {
     apiVersion: 'appsplus.io/v1alpha1',
     kind:       'App',
-    metadata:   { name: TOOL_APPS.rancher },
+    metadata:   toolMeta(TOOL_APPS.rancher, true, serviceSpec('Rancher', 443, 'https', 'A Rancher to test against, with its own embedded k3s. It answers the Rancher API.')),
     spec:       {
       description: 'A Rancher to test against: rancher/rancher with its own embedded k3s, in a pod, up in a couple of minutes. Its own lease, so a workspace is never holding a Rancher it has finished with.',
       values:      { workspace: '', image: 'rancher/rancher:v2.12.2', password: 'dj9971dj9971' },
@@ -601,4 +655,37 @@ function fingerprint(text: string): string {
   }
 
   return (h >>> 0).toString(16);
+}
+
+/** One tool, as the tools page and an agent both need it. See toolMeta. */
+export interface ToolDefinition {
+  /** The App's name, `lte-dev-server` and so on. */
+  app: string;
+  /** The kind the namespace is built from: `dev-<workspace>-<kind>`. */
+  kind: string;
+  description: string;
+  /** Whether two pieces of work can hold one at once. */
+  multitenant: boolean;
+  /** How to talk to it, as OpenAPI. */
+  openapi: string;
+}
+
+/**
+ * The tools this product defines, read off the Apps themselves rather than listed twice.
+ *
+ * `lteApps()` is where they are written; this reads what it wrote, so a tool added there shows
+ * up here without a second edit - which is the only way a list like this stays true.
+ */
+export function toolDefinitions(): ToolDefinition[] {
+  const byApp = new Map(Object.entries(TOOL_APPS).map(([kind, app]) => [app, kind]));
+
+  return lteApps()
+    .filter((app) => byApp.has(app.metadata?.name))
+    .map((app) => ({
+      app:         app.metadata.name,
+      kind:        byApp.get(app.metadata.name) as string,
+      description: app.spec?.description || '',
+      multitenant: (app.metadata?.annotations || {})['dev.rancher.io/multitenant'] !== 'false',
+      openapi:     (app.metadata?.annotations || {})['dev.rancher.io/openapi'] || '',
+    }));
 }
