@@ -23,6 +23,7 @@ import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from './api';
 import { noteCoded, noteBranch, isBot, STAGE_LABELS } from './workspace-status';
 import type { WorkspaceStatus, Stage } from './workspace-status';
 import { artifactKind } from './artifact-kind';
+import { numberTaskBoxes } from './pr-body.mjs';
 import type { ArtifactKind } from './artifact-kind';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -47,7 +48,12 @@ export function stepsFor(kind: WorkspaceStatus['kind']): RailStep[] {
 // ── Evidence ────────────────────────────────────────────────────────────────────────────────
 
 export type EvidenceItem =
-  | { kind: 'text'; text: string; html?: string; at?: string; who?: string }
+  /**
+   * `taskBody` marks the one text item that can be written back: the pull request's own
+   * description, whose task boxes are live. It carries the markdown the boxes were counted in,
+   * because toggling one rewrites that source rather than the rendered HTML.
+   */
+  | { kind: 'text'; text: string; html?: string; at?: string; who?: string; taskBody?: string; pr?: number; repo?: string }
   | { kind: 'kv'; rows: { k: string; v: string; tone?: string }[] }
   /** The workspace's artifacts directory: every top-level directory in it, and the loose files. */
   | { kind: 'artifacts'; groups: ArtifactGroup[]; total: number; truncated: boolean; lead: string[] }
@@ -57,6 +63,8 @@ export type EvidenceItem =
   /** A way into the review tool, for a change that is read there rather than listed here. */
   | { kind: 'review'; label: string }
   | { kind: 'links'; items: { label: string; url: string }[] }
+  /** Who is looking at it, and who to ask. `draft` is what the ready-for-review press needs. */
+  | { kind: 'reviewers'; asked: string[]; approved: string[]; suggested: { who: string; why: string }[]; draft: boolean; pr: number; repo: string }
   | { kind: 'empty'; text: string };
 
 /** One file under a workspace's artifacts. `path` is from the artifacts root; `label` is its path inside its group. */
@@ -560,7 +568,13 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
     if (!d) {
       return;
     }
-    const urls = [...new Set([...(d.reviewComments || []), ...(d.discussion || [])].flatMap((c: Json) => assetUrls(String(c.body || ''))))].slice(0, 40);
+    // The description as well as the comments. It was only the comments, so a recording in the
+    // pull request's own body - which is where the demo of the change usually is - stayed a bare
+    // link while the same recording in a comment under it played.
+    const urls = [...new Set([
+      ...assetUrls(String(d.meta?.body || '')),
+      ...[...(d.reviewComments || []), ...(d.discussion || [])].flatMap((c: Json) => assetUrls(String(c.body || ''))),
+    ])].slice(0, 40);
 
     if (!urls.length) {
       return;
@@ -609,6 +623,51 @@ interface Sources {
   failed?: Failed;
   /** Attachment URL -> content type, for the bodies. */
   kinds?: Record<string, string>;
+}
+
+/**
+ * Who has been asked to look at it, who already has, and who to ask next.
+ *
+ * The state a pull request of yours gets stuck in most quietly is open, green, and nobody
+ * asked - and the column showed none of it: the facts strip said "draft", and finding a
+ * reviewer meant opening GitHub and picking from a list that does not know who has touched
+ * these files. The candidates are built the way the Focus deck's card builds them (reviewersOf
+ * in focus-artifacts.ts): whoever has commented on the diff, then on the pull request, then
+ * reviewed it before - in that order, because that is how well each of them knows the change.
+ *
+ * Anyone already asked or already approving is left out of the suggestions rather than listed
+ * twice, and the asking is a press on the row.
+ */
+function reviewersItem(d: Json): EvidenceItem {
+  const asked: string[] = (d.meta?.reviewers || []).map(String);
+  const approved: string[] = (d.meta?.approvedBy || []).map(String);
+  // The author rather than the viewer: GitHub refuses a review request to the author, and on
+  // these pull requests the author is usually the person reading this anyway.
+  const author = String(d.meta?.author || '');
+  const seen = new Set([...asked, ...approved, author].filter(Boolean));
+  const named = (rows: Json[], why: string) => (rows || [])
+    .map((row: Json) => ({ who: String(row?.author || ''), why }));
+
+  const suggested = [
+    ...named(d.reviewComments, 'already commented on the diff'),
+    ...named(d.discussion, 'already commented on it'),
+    ...named(d.reviews, 'has reviewed it before'),
+  ]
+    .filter((row) => row.who && !seen.has(row.who) && !isBot(row.who))
+    // First reason wins: the sources are in order of how well each knows the change, and one
+    // person appearing twice would read as two candidates.
+    .filter((row, n, all) => all.findIndex((other) => other.who === row.who) === n)
+    .slice(0, 5);
+
+  return {
+    kind:  'reviewers',
+    asked,
+    approved,
+    suggested,
+    draft: !!d.meta?.draft,
+    pr:    Number(d.meta?.number) || 0,
+    repo:  String(d.meta?.repo || DEFAULT_REPO),
+  };
 }
 
 function compose(status: WorkspaceStatus, stage: Stage, have: Sources): EvidenceSection[] {
@@ -670,7 +729,19 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     if (failing.length) {
       items.push({ kind: 'links', items: failing.slice(0, 8).map((c: Json) => ({ label: `${ c.name || 'check' }: ${ c.conclusion || 'failing' }`, url: c.url })) });
     }
-    items.push({ kind: 'text', text: String(d.meta?.body || ''), html: renderBody(String(d.meta?.body || '') || '_(no description)_', kinds) });
+    const body = String(d.meta?.body || '');
+
+    // The description, with its task boxes live. `pr` and `repo` are what the column needs to
+    // write a tick back; `taskBody` is the source the Nth box is counted in - see pr-body.mjs.
+    items.push({
+      kind: 'text',
+      text: body,
+      html: numberTaskBoxes(renderBody(body || '_(no description)_', kinds)),
+      taskBody: body,
+      pr: Number(d.meta?.number) || 0,
+      repo: String(d.meta?.repo || DEFAULT_REPO),
+    });
+    items.push(reviewersItem(d));
     // First, and shut. What the PR is - its size, its checks, its description and checklist -
     // is the frame everything else in the column is read inside, so it belongs at the top; but
     // it is reference, not news, and open it was a screenful of template above the findings.

@@ -33,6 +33,7 @@ import {
   stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
 } from '../workspace-rail';
 import { prFile, openConversation } from '../reviews';
+import { toggleTask } from '../pr-body.mjs';
 import {
   listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates, sendToPane, renameConversation, endConversation
 } from '../conversations';
@@ -45,7 +46,7 @@ import {
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
 } from '../skills';
-import { markReadyForReview } from '../github';
+import { markReadyForReview, requestReviewers, describePr } from '../github';
 import {
   deleteWorkspace, devFetch, workspaceMediaListUrl, setWorkspaceRunning, workspaceProxyUrl, secretValue
 } from '../api';
@@ -116,6 +117,13 @@ export default {
       reading:     false,
       /** Which read of the first column is the current one; an older one landing is ignored. */
       readSeq:     0,
+      /** Who has just been asked from here, so their row says so before the next read lands. */
+      asked:         [],
+      reviewerBusy:  '',
+      reviewerError: '',
+      readying:      false,
+      /** A box being written back, by its index, so it cannot be pressed twice. */
+      tickingTask:   -1,
       /** The stage the column currently shows, so a refresh of it is not allowed to shrink it. */
       evidenceStage: '',
       /** The same for the status: one read at a time, and an older one landing cannot regress the stage. */
@@ -513,6 +521,83 @@ export default {
       await this.refreshStatus();
       await this.refreshEvidence();
       this.readDevServer();
+    },
+
+    /**
+     * A press inside a rendered body.
+     *
+     * Two things can be pressed in there: an image, which opens the viewer, and - in the pull
+     * request's own description - a task box. The box is handled here because ticking one means
+     * rewriting the description and PUTting it back: the rendered HTML is a picture of the
+     * markdown, so the Nth box maps to the Nth bracket in the source (pr-body.mjs).
+     */
+    async onBodyClick(event, item) {
+      const box = event.target?.closest?.('input[type="checkbox"][data-task]');
+
+      if (!box || !item?.taskBody || !item.pr) {
+        this.openShot(event);
+
+        return;
+      }
+      // The browser has already drawn the tick. The write decides whether it stays, so the box
+      // is put back where it was until GitHub has agreed - a box that unticks itself a second
+      // later is worse than one that waits.
+      const n = Number(box.getAttribute('data-task'));
+
+      box.checked = !box.checked;
+      if (this.tickingTask >= 0) {
+        return;
+      }
+      this.tickingTask = n;
+      this.reviewerError = '';
+      try {
+        await describePr(item.repo, item.pr, { body: toggleTask(item.taskBody, n) });
+        await this.refreshEvidence();
+      } catch (e) {
+        this.reviewerError = `The box could not be ticked: ${ e.message || e }`;
+      } finally {
+        this.tickingTask = -1;
+      }
+    },
+
+    /** Ask one person for a review, from the row that suggested them. */
+    async ask(item, who) {
+      this.reviewerBusy = who;
+      this.reviewerError = '';
+      try {
+        const { refused } = await requestReviewers(item.repo, item.pr, [who]);
+
+        if (refused[who]) {
+          this.reviewerError = `${ who } could not be asked: ${ refused[who] }`;
+        } else {
+          this.asked = [...this.asked, who];
+        }
+        await this.refreshEvidence();
+      } catch (e) {
+        this.reviewerError = `${ who } could not be asked: ${ e.message || e }`;
+      } finally {
+        this.reviewerBusy = '';
+      }
+    },
+
+    /**
+     * Out of draft, from the reviewers block.
+     *
+     * `markReady` already exists for the step button and does the whole of it - the mark, the
+     * notice and the settle - so this is only what a button inside the column needs around it:
+     * something to disable while it runs, and somewhere for the failure to be read.
+     */
+    async readyForReview() {
+      this.readying = true;
+      this.reviewerError = '';
+      try {
+        await this.markReady();
+        await this.refreshEvidence();
+      } catch (e) {
+        this.reviewerError = `It could not be marked ready: ${ e.message || e }`;
+      } finally {
+        this.readying = false;
+      }
     },
 
     /** What the workspace's dev server is doing, for the button and the automatic stop. */
@@ -2353,7 +2438,8 @@ export default {
                 <div
                   v-if="item.html"
                   class="md-body workspace-rail__md"
-                  @click="openShot"
+                  :class="{ 'workspace-rail__md--live': item.taskBody }"
+                  @click="(event) => onBodyClick(event, item)"
                   v-html="item.html"
                 />
                 <template v-else>{{ item.text }}</template>
@@ -2710,6 +2796,74 @@ export default {
                   rel="noopener noreferrer"
                 >{{ l.label }}</a>
               </p>
+              <!--
+                Who is looking at it, and who to ask - the thing a draft is usually waiting on,
+                and the one part of a pull request this column could only send you to GitHub for.
+              -->
+              <div
+                v-else-if="item.kind === 'reviewers'"
+                class="workspace-rail__reviewers"
+              >
+                <p
+                  v-if="item.asked.length || item.approved.length"
+                  class="workspace-rail__who-has"
+                >
+                  <span
+                    v-for="who in item.approved"
+                    :key="`a-${ who }`"
+                    class="workspace-rail__who workspace-rail__who--approved"
+                  >{{ who }} approved</span>
+                  <span
+                    v-for="who in item.asked"
+                    :key="`r-${ who }`"
+                    class="workspace-rail__who"
+                  >{{ who }} asked</span>
+                </p>
+                <p
+                  v-else
+                  class="workspace-rail__who-has workspace-rail__empty"
+                >Nobody has been asked yet.</p>
+
+                <ul
+                  v-if="item.suggested.length"
+                  class="workspace-rail__suggest"
+                >
+                  <li
+                    v-for="candidate in item.suggested"
+                    :key="candidate.who"
+                  >
+                    <span class="workspace-rail__who-name">{{ candidate.who }}</span>
+                    <span class="workspace-rail__why">{{ candidate.why }}</span>
+                    <RcButton
+                      variant="secondary"
+                      size="small"
+                      :disabled="reviewerBusy === candidate.who || asked.includes(candidate.who)"
+                      @click="ask(item, candidate.who)"
+                    >
+                      {{ asked.includes(candidate.who) ? 'Asked' : reviewerBusy === candidate.who ? 'Asking…' : 'Ask' }}
+                    </RcButton>
+                  </li>
+                </ul>
+
+                <div
+                  v-if="item.draft"
+                  class="workspace-rail__ready"
+                >
+                  <RcButton
+                    variant="primary"
+                    size="small"
+                    :disabled="readying"
+                    @click="readyForReview()"
+                  >
+                    {{ readying ? 'Marking…' : 'Ready for review' }}
+                  </RcButton>
+                  <span class="workspace-rail__why">It is a draft, so nobody is being asked to look at it yet.</span>
+                </div>
+                <p
+                  v-if="reviewerError"
+                  class="workspace-rail__empty workspace-rail__tone--error"
+                >{{ reviewerError }}</p>
+              </div>
               <p
                 v-else-if="item.kind === 'empty'"
                 class="workspace-rail__empty"
@@ -3981,5 +4135,67 @@ export default {
     font:          inherit;
     resize:        vertical;
   }
+}
+
+/* Who is looking at it, and who to ask. A list of rows, each ending in the one press. */
+.workspace-rail__reviewers {
+  display:        flex;
+  flex-direction: column;
+  gap:            var(--dev-space-3);
+  padding:        var(--dev-space-3) 0 0;
+}
+
+.workspace-rail__who-has {
+  display:   flex;
+  flex-wrap: wrap;
+  gap:       var(--dev-space-2);
+  margin:    0;
+}
+
+.workspace-rail__who {
+  padding:       0 var(--dev-space-3);
+  border-radius: 10px;
+  background:    var(--default);
+  color:         var(--muted);
+  font-size:     11px;
+}
+
+.workspace-rail__who--approved { background: var(--success-banner-bg); color: var(--success); }
+
+.workspace-rail__suggest {
+  list-style: none;
+  margin:     0;
+  padding:    0;
+
+  li {
+    display:       flex;
+    align-items:   center;
+    gap:           var(--dev-space-3);
+    padding:       var(--dev-space-2) 0;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+.workspace-rail__who-name { font-weight: 600; font-size: 13px; }
+
+.workspace-rail__why {
+  flex:          1 1 auto;
+  min-width:     0;
+  overflow:      hidden;
+  text-overflow: ellipsis;
+  white-space:   nowrap;
+  color:         var(--muted);
+  font-size:     12px;
+}
+
+.workspace-rail__ready {
+  display:     flex;
+  align-items: center;
+  gap:         var(--dev-space-3);
+}
+
+/* A description whose boxes can be pressed says so by letting the pointer change over them. */
+.workspace-rail__md--live input[type="checkbox"] {
+  cursor: pointer;
 }
 </style>

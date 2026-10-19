@@ -2743,6 +2743,11 @@ async function prDetail(repo, num) {
       changedFiles: meta.changed_files,
       approved,
       approvedBy:     [...latestByUser.entries()].filter(([, s]) => s === 'APPROVED').map(([u]) => u),
+      // Who has been asked. GitHub has it on the pull request itself and this never passed it
+      // on, so a page wanting to know who was already asked had either to ask GitHub again or
+      // to suggest someone who is already on it.
+      reviewers:      (meta.requested_reviewers || []).map((u) => u?.login).filter(Boolean),
+      reviewTeams:    (meta.requested_teams || []).map((t) => t?.slug).filter(Boolean),
       merged:         !!meta.merged,
       draft:          !!meta.draft,
       mergeable:      meta.mergeable,
