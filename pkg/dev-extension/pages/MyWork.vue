@@ -15,6 +15,13 @@ import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import AsyncButton from '@shell/components/AsyncButton';
 import { myWork, setIssueStatus, ALL_SECTIONS } from '../github';
+// The assigned-issues table, shared with the Issue tracker page. See issue-table.js.
+import {
+  issueHeadersFor, issueRowsFrom, narrowed,
+  // Aliased: the templates call these as methods of the same name, and a method shorthand
+  // does not shadow a module binding - but a reader should not have to know that to be sure.
+  statusHue as hueOfStatus, milestoneDue as dueOfMilestone
+} from '../issue-table';
 import {
   startPrReview, startIssueFix, startAlertFix, startDependabotReview, startCiTriage, mergePr, approveAndMerge,
   rerunFailedJobs, dependabotData, dependabotReviews, refreshDependabotReview, closeDependabotReview, listConversations
@@ -41,23 +48,9 @@ import { NarrowMixin } from '../design/narrow';
  * the only question a phone holds these tables to answer is which row to press.
  */
 const NARROW_COLUMNS = ['state', 'pr', 'title', 'actions'];
-const NARROW_ISSUE_COLUMNS = ['number', 'title', 'actions'];
 const NARROW_ALERT_COLUMNS = ['severity', 'advisory', 'actions'];
 const NARROW_BOT_COLUMNS = ['pr', 'package', 'actions'];
 
-/**
- * The phone's version of a header list: the few columns worth the width, and no fixed widths.
- *
- * The widths are dropped rather than kept because they were chosen to add up to a desktop
- * table. Three of them totalling 280px in a 390px viewport leaves the title column the
- * leftovers, which is the ellipsis this exists to avoid; without them the browser divides the
- * room it actually has.
- */
-function narrowed(all, keep) {
-  return all
-    .filter((column) => keep.includes(column.name))
-    .map(({ width, ...column }) => column); // eslint-disable-line no-unused-vars
-}
 
 /**
  * Columns shared by both tables, since the two differ only at their right-hand end.
@@ -102,48 +95,6 @@ function columns(extra, narrow = false, withAuthor = false) {
   return narrow ? narrowed(all, NARROW_COLUMNS) : all;
 }
 
-// The three tables that are not about pull requests. Written out here rather than in data()
-// because they are constants that a computed narrows, and a constant that sits in data() is one
-// Vue makes reactive for nothing.
-const ISSUE_COLUMNS = [
-  {
-    name: 'number', label: 'Issue', value: 'number', width: 90
-  },
-  { name: 'title', label: 'Title', value: 'title' },
-  // The board's Status column, sorted by how much of your attention a status wants rather
-  // than alphabetically - the rank is a field on the row, see issueRows.
-  {
-    name: 'status', label: 'Status', value: 'statusRank', sort: ['statusRank', 'createdAt:desc'], width: 130
-  },
-  /*
-   * The milestone, sorted with the issues that have none at the end rather than the front.
-   *
-   * Most of these have no milestone, and an ascending sort that opens with forty blanks is not
-   * the sort anybody pressed for. The rank is a field on the row for the same reason the board
-   * status is one - SortableTable sorts the value it is given - see issueRows.
-   */
-  {
-    name: 'milestone', label: 'Milestone', value: 'milestone', sort: ['milestoneSort', 'createdAt:desc'], width: 150
-  },
-  {
-    name: 'age', label: 'Age', value: 'createdAt', sort: ['createdAt'], width: 90
-  },
-  /*
-   * When it became yours, which is not when it was raised: the oldest issue here was assigned
-   * four months ago and opened four years ago, and only one of those is a fact about you.
-   *
-   * Newest first, because the question this column answers is "what have I just been handed".
-   */
-  {
-    name: 'assigned', label: 'Assigned', value: 'assignedAt', sort: ['assignedAt:desc'], width: 110
-  },
-  {
-    name: 'workspace', label: 'Workspace', value: 'key', width: 130
-  },
-  {
-    name: 'actions', label: 'Actions', align: 'right', width: 110
-  },
-];
 
 const BOT_COLUMNS = [
   { name: 'pr', label: 'PR', value: 'number', width: 90 },
@@ -173,49 +124,7 @@ const ALERT_COLUMNS = [
   },
 ];
 
-// ── Board status ──
-// Ranked by how much of your attention a status wants: work in hand, then what is queued, then
-// what needs a decision, then what waits on somebody else, then the parked columns. A status no
-// board here uses ranks after these but ahead of the finished ones: a column anyone can add must
-// not sink below Done. Generic names other boards use sit beside their equivalents.
-const STATUS_ORDER = [
-  'working', 'in progress',
-  'next up', 'todo', 'to do',
-  'to triage', 'triage', 'new',
-  'review', 'in review',
-  'qa working', 'qa review', 'to test',
-  'backlog', 'ice box',
-];
-const STATUS_TERMINAL = ['done', 'closed'];
 
-function statusRank(status) {
-  if (!status) {
-    return STATUS_ORDER.length + 2;
-  }
-
-  const name = status.name.toLowerCase();
-
-  if (STATUS_TERMINAL.includes(name)) {
-    return STATUS_ORDER.length + 1;
-  }
-
-  const i = STATUS_ORDER.indexOf(name);
-
-  return i === -1 ? STATUS_ORDER.length : i;
-}
-
-// The board's own colour for a column, in this dashboard's palette. A board anyone can add a
-// column to would otherwise leave every unfamiliar status looking identical.
-const STATUS_HUE = {
-  GRAY:   'muted',
-  BLUE:   'info',
-  GREEN:  'success',
-  YELLOW: 'warning',
-  ORANGE: 'warning',
-  RED:    'error',
-  PINK:   'accent',
-  PURPLE: 'accent',
-};
 
 /**
  * The last results, kept across visits.
@@ -438,7 +347,7 @@ export default {
     },
 
     issueHeaders() {
-      return this.narrow ? narrowed(ISSUE_COLUMNS, NARROW_ISSUE_COLUMNS) : ISSUE_COLUMNS;
+      return issueHeadersFor(this.narrow);
     },
 
     /**
@@ -466,13 +375,7 @@ export default {
 
     /** The issues with their board rank on them, zero-padded so the table sorts it as text. */
     issueRows() {
-      return (this.work?.issues || []).map((issue) => ({
-        ...issue,
-        statusRank: String(statusRank(issue.projectStatus)).padStart(2, '0'),
-        // The last code point there is, so an issue with no milestone sorts after every issue
-        // that has one instead of ahead of all of them.
-        milestoneSort: issue.milestone || '\uffff',
-      }));
+      return issueRowsFrom(this.work?.issues);
     },
 
     projectStatusError() {
@@ -1001,7 +904,7 @@ export default {
 
     /** How severe, in the one word GitHub uses, coloured the way the rest of the page is. */
     statusHue(status) {
-      return STATUS_HUE[(status?.color || '').toUpperCase()] || 'muted';
+      return hueOfStatus(status);
     },
 
     /**
@@ -1011,12 +914,7 @@ export default {
      * nothing to anybody who does not already know the release calendar.
      */
     milestoneDue(row) {
-      if (!row.milestoneDue) {
-        return row.milestone ? `${ row.milestone } - no due date` : '';
-      }
-      const due = new Date(row.milestoneDue);
-
-      return `${ row.milestone } - due ${ due.toLocaleDateString() }${ due.getTime() < Date.now() ? ' (overdue)' : '' }`;
+      return dueOfMilestone(row);
     },
 
     severityTone(severity) {
