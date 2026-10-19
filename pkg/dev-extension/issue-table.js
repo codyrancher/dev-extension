@@ -12,6 +12,10 @@
  * difference.
  */
 
+import {
+  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_APP, LTE_APP, lteName, isLte
+} from './config/constants';
+
 /**
  * The phone's version of a header list: the few columns worth the width, and no fixed widths.
  * Exported because My Work's other three tables narrow the same way.
@@ -142,4 +146,52 @@ export function milestoneDue(row) {
   const due = new Date(row.milestoneDue);
 
   return `${ row.milestone } - due ${ due.toLocaleDateString() }${ due.getTime() < Date.now() ? ' (overdue)' : '' }`;
+}
+
+/*
+ * Where an issue's workspace is, and what it is called.
+ *
+ * Shared for the same reason the columns are: the Workspace column means the same thing on both
+ * pages, and "the same column" that resolves a different name on each is worse than two columns.
+ * Pure, taking the workspace names rather than reading them, so neither page has to be a class
+ * for the other to borrow from.
+ */
+
+/**
+ * The name new work goes under: a leased workspace (`lte-issue-18536`), unless a workspace of
+ * the plain name already exists, in which case the work keeps exactly the one it has.
+ */
+export function workspaceNameFor(workspaces, base) {
+  return (workspaces || []).includes(base) ? base : lteName(base);
+}
+
+/** The App a workspace of that name is made from. */
+export function appForWorkspace(name) {
+  return isLte(name) ? LTE_APP : DEFAULT_APP;
+}
+
+export function issueWorkspaceName(workspaces, issue) {
+  return workspaceNameFor(workspaces, `issue-${ issue.number }`);
+}
+
+export function hasIssueWorkspace(workspaces, issue) {
+  return (workspaces || []).includes(issueWorkspaceName(workspaces, issue));
+}
+
+/** The workspace if it exists, otherwise the create form filled in for it. */
+export function issueWorkspaceLocation(workspaces, issue) {
+  const name = issueWorkspaceName(workspaces, issue);
+
+  if ((workspaces || []).includes(name)) {
+    return {
+      name:   WORKSPACE_ROUTE,
+      params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: name },
+    };
+  }
+
+  return {
+    name:   CREATE_ROUTE,
+    params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER },
+    query:  { app: appForWorkspace(name), name },
+  };
 }
