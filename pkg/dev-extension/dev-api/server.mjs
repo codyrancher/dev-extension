@@ -1640,6 +1640,295 @@ const OPENAPI = {
         responses: { 200: { description: '{ pr, check, name, url, jobId, text, lines, hits, truncated }' } },
       },
     },
+    /*
+     * The rest of what is served, described because the spec is the contract and a route that
+     * is not in it is a route an agent has to be told about by hand - which is the same as not
+     * having it. The ones here are the least glamorous and the most called: the my-work routes
+     * the harness's own review and fix skills run on, the skills and prompts an agent edits,
+     * and the handful of reads a page opens with.
+     */
+    '/': {
+      get: {
+        operationId: 'health',
+        summary:     'Whether this API is up. `{ api: "ok" }`, nothing else.',
+        responses:   { 200: { description: 'Up.' } },
+      },
+    },
+    '/openapi.json': {
+      get: {
+        operationId: 'spec',
+        summary:     'This document.',
+        responses:   { 200: { description: 'The OpenAPI document.' } },
+      },
+    },
+    '/templates': {
+      get: {
+        operationId: 'listTemplates',
+        summary:     'The Apps a workspace can be made from.',
+        responses:   { 200: { description: '{ templates }' } },
+      },
+    },
+    '/conversations/{id}': {
+      parameters: [{
+        name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: "A conversation's id: `agent-<n>`, or `p-<workspace>-<n>`.",
+      }],
+      get: {
+        operationId: 'conversation',
+        summary:     'One conversation: what it is doing, what it last said, and what it is waiting on.',
+        responses:   { 200: { description: 'The conversation.' }, 404: { description: 'No conversation of that id.' } },
+      },
+    },
+    '/agent-seed': {
+      get: {
+        operationId: 'agentSeed',
+        summary:     'The files a workspace is laid out from.',
+        responses:   { 200: { description: 'The seed, path to contents.' } },
+      },
+    },
+    '/agent-seed/version': {
+      get: {
+        operationId: 'agentSeedVersion',
+        summary:     "The seed's version, which moves when any skill or script is saved.",
+        description: 'Cheap enough to poll: it is how a workspace knows its copies are stale.',
+        responses:   { 200: { description: '{ version }' } },
+      },
+    },
+    '/skills/{name}': {
+      parameters: [{
+        name: 'name', in: 'path', required: true, schema: { type: 'string' },
+      }, {
+        name: 'path', in: 'query', schema: { type: 'string' }, description: "A file of the skill; defaults to SKILL.md.",
+      }],
+      get: {
+        operationId: 'readSkill',
+        summary:     'One skill as it stands, override included.',
+        responses:   { 200: { description: 'The skill.' }, 404: { description: 'No skill of that name.' } },
+      },
+      put: {
+        operationId: 'saveSkill',
+        summary:     'Save an override for one skill.',
+        description: 'The seed is not edited; an override is stored beside it and wins. The answer carries the new seed version, which is what tells every workspace to take a fresh copy.',
+        responses:   { 200: { description: '{ ok, version }' }, 400: { description: 'Not a skill name, or not a file of a skill.' } },
+      },
+    },
+    '/skills/{name}/reset': {
+      parameters: [{
+        name: 'name', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      post: {
+        operationId: 'resetSkill',
+        summary:     'Drop the override and go back to the seed\'s own copy.',
+        description: 'Takes `{ path }` for one file of the skill, defaulting to SKILL.md.',
+        responses:   { 200: { description: '{ ok, version }' }, 400: { description: 'Not a skill name, or not a file of a skill.' } },
+      },
+    },
+    '/prompts/{name}': {
+      parameters: [{
+        name: 'name', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      put: {
+        operationId: 'savePrompt',
+        summary:     'Override one prompt template.',
+        description: 'Takes `{ template }`. An empty one is refused rather than stored, because a prompt that is there and empty reads as a prompt that was meant to be empty.',
+        responses:   { 200: { description: '{ ok }' }, 400: { description: 'The prompt is empty.' } },
+      },
+      delete: {
+        operationId: 'dropPrompt',
+        summary:     "Remove the override, leaving the built-in prompt.",
+        responses:   { 200: { description: '{ ok }' } },
+      },
+    },
+    '/agents/{name}/trigger': {
+      parameters: [{
+        name: 'name', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      post: {
+        operationId: 'triggerAgent',
+        summary:     'Ask for a run of an agent.',
+        description: 'Recorded as requested here and started by the next dashboard tick, which has the browser session the start needs. `note` rides along into the run\'s record.',
+        responses:   { 200: { description: 'The run as recorded.' } },
+      },
+    },
+    '/agents/{name}/runs': {
+      parameters: [{
+        name: 'name', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'agentRuns',
+        summary:     "That agent's runs, newest first.",
+        responses:   { 200: { description: '{ runs }' } },
+      },
+    },
+    '/my-work/pr/{num}': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }, {
+        name: 'repo', in: 'query', schema: { type: 'string' }, description: 'owner/name. Defaults to rancher/dashboard.',
+      }],
+      get: {
+        operationId: 'prDetail',
+        summary:     'A pull request with everything on it: its state, its files, its checks and its reviews.',
+        description: 'Half a dozen GitHub calls behind this one, and seconds on a large PR. Ask once and keep the answer.',
+        responses:   { 200: { description: 'The pull request.' } },
+      },
+    },
+    '/my-work/pr/{num}/comments': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }],
+      get: {
+        operationId: 'listPrComments',
+        summary:     'The review comments drafted against this PR, decorated with what they point at.',
+        description: 'These are this product\'s own drafts, in a ConfigMap, not GitHub\'s - a review is written here and submitted in one go.',
+        responses:   { 200: { description: 'The comments.' } },
+      },
+      post: {
+        operationId: 'addPrComment',
+        summary:     'Draft a comment on a line of the diff.',
+        responses:   { 200: { description: 'The comment as stored.' } },
+      },
+    },
+    '/my-work/pr/{num}/comments/{commentId}': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }, {
+        name: 'commentId', in: 'path', required: true, schema: { type: 'integer' }, description: "The comment's id, as the list gives it.",
+      }],
+      put: {
+        operationId: 'editPrComment',
+        summary:     'Change a drafted comment.',
+        responses:   { 200: { description: 'The comment as stored.' }, 404: { description: 'No comment of that id.' } },
+      },
+      delete: {
+        operationId: 'dropPrComment',
+        summary:     'Delete a drafted comment.',
+        responses:   { 200: { description: '{ ok }' } },
+      },
+    },
+    '/my-work/pr/{num}/file': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }, {
+        name: 'path', in: 'query', required: true, schema: { type: 'string' }, description: 'A path in the pull request.',
+      }, {
+        name: 'repo', in: 'query', schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'prFile',
+        summary:     'One file of the pull request, at its head.',
+        description: 'For reading around a diff hunk: the patch alone is a few lines of context, and a comment usually needs more.',
+        responses:   { 200: { description: 'The file.' } },
+      },
+    },
+    '/my-work/pr/{num}/commits-diff': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }, {
+        name: 'repo', in: 'query', schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'prCommitsDiff',
+        summary:     'What changed between two points of the pull request.',
+        description: 'What a second pass over a PR needs: the changes since the review, rather than the whole diff again.',
+        responses:   { 200: { description: 'The diff.' } },
+      },
+    },
+    '/my-work/pr/{num}/review-run': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }],
+      get: {
+        operationId: 'reviewRun',
+        summary:     'The state of the review being written for this PR.',
+        responses:   { 200: { description: 'The run.' } },
+      },
+      post: {
+        operationId: 'saveReviewRun',
+        summary:     'Record where the review has got to.',
+        description: 'How a skill reports its progress through a review that outlives any one turn.',
+        responses:   { 200: { description: 'The run as stored.' } },
+      },
+    },
+    '/my-work/pr/{num}/upload': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }],
+      post: {
+        operationId: 'uploadEvidence',
+        summary:     "One piece of a comment's evidence, on GitHub's CDN and ready to embed.",
+        description: 'Takes `{ path }` - a file in the agent workspace - and answers `{ href, cached, name, kind }`. The review panel asks for this as it submits, so a screenshot or a recording lands in the comment itself rather than as a sentence naming a path nobody reading the PR can reach.',
+        responses:   { 200: { description: 'The uploaded file.' }, 500: { description: 'No such file in the agent workspace.' } },
+      },
+    },
+    '/my-work/dependabot': {
+      parameters: [{
+        name: 'repo', in: 'query', schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'dependabotPrs',
+        summary: 'The open Dependabot pull requests.',
+        responses: { 200: { description: 'The pull requests.' } },
+      },
+    },
+    '/my-work/dependabot/pr/{num}/review-context': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }, {
+        name: 'repo', in: 'query', schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'dependabotContext',
+        summary:     'What is needed to judge one Dependabot bump: the versions, the changelog and what depends on it.',
+        responses:   { 200: { description: 'The context.' } },
+      },
+    },
+    '/my-work/dependabot/reviews': {
+      get: {
+        operationId: 'dependabotReviews',
+        summary:     'Every verdict recorded against a Dependabot PR, by number.',
+        responses:   { 200: { description: '{ reviews }' } },
+      },
+    },
+    '/my-work/dependabot/reviews/{num}': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }],
+      put: {
+        operationId: 'saveDependabotReview',
+        summary:     'Record a verdict on one Dependabot PR.',
+        responses:   { 200: { description: 'The verdict as stored.' } },
+      },
+      delete: {
+        operationId: 'dropDependabotReview',
+        summary:     'Forget the verdict, so the PR is judged again.',
+        responses:   { 200: { description: '{ ok }' } },
+      },
+    },
+    '/workspace/{name}/media/file': {
+      parameters: [{
+        name: 'name', in: 'path', required: true, schema: { type: 'string' }, description: 'A workspace, or `set/<name>` for the artifacts kept from a deleted one.',
+      }, {
+        name: 'path', in: 'query', required: true, schema: { type: 'string' }, description: 'A path as the listing gives it.',
+      }],
+      get: {
+        operationId: 'artifactFile',
+        summary:     'One artifact, as itself.',
+        description: 'Served with its own content type and with `Range` honoured, so a recording can be scrubbed rather than downloaded whole. This is the URL the listing is turned into; it is given a path of its own here because a route described only inside another route\'s prose is a route nothing can be written against.',
+        responses:   { 200: { description: 'The file.' }, 206: { description: 'The range asked for.' }, 404: { description: 'No such file.' } },
+      },
+    },
+    '/share/{workspace}/{name}.tar.gz': {
+      parameters: [{
+        name: 'workspace', in: 'path', required: true, schema: { type: 'string' },
+      }, {
+        name: 'name', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'shareTarball',
+        summary:     'A workspace share, as a tarball.',
+        responses:   { 200: { description: 'The archive.' }, 404: { description: 'No such share.' } },
+      },
+    },
     '/workspace/{name}/media': {
       parameters: [{
         name: 'name', in: 'path', required: true, schema: { type: 'string' },

@@ -53,6 +53,8 @@ function asConcrete(spec) {
     // A check id is a number in the route, and substituting a word for it made the route look
     // missing. The placeholders are not interchangeable; each stands for a real shape.
     .replace(/\{checkId\}/g, '7')
+    // A comment's id is a number too, and `{id}` elsewhere is a conversation's word-shaped one.
+    .replace(/\{commentId\}/g, '7')
     .replace(/\{kind\}/g, 'dev-server')
     // Any other placeholder, camelCase included - `{checkId}` is one, and a lower-case-only
     // pattern silently left it in the path and then called the route missing.
@@ -84,6 +86,42 @@ test('every documented path is served by a route', () => {
   });
 
   assert.deepEqual(orphans, [], 'these paths are in the spec and in no route');
+});
+
+/** The same routes, with the verb kept, for the check that reads in the other direction. */
+function routesWithVerbs() {
+  const table = [...source.matchAll(/\['(GET|POST|PUT|DELETE)', \/\^([^/]*(?:\\\/[^/]*)*)\/[a-z]*,/g)]
+    .map((m) => ({ verb: m[1], raw: m[2] }));
+  const imperative = [...source.matchAll(/=\s*\/\^([^/]*(?:\\\/[^/]*)*)\/[a-z]*\.exec\(url\.pathname\)/g)]
+    .map((m) => ({ verb: 'GET', raw: m[1] }));
+
+  return [...table, ...imperative];
+}
+
+/**
+ * The other direction, which is the half that was missing.
+ *
+ * A documented path with no route sends an agent at a 404 with the spec's authority behind it;
+ * a route with no documented path is worse in a quieter way - it is a thing the API does that
+ * nothing written against the spec will ever call, so it gets explained in a skill, or in a
+ * message, or not at all. Both halves are the contract.
+ */
+test('every route the API serves is in the spec', () => {
+  const documented = documentedPaths().map(asConcrete);
+
+  const undocumented = routesWithVerbs().filter(({ raw }) => {
+    let re;
+
+    try {
+      re = new RegExp(`^${ raw.replace(/\\\//g, '/') }`);
+    } catch {
+      return false;
+    }
+
+    return !documented.some((path) => re.test(path));
+  }).map(({ verb, raw }) => `${ verb } ${ raw.replace(/\\\//g, '/') }`);
+
+  assert.deepEqual(undocumented, [], 'these routes are served and in no path of the spec');
 });
 
 test('the spec names an operationId for every operation it documents', () => {
