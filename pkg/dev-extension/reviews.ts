@@ -29,6 +29,7 @@ import {
 } from './workspace-tools';
 import type { WorkspaceContext } from './workspace-tools';
 import { rerunFailed } from './github';
+import { source } from './source-cache.mjs';
 import {
   DEFAULT_APP, DEV_API_IN_CLUSTER, LTE_APP, isLte
 } from './config/constants';
@@ -100,29 +101,17 @@ export interface ReviewRun {
   updatedAt: string;
 }
 
-const PR_DETAIL_TTL_MS = 25_000;
-const prDetailCache = new Map<string, { at: number; value: Promise<Json> }>();
-
 /**
  * A PR with everything on it. Half a dozen GitHub calls behind the API, and twenty seconds on
  * a PR with sixty commits, so a read is kept for a moment and shared: the workspace status
  * and the rail's first column both ask for the same PR within seconds of each other, and
- * used to pay twice. A failed read is not kept.
+ * used to pay twice. A failed read is not kept - see source-cache.mjs, which is where that
+ * rule and the three beside it now live.
  */
-export async function prDetail(num: number, repo = DEFAULT_REPO): Promise<Json> {
-  const key = `${ repo }#${ num }`;
-  const kept = prDetailCache.get(key);
-
-  if (kept && Date.now() - kept.at < PR_DETAIL_TTL_MS) {
-    return kept.value;
-  }
-  const value = api(`/my-work/pr/${ num }?repo=${ encodeURIComponent(repo) }`);
-
-  prDetailCache.set(key, { at: Date.now(), value });
-  value.catch(() => prDetailCache.delete(key));
-
-  return value;
-}
+export const prDetail = source(
+  (num: number, repo: string = DEFAULT_REPO): Promise<Json> => api(`/my-work/pr/${ num }?repo=${ encodeURIComponent(repo) }`),
+  { ttl: 25_000, key: (num: number, repo: string = DEFAULT_REPO) => `${ repo }#${ num }` },
+) as ((num: number, repo?: string) => Promise<Json>) & { forget: (num: number, repo?: string) => void };
 
 export async function listComments(num: number): Promise<LocalComment[]> {
   return api(`/my-work/pr/${ num }/comments`);
@@ -142,7 +131,7 @@ export async function addComment(num: number, body: string, at?: { path: string;
  * the PR panel: the next read has to see the change, not the copy taken up to 25 seconds ago.
  */
 export function forgetPrDetail(num: number, repo = DEFAULT_REPO): void {
-  prDetailCache.delete(`${ repo }#${ num }`);
+  prDetail.forget(num, repo);
 }
 
 export async function updateComment(num: number, id: number, changes: Partial<Pick<LocalComment, 'body' | 'status' | 'line' | 'path'>> & { attachments?: { path: string; caption?: string }[] }): Promise<LocalComment> {

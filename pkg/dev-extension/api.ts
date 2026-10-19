@@ -19,6 +19,7 @@ import { WORKSPACE_VUE_CONFIG, WORKSPACE_CONFIG_MOUNT } from './workspace-config
 import { WORKSPACE_API_SERVER } from './workspace-api';
 import { AGENT_SEED } from './agent-seed.generated';
 import { numbersIn } from './artifact-subjects.mjs';
+import { source } from './source-cache.mjs';
 import {
   createWorkspaceInstance, deleteWorkspaceInstance, appById
 } from './apps';
@@ -2756,51 +2757,33 @@ async function secretStoreName(): Promise<string> {
  * The last read of the store, briefly, so one page load does not fetch it once per GitHub call.
  *
  * Measured on a cold Focus deck: the same Secret fetched nine times, because `githubToken()` goes
- * through `secretValue` and nothing between them remembered anything. Each is a round trip at the
- * head of a chain that is already several deep, so the cost is not the bytes.
+ * through `secretValue` and nothing between them remembered anything.
  *
- * The promise is cached, not the value, so calls that arrive together share one request. Short,
+ * The promise is shared, not the value, so calls that arrive together make one request. Short,
  * because a token the person has just pasted into Settings has to work on the next call - and
- * `saveSecrets` clears it outright, so the window only matters for a change made somewhere else.
+ * `saveSecrets` forgets it outright, so the window only matters for a change made somewhere else.
+ *
+ * An empty store is never remembered: the read below swallows its own failure and answers `{}`,
+ * so a Rancher that blinked would otherwise pin "no token is set" for the whole window - which is
+ * the one wrong answer here that looks like a finished setup rather than a fault. That is the
+ * `keep` rule in source-cache.mjs.
  */
-let secretStore: { at: number; what: Promise<Record<string, string>> } | null = null;
-const SECRET_STORE_TTL = 30000;
+// The cast is because source-cache.mjs is JavaScript: TypeScript reads the option's default,
+// `keep = () => true`, as the option's type, so a predicate is not assignable to it. The same
+// reason chat-conversation.ts casts chat-state.mjs's arguments.
+const secretStore = source(() => readSecretStoreNow(), {
+  ttl:  30_000,
+  keep: (got: Record<string, string>) => !!Object.keys(got).length,
+} as any) as (() => Promise<Record<string, string>>) & { forget: () => void }; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 /** Forget the cached store. Called after a write, and exported for a caller that knows better. */
 export function forgetSecretStore(): void {
-  secretStore = null;
+  secretStore.forget();
 }
 
 /** The store as it is, or an empty one. Values included, since the caller is the browser. */
 export async function readSecretStore(): Promise<Record<string, string>> {
-  const now = Date.now();
-
-  if (secretStore && now - secretStore.at < SECRET_STORE_TTL) {
-    return secretStore.what;
-  }
-
-  const reading = readSecretStoreNow();
-
-  secretStore = { at: now, what: reading };
-
-  /*
-   * An empty store is never remembered.
-   *
-   * The read below swallows its own failure and answers `{}`, so a Rancher that blinked would
-   * otherwise pin "no token is set" for the whole window - which is the one wrong answer here that
-   * looks like a finished setup rather than a fault.
-   */
-  reading.then((got) => {
-    if (!Object.keys(got).length && secretStore?.what === reading) {
-      secretStore = null;
-    }
-  }).catch(() => {
-    if (secretStore?.what === reading) {
-      secretStore = null;
-    }
-  });
-
-  return reading;
+  return secretStore();
 }
 
 async function readSecretStoreNow(): Promise<Record<string, string>> {
