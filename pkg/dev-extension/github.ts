@@ -1179,6 +1179,49 @@ export async function markReadyForReview(repo: string, number: number): Promise<
  * the card that *browses* issues showed all four for thirty of them at once. They are in the
  * same selection set as the body, so they cost no extra round trip.
  */
+/**
+ * Named issues, in the shape the assigned-issues table already draws.
+ *
+ * For the Issue tracker's followed issues: ones GitHub will never hand over from
+ * `assignee:@me`, because they are somebody else's or nobody's. Aliased into one query rather
+ * than one request per issue - a person following a dozen should cost a dozen fields, not a
+ * dozen round trips.
+ *
+ * No `timelineItems`: `assignedAt` is when an issue became *yours*, and these are not. The
+ * column reads as an em dash, which is the truth rather than a gap.
+ *
+ * An issue that has been deleted, or that this token cannot see, comes back as null from
+ * GitHub and is dropped. A key that no longer resolves is not an error worth a banner - the
+ * issue is gone, and the row with it.
+ */
+export async function issuesByNumber(repo: string, numbers: number[]): Promise<GithubIssue[]> {
+  const wanted = [...new Set(numbers.filter((n) => Number.isInteger(n) && n > 0))];
+
+  if (!wanted.length) {
+    return [];
+  }
+  const fields = wanted.map((n) => `i${ n }: issue(number: ${ n }) { ...tracked }`).join('\n          ');
+  const data = await graphql(`
+    fragment tracked on Issue {
+      number title url createdAt
+      repository { nameWithOwner }
+      labels(first: 10) { nodes { name } }
+      milestone { title url dueOn }
+    }
+
+    query TrackedIssues($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) {
+        ${ fields }
+      }
+    }
+  `, splitRepo(repo));
+
+  return wanted
+    .map((n) => data.repository?.[`i${ n }`])
+    .filter(Boolean)
+    .map((node: Json) => issueFrom(node));
+}
+
 export async function issueBody(repo: string, number: number): Promise<{
   title: string;
   body: string;

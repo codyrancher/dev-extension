@@ -16,7 +16,9 @@ import { RcButton } from '@components/RcButton';
 import AsyncButton from '@shell/components/AsyncButton';
 import StageSteps from '../components/StageSteps.vue';
 import { NarrowMixin } from '../design/narrow';
-import { myWork } from '../github';
+import { myWork, issuesByNumber } from '../github';
+import { readPrefs, savePrefs } from '../prefs';
+import { DEFAULT_REPO } from '../reviews';
 import { listAllWorkspaces, createWorkspace } from '../api';
 import { defaultRancherValues } from '../ranchers';
 import { startIssueFix } from '../reviews';
@@ -44,8 +46,16 @@ export default {
       loading:    true,
       error:      '',
       statusError: '',
+      /** The followed issues themselves, fetched from GitHub by number. */
+      followed:   [],
       /** The stored stage of every workspace, by name. Read once, not once per row. */
       stages:     {},
+      /** Issues followed that GitHub would not hand over, as `owner/repo#number`. */
+      tracked:    [],
+      /** What has been typed into the follow box. */
+      adding:     '',
+      addError:   '',
+      busy:       false,
     };
   },
 
@@ -54,8 +64,18 @@ export default {
       return issueHeadersFor(this.narrow);
     },
 
+    /**
+     * The assigned issues and the followed ones, as one list.
+     *
+     * One table rather than two, because the question the page answers - what am I following
+     * through its stages - does not care how an issue got here. A followed one carries
+     * `followed` so its row can say so and offer to stop.
+     */
     rows() {
-      return issueRowsFrom(this.issues);
+      const mine = new Set(this.issues.map((issue) => issue.key));
+      const extra = this.followed.filter((issue) => !mine.has(issue.key));
+
+      return issueRowsFrom([...this.issues, ...extra.map((issue) => ({ ...issue, followed: true }))]);
     },
 
     /**
@@ -121,21 +141,112 @@ export default {
       this.loading = true;
 
       try {
-        const [work, workspaces, stages] = await Promise.all([
+        const [work, workspaces, stages, prefs] = await Promise.all([
           myWork(undefined, undefined, ['issues']),
           listAllWorkspaces().catch(() => []),
           storedStages().catch(() => ({})),
+          readPrefs().catch(() => ({ trackedIssues: [] })),
         ]);
 
         this.issues = work.issues || [];
         this.statusError = work.projectStatusError || '';
         this.workspaces = workspaces.map((workspace) => workspace.name);
         this.stages = stages;
+        this.tracked = prefs.trackedIssues || [];
+        await this.readFollowed();
       } catch (e) {
         this.error = e.message || String(e);
       } finally {
         this.loading = false;
       }
+    },
+
+    /**
+     * An issue key from whatever was typed: `19152`, `#19152`, a full GitHub URL, or
+     * `owner/repo#19152`. Null when there is no number in it.
+     *
+     * Generous on purpose: the number is what somebody has to hand, and pasting the URL from
+     * the tab they were just reading is the other half of the time.
+     */
+    parseIssueKey(text) {
+      const raw = String(text || '').trim();
+      const url = /github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/.exec(raw);
+
+      if (url) {
+        return `${ url[1] }#${ Number(url[2]) }`;
+      }
+      const qualified = /^([^/\s]+\/[^#\s]+)#(\d+)$/.exec(raw);
+
+      if (qualified) {
+        return `${ qualified[1] }#${ Number(qualified[2]) }`;
+      }
+      const bare = /^#?(\d+)$/.exec(raw);
+
+      return bare ? `${ DEFAULT_REPO }#${ Number(bare[1]) }` : null;
+    },
+
+    /** The followed issues, read from GitHub a repository at a time. */
+    async readFollowed() {
+      const byRepo = {};
+
+      for (const key of this.tracked) {
+        const [repo, number] = String(key).split('#');
+
+        if (repo && number) {
+          (byRepo[repo] = byRepo[repo] || []).push(Number(number));
+        }
+      }
+
+      const lists = await Promise.all(Object.entries(byRepo)
+        .map(([repo, numbers]) => issuesByNumber(repo, numbers).catch(() => [])));
+
+      this.followed = lists.flat();
+    },
+
+    async follow() {
+      this.addError = '';
+      const key = this.parseIssueKey(this.adding);
+
+      if (!key) {
+        this.addError = 'An issue number, or a link to one.';
+
+        return;
+      }
+      if (this.tracked.includes(key)) {
+        this.addError = `${ key } is already followed.`;
+
+        return;
+      }
+      this.busy = true;
+
+      try {
+        const [repo, number] = key.split('#');
+        const found = await issuesByNumber(repo, [Number(number)]);
+
+        // Checked before it is saved: a number nobody can resolve would otherwise be followed
+        // for ever as a row that never appears.
+        if (!found.length) {
+          this.addError = `${ key } could not be read. Check the number, and that the token can see that repository.`;
+
+          return;
+        }
+        this.tracked = [...this.tracked, key];
+        await savePrefs({ trackedIssues: this.tracked });
+        this.followed = [...this.followed.filter((issue) => issue.key !== key), ...found];
+        this.adding = '';
+      } catch (e) {
+        this.addError = e.message || String(e);
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    async unfollow(issue) {
+      this.tracked = this.tracked.filter((key) => key !== issue.key);
+      this.followed = this.followed.filter((one) => one.key !== issue.key);
+      await savePrefs({ trackedIssues: this.tracked }).catch((e) => {
+        this.error = e.message || String(e);
+      });
     },
 
     async startWorkspace(issue, done) {
@@ -205,6 +316,36 @@ export default {
       {{ statusError }}
     </Banner>
 
+    <!--
+      Follow an issue GitHub will not hand over: somebody else's, or nobody's. A number is what
+      a person has to hand; a pasted link is the other half of the time, so both work.
+    -->
+    <form
+      class="dev-issue-tracker__follow"
+      @submit.prevent="follow"
+    >
+      <input
+        v-model="adding"
+        type="text"
+        class="dev-issue-tracker__follow-input"
+        placeholder="Follow an issue: 19152, or a link to it"
+        aria-label="Follow an issue"
+        :disabled="busy"
+      >
+      <RcButton
+        variant="secondary"
+        size="small"
+        type="submit"
+        :disabled="busy || !adding.trim()"
+      >
+        {{ busy ? 'Reading…' : 'Follow' }}
+      </RcButton>
+      <span
+        v-if="addError"
+        class="dev-issue-tracker__follow-error"
+      >{{ addError }}</span>
+    </form>
+
     <div
       v-if="loading && !issues.length"
       class="dev-issue-tracker__loading"
@@ -234,6 +375,11 @@ export default {
           target="_blank"
           rel="noopener noreferrer"
         >#{{ row.number }}</a>
+        <span
+          v-if="row.followed"
+          class="dev-issue-tracker__followed"
+          title="Followed; not assigned to you"
+        >followed</span>
       </template>
 
       <template #cell:status="{ row }">
@@ -317,14 +463,25 @@ export default {
       </template>
 
       <template #cell:actions="{ row }">
-        <AsyncButton
-          mode="apply"
-          action-label="Start fix"
-          waiting-label="Opening"
-          success-label="Opened"
-          size="sm"
-          @click="(done) => startFix(row, done)"
-        />
+        <div class="dev-issue-tracker__actions">
+          <AsyncButton
+            mode="apply"
+            action-label="Start fix"
+            waiting-label="Opening"
+            success-label="Opened"
+            size="sm"
+            @click="(done) => startFix(row, done)"
+          />
+          <RcButton
+            v-if="row.followed"
+            variant="link"
+            size="small"
+            title="Stop following this issue"
+            @click="unfollow(row)"
+          >
+            Unfollow
+          </RcButton>
+        </div>
       </template>
       <!--
         The stages, under the issue they belong to.
@@ -388,6 +545,37 @@ export default {
   margin: 6px 0 0;
   color: var(--muted);
   font-size: 12px;
+}
+
+.dev-issue-tracker__follow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+
+.dev-issue-tracker__follow-input {
+  width: 320px;
+  max-width: 100%;
+}
+
+.dev-issue-tracker__follow-error { color: var(--error); font-size: 12px; }
+
+.dev-issue-tracker__followed {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--default);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.dev-issue-tracker__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .dev-issue-tracker__loading {

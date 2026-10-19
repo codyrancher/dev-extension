@@ -42,11 +42,20 @@ export interface DevPrefs {
   hiddenApps: string[];
   /** The Rancher new workspaces point at, by URL; '' is the one this dashboard is on. See ranchers.ts. */
   defaultRancher: string;
+  /**
+   * Issues followed on the Issue tracker that GitHub does not hand over on its own, as
+   * `owner/repo#number`.
+   *
+   * A preference rather than a label on the issue: following something is a fact about the
+   * person watching it, not about the issue, and assigning yourself to say so would tell
+   * everybody else you had picked it up.
+   */
+  trackedIssues: string[];
   focus: FocusPrefs;
 }
 
 const EMPTY_FOCUS: FocusPrefs = { pinned: [], snoozed: {}, done: {} };
-const EMPTY: DevPrefs = { hiddenApps: [], defaultRancher: '', focus: EMPTY_FOCUS };
+const EMPTY: DevPrefs = { hiddenApps: [], defaultRancher: '', trackedIssues: [], focus: EMPTY_FOCUS };
 
 /** A record of strings, or an empty one: what came out of JSON is whatever was written. */
 function strings(value: unknown): Record<string, string> {
@@ -78,6 +87,7 @@ export async function readPrefs(): Promise<DevPrefs> {
       ...EMPTY,
       hiddenApps:     Array.isArray(parsed.hiddenApps) ? parsed.hiddenApps.filter((id: unknown) => typeof id === 'string') : [],
       defaultRancher: typeof parsed.defaultRancher === 'string' ? parsed.defaultRancher : '',
+      trackedIssues:  Array.isArray(parsed.trackedIssues) ? parsed.trackedIssues.filter((key: unknown) => typeof key === 'string') : [],
       focus:          {
         pinned:  Array.isArray(parsed.focus?.pinned) ? parsed.focus.pinned.filter((key: unknown) => typeof key === 'string') : [],
         snoozed: strings(parsed.focus?.snoozed),
