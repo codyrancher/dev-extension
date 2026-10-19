@@ -42,7 +42,7 @@ import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
-  MY_WORK_ROUTE, ISSUE_TRACKER_ROUTE, ARTIFACTS_ROUTE, FOCUS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, CONVERSATIONS_ROUTE
+  MY_WORK_ROUTE, ISSUE_TRACKER_ROUTE, ARTIFACTS_ROUTE, TOOLS_ROUTE, FOCUS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, CONVERSATIONS_ROUTE
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
@@ -188,6 +188,10 @@ export default {
         // What the work left behind, which outlives the workspace that made it.
         {
           label: 'Artifacts', icon: 'icon-folder', route: ARTIFACTS_ROUTE
+        },
+        // What can be attached to a piece of work, and what is attached now.
+        {
+          label: 'Tools', icon: 'icon-wrench', route: TOOLS_ROUTE
         },
         {
           label: 'Agents', logo: true, route: AGENTS_ROUTE

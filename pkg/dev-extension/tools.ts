@@ -36,29 +36,47 @@ export interface Tool {
   error?: string;
 }
 
-/** What each tool is, in the words the page and the agent's rule both use. */
-export const TOOLS: Record<ToolKind, { label: string; icon: string; what: string }> = {
+/**
+ * What each tool is, in the words the page and the agent's rule both use - and whether two
+ * pieces of work can hold one at the same time.
+ *
+ * `multitenant` is the fact a lease has to act on, and the reason it is here rather than only on
+ * the Apps: three of these four are an App whose instance is per workspace
+ * (`dev-<workspace>-<kind>`), and the fourth is not an App at all. The browser is one Chromium
+ * that every workspace drives, so two agents using it at once are in each other's tabs. That is
+ * the case the flag exists for; without it, "all tools are per workspace" is true of the ones
+ * that happen to be Apps and false of the product.
+ */
+export const TOOLS: Record<ToolKind, { label: string; icon: string; what: string; multitenant: boolean; sharing?: string }> = {
   'dev-server': {
-    label: 'Dev server',
-    icon:  'icon-play',
-    what:  'The dashboard compiled and served from this checkout, so a change can be seen. Two gigabytes while it runs.',
+    label:       'Dev server',
+    icon:        'icon-play',
+    what:        'The dashboard compiled and served from this checkout, so a change can be seen. Two gigabytes while it runs.',
+    multitenant: true,
   },
   storybook: {
-    label: 'Storybook',
-    icon:  'icon-book',
-    what:  'The component gallery built from this checkout, for a change to a component in isolation.',
+    label:       'Storybook',
+    icon:        'icon-book',
+    what:        'The component gallery built from this checkout, for a change to a component in isolation.',
+    multitenant: true,
   },
   rancher: {
-    label: 'Rancher',
-    icon:  'icon-cluster',
-    what:  'A Rancher of its own to point the work at, with its own embedded k3s. Up in a couple of minutes.',
+    label:       'Rancher',
+    icon:        'icon-cluster',
+    what:        'A Rancher of its own to point the work at, with its own embedded k3s. Up in a couple of minutes.',
+    multitenant: true,
   },
   browser: {
-    label: 'Browser',
-    icon:  'icon-globe',
-    what:  'The shared Chromium every workspace drives, with the GitHub and Rancher logins already in it. Always there, nothing to attach.',
+    label:       'Browser',
+    icon:        'icon-globe',
+    what:        'The shared Chromium every workspace drives, with the GitHub and Rancher logins already in it. Always there, nothing to attach.',
+    multitenant: false,
+    sharing:     'One Chromium for every workspace. Two agents driving it at once are in each other\'s tabs, so take a context of your own (see the shared-CDP context in the agent rules) rather than the default one, and do not close tabs you did not open.',
   },
 };
+
+/** Tools two pieces of work cannot simply both have. Nothing else needs to know the reason. */
+export const SHARED_TOOLS: ToolKind[] = (Object.keys(TOOLS) as ToolKind[]).filter((kind) => !TOOLS[kind].multitenant);
 
 /** The order they are offered in: the one almost every piece of work wants, first. */
 export const TOOL_ORDER: ToolKind[] = ['dev-server', 'browser', 'storybook', 'rancher'];
