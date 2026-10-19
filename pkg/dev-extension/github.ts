@@ -775,9 +775,9 @@ export async function rerunFailed(repo: string, run: GithubRun): Promise<void> {
  * still yours to watch. GitHub has no single query for the union, so it is two and a merge.
  */
 export async function myWork(repos?: string[], without?: string[], sections: WorkSection[] = ALL_SECTIONS): Promise<GithubWork> {
-  const token = await githubToken();
-
-  if (!token) {
+  // `graphql` checks this too; it is checked here as well so a page with no token fails before
+  // the statuses query below is started rather than after it has been left to reject on its own.
+  if (!await githubToken()) {
     throw new Error('No GitHub token is set. Add one in Settings.');
   }
 
@@ -800,39 +800,16 @@ export async function myWork(repos?: string[], without?: string[], sections: Wor
 
   statusesSoon?.catch(() => undefined);
 
-  const response = await fetch(ENDPOINT, {
-    method:  'POST',
-    headers: {
-      authorization:  `Bearer ${ token }`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      query:     queryFor(repoScope(repos, without), sections),
-      // Only the variables the query declares; GraphQL rejects one it does not.
-      variables: {
-        ...(sections.some((s) => PR_SECTIONS.has(s)) ? { page: PAGE } : {}),
-        ...(sections.some((s) => ISSUE_SECTIONS.has(s)) ? { issues: ISSUE_PAGE } : {}),
-      },
-    }),
+  // Through the same `graphql` the rest of this file uses - the token, the 401 that is worth
+  // naming, and the GraphQL error that arrives as a 200 with an errors array are all one piece
+  // of handling, and this call had its own copy of all three.
+  const data = await graphql(queryFor(repoScope(repos, without), sections), {
+    // Only the variables the query declares; GraphQL rejects one it does not.
+    ...(sections.some((s) => PR_SECTIONS.has(s)) ? { page: PAGE } : {}),
+    ...(sections.some((s) => ISSUE_SECTIONS.has(s)) ? { issues: ISSUE_PAGE } : {}),
   });
 
-  if (!response.ok) {
-    // 401 is the one worth naming: a token that has expired or been revoked looks exactly like a
-    // token that was never set unless the page says which.
-    throw new Error(response.status === 401
-      ? 'GitHub rejected the token. It may have expired, or it may not have the repo scope.'
-      : `GitHub answered ${ response.status }.`);
-  }
-
-  const body = await response.json();
-
-  // A GraphQL error is a 200 with an errors array, so this is the only place a bad query or a
-  // missing scope surfaces at all.
-  if (body.errors?.length) {
-    throw new Error(body.errors.map((error: Json) => error.message).join(' '));
-  }
-
-  const login = body.data?.viewer?.login || '';
+  const login = data.viewer?.login || '';
   const seen = new Set<string>();
   const reviewing: GithubPr[] = [];
 
@@ -841,8 +818,8 @@ export async function myWork(repos?: string[], without?: string[], sections: Wor
   // waiting on. A PR in both is a re-review (you reviewed it, then were requested again); the
   // request wins, so it is listed first and carries reviewRequested: true.
   for (const [node, requested] of [
-    ...(body.data?.reviewing?.nodes || []).map((n: Json) => [n, true] as const),
-    ...(body.data?.reviewed?.nodes || []).map((n: Json) => [n, false] as const),
+    ...(data.reviewing?.nodes || []).map((n: Json) => [n, true] as const),
+    ...(data.reviewed?.nodes || []).map((n: Json) => [n, false] as const),
   ]) {
     const pr = prFrom(node, login, requested);
 
@@ -852,7 +829,7 @@ export async function myWork(repos?: string[], without?: string[], sections: Wor
     }
   }
 
-  const issues: GithubIssue[] = (body.data?.issues?.nodes || []).map((node: Json) => issueFrom(node, login));
+  const issues: GithubIssue[] = (data.issues?.nodes || []).map((node: Json) => issueFrom(node, login));
   let projectStatusError = '';
 
   try {
@@ -870,9 +847,9 @@ export async function myWork(repos?: string[], without?: string[], sections: Wor
   return {
     login,
     reviewing,
-    mine: (body.data?.mine?.nodes || []).map((node: Json) => prFrom(node, login)),
+    mine: (data.mine?.nodes || []).map((node: Json) => prFrom(node, login)),
     issues,
-    unassigned: (body.data?.unassigned?.nodes || []).map((node: Json) => issueFrom(node)),
+    unassigned: (data.unassigned?.nodes || []).map((node: Json) => issueFrom(node)),
     projectStatusError,
   };
 }

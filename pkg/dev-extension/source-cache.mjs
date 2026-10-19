@@ -21,8 +21,15 @@
  * finished setup rather than a fault).
  *
  * That is all this is. Not a cache layer, not a data framework - the smallest thing that lets a
- * new source be a few lines instead of thirty: see tasks/tubes-library-survey.md, which looked
- * for something off the shelf and concluded that the honest version of it is this.
+ * new source be a line instead of thirty: see tasks/tubes-library-survey.md, which looked for
+ * something off the shelf and concluded that the honest version of it is this. A new one reads:
+ *
+ *   export const thing = source(
+ *     (id) => devFetch(`${ DEV_API }/thing/${ id }`),
+ *     { name: 'thing', ttl: 30_000 },
+ *   );
+ *
+ * and arrives with the sharing, the expiry, the retry-on-failure and a line in the log.
  *
  * Every read is also written to the product's log (dev-log.mjs) - which source, which key, how
  * long, and whether the answer was fresh, shared with a caller already waiting, or a failure.

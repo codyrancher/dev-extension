@@ -5,7 +5,7 @@
 // reads what it printed - a directory listing, a file's bytes, an image written in chunks. There
 // is no service pod behind any of it: the browser opens the socket, with the session cookie it
 // already has, which is what makes this extension something a Rancher can install on its own.
-import { rancherFetch } from './agents-api';
+import { devFetch } from './api';
 
 /** The cluster the agent pod is in, which is this Rancher's own. */
 const EXT_CLUSTER = 'local';
@@ -315,7 +315,7 @@ export function objectPath(spec: { type: string; namespace?: string; name: strin
 }
 
 export async function objectExists(spec: { type: string; namespace?: string; name: string }): Promise<boolean> {
-  return !!await rancherFetch(objectPath(spec)).catch(() => null);
+  return !!await devFetch(objectPath(spec)).catch(() => null);
 }
 
 /**
@@ -330,7 +330,7 @@ export async function createIfAbsent(spec: ObjectSpec): Promise<'present' | 'cre
   }
 
   try {
-    await rancherFetch(`${ EXT_BASE }/v1/${ spec.type }`, { method: 'POST', body: JSON.stringify(spec.body()) });
+    await devFetch(`${ EXT_BASE }/v1/${ spec.type }`, { method: 'POST', body: JSON.stringify(spec.body()) });
 
     return 'created';
   } catch (e: any) {

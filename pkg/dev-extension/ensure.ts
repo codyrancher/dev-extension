@@ -9,7 +9,7 @@
 // given, nothing anywhere reports a mismatch, and the source or the version being advertised
 // stops being the one that is running. So an object that carries generated content records a
 // fingerprint of that content, and is replaced when the fingerprint no longer matches.
-import { rancherFetch } from './agents-api';
+import { devFetch } from './api';
 import { objectPath, createIfAbsent } from './pod';
 
 /** One object this extension makes: what it is, one sentence on why, and how to make it. */
@@ -86,7 +86,7 @@ async function replaceIfStale(step: InstallStep): Promise<void> {
     return;
   }
 
-  const existing = await rancherFetch(objectPath(step)).catch(() => null);
+  const existing = await devFetch(objectPath(step)).catch(() => null);
 
   if (!existing || existing.metadata?.annotations?.[VERSION_ANNOTATION] === wanted) {
     return;
@@ -96,5 +96,5 @@ async function replaceIfStale(step: InstallStep): Promise<void> {
 
   body.metadata.resourceVersion = existing.metadata?.resourceVersion;
 
-  await rancherFetch(objectPath(step), { method: 'PUT', body: JSON.stringify(body) });
+  await devFetch(objectPath(step), { method: 'PUT', body: JSON.stringify(body) });
 }

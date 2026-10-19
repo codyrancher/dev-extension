@@ -28,7 +28,7 @@
 // agent loses its credential when the token expires - which is the intended end of it, not a
 // bug to work around.
 import { EXT_NS, EXT_BASE } from './pod';
-import { rancherFetch } from './agents-api';
+import { devFetch } from './api';
 
 /** The Secret the pod reads. One object, replaced, rather than one per person or per pane. */
 export const AGENT_CREDENTIAL_SECRET = 'extension-studio-agent-credential';
@@ -69,7 +69,7 @@ function secretPath(): string {
  * the agent for ever.
  */
 async function mintToken(): Promise<MintedToken> {
-  const created = await rancherFetch('/v3/token', {
+  const created = await devFetch('/v3/token', {
     method: 'POST',
     body:   JSON.stringify({
       type: 'token', description: TOKEN_DESCRIPTION, ttl: TOKEN_TTL_MS,
@@ -100,7 +100,7 @@ async function mintToken(): Promise<MintedToken> {
  * reason to refuse somebody a terminal.
  */
 async function revokeOthers(minted: MintedToken): Promise<void> {
-  const listing = await rancherFetch('/v3/tokens').catch(() => null);
+  const listing = await devFetch('/v3/tokens').catch(() => null);
   const stale = (listing?.data || []).filter((token: any) => (
     token?.description === TOKEN_DESCRIPTION &&
     token?.userId === minted.userId &&
@@ -108,7 +108,7 @@ async function revokeOthers(minted: MintedToken): Promise<void> {
   ));
 
   await Promise.all(stale.map((token: any) => (
-    rancherFetch(`/v3/tokens/${ token.id }`, { method: 'DELETE' }).catch(() => null)
+    devFetch(`/v3/tokens/${ token.id }`, { method: 'DELETE' }).catch(() => null)
   )));
 }
 
@@ -139,12 +139,12 @@ function secretBody(minted: MintedToken): Record<string, unknown> {
  * the one that lost is then swept by revokeOthers rather than stranded.
  */
 async function writeSecret(minted: MintedToken): Promise<void> {
-  const existing = await rancherFetch(secretPath()).catch(() => null);
+  const existing = await devFetch(secretPath()).catch(() => null);
 
   if (!existing) {
-    await rancherFetch(`${ EXT_BASE }/v1/secret`, { method: 'POST', body: JSON.stringify(secretBody(minted)) })
+    await devFetch(`${ EXT_BASE }/v1/secret`, { method: 'POST', body: JSON.stringify(secretBody(minted)) })
       .catch(async() => {
-        const now = await rancherFetch(secretPath());
+        const now = await devFetch(secretPath());
 
         await replaceSecret(minted, now.metadata.resourceVersion);
       });
@@ -158,7 +158,7 @@ async function writeSecret(minted: MintedToken): Promise<void> {
 function replaceSecret(minted: MintedToken, resourceVersion: string): Promise<unknown> {
   const body = secretBody(minted);
 
-  return rancherFetch(secretPath(), {
+  return devFetch(secretPath(), {
     method: 'PUT',
     body:   JSON.stringify({ ...body, metadata: { ...(body.metadata as object), resourceVersion } }),
   });

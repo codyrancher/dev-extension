@@ -24,7 +24,7 @@ import { VERSION_ANNOTATION, contentVersion, ensureCurrent } from './ensure';
 import { AGENT_FILES } from './seed.generated';
 import { MCP_GUIDANCE, mcpSeedFiles, withMcpBoot } from './agent-mcp';
 import { cardSeedFiles } from './agent-cards';
-import { rancherFetch } from './agents-api';
+import { devFetch } from './api';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -344,7 +344,7 @@ export function ensureAgent(): Promise<void> {
  * this the same way and a first boot is still installing tmux and claude for a minute or two.
  */
 export async function agentPod(): Promise<string | null> {
-  const pods = await rancherFetch(`${ EXT_BASE }/v1/pods/${ EXT_NS }`).catch(() => null);
+  const pods = await devFetch(`${ EXT_BASE }/v1/pods/${ EXT_NS }`).catch(() => null);
 
   const running = (pods?.data || []).find((pod: any) => (
     pod.metadata?.labels?.app === AGENT_OBJECT &&
@@ -477,7 +477,7 @@ export function activityState(a: SessionActivity, podStartedMs = 0): AgentActivi
  * what the extension used to do permanently by never asking.
  */
 export async function agentPodStartedAt(): Promise<number> {
-  const pods = await rancherFetch(`${ EXT_BASE }/v1/pods/${ EXT_NS }`).catch(() => null);
+  const pods = await devFetch(`${ EXT_BASE }/v1/pods/${ EXT_NS }`).catch(() => null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const running = (pods?.data || []).find((pod: any) => (
     pod.metadata?.labels?.app === AGENT_OBJECT &&

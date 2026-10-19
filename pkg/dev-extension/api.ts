@@ -1454,21 +1454,15 @@ async function ensureWorkspaceTerminal(name: string): Promise<void> {
  * Cached for the life of the page. Node addresses do not change, and this is asked once per row
  * of the Ports tab.
  */
-let nodeAddressPromise: Promise<string> | null = null;
+export const nodeAddress = source(async(): Promise<string> => {
+  const nodes = await devFetch(`${ BASE }/v1/nodes`).catch(() => null);
+  const addresses = (nodes?.data || []).flatMap((node: Json) => node.status?.addresses || []);
+  const of = (type: string) => addresses.find((entry: Json) => entry.type === type)?.address;
 
-export function nodeAddress(): Promise<string> {
-  nodeAddressPromise = nodeAddressPromise || (async() => {
-    const nodes = await devFetch(`${ BASE }/v1/nodes`).catch(() => null);
-    const addresses = (nodes?.data || []).flatMap((node: Json) => node.status?.addresses || []);
-    const of = (type: string) => addresses.find((entry: Json) => entry.type === type)?.address;
-
-    // The page's own host is the last resort rather than the first. It is wrong, but a row with
-    // no address at all is worse, and this is the case where the person cannot read the nodes.
-    return of('ExternalIP') || of('InternalIP') || window.location.hostname;
-  })();
-
-  return nodeAddressPromise;
-}
+  // The page's own host is the last resort rather than the first. It is wrong, but a row with
+  // no address at all is worse, and this is the case where the person cannot read the nodes.
+  return of('ExternalIP') || of('InternalIP') || window.location.hostname;
+}, { name: 'node-address', ttl: Infinity }) as () => Promise<string>;
 
 
 /**
