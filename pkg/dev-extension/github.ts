@@ -181,6 +181,8 @@ export interface GithubIssue {
    * claim an issue was assigned at the epoch.
    */
   assignedAt: string;
+  /** OPEN or CLOSED, where it was asked for. Absent from the assigned search, which is open-only. */
+  state?: string;
   /** Null when the issue is on no board - or when the token cannot read boards; see GithubWork. */
   projectStatus: GithubBoardStatus | null;
   /** How much has been said on it, which is the cheapest signal of whether it is well specified. */
@@ -549,6 +551,7 @@ function issueFrom(node: Json, login = ''): GithubIssue {
     milestone:     node.milestone?.title || '',
     milestoneUrl:  node.milestone?.url || '',
     milestoneDue:  node.milestone?.dueOn || '',
+    state:         node.state || undefined,
     assignedAt:    mine.length ? (mine[mine.length - 1].createdAt || '') : '',
     projectStatus: null,
     comments:      node.comments?.totalCount ?? undefined,
@@ -1203,7 +1206,7 @@ export async function issuesByNumber(repo: string, numbers: number[]): Promise<G
   const fields = wanted.map((n) => `i${ n }: issue(number: ${ n }) { ...tracked }`).join('\n          ');
   const data = await graphql(`
     fragment tracked on Issue {
-      number title url createdAt
+      number title url createdAt state
       repository { nameWithOwner }
       labels(first: 10) { nodes { name } }
       milestone { title url dueOn }

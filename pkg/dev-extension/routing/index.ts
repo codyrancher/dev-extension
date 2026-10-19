@@ -3,7 +3,7 @@ import {
   BLANK_CLUSTER,
   DEV_PRODUCT, WORKSPACES_PAGE, CREATE_PAGE, MY_WORK_PAGE, FOCUS_PAGE, SETTINGS_PAGE, AGENTS_PAGE,
   DEV_SHELL_ROUTE, WORKSPACES_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE,
-  MY_WORK_ROUTE, ISSUE_TRACKER_ROUTE, ISSUE_TRACKER_PAGE, FOCUS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, AGENT_EDIT_PAGE, AGENT_EDIT_ROUTE,
+  MY_WORK_ROUTE, ISSUE_TRACKER_ROUTE, ISSUE_TRACKER_PAGE, ARTIFACTS_ROUTE, ARTIFACTS_PAGE, FOCUS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, AGENT_EDIT_PAGE, AGENT_EDIT_ROUTE,
   CONVERSATIONS_PAGE, CONVERSATIONS_ROUTE, SKILLS_PAGE, SKILLS_ROUTE
 } from '../config/constants';
 import Skills from '../pages/Skills.vue';
@@ -15,6 +15,7 @@ import CreateWorkspace from '../pages/CreateWorkspace.vue';
 import WorkspaceDetail from '../pages/WorkspaceDetail.vue';
 import MyWork from '../pages/MyWork.vue';
 import IssueTracker from '../pages/IssueTracker.vue';
+import Artifacts from '../pages/Artifacts.vue';
 import Focus from '../pages/Focus.vue';
 import Settings from '../pages/Settings.vue';
 import Agents from '../pages/Agents.vue';
@@ -74,6 +75,9 @@ const devRoutes: PluginRouteRecordRaw[] = [
         },
         {
           name: ISSUE_TRACKER_ROUTE, path: ISSUE_TRACKER_PAGE, component: IssueTracker, meta: devMeta
+        },
+        {
+          name: ARTIFACTS_ROUTE, path: ARTIFACTS_PAGE, component: Artifacts, meta: devMeta
         },
         // The deck: the same queue My Work ranks, one card at a time. See pages/Focus.vue.
         {

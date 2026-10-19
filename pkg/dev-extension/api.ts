@@ -3536,6 +3536,21 @@ export function workspaceMediaFileUrl(name: string, relPath: string): string {
 }
 
 /**
+ * The same two URLs for a kept set, which outlives the workspace it came from.
+ *
+ * `set/` as its own path segment rather than a prefix on the name: a colon is percent-escaped
+ * by `encodeURIComponent` and `url.pathname` does not decode it, so a route matching one would
+ * never fire. The server turns the segment back into `set:<name>`; see workspaceArtifactsRoot.
+ */
+function artifactSetBase(name: string): string {
+  return `${ BASE }/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy/workspace/set/${ encodeURIComponent(name) }/media`;
+}
+
+export function artifactSetFileUrl(name: string, relPath: string): string {
+  return `${ artifactSetBase(name) }/file?path=${ encodeURIComponent(relPath) }`;
+}
+
+/**
  * Whether anything is answering on that port yet.
  *
  * A workspace can be Running with nothing listening: the image is still starting, the server

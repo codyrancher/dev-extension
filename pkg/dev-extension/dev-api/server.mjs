@@ -4520,6 +4520,27 @@ const MEDIA_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.
 
 /** A workspace's artifacts tree on the node, as this pod sees it (read-only mount). */
 function workspaceArtifactsRoot(ws) {
+  /*
+   * A kept set, asked for as `set:<workspace>`.
+   *
+   * Artifacts are hardlinked into `.artifacts/<workspace>` before a workspace's tree is
+   * deleted (see captureWorkspaceArtifacts in api.ts), so what the work produced outlives the
+   * workspace that produced it. Those sets are served through this same route, which is what
+   * gives them the containment check, the content types and the range handling already here -
+   * a second file route for the same files would be the place the two disagree.
+   *
+   * `set:<name>` is the internal spelling; on the wire it is a path segment
+   * (`/workspace/set/<name>/media`), because a colon in a URL is percent-escaped by the client
+   * and `url.pathname` does not decode it - so a route matching a colon would never fire.
+   *
+   * The set's own name still goes through the same check as a workspace's.
+   */
+  const kept = /^set:(.+)$/.exec(String(ws || ''));
+
+  if (kept) {
+    return /^[a-z0-9][a-z0-9-]*$/.test(kept[1]) ? path.join(WORKSPACES_ROOT, '.artifacts', kept[1]) : '';
+  }
+
   if (!/^[a-z0-9][a-z0-9-]*$/.test(ws)) {
     return '';
   }
@@ -4791,7 +4812,9 @@ http.createServer(async(req, res) => {
   // screenshots - listed and served from the workspace's own artifacts tree. The Review tab shows
   // these; a workspace pod cannot serve its own files and the browser cannot read the node disk,
   // so this pod, which has the tree mounted, serves them.
-  const mediaList = /^\/workspace\/([a-z0-9][a-z0-9-]*)\/media$/.exec(url.pathname);
+  // `/workspace/set/<name>/media` is a kept set; see workspaceArtifactsRoot.
+  const mediaList = /^\/workspace\/(set\/)?([a-z0-9][a-z0-9-]*)\/media$/.exec(url.pathname);
+  const mediaListName = mediaList ? `${ mediaList[1] ? 'set:' : '' }${ mediaList[2] }` : '';
 
   if (mediaList && req.method === 'GET') {
     const count = (name, fallback, max) => Math.min(max, Math.max(0, parseInt(url.searchParams.get(name) || '', 10) || fallback));
@@ -4799,14 +4822,14 @@ http.createServer(async(req, res) => {
     // The directory as a directory: `?groups=<n>` is every top-level directory with its newest
     // n files, and `?dir=<name>&offset=&limit=` is one of them a page at a time.
     if (url.searchParams.has('groups')) {
-      return send(res, 200, groupArtifacts(mediaList[1], count('groups', 12, 48) || 12));
+      return send(res, 200, groupArtifacts(mediaListName, count('groups', 12, 48) || 12));
     }
     if (url.searchParams.has('dir')) {
-      return send(res, 200, pageArtifacts(mediaList[1], url.searchParams.get('dir') || '', count('offset', 0, ARTIFACT_WALK_MAX), count('limit', 48, 500) || 48));
+      return send(res, 200, pageArtifacts(mediaListName, url.searchParams.get('dir') || '', count('offset', 0, ARTIFACT_WALK_MAX), count('limit', 48, 500) || 48));
     }
 
     // `?media=1` keeps the old answer for the review panel; everything else gets the whole tree.
-    return send(res, 200, { files: listWorkspaceMedia(mediaList[1], url.searchParams.get('media') === '1') });
+    return send(res, 200, { files: listWorkspaceMedia(mediaListName, url.searchParams.get('media') === '1') });
   }
 
   // An image or a recording attached to a GitHub comment. The browser cannot fetch those
@@ -4843,10 +4866,10 @@ http.createServer(async(req, res) => {
     return;
   }
 
-  const mediaFile = /^\/workspace\/([a-z0-9][a-z0-9-]*)\/media\/file$/.exec(url.pathname);
+  const mediaFile = /^\/workspace\/(set\/)?([a-z0-9][a-z0-9-]*)\/media\/file$/.exec(url.pathname);
 
   if (mediaFile && req.method === 'GET') {
-    const file = workspaceMediaPath(mediaFile[1], url.searchParams.get('path') || '');
+    const file = workspaceMediaPath(`${ mediaFile[1] ? 'set:' : '' }${ mediaFile[2] }`, url.searchParams.get('path') || '');
 
     if (!file) {
       return send(res, 404, { error: 'No such media in the workspace.' });
