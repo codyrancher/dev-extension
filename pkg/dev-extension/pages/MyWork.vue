@@ -30,6 +30,7 @@ import {
   listAllWorkspaces, createWorkspace
 } from '../api';
 import { listApps } from '../apps';
+import { jiraQueue } from '../jira';
 import { priorityQueue } from '../priority';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
 import { defaultRancherValues } from '../ranchers';
@@ -159,7 +160,7 @@ const REFRESH_MS = 30000;
  * somebody goes through when it is their turn. They are named here because the name is in the
  * address, so a link to one is a link somebody can send.
  */
-const TABS = ['reviewing', 'mine', 'issues', 'interrupt-duty', 'priority'];
+const TABS = ['reviewing', 'mine', 'issues', 'jira', 'interrupt-duty', 'priority'];
 
 /** The tabs that are one `myWork` section each, by the section they read. See WorkSection. */
 const SECTION_TABS = ['reviewing', 'mine', 'issues'];
@@ -273,6 +274,11 @@ export default {
       // This person's own prompts, which is what a queued conversation opens on.
       // The repository's open Dependabot advisories, and why they could not be read when they
       // could not be. A token without the security tab is an ordinary thing, not a page error.
+      /** The Jira queue: the SURE bugs this team owns, by the filters the team maintains. */
+      jira:        null,
+      loadingJira: false,
+      jiraLoaded:  false,
+      jiraError:   '',
       alerts:     cache.alerts,
       botPrs:     cache.botPrs,
       botReviews: cache.botReviews,
@@ -285,7 +291,7 @@ export default {
   computed: {
     /** Whether the tab on screen is reading: what Refresh says and whether it can be pressed. */
     busy() {
-      return { 'interrupt-duty': this.loadingAlerts, priority: this.loadingQueue }[this.tab] ?? this.loading;
+      return { 'interrupt-duty': this.loadingAlerts, priority: this.loadingQueue, jira: this.loadingJira }[this.tab] ?? this.loading;
     },
 
 
@@ -480,6 +486,11 @@ export default {
 
         return;
       }
+      if (this.tab === 'jira') {
+        await this.refreshJira();
+
+        return;
+      }
       await this.refreshSection(this.tab);
     },
 
@@ -614,6 +625,29 @@ export default {
     },
 
     /**
+     * The Jira queue, which is its own tab for the reason the others are: it is a different
+     * system, on a different credential, and most visits do not want it.
+     *
+     * Its own error too. Jira is reached through dev-api with a token this page cannot see, so
+     * a token that has expired costs this tab and says so, rather than reading as an empty
+     * queue - which is what "no bugs" and "no token" look like to each other.
+     */
+    async refreshJira() {
+      this.jiraError = '';
+      this.loadingJira = true;
+
+      try {
+        this.jira = await jiraQueue();
+      } catch (e) {
+        this.jira = null;
+        this.jiraError = e.message || String(e);
+      } finally {
+        this.loadingJira = false;
+        this.jiraLoaded = true;
+      }
+    },
+
+    /**
      * The rota: advisories and Dependabot pull requests.
      *
      * Its own error, because the alerts belong to a repository and need a permission the rest of
@@ -664,7 +698,7 @@ export default {
 
       this.tab = tabFromHash(name);
 
-      const loaded = { 'interrupt-duty': this.alertsLoaded, priority: this.queueLoaded }[this.tab] ?? !!this.sections[this.tab];
+      const loaded = { 'interrupt-duty': this.alertsLoaded, priority: this.queueLoaded, jira: this.jiraLoaded }[this.tab] ?? !!this.sections[this.tab];
 
       if (!loaded) {
         await this.refresh();
@@ -1610,6 +1644,122 @@ export default {
         </template>
       </Tab>
 
+      <!--
+        Jira: the SURE bugs this team owns, in the queues the team's own saved filters define.
+        Lifted from the harness along with the data; see jira.ts.
+      -->
+      <Tab
+        name="jira"
+        label="Jira"
+        :weight="1.5"
+      >
+        <div
+          v-if="loadingJira && !jiraLoaded"
+          class="dev-my-work__loading"
+        >
+          <i class="icon icon-spinner icon-spin" />
+          <span>Reading the SURE queue from Jira&hellip;</span>
+        </div>
+
+        <Banner
+          v-else-if="jiraError"
+          color="warning"
+        >
+          {{ jiraError }}
+        </Banner>
+
+        <!--
+          One message for both halves of the same answer. A token that was never set and one
+          Jira has stopped accepting are indistinguishable from here, and both are fixed in the
+          same place, so saying "no token" alone would send somebody looking for a field that is
+          already filled in.
+        -->
+        <Banner
+          v-else-if="jira && !jira.configured"
+          color="info"
+        >
+          No Jira token, or Jira would not accept the one that is set. Add or replace
+          <code>JIRA_TOKEN</code> in Settings.
+        </Banner>
+
+        <template v-else-if="jira">
+          <p class="dev-my-work__jira-who">
+            <span v-if="jira.login">Signed in to Jira as {{ jira.login }}</span>
+            <a
+              :href="jira.dashboardUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+            >Open the team dashboard</a>
+          </p>
+
+          <template
+            v-for="cat in jira.categories"
+            :key="cat.id"
+          >
+            <h3>
+              <a
+                :href="cat.url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >{{ cat.label }}</a>
+              <span class="dev-my-work__count">{{ cat.total }}</span>
+              <span class="dev-my-work__jira-hint">{{ cat.hint }}</span>
+            </h3>
+
+            <Banner
+              v-if="cat.error"
+              color="warning"
+            >
+              This filter could not be read: {{ cat.error }}
+            </Banner>
+
+            <p
+              v-else-if="!cat.bugs.length"
+              class="text-muted dev-my-work__jira-empty"
+            >Nothing in this queue.</p>
+
+            <table
+              v-else
+              class="dev-my-work__jira-table"
+            >
+              <thead>
+                <tr>
+                  <th>Bug</th>
+                  <th>Summary</th>
+                  <th>Status</th>
+                  <th>Priority</th>
+                  <th>Assignee</th>
+                  <th>Age</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="bug in cat.bugs"
+                  :key="bug.key"
+                >
+                  <td>
+                    <a
+                      :href="bug.url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >{{ bug.key }}</a>
+                  </td>
+                  <td class="dev-my-work__jira-summary">{{ bug.summary }}</td>
+                  <td>{{ bug.status }}</td>
+                  <td>{{ bug.priority || '—' }}</td>
+                  <td>{{ bug.assignee ? bug.assignee.displayName : '—' }}</td>
+                  <!-- Business days, and red once the status's own deadline has passed. -->
+                  <td
+                    :class="{ 'dev-my-work__jira-overdue': bug.overdue }"
+                    :title="bug.overdue ? 'Past the deadline for this status' : 'Business days since it was raised'"
+                  >{{ bug.ageDays }}d</td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
+        </template>
+      </Tab>
+
       <Tab
         name="interrupt-duty"
         label="Interrupt duty"
@@ -2159,4 +2309,40 @@ export default {
     &__actions { flex-wrap: wrap; }
   }
 }
+
+.dev-my-work__jira-who {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dev-my-work__jira-hint {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.dev-my-work__jira-empty { font-size: 12px; }
+
+.dev-my-work__jira-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+
+  th, td {
+    text-align: left;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  th { color: var(--muted); font-weight: normal; }
+}
+
+.dev-my-work__jira-summary { max-width: 52ch; }
+
+.dev-my-work__jira-overdue { color: var(--error); font-weight: 600; }
 </style>
