@@ -24,13 +24,22 @@ import {
 } from '../issue-table';
 import {
   startPrReview, startIssueFix, startAlertFix, startDependabotReview, startCiTriage, mergePr, approveAndMerge,
-  rerunFailedJobs, dependabotData, dependabotReviews, refreshDependabotReview, closeDependabotReview, listConversations
+  rerunFailedJobs, dependabotData, dependabotReviews, refreshDependabotReview, closeDependabotReview, listConversations,
+  DEFAULT_REPO
 } from '../reviews';
 import {
   listAllWorkspaces, createWorkspace
 } from '../api';
 import { listApps } from '../apps';
 import { jiraQueue } from '../jira';
+import StageSteps from '../components/StageSteps.vue';
+import { storedStages } from '../stages';
+import { issuesByNumber } from '../github';
+import { savePrefs } from '../prefs';
+import { stepsFor as stagesFor } from '../workspace-rail';
+import {
+  issueWorkspaceName, issueWorkspaceLocation, hasIssueWorkspace, appForWorkspace
+} from '../issue-table';
 import { priorityQueue } from '../priority';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
 import { defaultRancherValues } from '../ranchers';
@@ -160,7 +169,7 @@ const REFRESH_MS = 30000;
  * somebody goes through when it is their turn. They are named here because the name is in the
  * address, so a link to one is a link somebody can send.
  */
-const TABS = ['reviewing', 'mine', 'issues', 'jira', 'interrupt-duty', 'priority'];
+const TABS = ['reviewing', 'mine', 'issues', 'tracker', 'jira', 'interrupt-duty', 'priority'];
 
 /** The tabs that are one `myWork` section each, by the section they read. See WorkSection. */
 const SECTION_TABS = ['reviewing', 'mine', 'issues'];
@@ -205,7 +214,7 @@ export default {
   },
 
   components: {
-    SortableTable, Tabbed, Tab, Banner, RcButton, AsyncButton
+    SortableTable, Tabbed, Tab, Banner, RcButton, AsyncButton, StageSteps,
   },
 
   async fetch() {
@@ -274,6 +283,15 @@ export default {
       // This person's own prompts, which is what a queued conversation opens on.
       // The repository's open Dependabot advisories, and why they could not be read when they
       // could not be. A token without the security tab is an ordinary thing, not a page error.
+      /** The tracker tab: stored stages, followed issues, and the follow box. */
+      stages:      {},
+      tracked:     [],
+      followed:    [],
+      adding:      '',
+      addError:    '',
+      trackerBusy: false,
+      trackerLoaded: false,
+      loadingTracker: false,
       /** The Jira queue: the SURE bugs this team owns, by the filters the team maintains. */
       jira:        null,
       loadingJira: false,
@@ -289,9 +307,33 @@ export default {
   },
 
   computed: {
+    /**
+     * The stages an issue goes through, which are a fix's stages. The same `stepsFor` the
+     * workspace rail uses, so an issue reads the same here as on its own workspace page.
+     */
+    trackerSteps() {
+      return stagesFor('fix');
+    },
+
+    /**
+     * The assigned issues and the followed ones as one list.
+     *
+     * One table, because the question this tab answers - what am I following through its stages
+     * - does not care how an issue got here. A followed one carries `followed` so its row can
+     * say so and offer to stop.
+     */
+    trackerRows() {
+      const mine = new Set((this.work?.issues || []).map((issue) => issue.key));
+      const extra = this.followed.filter((issue) => !mine.has(issue.key));
+
+      return issueRowsFrom([...(this.work?.issues || []), ...extra.map((issue) => ({ ...issue, followed: true }))]);
+    },
+
     /** Whether the tab on screen is reading: what Refresh says and whether it can be pressed. */
     busy() {
-      return { 'interrupt-duty': this.loadingAlerts, priority: this.loadingQueue, jira: this.loadingJira }[this.tab] ?? this.loading;
+      return {
+        'interrupt-duty': this.loadingAlerts, priority: this.loadingQueue, jira: this.loadingJira, tracker: this.loadingTracker,
+      }[this.tab] ?? this.loading;
     },
 
 
@@ -491,6 +533,11 @@ export default {
 
         return;
       }
+      if (this.tab === 'tracker') {
+        await this.refreshTracker();
+
+        return;
+      }
       await this.refreshSection(this.tab);
     },
 
@@ -624,6 +671,146 @@ export default {
       }
     },
 
+    // ── The tracker tab ───────────────────────────────────────────────────────────────────
+    //
+    // Moved here from a page of its own. It is the same issues the Issues tab lists, followed
+    // one at a time rather than glanced at, so it belongs beside them: a person looking for an
+    // issue should not have to know which of two places this product put it.
+
+    trackerStageFor(issue) {
+      const record = this.stages[issueWorkspaceName(this.workspaces, issue)] || this.stages[`issue-${ issue.number }`];
+
+      return record ? this.trackerSteps.findIndex((step) => step.key === record.stage) : -1;
+    },
+
+    trackerRoundFor(issue) {
+      const record = this.stages[issueWorkspaceName(this.workspaces, issue)] || this.stages[`issue-${ issue.number }`];
+
+      return record?.round || 1;
+    },
+
+    trackerHasWorkspace(issue) {
+      return hasIssueWorkspace(this.workspaces, issue);
+    },
+
+    trackerWorkspaceTo(issue) {
+      return issueWorkspaceLocation(this.workspaces, issue);
+    },
+
+    /**
+     * An issue key from whatever was typed: `19152`, `#19152`, a GitHub URL, or
+     * `owner/repo#19152`. Null when there is no number in it.
+     */
+    parseIssueKey(text) {
+      const raw = String(text || '').trim();
+      const url = /github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/.exec(raw);
+
+      if (url) {
+        return `${ url[1] }#${ Number(url[2]) }`;
+      }
+      const qualified = /^([^/\s]+\/[^#\s]+)#(\d+)$/.exec(raw);
+
+      if (qualified) {
+        return `${ qualified[1] }#${ Number(qualified[2]) }`;
+      }
+      const bare = /^#?(\d+)$/.exec(raw);
+
+      return bare ? `${ DEFAULT_REPO }#${ Number(bare[1]) }` : null;
+    },
+
+    async readFollowed() {
+      const byRepo = {};
+
+      for (const key of this.tracked) {
+        const [repo, number] = String(key).split('#');
+
+        if (repo && number) {
+          (byRepo[repo] = byRepo[repo] || []).push(Number(number));
+        }
+      }
+
+      const lists = await Promise.all(Object.entries(byRepo)
+        .map(([repo, numbers]) => issuesByNumber(repo, numbers).catch(() => [])));
+
+      this.followed = lists.flat();
+    },
+
+    async follow() {
+      this.addError = '';
+      const key = this.parseIssueKey(this.adding);
+
+      if (!key) {
+        this.addError = 'An issue number, or a link to one.';
+
+        return;
+      }
+      if (this.tracked.includes(key)) {
+        this.addError = `${ key } is already followed.`;
+
+        return;
+      }
+      this.trackerBusy = true;
+
+      try {
+        const [repo, number] = key.split('#');
+        const found = await issuesByNumber(repo, [Number(number)]);
+
+        // Checked before it is saved: a number nobody can resolve would otherwise be followed
+        // for ever as a row that never appears.
+        if (!found.length) {
+          this.addError = `${ key } could not be read. Check the number, and that the token can see that repository.`;
+
+          return;
+        }
+        this.tracked = [...this.tracked, key];
+        await savePrefs({ trackedIssues: this.tracked });
+        this.followed = [...this.followed.filter((issue) => issue.key !== key), ...found];
+        this.adding = '';
+      } catch (e) {
+        this.addError = e.message || String(e);
+      } finally {
+        this.trackerBusy = false;
+      }
+    },
+
+    async unfollow(issue) {
+      this.tracked = this.tracked.filter((key) => key !== issue.key);
+      this.followed = this.followed.filter((one) => one.key !== issue.key);
+      await savePrefs({ trackedIssues: this.tracked }).catch((e) => {
+        this.error = e.message || String(e);
+      });
+    },
+
+    /**
+     * The tracker needs the issues this page already reads, plus the stored stages and whatever
+     * is followed. The issues come from the `issues` section, so opening this tab after the
+     * Issues tab costs only the stages.
+     */
+    async refreshTracker() {
+      this.error = '';
+      this.loadingTracker = true;
+
+      try {
+        if (!this.sections.issues) {
+          await this.refreshSection('issues');
+        }
+
+        const [stages, prefs] = await Promise.all([
+          storedStages().catch(() => ({})),
+          readPrefs().catch(() => ({ trackedIssues: [] })),
+        ]);
+
+        this.stages = stages;
+        this.tracked = prefs.trackedIssues || [];
+        await this.readFollowed();
+      } catch (e) {
+        this.error = e.message || String(e);
+      } finally {
+        this.loadingTracker = false;
+        this.trackerLoaded = true;
+      }
+    },
+
     /**
      * The Jira queue, which is its own tab for the reason the others are: it is a different
      * system, on a different credential, and most visits do not want it.
@@ -698,7 +885,9 @@ export default {
 
       this.tab = tabFromHash(name);
 
-      const loaded = { 'interrupt-duty': this.alertsLoaded, priority: this.queueLoaded, jira: this.jiraLoaded }[this.tab] ?? !!this.sections[this.tab];
+      const loaded = {
+        'interrupt-duty': this.alertsLoaded, priority: this.queueLoaded, jira: this.jiraLoaded, tracker: this.trackerLoaded,
+      }[this.tab] ?? !!this.sections[this.tab];
 
       if (!loaded) {
         await this.refresh();
@@ -1645,6 +1834,214 @@ export default {
       </Tab>
 
       <!--
+        The tracker: the same issues the Issues tab lists, followed through their stages.
+
+        A tab rather than a page of its own. They are the same issues read at two depths - the
+        glance, and the one being followed - and a person looking for an issue should not have to
+        know which of two places this product put it.
+      -->
+      <Tab
+        name="tracker"
+        label="Tracker"
+        :weight="1.8"
+      >
+
+
+      <!--
+        Follow an issue GitHub will not hand over: somebody else's, or nobody's. A number is what
+        a person has to hand; a pasted link is the other half of the time, so both work.
+      -->
+      <form
+        class="dev-my-work__tracker__follow"
+        @submit.prevent="follow"
+      >
+        <input
+          v-model="adding"
+          type="text"
+          class="dev-my-work__tracker__follow-input"
+          placeholder="Follow an issue: 19152, or a link to it"
+          aria-label="Follow an issue"
+          :disabled="trackerBusy"
+        >
+        <RcButton
+          variant="secondary"
+          size="small"
+          type="submit"
+          :disabled="trackerBusy || !adding.trim()"
+        >
+          {{ trackerBusy ? 'Reading…' : 'Follow' }}
+        </RcButton>
+        <span
+          v-if="addError"
+          class="dev-my-work__tracker__follow-error"
+        >{{ addError }}</span>
+      </form>
+
+      <div
+        v-if="loadingTracker && !trackerLoaded"
+        class="dev-my-work__tracker__loading"
+      >
+        <i class="icon icon-spinner icon-spin" />
+        <span>Reading the stages&hellip;</span>
+      </div>
+
+      <SortableTable
+        v-else
+        :headers="issueHeaders"
+        :rows="trackerRows"
+        key-field="key"
+        default-sort-by="status"
+        :table-actions="false"
+        :row-actions="false"
+        :search="true"
+        :paging="true"
+        :rows-per-page="25"
+        :sub-rows="true"
+        :sub-expandable="true"
+        :sub-expand-column="true"
+      >
+        <template #cell:number="{ row }">
+          <a
+            :href="row.url"
+            target="_blank"
+            rel="noopener noreferrer"
+          >#{{ row.number }}</a>
+          <span
+            v-if="row.followed"
+            class="dev-my-work__tracker__followed"
+            title="Followed; not assigned to you"
+          >followed</span>
+        </template>
+
+        <template #cell:status="{ row }">
+          <a
+            v-if="row.projectStatus && row.projectStatus.url"
+            :href="row.projectStatus.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="dev-my-work__tracker__status"
+            :class="`dev-my-work__tracker__status--${ statusHue(row.projectStatus) }`"
+            :title="row.projectStatus.project"
+          >{{ row.projectStatus.name }}</a>
+          <span
+            v-else-if="row.projectStatus"
+            class="dev-my-work__tracker__status"
+            :class="`dev-my-work__tracker__status--${ statusHue(row.projectStatus) }`"
+            :title="row.projectStatus.project"
+          >{{ row.projectStatus.name }}</span>
+          <span
+            v-else
+            class="text-muted"
+            title="Not on a project board"
+          >&mdash;</span>
+        </template>
+
+        <template #cell:milestone="{ row }">
+          <a
+            v-if="row.milestone && row.milestoneUrl"
+            :href="row.milestoneUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            :title="milestoneDue(row)"
+          >{{ row.milestone }}</a>
+          <span
+            v-else-if="row.milestone"
+            :title="milestoneDue(row)"
+          >{{ row.milestone }}</span>
+          <span
+            v-else
+            class="text-muted"
+            title="Not in a milestone"
+          >&mdash;</span>
+        </template>
+
+        <template #cell:age="{ row }">
+          {{ ago(row.createdAt) }}
+        </template>
+
+        <!-- An em dash where nothing says, rather than `ago('')`, which reads an unparseable
+             date as now and would answer "just now". See MyWork's Assigned column. -->
+        <template #cell:assigned="{ row }">
+          <span
+            v-if="row.assignedAt"
+            :title="row.assignedAt"
+          >{{ ago(row.assignedAt) }}</span>
+          <span
+            v-else
+            class="text-muted"
+            title="Nothing in the issue's timeline says when it was assigned"
+          >&mdash;</span>
+        </template>
+
+        <template #cell:workspace="{ row }">
+          <RcButton
+            v-if="trackerHasWorkspace(row)"
+            variant="tertiary"
+            size="small"
+            @click="$router.push(trackerWorkspaceTo(row))"
+          >
+            Workspace
+          </RcButton>
+          <AsyncButton
+            v-else
+            mode="apply"
+            action-label="Start workspace"
+            waiting-label="Starting"
+            success-label="Started"
+            size="sm"
+            @click="(done) => startWorkspace(row, done)"
+          />
+        </template>
+
+        <template #cell:actions="{ row }">
+          <div class="dev-my-work__tracker__actions">
+            <AsyncButton
+              mode="apply"
+              action-label="Start fix"
+              waiting-label="Opening"
+              success-label="Opened"
+              size="sm"
+              @click="(done) => startFix(row, done)"
+            />
+            <RcButton
+              v-if="row.followed"
+              variant="link"
+              size="small"
+              title="Stop following this issue"
+              @click="unfollow(row)"
+            >
+              Unfollow
+            </RcButton>
+          </div>
+        </template>
+        <!--
+          The stages, under the issue they belong to.
+
+          The same stepper the workspace rail draws (StageSteps) and the same stored stages, so
+          an issue reads the same here as it does on its own workspace page. Read-only: this page
+          lists stages, the rail is where one is moved.
+        -->
+        <template #sub-row="{ row, fullColspan }">
+          <tr class="dev-my-work__tracker__stages-row">
+            <td :colspan="fullColspan">
+              <StageSteps
+                :steps="trackerSteps"
+                :current-index="trackerStageFor(row)"
+                :round="trackerRoundFor(row)"
+              />
+              <p
+                v-if="trackerStageFor(row) < 0"
+                class="dev-my-work__tracker__not-started"
+              >
+                Not started. Starting a workspace or a fix is what puts this issue on its first stage.
+              </p>
+            </td>
+          </tr>
+        </template>
+      </SortableTable>
+      </Tab>
+
+      <!--
         Jira: the SURE bugs this team owns, in the queues the team's own saved filters define.
         Lifted from the harness along with the data; see jira.ts.
       -->
@@ -2345,4 +2742,80 @@ export default {
 .dev-my-work__jira-summary { max-width: 52ch; }
 
 .dev-my-work__jira-overdue { color: var(--error); font-weight: 600; }
+
+/* ── The tracker tab, moved here from the page it used to be ── */
+.dev-my-work__tracker__error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.dev-my-work__tracker__stages-row td {
+  padding: 8px 12px 12px 40px;
+  background: var(--sortable-table-top-divider, var(--default));
+}
+
+.dev-my-work__tracker__not-started {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dev-my-work__tracker__follow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+
+.dev-my-work__tracker__follow-input {
+  width: 320px;
+  max-width: 100%;
+}
+
+.dev-my-work__tracker__follow-error { color: var(--error); font-size: 12px; }
+
+.dev-my-work__tracker__followed {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--default);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.dev-my-work__tracker__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.dev-my-work__tracker__loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 0;
+  color: var(--muted);
+}
+
+/* The board's own colours, as My Work draws them. */
+.dev-my-work__tracker__status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  background: var(--default);
+  color: var(--body-text);
+}
+
+.dev-my-work__tracker__status--muted   { background: var(--default); color: var(--muted); }
+.dev-my-work__tracker__status--info    { background: var(--info-banner-bg); color: var(--info); }
+.dev-my-work__tracker__status--success { background: var(--success-banner-bg); color: var(--success); }
+.dev-my-work__tracker__status--warning { background: var(--warning-banner-bg); color: var(--warning); }
+.dev-my-work__tracker__status--error   { background: var(--error-banner-bg); color: var(--error); }
+.dev-my-work__tracker__status--accent  { background: var(--primary-banner-bg, var(--default)); color: var(--primary); }
 </style>

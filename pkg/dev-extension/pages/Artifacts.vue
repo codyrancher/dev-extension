@@ -11,22 +11,20 @@
  * only thing in the product that removes one.
  */
 import { Banner } from '@components/Banner';
+import DevPage from '../components/DevPage.vue';
 import { RcButton } from '@components/RcButton';
 import ArtifactViewer from '../components/pr/ArtifactViewer.vue';
-import ArtifactThumb from '../components/pr/ArtifactThumb.vue';
-import { listArtifactSets, removeArtifactSet, artifactSetFileUrl } from '../api';
+import WorkspaceArtifacts from '../components/WorkspaceArtifacts.vue';
+import { listArtifactSets, removeArtifactSet } from '../api';
 import { issuesByNumber } from '../github';
 import { DEFAULT_REPO } from '../reviews';
-import { ago } from '../workspace-rail';
-
-/** What a file is, from its name, so a set can be drawn before anything is fetched. */
-const MEDIA = /\.(png|jpe?g|gif|webp|svg|webm|mp4|mov)$/i;
+import { ago, readArtifacts } from '../workspace-rail';
 
 export default {
   name: 'DevArtifacts',
 
   components: {
-    Banner, RcButton, ArtifactViewer, ArtifactThumb
+    Banner, RcButton, ArtifactViewer, WorkspaceArtifacts, DevPage
   },
 
   data() {
@@ -37,8 +35,14 @@ export default {
       error:   '',
       /** The file being looked at, in the viewer. */
       shot:    null,
-      /** Sets whose file list is open. */
-      open:    {},
+      /**
+       * The grouped listing per set, as the workspace column reads it.
+       *
+       * Keyed by set, loaded when the page loads. The same shape WorkspaceArtifacts takes, from
+       * the same `readArtifacts` - so a kept set is drawn by the component that already draws a
+       * live workspace's artifacts rather than by a second gallery that looks nearly like it.
+       */
+      listing: {},
     };
   },
 
@@ -49,25 +53,16 @@ export default {
   methods: {
     ago,
 
-    isMedia(path) {
-      return MEDIA.test(path);
-    },
-
-    fileUrl(set, path) {
-      return artifactSetFileUrl(set.workspace, path);
-    },
-
     /** The issue a set is about, once it has been read. */
     issueFor(set) {
       return set.issue ? this.issues[`${ DEFAULT_REPO }#${ set.issue }`] || null : null;
     },
 
-    toggle(set) {
-      this.open = { ...this.open, [set.workspace]: !this.open[set.workspace] };
-    },
-
-    look(set, path) {
-      this.shot = { src: this.fileUrl(set, path), name: path.split('/').pop(), caption: `${ set.workspace } · ${ path }` };
+    /** What the gallery asks to open: the same `{ src, name }` the workspace column emits. */
+    look(set, file) {
+      this.shot = {
+        src: file.url, name: file.label || file.path, caption: `${ set.workspace } · ${ file.path }`, path: file.path,
+      };
     },
 
     async refresh() {
@@ -83,6 +78,14 @@ export default {
         const found = numbers.length ? await issuesByNumber(DEFAULT_REPO, numbers).catch(() => []) : [];
 
         this.issues = Object.fromEntries(found.map((issue) => [issue.key, issue]));
+
+        // One listing per set, in parallel. A set whose files cannot be read keeps its row and
+        // its issue line - the set still exists, and saying nothing about it would read as empty.
+        const listings = await Promise.all(this.sets.map((set) => readArtifacts(`set:${ set.workspace }`)
+          .then((got) => [set.workspace, got])
+          .catch(() => [set.workspace, { groups: [], total: 0, truncated: false }])));
+
+        this.listing = Object.fromEntries(listings);
       } catch (e) {
         this.error = e.message || String(e);
       } finally {
@@ -108,11 +111,10 @@ export default {
 </script>
 
 <template>
-  <div class="dev-artifacts">
-    <h1>
-      Artifacts
-      <span class="dev-artifacts__lede">What the work produced, kept after the workspace was deleted.</span>
-    </h1>
+  <DevPage
+    title="Artifacts"
+    lede="What the work produced, kept after the workspace was deleted."
+  >
 
     <Banner
       v-if="error"
@@ -194,47 +196,23 @@ export default {
         </div>
       </header>
 
-      <!-- The previews: what can be looked at, looked at. -->
-      <div class="dev-artifacts__thumbs">
-        <!--
-          ArtifactThumb draws the tile and has no click of its own, so the press belongs to a
-          button around it rather than to a listener the component never emits.
-        -->
-        <button
-          v-for="path in set.files.filter(isMedia).slice(0, 12)"
-          :key="path"
-          type="button"
-          class="dev-artifacts__thumb"
-          :title="path"
-          @click="look(set, path)"
-        >
-          <ArtifactThumb
-            :url="fileUrl(set, path)"
-            :name="path.split('/').pop()"
-          />
-        </button>
-        <span
-          v-if="!set.files.some(isMedia)"
-          class="text-muted dev-artifacts__none"
-        >No recordings or screenshots in this set.</span>
-      </div>
-
-      <!-- Everything, including the things with nothing to show: reports, logs, patches. -->
-      <ul
-        v-if="open[set.workspace]"
-        class="dev-artifacts__files"
-      >
-        <li
-          v-for="path in set.files"
-          :key="path"
-        >
-          <button
-            type="button"
-            class="dev-artifacts__file"
-            @click="look(set, path)"
-          >{{ path }}</button>
-        </li>
-      </ul>
+      <!--
+        The same gallery the workspace column draws, from the same listing.
+        Grouped by directory, with the counts, sizes and ages it already shows - rather than a
+        second gallery that looks nearly like it and drifts from it.
+      -->
+      <WorkspaceArtifacts
+        v-if="listing[set.workspace] && listing[set.workspace].groups.length"
+        :workspace="`set:${ set.workspace }`"
+        :groups="listing[set.workspace].groups"
+        :total="listing[set.workspace].total"
+        :truncated="listing[set.workspace].truncated"
+        @open="look(set, $event)"
+      />
+      <p
+        v-else
+        class="text-muted dev-artifacts__none"
+      >Nothing in this set could be read. The files are kept; the API may be restarting.</p>
     </div>
 
     <Teleport to="body">
@@ -247,23 +225,10 @@ export default {
         @close="shot = null"
       />
     </Teleport>
-  </div>
+  </DevPage>
 </template>
 
 <style lang="scss" scoped>
-.dev-artifacts {
-  padding: 0 0 24px;
-
-  h1 {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-}
-
-.dev-artifacts__lede { color: var(--muted); font-size: 14px; font-weight: normal; }
-
 .dev-artifacts__loading {
   display: flex;
   align-items: center;
@@ -324,37 +289,9 @@ export default {
   font-size: 12px;
 }
 
-.dev-artifacts__thumbs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
-}
 
-.dev-artifacts__thumb {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  cursor: zoom-in;
-}
 
 .dev-artifacts__none { font-size: 12px; }
 
-.dev-artifacts__files {
-  margin: 10px 0 0;
-  padding: 0;
-  list-style: none;
-  max-height: 240px;
-  overflow: auto;
-}
 
-.dev-artifacts__file {
-  border: 0;
-  background: transparent;
-  color: var(--link);
-  cursor: pointer;
-  font-family: monospace;
-  font-size: 12px;
-  padding: 1px 0;
-}
 </style>

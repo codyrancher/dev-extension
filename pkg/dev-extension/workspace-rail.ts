@@ -336,7 +336,7 @@ const artifact = (workspace: string, dir: string, f: Json): Artifact => ({
   at:    new Date(f.mtimeMs || 0).toISOString(),
 });
 
-async function readArtifacts(workspace: string): Promise<{ groups: ArtifactGroup[]; total: number; truncated: boolean }> {
+export async function readArtifacts(workspace: string): Promise<{ groups: ArtifactGroup[]; total: number; truncated: boolean }> {
   // Not caught to an empty list. The route answers 200 with nothing in it for a workspace that
   // has no artifacts, so every failure here is the API being away - and an empty list is drawn
   // as "there are none", which deleted the section out from under whoever was watching a

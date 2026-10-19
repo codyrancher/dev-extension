@@ -30,7 +30,6 @@ import {
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import { ensureCertControllers } from '../certs';
 import DevList from './DevList.vue';
-import FocusMark from './FocusMark.vue';
 import DevDialog from './DevDialog.vue';
 import NavRow from './NavRow.vue';
 import NavHead from './NavHead.vue';
@@ -42,7 +41,7 @@ import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
-  MY_WORK_ROUTE, ISSUE_TRACKER_ROUTE, ARTIFACTS_ROUTE, TOOLS_ROUTE, FOCUS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, CONVERSATIONS_ROUTE
+  MY_WORK_ROUTE, ARTIFACTS_ROUTE, TOOLS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, CONVERSATIONS_ROUTE
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
@@ -134,7 +133,7 @@ export default {
   name: 'DevSidebar',
 
   components: {
-    DevList, Stack, Row, ClaudeLogo, FocusMark, DevDialog, RancherPicker, NavRow, NavHead, HoverCard
+    DevList, Stack, Row, ClaudeLogo, DevDialog, RancherPicker, NavRow, NavHead, HoverCard
   },
 
   mixins: [hoverCard],
@@ -172,15 +171,6 @@ export default {
       globals: [
         {
           label: 'My Work', icon: 'icon-list-flat', route: MY_WORK_ROUTE
-        },
-        // Beside My Work, because it is the same issues: the glance, and then the one you are
-        // following through its stages.
-        {
-          label: 'Issue tracker', icon: 'icon-checkmark', route: ISSUE_TRACKER_ROUTE
-        },
-        // The same queue, dealt out: one card at a time rather than a table of everything.
-        {
-          label: 'Focus', mark: true, route: FOCUS_ROUTE
         },
         {
           label: 'Conversations', icon: 'icon-comment', route: CONVERSATIONS_ROUTE
@@ -915,10 +905,6 @@ export default {
             v-if="global.logo"
             class="icon"
           />
-          <FocusMark
-            v-else-if="global.mark"
-            class="icon dev-sidebar__globals-mark"
-          />
           <i
             v-else
             class="icon"
@@ -1163,7 +1149,6 @@ export default {
 
     // The sparkle is a drawing rather than a glyph, so it takes its size from here rather than
     // from the icon font.
-    &__globals-mark { font-size: 17px; }
 
     &__globals-label { display: none; }
 

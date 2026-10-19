@@ -14,6 +14,8 @@
  * guaranteed to disagree.
  */
 import { Banner } from '@components/Banner';
+import DevPage from '../components/DevPage.vue';
+import DevCard from '../components/DevCard.vue';
 import { RcButton } from '@components/RcButton';
 import { inject } from 'vue';
 import {
@@ -28,7 +30,9 @@ import { ago } from '../workspace-rail';
 export default {
   name: 'DevTools',
 
-  components: { Banner, RcButton },
+  components: {
+    Banner, RcButton, DevPage, DevCard
+  },
 
   /**
    * Where this page's data comes from, asked for rather than imported.
@@ -148,10 +152,11 @@ export default {
 </script>
 
 <template>
-  <div class="dev-tools">
-    <h1>
-      Tools
-      <span class="dev-tools__lede">What can be attached to a piece of work, and what is attached now.</span>
+  <DevPage
+    title="Tools"
+    lede="What can be attached to a piece of work, and what is attached now."
+  >
+    <template #actions>
       <RcButton
         variant="link"
         size="small"
@@ -160,7 +165,7 @@ export default {
       >
         Refresh
       </RcButton>
-    </h1>
+    </template>
 
     <Banner
       v-if="error"
@@ -340,23 +345,10 @@ export default {
         class="dev-tools__spec"
       >{{ WORKSPACE_TOOL.openapi }}</pre>
     </div>
-  </div>
+  </DevPage>
 </template>
 
 <style lang="scss" scoped>
-.dev-tools {
-  padding: 0 0 24px;
-
-  h1 {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-}
-
-.dev-tools__lede { color: var(--muted); font-size: 14px; font-weight: normal; }
-
 .dev-tools__loading {
   display: flex;
   align-items: center;
@@ -365,12 +357,13 @@ export default {
   color: var(--muted);
 }
 
+/* The box itself is DevCard's; what is left here is this page's own spacing inside it. */
 .dev-tools__tool {
-  margin: 0 0 16px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--box-bg);
+  margin:        0 0 var(--dev-space-4);
+  padding:       var(--dev-space-3);
+  border:        1px solid var(--border);
+  border-radius: var(--border-radius);
+  background:    var(--box-bg);
 }
 
 .dev-tools__head {

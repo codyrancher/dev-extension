@@ -20,6 +20,7 @@ import ModalManager from '@shell/components/ModalManager';
 import GrowlManager from '@shell/components/GrowlManager';
 import DevSidebar from '../components/DevSidebar.vue';
 import ClaudeLogo from '../components/ClaudeLogo.vue';
+import FocusMark from '../components/FocusMark.vue';
 import { socketsWork, rancherOwnAddress } from '../sockets';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, FOCUS_ROUTE
@@ -29,7 +30,7 @@ export default {
   name: 'DevShell',
 
   components: {
-    WindowManager, ActionMenu, PromptRemove, ModalManager, GrowlManager, DevSidebar, ClaudeLogo
+    WindowManager, ActionMenu, PromptRemove, ModalManager, GrowlManager, DevSidebar, ClaudeLogo, FocusMark
   },
 
   data() {
@@ -59,6 +60,18 @@ export default {
     /** This product's own home, for the wordmark to lead back to. */
     homeTo() {
       return { name: WORKSPACES_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } };
+    },
+
+    /**
+     * The deck.
+     *
+     * It is in this menu rather than in the sidebar's icon row because of what it does: the
+     * route takes the whole window, closing the nav it would have been launched from. A way out
+     * of the chrome belongs beside the other one - the way back to Rancher - and not among the
+     * pages that keep the chrome.
+     */
+    focusTo() {
+      return { name: FOCUS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } };
     },
 
     host() {
@@ -184,6 +197,14 @@ export default {
               @click="menu = false"
             >
               <ClaudeLogo class="dev-top__item-logo" /> Dev
+            </router-link>
+            <router-link
+              :to="focusTo"
+              class="dev-top__item"
+              data-testid="dev-menu-focus"
+              @click="menu = false"
+            >
+              <FocusMark class="dev-top__item-mark" /> Focus
             </router-link>
             <span
               v-if="principal && principal.loginName"
@@ -336,6 +357,10 @@ export default {
   // The dev mark in the menu, at the size the row's icons are - it stands in for the icon-home
   // that read as "some generic home" rather than "this product".
   &__item-logo { width: 16px; height: 16px; flex: 0 0 16px; }
+
+  // The sparkle is drawn at 1em, so it is sized by the row's font rather than by a box of its
+  // own; the slot it sits in is the logo's, so both rows' labels start at the same x.
+  &__item-mark { width: 16px; flex: 0 0 16px; font-size: 15px; }
 
   &__logo { width: 22px; height: 22px; }
 

@@ -3524,7 +3524,19 @@ export function globalBrowserUrl(): string {
  * JSON; each file's URL is used directly as a `<video>`/`<img>` src.
  */
 function workspaceMediaBase(name: string): string {
-  return `${ BASE }/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy/workspace/${ encodeURIComponent(name) }/media`;
+  /*
+   * `set:<name>` is a kept set - the artifacts of a workspace that has been deleted - and it is
+   * served by the same route under a `set/` segment. Handled here rather than in each caller so
+   * that everything already built on these URLs works on a set unchanged: the listing, the
+   * per-directory paging, the file fetch and therefore WorkspaceArtifacts itself.
+   *
+   * A segment rather than a colon in the name, because `encodeURIComponent` escapes a colon and
+   * `url.pathname` does not decode it, so the route would never match. See workspaceArtifactsRoot.
+   */
+  const kept = /^set:(.+)$/.exec(name);
+  const path = kept ? `set/${ encodeURIComponent(kept[1]) }` : encodeURIComponent(name);
+
+  return `${ BASE }/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy/workspace/${ path }/media`;
 }
 
 export function workspaceMediaListUrl(name: string): string {
@@ -3535,19 +3547,9 @@ export function workspaceMediaFileUrl(name: string, relPath: string): string {
   return `${ workspaceMediaBase(name) }/file?path=${ encodeURIComponent(relPath) }`;
 }
 
-/**
- * The same two URLs for a kept set, which outlives the workspace it came from.
- *
- * `set/` as its own path segment rather than a prefix on the name: a colon is percent-escaped
- * by `encodeURIComponent` and `url.pathname` does not decode it, so a route matching one would
- * never fire. The server turns the segment back into `set:<name>`; see workspaceArtifactsRoot.
- */
-function artifactSetBase(name: string): string {
-  return `${ BASE }/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy/workspace/set/${ encodeURIComponent(name) }/media`;
-}
-
+/** One file of a kept set. The `set:` name is what `workspaceMediaBase` turns into the route. */
 export function artifactSetFileUrl(name: string, relPath: string): string {
-  return `${ artifactSetBase(name) }/file?path=${ encodeURIComponent(relPath) }`;
+  return workspaceMediaFileUrl(`set:${ name }`, relPath);
 }
 
 /**
