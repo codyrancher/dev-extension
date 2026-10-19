@@ -10,7 +10,8 @@
 // is left here is what is particular to the nav: which sections there are, what a row links to,
 // and the strip of everything that is not a workspace along the foot.
 import {
-  listAllWorkspaces, deleteWorkspace, listClusters, readableBytes, pruneWorkspaceTrees, refreshWorkspaceScripts, refreshWorkspaceApis
+  listAllWorkspaces, deleteWorkspace, listClusters, readableBytes, pruneWorkspaceTrees, refreshWorkspaceScripts, refreshWorkspaceApis,
+  tagWorkspaceArtifacts
 } from '../api';
 import {
   listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp, workspaceInstance
@@ -346,6 +347,10 @@ export default {
         // And the scripts a workspace's pod mounts at /seed, which its namespace holds and a
         // re-render therefore takes with it. See ensureWorkspaceScripts.
         refreshWorkspaceScripts(workspaces.map((w) => ({ name: w.name, cluster: w.cluster || 'local' }))).catch(() => {});
+        // And what each workspace's artifacts are about, written beside the files themselves so
+        // that a recording made this morning is filed under its issue whether or not the
+        // workspace that made it still exists. See tagWorkspaceArtifacts.
+        tagWorkspaceArtifacts(workspaces.map((w) => ({ name: w.name }))).catch(() => {});
         // And the API on any cluster other than this one that has a workspace on it: it is only
         // written when a workspace is created there, so without this a downstream cluster runs
         // whatever server it was first given. See refreshWorkspaceApis.

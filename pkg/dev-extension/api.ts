@@ -18,6 +18,7 @@
 import { WORKSPACE_VUE_CONFIG, WORKSPACE_CONFIG_MOUNT } from './workspace-config';
 import { WORKSPACE_API_SERVER } from './workspace-api';
 import { AGENT_SEED } from './agent-seed.generated';
+import { numbersIn } from './artifact-subjects.mjs';
 import {
   createWorkspaceInstance, deleteWorkspaceInstance, appById
 } from './apps';
@@ -1523,6 +1524,15 @@ export async function removeWorkspaceTree(workspace: string): Promise<void> {
 export const ARTIFACT_SETS_DIR = '/workspaces/.artifacts';
 
 /**
+ * The tag beside a set of artifacts: what made them and what they are about.
+ *
+ * Written into a live workspace's artifacts directory as soon as there is one, so the files are
+ * self-describing from the moment they exist - and carried into the kept set by the hardlink, so
+ * deleting the workspace does not lose what the evidence was for.
+ */
+export const ARTIFACT_TAG = '.set.json';
+
+/**
  * Keep a workspace's artifacts, so deleting the workspace does not delete the evidence.
  *
  * Everything an agent recorded while it worked - the recordings, the screenshots, the reports
@@ -1548,6 +1558,7 @@ export async function captureWorkspaceArtifacts(workspace: string): Promise<bool
     return false;
   }
   const at = new Date().toISOString();
+  const { issue, pr } = numbersIn(name);
   const script = [
     `src="/workspaces/${ name }/artifacts"`,
     `dst="${ ARTIFACT_SETS_DIR }/${ name }"`,
@@ -1555,8 +1566,10 @@ export async function captureWorkspaceArtifacts(workspace: string): Promise<bool
     `[ -d "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ] || { echo NO-ARTIFACTS; exit 0; }`,
     `mkdir -p "$dst" 2>/dev/null`,
     `cp -al "$src/." "$dst/" 2>/dev/null || cp -a "$src/." "$dst/" 2>/dev/null || true`,
-    // What it was and when, so the page does not have to infer either from the directory name.
-    `printf '%s' '{"workspace":"${ name }","capturedAt":"${ at }"}' > "$dst/.set.json" 2>/dev/null`,
+    // What it was, what it was about, and when it was kept - so nothing downstream has to infer
+    // any of it from the directory's name. A tag the workspace already carried is kept and only
+    // dated: it may say what no name could, and this is not the place to overrule it.
+    `if [ -f "$dst/.set.json" ]; then sed -i 's/}[[:space:]]*$/,"capturedAt":"${ at }"}/' "$dst/.set.json" 2>/dev/null; else printf '%s' '{"workspace":"${ name }","issue":${ issue },"pr":${ pr },"capturedAt":"${ at }"}' > "$dst/.set.json" 2>/dev/null; fi`,
     `echo CAPTURED`,
   ].join('; ');
 
@@ -1574,14 +1587,6 @@ export interface ArtifactSet {
   pr: number;
   /** Paths inside the set, newest first. */
   files: string[];
-}
-
-/** The issue and PR a workspace name is about: `lte-issue-14904` is issue 14904. */
-function numbersIn(name: string): { issue: number; pr: number } {
-  return {
-    issue: Number(/(?:^|-)issue-(\d+)(?:-|$)/.exec(name)?.[1]) || 0,
-    pr:    Number(/(?:^|-)pr-(\d+)(?:-|$)/.exec(name)?.[1]) || 0,
-  };
 }
 
 /**
@@ -1629,6 +1634,120 @@ export async function listArtifactSets(): Promise<ArtifactSet[]> {
   }
 
   return sets.sort((a, b) => (b.capturedAt || '').localeCompare(a.capturedAt || ''));
+}
+
+/** One place artifacts come from: a workspace still running, or a set kept from a deleted one. */
+export interface ArtifactSource {
+  /** The workspace that made them, which for a kept set is also the set's name. */
+  workspace: string;
+  /** Whether the workspace is still there, which decides how its files are addressed. */
+  live: boolean;
+  /** What it is about, from the tag beside the files or from the name. 0 when neither says. */
+  issue: number;
+  pr: number;
+  /** When it was kept, or when its newest file was written. */
+  at: string;
+  /** How many files there are, which is all this listing needs to say about them. */
+  files: number;
+}
+
+/**
+ * Everywhere artifacts are, in one read: every live workspace and every kept set.
+ *
+ * The page used to list only kept sets, which meant the evidence an agent was producing right now
+ * was not on it - a workspace had to be deleted before its recordings appeared, which is exactly
+ * backwards. Both are directories of the same shape with the same tag beside them, so both are
+ * read by one walk here and told apart by `live`.
+ *
+ * One exec, because this is a listing: a page opening on thirty workspaces should cost one round
+ * trip, not thirty.
+ */
+export async function listArtifactSources(): Promise<ArtifactSource[]> {
+  const script = [
+    `for d in /workspaces/*/artifacts "${ ARTIFACT_SETS_DIR }"/*; do`,
+    `  [ -d "$d" ] || continue`,
+    `  n=$(ls -A "$d" 2>/dev/null | grep -v '^${ ARTIFACT_TAG }$' | head -1)`,
+    // A workspace with an artifacts directory and nothing in it is not a source of anything.
+    `  [ -n "$n" ] || continue`,
+    `  case "$d" in`,
+    `    ${ ARTIFACT_SETS_DIR }/*) echo "SRC kept $(basename "$d")" ;;`,
+    `    *) echo "SRC live $(basename "$(dirname "$d")")" ;;`,
+    `  esac`,
+    `  cat "$d/${ ARTIFACT_TAG }" 2>/dev/null | tr -d '\\n'; echo`,
+    `  echo "COUNT $(find "$d" -type f ! -name '${ ARTIFACT_TAG }' 2>/dev/null | wc -l)"`,
+    // The newest file's time, which is when this source last had anything to say.
+    `  echo "NEWEST $(find "$d" -type f ! -name '${ ARTIFACT_TAG }' -printf '%T@\\n' 2>/dev/null | sort -rn | head -1)"`,
+    `done`,
+  ].join('\n');
+  const out = await inAgentPod(script).catch(() => '');
+  const sources: ArtifactSource[] = [];
+  let current: ArtifactSource | null = null;
+
+  for (const raw of out.split('\n')) {
+    const line = raw.trim();
+    const head = /^SRC (live|kept) (\S+)$/.exec(line);
+
+    if (head) {
+      current = {
+        workspace: head[2], live: head[1] === 'live', ...numbersIn(head[2]), at: '', files: 0,
+      };
+      sources.push(current);
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    const count = /^COUNT (\d+)$/.exec(line);
+    const newest = /^NEWEST ([\d.]+)$/.exec(line);
+
+    if (count) {
+      current.files = Number(count[1]);
+    } else if (newest) {
+      // Only when the tag did not already say when: a kept set's capture time is the better
+      // answer, because its files keep the modification times they had in the workspace.
+      current.at = current.at || new Date(Number(newest[1]) * 1000).toISOString();
+    } else if (line.startsWith('{')) {
+      try {
+        const tag = JSON.parse(line);
+
+        // The tag outranks the name: it can say what no name could.
+        current.issue = Number(tag.issue) || current.issue;
+        current.pr = Number(tag.pr) || current.pr;
+        current.at = tag.capturedAt || current.at;
+      } catch { /* a set written before there were tags; its name still says what it is about */ }
+    }
+  }
+
+  return sources;
+}
+
+/**
+ * Tag every workspace's artifacts with what they are about, where that has not been done.
+ *
+ * Written once per workspace and never rewritten: the tag is the first thing that knew, and
+ * anything that edits it afterwards - a person pointing a differently-named workspace at an issue
+ * - has a better claim to it than this sweep does. Called from the same place the seed scripts are
+ * refreshed, because it is the same kind of thing: making a workspace say what it is.
+ */
+export async function tagWorkspaceArtifacts(workspaces: { name: string }[]): Promise<void> {
+  const named = (workspaces || []).map(({ name }) => safeName(name)).filter(Boolean);
+
+  if (!named.length) {
+    return;
+  }
+  const at = new Date().toISOString();
+  // One line per workspace, each naming its own directory rather than setting a variable: a
+  // `d=... [ -d "$d" ]` on one line is a prefix assignment, so the test reads the value from
+  // before it and nothing is ever tagged.
+  const script = named.map((name) => {
+    const { issue, pr } = numbersIn(name);
+    const dir = `/workspaces/${ name }/artifacts`;
+    const tag = `${ dir }/${ ARTIFACT_TAG }`;
+
+    return `[ -d "${ dir }" ] && [ ! -f "${ tag }" ] && printf '%s' '{"workspace":"${ name }","issue":${ issue },"pr":${ pr },"taggedAt":"${ at }"}' > "${ tag }" 2>/dev/null; true`;
+  }).join('\n');
+
+  await inAgentPod(script).catch(() => '');
 }
 
 /**

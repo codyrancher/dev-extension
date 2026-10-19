@@ -1,21 +1,30 @@
 <script>
 /**
- * What the work produced, after the work is gone.
+ * What the work produced, by what it was about.
  *
- * A workspace is disposable; the recordings, screenshots and reports an agent made while it
- * worked are not. Those are hardlinked aside before a tree is deleted (captureWorkspaceArtifacts
- * in api.ts), and this is where the kept sets are read - each one against the issue it came
- * from, so a set is evidence about something rather than a directory of files.
+ * An agent that reproduces an issue leaves a recording, a screenshot, a script and a note behind,
+ * and those files are the answer to a question somebody asked - issue 19517, pull request 19152.
+ * This page used to be a list of directories instead: one card per *kept set*, which is what a
+ * workspace leaves when it is deleted. So the evidence for one issue was split across however
+ * many workspaces had worked on it, and a workspace still running showed nothing at all, because
+ * nothing had been kept yet. Two agents could be recording an issue right now and this page would
+ * say "nothing kept yet".
  *
- * Nothing here expires. A set lingers until somebody presses Delete on this page, which is the
- * only thing in the product that removes one.
+ * So the card is the subject, and under it is every source of artifacts about that subject: the
+ * workspaces still running, then the sets kept from the ones that are gone. Which issue a source
+ * is about comes from the tag written beside its files (ARTIFACT_TAG in api.ts) and falls back to
+ * the workspace's name - see artifact-subjects.mjs.
+ *
+ * Nothing here expires. A kept set lingers until somebody presses Delete on this page, which is
+ * the only thing in the product that removes one; a live workspace's artifacts go when it does.
  */
 import { Banner } from '@components/Banner';
 import DevPage from '../components/DevPage.vue';
 import { RcButton } from '@components/RcButton';
 import ArtifactViewer from '../components/pr/ArtifactViewer.vue';
 import WorkspaceArtifacts from '../components/WorkspaceArtifacts.vue';
-import { listArtifactSets, removeArtifactSet } from '../api';
+import { listArtifactSources, removeArtifactSet } from '../api';
+import { groupSubjects } from '../artifact-subjects.mjs';
 import { issuesByNumber } from '../github';
 import { DEFAULT_REPO } from '../reviews';
 import { ago, readArtifacts } from '../workspace-rail';
@@ -29,21 +38,30 @@ export default {
 
   data() {
     return {
-      sets:    [],
+      sources: [],
       issues:  {},
       loading: true,
       error:   '',
       /** The file being looked at, in the viewer. */
       shot:    null,
       /**
-       * The grouped listing per set, as the workspace column reads it.
+       * The grouped listing per source, as the workspace column reads it.
        *
-       * Keyed by set, loaded when the page loads. The same shape WorkspaceArtifacts takes, from
-       * the same `readArtifacts` - so a kept set is drawn by the component that already draws a
-       * live workspace's artifacts rather than by a second gallery that looks nearly like it.
+       * Keyed the way the media API addresses it - a live workspace by its name, a kept set by
+       * `set:<name>` - so one key serves both the listing and the file URLs. The same shape
+       * WorkspaceArtifacts takes, from the same `readArtifacts`, so artifacts are drawn here by
+       * the component that already draws them inside a workspace rather than by a second gallery
+       * that looks nearly like it.
        */
       listing: {},
     };
+  },
+
+  computed: {
+    /** The sources gathered by what they are evidence about, newest subject first. */
+    subjects() {
+      return groupSubjects(this.sources);
+    },
   },
 
   mounted() {
@@ -53,15 +71,20 @@ export default {
   methods: {
     ago,
 
-    /** The issue a set is about, once it has been read. */
-    issueFor(set) {
-      return set.issue ? this.issues[`${ DEFAULT_REPO }#${ set.issue }`] || null : null;
+    /** How the media API addresses this source's files. */
+    keyOf(source) {
+      return source.live ? source.workspace : `set:${ source.workspace }`;
+    },
+
+    /** The issue a subject is about, once it has been read. */
+    issueFor(subject) {
+      return subject.issue ? this.issues[`${ DEFAULT_REPO }#${ subject.issue }`] || null : null;
     },
 
     /** What the gallery asks to open: the same `{ src, name }` the workspace column emits. */
-    look(set, file) {
+    look(source, file) {
       this.shot = {
-        src: file.url, name: file.label || file.path, caption: `${ set.workspace } · ${ file.path }`, path: file.path,
+        src: file.url, name: file.label || file.path, caption: `${ source.workspace } · ${ file.path }`, path: file.path,
       };
     },
 
@@ -70,20 +93,20 @@ export default {
       this.loading = true;
 
       try {
-        this.sets = await listArtifactSets();
+        this.sources = await listArtifactSources();
 
-        // One query for every issue the sets name, not one per set. An issue that cannot be
-        // read leaves its set listed with no issue line, which is still a set worth keeping.
-        const numbers = [...new Set(this.sets.map((set) => set.issue).filter(Boolean))];
+        // One query for every issue the subjects name, not one per card. An issue that cannot be
+        // read leaves its card with the number and no title, which is still evidence about it.
+        const numbers = [...new Set(this.subjects.map(({ issue }) => issue).filter(Boolean))];
         const found = numbers.length ? await issuesByNumber(DEFAULT_REPO, numbers).catch(() => []) : [];
 
         this.issues = Object.fromEntries(found.map((issue) => [issue.key, issue]));
 
-        // One listing per set, in parallel. A set whose files cannot be read keeps its row and
-        // its issue line - the set still exists, and saying nothing about it would read as empty.
-        const listings = await Promise.all(this.sets.map((set) => readArtifacts(`set:${ set.workspace }`)
-          .then((got) => [set.workspace, got])
-          .catch(() => [set.workspace, { groups: [], total: 0, truncated: false }])));
+        // One listing per source, in parallel. A source whose files cannot be read keeps its row
+        // - it still exists, and saying nothing about it would read as empty.
+        const listings = await Promise.all(this.sources.map((source) => readArtifacts(this.keyOf(source))
+          .then((got) => [this.keyOf(source), got])
+          .catch(() => [this.keyOf(source), { groups: [], total: 0, truncated: false }])));
 
         this.listing = Object.fromEntries(listings);
       } catch (e) {
@@ -93,15 +116,15 @@ export default {
       }
     },
 
-    async remove(set) {
+    async remove(source) {
       // Asked for, because this is the only thing that deletes evidence and it cannot be undone.
-      if (!confirm(`Delete the artifacts kept from ${ set.workspace }? This cannot be undone.`)) { // eslint-disable-line no-alert
+      if (!confirm(`Delete the artifacts kept from ${ source.workspace }? This cannot be undone.`)) { // eslint-disable-line no-alert
         return;
       }
 
       try {
-        await removeArtifactSet(set.workspace);
-        this.sets = this.sets.filter((one) => one.workspace !== set.workspace);
+        await removeArtifactSet(source.workspace);
+        this.sources = this.sources.filter((one) => one.live || one.workspace !== source.workspace);
       } catch (e) {
         this.error = e.message || String(e);
       }
@@ -113,8 +136,18 @@ export default {
 <template>
   <DevPage
     title="Artifacts"
-    lede="What the work produced, kept after the workspace was deleted."
+    lede="What the work produced, by what it was about - from the workspaces still running and the sets kept after they were deleted."
   >
+    <template #actions>
+      <RcButton
+        variant="secondary"
+        size="small"
+        :disabled="loading"
+        @click="refresh"
+      >
+        Refresh
+      </RcButton>
+    </template>
 
     <Banner
       v-if="error"
@@ -128,91 +161,109 @@ export default {
       class="dev-artifacts__loading"
     >
       <i class="icon icon-spinner icon-spin" />
-      <span>Reading what has been kept&hellip;</span>
+      <span>Reading what the work has produced&hellip;</span>
     </div>
 
     <Banner
-      v-else-if="!sets.length"
+      v-else-if="!subjects.length"
       color="info"
     >
-      Nothing kept yet. A set is written when a workspace with artifacts is deleted, and stays
-      until it is deleted here.
+      Nothing yet. Artifacts appear here as soon as an agent writes any, and the set kept from a
+      deleted workspace stays until it is deleted here.
     </Banner>
 
     <div
-      v-for="set in sets"
+      v-for="subject in subjects"
       v-else
-      :key="set.workspace"
-      class="dev-artifacts__set"
+      :key="subject.key"
+      class="dev-artifacts__subject"
     >
       <header class="dev-artifacts__head">
         <div class="dev-artifacts__what">
-          <code class="dev-artifacts__ws">{{ set.workspace }}</code>
-
-          <!-- What it is evidence about, and whether that is still open. -->
+          <!-- What this is evidence about, and whether that is still open. -->
           <a
-            v-if="issueFor(set)"
-            :href="issueFor(set).url"
+            v-if="issueFor(subject)"
+            :href="issueFor(subject).url"
             target="_blank"
             rel="noopener noreferrer"
             class="dev-artifacts__issue"
-          >#{{ set.issue }} {{ issueFor(set).title }}</a>
+          >#{{ subject.issue }} {{ issueFor(subject).title }}</a>
           <span
-            v-else-if="set.issue"
+            v-else-if="subject.kind === 'issue'"
             class="dev-artifacts__issue text-muted"
-          >#{{ set.issue }}</span>
+          >#{{ subject.issue }}</span>
           <span
-            v-else-if="set.pr"
+            v-else-if="subject.kind === 'pr'"
             class="dev-artifacts__issue text-muted"
-          >PR #{{ set.pr }}</span>
+          >PR #{{ subject.pr }}</span>
+          <!-- Neither: the workspace is the subject, so it is named rather than filed under "other". -->
+          <code
+            v-else
+            class="dev-artifacts__ws"
+          >{{ subject.sources[0].workspace }}</code>
 
           <span
-            v-if="issueFor(set)"
+            v-if="issueFor(subject)"
             class="dev-artifacts__state"
-            :class="`dev-artifacts__state--${ (issueFor(set).state || '').toLowerCase() }`"
-          >{{ (issueFor(set).state || '').toLowerCase() || 'unknown' }}</span>
+            :class="`dev-artifacts__state--${ (issueFor(subject).state || '').toLowerCase() }`"
+          >{{ (issueFor(subject).state || '').toLowerCase() || 'unknown' }}</span>
         </div>
 
         <div class="dev-artifacts__meta">
-          <span
-            v-if="set.capturedAt"
-            :title="set.capturedAt"
-          >kept {{ ago(set.capturedAt) }}</span>
-          <span>{{ set.files.length }} file{{ set.files.length === 1 ? '' : 's' }}</span>
-          <RcButton
-            variant="link"
-            size="small"
-            @click="toggle(set)"
-          >
-            {{ open[set.workspace] ? 'Hide files' : 'All files' }}
-          </RcButton>
-          <RcButton
-            variant="secondary"
-            size="small"
-            @click="remove(set)"
-          >
-            Delete
-          </RcButton>
+          <span v-if="subject.at">{{ ago(new Date(subject.at).toISOString()) }}</span>
+          <span>{{ subject.files }} file{{ subject.files === 1 ? '' : 's' }}</span>
         </div>
       </header>
 
       <!--
-        The same gallery the workspace column draws, from the same listing.
-        Grouped by directory, with the counts, sizes and ages it already shows - rather than a
-        second gallery that looks nearly like it and drifts from it.
+        One block per source. A workspace still running is said to be, because its artifacts are
+        still arriving and it can be opened; a kept set is all there will ever be of that
+        workspace, and is the only thing here that can be deleted.
       -->
-      <WorkspaceArtifacts
-        v-if="listing[set.workspace] && listing[set.workspace].groups.length"
-        :workspace="`set:${ set.workspace }`"
-        :groups="listing[set.workspace].groups"
-        :total="listing[set.workspace].total"
-        :truncated="listing[set.workspace].truncated"
-        @open="look(set, $event)"
-      />
-      <p
-        v-else
-        class="text-muted dev-artifacts__none"
-      >Nothing in this set could be read. The files are kept; the API may be restarting.</p>
+      <section
+        v-for="source in subject.sources"
+        :key="keyOf(source)"
+        class="dev-artifacts__source"
+      >
+        <div class="dev-artifacts__from">
+          <span
+            class="dev-artifacts__tag"
+            :class="source.live ? 'dev-artifacts__tag--live' : 'dev-artifacts__tag--kept'"
+          >{{ source.live ? 'live' : 'kept' }}</span>
+          <code class="dev-artifacts__ws">{{ source.workspace }}</code>
+          <span
+            v-if="source.at"
+            class="dev-artifacts__when"
+          >{{ source.live ? 'last wrote' : 'kept' }} {{ ago(new Date(source.at).toISOString()) }}</span>
+          <RcButton
+            v-if="!source.live"
+            variant="secondary"
+            size="small"
+            @click="remove(source)"
+          >
+            Delete
+          </RcButton>
+        </div>
+
+        <!--
+          The same gallery the workspace column draws, from the same listing: grouped by
+          directory, with the counts, sizes and ages it already shows.
+        -->
+        <WorkspaceArtifacts
+          v-if="listing[keyOf(source)] && listing[keyOf(source)].groups.length"
+          :workspace="keyOf(source)"
+          :groups="listing[keyOf(source)].groups"
+          :total="listing[keyOf(source)].total"
+          :truncated="listing[keyOf(source)].truncated"
+          @open="look(source, $event)"
+        />
+        <p
+          v-else
+          class="text-muted dev-artifacts__none"
+        >
+          Nothing here could be read. The files are there; the API may be restarting.
+        </p>
+      </section>
     </div>
 
     <Teleport to="body">
@@ -230,68 +281,94 @@ export default {
 
 <style lang="scss" scoped>
 .dev-artifacts__loading {
-  display: flex;
+  display:     flex;
   align-items: center;
-  gap: 8px;
-  padding: 24px 0;
-  color: var(--muted);
+  gap:         var(--dev-space-3);
+  padding:     var(--dev-space-5) 0;
+  color:       var(--muted);
 }
 
-.dev-artifacts__set {
-  margin: 0 0 16px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--box-bg);
+.dev-artifacts__subject {
+  margin:        0 0 var(--dev-space-4);
+  padding:       var(--dev-space-4);
+  border:        1px solid var(--border);
+  border-radius: var(--border-radius);
+  background:    var(--box-bg);
 }
 
 .dev-artifacts__head {
-  display: flex;
-  align-items: center;
+  display:         flex;
+  align-items:     center;
   justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap:             var(--dev-space-4);
+  flex-wrap:       wrap;
 }
 
 .dev-artifacts__what {
-  display: flex;
+  display:     flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
+  gap:         var(--dev-space-3);
+  flex-wrap:   wrap;
+  min-width:   0;
 }
 
 .dev-artifacts__ws { font-size: 12px; }
 
 .dev-artifacts__issue {
-  overflow: hidden;
+  overflow:      hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 48ch;
+  white-space:   nowrap;
+  max-width:     48ch;
 }
 
 .dev-artifacts__state {
-  padding: 0 8px;
+  padding:       0 var(--dev-space-3);
   border-radius: 10px;
-  font-size: 11px;
-  background: var(--default);
-  color: var(--muted);
+  font-size:     11px;
+  background:    var(--default);
+  color:         var(--muted);
 }
 
 .dev-artifacts__state--open   { background: var(--success-banner-bg); color: var(--success); }
 .dev-artifacts__state--closed { background: var(--default); color: var(--muted); }
 
 .dev-artifacts__meta {
-  display: flex;
+  display:     flex;
   align-items: center;
-  gap: 12px;
-  color: var(--muted);
-  font-size: 12px;
+  gap:         var(--dev-space-4);
+  color:       var(--muted);
+  font-size:   12px;
 }
 
+/* A subject with one source needs no rule above it; several read as a stack without one. */
+.dev-artifacts__source + .dev-artifacts__source {
+  margin-top:  var(--dev-space-4);
+  padding-top: var(--dev-space-4);
+  border-top:  1px solid var(--border);
+}
 
+.dev-artifacts__from {
+  display:     flex;
+  align-items: center;
+  gap:         var(--dev-space-3);
+  margin:      var(--dev-space-3) 0 var(--dev-space-2);
+  flex-wrap:   wrap;
+}
+
+/* Which kind of source this is, said in the one place a person is deciding whether to trust that
+   it is complete: work still arriving, or work that is over. */
+.dev-artifacts__tag {
+  padding:        0 var(--dev-space-2);
+  border-radius:  3px;
+  font-size:      10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.dev-artifacts__tag--live { background: var(--success-banner-bg); color: var(--success); }
+.dev-artifacts__tag--kept { background: var(--default); color: var(--muted); }
+
+.dev-artifacts__when { color: var(--muted); font-size: 12px; }
 
 .dev-artifacts__none { font-size: 12px; }
-
-
 </style>
