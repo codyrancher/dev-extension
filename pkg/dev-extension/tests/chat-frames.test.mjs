@@ -12,7 +12,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { frameNonce, markers, readFrames } from '../chat-frames.mjs';
+import {
+  frameNonce, markers, readFrames, spliceEarlier
+} from '../chat-frames.mjs';
 
 /** What the script writes, with the markers it would write them with. */
 function wire(nonce, {
@@ -145,4 +147,52 @@ test('a nonce is fresh, and is a single shell word', () => {
     seen.add(nonce);
   }
   assert.equal(seen.size, 50);
+});
+
+test('paging back joins the seam rather than losing the line it fell on', () => {
+  const whole = [
+    '{"n":1,"text":"the first line of the conversation"}',
+    '{"n":2,"text":"the line the first read was cut inside"}',
+    '{"n":3,"text":"the first line the view held"}',
+  ].join('\n');
+  // The first read took the last 60 bytes: a line cut in the middle, then whole ones. That is
+  // what the view holds, partial first line and all.
+  const cut = whole.length - 60;
+  const held = whole.slice(cut).split('\n');
+
+  assert.throws(() => JSON.parse(held[0]), 'the held set starts mid-line');
+
+  // Paging back reads everything before that byte.
+  const joined = spliceEarlier(held, whole.slice(0, cut), 0);
+
+  assert.deepEqual(joined, whole.split('\n'));
+  // Every line parses now, including the one the cut fell on.
+  assert.deepEqual(joined.map((l) => JSON.parse(l).n), [1, 2, 3]);
+});
+
+test('a page that is itself cut leaves its first line for the page before it', () => {
+  const whole = ['{"n":1,"text":"aaaaaaaaaaaaaaaaaaaaaaa"}', '{"n":2,"text":"bbbbbbbbbbbbbb"}', '{"n":3,"text":"cc"}'].join('\n');
+  const second = 48;
+  const held = whole.slice(second).split('\n');
+  // One page back, still not at the start: from > 0, so this page's own first line is a tail.
+  const once = spliceEarlier(held, whole.slice(12, second), 12);
+
+  assert.throws(() => JSON.parse(once[0]), 'still partial at the front');
+  // And the page before it completes that line, so nothing was lost on the way.
+  const twice = spliceEarlier(once, whole.slice(0, 12), 0);
+
+  assert.deepEqual(twice, whole.split('\n'));
+});
+
+test('an earlier page is framed like any other read', () => {
+  const nonce = 'b0b0b0b0';
+  const m = markers(nonce);
+  const out = `${ m.from } 0\n${ m.back }\n{"n":1}\n{"n":2}\n${ m.endBack }`;
+  const frame = readFrames(out, nonce);
+
+  assert.equal(frame.from, 0);
+  assert.equal(frame.back, '{"n":1}\n{"n":2}');
+  // And a read that carried no page says so, rather than looking like an empty one.
+  assert.equal(readFrames(`${ m.from } 512`, nonce).back, null);
+  assert.equal(readFrames(`${ m.from } 512`, nonce).from, 512);
 });

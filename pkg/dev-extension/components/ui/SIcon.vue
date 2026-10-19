@@ -43,7 +43,8 @@ const FONT = {
   trash:        'icon-trash',
   upload:       'icon-upload',
   download:     'icon-download',
-  filter:       'icon-filter',
+  // The font has no funnel; search is the nearest thing in it that means "narrow this list".
+  filter:       'icon-search',
   code:         'icon-code',
   lock:         'icon-lock',
   user:         'icon-user',

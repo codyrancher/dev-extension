@@ -49,8 +49,11 @@ export function markers(nonce) {
   return {
     file:   tag('FILE'),
     size:   tag('SIZE'),
+    from:   tag('FROM'),
     data:   tag('DATA'),
     endData: tag('ENDDATA'),
+    back:   tag('BACK'),
+    endBack: tag('ENDBACK'),
     ssize:  tag('SSIZE'),
     sdata:  tag('SDATA'),
     endSData: tag('ENDSDATA'),
@@ -77,11 +80,16 @@ function between(out, open, close) {
   return end < from ? null : out.slice(from, end);
 }
 
-/** The number on a `@@SIZE-<nonce> 1234` line, or 0. */
-function value(out, marker) {
+/** The number on a `@@SIZE-<nonce> 1234` line, or null when the line is not there. */
+function number(out, marker) {
   const found = new RegExp(`${ marker } (\\d+)`).exec(out);
 
-  return found ? Number(found[1]) : 0;
+  return found ? Number(found[1]) : null;
+}
+
+/** The same, for the fields where an absent line and a zero mean the same thing. */
+function value(out, marker) {
+  return number(out, marker) ?? 0;
 }
 
 /**
@@ -118,7 +126,13 @@ export function readFrames(out, nonce) {
   return {
     file:  fileLine ? fileLine[1].trim() : '',
     size:  value(out, m.size),
+    // Which byte the forward read started at, which is where the view's history begins. null when
+    // this read carried no transcript at all; 0 means the whole of it is held and there is no
+    // earlier page to ask for.
+    from:  number(out, m.from),
     data:  between(out, m.data, m.endData),
+    // An earlier page, asked for by hand: the bytes before the view's first line. See spliceEarlier.
+    back:  between(out, m.back, m.endBack),
     ssize: value(out, m.ssize),
     sdata: between(out, m.sdata, m.endSData),
     tails: readTails(out, m),
@@ -151,4 +165,31 @@ function readTails(out, m) {
 
     return { id: id || '', at: Number(mtime) || 0, raw: rest.join('\n').trim() };
   }).filter(({ id }) => id);
+}
+
+
+/**
+ * An earlier page of transcript, joined onto the front of the lines already held.
+ *
+ * The first read of a long transcript takes only its last megabyte, because the whole of one
+ * does not arrive through a single exec. That made everything before it unreachable: a
+ * conversation that has run for a day opened on its last hour with no way back. Paging back is
+ * reading the megabyte before `start` - and the whole of the difficulty is the seam.
+ *
+ * A read cut at a byte lands mid-line at both ends. The held set's first line is the tail of a
+ * line whose head is at the end of this page, so the two are joined here rather than both being
+ * dropped; and this page's own first line is a tail in the same way, left partial for the page
+ * before it to complete. parseTranscript drops a line it cannot parse, so a partial line at the
+ * front costs the view nothing until the page that heals it arrives.
+ *
+ * Returns the new lines; `from` becomes the caller's new start.
+ */
+export function spliceEarlier(held, chunk, from) {
+  const parts = chunk.split('\n');
+  // The last piece has no newline after it: it is the head of the line the held set starts with.
+  const head = parts.pop() ?? '';
+  const first = held.length ? head + held[0] : head;
+  const earlier = from > 0 ? parts : parts.filter((l) => l.trim());
+
+  return [...earlier, first, ...held.slice(1)].filter((l) => l.trim());
 }

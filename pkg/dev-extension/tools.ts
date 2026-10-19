@@ -56,7 +56,7 @@ export const TOOLS: Record<ToolKind, { label: string; icon: string; what: string
   },
   storybook: {
     label:       'Storybook',
-    icon:        'icon-book',
+    icon:        'icon-document',
     what:        'The component gallery built from this checkout, for a change to a component in isolation.',
     multitenant: true,
   },

@@ -30,6 +30,7 @@ import {
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import { ensureCertControllers } from '../certs';
 import DevList from './DevList.vue';
+import ToolMark from './ToolMark.vue';
 import DevDialog from './DevDialog.vue';
 import NavRow from './NavRow.vue';
 import NavHead from './NavHead.vue';
@@ -133,7 +134,7 @@ export default {
   name: 'DevSidebar',
 
   components: {
-    DevList, Stack, Row, ClaudeLogo, DevDialog, RancherPicker, NavRow, NavHead, HoverCard
+    DevList, Stack, Row, ClaudeLogo, ToolMark, DevDialog, RancherPicker, NavRow, NavHead, HoverCard
   },
 
   mixins: [hoverCard],
@@ -179,9 +180,10 @@ export default {
         {
           label: 'Artifacts', icon: 'icon-folder', route: ARTIFACTS_ROUTE
         },
-        // What can be attached to a piece of work, and what is attached now.
+        // What can be attached to a piece of work, and what is attached now. A mark of its own,
+        // because Rancher's font has no tool in it - see ToolMark.
         {
-          label: 'Tools', icon: 'icon-wrench', route: TOOLS_ROUTE
+          label: 'Tools', mark: 'ToolMark', route: TOOLS_ROUTE
         },
         {
           label: 'Agents', logo: true, route: AGENTS_ROUTE
@@ -905,6 +907,12 @@ export default {
             v-if="global.logo"
             class="icon"
           />
+          <!-- A drawing of this product's own, for the entries Rancher's icon font cannot name. -->
+          <component
+            :is="global.mark"
+            v-else-if="global.mark"
+            class="icon dev-sidebar__globals-mark"
+          />
           <i
             v-else
             class="icon"
@@ -1149,6 +1157,8 @@ export default {
 
     // The sparkle is a drawing rather than a glyph, so it takes its size from here rather than
     // from the icon font.
+
+    &__globals-mark { font-size: 17px; }
 
     &__globals-label { display: none; }
 

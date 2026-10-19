@@ -37,7 +37,7 @@ import {
 import {
   deriveState, parseEntries, reconcilePending, unwrapPasted,
 } from './chat-state.mjs';
-import { frameNonce, readFrames } from './chat-frames.mjs';
+import { frameNonce, readFrames, spliceEarlier } from './chat-frames.mjs';
 import {
   modelAliases, flagChoices, parseMcpList, currentModel, isSafeOptionValue, type McpServer,
 } from './chat-options';
@@ -352,6 +352,20 @@ export function useConversation(source: () => ConversationSource) {
   const lines = ref<string[]>([]);
   const remainder = ref('');
   const offset = ref(0);
+  /**
+   * The byte the held history begins at, and whether there is anything before it.
+   *
+   * The first read of a long transcript takes only its last megabyte - the whole of one does not
+   * arrive through a single exec - which used to be the end of it: everything earlier was simply
+   * unreachable, so a conversation that had run all day opened on its last hour and that was all
+   * there was. `loadEarlier` reads the page before this, and `historyStart` walks back to 0.
+   */
+  const historyStart = ref(0);
+  const loadingEarlier = ref(false);
+  /** Goes up when a page was joined onto the front, for a host that keeps its place while it is. */
+  const prepended = ref(0);
+  /** Nothing earlier to ask for: the view holds the transcript from its first byte. */
+  const atStart = computed(() => historyStart.value <= 0);
   const file = ref('');
   const entries = ref<any[]>([]);
   const hook = ref<any>(null);
@@ -655,6 +669,46 @@ export function useConversation(source: () => ConversationSource) {
 
   /* ── Reading ──────────────────────────────────────────────────────────────────────────────── */
 
+  /**
+   * The page of transcript before the one being held, joined onto the front.
+   *
+   * A quarter of a megabyte at a time rather than the megabyte the first read takes: this one is
+   * asked for by a person who is waiting for it, and four quick steps back read better than one
+   * slow one. The seam between the pages - both ends of a byte-cut read land mid-line - is
+   * spliceEarlier's, and tested there.
+   */
+  async function loadEarlier(): Promise<void> {
+    if (loadingEarlier.value || atStart.value || !file.value) {
+      return;
+    }
+    loadingEarlier.value = true;
+    try {
+      const nonce = frameNonce();
+      const out = await run([
+        `FILE=${ JSON.stringify(file.value) }; START=${ historyStart.value }; CAP=262144; N=${ JSON.stringify(nonce) }`,
+        'FROM=$((START - CAP)); [ "$FROM" -lt 0 ] && FROM=0',
+        'echo "@@FROM-$N $FROM"',
+        'if [ -f "$FILE" ] && [ "$START" -gt "$FROM" ]; then echo "@@BACK-$N"; tail -c +$((FROM+1)) "$FILE" | head -c $((START - FROM)); echo; echo "@@ENDBACK-$N"; fi',
+      ].join('\n'));
+      const frame = readFrames(out, nonce);
+
+      if (frame.back === null || frame.from === null) {
+        return;
+      }
+      lines.value = spliceEarlier(lines.value, frame.back, frame.from);
+      historyStart.value = frame.from;
+      const all = lines.value.concat(remainder.value.trim() ? [remainder.value] : []);
+
+      messages.value = parseTranscript(all);
+      entries.value = parseEntries(all);
+      prepended.value++;
+    } catch (e: any) {
+      error.value = e.message || String(e);
+    } finally {
+      loadingEarlier.value = false;
+    }
+  }
+
   /** Everything the transcript, the pane, the hook and the subagents say, in one round trip. */
   async function poll(): Promise<void> {
     if (!enabled.value || polling.value || (typeof document !== 'undefined' && document.hidden)) {
@@ -687,7 +741,7 @@ export function useConversation(source: () => ConversationSource) {
         // not this conversation's.
         'if [ -n "$uuid" ] && [ -f "$PROJ/$uuid.jsonl" ]; then FILE="$PROJ/$uuid.jsonl"; elif [ "$(ls "$PROJ"/*.jsonl 2>/dev/null | wc -l)" -eq 1 ]; then FILE=$(ls "$PROJ"/*.jsonl 2>/dev/null | head -1); fi',
         'echo "@@FILE-$N $FILE"',
-        'if [ -n "$FILE" ] && [ -f "$FILE" ]; then size=$(wc -c < "$FILE"); echo "@@SIZE-$N $size"; FROM=$OFF; if [ "$OFF" -eq 0 ] && [ "$size" -gt "$CAP" ]; then FROM=$((size - CAP)); fi; if [ "$size" -gt "$FROM" ]; then echo "@@DATA-$N"; tail -c +$((FROM+1)) "$FILE"; echo; echo "@@ENDDATA-$N"; fi; fi',
+        'if [ -n "$FILE" ] && [ -f "$FILE" ]; then size=$(wc -c < "$FILE"); echo "@@SIZE-$N $size"; FROM=$OFF; if [ "$OFF" -eq 0 ] && [ "$size" -gt "$CAP" ]; then FROM=$((size - CAP)); fi; echo "@@FROM-$N $FROM"; if [ "$size" -gt "$FROM" ]; then echo "@@DATA-$N"; tail -c +$((FROM+1)) "$FILE"; echo; echo "@@ENDDATA-$N"; fi; fi',
         // The subagent's transcript sits beside the session's, in a directory named for it. Capped the same way.
         'if [ -n "$SUB" ] && [ -n "$FILE" ]; then SF="${FILE%.jsonl}/subagents/agent-$SUB.jsonl"; if [ -f "$SF" ]; then ssize=$(wc -c < "$SF"); echo "@@SSIZE-$N $ssize"; SFROM=$SOFF; if [ "$SOFF" -eq 0 ] && [ "$ssize" -gt "$CAP" ]; then SFROM=$((ssize - CAP)); fi; if [ "$ssize" -gt "$SFROM" ]; then echo "@@SDATA-$N"; tail -c +$((SFROM+1)) "$SF"; echo; echo "@@ENDSDATA-$N"; fi; fi; fi',
         // Every subagent's last line and when it was written, for the list of them.
@@ -734,6 +788,7 @@ export function useConversation(source: () => ConversationSource) {
       // A different transcript (the id file appeared, or the conversation restarted): start over.
       file.value = frame.file;
       offset.value = 0;
+      historyStart.value = 0;
       lines.value = [];
       remainder.value = '';
       messages.value = [];
@@ -742,6 +797,12 @@ export function useConversation(source: () => ConversationSource) {
         // The data in this answer is from OFF, which was for the old file; ask again from 0.
         return;
       }
+    }
+
+    // Where this read began is where the held history begins - but only on the read that began
+    // it. Every read after that one is a delta from the end and says nothing about the front.
+    if (frame.from !== null && !offset.value) {
+      historyStart.value = frame.from;
     }
 
     if (frame.data !== null) {
@@ -1614,6 +1675,9 @@ export function useConversation(source: () => ConversationSource) {
     workingAgents,
     grew,
     restarted,
+    atStart,
+    loadingEarlier,
+    prepended,
     // What is on its way
     draft,
     draftMarked,
@@ -1644,6 +1708,7 @@ export function useConversation(source: () => ConversationSource) {
     keys,
     say,
     poll,
+    loadEarlier,
     start,
     show,
     send,

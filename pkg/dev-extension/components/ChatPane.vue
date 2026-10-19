@@ -265,6 +265,25 @@ export default {
       }
     },
 
+    /**
+     * An earlier page, with the reader left where they were.
+     *
+     * The log grows at the top, so holding `scrollTop` would move the text under the reader by
+     * the height of what arrived. What is held instead is the distance from the bottom, which is
+     * the one measure a prepend does not change.
+     */
+    async readEarlier() {
+      const el = this.$refs.log;
+      const fromBottom = el ? el.scrollHeight - el.scrollTop : 0;
+
+      await this.loadEarlier();
+      this.$nextTick(() => {
+        if (el) {
+          el.scrollTop = el.scrollHeight - fromBottom;
+        }
+      });
+    },
+
     onScroll() {
       const el = this.$refs.log;
 
@@ -711,6 +730,25 @@ export default {
       @click="onLogClick"
       @scroll.passive="onScroll"
     >
+      <!--
+        Everything before what is held. The first read of a long transcript takes only its last
+        megabyte, so this is how the rest of it is reached - and the scroll is anchored across the
+        join, because a page that arrives by moving the reader somewhere else is not readable.
+      -->
+      <div
+        v-if="file && !atStart"
+        class="mc-chat__earlier"
+      >
+        <button
+          type="button"
+          class="mc-chat__link"
+          :disabled="loadingEarlier"
+          data-testid="chat-earlier"
+          @click="readEarlier"
+        >
+          {{ loadingEarlier ? 'Reading earlier…' : 'Load earlier' }}
+        </button>
+      </div>
       <p
         v-if="!messages.length && !error"
         class="mc-chat__empty"
@@ -1623,6 +1661,14 @@ export default {
     // line of the conversation is read through a pair of buttons.
     padding:    32px var(--mc-chat-gutter) 8px;
     min-height: 0;
+  }
+
+  // The way back through a transcript longer than one read: a line of its own at the top of the
+  // log, so it is where a person looks when they have scrolled as far as there is.
+  &__earlier {
+    display:         flex;
+    justify-content: center;
+    padding:         var(--dev-space-2) 0 var(--dev-space-3);
   }
 
   &__empty { color: var(--muted); }
