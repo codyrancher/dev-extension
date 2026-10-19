@@ -3100,7 +3100,7 @@ function nameError(name) {
   return /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name) ? '' : 'A name can hold lowercase letters, numbers and dashes, and has to start and end with one of the first two.';
 }
 
-async function makeWorkspace(name, appId, cluster = 'local') {
+async function makeWorkspace(name, appId, cluster = 'local', owner = '') {
   const known = await apps();
 
   if (!known.some((app) => app.id === appId)) {
@@ -3119,7 +3119,15 @@ async function makeWorkspace(name, appId, cluster = 'local') {
   const created = await create(INSTANCES, {
     apiVersion: 'appsplus.io/v1alpha1',
     kind:       'AppInstance',
-    metadata:   { name, labels: { [LABEL_WORKSPACE]: name, [LABEL_APP]: appId, [LABEL_CLUSTER]: cluster } },
+    // Whose it is, when it can be known: an agent making a workspace from inside its own is
+    // making it for the person whose workspace that is. Without this, a workspace made through
+    // this route would be the one kind nothing can resolve a credential for - see ownerOfCaller.
+    metadata:   {
+      name,
+      labels: {
+        [LABEL_WORKSPACE]: name, [LABEL_APP]: appId, [LABEL_CLUSTER]: cluster, ...(owner ? { 'dev.rancher.io/owner': owner } : {}),
+      },
+    },
     spec:       {
       app: appId, namespace, targets: [{ clusterName: cluster }], values: { hostCluster: cluster }, provisionCluster: { enabled: false },
     },
@@ -4570,7 +4578,7 @@ const routes = [
       })),
     };
   }],
-  ['POST', /^\/workspaces$/, async(m, url, body) => {
+  ['POST', /^\/workspaces$/, async(m, url, body, req) => {
     const problem = nameError(body.name);
 
     if (problem) {
@@ -4580,7 +4588,7 @@ const routes = [
     // The leased App by default, which is what new work gets everywhere else: this is the path
     // with no browser behind it - an agent, a script - and it used to be the one place that
     // still made an all-in-one workspace without being asked to.
-    return makeWorkspace(body.name, body.app || body.template || LTE_APP, body.cluster || 'local');
+    return makeWorkspace(body.name, body.app || body.template || LTE_APP, body.cluster || 'local', await ownerOfCaller(req));
   }],
 
   /*
