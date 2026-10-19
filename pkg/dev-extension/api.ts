@@ -1576,66 +1576,6 @@ export async function captureWorkspaceArtifacts(workspace: string): Promise<bool
   return (await inAgentPod(script).catch(() => '')).includes('CAPTURED');
 }
 
-/** One kept set of artifacts: what produced it, when it was kept, and what is in it. */
-export interface ArtifactSet {
-  /** The workspace it came from, which is also the set's name. */
-  workspace: string;
-  capturedAt: string;
-  /** The issue the work was about, from the workspace's name, or 0. */
-  issue: number;
-  /** The pull request, from the workspace's name, or 0. */
-  pr: number;
-  /** Paths inside the set, newest first. */
-  files: string[];
-}
-
-/**
- * Every kept set, newest file first within each.
- *
- * One exec rather than one per set: this is a listing, and a page that opens with forty of
- * them should cost one round trip. The marker file is read as part of the same walk.
- */
-export async function listArtifactSets(): Promise<ArtifactSet[]> {
-  const script = [
-    `[ -d "${ ARTIFACT_SETS_DIR }" ] || { echo NONE; exit 0; }`,
-    `for d in "${ ARTIFACT_SETS_DIR }"/*; do`,
-    `  [ -d "$d" ] || continue`,
-    `  echo "SET $(basename "$d")"`,
-    `  cat "$d/.set.json" 2>/dev/null | tr -d '\\n'; echo`,
-    `  find "$d" -type f ! -name '.set.json' -printf '%T@ %P\\n' 2>/dev/null | sort -rn | head -500 | sed 's/^[0-9.]* /FILE /'`,
-    `done`,
-  ].join('\n');
-  const out = await inAgentPod(script).catch(() => '');
-  const sets: ArtifactSet[] = [];
-  let current: ArtifactSet | null = null;
-
-  for (const line of out.split('\n')) {
-    const name = /^SET (\S+)$/.exec(line.trim());
-
-    if (name) {
-      current = {
-        workspace: name[1], capturedAt: '', ...numbersIn(name[1]), files: [],
-      };
-      sets.push(current);
-      continue;
-    }
-    if (!current) {
-      continue;
-    }
-    const file = /^FILE (.+)$/.exec(line.trim());
-
-    if (file) {
-      current.files.push(file[1]);
-    } else if (line.trim().startsWith('{')) {
-      try {
-        current.capturedAt = JSON.parse(line.trim())?.capturedAt || '';
-      } catch { /* a set written by an older version has no marker; its files still list */ }
-    }
-  }
-
-  return sets.sort((a, b) => (b.capturedAt || '').localeCompare(a.capturedAt || ''));
-}
-
 /** One place artifacts come from: a workspace still running, or a set kept from a deleted one. */
 export interface ArtifactSource {
   /** The workspace that made them, which for a kept set is also the set's name. */
@@ -3664,11 +3604,6 @@ export function workspaceMediaListUrl(name: string): string {
 
 export function workspaceMediaFileUrl(name: string, relPath: string): string {
   return `${ workspaceMediaBase(name) }/file?path=${ encodeURIComponent(relPath) }`;
-}
-
-/** One file of a kept set. The `set:` name is what `workspaceMediaBase` turns into the route. */
-export function artifactSetFileUrl(name: string, relPath: string): string {
-  return workspaceMediaFileUrl(`set:${ name }`, relPath);
 }
 
 /**
