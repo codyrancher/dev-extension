@@ -48,6 +48,13 @@ export const GLOBAL_SECRETS: DevSecret[] = [
     group:    'access',
   },
   {
+    key:      'JIRA_TOKEN',
+    label:    'Jira personal access token',
+    help:     'A personal access token from jira.suse.com (Profile -> Personal Access Tokens). My Work\'s Jira tab reads the SURE queues with it. jira.suse.com is Jira Server, so this is a bearer token on its own - not the email:token pair Jira Cloud uses.',
+    required: false,
+    group:    'access',
+  },
+  {
     key:      'RANCHER_PASSWORD',
     label:    'Rancher login password',
     help:     'The password for the local "admin" account. A workspace opens on a fresh Rancher login, and the Verify tools copy this to your clipboard so you can sign in.',
