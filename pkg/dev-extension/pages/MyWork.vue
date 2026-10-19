@@ -14,7 +14,7 @@ import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import AsyncButton from '@shell/components/AsyncButton';
-import { myWork, setIssueStatus } from '../github';
+import { myWork, setIssueStatus, ALL_SECTIONS } from '../github';
 import {
   startPrReview, startIssueFix, startAlertFix, startDependabotReview, startCiTriage, mergePr, approveAndMerge,
   rerunFailedJobs, dependabotData, dependabotReviews, refreshDependabotReview, closeDependabotReview, listConversations
@@ -228,6 +228,8 @@ const STATUS_HUE = {
  */
 const cache = {
   work: null, apps: [], workspaces: [], alerts: [], botPrs: [], botReviews: {}, alertError: '', alertsLoaded: false, queue: [], queueLoaded: false,
+  /** Which `myWork` sections have actually been read, since `work` is now filled a part at a time. */
+  sections: {},
 };
 
 // How often the open page re-reads GitHub. Slower than the sidebar's five seconds: My Work is a
@@ -238,18 +240,27 @@ const REFRESH_MS = 30000;
 /**
  * The two tabs, and the two questions they answer.
  *
- * `daily` is your own work: what you wrote, what is waiting on you, what you were assigned.
+ * `reviewing`, `mine` and `issues` were one `daily` tab holding all three tables. They came from
+ * one GraphQL request, so opening the page paid for all of them however few you looked at -
+ * measured against the live account at three rows each, the two pull request searches are 104KB
+ * and 55KB and the assigned issues are 1.6KB. The issues table was waiting on a hundred and
+ * sixty kilobytes of pull requests it does not show.
+ *
  * `interrupt-duty` is the rota - advisories to fix and Dependabot bumps to wave through - which
  * somebody goes through when it is their turn. They are named here because the name is in the
  * address, so a link to one is a link somebody can send.
  */
-const TABS = ['daily', 'interrupt-duty', 'priority'];
+const TABS = ['reviewing', 'mine', 'issues', 'interrupt-duty', 'priority'];
+
+/** The tabs that are one `myWork` section each, by the section they read. See WorkSection. */
+const SECTION_TABS = ['reviewing', 'mine', 'issues'];
 
 /** The tab an address names, or the default when it names none or one that does not exist. */
 function tabFromHash(hash) {
   const asked = String(hash || '').replace(/^#/, '');
 
-  return TABS.includes(asked) ? asked : 'daily';
+  // `daily` is what the three section tabs used to be called; a link to it opens the first of them.
+  return TABS.includes(asked) ? asked : 'reviewing';
 }
 
 export default {
@@ -338,6 +349,14 @@ export default {
        * `data` so the first fetch already knows which half of GitHub to read.
        */
       tab:        tabFromHash(this.$route?.hash),
+      /**
+       * Which sections of `work` have been read.
+       *
+       * `work` is no longer all-or-nothing: each tab fills its own part of it, so "is it loaded"
+       * is a question per section rather than per page, and a tab that has not been opened is
+       * not an empty table - it is one that has not been asked for.
+       */
+      sections:   { ...cache.sections },
       /** The one queue: everything waiting on this person, most pressing first. See priority.ts. */
       queue:        cache.queue,
       loadingQueue: false,
@@ -359,6 +378,7 @@ export default {
     busy() {
       return { 'interrupt-duty': this.loadingAlerts, priority: this.loadingQueue }[this.tab] ?? this.loading;
     },
+
 
     // The two tables' own last columns: when you last reviewed something that is waiting on
     // you, and when anyone last said anything on something you wrote. Computed rather than
@@ -552,7 +572,12 @@ export default {
 
         return;
       }
-      await (this.tab === 'interrupt-duty' ? this.refreshInterrupt() : this.refreshDaily());
+      if (this.tab === 'interrupt-duty') {
+        await this.refreshInterrupt();
+
+        return;
+      }
+      await this.refreshSection(this.tab);
     },
 
     /**
@@ -569,8 +594,15 @@ export default {
 
       try {
         const workspaces = await listAllWorkspaces().catch(() => []);
+        // Whatever the section tabs have not already read. `work` is filled a part at a time
+        // now, so "we have it" is per section - asking for all of them because one is cached
+        // would pay for the other three again, and trusting a partial `work` would rank the
+        // queue against tables that were never read.
+        const missing = ALL_SECTIONS.filter((section) => !this.sections[section]);
         const [work, dependabot, cached] = await Promise.all([
-          this.work ? Promise.resolve(this.work) : myWork().catch(() => null),
+          missing.length
+            ? myWork(undefined, undefined, missing).then((got) => ({ ...(this.work || {}), ...got })).catch(() => this.work)
+            : Promise.resolve(this.work),
           this.alertsLoaded ? Promise.resolve(null) : dependabotData(this.repo).catch(() => null),
           workspaceStatuses(workspaces).catch(() => ({})),
         ]);
@@ -591,6 +623,12 @@ export default {
         if (work) {
           this.work = work;
           cache.work = work;
+          // This tab reads every section, so the three that are one tab each are now loaded:
+          // recorded, or opening one of them afterwards would read it a second time.
+          if (missing.length) {
+            this.sections = { ...this.sections, ...Object.fromEntries(missing.map((section) => [section, true])) };
+            cache.sections = this.sections;
+          }
         }
         if (dependabot) {
           this.alerts = (dependabot.groups || []).map((group) => ({ ...group, key: group.slug }));
@@ -627,13 +665,23 @@ export default {
     },
 
     /** What you wrote and what is waiting on you: one GraphQL request, plus the workspace names. */
-    async refreshDaily() {
+    /**
+     * One tab's own table, and nothing else.
+     *
+     * This read all three at once, because all three came out of one GraphQL request. They are
+     * independent searches, so a tab now asks for its own section and merges it into `work` -
+     * which means `work` is partial, and `sections` is what says which parts of it are real.
+     *
+     * The three local reads beside it stay shared: they are in-cluster lists, they are needed by
+     * every tab, and they are what `repo` is derived from.
+     */
+    async refreshSection(section) {
       this.error = '';
       this.loading = true;
 
       try {
         const [work, workspaces, apps, prefs] = await Promise.all([
-          myWork(),
+          myWork(undefined, undefined, [section]),
           listAllWorkspaces().catch(() => []),
           listApps(this.$store).catch(() => []),
           readPrefs().catch(() => ({ hiddenApps: [] })),
@@ -641,12 +689,16 @@ export default {
 
         this.apps = shownApps(apps, prefs);
 
-        this.work = work;
+        // Merged, not replaced: the other tabs' sections are still in here, and `login` and
+        // `projectStatusError` come back with whichever section was asked for.
+        this.work = { ...(this.work || {}), ...work };
+        this.sections = { ...this.sections, [section]: true };
         this.workspaces = workspaces.map((workspace) => workspace.name);
 
         // Kept for the next visit; see the module-level cache.
         cache.apps = this.apps;
         cache.work = this.work;
+        cache.sections = this.sections;
         cache.workspaces = this.workspaces;
       } catch (e) {
         // Keep the last-good results on screen rather than blanking the page: a poll that fails,
@@ -709,7 +761,7 @@ export default {
 
       this.tab = tabFromHash(name);
 
-      const loaded = { daily: !!this.work, 'interrupt-duty': this.alertsLoaded, priority: this.queueLoaded }[this.tab];
+      const loaded = { 'interrupt-duty': this.alertsLoaded, priority: this.queueLoaded }[this.tab] ?? !!this.sections[this.tab];
 
       if (!loaded) {
         await this.refresh();
@@ -1255,18 +1307,18 @@ export default {
       @changed="onTab"
     >
       <Tab
-        name="daily"
-        label="Daily"
-        :weight="2"
+        name="reviewing"
+        label="Reviewing"
+        :weight="4"
       >
         <div
-          v-if="loading && !work"
+          v-if="loading && !sections.reviewing"
           class="dev-my-work__loading"
         >
           <i class="icon icon-spinner icon-spin" />
-          <span>Reading your pull requests and issues from GitHub&hellip;</span>
+          <span>Reading the pull requests waiting on you&hellip;</span>
         </div>
-        <template v-if="work">
+        <template v-if="sections.reviewing">
           <h3>PRs with me as a reviewer <span class="dev-my-work__count">{{ reviewing.length }}</span></h3>
           <SortableTable
             :headers="reviewHeaders"
@@ -1370,6 +1422,22 @@ export default {
             </template>
           </SortableTable>
 
+        </template>
+      </Tab>
+
+      <Tab
+        name="mine"
+        label="My PRs"
+        :weight="3"
+      >
+        <div
+          v-if="loading && !sections.mine"
+          class="dev-my-work__loading"
+        >
+          <i class="icon icon-spinner icon-spin" />
+          <span>Reading the pull requests you wrote&hellip;</span>
+        </div>
+        <template v-if="sections.mine">
           <h3>My PRs <span class="dev-my-work__count">{{ mine.length }}</span></h3>
           <SortableTable
             :headers="mineHeaders"
@@ -1489,6 +1557,22 @@ export default {
               <span :class="row.commentedAt ? '' : 'text-muted'">{{ ago(row.commentedAt) }}</span>
             </template>
           </SortableTable>
+        </template>
+      </Tab>
+
+      <Tab
+        name="issues"
+        label="Issues"
+        :weight="2"
+      >
+        <div
+          v-if="loading && !sections.issues"
+          class="dev-my-work__loading"
+        >
+          <i class="icon icon-spinner icon-spin" />
+          <span>Reading the issues assigned to you&hellip;</span>
+        </div>
+        <template v-if="sections.issues">
           <h3>Issues assigned to me <span class="dev-my-work__count">{{ work.issues.length }}</span></h3>
           <!--
             A blank Status column is almost always a missing scope rather than an untriaged board,

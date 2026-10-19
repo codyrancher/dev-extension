@@ -232,7 +232,7 @@ export interface GithubWork {
  * the login is in the same response: asking for the last few and picking yours out here costs one
  * round trip fewer than asking twice.
  */
-const QUERY_FOR = (scope: string) => `
+const PR_FRAGMENT = `
   fragment pr on PullRequest {
     number
     title
@@ -293,17 +293,37 @@ const QUERY_FOR = (scope: string) => `
     }
   }
 
-  query MyWork($page: Int!, $issues: Int!) {
-    viewer { login }
+`;
+
+/**
+ * The searches, one per section of My Work, so a page can ask for the section it is showing.
+ *
+ * This was one query with all five searches in it, and every visit paid for all of them: 364KB
+ * and about eight seconds, most of it for tables nobody had opened. They are independent - no
+ * search here needs a result from another - so the only thing making them one request was that
+ * they were written as one.
+ *
+ * `reviewing` is two searches and stays one section: GitHub asking you for a review and a pull
+ * request you have already reviewed are the same table, and splitting them would mean two
+ * loading states for one list.
+ */
+export type WorkSection = 'reviewing' | 'mine' | 'issues' | 'unassigned';
+
+export const ALL_SECTIONS: WorkSection[] = ['reviewing', 'mine', 'issues', 'unassigned'];
+
+const SEARCHES: Record<WorkSection, (scope: string) => string> = {
+  reviewing: (scope) => `
     reviewing: search(query: "${ scope }is:open is:pr review-requested:@me archived:false", type: ISSUE, first: $page) {
       nodes { ...pr }
     }
     reviewed: search(query: "${ scope }is:open is:pr reviewed-by:@me archived:false", type: ISSUE, first: $page) {
       nodes { ...pr }
-    }
+    }`,
+  mine: (scope) => `
     mine: search(query: "${ scope }is:open is:pr author:@me archived:false", type: ISSUE, first: $page) {
       nodes { ...pr }
-    }
+    }`,
+  unassigned: () => `
     # Work nobody has picked up, in the repository this product is for.
     #
     # Scoped to the repository, unlike the searches above: assignee:@me means something across
@@ -325,7 +345,8 @@ const QUERY_FOR = (scope: string) => `
           milestone { title url dueOn }
         }
       }
-    }
+    }`,
+  issues: (scope) => `
     issues: search(query: "${ scope }is:open is:issue assignee:@me archived:false", type: ISSUE, first: $issues) {
       nodes {
         ... on Issue {
@@ -355,9 +376,32 @@ const QUERY_FOR = (scope: string) => `
           }
         }
       }
-    }
+    }`,
+};
+
+/** Which sections need the `pr` fragment, and which need the issue page size. */
+const PR_SECTIONS = new Set<WorkSection>(['reviewing', 'mine']);
+const ISSUE_SECTIONS = new Set<WorkSection>(['unassigned', 'issues']);
+
+/**
+ * The query for one set of sections.
+ *
+ * The fragment and both variables are conditional, and have to be: GraphQL rejects a query that
+ * declares a variable it never uses or defines a fragment it never spreads, so asking for the
+ * issues alone with `$page` still declared is not a slower query, it is an error.
+ */
+function queryFor(scope: string, sections: WorkSection[]): string {
+  const wantsPr = sections.some((s) => PR_SECTIONS.has(s));
+  const vars = [wantsPr ? '$page: Int!' : '', sections.some((s) => ISSUE_SECTIONS.has(s)) ? '$issues: Int!' : '']
+    .filter(Boolean).join(', ');
+
+  return `${ wantsPr ? PR_FRAGMENT : '' }
+  query MyWork${ vars ? `(${ vars })` : '' } {
+    viewer { login }
+${ sections.map((s) => SEARCHES[s](scope)).join('\n') }
   }
 `;
+}
 
 interface Json { [key: string]: any }
 
@@ -727,7 +771,7 @@ export async function rerunFailed(repo: string, run: GithubRun): Promise<void> {
  * review-requested the moment you review it, and one you have reviewed and are waiting on is
  * still yours to watch. GitHub has no single query for the union, so it is two and a merge.
  */
-export async function myWork(repos?: string[], without?: string[]): Promise<GithubWork> {
+export async function myWork(repos?: string[], without?: string[], sections: WorkSection[] = ALL_SECTIONS): Promise<GithubWork> {
   const token = await githubToken();
 
   if (!token) {
@@ -745,9 +789,13 @@ export async function myWork(repos?: string[], without?: string[]): Promise<Gith
    * Its rejection is handled where it is awaited, below. The idle `catch` here is only so a
    * failure that lands before then is not an unhandled rejection.
    */
-  const statusesSoon = issueStatuses(repos, without);
+  //
+  // Only when the assigned issues are being asked for: it is the one section the board status
+  // annotates, and on a page showing only the pull requests it was a second GraphQL round trip
+  // whose answer nothing read.
+  const statusesSoon = sections.includes('issues') ? issueStatuses(repos, without) : null;
 
-  statusesSoon.catch(() => undefined);
+  statusesSoon?.catch(() => undefined);
 
   const response = await fetch(ENDPOINT, {
     method:  'POST',
@@ -755,7 +803,14 @@ export async function myWork(repos?: string[], without?: string[]): Promise<Gith
       authorization:  `Bearer ${ token }`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ query: QUERY_FOR(repoScope(repos, without)), variables: { page: PAGE, issues: ISSUE_PAGE } }),
+    body: JSON.stringify({
+      query:     queryFor(repoScope(repos, without), sections),
+      // Only the variables the query declares; GraphQL rejects one it does not.
+      variables: {
+        ...(sections.some((s) => PR_SECTIONS.has(s)) ? { page: PAGE } : {}),
+        ...(sections.some((s) => ISSUE_SECTIONS.has(s)) ? { issues: ISSUE_PAGE } : {}),
+      },
+    }),
   });
 
   if (!response.ok) {
@@ -801,7 +856,7 @@ export async function myWork(repos?: string[], without?: string[]): Promise<Gith
     const statuses = await statusesSoon;
 
     issues.forEach((issue) => {
-      issue.projectStatus = statuses.get(issue.key) || null;
+      issue.projectStatus = statuses?.get(issue.key) || null;
     });
   } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
     projectStatusError = /read:project/.test(String(e?.message))
