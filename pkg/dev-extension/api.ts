@@ -1513,7 +1513,137 @@ export async function removeWorkspaceTree(workspace: string): Promise<void> {
   if (!name) {
     return;
   }
+  // Kept before the tree goes, never instead of it: a capture that fails must not leave a
+  // workspace undeleted, which is why this is caught here rather than inside.
+  await captureWorkspaceArtifacts(name).catch(() => undefined);
   await inAgentPod(`rm -rf "/workspaces/${ name }" 2>/dev/null; echo TREE-GONE`).catch(() => '');
+}
+
+/** Where captured sets live: hidden, so nothing that lists workspaces ever sees one. */
+export const ARTIFACT_SETS_DIR = '/workspaces/.artifacts';
+
+/**
+ * Keep a workspace's artifacts, so deleting the workspace does not delete the evidence.
+ *
+ * Everything an agent recorded while it worked - the recordings, the screenshots, the reports
+ * it attached to review comments - lives under the tree, and `rm -rf` took all of it. The
+ * workspace is disposable by design and about to become more so; what it produced is not, and
+ * a review comment pointing at a recording nobody can open any more is worse than one with no
+ * recording at all.
+ *
+ * Hardlinks (`cp -al`), which is what makes this free: the same inodes gain a second name
+ * under `.artifacts`, so the copy costs no disk and no time, and the `rm -rf` below removes
+ * only the tree's link. A filesystem that refuses the link falls back to a real copy.
+ *
+ * `.artifacts` rather than `artifacts`, because a leading dot is how this node already says
+ * "mine, not a workspace's" - `.shared` is the precedent - and `safeName` rejects it, so the
+ * pruner cannot mistake a set for a tree and delete it.
+ *
+ * A set lingers until somebody removes it; nothing here ever does.
+ */
+export async function captureWorkspaceArtifacts(workspace: string): Promise<boolean> {
+  const name = safeName(workspace);
+
+  if (!name) {
+    return false;
+  }
+  const at = new Date().toISOString();
+  const script = [
+    `src="/workspaces/${ name }/artifacts"`,
+    `dst="${ ARTIFACT_SETS_DIR }/${ name }"`,
+    // Nothing recorded is not a failure, and must not leave an empty set behind.
+    `[ -d "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ] || { echo NO-ARTIFACTS; exit 0; }`,
+    `mkdir -p "$dst" 2>/dev/null`,
+    `cp -al "$src/." "$dst/" 2>/dev/null || cp -a "$src/." "$dst/" 2>/dev/null || true`,
+    // What it was and when, so the page does not have to infer either from the directory name.
+    `printf '%s' '{"workspace":"${ name }","capturedAt":"${ at }"}' > "$dst/.set.json" 2>/dev/null`,
+    `echo CAPTURED`,
+  ].join('; ');
+
+  return (await inAgentPod(script).catch(() => '')).includes('CAPTURED');
+}
+
+/** One kept set of artifacts: what produced it, when it was kept, and what is in it. */
+export interface ArtifactSet {
+  /** The workspace it came from, which is also the set's name. */
+  workspace: string;
+  capturedAt: string;
+  /** The issue the work was about, from the workspace's name, or 0. */
+  issue: number;
+  /** The pull request, from the workspace's name, or 0. */
+  pr: number;
+  /** Paths inside the set, newest first. */
+  files: string[];
+}
+
+/** The issue and PR a workspace name is about: `lte-issue-14904` is issue 14904. */
+function numbersIn(name: string): { issue: number; pr: number } {
+  return {
+    issue: Number(/(?:^|-)issue-(\d+)(?:-|$)/.exec(name)?.[1]) || 0,
+    pr:    Number(/(?:^|-)pr-(\d+)(?:-|$)/.exec(name)?.[1]) || 0,
+  };
+}
+
+/**
+ * Every kept set, newest file first within each.
+ *
+ * One exec rather than one per set: this is a listing, and a page that opens with forty of
+ * them should cost one round trip. The marker file is read as part of the same walk.
+ */
+export async function listArtifactSets(): Promise<ArtifactSet[]> {
+  const script = [
+    `[ -d "${ ARTIFACT_SETS_DIR }" ] || { echo NONE; exit 0; }`,
+    `for d in "${ ARTIFACT_SETS_DIR }"/*; do`,
+    `  [ -d "$d" ] || continue`,
+    `  echo "SET $(basename "$d")"`,
+    `  cat "$d/.set.json" 2>/dev/null | tr -d '\\n'; echo`,
+    `  find "$d" -type f ! -name '.set.json' -printf '%T@ %P\\n' 2>/dev/null | sort -rn | head -500 | sed 's/^[0-9.]* /FILE /'`,
+    `done`,
+  ].join('\n');
+  const out = await inAgentPod(script).catch(() => '');
+  const sets: ArtifactSet[] = [];
+  let current: ArtifactSet | null = null;
+
+  for (const line of out.split('\n')) {
+    const name = /^SET (\S+)$/.exec(line.trim());
+
+    if (name) {
+      current = {
+        workspace: name[1], capturedAt: '', ...numbersIn(name[1]), files: [],
+      };
+      sets.push(current);
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    const file = /^FILE (.+)$/.exec(line.trim());
+
+    if (file) {
+      current.files.push(file[1]);
+    } else if (line.trim().startsWith('{')) {
+      try {
+        current.capturedAt = JSON.parse(line.trim())?.capturedAt || '';
+      } catch { /* a set written by an older version has no marker; its files still list */ }
+    }
+  }
+
+  return sets.sort((a, b) => (b.capturedAt || '').localeCompare(a.capturedAt || ''));
+}
+
+/**
+ * Remove one kept set. The only thing that ever deletes one, and it is a person pressing it.
+ *
+ * The whole point of a set is that it outlives the workspace, so nothing reclaims these on a
+ * schedule: a set is evidence until somebody says it is not.
+ */
+export async function removeArtifactSet(workspace: string): Promise<void> {
+  const name = safeName(workspace);
+
+  if (!name) {
+    return;
+  }
+  await inAgentPod(`rm -rf "${ ARTIFACT_SETS_DIR }/${ name }" 2>/dev/null; echo SET-GONE`).catch(() => '');
 }
 
 /**
