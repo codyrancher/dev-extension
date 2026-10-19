@@ -1335,6 +1335,85 @@ const OPENAPI = {
         responses: { 200: { description: 'Deleted.' }, 404: { description: 'No workspace of that name.' } },
       },
     },
+    /*
+     * Tools. The most-used routes in this API and the least described, which is the wrong way
+     * round: `bin/tools` inside a workspace calls exactly these, and so does the Tools page.
+     */
+    '/tools': {
+      get: {
+        operationId: 'listTools',
+        summary:     'Every tool running anywhere, with its workspace, lease and address.',
+        responses:   { 200: { description: 'The tools.' } },
+      },
+    },
+    '/tools/{workspace}': {
+      get: {
+        operationId: 'workspaceTools',
+        summary:     'All four kinds for one workspace, running or not.',
+        description: [
+          'Always four entries, because "not running" is an answer: a page offering to start one',
+          'needs to know it is not there. The shared browser is always present and is not leased.',
+        ].join('\n'),
+        responses: { 200: { description: 'The tools for that workspace.' } },
+      },
+    },
+    '/tools/{workspace}/{kind}': {
+      get: {
+        operationId: 'toolState',
+        summary:     'One tool: whether it is there, whether it answers, and when its lease ends.',
+        responses:   { 200: { description: 'The tool.' } },
+      },
+      post: {
+        operationId: 'startTool',
+        summary:     'Start a tool, or renew the one already there.',
+        description: [
+          'Idempotent on purpose: asking twice gets the tool and a fresh lease rather than an',
+          'error about a namespace that exists.',
+          '',
+          'Three of the four kinds are per workspace and can be started freely. `browser` is one',
+          'Chromium every workspace drives - two agents in it at once are in each other\'s tabs,',
+          'so take a context of your own rather than the default one.',
+        ].join('\n'),
+        responses: { 200: { description: 'The tool, with its lease.' } },
+      },
+      delete: {
+        operationId: 'stopTool',
+        summary:     'Release a tool now rather than at the end of its lease.',
+        responses:   { 200: { description: 'Released. The shared browser answers without releasing anything.' } },
+      },
+    },
+    '/tools/{workspace}/{kind}/renew': {
+      post: {
+        operationId: 'renewTool',
+        summary:     'Extend the lease on a tool that is already running.',
+        responses:   { 200: { description: 'The tool, with the new lease.' } },
+      },
+    },
+    '/tools/{workspace}/{kind}/logs': {
+      get: {
+        operationId: 'toolLogs',
+        summary:     'What the tool\'s pod has printed. `?tail=` to bound it.',
+        responses:   { 200: { description: 'The log.' } },
+      },
+    },
+    '/skills': {
+      get: {
+        operationId: 'listSkills',
+        summary:     'Every skill the agents run on, and which are overridden here.',
+        description: [
+          'Read from the skills repository and cached; an override is a copy kept in this',
+          'cluster that wins over the repository\'s. See skills.ts.',
+        ].join('\n'),
+        responses: { 200: { description: 'The skills.' } },
+      },
+    },
+    '/prompts': {
+      get: {
+        operationId: 'readPrompts',
+        summary:     'The prompt templates the cards and the rail send, with any local edits.',
+        responses:   { 200: { description: 'The prompts.' } },
+      },
+    },
     '/conversations': {
       get: {
         operationId: 'readConversations',
