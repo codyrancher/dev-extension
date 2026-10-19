@@ -159,3 +159,62 @@ export function toolState(tool: Tool): string {
 
   return tool.ready ? (leaseLeft(tool) || 'running') : (tool.detail || 'starting');
 }
+
+/*
+ * The workspace itself, as a thing that can be taken and given back.
+ *
+ * Items 3 and 4 of the backlog, and the reading taken: a workspace is not a fifth `ToolKind` -
+ * it is what tools attach *to*, and making it one would mean `tools start workspace` inside a
+ * workspace, which is a sentence with no meaning. What they ask for is that a workspace be as
+ * disposable as a tool and reachable the same way, so it is described and driven here beside
+ * them rather than folded into them.
+ *
+ * `POST /workspaces` existed already; `DELETE /workspaces/<name>` is new, and without it a
+ * workspace an agent made for one job stayed until a person deleted it from a page. Both halves
+ * are in the API's own OpenAPI now, for the reason that spec exists: an agent given a URL and a
+ * sentence invents the rest.
+ *
+ * Existing workspaces are untouched by any of this - item 3.1. Nothing above changes how one is
+ * made from the page, what it contains, or when it is swept.
+ */
+export interface WorkspaceAsTool {
+  label: string;
+  what: string;
+  /** Every workspace is its own; two pieces of work never share one. */
+  multitenant: true;
+  openapi: string;
+}
+
+export const WORKSPACE_TOOL: WorkspaceAsTool = {
+  label: 'Workspace',
+  what:  'A unit of work: a checkout with its dependencies and its command-line tools, with nothing running until a tool is attached. An agent can take one and give it back.',
+  multitenant: true,
+  openapi: [
+    'openapi: 3.1.0',
+    'info:',
+    '  title: Workspaces',
+    '  version: "1"',
+    '  description: Take a workspace, and give it back. Served by dev-api.',
+    'paths:',
+    '  /workspaces:',
+    '    get:',
+    '      summary: Every workspace, with its namespace, App and cluster.',
+    '    post:',
+    '      summary: Make one. Defaults to the leased App; the answer says the name it ended up with.',
+    '  /workspaces/{name}:',
+    '    delete:',
+    '      summary: Remove one. Releases its tools; the sweep keeps its artifacts and then takes the tree.',
+  ].join('\n'),
+};
+
+/** Make a workspace. The leased App unless something says otherwise. */
+export async function createWorkspaceTool(name: string, app?: string, cluster = 'local'): Promise<{ name: string; namespace: string }> {
+  return devApi('/workspaces', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, app, cluster }),
+  });
+}
+
+/** Give it back. Releases the tools; the artifacts are kept by the sweep that takes the tree. */
+export async function removeWorkspaceTool(name: string): Promise<void> {
+  await devApi(`/workspaces/${ encodeURIComponent(name) }`, { method: 'DELETE' });
+}

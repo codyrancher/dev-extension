@@ -1292,6 +1292,49 @@ const OPENAPI = {
     description: 'Workspaces, the harness my-work routes, and the Focus deck\'s cards. Served by the dev-api Deployment in dev-system.',
   },
   paths: {
+    /*
+     * Workspaces, described because an agent can now take one and give it back.
+     *
+     * `tools` has had a rule and a CLI for a long time; a workspace had a POST nobody had
+     * written down and no way to undo it. An agent given a URL and a sentence invents the rest,
+     * which is the note at the top of this spec - so the pair is described rather than half of
+     * it.
+     */
+    '/workspaces': {
+      get: {
+        operationId: 'listWorkspaces',
+        summary:     'Every workspace, with its namespace, its App and which cluster it is on.',
+        responses:   { 200: { description: 'The workspaces.' } },
+      },
+      post: {
+        operationId: 'createWorkspace',
+        summary:     'Make a workspace.',
+        description: [
+          'Defaults to the leased App (`lte-workspace`), which is what new work gets everywhere',
+          'else: the checkout and the command-line tools, with nothing running until a tool is',
+          'attached. A leased workspace wears its kind in its name, so a name without the `lte-`',
+          'prefix is given one; the answer says the name it ended up with.',
+        ].join('\n'),
+        responses: { 200: { description: 'The workspace.' }, 409: { description: 'One of that name already exists.' } },
+      },
+    },
+    '/workspaces/{name}': {
+      delete: {
+        operationId: 'deleteWorkspace',
+        summary:     'Remove a workspace and release everything it holds.',
+        description: [
+          'The other half of the POST, and what makes a workspace something to take and give',
+          'back rather than something to accumulate.',
+          '',
+          'Tools are released first - a dev server should stop compiling now rather than through',
+          'the teardown. The tree is NOT removed here: the extension keeps the artifacts before',
+          'removing a tree, and a second path to the same `rm -rf` would be the one that forgets',
+          'the evidence. The sweep takes the tree, with the artifacts kept first, and it only',
+          'acts on trees whose workspace is already gone.',
+        ].join('\n'),
+        responses: { 200: { description: 'Deleted.' }, 404: { description: 'No workspace of that name.' } },
+      },
+    },
     '/conversations': {
       get: {
         operationId: 'readConversations',
@@ -3956,6 +3999,39 @@ const routes = [
     // with no browser behind it - an agent, a script - and it used to be the one place that
     // still made an all-in-one workspace without being asked to.
     return makeWorkspace(body.name, body.app || body.template || LTE_APP, body.cluster || 'local');
+  }],
+
+  /*
+   * Remove a workspace, so an agent can take one and give it back.
+   *
+   * `POST /workspaces` has been here all along and there was no way to undo it: a workspace an
+   * agent made for one job stayed until a person deleted it from the page. Making workspaces
+   * disposable - which is what the task asks for - needs both halves, and this is the other one.
+   *
+   * It releases the tools first, for the reason the page's own delete does: the sweep would get
+   * them within the minute anyway, but a dev server should stop compiling now rather than
+   * through the teardown, and a delete that stalls on something else has still freed the
+   * expensive part.
+   *
+   * It does NOT remove the tree. The extension's pruner does that, and does it in the one place
+   * that also keeps the artifacts first (`removeWorkspaceTree` -> `captureWorkspaceArtifacts`).
+   * Deleting the tree here would be a second path to the same `rm -rf`, and the one that
+   * forgets the evidence - exactly the drift the capture was added to prevent. The pruner only
+   * acts on trees whose Installation is gone, which is the state this leaves behind.
+   */
+  ['DELETE', /^\/workspaces\/([a-z0-9-]+)$/, async(m) => {
+    const name = m[1];
+    const instance = await k8s(`${ INSTANCES }/${ name }`).catch(() => null);
+
+    if (!instance) {
+      throw failure(404, `No workspace called ${ name }.`);
+    }
+
+    // Best effort, each on its own: a tool that will not release must not keep the workspace.
+    await Promise.all(TOOL_KINDS.map((kind) => stopTool(name, kind).catch(() => null)));
+    await k8s(`${ INSTANCES }/${ name }`, { method: 'DELETE' });
+
+    return { name, deleted: true, note: 'Tools released. The tree and its artifacts are kept until the sweep, which captures the artifacts before removing it.' };
   }],
 
   // -- Tools ---------------------------------------------------------------------------------

@@ -16,7 +16,7 @@
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import {
-  TOOLS, TOOL_ORDER, allTools, stopTool, renewTool, toolHref
+  TOOLS, TOOL_ORDER, WORKSPACE_TOOL, allTools, stopTool, renewTool, toolHref
 } from '../tools';
 import { TOOL_APPS } from '../config/constants';
 import { APP, PRODUCT_NAME, BLANK_CLUSTER } from '../config/types';
@@ -40,6 +40,10 @@ export default {
   },
 
   computed: {
+    WORKSPACE_TOOL() {
+      return WORKSPACE_TOOL;
+    },
+
     /**
      * Every tool kind, with what is running of it.
      *
@@ -289,6 +293,38 @@ export default {
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!--
+      The workspace, which is what the tools above attach to rather than one of them.
+      Listed here because it is now as disposable as they are - an agent can take one and give
+      it back - and because somebody reading this page to find out what can be asked for should
+      not have to know that one of the answers lives somewhere else.
+    -->
+    <div class="dev-tools__tool dev-tools__tool--subject">
+      <header class="dev-tools__head">
+        <i class="icon icon-folder" />
+        <strong>{{ WORKSPACE_TOOL.label }}</strong>
+        <span
+          class="dev-tools__tenancy dev-tools__tenancy--per"
+          title="Every workspace is its own; two pieces of work never share one"
+        >per workspace</span>
+        <span class="dev-tools__count">what the tools attach to</span>
+        <RcButton
+          variant="link"
+          size="small"
+          @click="spec = spec === 'workspace' ? '' : 'workspace'"
+        >
+          {{ spec === 'workspace' ? 'Hide the API' : 'How to talk to it' }}
+        </RcButton>
+      </header>
+
+      <p class="dev-tools__what">{{ WORKSPACE_TOOL.what }}</p>
+
+      <pre
+        v-if="spec === 'workspace'"
+        class="dev-tools__spec"
+      >{{ WORKSPACE_TOOL.openapi }}</pre>
     </div>
   </div>
 </template>
