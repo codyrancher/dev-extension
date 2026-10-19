@@ -288,3 +288,27 @@ export async function clearManualStage(name: string): Promise<void> {
 export function isManual(name: string): boolean {
   return !!cache[name]?.manual;
 }
+
+/**
+ * The stage a workspace is at, as stored, without deriving or writing one.
+ *
+ * `reconcileStage` is the usual way in, and it is a writer: it decides a stage from what GitHub
+ * and the agent say and saves it when it has moved. That is right for a page about one
+ * workspace, and wrong for a page listing forty - a tracker left open on a second monitor would
+ * be a background writer nobody asked for, reconciling work it is only displaying.
+ *
+ * So this reads. It answers null for a workspace the store has never seen, which is a real
+ * answer - the work has not started - and not the same as the first stage.
+ */
+export async function storedStage(name: string): Promise<StageRecord | null> {
+  await ensureLoaded();
+
+  return cache[name] || null;
+}
+
+/** Every stage the store knows, for a page drawing a list of them. One read, not one per row. */
+export async function storedStages(): Promise<Record<string, StageRecord>> {
+  await ensureLoaded();
+
+  return { ...cache };
+}

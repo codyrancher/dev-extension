@@ -14,12 +14,14 @@ import SortableTable from '@shell/components/SortableTable';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import AsyncButton from '@shell/components/AsyncButton';
+import StageSteps from '../components/StageSteps.vue';
 import { NarrowMixin } from '../design/narrow';
 import { myWork } from '../github';
 import { listAllWorkspaces, createWorkspace } from '../api';
 import { defaultRancherValues } from '../ranchers';
 import { startIssueFix } from '../reviews';
-import { ago } from '../workspace-rail';
+import { ago, stepsFor } from '../workspace-rail';
+import { storedStages } from '../stages';
 import {
   issueHeadersFor, issueRowsFrom, statusHue, milestoneDue,
   appForWorkspace, issueWorkspaceName, hasIssueWorkspace, issueWorkspaceLocation
@@ -30,7 +32,7 @@ export default {
   name: 'DevIssueTracker',
 
   components: {
-    SortableTable, Banner, RcButton, AsyncButton
+    SortableTable, Banner, RcButton, AsyncButton, StageSteps
   },
 
   mixins: [NarrowMixin],
@@ -42,6 +44,8 @@ export default {
       loading:    true,
       error:      '',
       statusError: '',
+      /** The stored stage of every workspace, by name. Read once, not once per row. */
+      stages:     {},
     };
   },
 
@@ -52,6 +56,16 @@ export default {
 
     rows() {
       return issueRowsFrom(this.issues);
+    },
+
+    /**
+     * The stages an issue goes through, which are a fix's stages.
+     *
+     * The same list the workspace rail draws, from the same `stepsFor` - an issue assigned to
+     * you is work to be done, so it travels assess, code, draft, review, feedback, merged.
+     */
+    steps() {
+      return stepsFor('fix');
     },
 
     settingsTo() {
@@ -67,6 +81,27 @@ export default {
     ago,
     statusHue,
     milestoneDue,
+
+    /**
+     * Where this issue has got to, or -1 for work that has not started.
+     *
+     * Read from the store rather than derived. `reconcileStage` decides a stage from GitHub and
+     * the agent and writes it, which is right for the page about one workspace and wrong for a
+     * list of forty: a tracker open on a second monitor would be reconciling work it is only
+     * showing. So an issue with no workspace, or one the store has never seen, has no stage
+     * yet - which is a true answer, and not the same as being at the first one.
+     */
+    stageIndexFor(issue) {
+      const record = this.stages[issueWorkspaceName(this.workspaces, issue)] || this.stages[`issue-${ issue.number }`];
+
+      return record ? this.steps.findIndex((step) => step.key === record.stage) : -1;
+    },
+
+    stageRoundFor(issue) {
+      const record = this.stages[issueWorkspaceName(this.workspaces, issue)] || this.stages[`issue-${ issue.number }`];
+
+      return record?.round || 1;
+    },
 
     hasWorkspace(issue) {
       return hasIssueWorkspace(this.workspaces, issue);
@@ -86,14 +121,16 @@ export default {
       this.loading = true;
 
       try {
-        const [work, workspaces] = await Promise.all([
+        const [work, workspaces, stages] = await Promise.all([
           myWork(undefined, undefined, ['issues']),
           listAllWorkspaces().catch(() => []),
+          storedStages().catch(() => ({})),
         ]);
 
         this.issues = work.issues || [];
         this.statusError = work.projectStatusError || '';
         this.workspaces = workspaces.map((workspace) => workspace.name);
+        this.stages = stages;
       } catch (e) {
         this.error = e.message || String(e);
       } finally {
@@ -187,6 +224,9 @@ export default {
       :search="true"
       :paging="true"
       :rows-per-page="25"
+      :sub-rows="true"
+      :sub-expandable="true"
+      :sub-expand-column="true"
     >
       <template #cell:number="{ row }">
         <a
@@ -286,6 +326,30 @@ export default {
           @click="(done) => startFix(row, done)"
         />
       </template>
+      <!--
+        The stages, under the issue they belong to.
+
+        The same stepper the workspace rail draws (StageSteps) and the same stored stages, so
+        an issue reads the same here as it does on its own workspace page. Read-only: this page
+        lists stages, the rail is where one is moved.
+      -->
+      <template #sub-row="{ row, fullColspan }">
+        <tr class="dev-issue-tracker__stages-row">
+          <td :colspan="fullColspan">
+            <StageSteps
+              :steps="steps"
+              :current-index="stageIndexFor(row)"
+              :round="stageRoundFor(row)"
+            />
+            <p
+              v-if="stageIndexFor(row) < 0"
+              class="dev-issue-tracker__not-started"
+            >
+              Not started. Starting a workspace or a fix is what puts this issue on its first stage.
+            </p>
+          </td>
+        </tr>
+      </template>
     </SortableTable>
   </div>
 </template>
@@ -313,6 +377,17 @@ export default {
   align-items: center;
   gap: 12px;
   justify-content: space-between;
+}
+
+.dev-issue-tracker__stages-row td {
+  padding: 8px 12px 12px 40px;
+  background: var(--sortable-table-top-divider, var(--default));
+}
+
+.dev-issue-tracker__not-started {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .dev-issue-tracker__loading {
