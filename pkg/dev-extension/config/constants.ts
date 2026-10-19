@@ -141,6 +141,15 @@ export const LABEL_APP = 'dev.rancher.io/app';
 export const LABEL_CLUSTER = 'dev.rancher.io/cluster';
 /** On an Installation: `developer`, `reviewer` or `other`, overriding the role its name implies. */
 export const LABEL_ROLE = 'dev.rancher.io/role';
+/**
+ * On an Installation: whose workspace it is, as the per-person secret store names them.
+ *
+ * Written when the workspace is made, because that is the only moment anything knows: the
+ * browser making it is signed in, and nothing afterwards can tell. It is what lets the
+ * in-cluster API answer an agent's call with that person's own GitHub token instead of
+ * refusing because two stores hold one - see `whoami` and `ownerOfCaller` in dev-api.
+ */
+export const LABEL_OWNER = 'dev.rancher.io/owner';
 
 /**
  * How to reach what a workspace serves, on its namespace, because the namespace is the one

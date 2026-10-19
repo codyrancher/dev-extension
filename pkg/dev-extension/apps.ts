@@ -18,7 +18,7 @@
 // from. Where it is not, everything here fails with the one error that says so.
 
 import {
-  APP, APP_INSTANCE, LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, DEFAULT_APP, WORKSPACE_PORT_ANNOTATION,
+  APP, APP_INSTANCE, LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER, LABEL_OWNER, DEFAULT_APP, WORKSPACE_PORT_ANNOTATION,
   APP_KIND_LABEL, APP_KIND_WORKSPACE, LEGACY_WORKSPACE_APPS,
   WORKSPACE_SCHEME_ANNOTATION,
   DEV_API_IN_CLUSTER,
@@ -31,7 +31,7 @@ import { rancherSingleApp, rancherShareApp } from './apps-rancher';
 import { ensureAppsPlusCrds } from './apps-plus';
 // The same-origin fetch and cluster path every other Rancher call in this product goes through.
 // Imported rather than reinvented so the CSRF header and the error shape stay in one place.
-import { devFetch, clusterBase, activeCluster, GITHUB_BROWSER_CDP } from './api';
+import { devFetch, clusterBase, activeCluster, currentOwner, GITHUB_BROWSER_CDP } from './api';
 
 /** The browser beside every workspace: the image the harness's browser sidecar and the dev-browser App use. */
 const BROWSER_IMAGE = 'lscr.io/linuxserver/chromium:latest';
@@ -178,12 +178,17 @@ export async function createWorkspaceInstance(store: Store, name: string, appId:
   requireAppsPlus(store);
 
   const namespace = `dev-${ name }`;
+  // Whose it is, recorded now because now is the only time anything knows. An agent in this
+  // workspace will later call the in-cluster API with no user attached to the request at all,
+  // and this label is what lets that call be answered with this person's own credentials.
+  // Empty when the principal cannot be read, which leaves the API exactly as it is today.
+  const owner = await currentOwner().catch(() => '');
   const instance = await store.dispatch('management/create', {
     type:     APP_INSTANCE,
     metadata: {
       name,
       labels: {
-        [LABEL_WORKSPACE]: name, [LABEL_APP]: appId, [LABEL_CLUSTER]: cluster,
+        [LABEL_WORKSPACE]: name, [LABEL_APP]: appId, [LABEL_CLUSTER]: cluster, ...(owner ? { [LABEL_OWNER]: owner } : {}),
       },
     },
     spec: {

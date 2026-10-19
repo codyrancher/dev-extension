@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { spawn } from 'node:child_process';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = 'https://kubernetes.default.svc';
@@ -268,7 +269,19 @@ async function writeDoc(name, key, value, labels = {}) {
 
 // -- GitHub ----------------------------------------------------------------------------------
 
-let tokenCache = { at: 0, token: '' };
+/** One entry per caller: '' is the calls nobody can place, a login is an agent's workspace. */
+const tokenCache = new Map();
+
+/**
+ * The request being handled, so the credential a handler reaches for can be the caller's.
+ *
+ * Threaded this way rather than through every signature between the route and `githubToken`:
+ * a token is fetched from six places, several of them several calls deep, and a parameter
+ * chain through all of them would be a change to everything to serve one thing. The store
+ * holds the request rather than the resolved owner, so a handler that never asks for a
+ * credential never pays for the lookup.
+ */
+const callerRequest = new AsyncLocalStorage();
 
 /**
  * One key out of the per-person secret stores in dev-system.
@@ -289,12 +302,76 @@ let tokenCache = { at: 0, token: '' };
  * not solved, but no longer silent. Solving it needs an identity the caller can prove, which
  * needs a path that carries one.
  */
-async function secretFromStores(key) {
+/**
+ * Whose request this is, worked out from where it came from.
+ *
+ * An agent calls this service from inside its own workspace's pod, over the ClusterIP, so the
+ * source address of the connection is that pod's IP - and a pod is a thing the apiserver can be
+ * asked about. Pod IP to pod, pod to namespace, namespace to the workspace's Installation, and
+ * the Installation carries `dev.rancher.io/owner`: the person who made the workspace, recorded
+ * at the one moment anything knew (see LABEL_OWNER).
+ *
+ * That is an identity taken from cluster state rather than from the request, which matters,
+ * because the request cannot be trusted to say: nothing authenticates a caller to this service.
+ * An agent cannot claim to be somebody else without being in that person's workspace.
+ *
+ * Empty for anything that is not a pod of a workspace - the browser's calls arrive from the
+ * apiserver's own proxy - and empty for a workspace made before the label existed, both of
+ * which leave the caller to the rules that were there before.
+ */
+const ownerByIp = new Map();
+
+async function ownerOfCaller(req) {
+  const ip = String(req?.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+
+  if (!ip || ip === '127.0.0.1' || ip === '::1') {
+    return '';
+  }
+
+  const held = ownerByIp.get(ip);
+
+  // A pod's IP outlives one request and is reused when the pod is replaced, so this is a short
+  // memo rather than a cache: long enough that a page of calls costs one lookup.
+  if (held && Date.now() - held.at < 60_000) {
+    return held.owner;
+  }
+
+  const owner = await (async() => {
+    const pods = await k8s(`/api/v1/pods?fieldSelector=status.podIP%3D${ encodeURIComponent(ip) }&limit=2`).catch(() => null);
+    const namespace = pods?.items?.[0]?.metadata?.namespace || '';
+    const workspace = /^dev-(.+)$/.exec(namespace)?.[1] || '';
+
+    if (!workspace) {
+      return '';
+    }
+    const instance = await k8s(`${ INSTANCES }/${ encodeURIComponent(workspace) }`).catch(() => null);
+
+    return String(instance?.metadata?.labels?.['dev.rancher.io/owner'] || '');
+  })().catch(() => '');
+
+  ownerByIp.set(ip, { at: Date.now(), owner });
+
+  return owner;
+}
+
+async function secretFromStores(key, caller = '') {
   const list = await k8s(`/api/v1/namespaces/${ NAMESPACE }/secrets?labelSelector=${ SECRET_KIND_LABEL }%3Dsecrets`);
   const holding = (list.items || []).filter((secret) => secret.data?.[key]);
 
   if (!holding.length) {
     return '';
+  }
+
+  // Whose workspace the call came from, when it came from one. This outranks the Deployment's
+  // own setting: DEV_SECRET_OWNER is a standing answer for calls nobody can place, and a call
+  // that can be placed should be answered with that person's credentials, not with the default
+  // person's. See ownerOfCaller.
+  if (caller) {
+    const theirs = holding.find((secret) => secret.metadata?.name === `dev-secrets-${ caller }`);
+
+    if (theirs) {
+      return Buffer.from(theirs.data[key], 'base64').toString('utf8').trim();
+    }
   }
 
   const owner = (process.env.DEV_SECRET_OWNER || '').trim();
@@ -315,15 +392,27 @@ async function secretFromStores(key) {
   return Buffer.from(holding[0].data[key], 'base64').toString('utf8').trim();
 }
 
-/** The GitHub token, cached for a minute. See secretFromStores for whose it is. */
-async function githubToken() {
-  if (Date.now() - tokenCache.at < 60_000 && tokenCache.token) {
-    return tokenCache.token;
+/**
+ * The GitHub token, cached for a minute, per caller.
+ *
+ * Per caller because there is now more than one answer: an agent calling from its own
+ * workspace gets the token of whoever made that workspace. A single cache would have handed
+ * the first caller's token to the second, which is the one failure here that is worse than
+ * refusing - it would act on GitHub as the wrong person.
+ */
+async function githubToken(asked) {
+  // `await` is not allowed in a parameter default, so the fallback is here: whoever is calling,
+  // worked out from where the call came from.
+  const caller = asked ?? await ownerOfCaller(callerRequest.getStore());
+  const held = tokenCache.get(caller);
+
+  if (held && Date.now() - held.at < 60_000 && held.token) {
+    return held.token;
   }
 
-  const token = await secretFromStores('GH_TOKEN');
+  const token = await secretFromStores('GH_TOKEN', caller);
 
-  tokenCache = { at: Date.now(), token };
+  tokenCache.set(caller, { at: Date.now(), token });
 
   return token;
 }
@@ -1665,6 +1754,10 @@ const OPENAPI = {
           'through SelfSubjectReview, or null when there was nothing to resolve - which is what a',
           'request through the plain Service proxy looks like, because the proxy authenticates the',
           'caller to the apiserver and then opens its own connection to this service.',
+          '`caller` is who this service believes is calling, taken from cluster state rather than from',
+          'the request: the connection\'s source address resolves to a pod, the pod to a namespace, the',
+          'namespace to a workspace, and the workspace\'s Installation carries the person who made it.',
+          'It is empty for the browser, whose calls arrive from the apiserver\'s own proxy.',
           '`stores` lists the per-person secret stores that exist, and `owner` whether one has been',
           'named for this Deployment.',
         ].join('\n'),
@@ -4401,6 +4494,11 @@ const routes = [
       headers:       seen,
       authorization: bearer ? 'bearer' : (headers.authorization ? 'other' : 'absent'),
       resolved,
+      // Who this service believes is calling, from the pod the connection came from rather
+      // than from anything the request claims. '' for the browser, whose calls arrive from the
+      // apiserver's own proxy, and for a workspace made before the owner label existed.
+      caller:        await ownerOfCaller(req),
+      from:          String(req?.socket?.remoteAddress || '').replace(/^::ffff:/, ''),
       owner:         (process.env.DEV_SECRET_OWNER || '').trim(),
       stores,
     };
@@ -5562,8 +5660,10 @@ http.createServer(async(req, res) => {
         const body = method === 'POST' || method === 'PUT' ? await readBody(req) : {};
 
         // `req` last and unused by almost everything: only /whoami needs the request itself,
-        // and threading it through is cheaper than a second dispatch for one route.
-        return send(res, 200, await handler(m, url, body, req));
+        // and threading it through is cheaper than a second dispatch for one route. The same
+        // request is put in the async store so a credential fetched deep inside a handler can
+        // be the caller's own - see callerRequest and ownerOfCaller.
+        return send(res, 200, await callerRequest.run(req, () => handler(m, url, body, req)));
       }
     }
 
