@@ -41,6 +41,7 @@ import RancherPicker from './RancherPicker.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
 import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
+import { note } from '../dev-log.mjs';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
   MY_WORK_ROUTE, ARTIFACTS_ROUTE, TOOLS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, CONVERSATIONS_ROUTE
@@ -673,7 +674,7 @@ export default {
       } catch (e) {
         this.error = `Could not delete ${ name }: ${ e.message || e }`;
         // eslint-disable-next-line no-console
-        console.error(`[dev] deleting ${ name } failed`, e);
+        note('dev', `deleting ${ name } failed`, e);
       }
     },
   },

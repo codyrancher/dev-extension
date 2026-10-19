@@ -9,6 +9,7 @@ import {
 } from '../fields';
 import { substitute } from '../render';
 import { dumpTemplate } from '../import-resource';
+import { note } from '../dev-log.mjs';
 
 /**
  * "Allow editing in installation" switches, laid over Rancher's own resource edit form.
@@ -111,7 +112,7 @@ export default {
       }
 
       this.probePage(els).catch((e) => {
-        console.error('[apps-plus] page marks probe failed', e); // eslint-disable-line no-console
+        note('apps-plus', 'page marks probe failed', e);
       });
     },
 

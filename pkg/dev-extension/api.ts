@@ -2772,6 +2772,7 @@ async function secretStoreName(): Promise<string> {
 // `keep = () => true`, as the option's type, so a predicate is not assignable to it. The same
 // reason chat-conversation.ts casts chat-state.mjs's arguments.
 const secretStore = source(() => readSecretStoreNow(), {
+  name: 'secret-store',
   ttl:  30_000,
   keep: (got: Record<string, string>) => !!Object.keys(got).length,
 } as any) as (() => Promise<Record<string, string>>) & { forget: () => void }; // eslint-disable-line @typescript-eslint/no-explicit-any

@@ -22,6 +22,7 @@
 
 import { clusterBase, devFetch, readSecretStore } from './api';
 import { CERT_CONTROL } from './certs.generated';
+import { note } from './dev-log.mjs';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -285,7 +286,7 @@ export async function ensureCertControllers(clusters: string[]): Promise<void> {
       done.add(cluster);
       await ensureCertController(cluster).catch((e) => {
         done.delete(cluster);
-        console.error(`[dev] the certificate controller could not be put on ${ cluster }:`, e?.message || e); // eslint-disable-line no-console
+        note('dev', `the certificate controller could not be put on ${ cluster }`, e);
       });
     }
   }

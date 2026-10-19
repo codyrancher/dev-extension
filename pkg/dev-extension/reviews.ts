@@ -34,6 +34,7 @@ import {
   DEFAULT_APP, DEV_API_IN_CLUSTER, LTE_APP, isLte
 } from './config/constants';
 import { defaultRancherValues } from './ranchers';
+import { note } from './dev-log.mjs';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -110,7 +111,7 @@ export interface ReviewRun {
  */
 export const prDetail = source(
   (num: number, repo: string = DEFAULT_REPO): Promise<Json> => api(`/my-work/pr/${ num }?repo=${ encodeURIComponent(repo) }`),
-  { ttl: 25_000, key: (num: number, repo: string = DEFAULT_REPO) => `${ repo }#${ num }` },
+  { ttl: 25_000, name: 'pr-detail', key: (num: number, repo: string = DEFAULT_REPO) => `${ repo }#${ num }` },
 ) as ((num: number, repo?: string) => Promise<Json>) & { forget: (num: number, repo?: string) => void };
 
 export async function listComments(num: number): Promise<LocalComment[]> {
@@ -579,7 +580,7 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
   // empty prompt. Queued through the agents extension because that is where every pane runs.
   await (prompt ? queuePrompt(conversation.attach, prompt) : Promise.resolve()).catch((e: Json) => {
     onNote?.(`the prompt could not be queued: ${ e?.message || e }`);
-    console.error('[dev] queuing the opening prompt failed', e); // eslint-disable-line no-console
+    note('dev', 'queuing the opening prompt failed', e);
   });
 
   const prepare = async() => {
@@ -616,7 +617,7 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
       await prepare();
     } catch (e: Json) {
       onNote?.(`the workspace could not be prepared: ${ e?.message || e }`);
-      console.error('[dev] preparing the workspace failed', e); // eslint-disable-line no-console
+      note('dev', 'preparing the workspace failed', e);
     }
 
     return conversation;
@@ -630,7 +631,7 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
       await prepare();
     } catch (e: Json) {
       onNote?.(`could not start: ${ e?.message || e }`);
-      console.error('[dev] preparing the workspace failed', e); // eslint-disable-line no-console
+      note('dev', 'preparing the workspace failed', e);
     }
   })();
 
@@ -714,7 +715,7 @@ export async function startPendingConversations(workspaces: { name: string; stat
           await startPaneDetached(workspace, id);
         }
       } catch (e) {
-        console.error(`[dev] starting the queued conversations of ${ workspace } failed`, e); // eslint-disable-line no-console
+        note('dev', `starting the queued conversations of ${ workspace } failed`, e);
       }
     }
   } finally {

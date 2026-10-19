@@ -11,6 +11,7 @@
 // needs are created on top of them. Installing this extension is all it takes.
 import { APPS_PLUS_CRDS } from './apps-plus-crds.generated';
 import { devFetch, clusterBase } from './api';
+import { note } from './dev-log.mjs';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -52,7 +53,7 @@ export async function ensureAppsPlusCrds(): Promise<boolean> {
     const made = await devFetch(base, { method: 'POST', body: JSON.stringify(crd) }).catch((e: Json) => {
       // A 409 is two tabs doing this at once, which is fine and common.
       if (e?.status !== 409) {
-        console.info(`[dev] the ${ name } type could not be created: ${ e?.message || e }`); // eslint-disable-line no-console
+        note('dev', `the ${ name } type could not be created`, e);
       }
 
       return null;

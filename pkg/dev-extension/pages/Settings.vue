@@ -33,6 +33,7 @@ import {
 import { GLOBAL_SECRETS, SECRET_GROUPS } from '../secrets';
 import { listApps } from '../apps';
 import { readPrefs, savePrefs } from '../prefs';
+import { log } from '../dev-log.mjs';
 import { DEV_PRODUCT, BLANK_CLUSTER, SKILLS_ROUTE } from '../config/constants';
 
 export default {
@@ -49,6 +50,18 @@ export default {
     await this.refresh();
   },
 
+  mounted() {
+    this.activity = log.lines(60);
+    // Live, because the interesting line is usually the one that lands while you are looking.
+    this.unwatch = log.watch(() => {
+      this.activity = log.lines(60);
+    });
+  },
+
+  beforeUnmount() {
+    this.unwatch?.();
+  },
+
   data() {
     return {
       /*
@@ -58,6 +71,16 @@ export default {
        * anybody navigates here, so by the time this is read it has finished trying.
        */
       installTrouble: installProblems(),
+      /*
+       * What this page load has done and what went wrong doing it.
+       *
+       * Here because this is the page somebody opens when something is not working, and the
+       * alternative was devtools: nine places used to console.warn and nothing kept the line.
+       * Shut by default - it is an answer to a question, not part of the page.
+       */
+      activity:     [],
+      showActivity: false,
+      unwatch:      null,
       keys:     [],
       // Every App, and which of them this person has hidden. See prefs.ts.
       apps:         [],
@@ -123,6 +146,11 @@ export default {
   },
 
   methods: {
+    /** A log line's time, as the clock reads it: the log keeps epoch ms. */
+    logTime(at) {
+      return new Date(at).toLocaleTimeString();
+    },
+
     /** How many of a section's keys have a value, which is the card's summary line. */
     configured(section) {
       return section.secrets.filter((secret) => secret.set).length;
@@ -677,6 +705,63 @@ export default {
         />
       </div>
     </section>
+
+    <!--
+      What the page has been doing. Last, and shut: it is the answer to "why is this empty?",
+      which is a question somebody asks occasionally and nobody asks on the way past.
+    -->
+    <section class="dev-settings__card">
+      <div class="dev-settings__card-head">
+        <i class="dev-settings__card-icon icon icon-list-flat" />
+        <div class="dev-settings__card-title">
+          <h3>Activity</h3>
+          <p>Every read this page load made, and everything that failed. Kept here rather than only in the browser's console, which is no use unless it was already open.</p>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        class="dev-settings__summary"
+        @click="showActivity = !showActivity"
+      >
+        <i
+          class="icon"
+          :class="showActivity ? 'icon-chevron-down' : 'icon-chevron-right'"
+        />
+        {{ activity.length }} line{{ activity.length === 1 ? '' : 's' }}
+      </button>
+
+      <template v-if="showActivity">
+        <p
+          v-if="!activity.length"
+          class="dev-settings__card-help"
+        >
+          Nothing yet. Lines appear as pages read things.
+        </p>
+        <ul
+          v-else
+          class="dev-settings__log"
+        >
+          <li
+            v-for="(line, i) in activity"
+            :key="`${ line.at }-${ i }`"
+            class="dev-settings__log-line"
+            :class="line.outcome === 'failed' || line.kind === 'note' ? 'dev-settings__log-line--bad' : ''"
+          >
+            <span class="dev-settings__log-at">{{ logTime(line.at) }}</span>
+            <span class="dev-settings__log-what">
+              <template v-if="line.kind === 'note'">{{ line.scope }}: {{ line.what }}</template>
+              <template v-else>{{ line.source || 'read' }} {{ line.key }}</template>
+            </span>
+            <span class="dev-settings__log-detail">{{ line.kind === 'note' ? line.detail : line.outcome }}</span>
+            <span
+              v-if="line.kind !== 'note'"
+              class="dev-settings__log-ms"
+            >{{ line.ms }}ms</span>
+          </li>
+        </ul>
+      </template>
+    </section>
   </div>
 </template>
 
@@ -965,4 +1050,39 @@ export default {
       margin-top: var(--dev-space-5);
     }
   }
+
+.dev-settings__log {
+  list-style: none;
+  margin:     var(--dev-space-3) 0 0;
+  padding:    0;
+  max-height: 320px;
+  overflow-y: auto;
+  font-size:  12px;
+}
+
+.dev-settings__log-line {
+  display:               grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap:                   var(--dev-space-3);
+  align-items:           baseline;
+  padding:               2px 0;
+  border-bottom:         1px solid var(--border);
+}
+
+.dev-settings__log-line--bad .dev-settings__log-detail { color: var(--error); }
+
+.dev-settings__log-at,
+.dev-settings__log-ms {
+  color:       var(--muted);
+  font-family: monospace;
+}
+
+.dev-settings__log-what {
+  min-width:     0;
+  overflow:      hidden;
+  text-overflow: ellipsis;
+  white-space:   nowrap;
+}
+
+.dev-settings__log-detail { color: var(--muted); }
 </style>

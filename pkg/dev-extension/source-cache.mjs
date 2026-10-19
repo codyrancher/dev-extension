@@ -24,9 +24,15 @@
  * new source be a few lines instead of thirty: see tasks/tubes-library-survey.md, which looked
  * for something off the shelf and concluded that the honest version of it is this.
  *
- * Plain JavaScript and no imports, so `node --test` loads it directly, and the clock is an
- * argument so the tests do not wait - see tests/source-cache.test.mjs.
+ * Every read is also written to the product's log (dev-log.mjs) - which source, which key, how
+ * long, and whether the answer was fresh, shared with a caller already waiting, or a failure.
+ * That is the half of "what is this page doing" that cannot be reconstructed from the console,
+ * because nothing was ever printed for a read that worked.
+ *
+ * Plain JavaScript, and the clock is an argument so the tests do not wait - see
+ * tests/source-cache.test.mjs.
  */
+import { log as devLog } from './dev-log.mjs';
 
 /** JSON of the arguments: distinct for every distinct call, stable for the same one. */
 function defaultKey(...args) {
@@ -48,34 +54,53 @@ function defaultKey(...args) {
  *         everything; a reader whose failure looks like a valid empty answer says so here.
  *   key   the cache key from the arguments, when JSON of them will not do.
  *   now   the clock, for tests.
+ *   name  what this source is called in the log. A source with no name still works and is
+ *         still logged; it is just harder to recognise, which is the only argument for the
+ *         option being required-in-practice rather than required.
+ *   log   where reads are recorded. The product's log by default; a test passes its own.
  */
 export function source(load, {
-  ttl = 30_000, keep = () => true, key = defaultKey, now = Date.now,
+  ttl = 30_000, keep = () => true, key = defaultKey, now = Date.now, name = '', log = devLog,
 } = {}) {
   const held = new Map();
 
   const read = (...args) => {
     const id = key(...args);
     const found = held.get(id);
+    const began = now();
 
-    if (found && now() - found.at < ttl) {
+    if (found && began - found.at < ttl) {
+      log?.record({
+        source: name, key: id, ms: 0, outcome: 'kept',
+      });
+
       return found.value;
     }
 
     const value = (async() => load(...args))();
 
-    held.set(id, { at: now(), value });
+    held.set(id, { at: began, value });
 
-    // Dropped on the way past rather than awaited: the caller still gets this promise, and the
-    // next caller gets a fresh read. Compared by identity, so a read that was already replaced
-    // or forgotten while it was in flight does not remove its successor.
+    // One pass over the answer, doing both things that happen after it: the log line, and the
+    // decision to keep it. Dropped on the way past rather than awaited - the caller still gets
+    // this promise, and the next caller gets a fresh read. The entry is compared by identity, so
+    // a read that was already replaced or forgotten while it was in flight does not remove its
+    // successor.
     value.then(
       (got) => {
-        if (!keep(got) && held.get(id)?.value === value) {
+        const wanted = keep(got);
+
+        log?.record({
+          source: name, key: id, ms: now() - began, outcome: wanted ? 'read' : 'dropped',
+        });
+        if (!wanted && held.get(id)?.value === value) {
           held.delete(id);
         }
       },
-      () => {
+      (e) => {
+        log?.record({
+          source: name, key: id, ms: now() - began, outcome: 'failed', detail: String(e?.message || e),
+        });
         if (held.get(id)?.value === value) {
           held.delete(id);
         }

@@ -21,6 +21,7 @@ export { setManualStage, clearManualStage, isManual } from './stages';
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 import { activityState } from './agent';
+import { note } from './dev-log.mjs';
 
 export type AgentState = 'working' | 'input' | 'idle' | 'finished' | 'none';
 export type Tone = 'green' | 'attention' | 'waiting' | 'working' | 'muted';
@@ -661,7 +662,7 @@ async function readStale(names: string[]): Promise<void> {
       // Read again next time round, not on every poll: the failure is usually GitHub's rate
       // limit or a token, and either is the same in five seconds.
       statuses.set(name, { ...before, readAt: Date.now() });
-      console.warn(`[dev] the status of ${ name } could not be read`, e); // eslint-disable-line no-console
+      note('dev', `the status of ${ name } could not be read`, e);
     }
   } finally {
     reading = false;
