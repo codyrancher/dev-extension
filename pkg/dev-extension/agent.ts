@@ -17,6 +17,8 @@ import {
   EXT_NS, EXT_ACCOUNT, EXT_IMAGE, EXT_BASE, AGENT_OBJECT, AGENT_CONTAINER, execUrl, podExecResult,
   namespaceBody, serviceAccountBody, clusterRoleBindingBody, EXT_ROLE_BINDING,
 } from './pod';
+// The coarse bucket, shared and tested. See activityBucket there.
+import { activityBucket } from './chat-state.mjs';
 import type { InstallStep } from './ensure';
 import { VERSION_ANNOTATION, contentVersion, ensureCurrent } from './ensure';
 import { AGENT_FILES } from './seed.generated';
@@ -462,31 +464,28 @@ const SPEAKS_LAST = new Set(['Stop', 'SessionEnd', 'Notification']);
  * this pod's own conversations, letting it know halves the samples where a working conversation
  * was showing an idle dot.
  */
-export function activityState(a: SessionActivity): AgentActivity {
-  if (!a.alive) {
-    return 'finished';
-  }
+export function activityState(a: SessionActivity, podStartedMs = 0): AgentActivity | '' | 'none' {
+  return activityBucket(a, podStartedMs) as AgentActivity | '' | 'none';
+}
 
-  const hookAgo = (Date.now() - (Date.parse(a.at) || 0)) / 1000;
-  const overruled = SPEAKS_LAST.has(a.event) && hookAgo <= a.wroteAgo + 5;
+/**
+ * When the agent pod came up, in ms, or 0 when it cannot be told.
+ *
+ * `activityBucket` needs it to tell "this pane is gone" from "there is no tmux server yet": for
+ * the first two minutes after the pod changes, every conversation is legitimately absent. 0 is
+ * the safe answer - the guard treats not knowing as doubt and reports no change at all, which is
+ * what the extension used to do permanently by never asking.
+ */
+export async function agentPodStartedAt(): Promise<number> {
+  const pods = await rancherFetch(`${ EXT_BASE }/v1/pods/${ EXT_NS }`).catch(() => null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const running = (pods?.data || []).find((pod: any) => (
+    pod.metadata?.labels?.app === AGENT_OBJECT &&
+    pod.status?.phase === 'Running' &&
+    !pod.metadata?.deletionTimestamp
+  ));
 
-  if (a.wroteAgo >= 0 && a.wroteAgo <= WORKING_WINDOW_S && !overruled) {
-    return 'working';
-  }
-  if (a.event === 'Notification' && a.notification && a.notification !== 'idle_prompt') {
-    return 'input';
-  }
-  switch (a.event) {
-  case 'UserPromptSubmit':
-  case 'PreToolUse':
-  case 'PostToolUse':
-  case 'SubagentStop':
-    return 'working';
-  case 'Notification':
-    return a.notification === 'idle_prompt' ? 'idle' : 'input';
-  default:
-    return 'idle';
-  }
+  return Date.parse(running?.status?.startTime || '') || 0;
 }
 
 /**
@@ -496,7 +495,10 @@ export function activityState(a: SessionActivity): AgentActivity {
  */
 async function sessionStates(project = ''): Promise<Map<string, AgentActivity>> {
   const args = project ? ['states', project] : ['states'];
-  const listing = await sessionScript(args, 'read what the conversations are doing').catch(() => '');
+  const [listing, podStartedMs] = await Promise.all([
+    sessionScript(args, 'read what the conversations are doing').catch(() => ''),
+    agentPodStartedAt().catch(() => 0),
+  ]);
   const out = new Map<string, AgentActivity>();
 
   for (const raw of listing.split('\n')) {
@@ -519,13 +521,19 @@ async function sessionStates(project = ''): Promise<Map<string, AgentActivity>> 
       event = JSON.parse(json || '{}');
     } catch { /* a state file caught mid-write; the next poll reads it whole */ }
 
-    out.set(id, activityState({
+    const bucket = activityState({
       alive:        alive === 'yes',
       event:        String(event.event || ''),
       notification: String(event.notification || ''),
       at:           String(event.at || ''),
       wroteAgo:     Number(wrote ?? -1),
-    }));
+    }, podStartedMs);
+
+    // '' is "nothing believable" and 'none' is "nobody has opened this": neither is an entry.
+    // A caller reads a missing id as `none`, which is what both of those mean here.
+    if (bucket && bucket !== 'none') {
+      out.set(id, bucket as AgentActivity);
+    }
   }
 
   return out;

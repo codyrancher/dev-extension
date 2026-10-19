@@ -717,3 +717,91 @@ export function sentSeen(text, sentAt, entries, hook, queue) {
     entries, hook, queue, now: sentAt,
   }).length;
 }
+
+// ── What a conversation is doing, from the cheap signals ───────────────────────────────────
+//
+// The coarse bucket - working, input, idle, finished - that colours a dot beside every
+// conversation. Distinct from `deriveState` above and deliberately so: that one reads the whole
+// transcript and answers richly, which is right for the one conversation on screen and far too
+// expensive for a list of forty. This answers from three cheap signals the pod reports per
+// conversation: whether the pane is there, how long since anything was written, and the last
+// hook event.
+//
+// Ported here from the in-cluster API's `conversationState`, which is where the considered
+// version lived. The extension had its own, and it was wrong three ways: it had no `none` for a
+// conversation nobody has opened, no settle guard after the pod changes, and no SessionEnd -
+// so a fresh tab got a misleading dot, every conversation read `finished` for two minutes after
+// a release, and a session that had exited read as idle.
+//
+// It is not shared with the server, which is the honest limitation: `gen-dev-api.mjs` packs one
+// file, so the server keeps its copy. One of the two is now tested, which is the half that can
+// be fixed from this repository.
+
+const WORKING_WINDOW_SECONDS = 90;
+
+/** The hooks that speak last, so a recent one outranks a transcript that is still settling. */
+const SPEAKS_LAST_EVENTS = new Set(['Stop', 'SessionEnd', 'Notification']);
+
+/** Two minutes: how long after the agent pod changes its panes are legitimately absent. */
+export const POD_SETTLE_MS = 120_000;
+
+/**
+ * `''` means nothing believable - the caller folds it in as no change at all.
+ *
+ * A state file caught between the hook's write and its rename, and an `alive: no` from a pod
+ * that has only just started, are both doubt rather than news.
+ */
+export function activityBucket(a, podStartedMs = 0, now = Date.now()) {
+  // Neither a hook file nor a transcript: a conversation nobody has ever opened. Which is what
+  // leaves a fresh tab with no dot rather than a misleading one.
+  if (!a.event && Number(a.wroteAgo) < 0) {
+    return 'none';
+  }
+
+  const hookMs = Date.parse(a.at) || 0;
+
+  if (!a.alive) {
+    /*
+     * A pane that is not there, which is only believable twice over.
+     *
+     * For the first two minutes after the agent pod changes there is no tmux server at all while
+     * every conversation is still on the hostPath waiting to be reattached. And a hook event
+     * written before this container started was written by a claude that no longer exists, so
+     * its pane being absent says nothing that was not already true - and that holds however long
+     * ago the pod came up, which is what stops a conversation last touched a week ago becoming
+     * `finished` news the moment the settle window passes.
+     */
+    if (!podStartedMs || now - podStartedMs < POD_SETTLE_MS || (hookMs && hookMs < podStartedMs)) {
+      return '';
+    }
+
+    return 'finished';
+  }
+
+  const hookAgo = (now - hookMs) / 1000;
+  const overruled = SPEAKS_LAST_EVENTS.has(a.event) && hookAgo <= Number(a.wroteAgo) + 5;
+
+  if (Number(a.wroteAgo) >= 0 && Number(a.wroteAgo) <= WORKING_WINDOW_SECONDS && !overruled) {
+    return 'working';
+  }
+  // claude said it exited. The pane may well still be there - the loop that owns it restarts
+  // claude in a moment - but nothing is running in it now. Below the transcript window on
+  // purpose: a `/clear` fires SessionEnd too, and the SessionStart a second later takes it back.
+  if (a.event === 'SessionEnd') {
+    return 'finished';
+  }
+  if (a.event === 'Notification' && a.notification && a.notification !== 'idle_prompt') {
+    return 'input';
+  }
+  switch (a.event) {
+  case 'UserPromptSubmit':
+  case 'PreToolUse':
+  case 'PostToolUse':
+  case 'SubagentStop':
+    return 'working';
+  case 'Notification':
+    return a.notification === 'idle_prompt' ? 'idle' : 'input';
+  default:
+    return 'idle';
+  }
+}
