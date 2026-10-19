@@ -1654,6 +1654,23 @@ const OPENAPI = {
         responses:   { 200: { description: 'Up.' } },
       },
     },
+    '/whoami': {
+      get: {
+        operationId: 'whoami',
+        summary:     'Who this service can tell is calling, and from what.',
+        description: [
+          'A diagnostic for the per-person credential store. `headers` names the identity-bearing',
+          'headers that actually arrived and never their values; `authorization` says only whether',
+          'one was there. `resolved` is the username the apiserver returns for that bearer token,',
+          'through SelfSubjectReview, or null when there was nothing to resolve - which is what a',
+          'request through the plain Service proxy looks like, because the proxy authenticates the',
+          'caller to the apiserver and then opens its own connection to this service.',
+          '`stores` lists the per-person secret stores that exist, and `owner` whether one has been',
+          'named for this Deployment.',
+        ].join('\n'),
+        responses: { 200: { description: '{ headers, authorization, resolved, owner, stores }' } },
+      },
+    },
     '/openapi.json': {
       get: {
         operationId: 'spec',
@@ -4335,6 +4352,59 @@ const routes = [
   // the shipped cards, not an empty page.
   ['GET', /^\/focus$/, async() => readFocus()],
   ['PUT', /^\/focus$/, async(m, url, body) => writeFocus(body)],
+  /*
+   * Who is calling, as far as this service can tell.
+   *
+   * It is a diagnostic and an answer to a design question at once: the per-person secret store
+   * only works if dev-api knows whose request this is, and the question was whether the caller
+   * can simply be inferred. Nothing guesses here - it reports what actually arrived.
+   *
+   * `headers` names only the headers that could carry an identity, and never their values, with
+   * `authorization` reduced to whether one is there. `resolved` is the real test: if a bearer
+   * token did arrive, it is handed to the apiserver's SelfSubjectReview, which answers with the
+   * user that token belongs to. A null there means the token could not be resolved; an absent
+   * one means no token reached this service at all, which is the case worth knowing about.
+   */
+  ['GET', /^\/whoami$/, async(m, url, body, req) => {
+    const headers = req?.headers || {};
+    // The headers an apiserver's front proxy, an aggregated API server, or an auth proxy would
+    // add. A plain Service proxy adds none of them, which is the thing being measured.
+    const carriers = ['x-remote-user', 'x-remote-group', 'x-forwarded-user', 'x-forwarded-email', 'x-auth-request-user', 'impersonate-user'];
+    const seen = {};
+
+    for (const name of carriers) {
+      if (headers[name]) {
+        seen[name] = String(headers[name]);
+      }
+    }
+
+    const bearer = /^Bearer\s+(.+)$/i.exec(String(headers.authorization || ''))?.[1];
+    let resolved = null;
+
+    if (bearer) {
+      // Asked as the caller, not as this service: the point is what their token proves.
+      resolved = await fetch(`${ ROOT }/apis/authentication.k8s.io/v1/selfsubjectreviews`, {
+        method:  'POST',
+        headers: { authorization: `Bearer ${ bearer }`, 'content-type': 'application/json' },
+        body:    JSON.stringify({ apiVersion: 'authentication.k8s.io/v1', kind: 'SelfSubjectReview' }),
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((r) => r?.status?.userInfo?.username || null)
+        .catch(() => null);
+    }
+
+    const stores = await k8s(`/api/v1/namespaces/${ NAMESPACE }/secrets?labelSelector=${ SECRET_KIND_LABEL }%3Dsecrets`)
+      .then((list) => (list.items || []).map((secret) => secret.metadata?.name).filter(Boolean))
+      .catch(() => []);
+
+    return {
+      headers:       seen,
+      authorization: bearer ? 'bearer' : (headers.authorization ? 'other' : 'absent'),
+      resolved,
+      owner:         (process.env.DEV_SECRET_OWNER || '').trim(),
+      stores,
+    };
+  }],
   ['GET', /^\/openapi.json$/, async() => OPENAPI],
   ['GET', /^\/focus\/cards$/, async() => listCards()],
   ['GET', /^\/focus\/cards\/([a-z0-9-]+)$/, async(m) => readCard(m[1])],
@@ -5491,7 +5561,9 @@ http.createServer(async(req, res) => {
       if (m && req.method === method) {
         const body = method === 'POST' || method === 'PUT' ? await readBody(req) : {};
 
-        return send(res, 200, await handler(m, url, body));
+        // `req` last and unused by almost everything: only /whoami needs the request itself,
+        // and threading it through is cheaper than a second dispatch for one route.
+        return send(res, 200, await handler(m, url, body, req));
       }
     }
 
