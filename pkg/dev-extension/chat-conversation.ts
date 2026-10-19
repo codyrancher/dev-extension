@@ -37,6 +37,7 @@ import {
 import {
   deriveState, parseEntries, reconcilePending, unwrapPasted,
 } from './chat-state.mjs';
+import { frameNonce, readFrames } from './chat-frames.mjs';
 import {
   modelAliases, flagChoices, parseMcpList, currentModel, isSafeOptionValue, type McpServer,
 } from './chat-options';
@@ -662,6 +663,9 @@ export function useConversation(source: () => ConversationSource) {
     polling.value = true;
     try {
       const subId = view.value === 'main' ? '' : view.value;
+      // The frame's nonce, fresh for this read: every marker below carries it, so nothing the
+      // transcript happens to quote can close a block. See chat-frames.mjs.
+      const nonce = frameNonce();
       const out = await run([
         // CAP bounds the FIRST read of a transcript. A conversation that has run for hours has a
         // transcript of many megabytes, and shipping the whole of it through one exec (base64
@@ -672,7 +676,7 @@ export function useConversation(source: () => ConversationSource) {
         // view is for, small enough to arrive every time. A partial first line from cutting
         // mid-file is dropped by parseTranscript, and the browser sets its offset to the true
         // size, so every read after this one is just the delta.
-        `ID=${ JSON.stringify(paneId.value) }; OFF=${ offset.value }; SUB=${ JSON.stringify(subId) }; SOFF=${ sub.value.offset }; CAP=1048576`,
+        `ID=${ JSON.stringify(paneId.value) }; OFF=${ offset.value }; SUB=${ JSON.stringify(subId) }; SOFF=${ sub.value.offset }; CAP=1048576; N=${ JSON.stringify(nonce) }`,
         `PROJ="$HOME/.claude/projects/${ projectKey(workdir.value) }"`,
         'uuid=$(cat "$(dirname "$HOME")/sessions/$ID.id" 2>/dev/null)',
         'FILE=""',
@@ -682,25 +686,25 @@ export function useConversation(source: () => ConversationSource) {
         // a new conversation's id file landed, and the chat opened on eighteen messages that were
         // not this conversation's.
         'if [ -n "$uuid" ] && [ -f "$PROJ/$uuid.jsonl" ]; then FILE="$PROJ/$uuid.jsonl"; elif [ "$(ls "$PROJ"/*.jsonl 2>/dev/null | wc -l)" -eq 1 ]; then FILE=$(ls "$PROJ"/*.jsonl 2>/dev/null | head -1); fi',
-        'echo "@@FILE $FILE"',
-        'if [ -n "$FILE" ] && [ -f "$FILE" ]; then size=$(wc -c < "$FILE"); echo "@@SIZE $size"; FROM=$OFF; if [ "$OFF" -eq 0 ] && [ "$size" -gt "$CAP" ]; then FROM=$((size - CAP)); fi; if [ "$size" -gt "$FROM" ]; then echo "@@DATA"; tail -c +$((FROM+1)) "$FILE"; echo; echo "@@ENDDATA"; fi; fi',
+        'echo "@@FILE-$N $FILE"',
+        'if [ -n "$FILE" ] && [ -f "$FILE" ]; then size=$(wc -c < "$FILE"); echo "@@SIZE-$N $size"; FROM=$OFF; if [ "$OFF" -eq 0 ] && [ "$size" -gt "$CAP" ]; then FROM=$((size - CAP)); fi; if [ "$size" -gt "$FROM" ]; then echo "@@DATA-$N"; tail -c +$((FROM+1)) "$FILE"; echo; echo "@@ENDDATA-$N"; fi; fi',
         // The subagent's transcript sits beside the session's, in a directory named for it. Capped the same way.
-        'if [ -n "$SUB" ] && [ -n "$FILE" ]; then SF="${FILE%.jsonl}/subagents/agent-$SUB.jsonl"; if [ -f "$SF" ]; then ssize=$(wc -c < "$SF"); echo "@@SSIZE $ssize"; SFROM=$SOFF; if [ "$SOFF" -eq 0 ] && [ "$ssize" -gt "$CAP" ]; then SFROM=$((ssize - CAP)); fi; if [ "$ssize" -gt "$SFROM" ]; then echo "@@SDATA"; tail -c +$((SFROM+1)) "$SF"; echo; echo "@@SENDDATA"; fi; fi; fi',
+        'if [ -n "$SUB" ] && [ -n "$FILE" ]; then SF="${FILE%.jsonl}/subagents/agent-$SUB.jsonl"; if [ -f "$SF" ]; then ssize=$(wc -c < "$SF"); echo "@@SSIZE-$N $ssize"; SFROM=$SOFF; if [ "$SOFF" -eq 0 ] && [ "$ssize" -gt "$CAP" ]; then SFROM=$((ssize - CAP)); fi; if [ "$ssize" -gt "$SFROM" ]; then echo "@@SDATA-$N"; tail -c +$((SFROM+1)) "$SF"; echo; echo "@@ENDSDATA-$N"; fi; fi; fi',
         // Every subagent's last line and when it was written, for the list of them.
-        'if [ -n "$FILE" ] && [ -d "${FILE%.jsonl}/subagents" ]; then for f in "${FILE%.jsonl}"/subagents/agent-*.jsonl; do [ -f "$f" ] || continue; id=$(basename "$f" .jsonl); id=${id#agent-}; echo "@@TAIL $id $(stat -c %Y "$f")"; tail -c 6000 "$f" | grep "\"type\":\"assistant\"" | tail -n 1 | cut -c1-3000; done; echo "@@ENDTAILS"; fi',
+        'if [ -n "$FILE" ] && [ -d "${FILE%.jsonl}/subagents" ]; then for f in "${FILE%.jsonl}"/subagents/agent-*.jsonl; do [ -f "$f" ] || continue; id=$(basename "$f" .jsonl); id=${id#agent-}; echo "@@TAIL-$N $id $(stat -c %Y "$f")"; tail -c 6000 "$f" | grep "\"type\":\"assistant\"" | tail -n 1 | cut -c1-3000; done; echo "@@ENDTAILS-$N"; fi',
         // The hook state file (seed/chat-hook.mjs): the last thing claude said it was doing.
-        'echo "@@HOOK"; cat "$(dirname "$HOME")/sessions/$ID.state.json" 2>/dev/null; echo; echo "@@ENDHOOK"',
+        'echo "@@HOOK-$N"; cat "$(dirname "$HOME")/sessions/$ID.state.json" 2>/dev/null; echo; echo "@@ENDHOOK-$N"',
         // Whether a claude process is running in the pane at all. The pane's own command is the
         // loop that runs claude (claude-session.sh), so claude is its child - and a pane with the
         // loop but no child is a shell, whatever the transcript's last line says.
-        'if tmux has-session -t "mc-$ID" 2>/dev/null; then P=$(tmux display -p -t "mc-$ID" "#{pane_pid}" 2>/dev/null); [ -n "$P" ] && pgrep -P "$P" -x claude >/dev/null 2>&1 && echo "@@ALIVE"; fi',
-        'echo "@@PANE"',
-        'if tmux has-session -t "mc-$ID" 2>/dev/null; then tmux capture-pane -p -t "mc-$ID" | tail -n 40; else echo "@@NOPANE"; fi',
+        'if tmux has-session -t "mc-$ID" 2>/dev/null; then P=$(tmux display -p -t "mc-$ID" "#{pane_pid}" 2>/dev/null); [ -n "$P" ] && pgrep -P "$P" -x claude >/dev/null 2>&1 && echo "@@ALIVE-$N"; fi',
+        'echo "@@PANE-$N"',
+        'if tmux has-session -t "mc-$ID" 2>/dev/null; then tmux capture-pane -p -t "mc-$ID" | tail -n 40; else echo "@@NOPANE-$N"; fi',
       ].join('\n'));
 
       const before = messages.value.length;
 
-      absorb(out);
+      absorb(out, nonce);
       // After absorb, which is what moves the transcript on: a queued message is retired by the
       // line claude has just written for it, and a picker is over once claude is writing into the
       // conversation again.
@@ -715,31 +719,33 @@ export function useConversation(source: () => ConversationSource) {
     }
   }
 
-  function absorb(out: string): void {
-    const fileMatch = /@@FILE (.*)/.exec(out);
-    const found = fileMatch ? fileMatch[1].trim() : '';
-    const size = Number(/@@SIZE (\d+)/.exec(out)?.[1] || 0);
+  /**
+   * One read, taken apart and folded in.
+   *
+   * The taking-apart is chat-frames.mjs; what is left here is what the view does with each piece:
+   * which of them means "a different conversation, start again", which of them moves the offset,
+   * and which of them is only kept when the read actually carried it.
+   */
+  function absorb(out: string, nonce: string): void {
+    const frame = readFrames(out, nonce);
+    const size = frame.size;
 
-    if (found !== file.value || size < offset.value) {
+    if (frame.file !== file.value || size < offset.value) {
       // A different transcript (the id file appeared, or the conversation restarted): start over.
-      file.value = found;
+      file.value = frame.file;
       offset.value = 0;
       lines.value = [];
       remainder.value = '';
       messages.value = [];
       restarted.value++;
-      if (size && out.includes('@@DATA')) {
+      if (size && frame.data !== null) {
         // The data in this answer is from OFF, which was for the old file; ask again from 0.
         return;
       }
     }
 
-    const dataAt = out.indexOf('@@DATA\n');
-    const dataEnd = out.indexOf('\n@@ENDDATA');
-
-    if (dataAt >= 0 && dataEnd > dataAt) {
-      const chunk = out.slice(dataAt + 7, dataEnd);
-      const text = remainder.value + chunk;
+    if (frame.data !== null) {
+      const text = remainder.value + frame.data;
       const parts = text.split('\n');
 
       remainder.value = parts.pop() || '';
@@ -760,73 +766,54 @@ export function useConversation(source: () => ConversationSource) {
       grew.value++;
     }
 
-    const sdataAt = out.indexOf('@@SDATA\n');
-    const sdataEnd = out.indexOf('\n@@SENDDATA');
-    const ssize = Number(/@@SSIZE (\d+)/.exec(out)?.[1] || 0);
-
-    if (view.value !== 'main' && ssize && ssize < sub.value.offset) {
+    if (view.value !== 'main' && frame.ssize && frame.ssize < sub.value.offset) {
       sub.value = {
         offset: 0, lines: [], remainder: '', messages: [],
       };
-    } else if (view.value !== 'main' && sdataAt >= 0 && sdataEnd > sdataAt) {
-      const text = sub.value.remainder + out.slice(sdataAt + 8, sdataEnd);
+    } else if (view.value !== 'main' && frame.sdata !== null) {
+      const text = sub.value.remainder + frame.sdata;
       const parts = text.split('\n');
       const rest = parts.pop() || '';
       const all = sub.value.lines.concat(parts.filter((l) => l.trim()));
 
       sub.value = {
-        offset: ssize, lines: all, remainder: rest, messages: parseTranscript(all.concat(rest.trim() ? [rest] : [])),
+        offset: frame.ssize, lines: all, remainder: rest, messages: parseTranscript(all.concat(rest.trim() ? [rest] : [])),
       };
       grew.value++;
     }
 
-    const tailsAt = out.indexOf('@@TAIL ');
-    const tailsEnd = out.indexOf('@@ENDTAILS');
-
-    if (tailsAt >= 0 && tailsEnd > tailsAt) {
+    if (frame.tails.length) {
       const next: Record<string, { at: number; last: string }> = {};
 
-      for (const chunk of out.slice(tailsAt, tailsEnd).split('@@TAIL ').slice(1)) {
-        const [head, ...rest] = chunk.split('\n');
-        const [id, at] = head.trim().split(/\s+/);
+      for (const { id, at, raw } of frame.tails) {
         let last = '';
 
         try {
-          const entry = JSON.parse(rest.join('\n').trim());
+          const entry = JSON.parse(raw);
           const blocks = Array.isArray(entry?.message?.content) ? entry.message.content : [];
           const text = blocks.filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ').trim();
           const tool = blocks.find((b: any) => b.type === 'tool_use');
 
           last = text || (tool ? `${ tool.name }: ${ toolSummary({ id: tool.id, name: tool.name, input: tool.input }) }` : '');
         } catch { /* a partial line; keep what we had */ }
-        next[id] = { at: Number(at) || 0, last: (last || tails.value[id]?.last || '').split('\n')[0].slice(0, 140) };
+        next[id] = { at, last: (last || tails.value[id]?.last || '').split('\n')[0].slice(0, 140) };
       }
       tails.value = next;
     }
 
-    const hookAt = out.indexOf('@@HOOK\n');
-    const hookEnd = out.indexOf('\n@@ENDHOOK');
-
-    if (hookAt >= 0 && hookEnd > hookAt) {
-      try {
-        const raw = out.slice(hookAt + 7, hookEnd).trim();
-
-        hook.value = raw ? JSON.parse(raw) : null;
-      } catch {
-        // Half-written; the next poll reads a whole one.
-      }
+    // undefined is "this read did not carry one", which is not the same as a state file that is
+    // there and empty: the first keeps what the view had, the second clears it.
+    if (frame.hook !== undefined) {
+      hook.value = frame.hook;
     }
 
-    const paneAt = out.indexOf('@@PANE\n');
-    const text = paneAt >= 0 ? out.slice(paneAt + 7) : '';
-
-    attached.value = !text.includes('@@NOPANE');
-    alive.value = attached.value && out.slice(0, paneAt >= 0 ? paneAt : undefined).includes('@@ALIVE');
-    paneText.value = text;
+    attached.value = frame.attached;
+    alive.value = frame.alive;
+    paneText.value = frame.pane;
     state.value = deriveState({
-      entries: entries.value, hook: hook.value, attached: attached.value, alive: alive.value, paneText: text, now: Date.now(),
+      entries: entries.value, hook: hook.value, attached: attached.value, alive: alive.value, paneText: frame.pane, now: Date.now(),
     });
-    pane.value = paneFromState(state.value, text);
+    pane.value = paneFromState(state.value, frame.pane);
   }
 
   /**
