@@ -139,8 +139,13 @@ async function instanceTarget(name: string, since: string, cluster: Json | undef
       };
     }
 
+    // The node's address is carried even while Rancher is still installing, because the host
+    // it implies has to be written onto the instance before Rancher first starts rather than
+    // after: the address is what server-url and the certificate are made from, and a Rancher
+    // that came up without them has already told every agent it issues to call home to
+    // nowhere. See ensureRancherHosts.
     return {
-      ...base, phase: 'installing', step: 2, detail: deployment ? 'Rancher is starting' : 'Installing Rancher',
+      ...base, phase: 'installing', step: 2, detail: deployment ? 'Rancher is starting' : 'Installing Rancher', clusterId: cluster.id, nodeIp: address,
     };
   }
 
@@ -156,6 +161,13 @@ async function instanceTarget(name: string, since: string, cluster: Json | undef
   if (nodeUp) {
     return {
       ...base, phase: 'ready', step: 3, detail: '', url: rancherAddress(name, machineIp), clusterId: cluster?.id || '', nodeIp: machineIp,
+    };
+  }
+  // Provisioning, but the machine already has an address: worth reporting for the same reason
+  // as above - the host can be written now, so the install that follows renders with it.
+  if (machineIp) {
+    return {
+      ...base, phase: 'provisioning', step: 1, detail: message || `Provisioning (${ cluster?.state || 'pending' })`, clusterId: cluster?.id || '', nodeIp: machineIp,
     };
   }
   if (cluster && (cluster.state === 'error' || cluster.transitioning === 'error')) {
@@ -232,7 +244,18 @@ export function rancherAddress(name: string, nodeIp: string): string {
  * certificate controller does the rest (see certs.ts).
  */
 export async function ensureRancherHosts(store: Store, ranchers: RancherTarget[]): Promise<void> {
-  const wanted = ranchers.filter((rancher) => rancher.kind === 'instance' && rancher.phase === 'ready' && rancher.nodeIp);
+  /*
+   * Any instance whose node has an address, not only one that is up.
+   *
+   * The host is what the certificate is issued for and what server-url is set to, and both of
+   * those want to be true before Rancher's first start rather than after it. Waiting for
+   * `ready` meant the opposite: Rancher came up on a bundle rendered with `host: none`, so it
+   * had no server-url, and every cluster provisioned from it handed its agents nowhere to call
+   * home - which is what "cluster management does not work" turned out to be. It also put the
+   * re-render after the instance had taken its cluster over from this Rancher, which is the
+   * worst moment to need Fleet to deliver something.
+   */
+  const wanted = ranchers.filter((rancher) => rancher.kind === 'instance' && rancher.nodeIp);
 
   if (!wanted.length) {
     return;

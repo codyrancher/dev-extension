@@ -314,9 +314,18 @@ spec:
             # actually listens on for this.
             #
             # eula-agreed is left alone: the Rancher these apps are managed from has it empty and
-            # logs in fine. server-url is not set: its value is the hostname the instance is
-            # reached on, which carries a node IP nobody knows at template time, and this
-            # instance manages no downstream clusters, which is what server-url is for.
+            # logs in fine.
+            #
+            # server-url is NOT set here, and the reason is ordering rather than principle. It
+            # was once left out on the grounds that an instance manages no downstream clusters,
+            # which turned out to be false the first time somebody made one from an instance:
+            # without it, a cluster provisioned here hands its agents no address to call home to
+            # and hangs for ever, which is what "cluster management does not work" looks like.
+            # Its value is this instance's own hostname, which carries a node IP nobody knows at
+            # template time - so it is set by the sidecar below, which runs after the address is
+            # known and re-checks it hourly. Setting it from the environment would mean writing
+            # "https://none" on the first render and correcting it later, and a wrong
+            # server-url that Rancher marks authoritative (source: env) is worse than none.
             - name: CATTLE_FIRST_LOGIN
               value: "false"
           startupProbe:
@@ -359,13 +368,44 @@ spec:
               # the first install here succeed.
               handover() { for kind in deployment serviceaccount configmap clusterrolebinding; do for n in $(kubectl get $kind -n cattle-system -o jsonpath='{range .items[?(@.metadata.annotations.meta\\.helm\\.sh/release-name=="mcc-\${install}-managed-system-upgrade-controller")]}{.metadata.name}{" "}{end}' 2>/dev/null); do kubectl annotate $kind -n cattle-system $n meta.helm.sh/release-name=system-upgrade-controller --overwrite; done; done; }
               handover || true
+              # The address this Rancher tells everything else to reach it on.
+              #
+              # Every agent of every cluster provisioned from here is handed server-url and
+              # calls home to it; empty, they have nowhere to go, and the cluster sits in
+              # Provisioning until somebody gives up on it. It cannot be an env var on the
+              # container above because its value is this instance's own hostname, which
+              # carries the node's IP and is therefore unknown until after the node exists -
+              # the first render would write "https://none", and a wrong server-url set from
+              # the environment is one Rancher marks authoritative and refuses to correct.
+              #
+              # So: here, where it can be skipped until the host is real, and re-checked on
+              # the hourly pass so that the first render after the address lands fixes it.
+              # Rancher creates the Setting itself at startup, so this patches rather than
+              # creates: a kubectl create racing Rancher's own would make this the second
+              # owner of an object Rancher manages, which is the mistake 70-admins.yaml
+              # describes. A patch that fails because the Setting is not there yet is a
+              # "return 1", and the caller waits.
+              server_url() {
+                [ -n "\${host}" ] && [ "\${host}" != none ] || return 0
+                want="https://\${host}"
+                have=$(kubectl get setting server-url -o jsonpath='{.value}' 2>/dev/null) || return 1
+                [ "$have" = "$want" ] && return 0
+                echo "setting server-url to $want"
+                # Single quotes around the JSON and the value spliced in: an escaped double
+                # quote inside this template survives into the YAML as a plain one, which left
+                # the shell reading {value:https://...} - not JSON, refused by the apiserver,
+                # and refused quietly because this redirects its output.
+                kubectl patch setting server-url --type=merge -p '{"value":"'"$want"'"}' >/dev/null 2>&1
+              }
               echo "waiting for Rancher's CRDs"
               until kubectl get crd authconfigs.management.cattle.io users.management.cattle.io globalrolebindings.management.cattle.io >/dev/null 2>&1; do sleep 15; done
+              echo "waiting to set server-url"
+              until server_url; do sleep 15; done
               echo "waiting for Rancher to create the github AuthConfig"
               until kubectl get authconfig github >/dev/null 2>&1; do sleep 10; done
               until kubectl apply -f /bootstrap/authconfig.yaml -f /bootstrap/admins.yaml; do echo "not yet, retrying"; sleep 15; done
               echo "github login and admins configured"
-              while true; do sleep 3600; handover >/dev/null 2>&1 || true; kubectl apply -f /bootstrap/authconfig.yaml -f /bootstrap/admins.yaml >/dev/null 2>&1 || true; done
+              while true; do sleep 3600; handover >/dev/null 2>&1 || true; server_url >/dev/null 2>&1 || true; kubectl apply -f /bootstrap/authconfig.yaml -f /bootstrap/admins.yaml >/dev/null 2>&1 || true; done
           volumeMounts:
             - name: bootstrap-auth
               mountPath: /bootstrap
