@@ -238,7 +238,8 @@ body {
   --studio-control-sm:     30px;
 
   --studio-radius-control: 3px;
-  --studio-radius:         4px;
+  /* The control radius, from the one ladder; see design/tokens.css. */
+  --studio-radius:         var(--dev-r-ctl);
   --studio-radius-pill:    100px;
 
   /* -------------------------------------------------------------- Density --

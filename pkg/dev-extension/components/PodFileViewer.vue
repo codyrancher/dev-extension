@@ -518,7 +518,7 @@ export default {
   :deep(p) { margin: 0 0 10px; }
   :deep(ul), :deep(ol) { margin: 0 0 10px; padding-left: 22px; }
   :deep(li) { margin: 2px 0; }
-  :deep(code) { font-size: 12px; background: var(--box-bg); padding: 1px 4px; border-radius: 3px; }
+  :deep(code) { font-size: 12px; background: var(--box-bg); padding: 1px 4px; border-radius: var(--dev-r-xs); }
   :deep(pre) { background: var(--box-bg); border: 1px solid var(--border); border-radius: var(--border-radius); padding: 8px 10px; overflow-x: auto; }
   :deep(pre code) { background: transparent; padding: 0; }
   :deep(table) { border-collapse: collapse; margin: 0 0 10px; }

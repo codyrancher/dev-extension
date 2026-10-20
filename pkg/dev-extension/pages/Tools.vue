@@ -375,7 +375,7 @@ export default {
 
 .dev-tools__tenancy {
   padding: 0 8px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   font-size: 11px;
 }
 
@@ -394,7 +394,7 @@ export default {
   margin: 8px 0 0;
   padding: 8px;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--dev-r-ctl);
   background: var(--default);
   font-size: 11px;
   overflow: auto;

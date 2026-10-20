@@ -751,7 +751,7 @@ defineExpose({ ask, focus: focusBox });
   margin-left: 6px;
   padding: 2px 8px;
   border: 1px solid var(--dev-line, #2b3240);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--dev-muted, #9aa3b2);
   font: inherit;

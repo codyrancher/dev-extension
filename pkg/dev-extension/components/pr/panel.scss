@@ -102,7 +102,7 @@
   gap:           var(--dev-space-2);
   height:        28px;
   padding:       0 12px;
-  border-radius: 14px;
+  border-radius: var(--r-md);
   background:    var(--pr-el);
   color:         var(--pr-muted);
   font-size:     12px;
@@ -478,7 +478,7 @@
   align-items:   center;
   gap:           3px;
   padding:       var(--dev-space-1) 6px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   font-size:     10px;
   font-weight:   600;
   background:    var(--pr-el);
@@ -780,7 +780,7 @@
   padding:       0;
   margin:        0;
   border:        0;
-  border-radius: 4px;
+  border-radius: var(--dev-r-ctl);
   background:    var(--pr-el);
   color:         var(--pr-muted);
   font-size:     13px;
@@ -834,7 +834,7 @@
 .md-body :deep(code) {
   background:    var(--pr-bg);
   padding:       var(--dev-space-1) 5px;
-  border-radius: 3px;
+  border-radius: var(--dev-r-xs);
   font-family:   var(--pr-mono);
   font-size:     12px;
 }
@@ -1017,7 +1017,7 @@
 
 .prm-card-context {
   background:    var(--pr-bg);
-  border-radius: 3px;
+  border-radius: var(--dev-r-xs);
   padding:       var(--dev-space-1) 0;
   overflow-x:    auto;
 }

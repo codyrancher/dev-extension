@@ -1682,7 +1682,7 @@ export default {
     // people talking measured the same as the gap between a heading and its own text.
     margin:        0 0 14px;
     padding:       10px 14px 10px 16px;
-    border-radius: 10px;
+    border-radius: var(--r-md);
     max-width:     100%;
     border:        1px solid transparent;
 
@@ -1733,7 +1733,7 @@ export default {
     max-width:     240px;
     max-height:    160px;
     border:        1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--dev-r-ctl);
     cursor:        zoom-in;
     object-fit:    contain;
     background:    var(--body-bg);
@@ -1745,7 +1745,7 @@ export default {
     background:    var(--body-bg);
     color:         var(--body-text);
     border:        1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     width:         min(92vw, 760px);
     max-height:    88vh;
     display:       flex;
@@ -1808,7 +1808,7 @@ export default {
     margin:        2px 0 6px;
     padding:       5px 8px;
     border:        1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     background:    var(--body-bg);
     color:         var(--body-text);
     font-size:     12px;
@@ -1880,14 +1880,14 @@ export default {
     :deep(pre) {
       background:    var(--body-bg);
       border:        1px solid var(--border);
-      border-radius: 6px;
+      border-radius: var(--r-sm);
       padding:       8px 10px;
       overflow:      auto;
       font-size:     12px;
       margin:        6px 0;
     }
     :deep(code) { font-family: monospace; font-size: 12px; }
-    :deep(p code), :deep(li code) { background: color-mix(in srgb, var(--body-text) 8%, transparent); padding: 0 4px; border-radius: 3px; }
+    :deep(p code), :deep(li code) { background: color-mix(in srgb, var(--body-text) 8%, transparent); padding: 0 4px; border-radius: var(--dev-r-xs); }
     :deep(ul), :deep(ol) { margin: 4px 0 8px; padding-left: 22px; }
     :deep(h3), :deep(h4), :deep(h5), :deep(h6) { margin: 8px 0 4px; font-size: 13px; }
     :deep(blockquote) { border-left: 3px solid var(--border); margin: 6px 0; padding-left: 10px; color: var(--muted); }
@@ -1942,7 +1942,7 @@ export default {
     width:          auto;
     max-width:      6em;
     object-fit:     cover;
-    border-radius:  3px;
+    border-radius: var(--dev-r-xs);
     border:         1px solid var(--border);
     vertical-align: middle;
     background:     var(--body-bg);
@@ -1958,7 +1958,7 @@ export default {
     height:          1.4em;
     min-width:       1.6em;
     padding:         0 4px;
-    border-radius:   3px;
+    border-radius: var(--dev-r-xs);
     border:          1px solid var(--border);
     background:      var(--body-bg);
     font-size:       10px;
@@ -1981,7 +1981,7 @@ export default {
     gap:           4px;
     padding:       1px 8px;
     border:        1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--r-md);
     background:    var(--body-bg);
     color:         var(--muted);
     font-size:     11px;
@@ -2011,7 +2011,7 @@ export default {
     font-size:     11px;
     background:    var(--body-bg);
     border:        1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--dev-r-ctl);
     white-space:   pre-wrap;
     word-break:    break-word;
     max-height:    320px;
@@ -2070,7 +2070,7 @@ export default {
     font-size:     10px;
     line-height:   16px;
     padding:       0 5px;
-    border-radius: 3px;
+    border-radius: var(--dev-r-xs);
     background:    color-mix(in srgb, var(--body-text) 8%, transparent);
     color:         var(--body-text);
     text-transform: uppercase;
@@ -2092,7 +2092,7 @@ export default {
     font-size:     11px;
     background:    var(--body-bg);
     border:        1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--dev-r-ctl);
     white-space:   pre-wrap;
     word-break:    break-word;
     max-height:    320px;
@@ -2144,7 +2144,7 @@ export default {
     bottom:        118px;
     z-index:       4;
     padding:       8px 12px;
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     background:    color-mix(in srgb, var(--warning) 18%, var(--body-bg));
     border:        1px solid color-mix(in srgb, var(--warning) 50%, transparent);
     font-size:     12px;
@@ -2156,7 +2156,7 @@ export default {
     margin:        0 18px 8px;
     padding:       10px 12px;
     border:        1px solid var(--link);
-    border-radius: 10px;
+    border-radius: var(--r-md);
     background:    color-mix(in srgb, var(--link) 8%, transparent);
   }
 
@@ -2177,7 +2177,7 @@ export default {
     border:          1px solid var(--border);
     background:      var(--body-bg);
     color:           var(--body-text);
-    border-radius:   6px;
+    border-radius: var(--r-sm);
     padding:         4px 10px;
     min-height:      0;
     font-size:       12px;
@@ -2250,7 +2250,7 @@ export default {
     position:      relative;
     margin:        0 var(--mc-chat-gutter) 12px;
     border:        1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     background:    var(--body-bg);
     transition:    border-color 0.12s ease;
 
@@ -2317,7 +2317,7 @@ export default {
    */
   :deep(.mc-chat__cmd) {
     padding:        1px 0;
-    border-radius:  3px;
+    border-radius: var(--dev-r-xs);
     background:     color-mix(in srgb, var(--success) 22%, transparent);
     box-shadow:     0 1px 0 color-mix(in srgb, var(--success) 55%, transparent);
     color:          transparent;
@@ -2332,7 +2332,7 @@ export default {
     margin:        0 var(--mc-chat-gutter) 6px;
     padding:       8px 10px;
     border:        1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     background:    var(--box-bg);
   }
 
@@ -2394,7 +2394,7 @@ export default {
     max-width:     40%;
     padding:       3px 7px;
     border:        0;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     background:    transparent;
     color:         var(--muted);
     font-size:     11px;
@@ -2438,7 +2438,7 @@ export default {
     padding:         0;
     border-width:    1px;
     border-style:    solid;
-    border-radius:   6px;
+    border-radius: var(--r-sm);
     line-height:     1;
   }
 
@@ -2472,7 +2472,7 @@ export default {
     overflow:      auto;
     border:        1px solid var(--border);
     border-bottom: 0;
-    border-radius: 8px 8px 0 0;
+    border-radius: var(--r-sm) var(--r-sm) 0 0;
     background:    var(--body-bg);
 
     li { list-style: none; }
@@ -2485,7 +2485,7 @@ export default {
     width:         100%;
     padding:       4px 8px;
     border:        0;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     background:    transparent;
     color:         var(--body-text);
     font-size:     12px;
@@ -2533,7 +2533,7 @@ export default {
     margin:        0 18px 6px;
     padding:       8px 10px;
     border:        1px solid var(--warning);
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     background:    color-mix(in srgb, var(--warning) 10%, transparent);
     font-size:     12px;
   }
@@ -2575,7 +2575,7 @@ export default {
     padding:       3px;
     border:        1px solid var(--border);
     border-bottom: 0;
-    border-radius: 8px 8px 0 0;
+    border-radius: var(--r-sm) var(--r-sm) 0 0;
     background:    var(--body-bg);
     max-height:    46vh;
     overflow:      auto;
@@ -2609,7 +2609,7 @@ export default {
     width:         100%;
     padding:       4px 8px;
     border:        0;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     background:    transparent;
     color:         var(--body-text);
     font-size:     12px;
@@ -2652,7 +2652,7 @@ export default {
     padding:       2px 9px;
     line-height:   1.5;
     border:        1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--r-pill);
     background:    transparent;
     color:         var(--muted);
     font-size:     11px;
@@ -2734,7 +2734,7 @@ export default {
     height:        24px;
     padding:       0 10px;
     font-size:     11px;
-    border-radius: 12px;
+    border-radius: var(--r-md);
     border:        1px solid var(--border);
     background:    transparent;
     color:         var(--body-text);
@@ -2764,7 +2764,7 @@ export default {
     min-height:    0;
     padding:       4px 8px;
     border:        1px solid transparent;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     background:    transparent;
     color:         var(--body-text);
     text-align:    left;
@@ -2845,7 +2845,7 @@ export default {
     padding:         0 10px;
     font-size:       11px;
     line-height:     1;
-    border-radius:   6px;
+    border-radius: var(--r-sm);
     border:          1px solid var(--border);
     background:      var(--body-bg);
     color:           var(--muted);
@@ -2888,7 +2888,7 @@ export default {
     &__msg {
       margin:        0 0 12px;
       padding:       9px 11px 9px 12px;
-      border-radius: 8px;
+      border-radius: var(--r-sm);
     }
 
     /* Enough to tell the two apart at a glance, which is all the indent was ever doing; the

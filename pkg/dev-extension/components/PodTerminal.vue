@@ -1266,7 +1266,7 @@ export default {
   padding: 0 8px;
   background: var(--body-bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--dev-r-ctl);
   color: var(--body-text);
   font-family: monospace;
   font-size: 13px;
@@ -1336,7 +1336,7 @@ export default {
     display:       flex;
     gap:           4px;
     padding:       2px;
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     background:    color-mix(in srgb, var(--terminal-bg, var(--body-bg)) 88%, transparent);
     backdrop-filter: blur(3px);
     opacity:    0;
@@ -1355,7 +1355,7 @@ export default {
     padding:       0 8px;
     font-size:     11px;
     font-family:   monospace;
-    border-radius: 4px;
+    border-radius: var(--dev-r-ctl);
     border:        1px solid var(--border);
     background:    var(--body-bg);
     color:         var(--muted);
@@ -1410,7 +1410,7 @@ export default {
     gap: 8px;
     padding: 4px 10px;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--dev-r-ctl);
     background: var(--body-bg);
     color: var(--muted);
     font-size: 12px;

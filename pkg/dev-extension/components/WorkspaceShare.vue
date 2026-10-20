@@ -712,7 +712,7 @@ export default {
 
     &__state {
       padding:        1px 8px;
-      border-radius:  12px;
+      border-radius: var(--r-md);
       font-size:      11px;
       letter-spacing: 0.04em;
       text-transform: uppercase;
@@ -734,7 +734,7 @@ export default {
 
     &__cert {
       padding:       1px 8px;
-      border-radius: 10px;
+      border-radius: var(--r-md);
       font-size:     11px;
       font-weight:   600;
       background:    var(--box-bg);
@@ -767,7 +767,7 @@ export default {
     &__stale {
       margin-left:   var(--dev-space-2);
       padding:       1px 8px;
-      border-radius: 9px;
+      border-radius: var(--r-sm);
       font-size:     12px;
       color:         var(--warning);
       border:        1px solid var(--warning);

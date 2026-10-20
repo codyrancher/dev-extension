@@ -1010,7 +1010,7 @@ export default {
       min-height:      0;
       padding:         0;
       border:          0;
-      border-radius:   4px;
+      border-radius: var(--dev-r-ctl);
       background:      none;
       color:           var(--muted);
       font-size:       12px;
@@ -1065,7 +1065,7 @@ export default {
       display:       block;
       width:         14px;
       height:        3px;
-      border-radius: 2px;
+      border-radius: var(--dev-r-xs);
       background:    var(--border);
 
       &--done { background: var(--success); }
@@ -1122,7 +1122,7 @@ export default {
       min-width:     90px;
       overflow:      hidden;
       height:        6px;
-      border-radius: 3px;
+      border-radius: var(--dev-r-xs);
       background:    var(--border);
     }
 
@@ -1277,7 +1277,7 @@ export default {
         width:           auto;
         height:          40px;
         padding:         0 $rail;
-        border-radius:   0;
+        border-radius: 0;
       }
 
       // The glyph occupies the same slot a list row's dot does, so the labels agree too.

@@ -224,7 +224,7 @@ export default {
   margin-left:    6px;
   padding:        1px 6px;
   border:         1px solid var(--warning);
-  border-radius:  10px;
+  border-radius: var(--r-md);
   color:          var(--warning);
   font-size:      10px;
   font-weight:    700;

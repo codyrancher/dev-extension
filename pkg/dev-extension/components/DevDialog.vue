@@ -123,7 +123,7 @@ export default {
     background:     var(--body-bg);
     color:          var(--body-text);
     border:         1px solid var(--border);
-    border-radius:  10px;
+    border-radius: var(--r-md);
     box-shadow:     0 12px 40px rgba(0, 0, 0, 0.4);
   }
 
@@ -139,7 +139,7 @@ export default {
     background:    var(--body-bg);
     color:         var(--body-text);
     border:        1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--r-sm);
 
     &:focus { outline: none; border-color: var(--dev-accent); }
   }
@@ -151,7 +151,7 @@ export default {
     height:        32px;
     padding:       0 14px;
     font-size:     13px;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     border:        1px solid var(--border);
     background:    transparent;
     color:         var(--body-text);

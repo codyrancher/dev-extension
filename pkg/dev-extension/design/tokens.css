@@ -64,6 +64,35 @@
   --dev-row-glyph: var(--dev-inset);
 
   /* Dialog widths, and the one fixed column this product has. */
+  /* ── Corners ─────────────────────────────────────────────────────────
+   *
+   * The same story as the spacing above, one property along: 2, 3, 4, 6, 7, 8, 9, 10 and 12
+   * pixels were all in use as a border radius, chosen a component at a time, which is how two
+   * panels side by side come to be almost the same shape.
+   *
+   * Four steps and a pill. The three larger ones are the deck's own ladder, which was already
+   * the most deliberate thing here - it just lived in design/focus.css where only the deck and
+   * the code view could see it, so the rest of the product could not round anything the same
+   * way even when it wanted to. It is declared here instead, and continues upwards into the
+   * two sizes only the deck uses.
+   *
+   * `--dev-r-ctl` is Rancher's own control radius rather than a number of ours: a button of
+   * this product's sits next to buttons of Rancher's, and a rhythm of its own there reads as a
+   * mistake. The same argument the spacing scale makes about 10px.
+   */
+  /* a chip, a tag, an inline code span */
+  --dev-r-xs:  3px;
+  /* anything that is a control: a button, an input, a select */
+  --dev-r-ctl: var(--border-radius, 4px);
+  /* a row, a thumbnail, a small surface */
+  --r-sm:   8px;
+  /* a card, a panel, a dialog */
+  --r-md:   12px;
+  /* the deck's larger surfaces */
+  --r-lg:   18px;
+  --r-xl:   28px;
+  --r-pill: 999px;
+
   --dev-modal-sm: 560px;
   --dev-modal:    720px;
   --dev-modal-lg: 900px;

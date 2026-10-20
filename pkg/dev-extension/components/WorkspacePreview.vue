@@ -154,7 +154,7 @@ export default {
 
     &__state {
       padding:        1px 8px;
-      border-radius:  12px;
+      border-radius: var(--r-md);
       font-size:      11px;
       letter-spacing: 0.04em;
       text-transform: uppercase;

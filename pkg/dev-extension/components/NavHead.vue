@@ -161,7 +161,7 @@ export default {
       min-height:      0;
       padding:         0;
       border:          1px solid var(--border);
-      border-radius:   4px;
+      border-radius: var(--dev-r-ctl);
       background:      transparent;
       color:           var(--muted);
       font-size:       15px;

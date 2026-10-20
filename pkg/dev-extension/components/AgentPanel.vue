@@ -1438,7 +1438,7 @@ export default {
       height: 20px;
       padding: 0;
       justify-content: center;
-      border-radius: 3px;
+      border-radius: var(--dev-r-xs);
     }
   }
 
@@ -1460,7 +1460,7 @@ export default {
     // Rancher gives every button a 40px min-height, which would stretch these past the row.
     min-height: 0;
     border: none;
-    border-radius: 3px;
+    border-radius: var(--dev-r-xs);
     background: none;
     color: var(--body-text);
     cursor: pointer;
@@ -1493,7 +1493,7 @@ export default {
     min-width: 80px;
     padding: 3px 6px;
     border: 1px solid var(--border);
-    border-radius: 3px;
+    border-radius: var(--dev-r-xs);
     background: var(--body-bg);
     color: var(--body-text);
     font-size: 13px;
@@ -1583,7 +1583,7 @@ export default {
       z-index: 2;
       opacity: 0.6;
       background: var(--default-hover-bg, var(--body-bg));
-      border-radius: 3px;
+      border-radius: var(--dev-r-xs);
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
       cursor: grabbing;
       transition: none;
@@ -1650,7 +1650,7 @@ export default {
     margin: 2px 0;
     padding: 0;
     border: none;
-    border-radius: 3px;
+    border-radius: var(--dev-r-xs);
     background: none;
     color: var(--body-text);
     cursor: pointer;

@@ -719,14 +719,14 @@ export default {
 
   &__count {
     background:    var(--nav-bg);
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     padding:       0 6px;
   }
 }
 
 .card {
   border:        1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--dev-r-ctl);
   margin-bottom: 6px;
   position:      relative;
 

@@ -466,7 +466,7 @@ export default {
     text-transform: uppercase;
     letter-spacing: 0.05em;
     padding:        2px 8px;
-    border-radius:  10px;
+    border-radius: var(--r-md);
     border:         1px solid var(--border);
     color:          var(--muted);
     background:     var(--body-bg);
@@ -582,7 +582,7 @@ export default {
     flex-direction: column;
     background:     var(--body-bg);
     border:         1px solid var(--border);
-    border-radius:  10px;
+    border-radius: var(--r-md);
     overflow:       hidden;
   }
 

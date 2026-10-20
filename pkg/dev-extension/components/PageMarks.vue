@@ -289,7 +289,7 @@ export default {
   height:        22px;
   padding:       0;
   border:        1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--dev-r-ctl);
   background:    var(--body-bg);
   color:         var(--muted);
   cursor:        pointer;

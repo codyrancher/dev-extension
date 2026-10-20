@@ -2562,7 +2562,7 @@ export default {
   .dev-my-work__status {
     display:         inline-block;
     padding:         1px 8px;
-    border-radius:   12px;
+    border-radius: var(--r-md);
     font-size:       11px;
     letter-spacing:  0.04em;
     text-transform:  uppercase;
@@ -2633,7 +2633,7 @@ export default {
     // name and would have to be told that "4 failing" is one.
     &__badge {
       padding:       1px var(--dev-space-3);
-      border-radius: 10px;
+      border-radius: var(--r-md);
       font-size:     11px;
       white-space:   nowrap;
 
@@ -2663,7 +2663,7 @@ export default {
       margin:        1px var(--dev-space-2) 1px 0;
       padding:       1px var(--dev-space-3);
       border:        1px solid var(--border);
-      border-radius: 10px;
+      border-radius: var(--r-md);
       color:         var(--muted);
       font-size:     11px;
       white-space:   nowrap;
@@ -2809,7 +2809,7 @@ export default {
 .dev-my-work__tracker__followed {
   margin-left: 6px;
   padding: 0 6px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--default);
   color: var(--muted);
   font-size: 10px;
@@ -2834,7 +2834,7 @@ export default {
 .dev-my-work__tracker__status {
   display: inline-block;
   padding: 1px 8px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   font-size: 12px;
   white-space: nowrap;
   background: var(--default);

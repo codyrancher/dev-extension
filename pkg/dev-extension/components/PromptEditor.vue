@@ -306,7 +306,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   --pe-wash: color-mix(in srgb, var(--primary, #3d98d3) 16%, transparent);
   --pe-warn: var(--warning, #d29922);
   --pe-error: var(--error, #f85149);
-  --pe-radius: 4px;
+  /* A control outside the deck; inside it, the surface step below. See design/tokens.css. */
+  --pe-radius: var(--dev-r-ctl);
   --pe-mono: var(--mono, monospace);
 
   display: flex;
@@ -356,7 +357,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 .pe__tag {
   padding: 1px 6px;
   border: 1px solid var(--pe-accent);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--pe-wash);
   color: var(--pe-accent);
   font-size: 10px;
@@ -399,13 +400,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   position: absolute;
   inset: 0;
   overflow: hidden;
-  border-radius: 4px;
+  border-radius: var(--dev-r-ctl);
   color: transparent;
   pointer-events: none;
 }
 
 .pe__ghost-hit {
-  border-radius: 3px;
+  border-radius: var(--dev-r-xs);
   background: var(--pe-wash);
   box-shadow: 0 0 0 1px var(--pe-accent) inset;
 }
@@ -480,7 +481,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 
 /* What a token became, marked the way the token itself is. */
 .pe__hit {
-  border-radius: 3px;
+  border-radius: var(--dev-r-xs);
   padding: 0 2px;
   background: var(--pe-wash);
   box-shadow: 0 0 0 1px var(--pe-accent) inset;

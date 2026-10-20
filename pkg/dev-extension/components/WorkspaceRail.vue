@@ -3314,7 +3314,7 @@ export default {
   &__manual-chip {
     padding:       1px 8px;
     border:        1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--r-md);
     background:    var(--box-bg);
     color:        var(--body-text);
     font:         inherit;
@@ -3642,7 +3642,7 @@ export default {
     :deep(h1), :deep(h2), :deep(h3), :deep(h4) { margin: 10px 0 6px; font-size: 14px; }
     :deep(h1) { font-size: 16px; }
     :deep(ul), :deep(ol) { margin: 0 0 8px; padding-left: 20px; }
-    :deep(code) { font-size: 12px; background: var(--body-bg); padding: 1px 4px; border-radius: 3px; }
+    :deep(code) { font-size: 12px; background: var(--body-bg); padding: 1px 4px; border-radius: var(--dev-r-xs); }
     :deep(pre) { background: var(--body-bg); border: 1px solid var(--border); border-radius: var(--border-radius); padding: 8px 10px; overflow-x: auto; }
     :deep(pre code) { background: transparent; padding: 0; }
     :deep(img) { max-width: 100%; }
@@ -3964,7 +3964,7 @@ export default {
     align-items:   center;
     margin-left:   6px;
     padding:       3px 10px;
-    border-radius: 10px;
+    border-radius: var(--r-md);
     font-size:     11px;
     line-height:   1.2;
     font-weight:   600;
@@ -4120,7 +4120,7 @@ export default {
 
 .workspace-rail__who {
   padding:       0 var(--dev-space-3);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background:    var(--default);
   color:         var(--muted);
   font-size:     11px;

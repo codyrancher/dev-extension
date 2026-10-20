@@ -282,7 +282,7 @@ export default {
   align-items:   center;
   gap:           8px;
   padding:       5px 6px;
-  border-radius: 4px;
+  border-radius: var(--dev-r-ctl);
 
   &--on { background: var(--nav-bg); }
 
@@ -291,7 +291,7 @@ export default {
     width:         22px;
     height:        22px;
     border:        1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--dev-r-ctl);
     background:    none;
     color:         var(--muted);
     cursor:        pointer;
@@ -360,7 +360,7 @@ export default {
     font-size:     11px;
     padding:       2px 6px;
     border:        1px solid var(--border);
-    border-radius: 3px;
+    border-radius: var(--dev-r-xs);
     background:    var(--body-bg);
     color:         var(--body-text);
   }

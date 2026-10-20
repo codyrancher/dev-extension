@@ -578,7 +578,7 @@ export default {
       margin-left: 5px;
       background-color: var(--link);
       color: #fff;
-      border-radius: 6px;
+      border-radius: var(--r-sm);
       padding: 1px 7px;
       font-size: 11px;
     }

@@ -334,7 +334,7 @@ export default {
     :deep(h3), :deep(h4) { font-size: 13px; }
     :deep(p) { margin: 0 0 6px; }
     :deep(ul), :deep(ol) { margin: 0 0 6px; padding-left: 18px; }
-    :deep(pre) { margin: 0 0 6px; padding: 4px 6px; background: var(--box-bg); border-radius: 3px; overflow: hidden; }
+    :deep(pre) { margin: 0 0 6px; padding: 4px 6px; background: var(--box-bg); border-radius: var(--dev-r-xs); overflow: hidden; }
     :deep(code) { font-size: 11px; }
     :deep(table) { border-collapse: collapse; margin: 0 0 6px; }
     :deep(th), :deep(td) { border: 1px solid var(--border); padding: 1px 5px; }
@@ -364,7 +364,7 @@ export default {
     i {
       display:       block;
       width:         3px;
-      border-radius: 2px;
+      border-radius: var(--dev-r-xs);
       background:    var(--link);
       opacity:       .75;
     }
@@ -374,7 +374,7 @@ export default {
     position:       absolute;
     inset:          auto 4px 4px auto;
     padding:        0 5px;
-    border-radius:  3px;
+    border-radius: var(--dev-r-xs);
     background:     rgba(0, 0, 0, .6);
     color:          #fff;
     font-family:    var(--font-family-mono, monospace);

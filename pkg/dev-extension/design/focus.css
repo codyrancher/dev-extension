@@ -148,11 +148,11 @@
    * mistake this token was declared to fix.
    */
   --bar-h: 50px;
-  --r-sm: 8px;
-  --r-md: 12px;
-  --r-lg: 18px;
-  --r-xl: 28px;
-  --r-pill: 999px;
+  /*
+   * The radius ladder moved to design/tokens.css, on :root, so the rest of the product can
+   * round things the same way the deck does - it could not before, which is why there were
+   * nine different radii outside this file. Nothing here redeclares them.
+   */
 
   /* ── Type scale ──────────────────────────────────────────────────────── */
   --font: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;

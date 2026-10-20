@@ -611,7 +611,7 @@ export default {
     background:     var(--body-bg);
     color:          var(--body-text);
     border:         1px solid var(--border);
-    border-radius:  10px;
+    border-radius: var(--r-md);
     box-shadow:     0 12px 40px rgba(0, 0, 0, 0.45);
     overflow:       hidden;
   }
@@ -633,7 +633,7 @@ export default {
     min-height:      0;
     height:          26px;
     padding:         0 10px;
-    border-radius:   6px;
+    border-radius: var(--r-sm);
     border:          1px solid var(--border);
     background:      transparent;
     color:           var(--body-text);
@@ -740,7 +740,7 @@ export default {
     :deep(p) { margin: 0 0 10px; }
     :deep(ul), :deep(ol) { margin: 0 0 10px; padding-left: 22px; }
     :deep(li) { margin: 2px 0; }
-    :deep(code) { font-size: 12px; background: var(--box-bg); padding: 1px 4px; border-radius: 3px; }
+    :deep(code) { font-size: 12px; background: var(--box-bg); padding: 1px 4px; border-radius: var(--dev-r-xs); }
     :deep(pre) { background: var(--box-bg); border: 1px solid var(--border); border-radius: var(--border-radius); padding: 8px 10px; overflow-x: auto; }
     :deep(pre code) { display: block; background: transparent; padding: 0; border: 0; }
     :deep(table) { border-collapse: collapse; margin: 0 0 10px; }
@@ -771,8 +771,8 @@ export default {
     display: inline-flex;
 
     .artifact-viewer__btn { border-radius: 0; margin-left: -1px; }
-    .artifact-viewer__btn:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
-    .artifact-viewer__btn:last-child { border-radius: 0 6px 6px 0; }
+    .artifact-viewer__btn:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); margin-left: 0; }
+    .artifact-viewer__btn:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
   }
 
   &__btn--on { border-color: var(--link); color: var(--link); background: var(--box-bg); position: relative; }

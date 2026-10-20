@@ -509,7 +509,7 @@ export default {
   &__files {
     flex:          0 0 auto;
     padding:       0 5px;
-    border-radius: 7px;
+    border-radius: var(--r-sm);
     background:    var(--box-bg);
     color:         var(--muted);
     font-size:     10px;
@@ -565,7 +565,7 @@ export default {
 
   &__dirty {
     padding:       0 6px;
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     background:    rgba(255, 228, 122, .18);
     color:         var(--warning);
     font-size:     10px;

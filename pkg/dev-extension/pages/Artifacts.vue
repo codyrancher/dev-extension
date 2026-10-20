@@ -323,7 +323,7 @@ export default {
 
 .dev-artifacts__state {
   padding:       0 var(--dev-space-3);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   font-size:     11px;
   background:    var(--default);
   color:         var(--muted);
@@ -359,7 +359,7 @@ export default {
    it is complete: work still arriving, or work that is over. */
 .dev-artifacts__tag {
   padding:        0 var(--dev-space-2);
-  border-radius:  3px;
+  border-radius: var(--dev-r-xs);
   font-size:      10px;
   letter-spacing: 0.06em;
   text-transform: uppercase;

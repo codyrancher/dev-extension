@@ -729,7 +729,7 @@ onBeforeUnmount(() => {
   max-height: 82vh;
   overflow: auto;
   padding: 18px 20px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--dev-panel, #1b1f27);
   border: 1px solid var(--dev-line, #2b3240);
 }

@@ -31,7 +31,7 @@ export default {
     gap:            var(--dev-space-1);
     height:         20px;
     padding:        0 var(--dev-space-3);
-    border-radius:  10px;
+    border-radius: var(--r-md);
     background:     var(--pr-el);
     color:          var(--pr-muted);
     font-size:      10px;

@@ -355,7 +355,7 @@ export default {
     height:        26px;
     padding:       0 10px;
     border:        1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     background:    transparent;
     color:         var(--body-text);
     font-size:     12px;

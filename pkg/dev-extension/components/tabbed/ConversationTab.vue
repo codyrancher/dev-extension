@@ -189,7 +189,7 @@ export default {
       height:        22px;
       padding:       0 6px;
       border:        1px solid var(--border);
-      border-radius: 3px;
+      border-radius: var(--dev-r-xs);
       background:    var(--body-bg);
       color:         var(--body-text);
       font-size:     13px;
@@ -210,7 +210,7 @@ export default {
       min-height:      0;
       padding:         0;
       border:          none;
-      border-radius:   3px;
+      border-radius: var(--dev-r-xs);
       background:      none;
       color:           var(--body-text);
       cursor:          pointer;

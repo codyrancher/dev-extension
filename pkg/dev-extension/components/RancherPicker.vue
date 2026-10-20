@@ -318,7 +318,7 @@ export default {
   &__tag {
     margin-left:    6px;
     padding:        1px 6px;
-    border-radius:  10px;
+    border-radius: var(--r-md);
     background:     var(--tag-bg, var(--border));
     color:          var(--muted);
     font-size:      10px;
