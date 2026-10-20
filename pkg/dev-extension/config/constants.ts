@@ -258,8 +258,13 @@ export function bareName(name: string): string {
  * starting the browser tool opens a CDP browser context of its own on it (its own cookies,
  * storage and window), which is what keeps two agents out of each other's tabs. The rest are
  * Apps: `lte-<kind>` in Apps Plus, rendered into a namespace of their own.
+ *
+ * `firefox` is a pod, and it is a pod rather than a second shared browser for a reason that is
+ * Firefox's rather than ours: its WebDriver BiDi accepts exactly one session at a time, so the
+ * trick that makes one Chromium serve everybody has no equivalent. One per workspace, leased
+ * like the others.
  */
-export const TOOL_KINDS = ['dev-server', 'storybook', 'rancher', 'browser'] as const;
+export const TOOL_KINDS = ['dev-server', 'storybook', 'rancher', 'browser', 'firefox'] as const;
 export type ToolKind = typeof TOOL_KINDS[number];
 
 /** The Apps the pod-backed tools are rendered from, by kind. */
@@ -267,6 +272,7 @@ export const TOOL_APPS: Record<string, string> = {
   'dev-server': 'lte-dev-server',
   storybook:    'lte-storybook',
   rancher:      'lte-rancher',
+  firefox:      'lte-firefox',
 };
 
 /** What a tool's own namespace is called: one per workspace and kind. */

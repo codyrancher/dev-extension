@@ -3164,11 +3164,25 @@ const DEFAULT_LEASE_MINUTES = 90;
 const MAX_LEASE_MINUTES = 8 * 60;
 
 /** The Apps the pod-backed tools are rendered from. `browser` has no pod; see below. */
-const TOOL_APPS = { 'dev-server': 'lte-dev-server', storybook: 'lte-storybook', rancher: 'lte-rancher' };
+const TOOL_APPS = {
+  'dev-server': 'lte-dev-server', storybook: 'lte-storybook', rancher: 'lte-rancher', firefox: 'lte-firefox',
+};
 const TOOL_KINDS = [...Object.keys(TOOL_APPS), 'browser'];
 /** Where each tool answers, which is also what its Service publishes. */
-const TOOL_PORTS = { 'dev-server': 8005, storybook: 6006, rancher: 443 };
-const TOOL_SCHEMES = { 'dev-server': 'https', storybook: 'http', rancher: 'https' };
+const TOOL_PORTS = {
+  'dev-server': 8005, storybook: 6006, rancher: 443, firefox: 3000,
+};
+const TOOL_SCHEMES = {
+  'dev-server': 'https', storybook: 'http', rancher: 'https', firefox: 'http',
+};
+/**
+ * Where a tool is driven, when that is somewhere other than where it is read.
+ *
+ * Firefox is the only one so far: port 3000 is the desktop a person watches and 9223 is
+ * WebDriver BiDi, which is what an agent talks to. The browser tool's equivalent is CDP, and it
+ * is not here because the shared Chromium is not a pod with a Service of its own.
+ */
+const TOOL_DRIVE_PORTS = { firefox: 9223 };
 /**
  * The browser tool is the shared Chromium, and it is not leased.
  *
@@ -3321,6 +3335,19 @@ async function podTool(workspace, kind) {
     // How something inside the cluster reaches it - an agent's curl, the shared browser. The
     // Service and the namespace have the same name, which is what makes this predictable.
     url:      `${ scheme }://${ namespace }.${ namespace }.svc:${ port }`,
+    /*
+     * And where it is DRIVEN, when that is not where it is read.
+     *
+     * Firefox is the one so far: `url` above is the desktop a person watches, and this is the
+     * WebDriver BiDi socket an agent talks to. Without it the tool would tell an agent only
+     * about the half it cannot automate - and since Firefox has no CDP and no /json endpoints,
+     * there would be nothing to discover the other half from.
+     */
+    ...(TOOL_DRIVE_PORTS[kind] ? {
+      bidi:     `ws://${ namespace }.${ namespace }.svc:${ TOOL_DRIVE_PORTS[kind] }/session`,
+      bidiPort: TOOL_DRIVE_PORTS[kind],
+      bidiNodePort: (service?.spec?.ports || []).find((p) => p.name === 'bidi')?.nodePort || 0,
+    } : {}),
     // And how a person reaches it: this Rancher's service proxy, which is the only way in to
     // the host cluster from outside. The page puts the Rancher's own address in front.
     proxy:    `/k8s/clusters/local/api/v1/namespaces/${ namespace }/services/${ scheme }:${ namespace }:${ port }/proxy/`,

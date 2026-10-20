@@ -1,9 +1,9 @@
 # How this environment differs from the harness
 
 {{#if leased}}**This is a leased workspace, and it runs nothing.** The checkout, the artifacts and the
-command-line tools are here; a dev server, a browser, a storybook and a Rancher are *tools* you
-attach while you need them and release when you are done - `tools`, `tools start dev-server`,
-`tools stop dev-server`. `.claude/rules/tools.md` is the whole of it, and it overrides the
+command-line tools are here; a dev server, a browser, a Firefox, a storybook and a Rancher are
+*tools* you attach while you need them and release when you are done - `tools`, `tools start
+dev-server`, `tools stop dev-server`. `.claude/rules/tools.md` is the whole of it, and it overrides the
 bullets below wherever they disagree: there is no dev server on `localhost:8005` in this pod,
 there is no Chromium container beside you (the browser is shared, and `tools start browser`
 gives you a session of your own on it), and `dev-server ...` still works because it hands every
@@ -23,6 +23,18 @@ This is a Kubernetes workspace made by the dev extension, not a harness project 
 
   If that is not the URL `dev-server status` shows, `dev-server --api <that URL>` points the running server at it: that, not a server of your own.
 - **Browser**: Chromium is a container in this pod with CDP on `$CLAUDE_BROWSER_CDP`. `wait-for-sidecars` only waits; nothing needs starting. `browser.mjs` and the recording skills work as in the harness.
+- **Firefox**: `tools start firefox` attaches one, for a bug that only happens outside Chromium. It is **not** a second Chromium and **not** CDP: Firefox has had no DevTools Protocol since version 129, so `/json/version` answers 404 and `browser.mjs`, `a11y axtree` and anything else built on CDP will not drive it. It speaks **WebDriver BiDi**, and the endpoint is the session - connect a websocket to the `bidi` address `tools` prints for it, then:
+
+  ```
+  session.new  {"capabilities": {"alwaysMatch": {"acceptInsecureCerts": true}}}
+  browsingContext.getTree {}                    -> contexts[0].context
+  browsingContext.navigate {"context": ..., "url": ..., "wait": "complete"}
+  script.evaluate {"expression": "document.title", "target": {"context": ...}}
+  browsingContext.captureScreenshot {"context": ...}    -> base64 PNG
+  session.end {}
+  ```
+
+  **One session at a time.** A second `session.new` is refused with "Maximum number of active sessions", and a client that disconnects without ending its session holds the browser until the pod restarts - so always `session.end`, and if you inherit a locked one, `tools stop firefox` then `tools start firefox` replaces the pod, which is the reliable reset. `data:` URLs are refused by this build; navigate to a real URL. The desktop on its `http` address is what a person watches, so a screenshot taken there is what they will compare against.
 - **Harness API**: `$CLAUDE_HARNESS_API` (= `$HARNESS_API`) answers the `/my-work/...` routes with no credential. The sidecar and Jira routes do not exist here.
 - **Accessibility**: the whole toolkit works. `a11y axtree` reads Chromium's tree over CDP; `a11y tree`, `say`, `record`, `orca`, `key`, `type`, `screen`, `click` and `shot` run in the browser container, which this one reaches with `kubectl exec -c browser` rather than through a harness API. AT-SPI and speech are installed already; `a11y tier orca` adds Orca and restarts that container.
 - **Publishing**: `gh` is signed in; commit and open draft PRs exactly as the skills say. The person you work for sees uncommitted changes in the workspace's Review tab and the PR in its PR tab.

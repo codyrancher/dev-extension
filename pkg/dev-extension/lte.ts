@@ -488,6 +488,196 @@ function devServerToolApp(): Json {
 }
 
 /** Storybook on the same checkout, on 6006. The same arrangement as the dev server. */
+/**
+ * Firefox's WebDriver BiDi, made reachable from another pod.
+ *
+ * Two things stop a client elsewhere in the cluster talking to it, and both are deliberate
+ * anti-DNS-rebinding behaviour in Firefox rather than anything to configure away. Both were
+ * measured against the image this App runs, not read about:
+ *
+ *   - the remote agent listens on 127.0.0.1 only, whatever port it is given, so publishing the
+ *     port on a Service reaches nothing;
+ *   - it refuses every Host header but `localhost:<port>` and `127.0.0.1:<port>`, and
+ *     `--remote-allow-hosts` had no effect in either spelling, for any of five Host values.
+ *
+ * So a plain TCP pipe does not work - the client's Host arrives unchanged and is refused - and
+ * this rewrites that one header and otherwise gets out of the way. It does not read the
+ * protocol, which is the point: BiDi can change without this needing to.
+ */
+const BIDI_PROXY = [
+  "const http = require('node:http'); const net = require('node:net');",
+  'const LISTEN = Number(process.env.BIDI_LISTEN || 9223);',
+  'const TARGET = Number(process.env.BIDI_TARGET || 9222);',
+  'const HOST = `127.0.0.1:${ TARGET }`;',
+  // Every header except Host, which is replaced. Written for both an ordinary request and an
+  // upgrade, because the handshake is the only part that matters and it is an upgrade.
+  'const headers = (req) => Object.entries(req.headers).filter(([k]) => k.toLowerCase() !== "host").map(([k, v]) => `${ k }: ${ v }`);',
+  'const head = (req) => [`${ req.method } ${ req.url } HTTP/1.1`].concat(headers(req)).concat([`Host: ${ HOST }`, "", ""]).join("\\r\\n");',
+  'const server = http.createServer((req, res) => {',
+  '  const up = net.connect(TARGET, "127.0.0.1", () => { up.write(head(req)); req.pipe(up); });',
+  '  up.on("error", () => { try { res.writeHead(502).end("firefox is not answering yet"); } catch {} });',
+  '  up.on("data", (chunk) => res.socket && res.socket.write(chunk));',
+  '  up.on("end", () => res.socket && res.socket.end());',
+  '});',
+  'server.on("upgrade", (req, socket) => {',
+  '  const up = net.connect(TARGET, "127.0.0.1", () => { up.write(head(req)); up.pipe(socket); socket.pipe(up); });',
+  '  up.on("error", () => socket.destroy());',
+  '  socket.on("error", () => up.destroy());',
+  '});',
+  'server.listen(LISTEN, "0.0.0.0", () => console.log(`bidi ${ LISTEN } -> 127.0.0.1:${ TARGET }`));',
+].join('\n');
+
+/**
+ * What an agent is told about driving it.
+ *
+ * Longer than the other tools' specs because this is the one whose protocol nobody here has
+ * used before: it is not CDP, there is no /json/version to discover a target from, and the
+ * one-session rule has an etiquette attached. Everything below was measured against this image
+ * rather than taken from documentation.
+ */
+function firefoxSpec(): string {
+  return [
+    'openapi: 3.1.0',
+    'info:',
+    '  title: Firefox (WebDriver BiDi)',
+    '  version: "1"',
+    '  description: |',
+    '    A Firefox of this workspace\'s own. Two ports: the desktop on 3000, which a person',
+    '    watches, and WebDriver BiDi on 9223, which you drive.',
+    '',
+    '    It is NOT the Chrome DevTools Protocol. Firefox has had no CDP since version 129, and',
+    '    /json/version, /json/list and /json all answer 404 - anything that discovers a target',
+    '    that way (including the shared browser helpers) will not work here. Connect straight to',
+    '    the websocket instead; the endpoint IS the session:',
+    '',
+    '        ws://<tool address>/session',
+    '',
+    '    Messages are {id, method, params} and come back as {id, result} or {id, error, message}.',
+    '    Open with session.new, passing acceptInsecureCerts for this cluster\'s certificates:',
+    '',
+    '        session.new  {"capabilities": {"alwaysMatch": {"acceptInsecureCerts": true}}}',
+    '        browsingContext.getTree {}                      -> contexts[0].context',
+    '        browsingContext.navigate {"context": ..., "url": ..., "wait": "complete"}',
+    '        script.evaluate {"expression": ..., "target": {"context": ...}}',
+    '        browsingContext.captureScreenshot {"context": ...}   -> base64 PNG',
+    '',
+    '    ONE SESSION AT A TIME. Firefox refuses a second session.new with "Maximum number of',
+    '    active sessions", and a client that disconnects without ending its session holds the',
+    '    browser until the pod restarts. Always finish with:',
+    '',
+    '        session.end {}',
+    '',
+    '    If you inherit a locked browser, release the tool and attach it again - that replaces',
+    '    the pod, which is the reliable reset.',
+    '',
+    '    data: URLs are refused by this build; navigate to a real URL (the workspace dev server,',
+    '    or a file served from the checkout).',
+    'servers:',
+    '  - url: ws://<node ip>:<node port>/session',
+    '    description: WebDriver BiDi. The desktop is the same host on the port the tool lists.',
+    'paths:',
+    '  /session:',
+    '    get:',
+    '      summary: The WebDriver BiDi websocket. Upgrade to it; do not GET it.',
+    '      responses:',
+    '        "101":',
+    '          description: The session socket.',
+  ].join('\n');
+}
+
+/**
+ * Firefox, for the bug that only happens outside Chromium.
+ *
+ * A pod per workspace rather than one shared browser, and that is Firefox's decision rather
+ * than ours: WebDriver BiDi accepts exactly one session at a time, so the trick that lets one
+ * Chromium serve every workspace - a context each - has no equivalent here. Leased like the
+ * other pod-backed tools, which also means a stuck session is recovered by releasing it.
+ *
+ * Two ports, two audiences, which is the same shape the shared Chromium has: 3000 is the
+ * desktop, for a person watching what the agent did, and 9223 is the protocol. The desktop is
+ * what the namespace annotation points at, so the dashboard frames it like any other tool.
+ */
+function firefoxToolApp(): Json {
+  return {
+    apiVersion: 'appsplus.io/v1alpha1',
+    kind:       'App',
+    metadata:   toolMeta(TOOL_APPS.firefox, true, firefoxSpec()),
+    spec:       {
+      description: 'Firefox on a leased workspace, with a desktop to watch and WebDriver BiDi to drive. For the bug that only reproduces outside Chromium.',
+      values:      {
+        workspace: '', image: 'lscr.io/linuxserver/firefox:latest', port: 3000, bidiPort: 9223, proxyImage: 'node:24-alpine',
+      },
+      valueLabels: {
+        workspace: 'Workspace it is attached to', image: 'Firefox image', port: 'Port the desktop is served on', bidiPort: 'Port WebDriver BiDi is reached on', proxyImage: 'Image the BiDi proxy runs in',
+      },
+      templates: [
+        toolNamespaceTemplate('firefox', 3000, 'http'),
+        template('configmap.json', {
+          apiVersion: 'v1',
+          kind:       'ConfigMap',
+          metadata:   { name: '${namespace}-proxy', namespace: '${namespace}', labels: toolLabels('firefox') },
+          data:       { 'proxy.js': BIDI_PROXY },
+        }),
+        toolDeployment('firefox', {
+          containers: [
+            {
+              name:      'firefox',
+              image:     '${image}',
+              resources: { requests: { cpu: '200m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } },
+              env:       [
+                { name: 'PUID', value: '1000' },
+                { name: 'PGID', value: '1000' },
+                { name: 'CUSTOM_PORT', value: '${port}' },
+                { name: 'TITLE', value: 'Firefox' },
+                // The flags reach the process intact - checked by reading its argv in the
+                // running image. `--remote-debugging-port` serves WebDriver BiDi here; Firefox
+                // has had no CDP since 129, and its /json endpoints answer 404.
+                { name: 'FIREFOX_CLI', value: '--remote-debugging-port 9222' },
+              ],
+              ports:        [{ name: 'http', containerPort: '${port}' }],
+              // The desktop stack wants more than the default 64MB of shared memory, the same
+              // way the shared Chromium does.
+              volumeMounts: [{ name: 'dshm', mountPath: '/dev/shm' }, { name: 'work', mountPath: '/workspaces' }],
+              readinessProbe: {
+                tcpSocket: { port: '${port}' }, initialDelaySeconds: 10, periodSeconds: 10, failureThreshold: 60,
+              },
+            },
+            {
+              // The sidecar shares the pod's network namespace, which is the whole reason this
+              // works: 127.0.0.1 here is Firefox's loopback.
+              name:         'bidi',
+              image:        '${proxyImage}',
+              command:      ['node', '/proxy/proxy.js'],
+              env:          [{ name: 'BIDI_LISTEN', value: '${bidiPort}' }, { name: 'BIDI_TARGET', value: '9222' }],
+              ports:        [{ name: 'bidi', containerPort: '${bidiPort}' }],
+              resources:    { requests: { cpu: '10m', memory: '32Mi' }, limits: { cpu: '200m', memory: '128Mi' } },
+              volumeMounts: [{ name: 'proxy', mountPath: '/proxy', readOnly: true }],
+            },
+          ],
+          volumes: [
+            { name: 'dshm', emptyDir: { medium: 'Memory', sizeLimit: '1Gi' } },
+            { name: 'proxy', configMap: { name: '${namespace}-proxy' } },
+            WORK_VOLUME,
+          ],
+        }),
+        template('service.json', {
+          apiVersion: 'v1',
+          kind:       'Service',
+          metadata:   { name: '${namespace}', namespace: '${namespace}', labels: toolLabels('firefox') },
+          spec:       {
+            type:     'NodePort',
+            selector: { app: '${namespace}' },
+            ports:    [
+              { name: 'http', port: '${port}', targetPort: 'http' },
+              { name: 'bidi', port: '${bidiPort}', targetPort: 'bidi' },
+            ],
+          },
+        }),
+      ],
+    },
+  };
+}
+
 function storybookToolApp(): Json {
   return {
     apiVersion: 'appsplus.io/v1alpha1',
@@ -642,7 +832,7 @@ function rancherToolApp(): Json {
 
 /** Every App this arrangement adds: the workspace, and the tools it can attach. */
 export function lteApps(): Json[] {
-  return [lteWorkspaceApp(), devServerToolApp(), storybookToolApp(), rancherToolApp()];
+  return [lteWorkspaceApp(), devServerToolApp(), storybookToolApp(), rancherToolApp(), firefoxToolApp()];
 }
 
 /** The same FNV the rest of this product fingerprints definitions with (apps.ts). */

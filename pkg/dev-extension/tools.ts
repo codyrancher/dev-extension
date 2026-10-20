@@ -24,6 +24,11 @@ export interface Tool {
   namespace?: string;
   port?: number;
   scheme?: string;
+  /**
+   * Where it is driven, when that is somewhere other than where it is read: Firefox's
+   * WebDriver BiDi socket. Absent for every other tool, which is driven where it is read.
+   */
+  bidi?: string;
   /** In-cluster address - what an agent or the shared browser opens. */
   url?: string;
   /** This Rancher's proxy path - what a person opens. */
@@ -66,6 +71,13 @@ export const TOOLS: Record<ToolKind, { label: string; icon: string; what: string
     what:        'A Rancher of its own to point the work at, with its own embedded k3s. Up in a couple of minutes.',
     multitenant: true,
   },
+  firefox: {
+    label:       'Firefox',
+    icon:        'icon-compass',
+    what:        'A Firefox of this workspace\'s own, with a desktop to watch and WebDriver BiDi to drive. For the bug that only happens outside Chromium.',
+    multitenant: true,
+    sharing:     'Yours while the lease lasts, and only yours: Firefox accepts one WebDriver BiDi session at a time, so there is no taking a context of your own the way the shared Chromium allows. End your session when you are done - a client that disconnects without ending it holds the browser until the pod restarts.',
+  },
   browser: {
     label:       'Browser',
     icon:        'icon-globe',
@@ -79,7 +91,7 @@ export const TOOLS: Record<ToolKind, { label: string; icon: string; what: string
 export const SHARED_TOOLS: ToolKind[] = (Object.keys(TOOLS) as ToolKind[]).filter((kind) => !TOOLS[kind].multitenant);
 
 /** The order they are offered in: the one almost every piece of work wants, first. */
-export const TOOL_ORDER: ToolKind[] = ['dev-server', 'browser', 'storybook', 'rancher'];
+export const TOOL_ORDER: ToolKind[] = ['dev-server', 'browser', 'firefox', 'storybook', 'rancher'];
 
 export async function workspaceTools(workspace: string): Promise<Tool[]> {
   const answer = await devApi(`/tools/${ encodeURIComponent(workspace) }`).catch(() => null);
