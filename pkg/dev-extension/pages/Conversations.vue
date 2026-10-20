@@ -6,18 +6,20 @@
 // belong to no workspace. They all live in the one pod (Extension Studio's agent), which is what
 // lets one page hold them: each tab is the Studio's terminal pointed at one drawer conversation.
 //
-// It is a single Tabbed of every open drawer conversation, most-recent first - the same tab
-// strip the stage rail uses for its live agents (WorkspaceRail), rather than a per-workspace
-// list. A workspace's stage conversations are reached from that workspace, not here.
+// It is laid out exactly as a workspace's Conversations tab is - a column of rows on the left,
+// the conversation on the right - because they are the same thing seen from two places, and
+// this page used to prove otherwise: a forked tab strip, its own header bar, its own idea of
+// what a conversation looks like. A workspace's stage conversations are still reached from that
+// workspace; what is here is the free-standing runs, most recent first.
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
-import Tab from '@shell/components/Tabbed/Tab';
-// Each tab carries its title, agent status and open-larger/close in its own header (the
-// `tab-header` slot), so there is no ConversationHeader bar nested under the strip - see
-// ConversationTabbed for why the shell strip had to be forked to allow that.
-import ConversationTabbed from '../components/tabbed/ConversationTabbed.vue';
-import ConversationTab from '../components/tabbed/ConversationTab.vue';
+// The conversation's own controls - its name, what its agent is doing, open larger, close -
+// are in ConversationHeader above the pane, which is where a workspace puts them too.
 import StudioTerminal from '../components/StudioTerminal.vue';
+import DevList from '../components/DevList.vue';
+import ConversationHeader from '../components/ConversationHeader.vue';
+import { CLI_CHOICES, cliMark } from '../agent-clis.mjs';
+import { readPrefs } from '../prefs';
 import DevModal from '../components/DevModal.vue';
 import { listAllWorkspaces, globalBrowserUrl } from '../api';
 import {
@@ -86,7 +88,7 @@ export default {
   name: 'DevAgents',
 
   components: {
-    Banner, RcButton, ConversationTabbed, ConversationTab, Tab, StudioTerminal, DevModal
+    Banner, RcButton, StudioTerminal, DevModal, DevList, ConversationHeader
   },
 
   async fetch() {
@@ -125,10 +127,14 @@ export default {
       seen:    {},
       error:   '',
       timer:   null,
+      /** Which CLI the split button's plain press starts, from the person's own preference. */
+      defaultCli: '',
     };
   },
 
   computed: {
+    CLI_CHOICES: () => CLI_CHOICES,
+
     all() {
       return this.groups.flatMap((group) => group.conversations.map((c) => ({
         ...c, workspace: group.workspace, uid: convUid(group.workspace, c.id),
@@ -155,6 +161,17 @@ export default {
     selected() {
       return this.flatConversations.find((c) => c.uid === this.current) || null;
     },
+
+    /** The conversations as DevList rows: the same shape a workspace's list builds. */
+    rows() {
+      return this.flatConversations.map((c) => ({
+        key:   c.uid,
+        label: c.title || 'Conversation',
+        state: this.states[c.uid]?.state || 'stopped',
+        agent: this.agents[c.id] || 'none',
+        mark:  cliMark(c.cli),
+      }));
+    },
   },
 
   watch: {
@@ -169,6 +186,9 @@ export default {
   },
 
   mounted() {
+    readPrefs().then((prefs) => {
+      this.defaultCli = prefs.cli || '';
+    }).catch(() => {});
     this.timer = setInterval(() => this.refresh(), REFRESH_MS);
     // The agents' states, on their own fifteen-second beat, so the header over the pane says
     // what each conversation's claude is doing.
@@ -188,6 +208,55 @@ export default {
      */
     openBrowser() {
       window.open(globalBrowserUrl(), '_blank', 'noopener');
+    },
+
+    /**
+     * A new conversation here, held with the CLI that was asked for.
+     *
+     * The same act as the drawer's `+`, and deliberately the same code path: the pod names it,
+     * the CLI rides on the row until the pane records it for itself, and the new one is
+     * selected so somebody can type into it straight away.
+     */
+    async startNew(cli = '') {
+      this.error = '';
+
+      try {
+        const api = await waitForStudio();
+
+        if (!api) {
+          throw new Error('The agents API is not on this page yet.');
+        }
+        const id = await api.agent.start();
+        const uid = convUid('', id);
+
+        this.groups = this.groups.map((group) => (group.workspace ? group : {
+          ...group,
+          conversations: [...group.conversations, {
+            id, title: id.replace(/^agent-/, ''), cli: cli === 'claude' ? '' : cli, attach: { command: null },
+          }],
+        }));
+        await this.refresh();
+        this.select(uid);
+      } catch (e) {
+        this.error = e?.message || String(e);
+      }
+    },
+
+    /** DevList speaks in row keys, which here are conversation uids. */
+    renameRow({ key, title }) {
+      const conversation = this.flatConversations.find((c) => c.uid === key);
+
+      if (conversation) {
+        this.rename(this.groupOf(conversation), { key, title });
+      }
+    },
+
+    closeRow(key) {
+      const conversation = this.flatConversations.find((c) => c.uid === key);
+
+      if (conversation) {
+        this.end(this.groupOf(conversation), key);
+      }
     },
 
     /** The argv of one conversation's pane: claude in its workspace's pod, reached through the agent pod. */
@@ -446,63 +515,69 @@ export default {
           </button>
         </template>
       </div>
-      <p
-        v-if="!flatConversations.length"
-        class="dev-agents__empty text-muted"
-      >
-        No conversations are open. Start one from a workspace's Conversations tab, from My Work, or from an agent above.
-      </p>
       <!--
-        One Tabbed of every drawer conversation - the product's own tab strip, the same one the
-        stage rail draws its live agents with. It hides an inactive tab with v-show rather than
-        unmounting it, so a terminal, once opened, keeps its socket while another tab is on show;
-        `seen` is what stops one being drawn for a tab nobody has looked at yet, and the popped
-        guard hands the session to the modal while it is up so the two do not fight over it.
+        The same two columns a workspace's Conversations tab has, and for the same reasons:
+        a conversation has a state worth a dot, carries the mark of the CLI holding it, is
+        created from the heading and closed from its own row. This page used to be a strip of
+        tabs instead - a second way of showing the same thing, with its own forked tab bar -
+        so the two places you talk to an agent looked and behaved like different products.
 
-        `use-hash` is off: the page keeps its place with `?c=` (see `rememberInRoute`), and a
-        second writer of the route - the tab strip's own `#uid` - would only get in its way.
+        What is kept from the strip is the thing that mattered about it: every pane that has
+        been opened stays mounted and is hidden with v-show, so a terminal keeps its socket
+        while another conversation is on show. `seen` is what stops one being built for a
+        conversation nobody has looked at, and the popped guard hands the session to the modal
+        while it is up so the two do not fight over it.
       -->
-      <ConversationTabbed
-        v-else
-        class="dev-agents__tabs"
-        :default-tab="current"
-        :use-hash="false"
-        flat
-        @changed="onTab"
-      >
-        <!--
-          The conversation's own controls, in its tab header: its name (renamed in place), what
-          its agent is doing, a way to open it larger and a way to close it - the bar that used to
-          sit under the strip, now in the tab itself so the tabs are not nested inside it.
-        -->
-        <template #tab-header="{ tab }">
-          <ConversationTab
-            v-if="flatByTab(tab.name)"
-            :conversation="flatByTab(tab.name)"
-            :agent="agents[flatByTab(tab.name).id] || 'none'"
-            :active="tab.active"
-            @rename="rename(groupOf(flatByTab(tab.name)), { key: tab.name, title: $event })"
-            @popout="popped = true; current = tab.name"
-            @close="end(groupOf(flatByTab(tab.name)), tab.name)"
+      <div class="dev-agents__split">
+        <div class="dev-agents__list">
+          <DevList
+            label=""
+            icon="icon-comment"
+            :rows="rows"
+            :current="current"
+            create-label="New conversation"
+            :create-options="CLI_CHOICES"
+            :create-value="defaultCli"
+            empty="No conversations"
+            deletable
+            renamable
+            @select="select($event)"
+            @create="startNew"
+            @delete="closeRow"
+            @rename="renameRow"
           />
-        </template>
-        <Tab
-          v-for="(c, i) in flatConversations"
-          :key="c.uid"
-          :name="c.uid"
-          :label="c.title || 'Conversation'"
-          :tooltip="c.workspace || 'Agents drawer'"
-          :weight="flatConversations.length - i"
-        >
-          <StudioTerminal
-            v-if="seen[c.uid] && !(popped && c.uid === current)"
-            :session="c.uid"
-            :command="paneFor(c)"
-            class="dev-agents__terminal"
-            @state="onState(c.uid, $event)"
+        </div>
+        <div class="dev-agents__pane">
+          <ConversationHeader
+            v-if="selected"
+            :conversation="selected"
+            :agent="agents[selected.id] || 'none'"
+            @rename="renameRow({ key: selected.uid, title: $event })"
+            @popout="popped = true"
+            @close="closeRow(selected.uid)"
           />
-        </Tab>
-      </ConversationTabbed>
+          <p
+            v-if="!flatConversations.length"
+            class="dev-agents__empty text-muted"
+          >
+            No conversations are open. Start one here, from a workspace's Conversations tab, or from My Work.
+          </p>
+          <template
+            v-for="c in flatConversations"
+            :key="c.uid"
+          >
+            <StudioTerminal
+              v-if="seen[c.uid] && !(popped && c.uid === current)"
+              v-show="c.uid === current"
+              :session="c.uid"
+              :mode="c.cli || ''"
+              :command="paneFor(c)"
+              class="dev-agents__terminal"
+              @state="onState(c.uid, $event)"
+            />
+          </template>
+        </div>
+      </div>
       <!-- The larger view of the selected conversation, over the page. -->
       <DevModal
         v-if="popped && selected"
@@ -550,6 +625,32 @@ export default {
     flex:           1 1 auto;
     min-height:     0;
     min-width:      0;
+    overflow:       hidden;
+  }
+
+  /* The two columns, as a workspace's Conversations tab has them: a list that scrolls on its
+     own, and a pane that takes the rest and never pushes the page sideways. */
+  .dev-agents__split {
+    display:   flex;
+    flex:      1 1 auto;
+    min-height: 0;
+    min-width:  0;
+    overflow:  hidden;
+  }
+
+  .dev-agents__list {
+    flex:       0 0 260px;
+    min-width:  0;
+    overflow-y: auto;
+    border-right: 1px solid var(--border);
+  }
+
+  .dev-agents__pane {
+    display:        flex;
+    flex-direction: column;
+    flex:           1 1 auto;
+    min-width:      0;
+    min-height:     0;
     overflow:       hidden;
   }
 
