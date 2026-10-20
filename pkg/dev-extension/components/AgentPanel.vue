@@ -1168,7 +1168,8 @@ export default {
           made when the conversation is, not afterwards in Settings.
         -->
         <SplitButton
-          class="mc-agent__new"
+          class="mc-agent__new-split"
+          main-class="mc-agent__new"
           label="New conversation"
           :value="defaultCli"
           :options="CLI_CHOICES"
@@ -1640,6 +1641,22 @@ export default {
 
   // New conversation, at the end of the tab row where a new tab would appear. The same bare-icon
   // treatment as the options button at the other end of the bar.
+  /* The split button's own box: layout only. Its halves carry the look - see `main-class`. */
+  &__new-split {
+    flex:       0 0 auto;
+    align-self: center;
+
+    // The tab row's press has no border; the caret beside it should not grow one.
+    :deep(.split-btn__more) {
+      border:     none;
+      background: none;
+      color:      var(--body-text);
+      opacity:    .7;
+
+      &:hover { opacity: 1; }
+    }
+  }
+
   &__new {
     flex: 0 0 auto;
     display: flex;

@@ -92,7 +92,8 @@ export default {
     <slot />
     <SplitButton
       v-if="createLabel && createOptions.length"
-      class="dev-nav-head__add dev-nav-head__add--split"
+      class="dev-nav-head__split"
+      main-class="dev-nav-head__add"
       :label="createLabel"
       :value="createValue"
       :options="createOptions"
@@ -147,7 +148,23 @@ export default {
       text-decoration: none;
     }
 
-    // Always there, rather than appearing when the pointer is in the section: a control you
+    // The split button's box: layout only, because `__add` below is 20px square and a wrapper
+  // wearing that would have to hold two buttons in one button's width.
+  &__split {
+    flex:        0 0 auto;
+    margin-left: var(--dev-space-3);
+
+    // The caret matches the press beside it rather than the menu it opens.
+    :deep(.split-btn__more) {
+      height:        20px;
+      border-color:  var(--border);
+      border-radius: 0 var(--dev-r-ctl) var(--dev-r-ctl) 0;
+    }
+
+    :deep(.dev-nav-head__add) { margin-left: 0; }
+  }
+
+  // Always there, rather than appearing when the pointer is in the section: a control you
     // have to hover to find is one you have to know about already. A square with a border,
     // because it is a thing to press and the heading beside it is not.
     &__add {

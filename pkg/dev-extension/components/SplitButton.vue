@@ -35,6 +35,19 @@ export default {
       type:    Boolean,
       default: false,
     },
+    /**
+     * A class for the main half.
+     *
+     * The host styles the button, not the wrapper: a host class with a width on it - the tab
+     * row's 28px, say - applied to the wrapper squeezes two buttons into one button's box,
+     * which inside a scroller clips them out of sight entirely. So the wrapper only ever
+     * carries layout, and anything that makes the press look like the host's other controls
+     * goes here.
+     */
+    mainClass: {
+      type:    String,
+      default: '',
+    },
   },
 
   emits: ['pick'],
@@ -92,6 +105,7 @@ export default {
     <button
       type="button"
       class="split-btn__main"
+      :class="mainClass"
       :disabled="disabled"
       :aria-label="label || chosen.label"
       :title="chosen.what || chosen.label"
