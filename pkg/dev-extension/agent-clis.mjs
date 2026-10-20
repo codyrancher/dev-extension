@@ -92,6 +92,33 @@ export function transcriptKind(lines) {
   return '';
 }
 
+/**
+ * What the person actually typed, out of the envelope agy records it in.
+ *
+ * agy does not store a user turn as the words somebody wrote. It stores the prompt it sent the
+ * model, which wraps those words in `<USER_REQUEST>` and appends an `<ADDITIONAL_METADATA>`
+ * block of its own - the local time, and whatever else it wants the model to know. Drawn
+ * literally, a chat showing "Say hello" in the terminal shows seven lines of XML in the view.
+ *
+ * It also breaks the matching of a message somebody has just sent: the view holds a sent message
+ * as pending until the transcript shows it, and compares the text to do that, so an envelope
+ * meant every message stayed marked "no record of this" for ever, with a `send again` beside it.
+ *
+ * Anything outside the envelope is kept as it is: a transcript written by a version that does
+ * not wrap, or a turn agy records some other way, must not come out empty.
+ */
+function userText(content) {
+  const wrapped = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/.exec(content);
+
+  if (wrapped) {
+    return wrapped[1];
+  }
+
+  // No envelope, but possibly the metadata block on its own, which is agy's and not the
+  // person's.
+  return content.replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>\s*/g, '').trim();
+}
+
 /** agy's step sources, as roles. SYSTEM is the CLI's own banner and is not part of the talk. */
 function roleOfStep(entry) {
   if (entry.source === 'USER_EXPLICIT' || entry.type === 'USER_INPUT') {
@@ -124,7 +151,8 @@ export function parseAgyTranscript(lines) {
     if (!role) {
       continue;
     }
-    const text = typeof entry.content === 'string' ? entry.content : '';
+    const raw = typeof entry.content === 'string' ? entry.content : '';
+    const text = role === 'user' ? userText(raw) : raw;
     const tools = (Array.isArray(entry.tool_calls) ? entry.tool_calls : []).map((call, i) => ({
       // agy gives a call no id of its own, so one is made from where it is: stable for as long
       // as the step is, which is what a key has to be.

@@ -97,3 +97,43 @@ test('every CLI the split button offers has a glyph and a name', () => {
     assert.ok(choice.what && choice.what.length > 20, `${ choice.id } says what it is`);
   }
 });
+
+test('a user turn is what the person typed, not the envelope agy sends the model', () => {
+  // The real shape, from a transcript agy 1.4.3 wrote: the words are wrapped in USER_REQUEST and
+  // agy appends a metadata block of its own. Drawn literally this is seven lines of XML where
+  // "Say hello" should be - and it is also why a sent message stayed marked "no record of this",
+  // since the view matches the text it sent against the text in the transcript.
+  const line = JSON.stringify({
+    step_index: 0,
+    source:     'USER_EXPLICIT',
+    type:       'USER_INPUT',
+    status:     'DONE',
+    created_at: '2026-10-20T17:26:26Z',
+    content:    '<USER_REQUEST>\nSay hello\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-20T17:26:26Z.\n</ADDITIONAL_METADATA>\n',
+  });
+
+  const [message] = parseAgyTranscript([line]);
+
+  assert.equal(message.role, 'user');
+  assert.equal(message.text, 'Say hello');
+});
+
+test('a turn with no envelope is left exactly as it is', () => {
+  const plain = JSON.stringify({
+    step_index: 1, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-10-20T17:30:00Z', content: 'just the words',
+  });
+  const metaOnly = JSON.stringify({
+    step_index: 2, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-10-20T17:31:00Z', content: 'words\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>\n',
+  });
+
+  assert.equal(parseAgyTranscript([plain])[0].text, 'just the words');
+  assert.equal(parseAgyTranscript([metaOnly])[0].text, 'words');
+});
+
+test("an assistant turn is never unwrapped - the model's words are its own", () => {
+  const line = JSON.stringify({
+    step_index: 3, source: 'MODEL', type: 'GENERIC', status: 'DONE', created_at: '2026-10-20T17:26:30Z', content: 'Hello! How can I help you today?',
+  });
+
+  assert.equal(parseAgyTranscript([line])[0].text, 'Hello! How can I help you today?');
+});

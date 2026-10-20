@@ -147,13 +147,12 @@ own_conversation() {
 STARTS=0
 
 while true; do
-  # The id as it stands, in case a previous run made the conversation this pane now owns.
-  if [ -z "$CONVERSATION" ]; then
-    CONVERSATION=$(own_conversation)
-    if [ -n "$CONVERSATION" ] && [ -n "$IDFILE" ]; then
-      printf '%s' "$CONVERSATION" > "$IDFILE" 2>/dev/null || true
-    fi
-  fi
+  # Nothing is adopted from the map before agy runs.
+  #
+  # The map is keyed by working directory and every conversation here shares one, so its entry
+  # before this pane has run is somebody else's conversation, or a dead one whose pane was ended.
+  # This pane's own id comes from its IDFILE, written by the watcher below the moment agy makes a
+  # conversation - which is the only moment the map says anything about THIS pane.
 
   # The opening prompt goes to the first start only, and interactively: -i runs it and stays in
   # the session, which is the whole point of a pane. Cleared after the start that carried it, so
@@ -161,6 +160,28 @@ while true; do
   OPEN=()
   if [ -n "$PROMPT" ]; then
     OPEN=(--prompt-interactive "$PROMPT")
+  fi
+
+  # Record which conversation this is as soon as agy has made one, rather than when agy exits -
+  # which, for a pane somebody is sitting in, is never. The chat finds a transcript by this id,
+  # so without it a conversation that was answering perfectly well in the terminal read as
+  # "Waiting for the conversation to begin" in the view, with the message sent to it marked as
+  # having no record. claude-session.sh carries the same watcher for the same reason.
+  #
+  # `own_conversation` rather than the raw map: until agy writes this pane's conversation the map
+  # still names the one next door, and recording that would be the adoption bug again, dressed as
+  # a watcher. It returns nothing until the id is one no other pane has claimed.
+  if [ -n "$IDFILE" ] && [ ! -s "$IDFILE" ]; then
+    (
+      for _ in $(seq 1 150); do
+        sleep 2
+        mine=$(own_conversation)
+        if [ -n "$mine" ]; then
+          printf '%s' "$mine" > "$IDFILE" 2>/dev/null || true
+          break
+        fi
+      done
+    ) &
   fi
 
   if [ -n "$CONVERSATION" ]; then
