@@ -37,7 +37,7 @@ import {
 import {
   deriveState, parseEntries, reconcilePending, unwrapPasted,
 } from './chat-state.mjs';
-import { AGY_COMMANDS, AGY_CUSTOMIZE } from './agent-clis.mjs';
+import { AGY_COMMANDS, AGY_CUSTOMIZE, agyPhase } from './agent-clis.mjs';
 import { frameNonce, readFrames, spliceEarlier } from './chat-frames.mjs';
 import {
   modelAliases, flagChoices, parseMcpList, currentModel, isSafeOptionValue, type McpServer,
@@ -927,9 +927,27 @@ export function useConversation(source: () => ConversationSource) {
     attached.value = frame.attached;
     alive.value = frame.alive;
     paneText.value = frame.pane;
+    /*
+     * What the CLI is doing.
+     *
+     * deriveState reads claude's transcript markers and the hook's state file, and agy writes
+     * neither - so every agy turn read as "idle": no busy indicator while it worked, and a
+     * queued message with nothing to retire it. agy's own steps say it plainly enough (see
+     * agyPhase), and they are overlaid afterwards rather than threaded through deriveState,
+     * which stays claude's and untouched. Only the working/idle half is overridden: whether
+     * there is a pane at all is the same question for both, and deriveState already answers it.
+     */
     state.value = deriveState({
       entries: entries.value, hook: hook.value, attached: attached.value, alive: alive.value, paneText: frame.pane, now: Date.now(),
     });
+
+    if (cli.value === 'agy') {
+      const phase = agyPhase(entries.value);
+
+      if (phase && (state.value.phase === 'idle' || state.value.phase === 'working')) {
+        state.value = { ...state.value, phase };
+      }
+    }
     pane.value = paneFromState(state.value, frame.pane);
   }
 

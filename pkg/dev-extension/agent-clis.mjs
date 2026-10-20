@@ -129,7 +129,7 @@ export function transcriptKind(lines) {
  * Anything outside the envelope is kept as it is: a transcript written by a version that does
  * not wrap, or a turn agy records some other way, must not come out empty.
  */
-function userText(content) {
+export function agyUserText(content) {
   const wrapped = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/.exec(content);
 
   if (wrapped) {
@@ -174,7 +174,7 @@ export function parseAgyTranscript(lines) {
       continue;
     }
     const raw = typeof entry.content === 'string' ? entry.content : '';
-    const text = role === 'user' ? userText(raw) : raw;
+    const text = role === 'user' ? agyUserText(raw) : raw;
     const tools = (Array.isArray(entry.tool_calls) ? entry.tool_calls : []).map((call, i) => ({
       // agy gives a call no id of its own, so one is made from where it is: stable for as long
       // as the step is, which is what a key has to be.
@@ -281,3 +281,37 @@ export const AGY_CUSTOMIZE = [
   { command: 'plugin', help: 'plugins' },
   { command: 'keybindings', help: 'keybindings' },
 ];
+
+/**
+ * Whether agy is mid-turn, from the transcript alone.
+ *
+ * claude says what it is doing through a hook that writes a state file on every event; agy has
+ * no hook, so a chat watching an agy pane had nothing to go on and sat on "idle" through every
+ * turn - no busy indicator, and a queued message with nothing to retire it.
+ *
+ * Its transcript is enough. agy writes a step when it starts one and marks it `RUNNING` until
+ * it is `DONE`, so a trailing RUNNING step is a turn in progress; and a user step with no model
+ * step after it is a turn that has been asked for and not yet begun, which is the same thing as
+ * far as somebody waiting is concerned. Anything else is idle.
+ *
+ * Returns '' when there is nothing to say, so a caller can leave whatever it already decided.
+ */
+export function agyPhase(entries) {
+  const steps = (entries || []).filter((entry) => entry && (entry.source || entry.type));
+
+  if (!steps.length) {
+    return '';
+  }
+  const last = steps[steps.length - 1];
+
+  if (String(last.status || '').toUpperCase() === 'RUNNING') {
+    return 'working';
+  }
+  // A question asked and not yet answered: the model's reply is a step of its own, so until one
+  // arrives after the person's, the turn is still agy's.
+  if (last.source === 'USER_EXPLICIT' || last.type === 'USER_INPUT') {
+    return 'working';
+  }
+
+  return 'idle';
+}

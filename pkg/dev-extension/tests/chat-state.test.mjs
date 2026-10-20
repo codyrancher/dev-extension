@@ -16,7 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, duration, tokens, promptKey
+  loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, duration, tokens, promptKey, reconcilePending
 } from '../chat-state.mjs';
 
 // ── The login flow: the one state only the pane shows ──────────────────────────────────────
@@ -129,4 +129,41 @@ test('tokens abbreviates without lying about the magnitude', () => {
 test('promptKey is stable for the same text and differs for different text', () => {
   assert.equal(promptKey('do the thing'), promptKey('do the thing'));
   assert.notEqual(promptKey('do the thing'), promptKey('do the other thing'));
+});
+
+test('a message sent to an Antigravity pane is retired by agy\'s own record of it', () => {
+  // The symptom this is for: every message sat as "queued / SENDING" under the answer agy had
+  // already given it, then flipped to "no record of this" twenty seconds later. promptRecords
+  // walked claude's entry shapes only, so an agy transcript claimed nothing - and the words are
+  // inside the envelope agy sends the model, so even a shape-blind text match would have missed.
+  const sentAt = Date.parse('2026-10-20T18:00:00Z');
+  const pending = [{ text: 'Say hello', sentAt }];
+  const entries = [{
+    step_index: 0,
+    source:     'USER_EXPLICIT',
+    type:       'USER_INPUT',
+    status:     'DONE',
+    created_at: '2026-10-20T18:00:01Z',
+    content:    '<USER_REQUEST>\nSay hello\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-20T18:00:01Z.\n</ADDITIONAL_METADATA>\n',
+  }];
+
+  assert.deepEqual(reconcilePending(pending, { entries, now: sentAt + 1000 }), []);
+});
+
+test('and one agy never recorded at all is still reported', () => {
+  // Only a model step, which is not a prompt record of any kind - so nothing claims the message
+  // and, once the grace is up, the view says so rather than leaving it "sending" for ever.
+  //
+  // Note what this does NOT assert: a message is retired by a record of SOMETHING arriving
+  // after it was sent, even under a different key, which is deliberate - claude rewrites what
+  // it records (a slash command, an image, a paste) often enough that demanding an exact match
+  // would strand messages that did land. See reconcilePending's second pass.
+  const sentAt = Date.parse('2026-10-20T18:00:00Z');
+  const pending = [{ text: 'the one that never landed', sentAt }];
+  const entries = [{
+    step_index: 0, source: 'MODEL', type: 'GENERIC', status: 'DONE', created_at: '2026-10-20T18:00:01Z', content: 'thinking out loud',
+  }];
+  const [left] = reconcilePending(pending, { entries, now: sentAt + 30000 });
+
+  assert.equal(left.failed, true);
 });

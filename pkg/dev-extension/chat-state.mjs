@@ -21,6 +21,7 @@
 //      carries.
 
 /** @typedef {{ phase: 'absent'|'gone'|'idle'|'working'|'question'|'waiting'|'login', since: string, status: string, verb: string, queue: string[], question: object|null, login: object|null, model: string, effort: string, mode: string, permissionMode: string, title: string, cost: object|null, outputTokens: number, lastEnd: string, interrupted: boolean }} ChatState */
+import { agyUserText } from './agent-clis.mjs';
 
 const QUESTION_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
@@ -629,6 +630,16 @@ export function promptRecords(entries, hook, queue = [], now = Date.now()) {
       records.push({ key: promptKey(entry.attachment.prompt), at });
     } else if (isPromptEntry(entry) && !isCliPrompt(entry)) {
       records.push({ key: promptKey(textOf(entry)), at });
+    } else if (entry.source === 'USER_EXPLICIT' || entry.type === 'USER_INPUT') {
+      /*
+       * agy's shape: one step per line, the person's words inside the envelope agy sends the
+       * model, and `created_at` where claude writes `timestamp`.
+       *
+       * Without this nothing in an agy transcript ever claimed a sent message, so every message
+       * sat as "queued / SENDING" until the twenty seconds ran out and it was marked as having
+       * no record - under the answer agy had already given it.
+       */
+      records.push({ key: promptKey(agyUserText(entry.content)), at: Date.parse(entry.created_at || '') || at });
     }
   }
   if (hook?.event === 'UserPromptSubmit') {

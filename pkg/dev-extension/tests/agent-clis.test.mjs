@@ -12,7 +12,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { transcriptKind, parseAgyTranscript, CLI_CHOICES } from '../agent-clis.mjs';
+import {
+  transcriptKind, parseAgyTranscript, CLI_CHOICES, agyPhase
+} from '../agent-clis.mjs';
 
 const AGY = [
   '{"step_index":0,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-10-19T17:00:00Z","content":"Antigravity CLI"}',
@@ -136,4 +138,22 @@ test("an assistant turn is never unwrapped - the model's words are its own", () 
   });
 
   assert.equal(parseAgyTranscript([line])[0].text, 'Hello! How can I help you today?');
+});
+
+test('agy is working while a step is RUNNING, and idle once it is done', () => {
+  const step = (over) => ({
+    step_index: 0, source: 'MODEL', type: 'GENERIC', status: 'DONE', created_at: '2026-10-20T18:00:00Z', content: 'x', ...over,
+  });
+
+  assert.equal(agyPhase([step({ status: 'RUNNING' })]), 'working');
+  assert.equal(agyPhase([step({})]), 'idle');
+  // A question asked and not yet answered is the person waiting, whatever the step says.
+  assert.equal(agyPhase([step({ source: 'USER_EXPLICIT', type: 'USER_INPUT' })]), 'working');
+  // And the last step is the one that decides.
+  assert.equal(agyPhase([step({ source: 'USER_EXPLICIT', type: 'USER_INPUT' }), step({})]), 'idle');
+});
+
+test('agyPhase says nothing about an empty transcript, so nothing is overridden', () => {
+  assert.equal(agyPhase([]), '');
+  assert.equal(agyPhase(null), '');
 });
