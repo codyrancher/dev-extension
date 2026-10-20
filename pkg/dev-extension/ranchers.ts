@@ -102,8 +102,19 @@ async function instanceTarget(name: string, since: string, cluster: Json | undef
   // "updating" / "cluster agent is not connected" and stays there. That is expected here, not a
   // fault, and this machine is where the node's address is still readable after it happens.
   const machineAddrs: Json[] = machine?.status?.addresses || [];
-  const machineIp = machineAddrs.find((a) => a.type === 'ExternalIP')?.address || machineAddrs.find((a) => a.type === 'InternalIP')?.address || '';
-  const nodeUp = machine?.status?.phase === 'Running' && !!machineIp;
+  /*
+   * The public address is the only one that makes a working address, and the fallback to the
+   * private one is for progress reporting alone.
+   *
+   * `<name>.dev-extension.<ip>.sslip.io` resolves to whatever IP is in it, so an instance
+   * reported ready on a 10.x address hands back a URL that resolves to a private range and
+   * answers nowhere - up, green and unreachable, which is the worst of the three states to be
+   * shown. A node that has registered but has no ExternalIP yet is still provisioning as far as
+   * anything that wants to reach it is concerned, so that is what it says.
+   */
+  const machinePublic = machineAddrs.find((a) => a.type === 'ExternalIP')?.address || '';
+  const machineIp = machinePublic || machineAddrs.find((a) => a.type === 'InternalIP')?.address || '';
+  const nodeUp = machine?.status?.phase === 'Running' && !!machinePublic;
 
   if (!cluster && !machine) {
     // Apps Plus makes the cluster when a dashboard with it loaded reconciles the instance.
@@ -122,15 +133,18 @@ async function instanceTarget(name: string, since: string, cluster: Json | undef
       devFetch(`${ clusterBase(cluster.id) }/v1/apps.deployments/cattle-system`).catch(() => null),
     ]);
     const addresses: Json[] = (nodes?.data || []).flatMap((node: Json) => node.status?.addresses || []);
-    const address = addresses.find((a) => a.type === 'ExternalIP')?.address || addresses.find((a) => a.type === 'InternalIP')?.address || machineIp;
+    // Same rule as the machine's above: only a public address can carry the instance's URL, and
+    // the private one is reported as progress rather than as a place to go.
+    const publicAddress = addresses.find((a) => a.type === 'ExternalIP')?.address || machinePublic;
+    const address = publicAddress || addresses.find((a) => a.type === 'InternalIP')?.address || machineIp;
     // The chart's release is named for the instance, so its Deployment is `<name>-rancher`
     // (`ha-rancher`); a Rancher installed by hand is plain `rancher`.
     const deployment: Json = (deployments?.data || []).find((d: Json) => [`${ name }-rancher`, 'rancher'].includes(d.metadata?.name)) || null;
     const ready = (deployment?.status?.readyReplicas || 0) > 0;
 
-    if (ready && address) {
+    if (ready && publicAddress) {
       return {
-        ...base, phase: 'ready', step: 3, detail: '', url: rancherAddress(name, address), clusterId: cluster.id, nodeIp: address,
+        ...base, phase: 'ready', step: 3, detail: '', url: rancherAddress(name, publicAddress), clusterId: cluster.id, nodeIp: publicAddress,
       };
     }
     if (/^Err/.test(bundleState)) {

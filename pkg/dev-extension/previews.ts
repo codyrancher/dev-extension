@@ -7,7 +7,7 @@
 // preview was built for.
 
 import {
-  devFetch, clusterBase, nodeAddress, workspaceNamespace, deleteWorkspace, DEV_SYSTEM_NAMESPACE
+  devFetch, clusterBase, nodeAddress, workspaceNamespace, deleteWorkspace, missingCluster, DEV_SYSTEM_NAMESPACE
 } from './api';
 import { LABEL_CLUSTER } from './config/constants';
 
@@ -363,6 +363,21 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
     acmeConfig().catch(() => EMPTY_ACME),
     certState(hostedOn, namespace, host, namespace).catch(() => ({ state: 'none', expires: '', host: '' } as CertState)),
   ]);
+  /*
+   * The cluster it was hosted on, when that cluster is no longer here.
+   *
+   * A share is pinned to the Rancher it was put on (LABEL_CLUSTER), and that Rancher can be
+   * deleted out from under it - rebuilding an instance gives the replacement a new cluster id
+   * and a new node address, and the share keeps pointing at the old ones. Every read above
+   * then fails, and this said `Waiting for a pod` for ever, with the link hidden: five shares
+   * from a rebuilt instance sat like that, looking like a build that was taking its time.
+   *
+   * Asked only when there is nothing to read, so the common case costs nothing, and only of a
+   * cluster that is not this one - `missingCluster` answers false for `local` and for an empty
+   * id, and a list that failed to arrive proves nothing and answers false too.
+   */
+  const stranded = !pods?.data && !services?.data && await missingCluster(hostedOn).catch(() => false);
+
   const pod: Json = (pods?.data || []).find((candidate: Json) => !candidate.metadata?.deletionTimestamp) || null;
   const service: Json = (services?.data || []).find((svc: Json) => svc.metadata?.name === namespace) || null;
   const nodePort = service?.spec?.ports?.[0]?.nodePort || 0;
@@ -372,7 +387,13 @@ export async function previewState(store: Store, workspace: string, cluster = 'l
   let state: PreviewState['state'] = 'building';
   let detail = 'Waiting for a pod';
 
-  if (init?.state?.waiting?.reason && /BackOff|Error/.test(init.state.waiting.reason)) {
+  if (stranded) {
+    // Not a failure of this share: the thing it was served from is gone. Nothing here can
+    // rebuild it - the build payload went with the cluster - so the detail says the one action
+    // that works.
+    state = 'failed';
+    detail = 'The Rancher this was hosted on no longer exists. Share again to rebuild it.';
+  } else if (init?.state?.waiting?.reason && /BackOff|Error/.test(init.state.waiting.reason)) {
     state = 'failed';
     detail = `Failed to prepare (${ init.state.waiting.reason }); see the pod's build container log.`;
   } else if (init?.state?.running) {

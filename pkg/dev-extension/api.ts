@@ -176,7 +176,25 @@ export async function missingCluster(id: string): Promise<boolean> {
 
 export async function listClusters(): Promise<DevCluster[]> {
   const response = await devFetch('/v3/clusters').catch(() => null);
-  const clusters = (response?.data || []).filter((cluster: Json) => cluster.state === 'active');
+  /*
+   * Active, and also errored-but-still-measurable.
+   *
+   * `active` alone drops exactly the clusters this product makes: a standalone Rancher instance
+   * takes its own cluster over, the parent's cluster agent is dropped, and the parent's view of
+   * it goes to `error` and stays there - by design, and `instanceTarget` in ranchers.ts calls
+   * the instance ready on the node's own evidence. But its cluster then vanished from here, so
+   * the sidebar's row lost its health dot and its memory and disk meters: not an error anybody
+   * could see, just an absence where something used to be, on the row of the Rancher somebody
+   * had just built. The proxy still answers for such a cluster (its nodes read fine), so the
+   * reads below still work.
+   *
+   * `allocatable.memory` is the guard rather than the state: a cluster the parent has real
+   * capacity figures for is one it has genuinely seen, while one that never provisioned reports
+   * nothing and would come back as zero bytes free - which `roomHealth` would then call low and
+   * paint red, inventing a problem out of an absence.
+   */
+  const clusters = (response?.data || []).filter((cluster: Json) => cluster.state === 'active'
+    || (cluster.state === 'error' && bytes(cluster.allocatable?.memory) > 0));
 
   return Promise.all(clusters.map(async(cluster: Json) => {
     const [nodes, pods] = await Promise.all([
