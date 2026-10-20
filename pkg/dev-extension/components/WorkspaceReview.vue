@@ -26,7 +26,6 @@ import { listConversations, startConversation, queuePrompt, paneCommand } from '
 import type { ProjectConversation } from '../conversations';
 import { readInWorkspace, ensureWorkspaceReady } from '../workspace-tools';
 import { listApps } from '../apps';
-import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from '../api';
 import { DEFAULT_APP, workspaceWorkdir } from '../config/constants';
 import { DEFAULT_REPO } from '../reviews';
 import { useStore } from 'vuex';
@@ -64,12 +63,6 @@ const defaultBase = ref('');
 const selectedBase = ref('');
 const selectedHead = ref('');
 const SHA_RE = /^[0-9a-f]{7,40}$/;
-// The agent's media - the videos and screenshots it recorded under the workspace's artifacts, the
-// ones it wants a reviewer to see.
-const media = ref<{ path: string; name: string; type: string; size: number }[]>([]);
-const mediaError = ref('');
-/** Whether the media is shown. Shut to begin with: the diff is what this is for. */
-const mediaOpen = ref(false);
 let timer: ReturnType<typeof setInterval> | null = null;
 
 async function resolveRepo() {
@@ -369,26 +362,6 @@ function shortSha(sha: string): string {
   return (sha || '').slice(0, 7);
 }
 
-async function loadMedia() {
-  try {
-    const data = await devFetch(workspaceMediaListUrl(props.workspace.name));
-
-    media.value = data?.files || [];
-    mediaError.value = '';
-  } catch (e: Json) {
-    media.value = [];
-    mediaError.value = e?.message || String(e);
-  }
-}
-
-function mediaSrc(item: { path: string }): string {
-  return workspaceMediaFileUrl(props.workspace.name, item.path);
-}
-
-function isVideo(item: { type: string }): boolean {
-  return (item.type || '').startsWith('video/');
-}
-
 // Re-read the diff the moment the base or compare point changes, rather than waiting for the poll.
 watch([selectedBase, selectedHead], () => {
   loading.value = true;
@@ -397,11 +370,10 @@ watch([selectedBase, selectedHead], () => {
 
 onMounted(async() => {
   await resolveRepo();
-  await Promise.all([refresh(), loadConversations(), loadMedia()]);
+  await Promise.all([refresh(), loadConversations()]);
   timer = setInterval(() => {
     if (!document.hidden) {
       refresh();
-      loadMedia();
     }
   }, REFRESH_MS);
 });
@@ -484,74 +456,6 @@ defineExpose({ refresh });
         <span class="muted prm-meta-note">Read from the agent's checkout in {{ dir }}. Comments are not kept: they are the next thing said to the agent.</span>
       </div>
     </header>
-
-    <!-- The media the agent wants highlighted: its repro and demo videos, its before/after shots. -->
-    <section
-      v-if="media.length || mediaError"
-      class="wr-media"
-    >
-      <!--
-        Shut by default, and scrolling when open. Ninety-one screenshots between the header and
-        the diff is a page you have to get past before you can read anything, and the diff is
-        what the modal is for.
-      -->
-      <button
-        type="button"
-        class="wr-media-head"
-        :title="mediaOpen ? 'Fold the media away' : 'Show the media'"
-        @click="mediaOpen = !mediaOpen"
-      >
-        <i
-          class="icon"
-          :class="mediaOpen ? 'icon-chevron-down' : 'icon-chevron-right'"
-        />
-        <span class="wr-media-title">Media</span>
-        <span class="muted">{{ media.length }} from the agent</span>
-      </button>
-      <div
-        v-if="mediaError && mediaOpen"
-        class="muted"
-      >
-        Media could not be read: {{ mediaError }}
-      </div>
-      <div
-        v-if="mediaOpen"
-        class="wr-media-grid"
-      >
-        <figure
-          v-for="m in media"
-          :key="m.path"
-          class="wr-media-item"
-        >
-          <video
-            v-if="isVideo(m)"
-            :src="mediaSrc(m)"
-            class="wr-media-el"
-            controls
-            preload="metadata"
-          />
-          <a
-            v-else
-            :href="mediaSrc(m)"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <img
-              :src="mediaSrc(m)"
-              :alt="m.name"
-              class="wr-media-el"
-              loading="lazy"
-            >
-          </a>
-          <figcaption
-            class="wr-media-cap"
-            :title="m.path"
-          >
-            {{ m.path }}
-          </figcaption>
-        </figure>
-      </div>
-    </section>
 
     <div
       v-if="showPane && session"
@@ -801,72 +705,6 @@ defineExpose({ refresh });
 
 .prm-meta-note {
   font-size: 12px;
-}
-
-// The agent's media: a gallery above the diff.
-.wr-media {
-  padding:       var(--dev-space-3, 8px) var(--dev-space-4, 12px);
-  border-bottom: 1px solid var(--border);
-}
-
-.wr-media-head {
-  display:       flex;
-  align-items:   baseline;
-  gap:           8px;
-  margin-bottom: var(--dev-space-3, 8px);
-  padding:       0;
-  border:        0;
-  background:    transparent;
-  color:         inherit;
-  font:          inherit;
-  min-height:    0;
-  cursor:        pointer;
-
-  .icon {
-    font-size: 10px;
-    color:     var(--muted);
-  }
-
-  &:hover .icon { color: var(--link); }
-}
-
-.wr-media-title {
-  font-weight: 600;
-}
-
-.wr-media-grid {
-  display:               grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap:                   var(--dev-space-3, 8px);
-  /* Its own scroller: ninety-one items must not push the diff off the page. */
-  max-height:            42vh;
-  overflow-y:            auto;
-  padding-right:         4px;
-}
-
-.wr-media-item {
-  margin:        0;
-  border:        1px solid var(--border);
-  border-radius: var(--border-radius, 4px);
-  overflow:      hidden;
-  background:    var(--body-bg);
-}
-
-.wr-media-el {
-  display:    block;
-  width:      100%;
-  max-height: 240px;
-  object-fit: contain;
-  background: #000;
-}
-
-.wr-media-cap {
-  padding:       4px 8px;
-  font-size:     11px;
-  color:         var(--muted);
-  overflow:      hidden;
-  text-overflow: ellipsis;
-  white-space:   nowrap;
 }
 
 .prm-title-sub { font-weight: 400; font-size: 12px; white-space: nowrap; }

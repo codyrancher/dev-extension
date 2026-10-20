@@ -16,6 +16,8 @@
  * drawn, because a menu that explains each choice in a sentence is a page, and this opens under
  * a 22px button next to the thing being added.
  */
+import { placeMenu } from '../menu-place.mjs';
+
 export default {
   name: 'SplitButton',
 
@@ -74,8 +76,16 @@ export default {
        * drawer's tab row scrolls horizontally (`overflow-x: auto`), and an overflow on one axis
        * clips the other, so a menu dropping out of that row was cut off at the row's edge. No
        * `z-index` reaches out of a clipping ancestor, so the menu has to leave it.
+       *
+       * Which also means nothing keeps it on screen, so `placeMenu` works out the corner from
+       * the two rectangles - see menu-place.mjs. `placed` is false for the one frame between
+       * rendering the menu and measuring it: it has to be in the document to have a size, and
+       * drawing it at a guessed position first is a visible jump.
        */
-      at: { top: 0, right: 0 },
+      at: {
+        top: 0, left: 0, maxHeight: 0, above: false,
+      },
+      placed: false,
     };
   },
 
@@ -92,11 +102,17 @@ export default {
   mounted() {
     document.addEventListener('click', this.onDocClick, true);
     document.addEventListener('keydown', this.onKey);
+    // Captured, because the scroller that moves the button is usually an inner one (the tab
+    // row) and a scroll event on it does not bubble to the window.
+    window.addEventListener('scroll', this.place, true);
+    window.addEventListener('resize', this.place);
   },
 
   beforeUnmount() {
     document.removeEventListener('click', this.onDocClick, true);
     document.removeEventListener('keydown', this.onKey);
+    window.removeEventListener('scroll', this.place, true);
+    window.removeEventListener('resize', this.place);
   },
 
   methods: {
@@ -124,19 +140,41 @@ export default {
       this.$emit('pick', id);
     },
 
-    /** Open it where the control is, measured now rather than guessed from the layout. */
+    /**
+     * Put the menu where it fits, from what both rectangles actually measure.
+     *
+     * Called when it opens, and again on any scroll or resize while it is open: the menu is
+     * fixed to the viewport and the button is not, so anything that moves the button leaves the
+     * menu behind. Cheap enough to run on those events - two `getBoundingClientRect`s and the
+     * arithmetic in menu-place.mjs - and the alternative, closing the menu on scroll, takes the
+     * menu away from somebody who only nudged a trackpad.
+     */
+    place() {
+      if (!this.open) {
+        return;
+      }
+      const anchor = this.$el?.getBoundingClientRect?.();
+      const menu = this.$refs.menu?.getBoundingClientRect?.();
+
+      if (!anchor || !menu) {
+        return;
+      }
+
+      this.at = placeMenu(anchor, menu, { width: window.innerWidth, height: window.innerHeight });
+      this.placed = true;
+    },
+
+    /** Open it where the control is, measured after it renders rather than guessed. */
     toggle() {
       if (this.open) {
         this.open = false;
 
         return;
       }
-      const box = this.$el?.getBoundingClientRect?.();
-
-      if (box) {
-        this.at = { top: Math.round(box.bottom + 4), right: Math.round(window.innerWidth - box.right) };
-      }
+      this.placed = false;
       this.open = true;
+      // One tick: the menu has to be in the document before it has a width to place by.
+      this.$nextTick(this.place);
     },
   },
 };
@@ -171,9 +209,16 @@ export default {
     <Teleport to="body">
       <ul
         v-if="open"
+        ref="menu"
         class="split-btn__menu"
+        :class="{ 'split-btn__menu--above': at.above }"
         role="menu"
-        :style="{ top: `${ at.top }px`, right: `${ at.right }px` }"
+        :style="{
+          top: `${ at.top }px`,
+          left: `${ at.left }px`,
+          maxHeight: at.maxHeight ? `${ at.maxHeight }px` : null,
+          visibility: placed ? null : 'hidden',
+        }"
       >
         <li
           v-for="option in choices"
@@ -263,6 +308,19 @@ export default {
   border:        1px solid var(--border);
   border-radius: var(--dev-r-ctl);
   box-shadow:    0 8px 24px rgba(0, 0, 0, .3);
+  /* Only ever reached when `maxHeight` is set, which is a menu too tall for the window either
+     way up. `overscroll-behavior` keeps that scroll out of the page behind it. */
+  overflow-y:          auto;
+  overscroll-behavior: contain;
+  /* A menu wider than the window is placed at the left edge; this is what stops it running off
+     the right one. */
+  max-width: calc(100vw - 16px);
+}
+
+/* Flipped above the button: the shadow falls the other way, or the menu looks as though it is
+   hanging from nothing. */
+.split-btn__menu--above {
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, .3);
 }
 
 /* One row: a glyph, a name, and nothing else. */

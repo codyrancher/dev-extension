@@ -412,11 +412,34 @@ export default {
      */
     showRancher(rancher, event) {
       const lines = [rancher.url || rancher.detail].filter(Boolean);
+      const links = [];
 
       if (rancher.room?.summary) {
         lines.push(rancher.room.summary);
       }
-      this.openCard(rancher, event, { title: rancher.name, lines, links: [] });
+
+      /*
+       * The one step this product cannot take for you, said where somebody will read it.
+       *
+       * An instance's GitHub login sends GitHub the host in the address bar - the dashboard
+       * builds `redirect_uri` from `window.location.origin`, not from server-url - and GitHub
+       * checks that against the callback URLs registered on the app. Until this instance's own
+       * `/verify-auth` is on that list the login bounces, and an instance nobody can sign in to
+       * is indistinguishable from a dead one: it answers, it serves its dashboard, its cluster
+       * is healthy, and you cannot get in.
+       *
+       * Nothing can register it automatically - GitHub has no API for an OAuth app's callback
+       * URLs - and the address carries the node's public IP, so it is a NEW URL every time an
+       * instance is rebuilt, which is the moment somebody is least expecting to have to do
+       * anything. It was written down only in the App's own 60-github-auth.yaml, which is to
+       * say nowhere a person looks when they cannot sign in.
+       */
+      if (rancher.kind === 'instance' && rancher.phase === 'ready' && rancher.url) {
+        lines.push(`Sign-in needs ${ rancher.url }/verify-auth on the GitHub app's callback list`);
+        links.push({ url: 'https://github.com/settings/developers', label: 'GitHub app callbacks' });
+      }
+
+      this.openCard(rancher, event, { title: rancher.name, lines, links });
     },
 
     bar(free, total) {
