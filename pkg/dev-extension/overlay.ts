@@ -30,6 +30,7 @@ import { createApp } from 'vue';
 import { isAdminUser } from '@shell/store/type-map';
 import AgentPanel from './components/AgentPanel.vue';
 import { readDrawerState } from './drawer';
+import { dashboardApp, dashboardStore, whenDashboardStore } from './dashboard-app';
 
 /**
  * Put the drawer back the way this browser left it.
@@ -45,18 +46,14 @@ import { readDrawerState } from './drawer';
  * hour later.
  */
 let stopWaitingForAdmin: (() => void) | null = null;
-let waitingForApp: any = null;
-
-/** How long to keep looking for the dashboard's app, and how often. See below for both. */
-const APP_POLL_MS = 200;
-const APP_WAIT_MS = 30000;
+let stopWaitingForApp: (() => void) | null = null;
 
 function restoreDrawer(): void {
   if (!readDrawerState().open) {
     return;
   }
 
-  whenAppExists((store) => {
+  stopWaitingForApp = whenDashboardStore((store) => {
     if (isAdmin()) {
       panelInstance();
 
@@ -81,47 +78,6 @@ function restoreDrawer(): void {
 }
 
 /**
- * Wait for the dashboard's own Vue app, then hand over its store.
- *
- * A poll, and the reason it is one is worth stating because the first version of this had no
- * wait at all and simply did nothing. A UIPlugin is evaluated during the dashboard's bootstrap,
- * inside `extendApp`, which is *before* `vueApp.mount('#app')` - so at the moment this runs
- * there is no `#app.__vue_app__` to read a store off, and asking once answers null on every cold
- * load. The drawer restored perfectly when the bundle happened to be re-evaluated later, and
- * never on a refresh, which is the case it exists for.
- *
- * It is a poll rather than an event because mounting is not one: Vue sets `__vue_app__` on the
- * element and announces nothing. The deadline is what keeps it from being a leak - a page where
- * the app never mounts is a broken page, not one to keep asking about.
- */
-function whenAppExists(then: (store: any) => void): void {
-  const store = dashboardStore();
-
-  if (store) {
-    then(store);
-
-    return;
-  }
-
-  const deadline = Date.now() + APP_WAIT_MS;
-
-  waitingForApp = setInterval(() => {
-    const ready = dashboardStore();
-
-    if (!ready && Date.now() < deadline) {
-      return;
-    }
-
-    clearInterval(waitingForApp);
-    waitingForApp = null;
-
-    if (ready) {
-      then(ready);
-    }
-  }, APP_POLL_MS);
-}
-
-/**
  * `event.code`, not `event.key`.
  *
  * Shift and a backtick produce `~` on a US layout and something else again elsewhere, so the
@@ -135,24 +91,6 @@ const HOST_ID = 'extension-studio-agent-overlay';
 
 let panel: any = null;
 let listening = false;
-
-/**
- * The dashboard's Vuex store, taken off the app Vue mounted.
- *
- * There is no import for it: `@shell/config/store` builds one, and the running dashboard's is
- * the one already mounted on `#app`. Vue 3 puts the app it mounted on the element, so this reads
- * that rather than constructing a second store which would answer about nobody.
- *
- * Null is a real answer and the gate below fails closed on it - on the login page, or before the
- * app has mounted, there is no user to be an admin.
- */
-function dashboardApp(): any {
-  return (document.querySelector('#app') as any)?.__vue_app__ || null;
-}
-
-function dashboardStore(): any {
-  return dashboardApp()?.config?.globalProperties?.$store || null;
-}
 
 function isAdmin(): boolean {
   const store = dashboardStore();
@@ -286,10 +224,8 @@ export function registerAgentOverlay(): () => void {
   return () => {
     stopWaitingForAdmin?.();
 
-    if (waitingForApp) {
-      clearInterval(waitingForApp);
-      waitingForApp = null;
-    }
+    stopWaitingForApp?.();
+    stopWaitingForApp = null;
 
     window.removeEventListener('keydown', onKeyDown);
     listening = false;
@@ -320,10 +256,8 @@ if (hot) {
   hot.dispose(() => {
     stopWaitingForAdmin?.();
 
-    if (waitingForApp) {
-      clearInterval(waitingForApp);
-      waitingForApp = null;
-    }
+    stopWaitingForApp?.();
+    stopWaitingForApp = null;
 
     window.removeEventListener('keydown', onKeyDown);
     listening = false;

@@ -22,6 +22,13 @@ This is a Kubernetes workspace made by the dev extension, not a harness project 
   ```
 
   If that is not the URL `dev-server status` shows, `dev-server --api <that URL>` points the running server at it: that, not a server of your own.
+- **Its preferences belong to a person, not to you**: every dashboard you drive - the shared browser and your own dev server alike - is signed in as the person you work for, so Rancher's user preferences (theme, pinned clusters, table views, landing page) are *theirs*. Do not tidy them. The theme is the one that used to leak: the dev extension re-registers it as a cookie of the browser it is loaded in, so switching to light to check a bug now stays with you - but a dashboard without the extension writes it straight to their account, and there the local flip is
+
+  ```js
+  document.querySelector('#app').__vue_app__.config.globalProperties.$store.commit('prefs/load', { key: 'theme', value: 'light' })
+  ```
+
+  which repaints immediately and is forgotten on reload. Worth knowing either way: `Shift+T` toggles the theme for anybody whose `plugin-developer` preference is set, and the shortcut is only suppressed inside inputs - so a stray keystroke with focus on the page body flips it with nothing to point at.
 - **Browser**: Chromium is a container in this pod with CDP on `$CLAUDE_BROWSER_CDP`. `wait-for-sidecars` only waits; nothing needs starting. `browser.mjs` and the recording skills work as in the harness.
 - **Firefox**: `tools start firefox` attaches one, for a bug that only happens outside Chromium. It is **not** a second Chromium and **not** CDP: Firefox has had no DevTools Protocol since version 129, so `/json/version` answers 404 and `browser.mjs`, `a11y axtree` and anything else built on CDP will not drive it. It speaks **WebDriver BiDi**, and the endpoint is the session - connect a websocket to the `bidi` address `tools` prints for it, then:
 

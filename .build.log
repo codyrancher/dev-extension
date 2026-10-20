@@ -1,0 +1,53 @@
+yarn run v1.22.22
+warning package.json: No license field
+$ ./node_modules/@rancher/shell/scripts/build-pkg.sh dev-extension
+Building UI Package dev-extension
+  Package name:    dev-extension-0.3.400
+  Package version: 0.3.400
+  Output formats:  umd-min
+  Output directory: /w/dist-pkg/dev-extension-0.3.400
+/w/pkg/dev-extension /w
+All browser targets in the browserslist configuration have supported ES module.
+Therefore we don't build two separate bundles for differential loading.
+
+
+-  Building for production as library (umd-min)...
+ WARNING  Compiled with 2 warnings9:30:21 PM
+
+ warning  
+
+asset size limit: The following asset(s) exceed the recommended size limit (244 KiB).
+This can impact web performance.
+Assets: 
+  dev-extension-0.3.400.umd.min.js (3.7 MiB)
+  img/traefik.6be4ff82.png (1.29 MiB)
+  dev-extension-0.3.400.umd.min.xterm.js (375 KiB)
+
+ warning  
+
+entrypoint size limit: The following entrypoint(s) combined asset size exceeds the recommended limit (244 KiB). This can impact web performance.
+Entrypoints:
+  dev-extension-0.3.400.umd.min (3.7 MiB)
+      dev-extension-0.3.400.umd.min.js
+
+
+Webpack Bundle Analyzer saved report to /w/dist-pkg/dev-extension-0.3.400/report.html
+  File                                      Size             Gzipped
+
+  ../../dist-pkg/dev-extension-0.3.400/d    3793.01 KiB      1017.76 KiB
+  ev-extension-0.3.400.umd.min.js
+  ../../dist-pkg/dev-extension-0.3.400/d    375.34 KiB       88.92 KiB
+  ev-extension-0.3.400.umd.min.xterm.js
+  ../../dist-pkg/dev-extension-0.3.400/d    6.79 KiB         2.01 KiB
+  ev-extension-0.3.400.umd.min.161.js
+  ../../dist-pkg/dev-extension-0.3.400/d    6.11 KiB         2.47 KiB
+  ev-extension-0.3.400.umd.min.37.js
+  ../../dist-pkg/dev-extension-0.3.400/d    2.65 KiB         1.28 KiB
+  ev-extension-0.3.400.umd.min.60.js
+
+  Images and other types of assets omitted.
+  Build at: 2026-10-12T21:30:24.212Z - Hash: d6fc284c3c73220d - Time: NaNms
+
+Updating package file
+/w
+Done in 35.91s.

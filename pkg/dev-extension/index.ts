@@ -8,6 +8,7 @@ import { ADD_TO_APP_ACTION } from './config/types';
 import { ensureAgent } from './agent';
 import { registerAgentOverlay } from './overlay';
 import { installBrowserApi } from './public-api';
+import { keepThemeLocal } from './theme-local';
 
 // Init the package
 export default function(plugin: IPlugin): void {
@@ -30,6 +31,11 @@ export default function(plugin: IPlugin): void {
 
   // And the chord that opens a terminal into it, from any page in Rancher.
   registerAgentOverlay();
+
+  // The theme belongs to this browser, not to the account every agent is signed in as. See
+  // theme-pref.mjs: without this, an agent checking a bug in light mode turns the person's own
+  // dashboard light, hours later, with nothing to point at.
+  keepThemeLocal();
 
   // Auto-import model, detail, edit, list and l10n from the folders. Both products' types are
   // picked up by the one call: they are folders of one package now (see apps-plus.ts).
