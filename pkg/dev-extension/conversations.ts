@@ -54,6 +54,8 @@ export interface ProjectConversation {
   id: string;
   title: string;
   attach: Attachment;
+  /** Which CLI holds it, as the pod reports it (AgentSession.cli); '' for one that never ran. */
+  cli?: string;
 }
 
 /**
@@ -91,7 +93,12 @@ export async function listConversations(workspace: string): Promise<ProjectConve
   const sessions = await api.agent.projectSessions(workspace);
   const pod = sessions.length ? (await workspacePod(workspace).catch(() => null)) || '' : '';
 
-  return sessions.map((session) => ({ id: session.id, title: session.title, attach: attachment(workspace, session.id, pod) }));
+  // `cli` carried through so the chat can name the right assistant: the pane's own record is
+  // the only thing that knows, and a conversation made in another tab is every conversation
+  // after a reload.
+  return sessions.map((session) => ({
+    id: session.id, title: session.title, cli: session.cli || '', attach: attachment(workspace, session.id, pod, session.cli === 'agy' ? 'agy' : 'claude'),
+  }));
 }
 
 /**
@@ -632,10 +639,12 @@ export interface StudioBrowserApi {
     namespace: string;
     container: string;
     pod(): Promise<string | null>;
-    command(id: string, mode?: 'claude' | 'shell'): string[];
+    command(id: string, mode?: 'claude' | 'agy' | 'shell'): string[];
     /** The drawer's own conversations (`agent-<n>`). */
-    sessions(): Promise<{ id: string; title: string }[]>;
-    projectSessions(project: string): Promise<{ id: string; title: string }[]>;
+    sessions(): Promise<{ id: string; title: string; cli?: string }[]>;
+    /** `cli` is which CLI holds it, from the pane's own record. Optional: an older bundle on
+     * the page answers without it, and '' and undefined both read as claude. */
+    projectSessions(project: string): Promise<{ id: string; title: string; cli?: string }[]>;
     /** A new drawer conversation; its id. */
     start(): Promise<string>;
     startInProject(project: string, title?: string, prompt?: string): Promise<string>;

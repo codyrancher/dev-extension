@@ -148,6 +148,31 @@ export default {
   },
 
   computed: {
+    /**
+     * Whose conversation this is, in the words the view uses.
+     *
+     * The pane runs whichever CLI the conversation was created with and cannot change its mind,
+     * so this is a fact about the conversation rather than a setting. It was not read at all
+     * once: an Antigravity conversation said "Claude is not running in this pane", offered
+     * `/login`, and invited you to "Message Claude" - three statements about a program that was
+     * not there, under a pane that had just said `agy is not installed`.
+     */
+    agentName() {
+      return this.mode === 'agy' ? 'Antigravity' : 'Claude';
+    },
+
+    /**
+     * Whether the affordances that are claude's alone belong on this pane.
+     *
+     * `/login`, the model picker and the thinking level are all claude's own slash commands and
+     * its own option file; agy has neither, so offering them is offering something that does
+     * nothing. The rest of the menu - attach, mention a file, clear - is about the pane and
+     * works for either.
+     */
+    isClaude() {
+      return this.mode !== 'agy';
+    },
+
     /** The menu is open while a name is still being typed and there is something to offer. */
     slashOpen() {
       return !!this.slashSpot && !this.slashDismissed && this.slashMatches.length > 0;
@@ -512,7 +537,7 @@ export default {
     async clearConversation() {
       this.menu = '';
       // eslint-disable-next-line no-alert
-      if (!window.confirm('Clear this conversation? claude forgets everything said so far.')) {
+      if (!window.confirm(`Clear this conversation? ${ this.agentName } forgets everything said so far.`)) {
         return;
       }
       await this.sendCommand('/clear');
@@ -778,7 +803,7 @@ export default {
             :class="[`mc-chat__msg--${ m.role }`, { 'mc-chat__msg--queued': m.queued }]"
           >
         <div class="mc-chat__meta">
-          <span class="mc-chat__who">{{ m.role === 'user' ? 'You' : m.role === 'summary' ? 'Summary' : m.role === 'note' ? 'Claude Code' : 'Claude' }}</span>
+          <span class="mc-chat__who">{{ m.role === 'user' ? 'You' : m.role === 'summary' ? 'Summary' : m.role === 'note' ? `${ agentName } Code` : agentName }}</span>
           <span class="mc-chat__when">{{ m.failed ? 'not recorded' : m.queued ? 'queued' : when(m.at) }}</span>
           <!--
             Said, rather than shown as an ordinary message, because it is not in the
@@ -1073,8 +1098,9 @@ export default {
         <template v-else-if="working" />
         <template v-else-if="!attached">Not running</template>
         <template v-else-if="pane.gone">
-          Claude is not running in this pane.
+          {{ agentName }} is not running in this pane.
           <button
+            v-if="isClaude"
             type="button"
             class="mc-chat__link"
             @click="login"
@@ -1083,7 +1109,7 @@ export default {
           </button>
         </template>
         <template v-else-if="state.phase === 'waiting'">
-          {{ pane.status || 'Claude is waiting for you' }}
+          {{ pane.status || `${ agentName } is waiting for you` }}
           <button
             type="button"
             class="mc-chat__link"
@@ -1208,10 +1234,14 @@ export default {
         <span class="mc-chat__menu-name">Rewind…</span>
         <span class="mc-chat__menu-note">in the terminal</span>
       </button>
-      <p class="mc-chat__menu-head">
+      <p
+        v-if="isClaude"
+        class="mc-chat__menu-head"
+      >
         Model
       </p>
       <button
+        v-if="isClaude"
         type="button"
         class="mc-chat__menu-item"
         @click="menu = 'model'"
@@ -1439,7 +1469,7 @@ export default {
       class="mc-chat__takeover"
     >
       <div class="mc-chat__takeover-head">
-        <span>Claude Code is showing something here that the chat cannot draw.</span>
+        <span>{{ agentName }} is showing something here that the chat cannot draw.</span>
         <button
           type="button"
           class="mc-chat__navbtn"
@@ -1524,7 +1554,7 @@ export default {
         v-model="draft"
         class="mc-chat__textarea"
         rows="1"
-        :placeholder="working ? 'Queue the next message…' : 'Message Claude — / for commands'"
+        :placeholder="working ? 'Queue the next message…' : `Message ${ agentName } — / for commands`"
         :title="'Enter to send, Shift+Enter for a new line, / for commands, paste an image to attach it'"
         @keydown="onKeydown"
         @keyup="syncCaret"
@@ -1554,9 +1584,15 @@ export default {
           class="mc-chat__hidden"
           @change="attachPicked"
         >
-        <!-- The model, and the effort level, which the picker carries as a row of its own. -->
+        <!--
+          The model, and the effort level, which the picker carries as a row of its own.
+
+          Claude's only: the options come from its own settings file and the picker sets them
+          with its own slash commands, so on an Antigravity pane this was a control that read
+          `opus[1m]` for a program that was not running.
+        -->
         <button
-          v-if="options.read"
+          v-if="options.read && isClaude"
           type="button"
           class="mc-chat__pill"
           :class="{ 'mc-chat__pill--on': menu === 'model' }"

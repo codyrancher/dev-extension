@@ -22,8 +22,50 @@ export HOME=${HOME:-/app/.home}
 # running it is agy that gets the signal, not this script, so this only fires where it is offered.
 trap 'echo; exec /bin/bash' INT
 
+# agy, installed here if it is not here yet.
+#
+# terminal-tools.sh installs it at boot only when TOOLS_AGY=1, and nothing sets that: it is a
+# couple of hundred megabytes of a CLI most panes never run, so paying for it in every pod's
+# boot to serve the occasional Antigravity conversation is the wrong trade. The right moment is
+# this one - somebody has just asked for an Antigravity conversation, so install it for them.
+# It lands in the pane's own durable home, so this happens once per pod and not once per pane.
+#
+# The lock is for two panes opened together: the second waits for the first's binary rather
+# than running a second installer over the top of it. `mkdir` is the test and the claim in one
+# step, which is what makes it a lock; the stale check is for an installer whose pane was closed
+# mid-download.
+AGY_BIN="$HOME/.local/bin/agy"
+LOCK="$HOME/.agy-install.lock"
+
+if ! command -v agy >/dev/null 2>&1 && [ ! -x "$AGY_BIN" ]; then
+  if [ -d "$LOCK" ] && [ -n "$(find "$LOCK" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
+    rmdir "$LOCK" 2>/dev/null || true
+  fi
+
+  if mkdir "$LOCK" 2>/dev/null; then
+    echo "[installing the antigravity cli - a minute, once for this pod]"
+    curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --skip-aliases --skip-path
+    rmdir "$LOCK" 2>/dev/null || true
+  else
+    echo "[another pane is installing the antigravity cli - waiting for it]"
+    for _ in $(seq 1 120); do
+      [ -x "$AGY_BIN" ] && break
+      sleep 5
+    done
+  fi
+  # The installer writes into a directory this shell already had on its PATH, so the shell's
+  # cache of "there is no agy" is what would be consulted next.
+  hash -r 2>/dev/null || true
+fi
+
+# Installed somewhere PATH does not look: the installer is told --skip-path, because a pane's
+# PATH is set by the pod rather than by a shell profile.
+if ! command -v agy >/dev/null 2>&1 && [ -x "$AGY_BIN" ]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
 if ! command -v agy >/dev/null 2>&1; then
-  echo "[agy is not installed in this pod - see /app/.terminal-tools.log]"
+  echo "[agy could not be installed - the installer's output is above, and /app/.terminal-tools.log]"
   echo "[dropping to a shell]"
   exec /bin/bash
 fi

@@ -52,11 +52,18 @@ export interface AgentsBrowserApi {
     /** The agent pod's current name, or null while there is none. */
     pod(): Promise<string | null>;
     /** The argv a pane runs for one conversation: what the component's `command` prop takes. */
-    command(id: string, mode?: 'claude' | 'shell'): string[];
-    /** Every `agent-<n>` conversation, whoever started it. The panel lists only its own. */
-    sessions(): Promise<{ id: string; title: string }[]>;
+    command(id: string, mode?: 'claude' | 'agy' | 'shell'): string[];
+    /**
+     * Every `agent-<n>` conversation, whoever started it. The panel lists only its own.
+     *
+     * `cli` is which CLI holds it - 'claude', 'agy', or '' for one that has never run - read in
+     * the pod from the record the pane wrote, because nothing in a browser can know it about a
+     * conversation it did not just create. Optional on the way out so a caller compiled against
+     * the older shape still type-checks.
+     */
+    sessions(): Promise<{ id: string; title: string; cli?: string }[]>;
     /** One project's conversations - `p-<project>-<n>`, which the drawer never lists. */
-    projectSessions(project: string): Promise<{ id: string; title: string }[]>;
+    projectSessions(project: string): Promise<{ id: string; title: string; cli?: string }[]>;
     /**
      * Start a free-standing conversation.
      *

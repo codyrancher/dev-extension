@@ -408,6 +408,15 @@ export interface AgentSession {
   title: string;
   /** What its pane is doing, for the tab's status dot. `none` until it has run at all. */
   state?: AgentActivity;
+  /**
+   * Which CLI holds it: 'claude', 'agy', or '' for one that has never run.
+   *
+   * Reported by the pod, from the record the pane itself wrote, because nothing in the browser
+   * can work it out: a tab knows what it asked for when it created a conversation, and nothing
+   * at all about one created in another tab, by an agent, or before this page was loaded. The
+   * chat drew claude's chrome over all of them until this existed.
+   */
+  cli?: string;
 }
 
 /** The raw signals `sessions.sh states` reports for one conversation, before they become a word. */
@@ -540,6 +549,25 @@ async function sessionStates(project = ''): Promise<Map<string, AgentActivity>> 
 }
 
 /** One call to the pod's own account of its conversations. See pod/agent/sessions.sh. */
+/**
+ * One line of `sessions.sh list` as a conversation: `id`, `title`, and optionally the CLI.
+ *
+ * Three fields, tab separated, and the third is read defensively because the two callers of
+ * this have to keep working against a pod whose seed is older than this browser's - a pane that
+ * has not been re-materialised yet still prints two. A title cannot contain a tab (`title_of`
+ * strips control characters), so a third field is the CLI or nothing; anything that is not a
+ * plain lowercase word is treated as part of the title rather than guessed at.
+ */
+function sessionLine(line: string): { id: string; title: string; cli: string } {
+  const fields = line.split('\t');
+  const id = fields[0] || line;
+  const last = fields.length > 2 ? fields[fields.length - 1] : '';
+  const cli = /^[a-z]{2,16}$/.test(last) ? last : '';
+  const title = fields.slice(1, cli ? -1 : undefined).join('\t');
+
+  return { id, title: title || id, cli };
+}
+
 async function sessionScript(args: string[], what: string): Promise<string> {
   const pod = await agentPod();
 
@@ -583,10 +611,9 @@ export async function agentSessions(): Promise<AgentSession[]> {
     .map((line) => line.replace(/\r$/, ''))
     .filter(Boolean)
     .map((line) => {
-      const tab = line.indexOf('\t');
-      const id = tab === -1 ? line : line.slice(0, tab);
+      const session = sessionLine(line);
 
-      return { id, title: tab === -1 ? id : line.slice(tab + 1), state: states.get(id) || 'none' as AgentActivity };
+      return { ...session, state: states.get(session.id) || 'none' as AgentActivity };
     })
     .filter((session) => /^agent-\d+$/.test(session.id))
     .sort((a, b) => Number(a.id.slice(6)) - Number(b.id.slice(6)));
@@ -714,12 +741,7 @@ export async function projectSessions(project: string): Promise<AgentSession[]> 
   return listing.split('\n')
     .map((line) => line.replace(/\r$/, ''))
     .filter(Boolean)
-    .map((line) => {
-      const tab = line.indexOf('\t');
-      const id = tab === -1 ? line : line.slice(0, tab);
-
-      return { id, title: tab === -1 ? id : line.slice(tab + 1) };
-    })
+    .map(sessionLine)
     .filter((session) => isProjectSession(name, session.id))
     .sort((a, b) => Number(a.id.slice(a.id.lastIndexOf('-') + 1)) - Number(b.id.slice(b.id.lastIndexOf('-') + 1)));
 }

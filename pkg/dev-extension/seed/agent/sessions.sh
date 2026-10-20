@@ -38,6 +38,10 @@ WORKDIR=/workspace/conversations
 # after it had already removed the conversation's own directory.
 AGENT_HOME=/workspace/.home
 
+# Where each pane records what it is - see shell.sh, which writes one file per pane beside the
+# sessions. The sixth line is the CLI the conversation is held with.
+PANES=/workspace/.panes
+
 VERB=${1:-list}
 ID=$2
 
@@ -125,6 +129,16 @@ ai_title_of() {
 # Manual first on purpose: renaming a tab is somebody saying what they want it called, and
 # having claude overwrite that a minute later because the conversation moved on would make the
 # rename look broken.
+# Which CLI a conversation is held with, from its pane's own record, or empty.
+#
+# `tr -cd` rather than a quoted read, because this goes into a tab-separated line: whatever is
+# on that line of the file, the field stays one word of lowercase letters or nothing.
+cli_of() {
+  [ -f "$PANES/$1" ] || return 0
+
+  sed -n 6p "$PANES/$1" 2>/dev/null | tr -cd 'a-z' | cut -c1-16
+}
+
 title_of() {
   found=''
 
@@ -154,8 +168,17 @@ case "$VERB" in
         ''|*[!0-9]*) continue ;;
       esac
 
-      # Tab separated, one line each, because a title may contain spaces and an id may not.
-      printf '%s\t%s\n' "$id" "$(title_of "$id")"
+      # Tab separated, one line each, because a title may contain spaces and an id may not -
+      # and `title_of` strips control characters, tabs included, so three fields stay three.
+      #
+      # The third is which CLI holds it, which the browser cannot work out for itself: it knows
+      # what it asked for when it created a conversation and nothing at all about one somebody
+      # else created, or one it created before this page was loaded. Without it the chat drew
+      # claude's chrome over every conversation - "Claude is not running in this pane", a
+      # /login it has no use for, a model picker reading opus[1m] - on panes running agy.
+      # Empty for a conversation that has never run or that predates the record, and the
+      # browser reads that as claude, which is what every pane was then.
+      printf '%s\t%s\t%s\n' "$id" "$(title_of "$id")" "$(cli_of "$id")"
     done
     ;;
 

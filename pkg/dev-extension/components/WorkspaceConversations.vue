@@ -525,6 +525,7 @@ export default {
           v-show="conversation.id === current"
           class="workspace-conversations__terminal"
           :session="conversation.id"
+          :mode="conversation.cli || ''"
           :command="conversation.attach.command"
           @state="onState(conversation.id, $event)"
         />
@@ -561,6 +562,7 @@ export default {
             :key="`pop-${ current }`"
             class="workspace-conversations__terminal"
             :session="current"
+            :mode="currentConversation.cli || ''"
             :command="currentConversation.attach.command"
             @state="onState(current, $event)"
           />
