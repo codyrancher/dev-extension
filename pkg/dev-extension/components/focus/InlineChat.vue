@@ -26,7 +26,7 @@ import ChatComposer from '../chat/ChatComposer.vue';
 import ChatQuestion from '../chat/ChatQuestion.vue';
 import { useConversation } from '../../chat-conversation';
 import { readLook } from '../../look';
-import { EXT_NS } from '../../pod';
+import { AGENT_NS } from '../../pod';
 import { AGENT_CONTAINER } from '../../agent';
 
 const props = withDefaults(defineProps<{
@@ -52,7 +52,7 @@ const chat = useConversation(() => ({
   session:   props.session || '',
   mode:      'claude' as const,
   command:   props.command || null,
-  namespace: EXT_NS,
+  namespace: AGENT_NS,
   container: AGENT_CONTAINER,
   imageDir:  '/workspace/.images',
   home:      '/workspace/.home',

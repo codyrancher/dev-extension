@@ -44,7 +44,11 @@ if ! command -v agy >/dev/null 2>&1 && [ ! -x "$AGY_BIN" ]; then
 
   if mkdir "$LOCK" 2>/dev/null; then
     echo "[installing the antigravity cli - a minute, once for this pod]"
-    curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --skip-aliases --skip-path
+    # `--dir` is the only option this installer has besides `--help`. Given anything else it
+    # prints its usage and exits 0, which is how agy came to be "installed" in pods that did not
+    # have it: a successful-looking log line and no binary.
+    mkdir -p "$HOME/.local/bin"
+    curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir "$HOME/.local/bin"
     rmdir "$LOCK" 2>/dev/null || true
   else
     echo "[another pane is installing the antigravity cli - waiting for it]"
@@ -65,7 +69,7 @@ if ! command -v agy >/dev/null 2>&1 && [ -x "$AGY_BIN" ]; then
 fi
 
 if ! command -v agy >/dev/null 2>&1; then
-  echo "[agy could not be installed - the installer's output is above, and /app/.terminal-tools.log]"
+  echo "[agy could not be installed - the installer's output is above, and $(dirname "$HOME")/.terminal-tools.log]"
   echo "[dropping to a shell]"
   exec /bin/bash
 fi

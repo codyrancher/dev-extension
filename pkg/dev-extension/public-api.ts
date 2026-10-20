@@ -17,7 +17,7 @@ import {
   AGENT_CONTAINER, agentPod, agentSessions, projectSessions, startAgentSession, startProjectSession,
   renameAgentSession, endAgentSession, queueSessionPrompt, sessionCommand, sessionPane,
 } from './agent';
-import { EXT_NS } from './pod';
+import { AGENT_NS } from './pod';
 
 /** Where the API is: `window.__agents`. */
 export const AGENTS_GLOBAL = '__agents';
@@ -89,7 +89,7 @@ export function installBrowserApi(version: string): AgentsBrowserApi {
     version,
     terminal: { component: PodTerminal },
     agent:    {
-      namespace:      EXT_NS,
+      namespace:      AGENT_NS,
       container:      AGENT_CONTAINER,
       pod:            agentPod,
       command:        sessionCommand,

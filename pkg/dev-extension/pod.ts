@@ -11,23 +11,36 @@ import { devFetch } from './api';
 const EXT_CLUSTER = 'local';
 
 /**
- * The namespace, the account and the names, kept from Extension Studio on purpose.
+ * The namespace, the account and the names: the agent's own, not the Studio's.
  *
- * This code lived in the Studio, and the agent pod it made - its conversations on the node under
- * `/var/lib/rancher/extension-studio/agent`, its credential Secret, the account it runs as - is
- * the pod this extension now owns. Renaming any of it would be a migration of every
- * conversation anybody has, for a name. So the objects keep theirs, and the Studio is what makes
- * the namespace and the account when it is installed too; this extension makes them when it is
- * the first to arrive (see index.ts).
+ * This code lived in Extension Studio, and for a long time the pod kept the Studio's names
+ * because renaming them looked like a migration of every conversation anybody has. It is not:
+ * the conversations are not in the namespace. They are on the node, under AGENT_HOST_PATH, with
+ * the transcripts, the queued prompts, the pane records and the installed CLIs - and that path
+ * is deliberately left alone here. Moving the objects that point at it costs one pod
+ * replacement, which boot.sh already recovers from by reattaching every pane it finds recorded.
+ *
+ * So the Deployment, the ConfigMap, the ServiceAccount and the credential Secret live in
+ * `dev-agents` as `agent`, and a person looking at a prompt sees whose pod they are in:
+ * `node@agent-xxxx:/workspace/conversations$`. The Studio's namespace is still where the
+ * Studio's own extensions run; nothing here writes to it any more except to retire what this
+ * extension used to keep there (see retireStudioAgent).
+ *
+ * The hostPath keeping the old name is a wart, and a deliberate one: it is the one thing that
+ * cannot be renamed without copying everybody's conversations between directories on the node.
  */
-export const EXT_NS = 'extension-studio';
-export const EXT_ACCOUNT = 'extension-studio';
-export const EXT_ROLE_BINDING = 'extension-studio-cluster-admin';
-export const EXT_IMAGE = 'node:24';
-export const EXT_BASE = `/k8s/clusters/${ EXT_CLUSTER }`;
+export const AGENT_NS = 'dev-agents';
+export const AGENT_ACCOUNT = 'agent';
+export const AGENT_ROLE_BINDING = 'dev-agents-cluster-admin';
+export const AGENT_IMAGE = 'node:24';
+export const AGENT_BASE = `/k8s/clusters/${ EXT_CLUSTER }`;
+
+/** Where the agent pod used to live, and what this extension retires on the way past. */
+export const STUDIO_NS = 'extension-studio';
+export const STUDIO_AGENT_OBJECT = 'extension-studio-agent';
 
 /** The one name for the ConfigMap, the Deployment and the pod's label. */
-export const AGENT_OBJECT = 'extension-studio-agent';
+export const AGENT_OBJECT = 'agent';
 
 /** The container a pane execs into. Named in the exec URL, so named once. */
 export const AGENT_CONTAINER = 'agent';
@@ -41,7 +54,7 @@ export const AGENT_CONTAINER = 'agent';
  * apiserver's status, 4 resize) followed by base64.
  */
 export function execUrl(
-  pod: string, command: string[], interactive: boolean, container: string = AGENT_CONTAINER, namespace: string = EXT_NS,
+  pod: string, command: string[], interactive: boolean, container: string = AGENT_CONTAINER, namespace: string = AGENT_NS,
 ): string {
   const origin = window.location.origin.replace(/^http/, 'ws');
   const params = new URLSearchParams({
@@ -57,7 +70,7 @@ export function execUrl(
     params.append('command', arg);
   }
 
-  return `${ origin }${ EXT_BASE }/api/v1/namespaces/${ namespace }/pods/${ pod }/exec?${ params }`;
+  return `${ origin }${ AGENT_BASE }/api/v1/namespaces/${ namespace }/pods/${ pod }/exec?${ params }`;
 }
 
 /** How long a one-shot exec may run. The slowest thing here is a base64 of a screenshot. */
@@ -83,7 +96,7 @@ export interface PodExecResult {
  * as JSON when the command ends, which is where the exit code is read from.
  */
 export function podExecResult(
-  pod: string, command: string[], timeoutMs = EXEC_TIMEOUT_MS, container: string = AGENT_CONTAINER, namespace: string = EXT_NS,
+  pod: string, command: string[], timeoutMs = EXEC_TIMEOUT_MS, container: string = AGENT_CONTAINER, namespace: string = AGENT_NS,
 ): Promise<PodExecResult> {
   return new Promise((resolve) => {
     const out = { stdout: '', stderr: '', status: '', code: -1, transport: false };
@@ -216,7 +229,7 @@ export interface PodTarget {
 }
 
 function inPod(target: PodTarget, script: string, timeoutMs?: number): Promise<string> {
-  return podExecOnce(target.pod, asPodUser(script, target.home), timeoutMs, target.container || AGENT_CONTAINER, target.namespace || EXT_NS);
+  return podExecOnce(target.pod, asPodUser(script, target.home), timeoutMs, target.container || AGENT_CONTAINER, target.namespace || AGENT_NS);
 }
 
 /** Base64 goes into the pod this many characters at a time: an exec is URL arguments. */
@@ -310,8 +323,8 @@ export interface ObjectSpec {
 
 export function objectPath(spec: { type: string; namespace?: string; name: string }): string {
   return spec.namespace
-    ? `${ EXT_BASE }/v1/${ spec.type }/${ spec.namespace }/${ spec.name }`
-    : `${ EXT_BASE }/v1/${ spec.type }/${ spec.name }`;
+    ? `${ AGENT_BASE }/v1/${ spec.type }/${ spec.namespace }/${ spec.name }`
+    : `${ AGENT_BASE }/v1/${ spec.type }/${ spec.name }`;
 }
 
 export async function objectExists(spec: { type: string; namespace?: string; name: string }): Promise<boolean> {
@@ -330,7 +343,7 @@ export async function createIfAbsent(spec: ObjectSpec): Promise<'present' | 'cre
   }
 
   try {
-    await devFetch(`${ EXT_BASE }/v1/${ spec.type }`, { method: 'POST', body: JSON.stringify(spec.body()) });
+    await devFetch(`${ AGENT_BASE }/v1/${ spec.type }`, { method: 'POST', body: JSON.stringify(spec.body()) });
 
     return 'created';
   } catch (e: any) {
@@ -343,11 +356,11 @@ export async function createIfAbsent(spec: ObjectSpec): Promise<'present' | 'cre
 }
 
 export function namespaceBody(): Record<string, unknown> {
-  return { apiVersion: 'v1', kind: 'Namespace', metadata: { name: EXT_NS } };
+  return { apiVersion: 'v1', kind: 'Namespace', metadata: { name: AGENT_NS } };
 }
 
 export function serviceAccountBody(): Record<string, unknown> {
-  return { apiVersion: 'v1', kind: 'ServiceAccount', metadata: { namespace: EXT_NS, name: EXT_ACCOUNT } };
+  return { apiVersion: 'v1', kind: 'ServiceAccount', metadata: { namespace: AGENT_NS, name: AGENT_ACCOUNT } };
 }
 
 /**
@@ -358,8 +371,8 @@ export function clusterRoleBindingBody(): Record<string, unknown> {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind:       'ClusterRoleBinding',
-    metadata:   { name: EXT_ROLE_BINDING },
+    metadata:   { name: AGENT_ROLE_BINDING },
     roleRef:    { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: 'cluster-admin' },
-    subjects:   [{ kind: 'ServiceAccount', name: EXT_ACCOUNT, namespace: EXT_NS }],
+    subjects:   [{ kind: 'ServiceAccount', name: AGENT_ACCOUNT, namespace: AGENT_NS }],
   };
 }

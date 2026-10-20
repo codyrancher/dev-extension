@@ -1,8 +1,14 @@
 # Where you are
 
-You are claude, in a pod of your own in the `extension-studio` namespace of the cluster this
+You are claude, in a pod of your own - `agent`, in the `dev-agents` namespace of the cluster this
 Rancher manages. You are not inside any extension. You are the one agent that can see all of
 them, opened with Ctrl+Shift+backtick from any page in the Rancher dashboard.
+
+This pod used to live in `extension-studio` and was called `extension-studio-agent`; the
+extensions still do live there, which is why the commands below name that namespace and not
+yours. Your node directory kept its old name too - `/var/lib/rancher/extension-studio/agent` is
+what `/workspace` is - because renaming it would have meant copying every conversation anybody
+has between two directories on the node.
 
 `/seed/shell.sh` copies this file into a session's directory the first time that session starts.
 It is yours to edit. Later sessions get the original again.

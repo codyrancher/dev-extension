@@ -14,8 +14,8 @@
 // Its terminal is PodTerminal, and its panes are shell.sh, tmux and a claude loop - the same
 // scripts Extension Studio's dev-server pods run, carried here in seed/ for this pod.
 import {
-  EXT_NS, EXT_ACCOUNT, EXT_IMAGE, EXT_BASE, AGENT_OBJECT, AGENT_CONTAINER, execUrl, podExecResult,
-  namespaceBody, serviceAccountBody, clusterRoleBindingBody, EXT_ROLE_BINDING,
+  AGENT_NS, AGENT_ACCOUNT, AGENT_IMAGE, AGENT_BASE, AGENT_OBJECT, AGENT_CONTAINER, STUDIO_NS, STUDIO_AGENT_OBJECT, execUrl, podExecResult,
+  namespaceBody, serviceAccountBody, clusterRoleBindingBody, AGENT_ROLE_BINDING,
 } from './pod';
 // The coarse bucket, shared and tested. See activityBucket there.
 import { activityBucket } from './chat-state.mjs';
@@ -25,6 +25,9 @@ import { AGENT_FILES } from './seed.generated';
 import { MCP_GUIDANCE, mcpSeedFiles, withMcpBoot } from './agent-mcp';
 import { cardSeedFiles } from './agent-cards';
 import { devFetch } from './api';
+// One name, from the module that owns the Secret; credential.ts imports nothing from here, so
+// this is not a cycle.
+import { AGENT_CREDENTIAL_SECRET } from './credential';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -134,7 +137,7 @@ export function agentConfigMapBody(): Record<string, unknown> {
     apiVersion: 'v1',
     kind:       'ConfigMap',
     metadata:   {
-      namespace:   EXT_NS,
+      namespace:   AGENT_NS,
       name:        AGENT_OBJECT,
       labels:      { app: AGENT_OBJECT },
       annotations: { [VERSION_ANNOTATION]: agentSourceVersion() },
@@ -171,7 +174,7 @@ function deploymentSpec(): Record<string, unknown> {
     apiVersion: 'apps/v1',
     kind:       'Deployment',
     metadata:   {
-      namespace: EXT_NS,
+      namespace: AGENT_NS,
       name:      AGENT_OBJECT,
       labels:    { app: AGENT_OBJECT },
     },
@@ -189,12 +192,12 @@ function deploymentSpec(): Record<string, unknown> {
         spec: {
           // The same account every pod here runs as, and here it is used rather than declared:
           // kubectl in a pane reads its token, and being able to answer a question about the
-          // cluster is most of what this pod is for. See EXT_ACCOUNT for what that grants, and
+          // cluster is most of what this pod is for. See AGENT_ACCOUNT for what that grants, and
           // agent-overlay.ts for why the way in is offered to admins only.
-          serviceAccountName: EXT_ACCOUNT,
+          serviceAccountName: AGENT_ACCOUNT,
           containers:         [{
             name:    AGENT_CONTAINER,
-            image:   EXT_IMAGE,
+            image:   AGENT_IMAGE,
             command: ['/bin/sh', '/seed/boot.sh'],
             // Privileged for FUSE: a workspace on a downstream cluster is mounted here over sshfs
             // (mount-downstream.sh) so a pane sees its files, and opening /dev/fuse is refused to
@@ -253,37 +256,38 @@ function deploymentSpec(): Record<string, unknown> {
 /**
  * What the pod needs to exist first, made here when this extension is the first to arrive.
  *
- * Extension Studio makes the same three objects when it is installed; the bodies are the same
- * and each side treats an object that is already there as its own. Either order works.
+ * These are the agents' own now. Extension Studio makes a namespace and an account of its own
+ * name for its own pods; nothing is shared between them any more, and an object that is already
+ * there is still treated as ours to keep current.
  */
 export function sharedSteps(): InstallStep[] {
   return [
     {
       id:          'namespace',
-      label:       `Namespace ${ EXT_NS }`,
-      description: 'Holds the agent pod, and everything Extension Studio makes beside it.',
+      label:       `Namespace ${ AGENT_NS }`,
+      description: 'Holds the agent pod and nothing else: the conversations, their panes and the credential they read.',
       type:        'namespaces',
       uiType:      'namespace',
-      name:        EXT_NS,
+      name:        AGENT_NS,
       body:        namespaceBody,
     },
     {
       id:          'serviceaccount',
-      label:       `ServiceAccount ${ EXT_ACCOUNT }`,
+      label:       `ServiceAccount ${ AGENT_ACCOUNT }`,
       description: 'The identity the agent pod runs as.',
       type:        'serviceaccounts',
       uiType:      'serviceaccount',
-      namespace:   EXT_NS,
-      name:        EXT_ACCOUNT,
+      namespace:   AGENT_NS,
+      name:        AGENT_ACCOUNT,
       body:        serviceAccountBody,
     },
     {
       id:          'clusterrolebinding',
-      label:       `ClusterRoleBinding ${ EXT_ROLE_BINDING }`,
+      label:       `ClusterRoleBinding ${ AGENT_ROLE_BINDING }`,
       description: 'Grants that identity cluster-admin, without which a pane gets 403 to every question about the cluster.',
       type:        'rbac.authorization.k8s.io.clusterrolebindings',
       uiType:      'rbac.authorization.k8s.io.clusterrolebinding',
-      name:        EXT_ROLE_BINDING,
+      name:        AGENT_ROLE_BINDING,
       body:        clusterRoleBindingBody,
     },
   ];
@@ -298,7 +302,7 @@ export function agentSteps(): InstallStep[] {
       description: 'What the agent pod runs, as source. There is no image, so this is the only copy of it in the cluster.',
       type:        'configmaps',
       uiType:      'configmap',
-      namespace:   EXT_NS,
+      namespace:   AGENT_NS,
       name:        AGENT_OBJECT,
       body:        agentConfigMapBody,
     },
@@ -308,7 +312,7 @@ export function agentSteps(): InstallStep[] {
       description: 'The one claude that can see every extension, which the global terminal opens into.',
       type:        'apps.deployments',
       uiType:      'apps.deployment',
-      namespace:   EXT_NS,
+      namespace:   AGENT_NS,
       name:        AGENT_OBJECT,
       body:        agentDeploymentBody,
     },
@@ -329,11 +333,74 @@ export function ensureAgent(): Promise<void> {
     return ensureAgentInFlight;
   }
 
-  ensureAgentInFlight = ensureCurrent([...sharedSteps(), ...agentSteps()]).finally(() => {
-    ensureAgentInFlight = null;
-  });
+  // Retired first, and awaited: the old pod and the new one mount the same hostPath, and two of
+  // them on it means two tmux servers on one socket directory and two boots reattaching the same
+  // panes. One at a time, old one first.
+  ensureAgentInFlight = retireStudioAgent()
+    .then(() => ensureCurrent([...sharedSteps(), ...agentSteps()]))
+    .finally(() => {
+      ensureAgentInFlight = null;
+    });
 
   return ensureAgentInFlight;
+}
+
+/**
+ * Take down the agent pod this extension used to keep in the Studio's namespace.
+ *
+ * The pod moved to `dev-agents` (see pod.ts) and the conversations did not move at all: they are
+ * on the node, under AGENT_HOST_PATH, which both the old Deployment and the new one mount. That
+ * is what makes this a rename rather than a migration - and also what makes leaving the old one
+ * running unsafe, because a tmux server is per user per socket directory and two pods sharing one
+ * would each think the other's sessions were theirs to reattach.
+ *
+ * The credential Secret is carried across before the Deployment goes, so the new pod has a
+ * Rancher identity from its first pane rather than from the next time somebody opens the panel.
+ * The old Secret is left where it is: it is the copy a pod that has not rolled yet still reads,
+ * and deleting somebody's credential to tidy up is not a trade worth making.
+ *
+ * Everything here is best effort and silent. It runs in front of a page, on behalf of somebody
+ * who may not be allowed to delete a Deployment, and a cluster where it fails is a cluster that
+ * keeps working off the old pod.
+ */
+async function retireStudioAgent(): Promise<void> {
+  const old = await devFetch(`${ AGENT_BASE }/v1/apps.deployments/${ STUDIO_NS }/${ STUDIO_AGENT_OBJECT }`).catch(() => null);
+
+  if (!old?.metadata) {
+    return;
+  }
+
+  await carryCredentialOver();
+
+  // The Deployment, then the ConfigMap it mounted: the other order leaves a pod whose volume has
+  // gone, which crash-loops noisily for the few seconds before the Deployment follows it.
+  await devFetch(`${ AGENT_BASE }/v1/apps.deployments/${ STUDIO_NS }/${ STUDIO_AGENT_OBJECT }`, { method: 'DELETE' }).catch(() => null);
+  await devFetch(`${ AGENT_BASE }/v1/configmaps/${ STUDIO_NS }/${ STUDIO_AGENT_OBJECT }`, { method: 'DELETE' }).catch(() => null);
+}
+
+/** Copy the old credential Secret into the agents' namespace, if there is one and it is needed. */
+async function carryCredentialOver(): Promise<void> {
+  const already = await devFetch(`${ AGENT_BASE }/v1/secrets/${ AGENT_NS }/${ AGENT_CREDENTIAL_SECRET }`).catch(() => null);
+
+  if (already?.metadata) {
+    return;
+  }
+  const from = await devFetch(`${ AGENT_BASE }/v1/secrets/${ STUDIO_NS }/${ STUDIO_AGENT_OBJECT }-credential`).catch(() => null);
+
+  if (!from?.data) {
+    return;
+  }
+
+  await devFetch(`${ AGENT_BASE }/v1/secrets`, {
+    method: 'POST',
+    body:   JSON.stringify({
+      apiVersion: 'v1',
+      kind:       'Secret',
+      type:       from.type || 'Opaque',
+      metadata:   { namespace: AGENT_NS, name: AGENT_CREDENTIAL_SECRET, labels: { app: AGENT_OBJECT } },
+      data:       from.data,
+    }),
+  }).catch(() => null);
 }
 
 /**
@@ -344,7 +411,7 @@ export function ensureAgent(): Promise<void> {
  * this the same way and a first boot is still installing tmux and claude for a minute or two.
  */
 export async function agentPod(): Promise<string | null> {
-  const pods = await devFetch(`${ EXT_BASE }/v1/pods/${ EXT_NS }`).catch(() => null);
+  const pods = await devFetch(`${ AGENT_BASE }/v1/pods/${ AGENT_NS }`).catch(() => null);
 
   const running = (pods?.data || []).find((pod: any) => (
     pod.metadata?.labels?.app === AGENT_OBJECT &&
@@ -486,7 +553,7 @@ export function activityState(a: SessionActivity, podStartedMs = 0): AgentActivi
  * what the extension used to do permanently by never asking.
  */
 export async function agentPodStartedAt(): Promise<number> {
-  const pods = await devFetch(`${ EXT_BASE }/v1/pods/${ EXT_NS }`).catch(() => null);
+  const pods = await devFetch(`${ AGENT_BASE }/v1/pods/${ AGENT_NS }`).catch(() => null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const running = (pods?.data || []).find((pod: any) => (
     pod.metadata?.labels?.app === AGENT_OBJECT &&

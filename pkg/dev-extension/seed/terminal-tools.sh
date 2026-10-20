@@ -205,7 +205,12 @@ if [ "${TOOLS_NO_CLAUDE:-0}" = 1 ] || [ "${TOOLS_AGY:-0}" != 1 ]; then
   :
 elif [ ! -x "$APP_HOME/.local/bin/agy" ]; then
   echo "[tools] installing the antigravity cli (this takes a moment)"
-  as_node "curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --skip-aliases --skip-path" || true
+  # `--dir`, and ONLY `--dir`: this installer takes `-d/--dir` and `-h/--help` and nothing else.
+  # It was called with claude's flags (`--skip-aliases --skip-path`), and an unknown option makes
+  # it print its usage and exit 0 - so every pod that asked for agy got a clean log, a success,
+  # and no binary. The directory is named rather than left to the installer's default for the
+  # same reason claude's is: the pane's home is a hostPath, and that is what survives the pod.
+  as_node "mkdir -p '$APP_HOME/.local/bin' && curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir '$APP_HOME/.local/bin'" || true
 
   if [ ! -x "$APP_HOME/.local/bin/agy" ]; then
     echo "[tools] the antigravity installer did not land; panes asking for it will say so"

@@ -3652,8 +3652,13 @@ function readBody(req) {
 // than kept as an accelerator. The mount is still read on demand, for a conversation's own event
 // log and for what it last said, where a stale or absent answer costs one response and not a tick.
 
-const AGENT_NAMESPACE = process.env.AGENT_NAMESPACE || 'extension-studio';
-const AGENT_APP = process.env.AGENT_APP || 'extension-studio-agent';
+// The agent pod, which lives in `dev-agents` as `agent` (pod.ts). The old namespace and name are
+// the fallback rather than the default: a cluster whose pod has not been retired yet is still
+// answered, and `AGENT_NAMESPACE`/`AGENT_APP` in the environment override both.
+const AGENT_NAMESPACE = process.env.AGENT_NAMESPACE || 'dev-agents';
+const AGENT_APP = process.env.AGENT_APP || 'agent';
+const STUDIO_AGENT_NAMESPACE = 'extension-studio';
+const STUDIO_AGENT_APP = 'extension-studio-agent';
 const AGENT_CONTAINER = process.env.AGENT_CONTAINER || 'agent';
 /** Where the agent pod's conversations are, as this pod sees them. See AGENT_ROOT. */
 const AGENT_SESSIONS = `${ AGENT_ROOT }/sessions`;
@@ -3863,28 +3868,49 @@ async function writeConversations(doc, changed) {
 }
 
 
-/** The running agent pod, or null. `Running` rather than `Ready`: this pod has no probes. */
+/**
+ * The running agent pod, or null. `Running` rather than `Ready`: this pod has no probes.
+ *
+ * Looked for in its own namespace and then in the Studio's, because the pod moved: a cluster
+ * whose browser has not run the retirement yet still has it under the old name, and a reconciler
+ * that stopped seeing conversations the moment this shipped would be a worse answer than one
+ * extra 404 per tick during the changeover.
+ */
 async function agentPod() {
-  const pods = await k8s(`/api/v1/namespaces/${ AGENT_NAMESPACE }/pods?labelSelector=app%3D${ AGENT_APP }`).catch((e) => {
-    /*
-     * No such namespace, said once.
-     *
-     * dev-api runs on every cluster a workspace can land on and the agent pod is only ever on
-     * `local`, so downstream this is the normal and permanent answer. The three reconcilers above
-     * each learned the expensive way that a failure logged every tick, forever, on every downstream
-     * cluster is worse than no feature; see `installations`.
-     */
-    if (e.status === 404) {
-      noAgentPod = true;
-      console.log(`[dev-api] conversations: no ${ AGENT_NAMESPACE } namespace on this cluster, so there is no agent pod to watch; not asking again.`);
-    } else {
-      watch = { ...watch, ok: false, detail: `the agent pod could not be looked up: ${ e.message || e }` };
+  const where = [[AGENT_NAMESPACE, AGENT_APP], [STUDIO_AGENT_NAMESPACE, STUDIO_AGENT_APP]];
+  let missing = 0;
+
+  for (const [namespace, app] of where) {
+    const pods = await k8s(`/api/v1/namespaces/${ namespace }/pods?labelSelector=app%3D${ app }`).catch((e) => {
+      if (e.status === 404) {
+        missing++;
+      } else {
+        watch = { ...watch, ok: false, detail: `the agent pod could not be looked up: ${ e.message || e }` };
+      }
+
+      return null;
+    });
+    const running = (pods?.items || []).find((pod) => pod.status?.phase === 'Running' && !pod.metadata?.deletionTimestamp);
+
+    if (running) {
+      return running;
     }
+  }
 
-    return null;
-  });
+  /*
+   * Neither namespace exists, said once.
+   *
+   * dev-api runs on every cluster a workspace can land on and the agent pod is only ever on
+   * `local`, so downstream this is the normal and permanent answer. The three reconcilers above
+   * each learned the expensive way that a failure logged every tick, forever, on every downstream
+   * cluster is worse than no feature; see `installations`.
+   */
+  if (missing === where.length) {
+    noAgentPod = true;
+    console.log(`[dev-api] conversations: neither ${ AGENT_NAMESPACE } nor ${ STUDIO_AGENT_NAMESPACE } is on this cluster, so there is no agent pod to watch; not asking again.`);
+  }
 
-  return (pods?.items || []).find((pod) => pod.status?.phase === 'Running' && !pod.metadata?.deletionTimestamp) || null;
+  return null;
 }
 
 /**

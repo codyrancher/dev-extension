@@ -1386,7 +1386,7 @@ async function resolveTerminalSeed(): Promise<Record<string, string> | null> {
   // spent months running scripts nobody was updating. The visible cost was a flag the agents
   // extension had just added being ignored; the invisible one was every fix to these scripts
   // since whenever that pod was created.
-  const agent = await devFetch(`${ BASE }/v1/configmaps/${ STUDIO_NAMESPACE }/${ AGENT_SEED_MAP }`).catch(() => null);
+  const agent = await devFetch(`${ BASE }/v1/configmaps/${ AGENT_SEED_NAMESPACE }/${ AGENT_SEED_MAP }`).catch(() => null);
 
   if (agent?.data?.['shell.sh']) {
     return agent.data;
@@ -1405,8 +1405,19 @@ async function resolveTerminalSeed(): Promise<Record<string, string> | null> {
   return holder?.data || null;
 }
 
-/** The agents extension's seed: the pod it makes is named for it, and so is the ConfigMap. */
-const AGENT_SEED_MAP = 'extension-studio-agent';
+/**
+ * The agent pod's seed: the ConfigMap beside the pod that runs it, in the agents' own namespace.
+ *
+ * Read by name rather than found, because every extension pod in the Studio's namespace carries
+ * an older copy of these scripts - seeded when that pod was made and never again - and "the
+ * first ConfigMap with a shell.sh in it" picked one of those for months. The fallbacks below
+ * still look there for a cluster whose agent pod has not moved yet.
+ */
+// Spelled out rather than imported from pod.ts, which imports `devFetch` from this file: the
+// cycle compiles but puts these in the temporal dead zone for whichever module webpack decides
+// to evaluate second. Keep them the same as AGENT_NS and AGENT_OBJECT there.
+const AGENT_SEED_NAMESPACE = 'dev-agents';
+const AGENT_SEED_MAP = 'agent';
 
 async function ensureWorkspaceTerminal(name: string): Promise<void> {
   const namespace = workspaceNamespace(name);

@@ -27,11 +27,17 @@
 // bounded rather than a new exposure. And a conversation outlives the panel, so a detached
 // agent loses its credential when the token expires - which is the intended end of it, not a
 // bug to work around.
-import { EXT_NS, EXT_BASE } from './pod';
+import { AGENT_NS, AGENT_BASE, AGENT_OBJECT } from './pod';
 import { devFetch } from './api';
 
-/** The Secret the pod reads. One object, replaced, rather than one per person or per pane. */
-export const AGENT_CREDENTIAL_SECRET = 'extension-studio-agent-credential';
+/**
+ * The Secret the pod reads. One object, replaced, rather than one per person or per pane.
+ *
+ * In `dev-agents` beside the pod that reads it. The copy this extension used to keep in the
+ * Studio's namespace is carried across once, on the way past - see retireStudioAgent - because a
+ * pod that comes up without it has no credential until somebody opens the panel again.
+ */
+export const AGENT_CREDENTIAL_SECRET = 'agent-credential';
 
 /**
  * How long a minted token lives.
@@ -56,7 +62,7 @@ interface MintedToken {
 }
 
 function secretPath(): string {
-  return `${ EXT_BASE }/v1/secret/${ EXT_NS }/${ AGENT_CREDENTIAL_SECRET }`;
+  return `${ AGENT_BASE }/v1/secret/${ AGENT_NS }/${ AGENT_CREDENTIAL_SECRET }`;
 }
 
 /**
@@ -118,9 +124,9 @@ function secretBody(minted: MintedToken): Record<string, unknown> {
     kind:       'Secret',
     type:       'Opaque',
     metadata:   {
-      namespace: EXT_NS,
+      namespace: AGENT_NS,
       name:      AGENT_CREDENTIAL_SECRET,
-      labels:    { app: 'extension-studio-agent' },
+      labels:    { app: AGENT_OBJECT },
     },
     data: {
       token:   btoa(minted.token),
@@ -142,7 +148,7 @@ async function writeSecret(minted: MintedToken): Promise<void> {
   const existing = await devFetch(secretPath()).catch(() => null);
 
   if (!existing) {
-    await devFetch(`${ EXT_BASE }/v1/secret`, { method: 'POST', body: JSON.stringify(secretBody(minted)) })
+    await devFetch(`${ AGENT_BASE }/v1/secret`, { method: 'POST', body: JSON.stringify(secretBody(minted)) })
       .catch(async() => {
         const now = await devFetch(secretPath());
 

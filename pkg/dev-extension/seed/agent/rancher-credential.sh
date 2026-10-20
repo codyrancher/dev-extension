@@ -33,8 +33,18 @@
 set -e
 
 HOME_DIR=${1:-/workspace/.home}
-NAMESPACE=extension-studio
-SECRET=extension-studio-agent-credential
+
+# The pod's own namespace, read rather than named: this pod moved from `extension-studio` to
+# `dev-agents` and a script that names one of them is wrong in a pod of the other. The
+# ServiceAccount's own namespace file is the pod's, whichever that is.
+NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo dev-agents)
+SECRET=${AGENT_CREDENTIAL_SECRET:-agent-credential}
+
+# A pod still in the old namespace reads the old name, so the same script serves both until every
+# pod has rolled.
+if [ "$NAMESPACE" = extension-studio ]; then
+  SECRET=extension-studio-agent-credential
+fi
 
 say() {
   echo "[rancher] $1"

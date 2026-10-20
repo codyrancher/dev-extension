@@ -10,10 +10,10 @@
 // ---------------------------------------------------------------------------
 // Who this is offered to, and why that is a decision rather than an omission.
 //
-// The pane runs as the `extension-studio` ServiceAccount, which is bound to cluster-admin. The
+// The pane runs as the `agent` ServiceAccount in `dev-agents`, which is bound to cluster-admin. The
 // exec WebSocket is authenticated as whoever is looking at the page, so Kubernetes refuses
-// anybody without exec rights in this namespace - but exec in one namespace is not
-// cluster-admin, and a user with edit on `extension-studio`, or a project containing it, has the
+// anybody without exec rights in that namespace - but exec in one namespace is not
+// cluster-admin, and a user with edit on `dev-agents`, or a project containing it, has the
 // first without the second. For them this chord is a one-keystroke privilege escalation, so the
 // affordance is offered to Rancher admins only, and to everybody else it does not exist: no
 // disabled button, no refusal, no hint that a chord is there. A control that only ever says no

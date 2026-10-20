@@ -20,7 +20,7 @@ export HOME=${HOME:-/app/.home}
 trap 'echo; exec /bin/bash' INT
 
 if ! command -v claude >/dev/null 2>&1; then
-  echo "[claude is not installed in this pod - see /app/.terminal-tools.log]"
+  echo "[claude is not installed in this pod - see $(dirname "$HOME")/.terminal-tools.log]"
   echo "[dropping to a shell]"
   exec /bin/bash
 fi

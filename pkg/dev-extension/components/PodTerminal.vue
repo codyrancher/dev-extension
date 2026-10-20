@@ -22,7 +22,7 @@ import Socket, {
   EVENT_MESSAGE,
   EVENT_CONNECT_ERROR,
 } from '@shell/utils/socket';
-import { execUrl, writeImageToPod, EXT_NS, AGENT_CONTAINER } from '../pod';
+import { execUrl, writeImageToPod, AGENT_NS, AGENT_CONTAINER } from '../pod';
 import { agentPod, sessionCommand } from '../agent';
 import { readPrefs } from '../prefs';
 import ChatPane from './ChatPane.vue';
@@ -214,7 +214,7 @@ export default {
 
     namespace: {
       type:    String,
-      default: EXT_NS,
+      default: AGENT_NS,
     },
 
     container: {
