@@ -280,8 +280,31 @@ spec:
             # it over and the first one loses the cluster.
             - --add-local=true
           env:
+            # What makes this a fully featured Rancher rather than a single-cluster one.
+            #
+            # These are read ONCE, on the first start of a Rancher whose cluster has no Feature
+            # objects yet: that is when Rancher creates them and writes what it was told as
+            # each one's default. After that the objects exist, and changing this value does
+            # nothing at all - the pod restarts with a new string and every flag keeps the
+            # default it was born with.
+            #
+            # That is not a theory. An instance made on 22 September, nine days before this
+            # line first shipped, first booted with no flags at all and took Rancher's own
+            # defaults, where multi-cluster-management and fleet are false. The App later
+            # gained this value, its pod restarted with it, and the flags stayed false: it has
+            # had no Cluster Management since, which is the fault that was being chased. A
+            # fresh instance made from the same App and the same image gets all three.
+            #
+            # So for an existing instance the environment is not the lever; the Feature object
+            # is. The sidecar below sets spec.value on any flag that did not take and restarts
+            # Rancher once, which is the only way to turn one of these on after the fact.
+            #
+            # "provisioningv2" was in this list and is not a feature this Rancher has (it knows
+            # thirty; that is not one). It is dropped because naming something that does not
+            # exist is wrong, not because it was the cause - an instance rendered with it in
+            # the string still came up with all three flags on.
             - name: CATTLE_FEATURES
-              value: multi-cluster-management=true,fleet=true,rke2=true,provisioningv2=true
+              value: multi-cluster-management=true,fleet=true,rke2=true
             - name: CATTLE_NAMESPACE
               value: cattle-system
             - name: CATTLE_PEER_SERVICE
@@ -397,15 +420,47 @@ spec:
                 # and refused quietly because this redirects its output.
                 kubectl patch setting server-url --type=merge -p '{"value":"'"$want"'"}' >/dev/null 2>&1
               }
+              # Did the feature flags actually take?
+              #
+              # A backstop, not the mechanism: CATTLE_FEATURES above is what sets them, and
+              # this is here because the way that fails is silent. One unknown name in the
+              # string discards all of it, every flag drops to its built-in default, and the
+              # only visible symptom is a Rancher that quietly has no Cluster Management - an
+              # instance ran that way for weeks.
+              #
+              # So each wanted flag is read back, and one that did not take is set on the
+              # Feature itself, which Rancher reads at boot and which no string can discard.
+              # These flags are not dynamic, so a patch only takes effect on the next start:
+              # the restart is done once and recorded in a ConfigMap of this script own, so a
+              # flag that refuses to stick cannot turn this into a restart loop.
+              features() {
+                patched=
+                for f in multi-cluster-management fleet rke2; do
+                  on=$(kubectl get feature "$f" -o jsonpath='{.spec.value}' 2>/dev/null)
+                  [ "$on" = true ] && continue
+                  [ -z "$on" ] && [ "$(kubectl get feature "$f" -o jsonpath='{.status.default}' 2>/dev/null)" = true ] && continue
+                  echo "feature $f is not on; setting it"
+                  kubectl patch feature "$f" --type=merge -p '{"spec":{"value":true}}' >/dev/null 2>&1 && patched=yes
+                done
+                [ -n "$patched" ] || return 0
+                kubectl get configmap \${install}-rancher-features >/dev/null 2>&1 && {
+                  echo "features were patched again after a restart; leaving it to a person"
+                  return 0
+                }
+                kubectl create configmap \${install}-rancher-features --from-literal=restarted="$(date -u +%FT%TZ)" >/dev/null 2>&1 || true
+                echo "restarting Rancher once so the flags take"
+                kubectl rollout restart deployment/\${install}-rancher >/dev/null 2>&1 || true
+              }
               echo "waiting for Rancher's CRDs"
               until kubectl get crd authconfigs.management.cattle.io users.management.cattle.io globalrolebindings.management.cattle.io >/dev/null 2>&1; do sleep 15; done
               echo "waiting to set server-url"
               until server_url; do sleep 15; done
+              features || true
               echo "waiting for Rancher to create the github AuthConfig"
               until kubectl get authconfig github >/dev/null 2>&1; do sleep 10; done
               until kubectl apply -f /bootstrap/authconfig.yaml -f /bootstrap/admins.yaml; do echo "not yet, retrying"; sleep 15; done
               echo "github login and admins configured"
-              while true; do sleep 3600; handover >/dev/null 2>&1 || true; server_url >/dev/null 2>&1 || true; kubectl apply -f /bootstrap/authconfig.yaml -f /bootstrap/admins.yaml >/dev/null 2>&1 || true; done
+              while true; do sleep 3600; handover >/dev/null 2>&1 || true; server_url >/dev/null 2>&1 || true; features >/dev/null 2>&1 || true; kubectl apply -f /bootstrap/authconfig.yaml -f /bootstrap/admins.yaml >/dev/null 2>&1 || true; done
           volumeMounts:
             - name: bootstrap-auth
               mountPath: /bootstrap
