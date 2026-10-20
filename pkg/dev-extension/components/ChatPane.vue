@@ -25,7 +25,7 @@
 // This component is also three slots now - `transcript`, `message` and `composer` - each
 // defaulting to exactly the markup it drew before. A host that wants the same conversation in
 // a different shape overrides one of them rather than forking the file.
-import { useConversation, escapeText, CUSTOMIZE } from '../chat-conversation';
+import { useConversation, escapeText, customizeFor } from '../chat-conversation';
 import { readLook, writeLook } from '../look';
 import PodFileViewer from './PodFileViewer.vue';
 
@@ -178,9 +178,9 @@ export default {
       return !!this.slashSpot && !this.slashDismissed && this.slashMatches.length > 0;
     },
 
-    /** The Customize section of the command menu: claude's own pickers, by slash command. */
+    /** The Customize section of the command menu: this CLI's own pickers, by slash command. */
     customize() {
-      return CUSTOMIZE;
+      return customizeFor(this.mode);
     },
 
     fileMatches() {
@@ -813,8 +813,8 @@ export default {
           <span
             v-if="m.failed"
             class="mc-chat__queued-note mc-chat__queued-note--failed"
-            title="Nothing claude writes down mentions this message - not the transcript, not its input queue, not the submit hook. Usually the paste into the pane did not land."
-          >claude has no record of this ·
+            :title="`Nothing ${ agentName } writes down mentions this message - not the transcript, not its input queue, not the submit hook. Usually the paste into the pane did not land.`"
+          >{{ agentName }} has no record of this ·
             <button
               type="button"
               class="mc-chat__link"
@@ -823,12 +823,12 @@ export default {
           <span
             v-else-if="m.inQueue"
             class="mc-chat__queued-note"
-            title="In claude's input queue: it starts on this when the current turn ends"
-          >in claude's queue</span>
+            :title="`In ${ agentName }'s input queue: it starts on this when the current turn ends`"
+          >in {{ agentName }}'s queue</span>
           <span
             v-else-if="m.queued"
             class="mc-chat__queued-note"
-            title="Sent; waiting for claude to record it"
+            :title="`Sent; waiting for ${ agentName } to record it`"
           >sending</span>
           <button
             v-if="m.role === 'summary'"

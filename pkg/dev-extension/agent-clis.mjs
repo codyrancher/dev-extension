@@ -152,3 +152,82 @@ export function parseAgyTranscript(lines) {
 
   return messages;
 }
+
+/**
+ * Antigravity's slash commands, as agy 1.4.3 itself lists them.
+ *
+ * Read out of the CLI rather than written from documentation: `agy` was started in a scratch
+ * directory, `/` typed, and its own picker paged through - which is also why the help text is
+ * agy's wording and not a paraphrase of it. `agy --help` does not list them, and the binary's
+ * strings are mostly noise, so the picker is the only authority there is.
+ *
+ * The chat offers these for exactly the reason it offers claude's: a command menu that shows the
+ * wrong CLI's commands is worse than no menu, because every one of them is a message the pane
+ * will answer with "unknown command". Aliases are kept in the name the way agy prints them -
+ * `/clear (new)` - because that is what somebody reading the menu is matching against.
+ *
+ * Stale is a hint going wrong, never a message blocked: an unrecognised command is reported as
+ * "not one I know of" and still sent, the same rule BUILTIN_COMMANDS lives under.
+ */
+export const AGY_COMMANDS = [
+  ['/add-dir', 'Add a directory to the workspace'],
+  ['/agents', 'List available custom agents'],
+  ['/agy-customizations', 'Guide and reference for customising Antigravity'],
+  ['/antigravity-guide', 'Comprehensive guide and quick reference'],
+  ['/artifact', 'View and review artifacts'],
+  ['/boost', 'Invoke the Boost multi-agent orchestrator for complex work'],
+  ['/browser', 'Invoke a browser agent for web tasks'],
+  ['/btw', 'Ask a side question without interrupting the current turn'],
+  ['/changelog', 'Show release notes and changes'],
+  ['/clear (new)', 'Clear conversation and start a new one'],
+  ['/codesearch (cs)', 'Search code in the workspace'],
+  ['/compact', 'Compact the conversation now'],
+  ['/config (settings)', 'Open settings panel'],
+  ['/context', 'Visualize current context usage'],
+  ['/copy', 'Copy the last planner response'],
+  ['/credits', 'Show remaining G1 credits and purchase link'],
+  ['/diff', 'View uncommitted changes and per-turn diffs'],
+  ['/effort', 'Set the reasoning effort'],
+  ['/exit (quit)', 'Exit the CLI'],
+  ['/feedback', 'Submit qualitative feedback to improve the agent'],
+  ['/fork (branch)', 'Create a branch of the current conversation at this point'],
+  ['/goal', 'Run until the specified goal is completely finished'],
+  ['/grill-me', 'Interview me to align on a plan'],
+  ['/help', 'Show available commands and keybindings'],
+  ['/hooks', 'Manage hook configurations for tool events'],
+  ['/keybindings', 'Set custom keybindings'],
+  ['/learn', 'Reflect on recent successes or corrections'],
+  ['/logout', 'Log out'],
+  ['/mcp', 'Manage MCP servers'],
+  ['/model', 'Set a model, or run a single prompt on another model'],
+  ['/open', 'Open a file or view opened/edited files'],
+  ['/permissions', 'Manage tool permissions'],
+  ['/plan', 'Plan carefully before executing a task'],
+  ['/plugin', 'Manage, discover and install plugins'],
+  ['/remote-control', 'Turn on remote control for this session'],
+  ['/rename', 'Rename the current conversation'],
+  ['/resume (switch)', 'Browse and resume past conversations'],
+  ['/rewind (undo)', 'Rewind conversation to a previous message'],
+  ['/schedule', 'Run an instruction on a schedule'],
+  ['/skills', 'List available skills'],
+  ['/statusline', 'Toggle the statusline'],
+  ['/tasks', 'View background tasks'],
+  ['/teamwork', 'Invoke a team of agents for large work'],
+  ['/title', 'Toggle custom terminal window title'],
+  ['/usage (quota)', 'View model quota usage'],
+  ['/voice (record)', 'Dictate a prompt using your microphone'],
+];
+
+/**
+ * The pickers a chat can open for one CLI: a slash command whose dialog the pane draws and the
+ * chat hands over to the terminal for. claude's are its own (`/mcp`, `/permissions`, ...); agy's
+ * are the ones with a panel behind them rather than an answer.
+ */
+export const AGY_CUSTOMIZE = [
+  { command: 'config', help: 'settings' },
+  { command: 'permissions', help: 'tool permissions' },
+  { command: 'hooks', help: 'hooks for tool events' },
+  { command: 'mcp', help: 'MCP servers' },
+  { command: 'plugin', help: 'plugins' },
+  { command: 'keybindings', help: 'keybindings' },
+];

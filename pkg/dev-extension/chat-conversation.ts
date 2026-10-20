@@ -37,6 +37,7 @@ import {
 import {
   deriveState, parseEntries, reconcilePending, unwrapPasted,
 } from './chat-state.mjs';
+import { AGY_COMMANDS, AGY_CUSTOMIZE } from './agent-clis.mjs';
 import { frameNonce, readFrames, spliceEarlier } from './chat-frames.mjs';
 import {
   modelAliases, flagChoices, parseMcpList, currentModel, isSafeOptionValue, type McpServer,
@@ -234,6 +235,26 @@ export const BUILTIN_COMMANDS: ChatCommand[] = [
   ['/vim', 'Toggle vim mode'],
 ].map(([name, help]) => ({ name, help, source: 'built-in' }));
 
+/** Antigravity's, in the same shape. See AGY_COMMANDS for where the list comes from. */
+export const AGY_BUILTIN_COMMANDS: ChatCommand[] = AGY_COMMANDS
+  .map((pair: string[]) => ({ name: pair[0], help: pair[1], source: 'built-in' as const }));
+
+/**
+ * The built-in commands for one CLI.
+ *
+ * A menu showing the wrong CLI's commands is worse than no menu: every entry in it is a message
+ * the pane will answer with "unknown command", and the person picked it from a list this product
+ * showed them.
+ */
+export function builtinCommandsFor(cli: string): ChatCommand[] {
+  return cli === 'agy' ? AGY_BUILTIN_COMMANDS : BUILTIN_COMMANDS;
+}
+
+/** And the pickers, likewise. */
+export function customizeFor(cli: string) {
+  return cli === 'agy' ? AGY_CUSTOMIZE : CUSTOMIZE;
+}
+
 /**
  * The Customize section of the command menu.
  *
@@ -326,6 +347,16 @@ export function useConversation(source: () => ConversationSource) {
 
   /** The pane's argv, and what it says about where the pane is. */
   const argv = computed<string[]>(() => (from.value.command?.length ? from.value.command : sessionCommand(from.value.session, from.value.mode || 'claude')));
+
+  /**
+   * Which CLI holds this conversation, for the two things in the read that differ by it: where
+   * the transcript is, and which program's presence in the pane means "running".
+   *
+   * Everything else in the read is the same for both, and the pieces that are claude's alone -
+   * the hook state file, the subagent transcripts - simply come back empty for agy rather than
+   * needing a branch of their own.
+   */
+  const cli = computed<'claude' | 'agy'>(() => (from.value.mode === 'agy' ? 'agy' : 'claude'));
   const shellAt = computed(() => argv.value.indexOf('/seed/shell.sh'));
   const paneId = computed(() => (shellAt.value >= 0 ? argv.value[shellAt.value + 1] : from.value.session));
   const workdir = computed(() => (shellAt.value >= 0 && argv.value[shellAt.value + 2]) || '/workspace/conversations');
@@ -525,7 +556,7 @@ export function useConversation(source: () => ConversationSource) {
   })));
 
   /** Every command that could be typed here: claude's own, then this pod's own. */
-  const commands = computed<ChatCommand[]>(() => [...BUILTIN_COMMANDS, ...custom.value]);
+  const commands = computed<ChatCommand[]>(() => [...builtinCommandsFor(cli.value), ...custom.value]);
 
   /**
    * The command being typed at the cursor, wherever the cursor is.
@@ -736,12 +767,29 @@ export function useConversation(source: () => ConversationSource) {
         `PROJ="$HOME/.claude/projects/${ projectKey(workdir.value) }"`,
         'uuid=$(cat "$(dirname "$HOME")/sessions/$ID.id" 2>/dev/null)',
         'FILE=""',
-        // Without an id file, fall back to the directory's transcript only when there is exactly
-        // one. Conversations share a working directory - every conversation of a workspace runs
-        // in its checkout - so "the newest transcript" was somebody else's for the seconds before
-        // a new conversation's id file landed, and the chat opened on eighteen messages that were
-        // not this conversation's.
-        'if [ -n "$uuid" ] && [ -f "$PROJ/$uuid.jsonl" ]; then FILE="$PROJ/$uuid.jsonl"; elif [ "$(ls "$PROJ"/*.jsonl 2>/dev/null | wc -l)" -eq 1 ]; then FILE=$(ls "$PROJ"/*.jsonl 2>/dev/null | head -1); fi',
+        /*
+         * Where the transcript is, which is the one thing about reading a conversation that the
+         * CLI decides.
+         *
+         * claude keeps one file per conversation in a directory named for the working directory;
+         * agy keeps a directory per conversation with the transcript inside it. Both are found
+         * from the same id file - the pane writes it (claude-session.sh, agy-session.sh) - so the
+         * difference here is a path and nothing else.
+         *
+         * Without an id file, claude falls back to the directory's transcript only when there is
+         * exactly one. Conversations share a working directory - every conversation of a workspace
+         * runs in its checkout - so "the newest transcript" was somebody else's for the seconds
+         * before a new conversation's id file landed, and the chat opened on eighteen messages
+         * that were not this conversation's. agy gets no such fallback at all: its id lives in a
+         * map keyed by that shared directory, so the guess there is not "probably somebody else's"
+         * but "certainly whoever ran last" - see claimed_elsewhere in agy-session.sh.
+         */
+        ...(cli.value === 'agy' ? [
+          'BRAIN="$HOME/.gemini/antigravity-cli/brain"',
+          'if [ -n "$uuid" ] && [ -f "$BRAIN/$uuid/.system_generated/logs/transcript.jsonl" ]; then FILE="$BRAIN/$uuid/.system_generated/logs/transcript.jsonl"; fi',
+        ] : [
+          'if [ -n "$uuid" ] && [ -f "$PROJ/$uuid.jsonl" ]; then FILE="$PROJ/$uuid.jsonl"; elif [ "$(ls "$PROJ"/*.jsonl 2>/dev/null | wc -l)" -eq 1 ]; then FILE=$(ls "$PROJ"/*.jsonl 2>/dev/null | head -1); fi',
+        ]),
         'echo "@@FILE-$N $FILE"',
         'if [ -n "$FILE" ] && [ -f "$FILE" ]; then size=$(wc -c < "$FILE"); echo "@@SIZE-$N $size"; FROM=$OFF; if [ "$OFF" -eq 0 ] && [ "$size" -gt "$CAP" ]; then FROM=$((size - CAP)); fi; echo "@@FROM-$N $FROM"; if [ "$size" -gt "$FROM" ]; then echo "@@DATA-$N"; tail -c +$((FROM+1)) "$FILE"; echo; echo "@@ENDDATA-$N"; fi; fi',
         // The subagent's transcript sits beside the session's, in a directory named for it. Capped the same way.
@@ -750,10 +798,16 @@ export function useConversation(source: () => ConversationSource) {
         'if [ -n "$FILE" ] && [ -d "${FILE%.jsonl}/subagents" ]; then for f in "${FILE%.jsonl}"/subagents/agent-*.jsonl; do [ -f "$f" ] || continue; id=$(basename "$f" .jsonl); id=${id#agent-}; echo "@@TAIL-$N $id $(stat -c %Y "$f")"; tail -c 6000 "$f" | grep "\"type\":\"assistant\"" | tail -n 1 | cut -c1-3000; done; echo "@@ENDTAILS-$N"; fi',
         // The hook state file (seed/chat-hook.mjs): the last thing claude said it was doing.
         'echo "@@HOOK-$N"; cat "$(dirname "$HOME")/sessions/$ID.state.json" 2>/dev/null; echo; echo "@@ENDHOOK-$N"',
-        // Whether a claude process is running in the pane at all. The pane's own command is the
-        // loop that runs claude (claude-session.sh), so claude is its child - and a pane with the
-        // loop but no child is a shell, whatever the transcript's last line says.
-        'if tmux has-session -t "mc-$ID" 2>/dev/null; then P=$(tmux display -p -t "mc-$ID" "#{pane_pid}" 2>/dev/null); [ -n "$P" ] && pgrep -P "$P" -x claude >/dev/null 2>&1 && echo "@@ALIVE-$N"; fi',
+        /*
+         * Whether the CLI is running in the pane at all. The pane's own command is the loop that
+         * runs it (claude-session.sh, agy-session.sh), so the CLI is that loop's child - and a
+         * pane with the loop but no child is a shell, whatever the transcript's last line says.
+         *
+         * The program's name is the CLI's: this asked for `claude` on every pane, so an
+         * Antigravity pane with agy running in it reported nothing, and the chat said
+         * "Antigravity is not running in this pane" under a conversation that was answering.
+         */
+        `if tmux has-session -t "mc-$ID" 2>/dev/null; then P=$(tmux display -p -t "mc-$ID" "#{pane_pid}" 2>/dev/null); [ -n "$P" ] && pgrep -P "$P" -x ${ cli.value } >/dev/null 2>&1 && echo "@@ALIVE-$N"; fi`,
         'echo "@@PANE-$N"',
         'if tmux has-session -t "mc-$ID" 2>/dev/null; then tmux capture-pane -p -t "mc-$ID" | tail -n 40; else echo "@@NOPANE-$N"; fi',
       ].join('\n'));
@@ -1344,6 +1398,21 @@ export function useConversation(source: () => ConversationSource) {
    * not while a message is being typed.
    */
   async function readCommands(): Promise<void> {
+    /*
+     * claude's layout, so claude's panes only.
+     *
+     * `.claude/commands` and `.claude/skills` are claude's directories and claude's spelling of
+     * what is in them. agy has commands of its own that are files too - it has a `/skills` - but
+     * where it keeps them has not been established, and offering an Antigravity pane a list of
+     * claude's project commands would be offering it things it will refuse by name. So an agy
+     * pane gets its built-ins and nothing invented; finding agy's own is the next thing here.
+     */
+    if (cli.value === 'agy') {
+      custom.value = [];
+
+      return;
+    }
+
     const script = [
       'cd "$(dirname "$HOME")" 2>/dev/null || cd /',
       'for root in "$HOME/.claude" ".claude" "$PWD/.claude"; do',
