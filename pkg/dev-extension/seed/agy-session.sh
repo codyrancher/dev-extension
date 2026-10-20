@@ -110,12 +110,46 @@ read_conversation() {
   ' "$LAST" "$(pwd)" 2>/dev/null
 }
 
+# Whether another pane already owns a conversation.
+#
+# agy's map is keyed by WORKING DIRECTORY, and every conversation in this pod shares one -
+# /workspace/conversations, so that any pane's resume picker can see all of them. So the map's
+# entry for this directory is whichever conversation was touched last by ANY pane, not this
+# pane's. Adopting it is how a brand-new conversation came up as somebody else's: agy was handed
+# `--conversation <that id>` and said so - "it was already open in another CLI instance on this
+# machine ... use /fork" - with the previous conversation's turns above the prompt.
+#
+# Each pane records its own id beside the sessions (`<session>.id`, written by shell.sh's
+# MC_CONVERSATION), so those files are the register of what is spoken for. An id in the map that
+# is in one of them belongs to another pane, and this one starts fresh instead.
+claimed_elsewhere() {
+  [ -n "$1" ] || return 1
+  [ -n "$IDFILE" ] || return 1
+
+  for f in "$(dirname "$IDFILE")"/*.id; do
+    [ -f "$f" ] || continue
+    [ "$f" = "$IDFILE" ] && continue
+    [ "$(cat "$f" 2>/dev/null)" = "$1" ] && return 0
+  done
+
+  return 1
+}
+
+# The map's id, but only when it is nobody else's.
+own_conversation() {
+  candidate=$(read_conversation)
+
+  if [ -n "$candidate" ] && ! claimed_elsewhere "$candidate"; then
+    printf '%s' "$candidate"
+  fi
+}
+
 STARTS=0
 
 while true; do
   # The id as it stands, in case a previous run made the conversation this pane now owns.
   if [ -z "$CONVERSATION" ]; then
-    CONVERSATION=$(read_conversation)
+    CONVERSATION=$(own_conversation)
     if [ -n "$CONVERSATION" ] && [ -n "$IDFILE" ]; then
       printf '%s' "$CONVERSATION" > "$IDFILE" 2>/dev/null || true
     fi
@@ -143,8 +177,11 @@ while true; do
 
   # Which conversation that was, now that agy has written it down. Recorded after the run as
   # well as before it, because the first run of a pane is the one that creates the id.
+  # Which conversation that was, now that agy has written it down - and only if no other pane
+  # has it, because a pane that was handed no id and created none (agy refused, the login
+  # expired) must not then claim the conversation next door.
   if [ -z "$CONVERSATION" ]; then
-    CONVERSATION=$(read_conversation)
+    CONVERSATION=$(own_conversation)
     if [ -n "$CONVERSATION" ] && [ -n "$IDFILE" ]; then
       printf '%s' "$CONVERSATION" > "$IDFILE" 2>/dev/null || true
     fi

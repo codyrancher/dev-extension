@@ -129,11 +129,19 @@ export default {
 
     rows() {
       return [
-        ...this.conversations.map((conversation) => ({
-          key:   conversation.id,
-          label: conversation.title,
-          state: ROW_STATE[this.states[conversation.id]] || 'stopped',
-        })),
+        ...this.conversations.map((conversation) => {
+          // Which CLI holds it, from the one list of them, so a strip with both in it says which
+          // is which without opening a tab.
+          const cli = CLI_CHOICES.find((choice) => choice.id === conversation.cli);
+
+          return {
+            key:       conversation.id,
+            label:     conversation.title,
+            state:     ROW_STATE[this.states[conversation.id]] || 'stopped',
+            icon:      cli?.icon || '',
+            iconTitle: cli?.label || '',
+          };
+        }),
         // The shell needs a pod that has the terminal scripts mounted, which a preview's nginx
         // does not; a preview does not show this tab at all, but the row is guarded here too.
         ...(this.workspace.preview ? [] : [{

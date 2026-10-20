@@ -657,6 +657,14 @@ export default {
       line-height:    1.25;
     }
 
+    &__row-icon {
+      flex:         0 0 auto;
+      margin-right: 4px;
+      font-size:    10px;
+      color:        var(--muted);
+      opacity:      .8;
+    }
+
     &__name {
       overflow:      hidden;
       text-overflow: ellipsis;

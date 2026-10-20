@@ -550,6 +550,16 @@ export default {
       });
     },
 
+    /** The glyph for a conversation's CLI, from the one list of them, or '' if it never ran. */
+    cliIcon(cli) {
+      return (CLI_CHOICES.find((choice) => choice.id === cli) || {}).icon || '';
+    },
+
+    /** Its name, for the hover. */
+    cliLabel(cli) {
+      return (CLI_CHOICES.find((choice) => choice.id === cli) || {}).label || '';
+    },
+
     /** The status dot's tooltip: what its colour means, in words, for a hover. */
     statusLabel(state) {
       return {
@@ -1131,6 +1141,18 @@ export default {
               :class="`mc-agent__dot--${ session.state }`"
               :title="statusLabel(session.state)"
             />
+            <!--
+              Which CLI holds it. The dot beside it says what the pane is DOING; this says what
+              the pane IS, which you cannot otherwise tell without opening the tab - and with two
+              CLIs in one strip that is the first thing you want to know. Absent for a
+              conversation that has never run, because nothing has decided yet.
+            -->
+            <i
+              v-if="cliIcon(session.cli)"
+              class="icon mc-agent__tab-cli"
+              :class="cliIcon(session.cli)"
+              :title="cliLabel(session.cli)"
+            />
             <span class="mc-agent__tab-title">{{ session.title }}</span>
             <button
               type="button"
@@ -1591,6 +1613,13 @@ export default {
     }
   }
 
+
+  &__tab-cli {
+    flex:      0 0 auto;
+    font-size: 10px;
+    color:     var(--muted);
+    opacity:   .8;
+  }
 
   &__tab-title {
     min-width: 0;
