@@ -22,6 +22,8 @@ import {
 import {
   listConversations, startConversation, endConversation, renameConversation, startedConversations, conversationStates, STUDIO_CLUSTER, KUBECTL
 } from '../conversations';
+import { CLI_CHOICES } from '../agent-clis.mjs';
+import { readPrefs } from '../prefs';
 import { agentStateOf } from '../workspace-status';
 import { prepareWorkspace } from '../reviews';
 import { ensureDefaultShare } from '../previews';
@@ -58,6 +60,8 @@ export default {
 
   data() {
     return {
+      /** Which CLI the plain press of "New conversation" uses; '' reads as claude. */
+      defaultCli: '',
       prepared: false,
       conversations: [],
       current:       '',
@@ -79,6 +83,9 @@ export default {
   },
 
   computed: {
+    /** The CLIs the create control offers; a module constant is not visible to a template. */
+    CLI_CHOICES: () => CLI_CHOICES,
+
     ready() {
       return this.workspace.state === 'running' || this.workspace.state === 'starting';
     },
@@ -183,6 +190,11 @@ export default {
   },
 
   mounted() {
+    // Which CLI this person holds conversations with, for the split button's plain press.
+    readPrefs().then((prefs) => {
+      this.defaultCli = prefs.cli || '';
+    }).catch(() => undefined);
+
     // The agents' states, on the same fifteen-second beat the rail and the sidebar use, so the
     // header over the pane says what claude is doing without the person opening the rail.
     this.refreshAgents();
@@ -317,11 +329,11 @@ export default {
       return [...workspaceTerminalCommand(this.workspace.name, 'shell'), 'shell'];
     },
 
-    async newConversation() {
+    async newConversation(cli = '') {
       this.error = '';
 
       try {
-        const conversation = await startConversation(this.workspace.name);
+        const conversation = await startConversation(this.workspace.name, '', '', cli);
 
         this.conversations = [...this.conversations, conversation];
         this.current = conversation.id;
@@ -392,6 +404,8 @@ export default {
         :rows="rows"
         :current="current"
         create-label="New conversation"
+        :create-options="CLI_CHOICES"
+        :create-value="defaultCli"
         empty="No conversations"
         deletable
         renamable

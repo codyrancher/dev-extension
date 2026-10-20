@@ -2048,7 +2048,12 @@ export default {
         <template #sub-row="{ row, fullColspan }">
           <tr class="dev-my-work__tracker__stages-row">
             <td :colspan="fullColspan">
+              <!--
+                The workspace column's stepper, drawn tighter: this sits inside an expanded
+                table row, where the column's vertical rhythm would be most of the row.
+              -->
               <StageSteps
+                class="stage-steps--tight"
                 :steps="trackerSteps"
                 :current-index="trackerStageFor(row)"
                 :round="trackerRoundFor(row)"

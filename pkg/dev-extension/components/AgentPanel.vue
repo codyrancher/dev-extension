@@ -41,6 +41,9 @@ import { isAdminUser } from '@shell/store/type-map';
 // else, so carrying it on every page changes the look of none of them.
 import '../design/studio';
 import PodTerminal from './PodTerminal';
+import SplitButton from './SplitButton.vue';
+import { CLI_CHOICES } from '../agent-clis.mjs';
+import { readPrefs } from '../prefs';
 import SIcon from './ui/SIcon.vue';
 import SMenu from './ui/SMenu.vue';
 import {
@@ -123,13 +126,15 @@ export default {
   name: 'AgentPanel',
 
   components: {
-    PodTerminal, SIcon, SMenu
+    PodTerminal, SIcon, SMenu, SplitButton
   },
 
   data() {
     const stored = readDrawerState();
 
     return {
+      /** Which CLI the plain press makes, from the preference; '' reads as claude. */
+      defaultCli: '',
       open:     false,
       /** [{ id, title, state }], as the pod reports them. `state` drives the tab's status dot. */
       sessions: [],
@@ -170,6 +175,9 @@ export default {
   },
 
   computed: {
+    /** The CLIs to offer; a module constant is not visible to a template. */
+    CLI_CHOICES: () => CLI_CHOICES,
+
     /**
      * Whether to show any of this at all.
      *
@@ -266,6 +274,10 @@ export default {
   },
 
   mounted() {
+    // Which CLI this person holds conversations with, for the split button's plain press.
+    readPrefs().then((prefs) => {
+      this.defaultCli = prefs.cli || '';
+    }).catch(() => undefined);
     // The viewport this was stored against is not necessarily this one.
     this.clamp();
     window.addEventListener('resize', this.clamp);
@@ -899,13 +911,22 @@ export default {
     },
 
     /** Start another conversation. The pod picks the name; see startAgentSession for why. */
-    async startNew() {
+    /**
+     * A new conversation, held with the CLI that was asked for.
+     *
+     * The id is carried on the tab, so the pane below is opened with it; after that the pane
+     * itself remembers - shell.sh writes the CLI into the pane's record and reads it back when
+     * nobody says, which is what makes a conversation reopened next week still its own CLI.
+     */
+    async startNew(cli = '') {
       this.error = '';
 
       try {
         const id = await startAgentSession();
 
-        this.sessions = [...this.sessions, { id, title: id.replace(/^agent-/, ''), state: 'none' }];
+        this.sessions = [...this.sessions, {
+          id, title: id.replace(/^agent-/, ''), state: 'none', cli: cli === 'claude' ? '' : cli,
+        }];
         this.select(id);
       } catch (e) {
         this.error = e?.message || String(e);
@@ -1140,19 +1161,24 @@ export default {
           </template>
         </div>
 
-        <!-- New conversation, at the end of the tabs where a new one would appear. -->
-        <button
-          type="button"
+        <!--
+          New conversation, at the end of the tabs where a new one would appear. A split
+          button: the press makes one with the CLI you usually use, and the caret is where the
+          others are - the choice belongs here because a pane runs its CLI for life, so it is
+          made when the conversation is, not afterwards in Settings.
+        -->
+        <SplitButton
           class="mc-agent__new"
-          aria-label="New conversation"
-          title="New conversation"
-          @click="startNew"
+          label="New conversation"
+          :value="defaultCli"
+          :options="CLI_CHOICES"
+          @pick="startNew"
         >
           <SIcon
             name="plus"
             :size="14"
           />
-        </button>
+        </SplitButton>
       </div>
 
       <!--
@@ -1197,6 +1223,7 @@ export default {
         <PodTerminal
           v-if="seen.includes(session.id)"
           :session="session.id"
+          :mode="session.cli || ''"
         />
       </section>
     </div>

@@ -12,11 +12,12 @@
 // The rule above a section is not this component's: it depends on what the section sits under,
 // not on what it is, so a section that needs one draws it itself.
 import BrandImage from '@shell/components/BrandImage';
+import SplitButton from './SplitButton.vue';
 
 export default {
   name: 'NavHead',
 
-  components: { BrandImage },
+  components: { BrandImage, SplitButton },
 
   props: {
     /** The section's name. Empty draws the row with only its glyph and its control. */
@@ -49,6 +50,22 @@ export default {
       type:    [String, Object],
       default: null,
     },
+    /**
+     * Kinds of thing this section can make, as `[{ id, label, what }]`.
+     *
+     * With none, the control is the plain `+` it has always been. With some, it is a split
+     * button: the press makes the usual kind and the caret offers the rest, and `create` is
+     * emitted with the chosen id either way.
+     */
+    createOptions: {
+      type:    Array,
+      default: () => [],
+    },
+    /** Which option the plain press makes; the first when empty. */
+    createValue: {
+      type:    String,
+      default: '',
+    },
   },
 
   emits: ['create'],
@@ -73,9 +90,17 @@ export default {
     >{{ label }}</span>
     <!-- Anything the section wants between its name and its create control. -->
     <slot />
+    <SplitButton
+      v-if="createLabel && createOptions.length"
+      class="dev-nav-head__add dev-nav-head__add--split"
+      :label="createLabel"
+      :value="createValue"
+      :options="createOptions"
+      @pick="$emit('create', $event)"
+    >+</SplitButton>
     <component
       :is="createTo ? 'router-link' : 'button'"
-      v-if="createLabel"
+      v-else-if="createLabel"
       class="dev-nav-head__add"
       :to="createTo"
       :type="createTo ? null : 'button'"

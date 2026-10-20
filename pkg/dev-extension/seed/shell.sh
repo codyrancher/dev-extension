@@ -242,12 +242,25 @@ MODE=${4:-claude}
 # detached, or a plain shell - and the two were one thing, which is why `start` could only ever
 # bring a pane back as claude however it was opened. `agy` as a MODE is accepted as shorthand
 # for the attached pane of that CLI, which is what a caller naturally passes.
-CLI=${6:-claude}
+CLI=${6:-}
 
 if [ "$MODE" = agy ]; then
   CLI=agy
   MODE=claude
 fi
+
+# Nobody said, so ask what this pane was last opened with.
+#
+# The browser passes the CLI when it opens a conversation it has just made. It does not know
+# one for a conversation somebody opened months ago - the choice was never anywhere but in that
+# pane - so the pane's own record is where it is read back from. Sixth line, written below.
+# A conversation from before any of this has a five-line record and reads as claude, which is
+# what it was.
+if [ -z "$CLI" ] && [ -n "$SESSION" ]; then
+  CLI=$(sed -n 6p "$(dirname "$HOME_DIR")/.panes/$SESSION" 2>/dev/null)
+fi
+
+CLI=${CLI:-claude}
 
 # The pane's environment, spelled out on the pane itself rather than inherited. A tmux server
 # hands every new session the environment it was started with, which is whichever pane came

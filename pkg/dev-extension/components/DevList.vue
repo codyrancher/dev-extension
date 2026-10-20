@@ -101,6 +101,15 @@ export default {
     },
 
     /** What the create control says. No label, no control. */
+    /** Passed to NavHead: kinds this section can make, which turn `+` into a split button. */
+    createOptions: {
+      type:    Array,
+      default: () => [],
+    },
+    createValue: {
+      type:    String,
+      default: '',
+    },
     createLabel: {
       type:    String,
       default: '',
@@ -291,7 +300,9 @@ export default {
       :tone="tone"
       :create-label="createLabel"
       :create-to="createTo"
-      @create="$emit('create')"
+      :create-options="createOptions"
+      :create-value="createValue"
+      @create="$emit('create', $event)"
     />
 
     <ul>

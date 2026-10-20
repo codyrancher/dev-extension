@@ -26,6 +26,7 @@ type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 import {
   workspaceWorkdir, workspaceShellWrapper, AGENT_HOME, AGENT_WORKSPACE
 } from './config/constants';
+import type { SessionMode } from './agent';
 
 /** Where the agents extension's API is. The agents extension made the agent pod, so this is its cluster. */
 export const STUDIO_CLUSTER = 'local';
@@ -63,7 +64,7 @@ export interface ProjectConversation {
  * is the point: one login for every conversation in this dashboard. The last argument is the
  * tunnel - the wrapper claude runs every command through, which puts it in the workspace's pod.
  */
-export function paneCommand(workspace: string, id: string, mode: 'claude' | 'shell' = 'claude'): string[] {
+export function paneCommand(workspace: string, id: string, mode: SessionMode = 'claude'): string[] {
   return [
     '/bin/sh', '/seed/shell.sh', id, workspaceWorkdir(workspace), AGENT_HOME, mode, workspaceShellWrapper(workspace),
   ];
@@ -76,12 +77,12 @@ export function paneCommand(workspace: string, id: string, mode: 'claude' | 'she
  */
 export const KUBECTL = ['/bin/sh', '-c', 'export PATH=/workspace/.home/.local/bin:/usr/local/bin:$PATH; exec kubectl "$@"', 'kubectl'];
 
-function attachment(workspace: string, id: string, pod: string): Attachment {
+function attachment(workspace: string, id: string, pod: string, mode: SessionMode = 'claude'): Attachment {
   // The namespace and pod are the workspace's, and they are what the pane is *about* rather
   // than where it runs: the terminal always opens on the agent pod (StudioTerminal.vue) and
   // runs the argv below. Pages read these to say which pod a conversation's commands land in.
   return {
-    namespace: workspaceNamespace(workspace), pod, container: WORKSPACE_CONTAINER, command: paneCommand(workspace, id), workspace, id,
+    namespace: workspaceNamespace(workspace), pod, container: WORKSPACE_CONTAINER, command: paneCommand(workspace, id, mode), workspace, id,
   };
 }
 
@@ -469,7 +470,7 @@ export async function queuedNotStarted(): Promise<{ id: string; workspace: strin
  * registration and rejects the prompt: callers that can wait (reviews.ts) queue it themselves
  * once the pod is there.
  */
-export async function startConversation(workspace: string, title = '', prompt = ''): Promise<ProjectConversation> {
+export async function startConversation(workspace: string, title = '', prompt = '', cli = ''): Promise<ProjectConversation> {
   const api = await requireAgents();
   const before = new Set((await api.agent.projectSessions(workspace).catch(() => [])).map((s) => s.id));
   let id: string;
@@ -492,7 +493,11 @@ export async function startConversation(workspace: string, title = '', prompt = 
     }
   }
 
-  const conversation = { id, title: title || id.slice(id.lastIndexOf('-') + 1), attach: attachment(workspace, id, (await workspacePod(workspace).catch(() => null)) || '') };
+  // `agy` as the mode is shell.sh's shorthand for "the assistant, held with that CLI"; the
+  // pane then records it, so reopening this conversation later gets the same one without
+  // anything here having to remember. See seed/shell.sh.
+  const mode: SessionMode = cli === 'agy' ? 'agy' : 'claude';
+  const conversation = { id, title: title || id.slice(id.lastIndexOf('-') + 1), attach: attachment(workspace, id, (await workspacePod(workspace).catch(() => null)) || '', mode) };
 
   if (prompt) {
     await api.agent.queue(id, prompt);

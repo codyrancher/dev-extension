@@ -127,91 +127,125 @@ export default {
 </template>
 
 <style lang="scss" scoped>
+/*
+ * The workspace column's stepper, which is now everybody's.
+ *
+ * This component started as the tracker's lighter row of pills and the column kept its own
+ * stepper, which is how there came to be two. Unifying them the first time took the wrong one:
+ * the column is the place a person reads a stage carefully, and its drawing - the connecting
+ * line, the filled circle for what is behind you, the ringed one for where you are - is what
+ * says "a pipeline with a position in it" rather than "some labels". So that is the one kept,
+ * and the tracker shows it too.
+ */
 .stage-steps {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 2px 4px;
-  margin: 0;
-  padding: 0;
+  display:    flex;
   list-style: none;
+  margin:     8px 0 4px;
+  padding:    0 8px;
 }
 
 .stage-steps__step {
-  display: flex;
-  align-items: center;
-  gap: 2px;
+  flex:     1 1 0;
+  position: relative;
+
+  /* The line between dots: from this dot's centre to the next's. */
+  &::after {
+    content:    '';
+    position:   absolute;
+    top:        13px;
+    left:       50%;
+    right:      -50%;
+    height:     2px;
+    background: var(--border);
+  }
+
+  &:last-child::after { display: none; }
+  &--done::after { background: var(--primary); }
 }
 
 .stage-steps__btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border: 0;
-  border-radius: 12px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.2;
-  cursor: default;
+  position:       relative;
+  z-index:        1;
+  display:        flex;
+  flex-direction: column;
+  align-items:    center;
+  gap:            6px;
+  width:          100%;
+  padding:        0;
+  border:         0;
+  background:     transparent;
+  color:          var(--muted);
+  font:           inherit;
+  cursor:         pointer;
 
-  &:not(:disabled) { cursor: pointer; }
-  &:not(:disabled):hover { background: var(--accent-btn); color: var(--body-text); }
+  &:disabled { cursor: default; }
 }
 
 .stage-steps__dot {
-  display: inline-flex;
-  align-items: center;
+  display:         flex;
+  align-items:     center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  font-size: 10px;
-  line-height: 1;
+  width:           26px;
+  height:          26px;
+  border-radius:   50%;
+  border:          2px solid var(--border);
+  background:      var(--body-bg);
+  font-size:       12px;
+  font-weight:     700;
 
-  .icon { font-size: 11px; }
+  .icon { font-size: 12px; }
 }
 
-.stage-steps__round {
-  padding: 0 6px;
-  border-radius: 8px;
-  background: var(--warning-banner-bg);
-  color: var(--warning);
-  font-size: 10px;
-}
-
-/* Behind you. */
 .stage-steps__step--done .stage-steps__dot {
-  border-color: var(--success);
-  background: var(--success);
-  color: var(--success-banner-bg, #fff);
-}
-.stage-steps__step--done .stage-steps__btn { color: var(--body-text); }
-
-/* Now. */
-.stage-steps__step--now .stage-steps__btn {
-  background: var(--primary-banner-bg, var(--accent-btn));
-  color: var(--primary);
-  font-weight: 600;
-}
-.stage-steps__step--now .stage-steps__dot {
+  background:   var(--primary);
   border-color: var(--primary);
-  color: var(--primary);
+  color:        #fff;
 }
 
-/* Done before and ahead of you again. */
-.stage-steps__step--again .stage-steps__dot {
+.stage-steps__step--now .stage-steps__dot {
   border-color: var(--warning);
-  color: var(--warning);
+  color:        var(--warning);
+  box-shadow:   0 0 0 4px rgba(255, 228, 122, .15);
 }
 
-/* Being looked at. */
-.stage-steps__step--shown .stage-steps__btn {
-  outline: 1px solid var(--primary);
-  outline-offset: -1px;
+/* A step done in an earlier round and ahead of you again: the same tick, said quietly. */
+.stage-steps__step--again .stage-steps__dot {
+  border-style: dashed;
+  opacity:      .85;
 }
 
-.stage-steps__step--future .stage-steps__btn { opacity: 0.75; }
+.stage-steps__step--now .stage-steps__label { color: var(--body-text); font-weight: 700; }
+.stage-steps__step--shown .stage-steps__label { text-decoration: underline; text-underline-offset: 3px; }
+.stage-steps__step--done .stage-steps__btn:hover .stage-steps__label { color: var(--body-text); }
+.stage-steps__label { font-size: 12px; }
+
+/* Which time round this step is being taken. Small, beside the label, never instead of it. */
+.stage-steps__round {
+  margin-left:    6px;
+  padding:        1px 6px;
+  border:         1px solid var(--warning);
+  border-radius:  10px;
+  color:          var(--warning);
+  font-size:      10px;
+  font-weight:    700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space:    nowrap;
+}
+
+/*
+ * A row of these in a table is tighter than a column header: the tracker draws one per issue
+ * inside an expanded row, where the column's vertical rhythm would be most of the row's height.
+ * Same drawing, less air - set by the page rather than by a second component.
+ */
+:host(.stage-steps--tight),
+.stage-steps--tight {
+  margin:  2px 0;
+  padding: 0;
+
+  .stage-steps__dot { width: 20px; height: 20px; font-size: 11px; }
+  .stage-steps__step::after { top: 10px; }
+  .stage-steps__btn { gap: 4px; }
+  .stage-steps__label { font-size: 11px; }
+}
 </style>

@@ -34,20 +34,8 @@ import { GLOBAL_SECRETS, SECRET_GROUPS } from '../secrets';
 import { listApps } from '../apps';
 import { readPrefs, savePrefs } from '../prefs';
 import { log } from '../dev-log.mjs';
+import { CLI_CHOICES } from '../agent-clis.mjs';
 import { DEV_PRODUCT, BLANK_CLUSTER, SKILLS_ROUTE } from '../config/constants';
-
-/**
- * The CLIs a conversation can be held with.
- *
- * Two, and the second is new, so what each one is worth saying: claude is what every pane has
- * always run and the only one the state dot, the queue and the hooks were written against;
- * Antigravity runs in the same pane with the same resume-by-id, and the chat reads its
- * transcript (agent-clis.mjs), but nothing reads its pane for a question yet.
- */
-const CLI_CHOICES = [
-  { id: 'claude', label: 'Claude Code', what: 'What every conversation has been held with. Hooks, the queue and the state dot all understand it.' },
-  { id: 'agy', label: 'Antigravity', what: 'Google\'s agy, in the same kind of pane. The conversation is read and resumed; its pane is not watched for questions yet.' },
-];
 
 export default {
   name: 'DevSettings',
