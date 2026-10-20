@@ -70,7 +70,7 @@ export default {
     height:         92vh;
     background:     var(--body-bg);
     border:         1px solid var(--border);
-    border-radius:  var(--border-radius);
+    border-radius:  var(--r-md);
     box-shadow:     0 10px 40px rgba(0, 0, 0, .4);
     overflow:       hidden;
   }

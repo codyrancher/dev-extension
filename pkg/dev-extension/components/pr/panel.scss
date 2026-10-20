@@ -389,7 +389,7 @@
   padding:       var(--dev-space-4);
   color:         var(--pr-error);
   background:    var(--pr-error-fill);
-  border-radius: var(--border-radius);
+  border-radius: var(--r-sm);
   font-size:     13px;
 }
 
@@ -548,7 +548,7 @@
   gap:            var(--dev-space-3);
   padding:        0 var(--dev-space-4) var(--dev-space-2);
   border:         1px solid var(--pr-border);
-  border-radius:  var(--border-radius);
+  border-radius:  var(--r-sm);
 }
 
 /* A section's head: the same row a file's header is, so every fold on the page folds alike. */
@@ -572,7 +572,7 @@
 
 .prm-file {
   border:        1px solid var(--pr-border);
-  border-radius: var(--border-radius);
+  border-radius: var(--r-sm);
   overflow:      hidden;
 }
 
@@ -699,7 +699,7 @@
 
 .comment {
   border:        1px solid var(--pr-border);
-  border-radius: var(--border-radius);
+  border-radius: var(--r-sm);
   padding:       var(--dev-space-3) var(--dev-space-4);
   font-family:   inherit;
   font-size:     13px;
@@ -807,7 +807,7 @@
   background:    var(--pr-bg);
   color:         var(--pr-text);
   border:        1px solid var(--pr-border);
-  border-radius: var(--border-radius);
+  border-radius: var(--r-sm);
   padding:       var(--dev-space-3) var(--dev-space-4);
   font-family:   inherit;
   font-size:     13px;
@@ -842,7 +842,7 @@
 .md-body :deep(pre) {
   background:    var(--pr-bg);
   border:        1px solid var(--pr-border);
-  border-radius: var(--border-radius);
+  border-radius: var(--r-sm);
   padding:       var(--dev-space-3) var(--dev-space-4);
   overflow-x:    auto;
   margin:        var(--dev-space-2) 0;
@@ -881,7 +881,7 @@
   max-width:     100%;
   max-height:    70vh;
   height:        auto;
-  border-radius: var(--border-radius);
+  border-radius: var(--r-sm);
   background:    #000;
 }
 .md-body :deep(table) { border-collapse: collapse; margin: var(--dev-space-2) 0; }
@@ -905,7 +905,7 @@
 .prm-prlevel, .prm-orphans {
   padding:        var(--dev-space-3) var(--dev-space-4);
   border:         1px solid var(--pr-border);
-  border-radius:  var(--border-radius);
+  border-radius:  var(--r-sm);
   display:        flex;
   flex-direction: column;
   gap:            var(--dev-space-3);
@@ -959,7 +959,7 @@
   box-sizing:     border-box;
   background:     var(--pr-bg-2);
   border:         1px solid var(--pr-border);
-  border-radius:  var(--border-radius);
+  border-radius:  var(--r-sm);
   padding:        var(--dev-space-3);
   display:        flex;
   flex-direction: column;

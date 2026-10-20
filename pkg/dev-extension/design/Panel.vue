@@ -68,7 +68,7 @@ export default {
   flex-direction: column;
   min-height:     0;
   border:         1px solid var(--border);
-  border-radius:  var(--border-radius);
+  border-radius:  var(--r-sm);
   background:     var(--body-bg);
   // So the head's own background does not square off the corners it sits in.
   overflow:       hidden;

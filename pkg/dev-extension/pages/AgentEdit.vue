@@ -533,7 +533,7 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
     padding:        var(--dev-space-4);
     margin-bottom:  var(--dev-space-4);
     border:         1px solid var(--border);
-    border-radius:  var(--border-radius);
+    border-radius:  var(--r-sm);
   }
 
   &__row { display: flex; gap: var(--dev-space-3); align-items: flex-end; flex-wrap: wrap; > * { flex: 1 1 220px; } }
@@ -550,7 +550,7 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
     background:    var(--body-bg);
     color:         var(--body-text);
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     resize:        vertical;
   }
 
@@ -578,7 +578,7 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
     white-space:   pre-wrap;
     word-break:    break-all;
     background:    color-mix(in srgb, var(--body-text) 5%, transparent);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
   }
 
   &__actions { display: flex; gap: var(--dev-space-3); justify-content: flex-end; }
@@ -609,7 +609,7 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
     min-width:     260px;
     background:    var(--body-bg);
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     box-shadow:    0 8px 24px rgba(0, 0, 0, 0.25);
     font-family:   monospace;
     font-size:     13px;
@@ -627,7 +627,7 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
     color:       var(--input-text);
     background:  var(--input-bg);
     border:      1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--dev-r-ctl);
     resize:      vertical;
 
     &--bad { border-color: var(--error); }

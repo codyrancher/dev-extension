@@ -220,7 +220,7 @@ export default {
     margin-top:     var(--dev-space-2);
     border:         1px solid var(--pr-border);
     border-left:    3px solid var(--pr-accent);
-    border-radius:  var(--border-radius);
+    border-radius:  var(--r-sm);
     overflow:       hidden;
     background:     var(--pr-bg);
     max-width:      900px;
@@ -275,7 +275,7 @@ export default {
       background:    var(--pr-bg);
       color:         var(--pr-text);
       border:        1px solid var(--pr-border);
-      border-radius: var(--border-radius);
+      border-radius: var(--r-sm);
       padding:       var(--dev-space-3) var(--dev-space-4);
       font-family:   inherit;
       font-size:     13px;

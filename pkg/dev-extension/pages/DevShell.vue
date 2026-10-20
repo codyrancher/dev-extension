@@ -309,7 +309,7 @@ export default {
     min-height:      0;
     padding:         0;
     border:          0;
-    border-radius:   var(--border-radius);
+    border-radius:   var(--dev-r-ctl);
     background:      transparent;
     color:           var(--header-btn-text, var(--body-text));
     font-size:       18px;
@@ -342,7 +342,7 @@ export default {
     padding:         var(--dev-space-2) var(--dev-space-3);
     margin-left:     calc(var(--dev-space-3) * -1);
     border:          0;
-    border-radius:   var(--border-radius);
+    border-radius:   var(--r-sm);
     background:      transparent;
     color:           var(--header-btn-text, var(--body-text));
     font:            inherit;
@@ -393,7 +393,7 @@ export default {
     padding:       var(--dev-space-2) 0;
     background:    var(--body-bg);
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-md);
     box-shadow:    0 8px 24px rgba(0, 0, 0, 0.3);
   }
 
@@ -431,7 +431,7 @@ export default {
   margin:        var(--dev-space-4) var(--dev-inset) 0;
   padding:       var(--dev-space-4);
   border:        1px solid var(--warning);
-  border-radius: var(--border-radius);
+  border-radius: var(--r-sm);
   background:    var(--warning-banner-bg, rgba(219, 171, 0, 0.12));
   color:         var(--body-text);
   font-size:     13px;

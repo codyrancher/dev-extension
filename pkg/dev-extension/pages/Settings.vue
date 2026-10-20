@@ -860,7 +860,7 @@ export default {
       margin-bottom: var(--dev-space-5);
       padding:       var(--dev-space-5);
       border:        1px solid var(--border);
-      border-radius: var(--border-radius);
+      border-radius: var(--r-sm);
     }
 
     &__card-head {
@@ -921,7 +921,7 @@ export default {
       margin:        var(--dev-space-4) 0 0 0;
       padding:       var(--dev-space-3) var(--dev-space-4);
       border:        1px solid var(--border);
-      border-radius: var(--border-radius);
+      border-radius: var(--r-sm);
       background:    transparent;
       color:         var(--body-text);
       font:          inherit;
@@ -1078,7 +1078,7 @@ export default {
       margin:          var(--dev-space-5) 0;
       padding:         var(--dev-space-4) var(--dev-space-5);
       border:          1px solid var(--border);
-      border-radius:   var(--border-radius);
+      border-radius:   var(--r-sm);
       color:           var(--body-text);
       text-decoration: none;
 

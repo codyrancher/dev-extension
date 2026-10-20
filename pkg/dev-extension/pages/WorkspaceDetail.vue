@@ -821,7 +821,7 @@ export default {
     margin:        0;
     padding:       8px 10px;
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--box-bg);
     font-size:     12px;
     white-space:   pre-wrap;

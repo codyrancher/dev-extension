@@ -618,7 +618,7 @@ export default {
 .side-tabs {
   display: flex;
   box-shadow: 0 0 20px var(--shadow);
-  border-radius: calc(var(--border-radius) * 2);
+  border-radius: var(--r-sm);
   background-color: var(--tabbed-sidebar-bg);
 
   .tab-container {

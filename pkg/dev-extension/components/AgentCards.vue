@@ -414,7 +414,7 @@ export default {
   &__empty {
     padding:       var(--dev-space-5);
     border:        1px dashed var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     font-size:     13px;
     text-align:    center;
 
@@ -432,7 +432,7 @@ export default {
   display:        flex;
   flex-direction: column;
   border:         1px solid var(--border);
-  border-radius:  var(--border-radius);
+  border-radius:  var(--r-sm);
   background:     var(--body-bg);
   overflow:       hidden;
   transition:     border-color 0.15s ease;

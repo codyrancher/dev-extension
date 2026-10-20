@@ -134,7 +134,7 @@
     min-height: 44px;
     padding: 0 var(--dev-space-4);
     font-size: 14px;
-    border-radius: var(--border-radius) var(--border-radius) 0 0;
+    border-radius: var(--dev-r-ctl) var(--dev-r-ctl) 0 0;
   }
 
   /*

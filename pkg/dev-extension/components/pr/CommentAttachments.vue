@@ -151,7 +151,7 @@ export default {
       flex-shrink:   0;
       padding:       0;
       border:        1px solid var(--pr-border);
-      border-radius: var(--border-radius);
+      border-radius: var(--r-sm);
       background:    var(--pr-bg);
       color:         var(--pr-muted);
       cursor:        pointer;
@@ -207,7 +207,7 @@ export default {
       height:        22px;
       padding:       0;
       border:        1px solid transparent;
-      border-radius: var(--border-radius);
+      border-radius: var(--dev-r-ctl);
       background:    transparent;
       color:         var(--pr-muted);
       font-size:     13px;
@@ -221,7 +221,7 @@ export default {
       video, img, iframe {
         max-width:     100%;
         max-height:    360px;
-        border-radius: var(--border-radius);
+        border-radius: var(--r-sm);
         border:        1px solid var(--pr-border);
         background:    var(--pr-bg);
       }

@@ -85,7 +85,7 @@ export default {
     max-width:     340px;
     padding:       10px 12px;
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--body-bg);
     box-shadow:    0 4px 16px rgba(0, 0, 0, 0.25);
     font-size:     12px;

@@ -74,6 +74,38 @@ if ! command -v agy >/dev/null 2>&1; then
   exec /bin/bash
 fi
 
+# This directory, trusted, before agy is asked to work in it.
+#
+# agy stops on "Do you trust the contents of this project?" in a directory it has not seen
+# before, and a pane holding a modal dialog is a pane that looks hung: the chat sees a CLI that
+# is running and says nothing, because nothing has been written to a transcript that does not
+# exist yet. claude has the same first-run question and claude-defaults.mjs answers it in
+# advance (hasTrustDialogAccepted); this is the same answer for the same reason.
+#
+# The file is agy's own `settings.json` and `trustedWorkspaces` is a list of paths. Merged
+# rather than written: somebody may have trusted other directories, and a pane is not the place
+# to forget them. node, because node is the one thing every one of these pods is guaranteed to
+# have, and a half-written settings file is worse than an unanswered dialog - so it is written
+# beside and renamed over.
+trust_here() {
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const file = process.argv[1], here = process.argv[2];
+    let settings = {};
+    try { settings = JSON.parse(fs.readFileSync(file, "utf8")) || {}; } catch {}
+    const trusted = Array.isArray(settings.trustedWorkspaces) ? settings.trustedWorkspaces : [];
+    if (trusted.includes(here)) { process.exit(0); }
+    settings.trustedWorkspaces = [...trusted, here];
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(`${ file }.tmp`, `${ JSON.stringify(settings, null, 2) }\n`);
+      fs.renameSync(`${ file }.tmp`, file);
+    } catch {}
+  ' "$HOME/.gemini/antigravity-cli/settings.json" "$(pwd)" 2>/dev/null || true
+}
+
+trust_here
+
 # A prompt somebody queued for this conversation, used once and then gone. Read before the loop
 # and deleted before agy runs, so a crash on the prompt does not ask it again on every restart.
 QUEUE=${1:-}

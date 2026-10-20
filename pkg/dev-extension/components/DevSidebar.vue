@@ -1259,7 +1259,7 @@ export default {
         margin:          0;
         padding:         0;
         border:          none;
-        border-radius:   var(--border-radius);
+        border-radius:   var(--dev-r-ctl);
         background:      transparent;
         color:           var(--body-text);
         font:            inherit;

@@ -3388,7 +3388,7 @@ export default {
     gap:           20px;
     padding:       8px 14px;
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--box-bg);
   }
 
@@ -3451,7 +3451,7 @@ export default {
     min-height:    110px;
     padding:       10px 12px;
     border:        1px solid var(--pr-border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--input-bg);
     color:         var(--pr-text);
     font-family:   var(--pr-mono);
@@ -3482,7 +3482,7 @@ export default {
   &__var {
     display:       block;
     border:        1px solid var(--pr-border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--pr-bg-2);
     color:         var(--pr-accent);
     font-family:   var(--pr-mono);
@@ -3507,7 +3507,7 @@ export default {
     margin:        0;
     padding:       10px 12px;
     border:        1px solid var(--pr-border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--pr-bg-2);
     font-family:   var(--pr-mono);
     font-size:     12px;
@@ -3522,7 +3522,7 @@ export default {
     min-height:    46vh;
     padding:       10px 12px;
     border:        1px solid var(--pr-border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--input-bg);
     color:         var(--pr-text);
     font-family:   var(--pr-mono);
@@ -3635,7 +3635,7 @@ export default {
     overflow-wrap: anywhere;
     white-space:   normal;
 
-    :deep(video) { max-width: 100%; border-radius: var(--border-radius); background: #000; }
+    :deep(video) { max-width: 100%; border-radius: var(--r-sm); background: #000; }
 
     :deep(p) { margin: 0 0 8px; }
     :deep(p:last-child) { margin-bottom: 0; }
@@ -3643,7 +3643,7 @@ export default {
     :deep(h1) { font-size: 16px; }
     :deep(ul), :deep(ol) { margin: 0 0 8px; padding-left: 20px; }
     :deep(code) { font-size: 12px; background: var(--body-bg); padding: 1px 4px; border-radius: var(--dev-r-xs); }
-    :deep(pre) { background: var(--body-bg); border: 1px solid var(--border); border-radius: var(--border-radius); padding: 8px 10px; overflow-x: auto; }
+    :deep(pre) { background: var(--body-bg); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px 10px; overflow-x: auto; }
     :deep(pre code) { background: transparent; padding: 0; }
     :deep(img) { max-width: 100%; }
     :deep(blockquote) { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--border); color: var(--muted); }
@@ -3687,7 +3687,7 @@ export default {
     box-sizing:    border-box;
     padding:       8px;
     border:        1px solid var(--pr-border, var(--border));
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--pr-bg-2, var(--box-bg));
     color:         var(--body-text);
     font:          inherit;
@@ -3697,7 +3697,7 @@ export default {
 
   &__thread-card {
     border:        1px solid var(--pr-border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--pr-bg-2);
     padding:       12px 14px;
     display:       flex;
@@ -3718,7 +3718,7 @@ export default {
     display:       inline-block;
     padding:       2px 8px;
     border:        1px dashed var(--pr-border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     color:         var(--pr-muted);
     font-size:     12px;
   }
@@ -3795,7 +3795,7 @@ export default {
     margin:        6px 0 8px;
     padding:       8px 10px;
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--body-bg);
     font-size:     12px;
     line-height:   1.45;
@@ -3826,7 +3826,7 @@ export default {
     gap:            14px;
     padding:        12px 14px;
     border:         1px solid var(--border);
-    border-radius:  var(--border-radius);
+    border-radius:  var(--r-sm);
     background:     var(--box-bg);
     min-width:      0;
   }
@@ -3988,7 +3988,7 @@ export default {
     max-height:     96px;
     object-fit:     cover;
     border:         1px solid var(--border);
-    border-radius:  var(--border-radius);
+    border-radius:  var(--r-sm);
     cursor:         zoom-in;
     vertical-align: middle;
   }
@@ -4012,7 +4012,7 @@ export default {
     align-items:     center;
     justify-content: center;
     border:          1px solid var(--pr-border);
-    border-radius: var(--border-radius);
+    border-radius: var(--dev-r-ctl);
     background:    var(--pr-bg);
     color:         var(--pr-text);
     font:          inherit;
@@ -4036,7 +4036,7 @@ export default {
     justify-content: center;
     min-width:       26px;
     border:        1px solid transparent;
-    border-radius: var(--border-radius);
+    border-radius: var(--dev-r-ctl);
     background:    var(--pr-bg);
     color:         var(--pr-muted);
     font:          inherit;
@@ -4073,7 +4073,7 @@ export default {
       color:         var(--pr-muted);
       padding:       3px 8px;
       border:        1px solid var(--pr-border);
-      border-radius: var(--border-radius);
+      border-radius: var(--dev-r-xs);
       background:    var(--pr-bg);
     }
   }
@@ -4095,7 +4095,7 @@ export default {
     box-sizing:    border-box;
     padding:       8px 10px;
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--dev-r-ctl);
     background:    var(--input-bg);
     color:         var(--body-text);
     font:          inherit;

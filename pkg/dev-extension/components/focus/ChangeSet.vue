@@ -1096,7 +1096,7 @@ const statusWord: Record<string, string> = {
   padding: var(--s2) var(--s3);
   border-left: 2px solid var(--kind);
   background: color-mix(in srgb, var(--kind) 9%, var(--surface-sunk));
-  border-radius: 0 var(--r-sm, 4px) var(--r-sm, 4px) 0;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
 }
 
 .ask__form { display: flex; align-items: center; gap: var(--s2); flex: 1; min-width: 0; }

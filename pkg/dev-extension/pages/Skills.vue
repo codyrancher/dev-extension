@@ -472,7 +472,7 @@ export default {
     height:        32px;
     padding:       0 var(--dev-space-3);
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--dev-r-ctl);
     background:    var(--input-bg);
     color:         var(--body-text);
     font:          inherit;
@@ -532,7 +532,7 @@ export default {
     align-items:     center;
     justify-content: center;
     border:          1px dashed var(--border);
-    border-radius:   var(--border-radius);
+    border-radius:   var(--r-sm);
     color:           var(--muted);
   }
 
@@ -589,7 +589,7 @@ export default {
     min-height:    0;
     padding:       3px var(--dev-space-3);
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    transparent;
     color:         var(--muted);
     font-family:   ui-monospace, 'SFMono-Regular', Menlo, monospace;
@@ -631,7 +631,7 @@ export default {
     box-sizing:    border-box;
     padding:       var(--dev-space-3) var(--dev-space-4);
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--input-bg);
     color:         var(--body-text);
     font-family:   ui-monospace, 'SFMono-Regular', Menlo, monospace;

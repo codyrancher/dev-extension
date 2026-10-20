@@ -2498,7 +2498,7 @@ export default {
     margin-left:    var(--dev-space-2);
     padding:        1px 6px;
     border:         1px solid var(--border);
-    border-radius:  var(--dev-space-3);
+    border-radius:  var(--r-sm);
     font-size:      10px;
     font-weight:    400;
     letter-spacing: .04em;
@@ -2541,7 +2541,7 @@ export default {
     min-height:      0;
     padding:         0;
     border:          1px solid var(--border);
-    border-radius:   var(--dev-space-3);
+    border-radius:   var(--r-sm);
     background:      transparent;
     color:           var(--muted);
     cursor:          pointer;

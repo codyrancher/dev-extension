@@ -320,7 +320,7 @@ export default {
     margin:        0 0 4px;
     padding:       0;
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--box-bg);
     overflow:      hidden;
     cursor:        zoom-in;

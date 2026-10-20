@@ -778,7 +778,7 @@ export default {
       min-height:      $control;
       padding:         0;
       border:          none;
-      border-radius:   var(--border-radius);
+      border-radius:   var(--dev-r-ctl);
       background:      transparent;
       color:           var(--muted);
       cursor:          pointer;

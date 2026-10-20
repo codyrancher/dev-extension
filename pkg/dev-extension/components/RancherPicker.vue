@@ -216,7 +216,7 @@ export default {
     overflow:       auto;
     padding:        20px;
     border:         1px solid var(--border);
-    border-radius:  var(--border-radius);
+    border-radius:  var(--r-md);
     background:     var(--default);
     box-shadow:     0 8px 32px rgba(0, 0, 0, .35);
   }
@@ -269,7 +269,7 @@ export default {
     width:         100%;
     padding:       10px 12px;
     border:        1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--r-sm);
     background:    var(--box-bg);
     color:         var(--body-text);
     font:          inherit;

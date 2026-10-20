@@ -258,7 +258,7 @@ export default {
   gap:            8px;
   padding:        10px 12px;
   border:         1px solid var(--border);
-  border-radius:  var(--border-radius);
+  border-radius:  var(--r-sm);
   background:     var(--box-bg);
 
   &__label {

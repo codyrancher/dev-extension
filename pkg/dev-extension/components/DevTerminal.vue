@@ -491,7 +491,7 @@ export default {
   height: 100%;
   padding: 6px 0 0 8px;
   border: 1px solid var(--border);
-  border-radius: var(--border-radius);
+  border-radius: var(--r-sm);
   background: var(--terminal-bg, var(--body-bg));
 
   &__xterm {
@@ -516,7 +516,7 @@ export default {
     gap: 8px;
     padding: 4px 10px;
     border: 1px solid var(--border);
-    border-radius: var(--border-radius);
+    border-radius: var(--dev-r-xs);
     background: var(--body-bg);
     color: var(--muted);
     font-size: 12px;

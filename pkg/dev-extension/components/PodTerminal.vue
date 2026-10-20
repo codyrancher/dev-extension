@@ -1371,7 +1371,7 @@ export default {
     bottom:        10px;
     z-index:       2;
     padding:       4px 8px;
-    border-radius: var(--border-radius);
+    border-radius: var(--dev-r-ctl);
     background:    var(--default);
     color:         var(--body-text);
     font-size:     11px;

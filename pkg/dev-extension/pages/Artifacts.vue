@@ -292,7 +292,7 @@ export default {
   margin:        0 0 var(--dev-space-4);
   padding:       var(--dev-space-4);
   border:        1px solid var(--border);
-  border-radius: var(--border-radius);
+  border-radius: var(--r-sm);
   background:    var(--box-bg);
 }
 

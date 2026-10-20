@@ -694,7 +694,7 @@ export default {
 
     &__card {
       border:        1px solid var(--border);
-      border-radius: var(--border-radius);
+      border-radius: var(--r-sm);
       padding:       var(--dev-space-4);
     }
 

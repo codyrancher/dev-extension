@@ -55,7 +55,7 @@ export default {
     justify-content: center;
     gap:             var(--dev-space-2);
     border:          1px solid transparent;
-    border-radius:   var(--border-radius);
+    border-radius:   var(--dev-r-ctl);
     // Rancher gives every button a 40px minimum, which is the row height of a form and not of
     // a toolbar; the sizes below are the whole of the height.
     min-height:      0;
