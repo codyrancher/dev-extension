@@ -14,7 +14,9 @@
  *      known. This is the column's answer, and it already carries the store's reconciliation.
  *   2. the stored record, by workspace name and then by `issue-<n>`. Covers a workspace that
  *      has gone and a stage somebody set by hand before one existed.
- *   3. the issue's own GitHub facts, which are all that is left when nothing here has ever
+ *   3. the column it sits in on the UI Project Board, which somebody moved by hand and which
+ *      survives the workspace being deleted;
+ *   4. the issue's own GitHub facts, which are all that is left when nothing here has ever
  *      worked on it: a merged pull request is merged, an open one is in review, a closed issue
  *      with no pull request is merged-or-abandoned and reads as merged, and anything else has
  *      not started.
@@ -27,6 +29,34 @@
  * Plain JavaScript and no imports, so `node --test` loads it directly - see
  * tests/issue-stage.test.mjs.
  */
+
+/**
+ * What each column of the UI Project Board says about where the work is.
+ *
+ * The board is the most reliable thing on an issue that nothing here had been reading: a person
+ * moves a card when the work moves, and for an issue whose workspace is gone it is the only
+ * record left. #19437 is the case that showed it up - open, in QA Review, with two merged pull
+ * requests - and the tracker said "Not started", because every source it had was empty.
+ *
+ * The columns after a merge all map to `merged`, which is where this pipeline ends: QA Review
+ * is what happens *after* the developer's part is done, not a stage of it. A column that means
+ * nobody has started is left blank rather than guessed at.
+ */
+const BOARD_STAGES = {
+  'to triage':       '',
+  backlog:           '',
+  'ice box':         '',
+  'backend blocked': '',
+  'next up':         '',
+  working:           'code',
+  reopened:          'code',
+  review:            'review',
+  'qa blocked':      'merged',
+  'to test':         'merged',
+  'qa working':      'merged',
+  'qa review':       'merged',
+  done:              'merged',
+};
 
 /** The fix pipeline, in order. The same keys stages.ts stores and StageSteps draws. */
 export const FIX_STAGES = ['assess', 'code', 'draft', 'review', 'feedback', 'merged'];
@@ -59,14 +89,32 @@ export function issueStage(issue, {
     return answer(status.stage, status.round, 'workspace');
   }
 
-  // 2. What was stored for it, under either name.
-  const record = (workspace && stages[workspace]) || (number && stages[`issue-${ number }`]) || null;
+  /*
+   * 2. What was stored for it, under any of the names it may have been stored under.
+   *
+   * The store is keyed by workspace, and a workspace for issue 19437 may have been called
+   * `issue-19437` or `lte-issue-19437` depending on when it was made - the live store holds
+   * both shapes. Looking under only one of them loses the stage of every issue whose
+   * workspace was made on the other side of that change and has since been deleted.
+   */
+  const record = (workspace && stages[workspace])
+    || (number && (stages[`issue-${ number }`] || stages[`lte-issue-${ number }`]))
+    || null;
 
   if (record?.stage) {
     return answer(record.stage, record.round, 'stored');
   }
 
-  // 3. The issue itself. Last, because it knows least.
+  // 3. Where the board says it is. A person moved that card deliberately, which makes it better
+  // evidence than anything inferred below - and for an issue with no workspace and no stored
+  // stage it is usually the only evidence there is.
+  const column = String(issue?.projectStatus?.name || '').trim().toLowerCase();
+
+  if (column && BOARD_STAGES[column]) {
+    return answer(BOARD_STAGES[column], 1, 'board');
+  }
+
+  // 4. The issue itself. Last, because it knows least.
   return answer(...fromGithub(issue));
 }
 

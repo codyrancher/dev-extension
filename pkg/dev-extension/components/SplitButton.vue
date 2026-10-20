@@ -60,7 +60,19 @@ export default {
   emits: ['pick'],
 
   data() {
-    return { open: false };
+    return {
+      open: false,
+      /**
+       * Where the menu is drawn, in viewport coordinates.
+       *
+       * The menu is teleported to the body and positioned, rather than placed under the button
+       * in the normal way, because the hosts that need it most are the ones that clip it: the
+       * drawer's tab row scrolls horizontally (`overflow-x: auto`), and an overflow on one axis
+       * clips the other, so a menu dropping out of that row was cut off at the row's edge. No
+       * `z-index` reaches out of a clipping ancestor, so the menu has to leave it.
+       */
+      at: { top: 0, right: 0 },
+    };
   },
 
   computed: {
@@ -107,6 +119,21 @@ export default {
       this.open = false;
       this.$emit('pick', id);
     },
+
+    /** Open it where the control is, measured now rather than guessed from the layout. */
+    toggle() {
+      if (this.open) {
+        this.open = false;
+
+        return;
+      }
+      const box = this.$el?.getBoundingClientRect?.();
+
+      if (box) {
+        this.at = { top: Math.round(box.bottom + 4), right: Math.round(window.innerWidth - box.right) };
+      }
+      this.open = true;
+    },
   },
 };
 </script>
@@ -132,35 +159,38 @@ export default {
       :aria-label="`${ label || 'More' }: other options`"
       :aria-expanded="open ? 'true' : 'false'"
       aria-haspopup="menu"
-      @click="open = !open"
+      @click="toggle"
     >
       <i :class="open ? 'icon icon-chevron-up' : 'icon icon-chevron-down'" />
     </button>
 
-    <ul
-      v-if="open"
-      class="split-btn__menu"
-      role="menu"
-    >
-      <li
-        v-for="option in choices"
-        :key="option.id"
+    <Teleport to="body">
+      <ul
+        v-if="open"
+        class="split-btn__menu"
+        role="menu"
+        :style="{ top: `${ at.top }px`, right: `${ at.right }px` }"
       >
-        <button
-          type="button"
-          role="menuitem"
-          class="split-btn__item"
-          :class="{ 'split-btn__item--on': option.id === chosen.id }"
-          @click="pick(option.id)"
+        <li
+          v-for="option in choices"
+          :key="option.id"
         >
-          <span class="split-btn__item-label">{{ option.label }}</span>
-          <span
-            v-if="option.what"
-            class="split-btn__item-what"
-          >{{ option.what }}</span>
-        </button>
-      </li>
-    </ul>
+          <button
+            type="button"
+            role="menuitem"
+            class="split-btn__item"
+            :class="{ 'split-btn__item--on': option.id === chosen.id }"
+            @click="pick(option.id)"
+          >
+            <span class="split-btn__item-label">{{ option.label }}</span>
+            <span
+              v-if="option.what"
+              class="split-btn__item-what"
+            >{{ option.what }}</span>
+          </button>
+        </li>
+      </ul>
+    </Teleport>
   </div>
 </template>
 
@@ -208,11 +238,10 @@ export default {
   font-size:     10px;
 }
 
+/* On the body, so no scroller can clip it; placed by the coordinates measured on open. */
 .split-btn__menu {
-  position:      absolute;
-  top:           calc(100% + 4px);
-  right:         0;
-  z-index:       100;
+  position:      fixed;
+  z-index:       1000;
   min-width:     220px;
   margin:        0;
   padding:       var(--dev-space-2) 0;
