@@ -22,7 +22,7 @@ import {
 import {
   listConversations, startConversation, endConversation, renameConversation, startedConversations, conversationStates, STUDIO_CLUSTER, KUBECTL
 } from '../conversations';
-import { CLI_CHOICES } from '../agent-clis.mjs';
+import { CLI_CHOICES, cliMark } from '../agent-clis.mjs';
 import { readPrefs } from '../prefs';
 import { agentStateOf } from '../workspace-status';
 import { prepareWorkspace } from '../reviews';
@@ -132,14 +132,12 @@ export default {
         ...this.conversations.map((conversation) => {
           // Which CLI holds it, from the one list of them, so a strip with both in it says which
           // is which without opening a tab.
-          const cli = CLI_CHOICES.find((choice) => choice.id === conversation.cli);
-
           return {
-            key:       conversation.id,
-            label:     conversation.title,
-            state:     ROW_STATE[this.states[conversation.id]] || 'stopped',
-            icon:      cli?.icon || '',
-            iconTitle: cli?.label || '',
+            key:   conversation.id,
+            label: conversation.title,
+            state: ROW_STATE[this.states[conversation.id]] || 'stopped',
+            // The provider's own mark, so a list holding both says which is which at a glance.
+            mark:  cliMark(conversation.cli),
           };
         }),
         // The shell needs a pod that has the terminal scripts mounted, which a preview's nginx

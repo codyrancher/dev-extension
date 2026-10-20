@@ -93,6 +93,13 @@ if [ -n "$IDFILE" ] && [ -f "$IDFILE" ]; then
   CONVERSATION=$(cat "$IDFILE" 2>/dev/null)
 fi
 
+# Every conversation in agy's brain, one id per line, sorted - the set this pane diffs against
+# to find the one agy makes for it. The brain is a directory per conversation, so this is a
+# listing and nothing more.
+brain_ids() {
+  ls -1 "$HOME/.gemini/antigravity-cli/brain" 2>/dev/null | sort
+}
+
 # agy's own record of which conversation belongs to this directory: `{"<path>": "<uuid>"}`.
 LAST="$HOME/.gemini/antigravity-cli/cache/last_conversations.json"
 
@@ -135,14 +142,33 @@ claimed_elsewhere() {
   return 1
 }
 
-# The map's id, but only when it is nobody else's.
+# The conversation THIS pane made: the one that appeared in the brain since it started.
+#
+# Not the map's entry for this directory, which was the first attempt and was wrong twice over.
+# The map says which conversation agy touched last in a directory every pane shares, so a new
+# pane read somebody else's and resumed it - and once that somebody's tab was closed, taking its
+# id file with it, the entry was unclaimed as well as stale, so the ownership check below let it
+# through and a brand-new conversation opened on a dead one's turns.
+#
+# A set difference cannot be wrong that way: whatever is in the brain now and was not there when
+# this pane started is this pane's, by construction. Exactly one, or nothing - two conversations
+# appearing at once means another pane is starting beside this one, and guessing between them is
+# how this went wrong in the first place. claude-session.sh finds its transcript the same way.
 own_conversation() {
-  candidate=$(read_conversation)
+  [ -f "$BRAIN_BEFORE" ] || return 0
 
-  if [ -n "$candidate" ] && ! claimed_elsewhere "$candidate"; then
-    printf '%s' "$candidate"
-  fi
+  fresh=$(comm -13 "$BRAIN_BEFORE" <(brain_ids) 2>/dev/null)
+
+  [ "$(printf '%s' "$fresh" | grep -c .)" = "1" ] || return 0
+  claimed_elsewhere "$fresh" && return 0
+
+  printf '%s' "$fresh"
 }
+
+# Where the pre-run listing of the brain is kept. One file per pane, in the pane's own home, so
+# two panes starting together do not read each other's snapshot.
+BRAIN_BEFORE="$HOME/.agy-brain-$$.before"
+trap 'rm -f "$BRAIN_BEFORE"' EXIT
 
 STARTS=0
 
@@ -161,6 +187,9 @@ while true; do
   if [ -n "$PROMPT" ]; then
     OPEN=(--prompt-interactive "$PROMPT")
   fi
+
+  # The brain as it is before agy runs, which is what makes the id it creates identifiable.
+  brain_ids > "$BRAIN_BEFORE"
 
   # Record which conversation this is as soon as agy has made one, rather than when agy exits -
   # which, for a pane somebody is sitting in, is never. The chat finds a transcript by this id,

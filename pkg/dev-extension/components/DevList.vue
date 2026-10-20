@@ -21,6 +21,7 @@ import BrandImage from '@shell/components/BrandImage';
 import NavHead from './NavHead.vue';
 import { colorForState, stateDisplay } from '@shell/plugins/dashboard-store/resource-class';
 import HoverCard from './HoverCard.vue';
+import CliMark from './CliMark.vue';
 import hoverCard from './hover-card';
 
 // A status tone to the dot colour that matches its status text. The same palette the detail line
@@ -37,7 +38,9 @@ const TONE_DOT = {
 export default {
   name: 'DevList',
 
-  components: { BrandImage, HoverCard, NavHead },
+  components: {
+    BrandImage, HoverCard, NavHead, CliMark
+  },
 
   mixins: [hoverCard],
 
@@ -357,6 +360,17 @@ export default {
               v-if="renaming !== row.key"
               class="dev-list__text"
             >
+              <!--
+                A mark the row brings with it, before its name: what this row IS, as against the
+                dot beside it, which is what it is doing. Conversations use it for the provider
+                holding them. A row that brings none is drawn exactly as it was.
+              -->
+              <CliMark
+                v-if="row.mark"
+                class="dev-list__row-icon"
+                :mark="row.mark"
+                :size="12"
+              />
               <span
                 class="dev-list__name"
                 :title="row.card ? null : (row.title || row.label)"
@@ -659,10 +673,9 @@ export default {
 
     &__row-icon {
       flex:         0 0 auto;
-      margin-right: 4px;
-      font-size:    10px;
+      margin-right: 6px;
       color:        var(--muted);
-      opacity:      .8;
+      opacity:      .9;
     }
 
     &__name {

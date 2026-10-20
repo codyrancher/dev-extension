@@ -42,7 +42,8 @@ import { isAdminUser } from '@shell/store/type-map';
 import '../design/studio';
 import PodTerminal from './PodTerminal';
 import SplitButton from './SplitButton.vue';
-import { CLI_CHOICES } from '../agent-clis.mjs';
+import { CLI_CHOICES, cliMark } from '../agent-clis.mjs';
+import CliMark from './CliMark.vue';
 import { readPrefs } from '../prefs';
 import SIcon from './ui/SIcon.vue';
 import SMenu from './ui/SMenu.vue';
@@ -126,8 +127,7 @@ export default {
   name: 'AgentPanel',
 
   components: {
-    PodTerminal, SIcon, SMenu, SplitButton
-  },
+    PodTerminal, SIcon, SMenu, SplitButton, CliMark },
 
   data() {
     const stored = readDrawerState();
@@ -550,15 +550,8 @@ export default {
       });
     },
 
-    /** The glyph for a conversation's CLI, from the one list of them, or '' if it never ran. */
-    cliIcon(cli) {
-      return (CLI_CHOICES.find((choice) => choice.id === cli) || {}).icon || '';
-    },
-
-    /** Its name, for the hover. */
-    cliLabel(cli) {
-      return (CLI_CHOICES.find((choice) => choice.id === cli) || {}).label || '';
-    },
+    /** The provider's mark for a conversation's CLI, or null for one that has never run. */
+    cliMark,
 
     /** The status dot's tooltip: what its colour means, in words, for a hover. */
     statusLabel(state) {
@@ -1147,11 +1140,11 @@ export default {
               CLIs in one strip that is the first thing you want to know. Absent for a
               conversation that has never run, because nothing has decided yet.
             -->
-            <i
-              v-if="cliIcon(session.cli)"
-              class="icon mc-agent__tab-cli"
-              :class="cliIcon(session.cli)"
-              :title="cliLabel(session.cli)"
+            <CliMark
+              v-if="cliMark(session.cli)"
+              class="mc-agent__tab-cli"
+              :mark="cliMark(session.cli)"
+              :size="12"
             />
             <span class="mc-agent__tab-title">{{ session.title }}</span>
             <button
@@ -1615,10 +1608,10 @@ export default {
 
 
   &__tab-cli {
-    flex:      0 0 auto;
-    font-size: 10px;
-    color:     var(--muted);
-    opacity:   .8;
+    flex:         0 0 auto;
+    margin-right: 6px;
+    color:        var(--muted);
+    opacity:      .9;
   }
 
   &__tab-title {

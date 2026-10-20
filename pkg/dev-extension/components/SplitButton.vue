@@ -17,9 +17,12 @@
  * a 22px button next to the thing being added.
  */
 import { placeMenu } from '../menu-place.mjs';
+import CliMark from './CliMark.vue';
 
 export default {
   name: 'SplitButton',
+
+  components: { CliMark },
 
   props: {
     /**
@@ -232,7 +235,14 @@ export default {
             :title="option.what || option.label"
             @click="pick(option.id)"
           >
+            <CliMark
+              v-if="option.mark"
+              class="split-btn__item-icon"
+              :mark="option.mark"
+              :size="13"
+            />
             <i
+              v-else
               class="icon split-btn__item-icon"
               :class="option.icon || 'icon-dot'"
             />
