@@ -256,8 +256,16 @@ fi
 # pane - so the pane's own record is where it is read back from. Sixth line, written below.
 # A conversation from before any of this has a five-line record and reads as claude, which is
 # what it was.
-if [ -z "$CLI" ] && [ -n "$SESSION" ]; then
-  CLI=$(sed -n 6p "$(dirname "$HOME_DIR")/.panes/$SESSION" 2>/dev/null)
+# `|| true`, and it is not decoration: this script runs under `set -e`, and `sed` on a file that
+# is not there exits 2, so an assignment from it ends the script. Which is exactly what happened
+# - every conversation that had never run had no record yet, so every NEW conversation died
+# here, silently, after printing the preamble and before creating its tmux session. The ones
+# that already had a record went on working, which is what made it look like the panel rather
+# than the pane. Guarded on the file as well, so the common case runs no sed at all.
+PANE_RECORD="$(dirname "$HOME_DIR")/.panes/$SESSION"
+
+if [ -z "$CLI" ] && [ -n "$SESSION" ] && [ -f "$PANE_RECORD" ]; then
+  CLI=$(sed -n 6p "$PANE_RECORD" 2>/dev/null || true)
 fi
 
 CLI=${CLI:-claude}
