@@ -16,10 +16,17 @@ export default {
   name: 'SplitButton',
 
   props: {
-    /** `[{ id, label, what }]`, the default first. */
+    /**
+     * `[{ id, label, what }]`, the default first.
+     *
+     * Defaulted rather than required, and read defensively below: a host that passes nothing -
+     * or passes a list that failed to import, which is how this component first shipped - gets
+     * a plain button that still does the usual thing. A control that throws while rendering
+     * disappears entirely, which is a worse answer to a missing list than a missing caret.
+     */
     options: {
-      type:     Array,
-      required: true,
+      type:    Array,
+      default: () => [],
     },
     /** Which option the main press runs; the first when empty. */
     value: {
@@ -57,8 +64,12 @@ export default {
   },
 
   computed: {
+    choices() {
+      return Array.isArray(this.options) ? this.options.filter((option) => option?.id) : [];
+    },
+
     chosen() {
-      return this.options.find((option) => option.id === this.value) || this.options[0] || {};
+      return this.choices.find((option) => option.id === this.value) || this.choices[0] || {};
     },
   },
 
@@ -114,6 +125,7 @@ export default {
       <slot>+</slot>
     </button>
     <button
+      v-if="choices.length > 1"
       type="button"
       class="split-btn__more"
       :disabled="disabled"
@@ -131,7 +143,7 @@ export default {
       role="menu"
     >
       <li
-        v-for="option in options"
+        v-for="option in choices"
         :key="option.id"
       >
         <button
@@ -179,10 +191,16 @@ export default {
 
 /* One control, so the halves meet: the radius is on the outside edges only. */
 .split-btn__main {
-  min-width:                   22px;
-  border-radius:               var(--border-radius) 0 0 var(--border-radius);
-  border-right-width:          0;
-  font-size:                   15px;
+  min-width:          22px;
+  border-radius:      var(--dev-r-ctl) 0 0 var(--dev-r-ctl);
+  border-right-width: 0;
+  font-size:          15px;
+
+  /* With nothing to choose between there is no caret, so the press is the whole control. */
+  &:only-child {
+    border-radius:      var(--dev-r-ctl);
+    border-right-width: 1px;
+  }
 }
 
 .split-btn__more {

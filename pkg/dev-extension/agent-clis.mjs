@@ -38,6 +38,19 @@
  */
 
 /**
+ * What a new conversation can be held with, in the order the split button offers them: the
+ * first is what the plain press does.
+ *
+ * Here rather than in a component because three places need it - the drawer's tab row, a
+ * workspace's conversation list and Settings - and a list of CLIs that differs between them is
+ * the same bug as two steppers. It lived in Settings once, as exactly that kind of copy.
+ */
+export const CLI_CHOICES = [
+  { id: 'claude', label: 'Claude Code', what: 'The default. Hooks, the queue and the state dot all understand it.' },
+  { id: 'agy', label: 'Antigravity', what: "Google's agy. Its transcript is read and resumed; its pane is not watched for questions yet." },
+];
+
+/**
  * Which CLI wrote these lines: 'claude', 'agy', or '' when nothing says.
  *
  * Decided on the first line that parses and is recognisable, rather than on the first line at
