@@ -75,6 +75,62 @@ async function ingresses() {
   return (list.items || []).filter((ing) => ing.metadata?.namespace !== NAMESPACE && !(ing.metadata?.annotations || {})[SKIP]);
 }
 
+/**
+ * Every address this cluster's nodes answer on.
+ *
+ * Read once per sweep and used to throw out names that cannot possibly be validated here - see
+ * `reachableHere`. A read that fails returns an empty set, which that check treats as "no
+ * opinion" rather than as "nothing is reachable": a controller that cannot list nodes should go
+ * on behaving exactly as it did before this existed.
+ */
+async function nodeAddresses() {
+  try {
+    const list = await k8s('/api/v1/nodes');
+
+    return new Set((list.items || [])
+      .flatMap((node) => node.status?.addresses || [])
+      .filter((address) => address.type === 'ExternalIP' || address.type === 'InternalIP')
+      .map((address) => String(address.address)));
+  } catch {
+    return new Set();
+  }
+}
+
+/** The IPv4 address a sslip.io name carries, in either spelling it allows, or ''. */
+function addressOf(host) {
+  const dotted = /(?:^|\.)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\.sslip\.io$/.exec(host);
+
+  if (dotted) {
+    return dotted[1];
+  }
+  const dashed = /(?:^|[.-])(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})\.sslip\.io$/.exec(host);
+
+  return dashed ? dashed.slice(1, 5).join('.') : '';
+}
+
+/**
+ * Whether a challenge for this name could reach this cluster at all.
+ *
+ * HTTP-01 means Let's Encrypt resolves the name and asks it for a file. A sslip.io name resolves
+ * to the address written in it, so a name carrying an address that is not one of these nodes'
+ * sends the challenge somewhere else, and the order fails - every sweep, for ever.
+ *
+ * That is not hypothetical and it is not cheap. An instance rebuilt on a new node leaves its
+ * shares' Ingresses behind carrying the old node's address, and Fleet re-delivers them to the
+ * replacement because the cluster's NAME has not changed. Five such names on one instance cost
+ * a solver Ingress created and deleted for each, every sweep, and up to ISSUE_TIMEOUT_MS of the
+ * sweep apiece - so a share that WAS reachable waited behind twenty minutes of orders that could
+ * never succeed, and the failed-validation budget on the account went on them too.
+ *
+ * Unknown is not refused: a name with no address in it, or a cluster whose nodes could not be
+ * listed, is treated exactly as it was before this check existed.
+ */
+function reachableHere(host, addresses) {
+  const address = addressOf(host);
+
+  return !address || !addresses.size || addresses.has(address);
+}
+
 /** The names one Ingress serves that are worth a certificate. */
 function hostsOf(ing) {
   const found = new Set();
@@ -258,9 +314,24 @@ async function fromCache(host) {
   return secret && covers(crt, [host]) ? { crt, key: decode(secret.data['tls.key']) } : null;
 }
 
+/** Names already reported as unreachable, so the reason is said once rather than every minute. */
+const said = new Set();
+
 async function sweep() {
+  const addresses = await nodeAddresses();
+
   for (const ing of await ingresses()) {
-    const hosts = hostsOf(ing);
+    const hosts = hostsOf(ing).filter((host) => {
+      if (reachableHere(host, addresses)) {
+        return true;
+      }
+      if (!said.has(host)) {
+        said.add(host);
+        console.log(`[certs] ${ host } names an address this cluster does not answer on, so a challenge for it cannot arrive here; skipping it until that changes.`);
+      }
+
+      return false;
+    });
 
     if (!hosts.length) {
       continue;

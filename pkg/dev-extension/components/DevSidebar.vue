@@ -14,10 +14,10 @@ import {
   tagWorkspaceArtifacts
 } from '../api';
 import {
-  listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp, workspaceInstance
+  listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp, workspaceInstance, RANCHER_SHARE_APP
 } from '../apps';
 import {
-  LEGACY_WORKSPACE_APPS, LTE_PREFIX, isLte
+  LEGACY_WORKSPACE_APPS, LTE_PREFIX, isLte, LABEL_CLUSTER, APP_INSTANCE
 } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
 import {
@@ -152,6 +152,8 @@ export default {
       /** The Clusters block is a header until it is opened; the choice is kept per browser. */
       /** The Rancher a delete is being confirmed for, or null. */
       deletingRancher: null,
+      /** The shares hosted on it, by name, so the confirmation can say what else goes. */
+      deletingShares:  [],
       /** Rancher id -> true for the moment after its address was copied. */
       copied:          {},
       apps:         cache.apps,
@@ -504,14 +506,57 @@ export default {
       }
     },
 
-    askDeleteRancher(rancher) {
+    /**
+     * Ask, and say what else is on it.
+     *
+     * Deleting an instance takes its cluster and node, and anything pinned to that cluster goes
+     * with them - which, for a share, is not visible anywhere until long afterwards: the share's
+     * Installation survives, still labelled with the dead cluster and still naming the dead
+     * node's address, so its tab reads as a build in progress rather than as a thing that cannot
+     * come back. Five shares were lost that way in one afternoon, and nothing had said they
+     * would be. The count is looked up rather than remembered because a share can be made on an
+     * instance at any time, by somebody else's agent, between this dialog's last open and this
+     * one.
+     */
+    async askDeleteRancher(rancher) {
       this.deletingRancher = rancher;
+      this.deletingShares = [];
+
+      if (!rancher?.clusterId) {
+        return;
+      }
+      const instances = await this.$store.dispatch('management/findAll', { type: APP_INSTANCE }).catch(() => []);
+
+      // Still the same dialog? The pointer can have moved on and opened another one while this
+      // was in flight, and the answer belongs to the Rancher that was asked about.
+      if (this.deletingRancher?.id !== rancher.id) {
+        return;
+      }
+      this.deletingShares = (instances || [])
+        .filter((instance) => instance.spec?.app === RANCHER_SHARE_APP
+          && instance.metadata?.labels?.[LABEL_CLUSTER] === rancher.clusterId
+          && !instance.metadata?.deletionTimestamp)
+        .map((instance) => instance.metadata?.name)
+        .filter(Boolean);
+    },
+
+    /** What the delete takes with it, in the words of the dialog. */
+    deleteRancherMessage() {
+      const base = 'Its cluster and the EC2 node it runs on are deleted with it. Anything on it is gone; workspaces pointed at it lose their Rancher.';
+
+      if (!this.deletingShares.length) {
+        return base;
+      }
+      const count = this.deletingShares.length;
+
+      return `${ base } ${ count } share${ count === 1 ? '' : 's' } ${ count === 1 ? 'is' : 'are' } hosted on it and cannot be moved - ${ this.deletingShares.join(', ') } - because the build each serves lives on this cluster. Share again from the workspace afterwards to rebuild them.`;
     },
 
     async deleteRancher() {
       const rancher = this.deletingRancher;
 
       this.deletingRancher = null;
+      this.deletingShares = [];
       if (!rancher) {
         return;
       }
@@ -899,11 +944,11 @@ export default {
     <DevDialog
       v-if="deletingRancher"
       :title="`Delete the Rancher ${ deletingRancher.name }?`"
-      :message="`Its cluster and the EC2 node it runs on are deleted with it. Anything on it is gone; workspaces pointed at it lose their Rancher.`"
+      :message="deleteRancherMessage()"
       confirm-label="Delete"
       :danger="true"
       @confirm="deleteRancher"
-      @cancel="deletingRancher = null"
+      @cancel="deletingRancher = null; deletingShares = []"
     />
     <DevDialog
       v-if="askingRancher"
