@@ -36,6 +36,7 @@ import StageSteps from '../components/StageSteps.vue';
 import { storedStages } from '../stages';
 import { issuesByNumber } from '../github';
 import { savePrefs } from '../prefs';
+import { issueStage } from '../issue-stage.mjs';
 import { stepsFor as stagesFor } from '../workspace-rail';
 import {
   issueWorkspaceName, issueWorkspaceLocation, hasIssueWorkspace, appForWorkspace
@@ -146,7 +147,7 @@ const ALERT_COLUMNS = [
  * ever arrived, still waits.
  */
 const cache = {
-  work: null, apps: [], workspaces: [], alerts: [], botPrs: [], botReviews: {}, alertError: '', alertsLoaded: false, queue: [], queueLoaded: false,
+  work: null, apps: [], workspaces: [], alerts: [], botPrs: [], botReviews: {}, alertError: '', alertsLoaded: false, queue: [], queueLoaded: false, statuses: {},
   /** Which `myWork` sections have actually been read, since `work` is now filled a part at a time. */
   sections: {},
 };
@@ -285,6 +286,14 @@ export default {
       // could not be. A token without the security tab is an ordinary thing, not a page error.
       /** The tracker tab: stored stages, followed issues, and the follow box. */
       stages:      {},
+      /**
+       * The workspace statuses the priority queue reads, kept rather than dropped.
+       *
+       * The tracker's stage comes from the same place the workspace column's does (see
+       * issueStage), and that place is a status. They were read here, used once for the
+       * queue's ranking and thrown away.
+       */
+      statuses:    cache.statuses,
       tracked:     [],
       followed:    [],
       adding:      '',
@@ -607,6 +616,8 @@ export default {
         this.workspaces = workspaces.map((workspace) => workspace.name);
         cache.workspaces = this.workspaces;
 
+        this.statuses = statuses;
+        cache.statuses = statuses;
         this.queue = priorityQueue({
           work:        this.work,
           statuses,
@@ -677,16 +688,29 @@ export default {
     // one at a time rather than glanced at, so it belongs beside them: a person looking for an
     // issue should not have to know which of two places this product put it.
 
-    trackerStageFor(issue) {
-      const record = this.stages[issueWorkspaceName(this.workspaces, issue)] || this.stages[`issue-${ issue.number }`];
+    /**
+     * How far along an issue is, from the one place that decides it.
+     *
+     * This used to look the issue up in the stored stages and show nothing when it found
+     * nothing - so an issue whose workspace had been deleted, or that was fixed before this
+     * product existed, had no stages at all even with its pull request merged. issueStage.mjs
+     * holds the order now, and the workspace column asks the same thing.
+     */
+    trackerStage(issue) {
+      return issueStage(issue, {
+        workspace: issueWorkspaceName(this.workspaces, issue),
+        statuses:  this.statuses,
+        stages:    this.stages,
+        steps:     this.trackerSteps.map((step) => step.key),
+      });
+    },
 
-      return record ? this.trackerSteps.findIndex((step) => step.key === record.stage) : -1;
+    trackerStageFor(issue) {
+      return this.trackerStage(issue).index;
     },
 
     trackerRoundFor(issue) {
-      const record = this.stages[issueWorkspaceName(this.workspaces, issue)] || this.stages[`issue-${ issue.number }`];
-
-      return record?.round || 1;
+      return this.trackerStage(issue).round;
     },
 
     trackerHasWorkspace(issue) {

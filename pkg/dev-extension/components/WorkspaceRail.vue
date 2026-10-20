@@ -24,6 +24,7 @@ import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
 import ArtifactViewer from './pr/ArtifactViewer.vue';
 import WorkspaceArtifacts from './WorkspaceArtifacts.vue';
+import StageSteps from './StageSteps.vue';
 import CodeView from './code/CodeView.vue';
 import { fromRailRows } from './code/rows';
 import {
@@ -66,7 +67,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView,
+    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView, StageSteps,
   },
 
   props: {
@@ -249,6 +250,17 @@ export default {
 
     currentIndex() {
       return this.steps.findIndex((s) => s.key === this.current);
+    },
+
+    /**
+     * The steps this round has already been through and will go through again.
+     *
+     * The rail used to decide this per step as it drew them; StageSteps takes the list, so the
+     * rule moves here unchanged: on a second or later pass, the two steps a review round
+     * repeats keep their ticks even though they are ahead of where the work is.
+     */
+    repeatedSteps() {
+      return this.round > 1 ? ['submitted', 'response'] : [];
     },
 
     /**
@@ -923,20 +935,6 @@ export default {
 
     toggleSection(section) {
       this.shut = { ...this.shut, [section.title]: !this.isShut(section) };
-    },
-
-    doneBefore(index) {
-      return this.round > 1 && !!this.steps[index] && ['submitted', 'response'].includes(this.steps[index].key) && index > this.currentIndex;
-    },
-
-    stepClass(step, index) {
-      return {
-        'workspace-rail__step--done':    index < this.currentIndex,
-        'workspace-rail__step--now':     index === this.currentIndex,
-        'workspace-rail__step--shown':   step.key === this.shown,
-        'workspace-rail__step--future':  index > this.currentIndex,
-        'workspace-rail__step--again':   this.doneBefore(index),
-      };
     },
 
     async run(action) {
@@ -2006,40 +2004,22 @@ export default {
         The rail. A passed step is a way back to what it left behind. The stage the work is at
         carries a pencil on the corner of its number, there while the stage is under the pointer
         or has the keyboard's focus, which sets the stage by hand.
+
+        The stepper itself is StageSteps, which is also what the Issue tracker draws. It was
+        lifted out of here for that reason and this half was never converted, so there were two
+        of them - which is the thing its own comment warns about. What is particular to this
+        page, the pencil, arrives through the slot the component leaves for it.
       -->
-      <ol class="workspace-rail__steps">
-        <li
-          v-for="(step, index) in steps"
-          :key="step.key"
-          class="workspace-rail__step"
-          :class="stepClass(step, index)"
-        >
-          <button
-            type="button"
-            class="workspace-rail__step-btn"
-            :disabled="index > currentIndex"
-            :title="index < currentIndex ? `Look at what ${ step.label } left behind` : index === currentIndex ? (round > 1 ? `Now, round ${ round }` : 'Now') : doneBefore(index) ? `Done in round ${ round - 1 }; ahead of you again` : 'Not yet'"
-            @click="look(step, index)"
-          >
-            <span class="workspace-rail__dot">
-              <i
-                v-if="index < currentIndex || doneBefore(index)"
-                class="icon icon-checkmark"
-              />
-              <span v-else>{{ index + 1 }}</span>
-            </span>
-            <span class="workspace-rail__step-label">{{ step.label }}</span>
-            <!--
-              Which time round this is. The same step twice with nothing to tell the two apart
-              reads as no progress, so a pass that follows a review of yours says "round 2" and
-              the steps it has already been through keep their ticks.
-            -->
-            <span
-              v-if="index === currentIndex && round > 1"
-              class="workspace-rail__round"
-            >round {{ round }}</span>
-          </button>
-          <!-- Beside the step's button, not in it: a button cannot hold another. -->
+      <StageSteps
+        :steps="steps"
+        :current-index="currentIndex"
+        :round="round"
+        :shown="shown"
+        :repeated="repeatedSteps"
+        interactive
+        @look="look($event.step, $event.index)"
+      >
+        <template #after="{ index }">
           <button
             v-if="index === currentIndex && !lookingBack && !manual"
             v-clean-tooltip="'Set the stage by hand'"
@@ -2052,8 +2032,8 @@ export default {
           >
             <i class="icon icon-edit" />
           </button>
-        </li>
-      </ol>
+        </template>
+      </StageSteps>
 
       <!--
         Set the stage by hand when the heuristics get it wrong. A held stage stands against the
@@ -3181,14 +3161,6 @@ export default {
     &--input { color: var(--status-input); }
   }
 
-  // The rail
-  &__steps {
-    display:    flex;
-    list-style: none;
-    margin:     8px 0 4px;
-    padding:    0 8px;
-  }
-
   /*
    * The pencil that sets the stage by hand: a badge on the top-right corner of the current
    * stage's number, centred on the corner so it reads as belonging to the dot. Out of sight
@@ -3229,42 +3201,6 @@ export default {
 
     &:focus-visible,
     &--on { opacity: 1; }
-  }
-
-  &__step:hover &__stage-edit,
-  &__step:has(:focus-visible) &__stage-edit { opacity: 1; }
-
-  &__step {
-    flex:     1 1 0;
-    position: relative;
-
-    // The line between dots: from this dot's centre to the next's.
-    &::after {
-      content:    '';
-      position:   absolute;
-      top:        13px;
-      left:       50%;
-      right:      -50%;
-      height:     2px;
-      background: var(--border);
-    }
-
-    &:last-child::after { display: none; }
-    &--done::after { background: var(--primary); }
-  }
-
-  /* Which time round this step is being taken. Small, beside the label, never instead of it. */
-  &__round {
-    margin-left:    6px;
-    padding:        1px 6px;
-    border:         1px solid var(--warning);
-    border-radius:  10px;
-    color:          var(--warning);
-    font-size:      10px;
-    font-weight:    700;
-    letter-spacing: .04em;
-    text-transform: uppercase;
-    white-space:    nowrap;
   }
 
   /* Setting the stage by hand: a quiet row under the rail, out of the way until it is wanted. */
@@ -3310,61 +3246,7 @@ export default {
   }
 
   /* A step this review has already been through once, waiting ahead of you again. */
-  &__step--again &__dot {
-    border-style: dashed;
-    opacity:      .85;
-  }
 
-  &__step-btn {
-    position:       relative;
-    z-index:        1;
-    display:        flex;
-    flex-direction: column;
-    align-items:    center;
-    gap:            6px;
-    width:          100%;
-    padding:        0;
-    border:         0;
-    background:     transparent;
-    color:          var(--muted);
-    font:           inherit;
-    cursor:         pointer;
-
-    &:disabled { cursor: default; }
-  }
-
-  &__dot {
-    display:         flex;
-    align-items:     center;
-    justify-content: center;
-    width:           26px;
-    height:          26px;
-    border-radius:   50%;
-    border:          2px solid var(--border);
-    background:      var(--body-bg);
-    font-size:       12px;
-    font-weight:     700;
-
-    .icon { font-size: 12px; }
-  }
-
-  &__step--done &__dot {
-    background:   var(--primary);
-    border-color: var(--primary);
-    color:        #fff;
-  }
-
-  &__step--now &__dot {
-    border-color: var(--warning);
-    color:        var(--warning);
-    box-shadow:   0 0 0 4px rgba(255, 228, 122, .15);
-  }
-
-  &__step--now &__step-label { color: var(--body-text); font-weight: 700; }
-  &__step--shown &__step-label { text-decoration: underline; text-underline-offset: 3px; }
-  &__step--done &__step-btn:hover &__step-label { color: var(--body-text); }
-
-  &__step-label { font-size: 12px; }
 
   // The one thing to press
   // No box of its own: what it says and each group under it is a row on the page, the way the
