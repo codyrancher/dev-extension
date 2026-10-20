@@ -8,16 +8,20 @@
  * every new conversation a two-step decision when it is the same answer nearly every time.
  * So: the button is the default, and the caret beside it is where the rest live.
  *
- * `options` is `[{ id, label, what }]`. The first is the default unless `value` names another.
- * What it emits is the id, never the index - a list that grows in the middle should not quietly
- * change what the button does.
+ * `options` is `[{ id, label, icon, what }]`. The first is the default unless `value` names
+ * another. What it emits is the id, never the index - a list that grows in the middle should not
+ * quietly change what the button does.
+ *
+ * The menu is one row per choice: the glyph and the name. `what` is the row's tooltip and is not
+ * drawn, because a menu that explains each choice in a sentence is a page, and this opens under
+ * a 22px button next to the thing being added.
  */
 export default {
   name: 'SplitButton',
 
   props: {
     /**
-     * `[{ id, label, what }]`, the default first.
+     * `[{ id, label, icon, what }]`, the default first.
      *
      * Defaulted rather than required, and read defensively below: a host that passes nothing -
      * or passes a list that failed to import, which is how this component first shipped - gets
@@ -180,13 +184,14 @@ export default {
             role="menuitem"
             class="split-btn__item"
             :class="{ 'split-btn__item--on': option.id === chosen.id }"
+            :title="option.what || option.label"
             @click="pick(option.id)"
           >
+            <i
+              class="icon split-btn__item-icon"
+              :class="option.icon || 'icon-dot'"
+            />
             <span class="split-btn__item-label">{{ option.label }}</span>
-            <span
-              v-if="option.what"
-              class="split-btn__item-what"
-            >{{ option.what }}</span>
           </button>
         </li>
       </ul>
@@ -234,40 +239,60 @@ export default {
 }
 
 .split-btn__more {
-  border-radius: 0 var(--border-radius) var(--border-radius) 0;
+  border-radius: 0 var(--dev-r-ctl) var(--dev-r-ctl) 0;
   font-size:     10px;
 }
 
-/* On the body, so no scroller can clip it; placed by the coordinates measured on open. */
+/*
+ * On the body, so no scroller can clip it; placed by the coordinates measured on open.
+ *
+ * Sized by its longest row rather than by a width of its own: a menu of two names was 220px
+ * wide and three lines tall per choice, which is a panel where a list was wanted. The sentence
+ * about each choice is in the row's `title` now, where it costs nothing to the person who
+ * already knows which one they want.
+ */
 .split-btn__menu {
   position:      fixed;
   z-index:       1000;
-  min-width:     220px;
+  width:         max-content;
+  min-width:     140px;
   margin:        0;
-  padding:       var(--dev-space-2) 0;
+  padding:       var(--dev-space-1) 0;
   list-style:    none;
   background:    var(--body-bg);
   border:        1px solid var(--border);
-  border-radius: var(--border-radius);
+  border-radius: var(--dev-r-ctl);
   box-shadow:    0 8px 24px rgba(0, 0, 0, .3);
 }
 
+/* One row: a glyph, a name, and nothing else. */
 .split-btn__item {
-  display:        flex;
-  flex-direction: column;
-  gap:            2px;
-  width:          100%;
-  padding:        var(--dev-space-3) var(--dev-space-4);
-  min-height:     0;
-  border:         0;
-  background:     transparent;
-  text-align:     left;
-  cursor:         pointer;
+  display:     flex;
+  align-items: center;
+  gap:         var(--dev-space-3);
+  width:       100%;
+  padding:     var(--dev-space-2) var(--dev-space-4);
+  min-height:  0;
+  border:      0;
+  background:  transparent;
+  text-align:  left;
+  white-space: nowrap;
+  cursor:      pointer;
 
   &:hover { background: var(--accent-btn); }
 }
 
-.split-btn__item-label { color: var(--body-text); font-size: 13px; }
+.split-btn__item-icon {
+  flex: 0 0 auto;
+  /* Dimmer than the name, so the row reads as a word with a mark beside it rather than as two
+     things of equal weight - and brightened with the rest of the row on hover. */
+  color:     var(--muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.split-btn__item:hover .split-btn__item-icon { color: var(--body-text); }
+
+.split-btn__item-label { color: var(--body-text); font-size: 13px; line-height: 18px; }
 .split-btn__item--on .split-btn__item-label { font-weight: 700; }
-.split-btn__item-what { color: var(--muted); font-size: 11px; }
 </style>

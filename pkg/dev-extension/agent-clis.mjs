@@ -44,10 +44,21 @@
  * Here rather than in a component because three places need it - the drawer's tab row, a
  * workspace's conversation list and Settings - and a list of CLIs that differs between them is
  * the same bug as two steppers. It lived in Settings once, as exactly that kind of copy.
+ *
+ * `icon` is one of Rancher's own glyph names, because the split button's menu is one row per
+ * choice: an icon and a name, read at a glance by somebody who already knows which one they
+ * want. `what` is the longer sentence for the places that have room for it - Settings, and the
+ * row's own tooltip - and is deliberately not drawn in the menu, which was three lines tall per
+ * choice and read like documentation at the moment of a one-click decision.
  */
 export const CLI_CHOICES = [
-  { id: 'claude', label: 'Claude Code', what: 'The default. Hooks, the queue and the state dot all understand it.' },
-  { id: 'agy', label: 'Antigravity', what: "Google's agy. Its transcript is read and resumed; its pane is not watched for questions yet." },
+  {
+    id: 'claude', label: 'Claude Code', icon: 'icon-ai', what: 'The default. Hooks, the queue and the state dot all understand it.',
+  },
+  {
+    // Google's, so Rancher's own Gemini glyph says whose it is in the one row the menu gives it.
+    id: 'agy', label: 'Antigravity', icon: 'icon-gemini', what: "Google's agy. Its transcript is read and resumed; its pane is not watched for questions yet.",
+  },
 ];
 
 /**

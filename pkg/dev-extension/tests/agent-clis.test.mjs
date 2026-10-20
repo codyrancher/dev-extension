@@ -12,7 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { transcriptKind, parseAgyTranscript } from '../agent-clis.mjs';
+import { transcriptKind, parseAgyTranscript, CLI_CHOICES } from '../agent-clis.mjs';
 
 const AGY = [
   '{"step_index":0,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-10-19T17:00:00Z","content":"Antigravity CLI"}',
@@ -78,4 +78,22 @@ test('nothing in the file is lost to a bad line, and empty steps are not message
   assert.deepEqual(messages.map((m) => m.text), ['reproduce the drawer bug']);
   assert.deepEqual(parseAgyTranscript([]), []);
   assert.deepEqual(parseAgyTranscript(null), []);
+});
+
+test('every CLI the split button offers has a glyph and a name', () => {
+  // The menu is one row of icon-and-name, so a choice with no icon draws an empty box where the
+  // glyph goes - and a glyph that is not in Rancher's set draws the same box. Both are the kind
+  // of thing nobody notices until the menu is open in front of somebody.
+  const ICONS = ['icon-ai', 'icon-gemini', 'icon-terminal', 'icon-code', 'icon-openai', 'icon-ollama'];
+
+  assert.ok(CLI_CHOICES.length >= 2, 'a split button needs something to split');
+  assert.equal(CLI_CHOICES[0].id, 'claude', 'the plain press is claude');
+
+  for (const choice of CLI_CHOICES) {
+    assert.match(choice.id, /^[a-z][a-z0-9-]*$/, `${ choice.id } is a usable id`);
+    assert.ok(choice.label, `${ choice.id } has a name`);
+    assert.ok(ICONS.includes(choice.icon), `${ choice.id }'s icon ${ choice.icon } is one Rancher ships`);
+    // Still wanted, just not in the menu: Settings draws it, and so does the row's tooltip.
+    assert.ok(choice.what && choice.what.length > 20, `${ choice.id } says what it is`);
+  }
 });
