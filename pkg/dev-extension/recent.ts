@@ -16,6 +16,22 @@
  */
 const WORKSPACE_KEY = 'dev-extension.last-workspace';
 const TAB_KEY = 'dev-extension.last-tab';
+/**
+ * The discussions a person has open, by the comment they are under.
+ *
+ * A discussion is a conversation with an agent about one finding, and it was open only for as
+ * long as the component drawing it stayed mounted: a refresh, or a navigation that remounted
+ * the column, closed every one of them. The conversation itself survived - it is a real
+ * conversation in the agent pod, and reopening the panel reattaches to it - but you had to
+ * know that, find the finding again and press Discuss a second time to get back to something
+ * you never finished.
+ *
+ * So which ones are open is kept here, beside the other "where you were" facts, and for the
+ * same reason: it is this browser's business, it is worth nothing to anybody else, and writing
+ * it through the apiserver would be a request per press. The conversation id is kept with it,
+ * so reattaching needs no lookup.
+ */
+const DISCUSSIONS_KEY = 'dev-extension.open-discussions';
 
 function read(key: string): string {
   try {
@@ -66,3 +82,58 @@ export function rememberWorkspaceView(view: 'rail' | 'tabs'): void {
   write(VIEW_KEY, view);
 }
 
+
+/** One open discussion: which comment it is under and which conversation it is. */
+export interface OpenDiscussion {
+  session: string;
+  at: string;
+}
+
+function readMap(): Record<string, OpenDiscussion> {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(DISCUSSIONS_KEY) || '{}');
+
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The discussions open under one pull request, by comment id.
+ *
+ * Keyed by PR as well as comment, because comment ids are only unique within one: two pull
+ * requests open in two tabs must not reopen each other's discussions.
+ */
+export function openDiscussions(pr: number): Record<string, OpenDiscussion> {
+  const prefix = `${ pr }:`;
+  const out: Record<string, OpenDiscussion> = {};
+
+  for (const [key, value] of Object.entries(readMap())) {
+    if (key.startsWith(prefix) && value?.session !== undefined) {
+      out[key.slice(prefix.length)] = value;
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Remember that a discussion is open, or forget it.
+ *
+ * Forgetting is what the close control does, and it is the only thing that does: a refresh, a
+ * remount and a navigation all leave the record alone, which is the whole point.
+ */
+export function rememberDiscussion(pr: number, comment: string | number, session: string): void {
+  const map = readMap();
+
+  map[`${ pr }:${ comment }`] = { session, at: new Date().toISOString() };
+  write(DISCUSSIONS_KEY, JSON.stringify(map));
+}
+
+export function forgetDiscussion(pr: number, comment: string | number): void {
+  const map = readMap();
+
+  delete map[`${ pr }:${ comment }`];
+  write(DISCUSSIONS_KEY, JSON.stringify(map));
+}

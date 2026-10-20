@@ -41,6 +41,7 @@ import {
 import { ensureWorkspaceReady, putArtifact, saveArtifact, devServerState, stopDevServer, startDevServer} from '../workspace-tools';
 import WorkspaceTools from './WorkspaceTools.vue';
 import { isLte } from '../config/constants';
+import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
   startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, DEFAULT_REPO
 } from '../reviews';
@@ -233,6 +234,14 @@ export default {
         .filter((item) => item.kind === 'comments')
         .flatMap((item) => item.items)
         .filter((c) => c.local).length;
+    },
+
+    /** Every finding currently drawn, for the discussion prune below. */
+    shownComments() {
+      return this.evidence
+        .flatMap((section) => section.items)
+        .filter((item) => item.kind === 'comments')
+        .flatMap((item) => item.items);
     },
 
     /** The repository these workspaces are of. One, for now, as everywhere else here. */
@@ -477,6 +486,11 @@ export default {
   },
 
   watch: {
+    /** Findings came or went: a discussion whose finding is gone is no longer open. */
+    shownComments() {
+      this.pruneDiscussions();
+    },
+
     evidence() {
       this.$nextTick(() => this.watchMedia());
     },
@@ -528,9 +542,15 @@ export default {
       // GitHub's sake.
       this.status = knownStatus(this.workspace.name) || provisionalStatus(this.workspace.name);
       this.loading = false;
+      // Before the first read, so a discussion that was open is open again as the column
+      // draws rather than a beat later; the PR number is already known from the cached status.
+      this.restoreDiscussions();
       this.refreshEvidence();
       this.ensureTunnel();
       await this.refreshStatus();
+      // And again once the status is fresh: a column opened on a workspace whose PR was not
+      // yet known had nothing to key the discussions by the first time.
+      this.restoreDiscussions();
       await this.refreshEvidence();
       this.readDevServer();
     },
@@ -1354,13 +1374,77 @@ export default {
       await this.changeComment(c, () => deleteComment(this.status.pr, c.id));
     },
 
-    /** Talk one finding over with the agent, in a conversation of its own under the card. */
+    /**
+     * Talk one finding over with the agent, in a conversation of its own under the card.
+     *
+     * Opening is remembered and closing is the only thing that forgets. A discussion used to
+     * live as long as this component did, so a refresh - or any navigation that remounted the
+     * column - shut every one of them: the conversation itself survived in the agent pod, but
+     * you had to know that, find the finding again and press Discuss a second time to get back
+     * to something you were in the middle of. See recent.ts.
+     */
     toggleDiscuss(c) {
-      this.discussing = { ...this.discussing, [c.id]: !this.discussing[c.id] };
+      const open = !this.discussing[c.id];
+
+      this.discussing = { ...this.discussing, [c.id]: open };
+      if (open) {
+        rememberOpenDiscussion(this.status?.pr || 0, c.id, this.discussSession[c.id] || '');
+      } else {
+        forgetDiscussion(this.status?.pr || 0, c.id);
+      }
     },
 
+    /** The conversation this discussion is, kept with the fact that it is open. */
     rememberDiscussion(c, session) {
       this.discussSession = { ...this.discussSession, [c.id]: session };
+      if (this.discussing[c.id]) {
+        rememberOpenDiscussion(this.status?.pr || 0, c.id, session);
+      }
+    },
+
+    /**
+     * Forget a remembered discussion whose finding is no longer here.
+     *
+     * The API hands a deleted comment's id to the next one filed, so a record left behind
+     * would one day reopen under a different finding - the same trap WorkspacePr guards with
+     * `discussionMade`. Only run once findings have actually been read: an empty list during
+     * the first second of a load is not evidence that anything was deleted.
+     */
+    pruneDiscussions() {
+      const pr = this.status?.pr || 0;
+      const open = Object.keys(this.discussing).filter((id) => this.discussing[id]);
+
+      if (!pr || !open.length || !this.shownComments.length) {
+        return;
+      }
+      const here = new Set(this.shownComments.map((c) => String(c.id)));
+      const gone = open.filter((id) => !here.has(String(id)));
+
+      if (!gone.length) {
+        return;
+      }
+      this.discussing = { ...this.discussing, ...Object.fromEntries(gone.map((id) => [id, false])) };
+      gone.forEach((id) => forgetDiscussion(pr, id));
+    },
+
+    /** The discussions this person had open on this pull request, reopened as they were. */
+    restoreDiscussions() {
+      const pr = this.status?.pr || 0;
+
+      if (!pr) {
+        return;
+      }
+      const open = openDiscussions(pr);
+      const ids = Object.keys(open);
+
+      if (!ids.length) {
+        return;
+      }
+      this.discussing = { ...this.discussing, ...Object.fromEntries(ids.map((id) => [id, true])) };
+      this.discussSession = {
+        ...this.discussSession,
+        ...Object.fromEntries(ids.filter((id) => open[id].session).map((id) => [id, open[id].session])),
+      };
     },
 
     /** One change to a finding: run it, forget the memoised PR, and read the column again. */
