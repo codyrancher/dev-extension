@@ -83,8 +83,12 @@ export default {
       return [
         { label: 'Root', path: '/' },
         { label: 'Workspaces', path: '/workspaces' },
+        // The one spot: git history, artifacts and packages, the last two as links to where
+        // they already live. Walking into one of those links shows the real directory's path
+        // in the breadcrumb, which is the honest thing for a link to do.
+        { label: 'Store', path: '/workspaces/.store' },
         { label: 'Artifacts', path: '/workspaces/.artifacts' },
-        { label: 'Shared store', path: '/workspaces/.shared' },
+        { label: 'Packages', path: '/workspaces/.shared' },
         { label: 'Agent', path: '/workspace' },
       ];
     },

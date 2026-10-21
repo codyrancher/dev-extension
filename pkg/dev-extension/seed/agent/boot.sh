@@ -120,6 +120,20 @@ HOME_DIR="$AGENT_HOME" /bin/sh /seed/terminal-tools.sh >"$WORKSPACE/.terminal-to
   done
 ) >"$WORKSPACE/.dedupe.log" 2>&1 &
 
+# One copy of the repository's history for every checkout on this node.
+#
+# Deferred a little further than the dedupe: the first run on a node with no mirror clones the
+# whole of upstream, and a pod that has just started has better things to do with its network.
+# Daily after that, which keeps the mirror current and attaches any checkout made since. See
+# git-store.sh for the order of the attach and why each step is where it is.
+(
+  sleep 600
+  while true; do
+    /bin/sh /seed/git-store.sh 2>&1 || true
+    sleep 86400
+  done
+) >"$WORKSPACE/.git-store.log" 2>&1 &
+
 # Every live workspace's artifacts, kept where deleting the workspace cannot reach them.
 #
 # Quarter-hourly rather than daily: this is the window in which a workspace can be deleted by

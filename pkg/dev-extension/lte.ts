@@ -92,6 +92,17 @@ const LTE_SCRIPT = [
     'export YARN_CACHE_FOLDER=$SHARED/yarn npm_config_cache=$SHARED/npm PLAYWRIGHT_BROWSERS_PATH=$SHARED/playwright',
     // init + fetch rather than clone: the agent seed writes `.claude` into this tree and may
     // get there first, and clone refuses a directory that is not empty.
+    // The node's own copy of the history, when there is one: /workspaces/.store/git/dashboard.git
+    // is a full mirror kept by the agent pod (seed/agent/git-store.sh). Attaching to it before
+    // the fetch is what makes a checkout cost nothing - the objects are already on this disk, so
+    // the fetch copies refs rather than 130 MiB of packs, and it is local, so a new workspace no
+    // longer waits on GitHub for its code. Measured on the seven workspaces migrated onto it:
+    // 877 MiB of .git became 15 MiB.
+    'STORE=/workspaces/.store/git/dashboard.git',
+    '[ -d $WS/dashboard/.git ] || [ ! -d $STORE ] || ( mkdir -p $WS/dashboard/.git && cd $WS/dashboard && git init -q && mkdir -p .git/objects/info && echo $STORE/objects > .git/objects/info/alternates && { git remote add origin https://github.com/${repo} 2>/dev/null || true; } && D=$(git --git-dir=$STORE symbolic-ref --short HEAD 2>/dev/null || echo master) && git fetch --no-tags -q $STORE "+refs/heads/*:refs/remotes/origin/*" && git checkout -f -B "$D" "refs/remotes/origin/$D" )',
+    // And the way it has always worked, for the first workspace on a node that has no store yet,
+    // or one whose store could not be read. Shallow, because without a store beside it the thing
+    // that matters is how fast one branch arrives.
     '[ -d $WS/dashboard/.git ] || ( mkdir -p $WS/dashboard && cd $WS/dashboard && git init -q && { git remote add origin https://github.com/${repo} 2>/dev/null || true; } && D=$(git ls-remote --symref origin HEAD | sed -n "s@^ref: refs/heads/\\(.*\\)[[:space:]]HEAD@\\1@p") && git fetch --depth 1 origin "$D" && git checkout -f -B "$D" FETCH_HEAD )',
     'cd $WS/dashboard',
     // node_modules hard-linked out of a template of the same lockfile, which is what keeps a
