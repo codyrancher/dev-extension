@@ -3573,6 +3573,25 @@ export default {
     border-radius:  var(--r-sm);
     background:     var(--box-bg);
     overflow:       hidden;
+    /*
+     * It keeps its own height, and this line is why the conversation can be seen at all.
+     *
+     * The rail is a flex column with `height: 100%` and `overflow: auto`, so every section in
+     * it is a flex item that SHRINKS once the column's content is taller than the viewport -
+     * which it always is, with a stage, an action box, a tools strip, a conversation and two
+     * columns of findings in it. That was survivable while this box had no `overflow`: the box
+     * was squeezed, its 360px terminal spilled out of it, and what a person saw was the
+     * conversation.
+     *
+     * Clipping it to its corners took the spill away and left the squeeze, so the box shrank to
+     * nothing and clipped the terminal out of existence - present in the DOM, in the right place
+     * in the DOM, and 0px tall. The symptom was a conversation that flashed on load and vanished,
+     * which reads like a data problem and is not one.
+     *
+     * `flex: none` is the half that was missing: the box is its content's height, the rail
+     * scrolls, which is what `overflow: auto` up there is for.
+     */
+    flex:           none;
   }
 
   &__live-head {
