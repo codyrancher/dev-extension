@@ -164,11 +164,32 @@ stringData:
         },
         {
           name:    "30-service.yaml",
-          content: `# Two services, and the second one is not optional.
+          content: `# Three services, and none of them is optional.
 #
 # The first is what the ingress sends traffic to. The second is how the three replicas find
 # each other: CATTLE_PEER_SERVICE names a service, and Rancher reads its endpoints to learn
 # the pods it is sharing leadership with. Without it three replicas are three Ranchers.
+#
+# The THIRD is named plain 'rancher', points at the same pods, and exists for one reader: the
+# PARENT's cattle-cluster-agent, running in this same namespace.
+#
+# That agent asks for cattle-system/rancher on its first Service event
+# (pkg/agent/rancher/rancher.go, OnChange). Finding it means "there is already a Rancher here,
+# stand down". Not finding it means the agent believes it is the only Rancher in the cluster and
+# starts a SECOND, full Rancher server inside its own process - which then dies at startup, and
+# logrus.Fatal takes the agent and its remotedialer tunnel down with it.
+#
+# Every instance this App has ever built did exactly that, from its first minute. Measured in
+# the parent's own log across four instances and fifty days: 357 tunnel sessions, 318 of them
+# exactly 3 seconds, none longer than 5, every one ending in 'websocket: close 1006', reconnecting
+# on the kubelet's 5-minute CrashLoopBackOff cap for ever. otter did it 1,329 times. That is the
+# whole of "the instances are unstable": the management link never held for five seconds, and the
+# dashboard reported the 5-minute cycle as a Rancher flapping between ready and installing.
+#
+# The other two Services cannot do this job: the agent matches the literal name 'rancher', and
+# they are named \${install}-rancher - a name CATTLE_PEER_SERVICE, the ingress backends,
+# ranchers.ts and rancher-share's upstream all depend on, so they are not renamed. This is a
+# third name for the same pods, which is the cheapest thing that makes the agent stand down.
 apiVersion: v1
 kind: Service
 metadata:
@@ -204,6 +225,28 @@ spec:
       targetPort: 444
       protocol: TCP
       name: https-internal
+  selector:
+    app: \${install}-rancher
+---
+# The one the parent's agent looks for. Same pods, plain name. See the note at the top.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rancher
+  namespace: cattle-system
+  labels:
+    app: \${install}-rancher
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+    - port: 443
+      targetPort: 443
+      protocol: TCP
+      name: https
   selector:
     app: \${install}-rancher
 `,
@@ -287,10 +330,16 @@ spec:
             # its \`local\` cluster, and installs its own webhook, Fleet and provisioning
             # controllers into cattle-system there.
             #
-            # Which is why this app wants a cluster of its own. Install it onto a cluster some
-            # other Rancher already manages and the two of them reconcile one cattle-system,
-            # where fleet-agent in particular has exactly one owner - the second Rancher takes
-            # it over and the first one loses the cluster.
+            # Which is why this app wants a cluster of its own: two Ranchers reconciling one
+            # cattle-system is a fight nobody planned.
+            #
+            # It is NOT, however, what was happening here. This comment used to say the second
+            # Rancher takes fleet-agent over and "the first one loses the cluster", and that was
+            # read as explaining the parent's disconnected agent. Measured instead: a day after
+            # install, heron's fleet-agent is still owned by the parent and still reporting, and
+            # the parent's agent had already been crash-looping for 42 seconds before this app's
+            # bundle even existed. The agent was dying for its own reason - see the Service note
+            # in 30-service.yaml - and this sentence was the alibi.
             - --add-local=true
           env:
             # What makes this a fully featured Rancher rather than a single-cluster one.

@@ -66,9 +66,15 @@ export async function listRanchers(store: Store): Promise<RancherTarget[]> {
     devFetch('/v3/clusters').then((r: Json) => r?.data || []).catch(() => []) as Promise<Json[]>,
     store.dispatch('management/findAll', { type: 'fleet.cattle.io.bundle' }).catch(() => []) as Promise<Json[]>,
     // The CAPI machines the parent owns for its provisioning-and-cleanup link. Read here rather
-    // than from each instance's downstream, because a standalone instance's own Rancher takes
-    // over its cluster and the parent's cluster agent then disconnects (expected, not a fault) -
-    // so this is the one view of the node that stays readable once the instance is up.
+    // than from each instance's downstream, because the parent's view of an instance's cluster
+    // cannot be relied on - so this is the one view of the node that is readable whatever the
+    // cluster agent is doing.
+    //
+    // It used to say the agent disconnecting was "expected, not a fault". It is a fault, it was
+    // always a fault, and saying otherwise here is most of why it went unfixed for weeks. See
+    // the Service note in apps-rancher.ts 30-service.yaml: with no `cattle-system/rancher`
+    // Service the parent's agent started a second Rancher inside itself and died doing it,
+    // every five minutes, on every instance ever built.
     devFetch('/v1/cluster.x-k8s.io.machines').then((r: Json) => r?.data || []).catch(() => []) as Promise<Json[]>,
   ]);
 
@@ -97,11 +103,15 @@ async function instanceTarget(name: string, since: string, cluster: Json | undef
   const bundleState: string = bundle?.status?.display?.state || '';
   const bundleMessage: string = bundle?.status?.display?.message || '';
 
-  // The node, from the CAPI machine the parent owns. A standalone instance runs its own Rancher,
-  // which takes over its cluster and drops the parent's cluster agent - so once the node is up
-  // the downstream is no longer reachable through the parent, and the parent's view of it goes
-  // "updating" / "cluster agent is not connected" and stays there. That is expected here, not a
-  // fault, and this machine is where the node's address is still readable after it happens.
+  // The node, from the CAPI machine the parent owns, which is readable whatever the cluster
+  // agent is doing - and that is the only reason this reads the machine rather than the cluster.
+  //
+  // What this comment used to claim - that an instance's own Rancher "takes over its cluster and
+  // drops the parent's cluster agent", expected, not a fault - is false, and was the reason
+  // nobody looked. The parent's agent keeps owning fleet-agent and keeps reporting; it was dying
+  // because it could not find a `cattle-system/rancher` Service and started a second Rancher
+  // inside its own process. A disconnected cluster agent on one of these instances is a fault
+  // and is worth investigating.
   const machineAddrs: Json[] = machine?.status?.addresses || [];
   /*
    * The public address is the only one that makes a working address, and the fallback to the
