@@ -2153,23 +2153,35 @@ export default {
         </template>
       </div>
 
-      <!-- The one thing to press. Stays on the current stage while a past one is being read. -->
+      <!--
+        The one thing to press. Stays on the current stage while a past one is being read.
+
+        No headline and no paragraph. Each stage used to introduce itself here - "A new pass over
+        what the agent found in the developer's changes", and under it a sentence saying where to
+        look - directly below a stepper that had already named the stage and above the buttons
+        that say what can be done about it. Three statements of the same fact, and the prose was
+        the one a person stops reading first.
+
+        The strings stay in `action` and are not dead: the box is labelled with the headline, so
+        what is being asked is still announced to a screen reader, which now has the stepper and
+        a group of buttons and would otherwise have nothing tying them together.
+      -->
       <div
         v-if="action"
         class="workspace-rail__action"
         :class="`workspace-rail__action--${ displayTone(status) }`"
+        role="group"
+        :aria-label="action.headline"
       >
-        <div class="workspace-rail__action-text">
-          <div
-            v-if="lookingBack"
-            class="workspace-rail__looking-back"
-          >Looking back at {{ shownLabel }} · <button
+        <div
+          v-if="lookingBack"
+          class="workspace-rail__action-text"
+        >
+          <div class="workspace-rail__looking-back">Looking back at {{ shownLabel }} · <button
             type="button"
             class="workspace-rail__back"
             @click="backToNow"
           >back to now</button></div>
-          <div class="workspace-rail__headline">{{ action.headline }}</div>
-          <div class="workspace-rail__detail">{{ action.detail }}</div>
         </div>
         <div class="workspace-rail__buttons">
           <!--
@@ -3346,6 +3358,14 @@ export default {
     &--working .workspace-rail__action-text { border-left-color: var(--primary); }
   }
 
+  // Still the approve modal's, which has two paragraphs of its own - the stage's description is
+  // what went, not every muted line in the component.
+  &__detail {
+    color:     var(--muted);
+    font-size: 13px;
+    margin:    0;
+  }
+
   &__action-text {
     display:        flex;
     flex-direction: column;
@@ -3362,16 +3382,7 @@ export default {
     color:          var(--pr-muted);
   }
 
-  &__headline {
-    font-size:   16px;
-    font-weight: 700;
-  }
 
-  &__detail {
-    color:     var(--muted);
-    font-size: 13px;
-    margin:    0;
-  }
 
   &__buttons {
     display:        flex;
