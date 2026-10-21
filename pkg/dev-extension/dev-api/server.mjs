@@ -10,7 +10,8 @@
 // from Extension Studio's agent pod, with this service standing where the harness API stood.
 //
 // GitHub is reached with the one token in this Rancher's harness - the per-person secret store
-// in dev-system - and the review state lives in ConfigMaps beside it, one per pull request.
+// in dev-system - and the review state lives on the disk, under /workspaces/.artifacts, beside
+// the recordings and reports of the same pull request (see reviewPaths).
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -885,7 +886,6 @@ async function ciFailureLog(repo, num, checkId) {
 
 // -- Pull requests, comments, runs -----------------------------------------------------------
 
-const reviewMap = (num) => `dev-review-pr-${ num }`;
 
 /*
  * Where a pull request's review state lives, and why it moved out of a ConfigMap.
@@ -923,6 +923,15 @@ function workspaceForPr(num) {
   }
 }
 
+/*
+ * The dependabot triage document: which of its pull requests have been looked at.
+ *
+ * On the disk with the review comments, and under a dot so the artifacts page - which lists
+ * `.artifacts/*` and so never sees a dotted name - does not show it as somebody's evidence. It
+ * belongs to no pull request and no workspace, so it has no subject and nothing stages it.
+ */
+const dependabotFile = () => `${ reviewStore() }/.dependabot/reviews.json`;
+
 /** The file a review document is held in, and the name the workspace stages it under. */
 function reviewPaths(num, key) {
   const home = `${ reviewStore() }/pr-${ Number(num) }/review`;
@@ -936,26 +945,26 @@ function reviewPaths(num, key) {
 }
 
 /**
- * Read a review document: the file, then the ConfigMap it used to be in.
+ * Read a document out of the store. The filesystem is the only place it is kept.
  *
- * The fallback is not forever - it is how the sixty that exist today are still readable before
- * anything has written them again - and a read that finds one writes it out, so a store moves
- * itself across the first time somebody opens it.
+ * There was a ConfigMap fallback here for exactly as long as it took to move the sixty that
+ * existed - 161 pending comments, written out and checked against a backup before anything was
+ * deleted. A fallback that outlives its migration is a second source of truth waiting to
+ * disagree with the first.
+ *
+ * Null for a document that is not there, which is the honest answer and the one every caller
+ * already handles: a pull request nobody has reviewed has no comments rather than an error.
  */
-async function readReview(num, key) {
-  const { file } = reviewPaths(num, key);
-
+function readStoreDoc(file) {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8')) ?? null;
-  } catch { /* not there yet, or not readable: try where it used to be */ }
-
-  const legacy = await readDoc(reviewMap(num), key).catch(() => null);
-
-  if (legacy !== null) {
-    await writeReview(num, key, legacy).catch(() => undefined);
+  } catch {
+    return null;
   }
+}
 
-  return legacy;
+async function readReview(num, key) {
+  return readStoreDoc(reviewPaths(num, key).file);
 }
 
 /**
@@ -969,22 +978,32 @@ async function readReview(num, key) {
  * it is, because the one thing this must not do is delete somebody's unposted comments while
  * tidying up where they are kept.
  */
-async function writeReview(num, key, value) {
-  const { file, home, staged } = reviewPaths(num, key);
-
-  fs.mkdirSync(home, { recursive: true });
-
+/**
+ * One document, written whole or not at all.
+ *
+ * To a temporary name and renamed over the target, so a reader never sees half of it - and so a
+ * symlink to it is never pointed at a file that is mid-write.
+ *
+ * Owned by the node user, which is who reads and writes it through the staged name. This service
+ * runs as root, so without the chown the file an agent is told it owns is one it cannot write,
+ * and the symlink would be a promise this does not keep. Best effort: a filesystem that refuses
+ * the chown is not a reason to lose the write.
+ */
+function writeStoreDoc(file, value) {
   const temp = `${ file }.${ process.pid }.tmp`;
 
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(temp, JSON.stringify(value));
-  // Owned by the node user, which is who reads and writes it through the staged name. This
-  // service runs as root, so without it the file an agent is told it owns is one it cannot
-  // write - and the symlink below would be a promise this does not keep. Best effort: a
-  // filesystem that refuses the chown is not a reason to lose the write.
   try {
     fs.chownSync(temp, 1000, 1000);
   } catch { /* not every filesystem allows it; the content still landed */ }
   fs.renameSync(temp, file);
+}
+
+async function writeReview(num, key, value) {
+  const { file, staged } = reviewPaths(num, key);
+
+  writeStoreDoc(file, value);
 
   if (staged) {
     try {
@@ -5002,20 +5021,20 @@ const routes = [
   ['GET', /^\/my-work\/pr\/(\d+)\/ci\/(\d+)\/log$/, (m, url) => ciFailureLog(repoOf(url), Number(m[1]), Number(m[2]))],
   ['GET', /^\/my-work\/dependabot$/, (m, url) => fetchDependabot(repoOf(url))],
   ['GET', /^\/my-work\/dependabot\/pr\/(\d+)\/review-context$/, (m, url) => dependabotReviewContext(repoOf(url), Number(m[1]))],
-  ['GET', /^\/my-work\/dependabot\/reviews$/, async() => ({ reviews: (await readDoc('dev-review-dependabot', 'reviews.json')) || {} })],
+  ['GET', /^\/my-work\/dependabot\/reviews$/, () => ({ reviews: readStoreDoc(dependabotFile()) || {} })],
   ['PUT', /^\/my-work\/dependabot\/reviews\/(\d+)$/, async(m, url, body) => {
-    const all = (await readDoc('dev-review-dependabot', 'reviews.json')) || {};
+    const all = readStoreDoc(dependabotFile()) || {};
 
     all[m[1]] = { ...(all[m[1]] || {}), ...body, pr: Number(m[1]), updatedAt: new Date().toISOString() };
-    await writeDoc('dev-review-dependabot', 'reviews.json', all);
+    writeStoreDoc(dependabotFile(), all);
 
     return { review: all[m[1]] };
   }],
   ['DELETE', /^\/my-work\/dependabot\/reviews\/(\d+)$/, async(m) => {
-    const all = (await readDoc('dev-review-dependabot', 'reviews.json')) || {};
+    const all = readStoreDoc(dependabotFile()) || {};
 
     delete all[m[1]];
-    await writeDoc('dev-review-dependabot', 'reviews.json', all);
+    writeStoreDoc(dependabotFile(), all);
 
     return { ok: true };
   }],
