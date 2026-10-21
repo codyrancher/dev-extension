@@ -26,6 +26,13 @@ import PodFileViewer from './PodFileViewer';
  *     count. It is shown for regular files alone: every directory has one above 1 and it means
  *     something else entirely there.
  *
+ * There are no shortcuts and no favourites. There were - a row of buttons for the places worth
+ * starting from - and they were the wrong idea twice over: a button is a claim about which part
+ * of a filesystem matters, and the row sat above a viewport that was showing the real thing
+ * anyway. Everything they pointed at is under the root and two clicks away, including the
+ * dot-directories, which this lists like any other entry. Back, up, refresh and the breadcrumb
+ * stay, because those are how you move, not opinions about where to go.
+ *
  * Which pod: the agent's, by default, because that is the one with `/workspaces` - the node's
  * own disk, every workspace, every checkout and the kept artifacts. Point it at another pod and
  * it shows that pod's filesystem instead, which is a different real filesystem, not a view of
@@ -83,26 +90,6 @@ export default {
       return crumbs(this.path);
     },
 
-    /**
-     * The places worth starting from, and every one of them a real path.
-     *
-     * Not a tree: these are shortcuts into the same filesystem the breadcrumb walks, so what
-     * they open is what `cd` would open. A shortcut to somewhere this pod has not got is left
-     * out by the listing itself - clicking it shows the error the filesystem gave.
-     */
-    places() {
-      return [
-        { label: 'Root', path: '/' },
-        { label: 'Workspaces', path: '/workspaces' },
-        // The one spot: git history, artifacts and packages, the last two as links to where
-        // they already live. Walking into one of those links shows the real directory's path
-        // in the breadcrumb, which is the honest thing for a link to do.
-        { label: 'Store', path: '/workspaces/.store' },
-        { label: 'Artifacts', path: '/workspaces/.artifacts' },
-        { label: 'Packages', path: '/workspaces/.shared' },
-        { label: 'Agent', path: '/workspace' },
-      ];
-    },
   },
 
   watch: {
@@ -304,18 +291,6 @@ export default {
       </nav>
     </div>
 
-    <div class="fs__places">
-      <button
-        v-for="place in places"
-        :key="place.path"
-        type="button"
-        class="fs__place"
-        :class="{ 'fs__place--here': place.path === path }"
-        :title="place.path"
-        @click="go(place.path)"
-      >{{ place.label }}</button>
-    </div>
-
     <div class="fs__body">
       <p
         v-if="loading"
@@ -460,31 +435,6 @@ export default {
   &--here {
     color: var(--body-text);
     font-weight: 600;
-  }
-}
-
-.fs__places {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.fs__place {
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--box-bg);
-  color: var(--body-text);
-  font-size: 12px;
-  padding: 2px 8px;
-  cursor: pointer;
-
-  &:hover {
-    background: var(--accent-btn-hover);
-  }
-
-  &--here {
-    border-color: var(--primary);
-    color: var(--primary);
   }
 }
 
