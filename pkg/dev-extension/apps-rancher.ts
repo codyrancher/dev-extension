@@ -39,6 +39,10 @@ export function rancherSingleApp(): Json {
         // silently broke every instance already installed, because nothing compared the two.
         githubClientSecret: "",
         githubUserId: "55104481",
+        // The bearer an agent uses to talk to this instance, generated per instance by the
+        // browser that creates it (ranchers.ts, agentBearer) and empty for an instance made by
+        // hand - in which case no machine account is created and nothing else changes.
+        agentToken: "",
         host: "none",
         image: "rancher/rancher:v2.15.1",
       },
@@ -467,9 +471,37 @@ spec:
               features || true
               echo "waiting for Rancher to create the github AuthConfig"
               until kubectl get authconfig github >/dev/null 2>&1; do sleep 10; done
-              until kubectl apply -f /bootstrap/authconfig.yaml -f /bootstrap/admins.yaml; do echo "not yet, retrying"; sleep 15; done
+              # The machine account only when one was asked for: an instance created by hand
+              # carries no agentToken, and an empty 'token:' would be a credential anybody could
+              # guess. Applied with the rest, retried with the rest.
+              agent_files=""
+              grep -q 'token: .\+' /bootstrap/agent.yaml 2>/dev/null && agent_files="-f /bootstrap/agent.yaml"
+
+              until kubectl apply -f /bootstrap/authconfig.yaml -f /bootstrap/admins.yaml $agent_files; do echo "not yet, retrying"; sleep 15; done
+
+              # Say whether that credential actually works, because nothing else can.
+              #
+              # The bearer is declared rather than issued, which is only valid while token
+              # hashing is off - and a Rancher that turns it on, or a schema that moves, would
+              # leave agents with a credential that silently 401s. So the pod asks Rancher about
+              # itself, as the agent would, and records the answer where the browser can read it
+              # without a credential of its own. One line, once, at the end of the bootstrap.
+              agent_check() {
+                [ -n "$agent_files" ] || return 0
+                secret=$(sed -n 's/^    token: //p' /bootstrap/agent.yaml | tail -1)
+                [ -n "$secret" ] || return 0
+                code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 \
+                  -H "Authorization: Bearer dev-agent:$secret" \
+                  "https://localhost/v3/users?me=true" 2>/dev/null)
+                kubectl create configmap \${install}-rancher-agent-token -n cattle-system \
+                  --from-literal=checked="$(date -u +%FT%TZ)" --from-literal=status="$code" \
+                  --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null 2>&1 || true
+                [ "$code" = 200 ] && echo "[agent] the machine token works" || echo "[agent] the machine token answered $code"
+              }
+
+              agent_check || true
               echo "github login and admins configured"
-              while true; do sleep 3600; handover >/dev/null 2>&1 || true; server_url >/dev/null 2>&1 || true; features >/dev/null 2>&1 || true; kubectl apply -f /bootstrap/authconfig.yaml -f /bootstrap/admins.yaml >/dev/null 2>&1 || true; done
+              while true; do sleep 3600; handover >/dev/null 2>&1 || true; server_url >/dev/null 2>&1 || true; features >/dev/null 2>&1 || true; kubectl apply -f /bootstrap/authconfig.yaml -f /bootstrap/admins.yaml $agent_files >/dev/null 2>&1 || true; agent_check >/dev/null 2>&1 || true; done
           volumeMounts:
             - name: bootstrap-auth
               mountPath: /bootstrap
@@ -660,6 +692,54 @@ data:
     clientSecret: cattle-global-data:githubconfig-clientsecret
     hostname: github.com
     tls: true
+  # The account agents use to talk to this Rancher, and the only credential for it that exists.
+  #
+  # A person signs in through GitHub; an agent cannot. It has no browser, no GitHub session and
+  # no way to answer an OAuth round trip - so before this, an agent could reach an instance's
+  # port and nothing else: no API, no kubectl through Rancher, no way to see what it had just
+  # provisioned. The product made Ranchers that only humans could use.
+  #
+  # So: a local machine user, bound to admin, with a token whose secret the creating browser
+  # chose ('agentToken', carried in spec.values beside adminPassword and the cloud credentials,
+  # which are admin-only for the same reason). The bearer is '<token name>:<secret>', which is
+  # Rancher's own format, and the browser therefore knows it without reading anything back.
+  #
+  # Why it is here and not a resource of the bundle: these are management.cattle.io kinds, whose
+  # CRDs do not exist until the Rancher in 40-deployment.yaml has started. Helm builds every
+  # object in a release before it applies any, so a bundle carrying them fails at "no matches for
+  # kind User" with nothing applied - Rancher included. 70-admins.yaml learned that first; this
+  # rides the same sidecar.
+  #
+  # 'ttl: 0' is Rancher's "does not expire", and that is deliberate: an agent's credential that
+  # dies silently is the failure this product already has with the human token in the agent pod.
+  # It is revoked by deleting the instance, which is how instances end here.
+  agent.yaml: |
+    apiVersion: management.cattle.io/v3
+    kind: User
+    metadata:
+      name: u-dev-agent
+    displayName: dev-extension agents
+    description: Machine account for the agents this Rancher was made by. Not a person.
+    principalIds:
+      - local://u-dev-agent
+    ---
+    apiVersion: management.cattle.io/v3
+    kind: GlobalRoleBinding
+    metadata:
+      name: grb-admin-u-dev-agent
+    globalRoleName: admin
+    userName: u-dev-agent
+    ---
+    apiVersion: management.cattle.io/v3
+    kind: Token
+    metadata:
+      name: dev-agent
+    authProvider: local
+    userId: u-dev-agent
+    isDerived: true
+    ttl: 0
+    description: dev-extension agents
+    token: \${agentToken}
   admins.yaml: |
     apiVersion: management.cattle.io/v3
     kind: User

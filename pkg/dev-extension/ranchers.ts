@@ -8,6 +8,7 @@
 
 import { devFetch, clusterBase, cloudCredentialsManifest } from './api';
 import { APP_INSTANCE } from './config/constants';
+import { AGENT_NS, AGENT_BASE } from './pod';
 import { readPrefs, savePrefs } from './prefs';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -340,6 +341,54 @@ export async function nextRancherName(store: Store): Promise<string> {
  * Kubernetes, or one whose GitHub login has to be filled in by hand, is worth more than no
  * instance at all.
  */
+/**
+ * The bearer an agent will use for this instance, decided here because here is the only place
+ * that can tell the instance and the agent pod the same thing.
+ *
+ * Rancher's bearer is `<token name>:<secret>`, and the token's name is fixed by the App
+ * (`dev-agent`), so choosing the secret is choosing the whole credential - which means the
+ * browser does not have to read anything back out of an instance that may not be reachable yet.
+ * 54 characters from the CSPRNG, the length Rancher's own tokens use.
+ *
+ * It goes into the instance through spec.values (admin-only, like adminPassword and the cloud
+ * credentials) and into the agent pod's namespace as a Secret, and nowhere else.
+ */
+function agentBearer(): string {
+  const bytes = new Uint8Array(27);
+
+  (globalThis.crypto || window.crypto).getRandomValues(bytes);
+
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Put an instance's agent credential where a conversation can find it.
+ *
+ * In the agent pod's own namespace, one Secret per instance, named for the instance - so a pane
+ * reads it with no proxy, no Rancher API and no knowledge of how the instance was made, and an
+ * instance that is deleted leaves one object to tidy rather than a credential inside something
+ * that no longer exists.
+ *
+ * Best effort on purpose: an instance whose credential could not be stored is still an instance,
+ * and the person who could not write a Secret into dev-agents is not the person this is for.
+ */
+async function storeAgentBearer(name: string, token: string): Promise<void> {
+  const url = `${ AGENT_BASE }/v1/secrets`;
+  const body = {
+    apiVersion: 'v1',
+    kind:       'Secret',
+    type:       'Opaque',
+    metadata:   {
+      namespace: AGENT_NS,
+      name:      `rancher-${ name }`,
+      labels:    { 'dev.rancher.io/kind': 'rancher-agent-credential', 'dev.rancher.io/rancher': name },
+    },
+    stringData: { token: `dev-agent:${ token }` },
+  };
+
+  await devFetch(url, { method: 'POST', body: JSON.stringify(body) }).catch(() => null);
+}
+
 async function managedValues(): Promise<Record<string, string>> {
   const values: Record<string, string> = {};
 
@@ -371,7 +420,8 @@ export async function createRancherInstance(store: Store, name: string, app = RA
   // The cloud credentials chosen in Settings, copied into the instance so it can provision
   // clusters on the same clouds. Read live at provision time, so there is nothing to keep in
   // sync; an instance created with none chosen simply gets none.
-  const values: Record<string, string> = { ...RANCHER_INSTANCE_VALUES, ...(await managedValues()) };
+  const agentToken = agentBearer();
+  const values: Record<string, string> = { ...RANCHER_INSTANCE_VALUES, ...(await managedValues()), agentToken };
   const cloudCredentials = await cloudCredentialsManifest().catch(() => '');
 
   if (cloudCredentials) {
@@ -387,6 +437,9 @@ export async function createRancherInstance(store: Store, name: string, app = RA
   });
 
   await instance.save();
+
+  // After the instance exists, so a failure here cannot stop one being made.
+  await storeAgentBearer(clean, agentToken);
 }
 
 /**
