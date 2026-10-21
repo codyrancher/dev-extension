@@ -532,6 +532,100 @@ async function ghRest(method, apiPath, body) {
   return text ? JSON.parse(text) : null;
 }
 
+/*
+ * Reading a pull request without reading it again.
+ *
+ * prDetail is six to eight GitHub calls - the pull request, its files, its review comments, its
+ * discussion, its reviews, its commits, then check runs and the combined status - and the rail
+ * asks for it on a timer, for every workspace, for as long as one is open. Most of those answers
+ * are identical to the last one: a pull request that nobody has touched since the last poll has
+ * the same commits, the same files and the same reviews it had a minute ago.
+ *
+ * So the answers are kept and re-validated rather than re-fetched. Every GET carries the ETag
+ * GitHub gave for that exact URL; GitHub answers 304 and no body when nothing has changed, which
+ * is a fraction of the bytes and - the part that matters on a shared token - does not count
+ * against the rate limit at all. A changed resource answers 200 as usual and the new body is
+ * kept in its place. This is per RESOURCE, which a timestamp could not be: a pull request's
+ * `updated_at` does not move when a check run finishes, so a CI-only change would have been
+ * missed by a cache keyed on it, and every other poll would still have re-read six resources to
+ * notice one.
+ *
+ * ONLY for a pull request that has a workspace, which is what is actually polled in a loop, and
+ * the cache lives in that workspace's own directory: it is scoped to the thing it serves, it is
+ * disposable with it, and it is not another store for somebody to wonder about later. Everything
+ * else goes through ghRest unchanged and uncached.
+ */
+function ghCacheFile(num) {
+  const ws = workspaceForPr(num);
+
+  return ws ? `${ WORKSPACES_ROOT }/${ ws }/.gh-cache.json` : '';
+}
+
+function readGhCache(file) {
+  if (!file) {
+    return null;
+  }
+
+  return readStoreDoc(file) || {};
+}
+
+/**
+ * One GET, revalidated.
+ *
+ * `cache` is the whole document and is mutated in place; the caller writes it once at the end
+ * rather than once per call. A cache with no entry, or a body that will not parse, simply reads
+ * normally - this must never be the reason a page cannot load a pull request.
+ */
+async function ghRevalidate(cache, apiPath) {
+  if (!cache) {
+    return ghRest('GET', apiPath);
+  }
+  const token = await githubToken();
+
+  if (!token) {
+    throw failure(503, 'No GitHub token is set. Add one in the Dev extension\'s Settings.');
+  }
+  const held = cache[apiPath];
+  const response = await fetch(`https://api.github.com${ apiPath }`, {
+    headers: {
+      authorization: `Bearer ${ token }`,
+      accept:        'application/vnd.github+json',
+      'user-agent':  'dev-extension',
+      ...(held?.etag ? { 'if-none-match': held.etag } : {}),
+    },
+  });
+
+  // Unchanged since we last asked. No body is sent, and none is needed.
+  if (response.status === 304 && held) {
+    return held.body ?? null;
+  }
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    // A cached answer is better than an error for a read that is only refreshing the page, but
+    // not for one that has never succeeded - then there is nothing to show and the caller has
+    // to hear why.
+    if (held) {
+      console.error(`[dev-api] GitHub ${ apiPath } -> ${ response.status }; serving the kept copy`);
+
+      return held.body ?? null;
+    }
+    throw failure(502, `GitHub GET ${ apiPath } -> ${ response.status }: ${ text.slice(0, 400) }`);
+  }
+
+  const parsed = text ? JSON.parse(text) : null;
+  const etag = response.headers.get('etag') || '';
+
+  if (etag) {
+    cache[apiPath] = { etag, body: parsed };
+  } else {
+    delete cache[apiPath];
+  }
+
+  return parsed;
+}
+
 async function graphql(query, variables) {
   const token = await githubToken();
   const response = await fetch('https://api.github.com/graphql', {
@@ -2937,13 +3031,19 @@ function decorate(c) {
 }
 
 async function prDetail(repo, num) {
+  // Kept and revalidated for a pull request that has a workspace - the ones polled in a loop.
+  // See ghRevalidate: every GET below carries its ETag, and an unchanged resource answers 304
+  // with no body and no cost to the rate limit. One read of the cache, one write at the end.
+  const cacheFile = ghCacheFile(num);
+  const cache = readGhCache(cacheFile);
+  const get = (apiPath) => ghRevalidate(cache, apiPath);
   const [meta, files, reviewComments, discussion, reviews, commits] = await Promise.all([
-    ghRest('GET', `/repos/${ repo }/pulls/${ num }`),
-    ghRest('GET', `/repos/${ repo }/pulls/${ num }/files?per_page=100`).catch(() => []),
-    ghRest('GET', `/repos/${ repo }/pulls/${ num }/comments?per_page=100`).catch(() => []),
-    ghRest('GET', `/repos/${ repo }/issues/${ num }/comments?per_page=100`).catch(() => []),
-    ghRest('GET', `/repos/${ repo }/pulls/${ num }/reviews?per_page=100`).catch(() => []),
-    ghRest('GET', `/repos/${ repo }/pulls/${ num }/commits?per_page=100`).catch(() => []),
+    get(`/repos/${ repo }/pulls/${ num }`),
+    get(`/repos/${ repo }/pulls/${ num }/files?per_page=100`).catch(() => []),
+    get(`/repos/${ repo }/pulls/${ num }/comments?per_page=100`).catch(() => []),
+    get(`/repos/${ repo }/issues/${ num }/comments?per_page=100`).catch(() => []),
+    get(`/repos/${ repo }/pulls/${ num }/reviews?per_page=100`).catch(() => []),
+    get(`/repos/${ repo }/pulls/${ num }/commits?per_page=100`).catch(() => []),
   ]);
   // /pulls/:n/comments leaves out the comments of a PENDING (unsubmitted) review. GitHub only
   // shows the asking user their own pending reviews, so those comments come in flagged.
@@ -2960,9 +3060,12 @@ async function prDetail(repo, num) {
   const states = [...latestByUser.values()];
   const approved = states.includes('APPROVED') && !states.includes('CHANGES_REQUESTED');
   const headSha = meta.head?.sha || '';
+  // CI, and the reason this is revalidated per resource rather than keyed on the pull request's
+  // `updated_at`: a check run finishing does not move that timestamp, so a cache built on it
+  // would show stale CI for as long as nothing else about the pull request changed.
   const [checkRuns, statuses] = headSha ? await Promise.all([
-    ghRest('GET', `/repos/${ repo }/commits/${ headSha }/check-runs?per_page=100`).catch(() => null),
-    ghRest('GET', `/repos/${ repo }/commits/${ headSha }/status`).catch(() => null),
+    get(`/repos/${ repo }/commits/${ headSha }/check-runs?per_page=100`).catch(() => null),
+    get(`/repos/${ repo }/commits/${ headSha }/status`).catch(() => null),
   ]) : [null, null];
   // `diff_hunk` is GitHub's own context for the comment - the hunk as it was when the comment
   // was left - which is the code to show for a comment whose line the diff has since moved
@@ -2970,6 +3073,14 @@ async function prDetail(repo, num) {
   const mapGhComment = (c, pending) => ({
     id: c.id, path: c.path, line: c.line ?? c.original_line ?? null, side: c.side || 'RIGHT', author: c.user?.login, body: c.body, createdAt: c.created_at, inReplyTo: c.in_reply_to_id ?? null, pending, outdated: c.line == null && c.original_line != null, originalLine: c.original_line ?? null, diffHunk: c.diff_hunk || '', position: c.position ?? c.original_position ?? null,
   });
+
+  // Once, after every call has had its say. A cache that cannot be written is not an error:
+  // the answer above is already correct, and the next read simply revalidates nothing.
+  if (cacheFile) {
+    try {
+      writeStoreDoc(cacheFile, cache);
+    } catch { /* the workspace may have gone while this was reading */ }
+  }
 
   return {
     meta: {
