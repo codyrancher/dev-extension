@@ -3112,6 +3112,55 @@ function laterThan(a: string, b: string): boolean {
   return false;
 }
 
+/**
+ * Bring an existing dev-api Deployment's workspaces mount back to read-write.
+ *
+ * `ensure` returns the moment an object exists and never updates it, which is the right
+ * behaviour for everything it creates except this: the live Deployment then stays whatever this
+ * extension rendered on the day the cluster was first set up, and every later change to the spec
+ * reaches a fresh install and nothing else - silently, because the ConfigMap and the pod both
+ * update around it and the Deployment looks current.
+ *
+ * It cost an afternoon and an agent. The review store moved onto the disk, the mount here
+ * dropped `readOnly` so this service could write it, the new server shipped, the pod rolled -
+ * and an agent trying to file its review comments got `EROFS` on every write, with the service
+ * reading those same files perfectly well, because reading is all a read-only mount refuses to
+ * stop.
+ *
+ * Narrow on purpose. It patches this one mount on this one Deployment rather than reconciling
+ * the whole pod spec: a general "make the live object match" here would also undo anything
+ * somebody had deliberately changed on it, and that is a bigger promise than this needs to make.
+ * A merge patch replaces the containers array whole, so the live container is sent back with
+ * only that field altered.
+ */
+async function reconcileApiMounts(namespace: string): Promise<void> {
+  const url = `${ BASE }/v1/apps.deployments/${ namespace }/${ API_NAME }`;
+  const live = await devFetch(url).catch(() => null);
+  const container = live?.spec?.template?.spec?.containers?.[0];
+  const mounts = container?.volumeMounts;
+
+  if (!Array.isArray(mounts) || !mounts.some((m: Json) => m?.name === 'workspaces' && m?.readOnly)) {
+    return;
+  }
+
+  await devFetch(url, {
+    method:  'PATCH',
+    headers: { 'Content-Type': 'application/merge-patch+json' },
+    body:    JSON.stringify({
+      spec: {
+        template: {
+          spec: {
+            containers: [{
+              ...container,
+              volumeMounts: mounts.map((m: Json) => (m?.name === 'workspaces' ? { ...m, readOnly: false } : m)),
+            }],
+          },
+        },
+      },
+    }),
+  }).catch(() => null);
+}
+
 export async function ensureWorkspaceApi(): Promise<void> {
   const namespace = DEV_SYSTEM_NAMESPACE;
   const labels = { app: API_NAME };
@@ -3369,6 +3418,10 @@ export async function ensureWorkspaceApi(): Promise<void> {
       },
     },
   });
+
+  // `ensure` above is create-only, so a Deployment that already exists keeps the spec it was
+  // created with - for ever. This brings the one field back that has to be right.
+  await reconcileApiMounts(namespace);
 
   await ensure('services', namespace, API_NAME, {
     apiVersion: 'v1',
