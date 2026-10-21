@@ -3557,9 +3557,22 @@ export default {
 
   // No box of its own: the tabbed strip below is the box. A bordered, padded wrapper around it
   // made two boxes nested, which is what this drops.
+  /*
+   * The conversation sits in a box like everything else in this column.
+   *
+   * It was the one section without one: the rows above and below it - the agent's buttons, the
+   * tools strip, what came back - are each a bordered card, and the conversation ran edge to
+   * edge between them, which read as a gap in the column rather than as a choice. The tab strip
+   * inside it draws its own bottom border, so the frame has to clip to its corners or the strip
+   * cuts across them.
+   */
   &__live {
     display:        flex;
     flex-direction: column;
+    border:         1px solid var(--border);
+    border-radius:  var(--r-sm);
+    background:     var(--box-bg);
+    overflow:       hidden;
   }
 
   &__live-head {

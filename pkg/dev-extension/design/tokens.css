@@ -80,15 +80,36 @@
    * this product's sits next to buttons of Rancher's, and a rhythm of its own there reads as a
    * mistake. The same argument the spacing scale makes about 10px.
    */
+  /*
+   * One radius for everything with a box around it, and it is RcButton's: 2px.
+   *
+   * The rungs below used to be a scale - 3px for a chip, Rancher's 4px for a control, 8px for a
+   * row, 12px for a card - and a scale is only worth having if a person can tell which rung
+   * they are looking at and why. In a column holding a button, a tools strip, a conversation
+   * and a findings panel, four radii within 9px of each other read as four accidents rather
+   * than as four decisions. So they are one decision, taken from the control this product puts
+   * beside everything else it draws.
+   *
+   * 2px is RcButton's own, not Rancher's `--border-radius` (4px): the button component renders
+   * at 2px and it is the thing our boxes actually sit next to.
+   *
+   * The names stay, and stay distinct, because they say what a thing IS - the grep that finds
+   * every card in this product is `--r-md` - and because a later decision to give cards their
+   * own corner again is then one line here rather than a sweep.
+   */
   /* a chip, a tag, an inline code span */
-  --dev-r-xs:  3px;
+  --dev-r-xs:  2px;
   /* anything that is a control: a button, an input, a select */
-  --dev-r-ctl: var(--border-radius, 4px);
+  --dev-r-ctl: 2px;
   /* a row, a thumbnail, a small surface */
-  --r-sm:   8px;
+  --r-sm:   2px;
   /* a card, a panel, a dialog */
-  --r-md:   12px;
-  /* the deck's larger surfaces */
+  --r-md:   2px;
+  /*
+   * The deck's own, and deliberately not 2px: Focus is a different surface - big soft cards
+   * floating over a dimmed page, nothing of Rancher's beside them - and squaring those off
+   * would be answering a question nobody asked about a screen that is not this one.
+   */
   --r-lg:   18px;
   --r-xl:   28px;
   --r-pill: 999px;
