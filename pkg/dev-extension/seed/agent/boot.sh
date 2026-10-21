@@ -98,6 +98,24 @@ HOME_DIR="$AGENT_HOME" /bin/sh /seed/terminal-tools.sh >"$WORKSPACE/.terminal-to
 # minute, each holding a PID.
 #
 # Ignoring SIGCHLD is the whole fix: a process that ignores it has its children reaped by the
+# Identical files across the workspaces on this node, collapsed into one inode each.
+#
+# The install path already hardlinks a whole node_modules out of a template when the lockfile
+# hash matches exactly, and that is as far as it goes: a lockfile differing by one package
+# shares nothing, and every branch has its own. Seven workspaces on this node held 6.3 GiB of
+# node_modules, five of them a full private copy of very nearly the same thing.
+#
+# Deferred five minutes so a pod that is still installing tmux, claude and a checkout is not
+# also reading every file on the disk, then daily. See dedupe-trees.mjs for what it refuses to
+# touch and why that makes it safe to run under a working agent.
+(
+  sleep 300
+  while true; do
+    node /seed/dedupe-trees.mjs "$WORKSPACE" 2>&1 || true
+    sleep 86400
+  done
+) >"$WORKSPACE/.dedupe.log" 2>&1 &
+
 # kernel, reparented ones included, so nothing has to call wait() at all. SIGTERM is handled
 # explicitly because PID 1 is exempt from default signal dispositions - without a handler the
 # signal is discarded, and every delete of this pod sat out its full grace period before the
