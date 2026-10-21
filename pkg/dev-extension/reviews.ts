@@ -112,7 +112,10 @@ export interface ReviewRun {
 export const prDetail = source(
   (num: number, repo: string = DEFAULT_REPO): Promise<Json> => api(`/my-work/pr/${ num }?repo=${ encodeURIComponent(repo) }`),
   { ttl: 25_000, name: 'pr-detail', key: (num: number, repo: string = DEFAULT_REPO) => `${ repo }#${ num }` },
-) as ((num: number, repo?: string) => Promise<Json>) & { forget: (num: number, repo?: string) => void };
+) as ((num: number, repo?: string) => Promise<Json>) & {
+  forget: (num: number, repo?: string) => void;
+  amend: (change: (value: Json) => Json | undefined, num: number, repo?: string) => boolean;
+};
 
 export async function listComments(num: number): Promise<LocalComment[]> {
   return api(`/my-work/pr/${ num }/comments`);
@@ -131,6 +134,34 @@ export async function addComment(num: number, body: string, at?: { path: string;
  * Forget the memoised read of a PR. Called after a comment is changed from a page that is not
  * the PR panel: the next read has to see the change, not the copy taken up to 25 seconds ago.
  */
+/**
+ * A draft comment changed, in the copy of the pull request the page is already holding.
+ *
+ * Changing one is a local write - the comment never goes near GitHub until the review is
+ * submitted - and it answers with the comment it wrote. The page used to forget the whole pull
+ * request afterwards so the next read would see it, which is half a dozen GitHub calls and up
+ * to twenty seconds on a large one, with the Save button disabled throughout. For one field of
+ * one draft, typed by the person watching the spinner.
+ *
+ * `comment` null removes it, which is what deleting a finding needs. Returns whether anything
+ * was held to change: nothing is invented here, so a page with no copy yet simply reads one
+ * when it next asks, and gets the new text because the write has already landed on the disk.
+ */
+export function amendPrComment(num: number, id: number, comment: LocalComment | null, repo = DEFAULT_REPO): boolean {
+  return prDetail.amend((detail: Json) => {
+    const held = detail?.localComments;
+
+    if (!Array.isArray(held)) {
+      return undefined;
+    }
+    const localComments = comment
+      ? held.map((c: LocalComment) => (c.id === id ? { ...c, ...comment } : c))
+      : held.filter((c: LocalComment) => c.id !== id);
+
+    return { ...detail, localComments };
+  }, num, repo);
+}
+
 export function forgetPrDetail(num: number, repo = DEFAULT_REPO): void {
   prDetail.forget(num, repo);
 }

@@ -43,7 +43,7 @@ import WorkspaceTools from './WorkspaceTools.vue';
 import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
-  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, DEFAULT_REPO
+  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
@@ -1448,6 +1448,25 @@ export default {
     },
 
     /** One change to a finding: run it, forget the memoised PR, and read the column again. */
+    /**
+     * One change to one draft comment, and nothing more than that.
+     *
+     * Every one of these - edit the text, mark it good, delete it - is a local write. The
+     * comment does not go near GitHub until the review is submitted, and the API answers in
+     * about forty milliseconds.
+     *
+     * What made saving an edit feel slow was everything after it: the page forgot the whole
+     * pull request and then AWAITED a full re-read, which is half a dozen GitHub calls behind
+     * the API and up to twenty seconds on a large pull request, with the button disabled and
+     * the spinner up the entire time. All of it to get one field it had just been handed back
+     * into the copy it was holding.
+     *
+     * So the held copy is amended with the answer instead (`amendPrComment`), and the only
+     * thing left to wait for is the write. The evidence is rebuilt from that copy - local, no
+     * network - and the stage is refreshed without forcing GitHub, because none of these
+     * changes can alter anything GitHub knows. The ordinary poll still corrects everything on
+     * its own schedule.
+     */
     async changeComment(c, run) {
       if (this.commentBusy) {
         return;
@@ -1455,15 +1474,23 @@ export default {
       this.commentBusy = c.id;
       this.error = '';
       try {
-        await run();
-        forgetPrDetail(this.status.pr);
-        await this.refreshEvidence();
-        this.refreshStatus(true);
+        const updated = await run();
+
+        // `deleteComment` answers with nothing, which is how a removal is told from an edit.
+        amendPrComment(this.status.pr, c.id, updated?.id ? updated : null);
       } catch (e) {
         this.error = e?.message || String(e);
-      } finally {
         this.commentBusy = 0;
+
+        // A write that failed leaves the page exactly as it was; re-reading would only redraw
+        // the same thing, and the error above is what there is to say about it.
+        return;
       }
+      this.commentBusy = 0;
+
+      // Not awaited: the button is already free, and these only redraw from what is now held.
+      this.refreshEvidence();
+      this.refreshStatus(false);
     },
 
     /** Everything pushed since a moment, as one diff: the commits of that section together. */

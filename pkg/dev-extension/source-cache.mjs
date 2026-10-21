@@ -117,6 +117,45 @@ export function source(load, {
     return value;
   };
 
+  /**
+   * Change what is held for one set of arguments, without reading it again.
+   *
+   * For the case where the caller already knows the new value because it just made the change:
+   * editing a pull request's own draft comment is a local write that answers with the comment
+   * it wrote, and the only reason to re-read the pull request afterwards was to get that one
+   * field back into this map. That re-read is half a dozen GitHub calls and up to twenty
+   * seconds on a large pull request, paid every time somebody fixes a typo in a finding.
+   *
+   * `change` is given the held value and returns the new one; returning undefined keeps what
+   * was there, so a change that cannot find what it meant to amend does nothing rather than
+   * emptying the entry. Nothing is amended if nothing is held - there is no value to correct,
+   * and inventing one would mean serving an answer this source never read. It does not reset
+   * the age: an amended entry still expires when the read it came from would have.
+   *
+   * A held entry is a promise, so this chains rather than assigns, and a rejected one is left
+   * exactly as it is: a failed read must not be turned into a successful one by an amendment.
+   */
+  read.amend = (change, ...args) => {
+    const id = key(...args);
+    const found = held.get(id);
+
+    if (!found) {
+      return false;
+    }
+
+    found.value = found.value.then((value) => {
+      const next = change(value);
+
+      return next === undefined ? value : next;
+    });
+
+    // The chain above must not become an unhandled rejection in its own right; the original
+    // promise is still what callers hold, and they handle their own failures.
+    found.value.catch(() => undefined);
+
+    return true;
+  };
+
   read.forget = (...args) => {
     if (!args.length) {
       held.clear();

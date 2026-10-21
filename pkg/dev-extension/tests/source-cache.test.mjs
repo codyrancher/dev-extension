@@ -148,3 +148,63 @@ test('a load that throws synchronously is a rejection, not a crash', async() => 
   await assert.rejects(read(), /bad arguments/);
   assert.equal(read.size(), 0);
 });
+
+/*
+ * `amend`: changing what is held, for the caller that already knows the answer.
+ *
+ * The case is a pull request's draft comment. Editing one is a local write that returns the
+ * comment it wrote, and the only reason the page then re-read the whole pull request - half a
+ * dozen GitHub calls - was to get that one field back into this map.
+ */
+test('amend changes the held value without reading again', async() => {
+  let reads = 0;
+  const read = source(async(n) => ({ n, body: `read ${ ++reads }` }), { ttl: 1000, log: null });
+
+  assert.equal((await read(1)).body, 'read 1');
+  assert.equal(read.amend((v) => ({ ...v, body: 'edited' }), 1), true);
+  assert.equal((await read(1)).body, 'edited');
+  assert.equal(reads, 1, 'the source was not asked again');
+});
+
+test('amend does nothing when nothing is held', async() => {
+  const read = source(async(n) => ({ n }), { ttl: 1000, log: null });
+
+  // Inventing an entry here would mean serving an answer this source never read.
+  assert.equal(read.amend(() => ({ n: 'made up' }), 7), false);
+  assert.equal(read.size(), 0);
+});
+
+test('an amendment that returns undefined keeps what was there', async() => {
+  const read = source(async() => ({ comments: [{ id: 1 }] }), { ttl: 1000, log: null });
+
+  await read();
+  // A change that cannot find what it meant to amend must not empty the entry.
+  read.amend(() => undefined);
+  assert.deepEqual((await read()).comments, [{ id: 1 }]);
+});
+
+test('amend does not turn a failed read into a successful one', async() => {
+  const read = source(async() => {
+    throw new Error('github said no');
+  }, { ttl: 1000, log: null });
+
+  await assert.rejects(read(1));
+  // The failure dropped the entry, so there is nothing to amend - and nothing is created.
+  assert.equal(read.amend(() => ({ ok: true }), 1), false);
+  await assert.rejects(read(1));
+});
+
+test('amend does not reset how old the entry is', async() => {
+  let clock = 0;
+  let reads = 0;
+  const read = source(async() => ({ read: ++reads }), {
+    ttl: 100, now: () => clock, log: null,
+  });
+
+  await read();
+  clock = 60;
+  read.amend((v) => ({ ...v, touched: true }));
+  clock = 120;
+  // Past the ttl measured from the original read, so this is a fresh one, amendment and all.
+  assert.equal((await read()).read, 2);
+});
