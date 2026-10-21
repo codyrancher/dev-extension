@@ -1,5 +1,6 @@
 <script>
 import { listPodEntries } from '../pod';
+import { agentPod } from '../agent';
 import {
   isWalkable, shared, childPath, parentPath, crumbs, humanSize,
 } from '../fs-listing.mjs';
@@ -48,6 +49,16 @@ export default {
 
   data() {
     return {
+      /*
+       * Which pod to read, resolved rather than assumed.
+       *
+       * `pod` defaults to empty, and the first version of this took that to mean "the agent
+       * pod, which pod.ts defaults to" - but pod.ts defaults the NAMESPACE and the CONTAINER,
+       * never the pod's name, and a name is the one thing an exec cannot do without. Every
+       * listing went to a URL with an empty name, came back with nothing, and was drawn as an
+       * empty directory: a broken read that looked like an answer, on every path.
+       */
+      resolved: this.pod,
       path:    this.start,
       entries: [],
       omitted: 0,
@@ -64,7 +75,7 @@ export default {
   computed: {
     target() {
       return {
-        pod: this.pod, container: this.container, namespace: this.namespace,
+        pod: this.resolved, container: this.container, namespace: this.namespace,
       };
     },
 
@@ -121,9 +132,30 @@ export default {
     isWalkable,
     shared,
 
+    /** The agent pod's name, when this was not given one. Nothing can be read without it. */
+    async resolvePod() {
+      if (this.resolved) {
+        return true;
+      }
+      this.resolved = (await agentPod().catch(() => null)) || '';
+
+      if (!this.resolved) {
+        this.loading = false;
+        this.error = 'There is no agent pod running, so there is no filesystem to read. It comes back on its own; the Agents page says what it is doing.';
+
+        return false;
+      }
+
+      return true;
+    },
+
     async read() {
       this.loading = true;
       this.error = '';
+
+      if (!await this.resolvePod()) {
+        return;
+      }
 
       const asked = this.path;
 
@@ -367,9 +399,14 @@ export default {
       </p>
     </div>
 
+    <p class="fs__whose">
+      <template v-if="resolved">Read live from <code>{{ resolved }}</code> in <code>{{ namespace || 'dev-agents' }}</code>, which has the node's own disk mounted.</template>
+      <template v-else>Looking for the agent pod…</template>
+    </p>
+
     <PodFileViewer
       v-if="open"
-      :pod="pod"
+      :pod="resolved"
       :container="container"
       :namespace="namespace"
       :path="open"
@@ -457,6 +494,17 @@ export default {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
+}
+
+.fs__whose {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+
+  code {
+    font-size: 12px;
+    padding: 0 3px;
+  }
 }
 
 .fs__note {

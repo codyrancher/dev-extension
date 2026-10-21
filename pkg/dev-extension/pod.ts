@@ -330,6 +330,20 @@ export async function listPodEntries(target: PodTarget, path: string): Promise<F
     `find ${ quoted } -maxdepth 1 -mindepth 1 -printf '${ FIND_FORMAT }' 2>/tmp/.fs-err; echo "FS-RC $?"; head -c 400 /tmp/.fs-err 2>/dev/null; rm -f /tmp/.fs-err`,
   );
   const rc = /FS-RC (\d+)/.exec(out);
+
+  /*
+   * No marker at all means the command did not run - and that has to be an error rather than an
+   * empty directory.
+   *
+   * This is how the first version of the explorer failed, on every path, while looking like it
+   * worked: the caller sent an empty pod name, every exec came back with nothing, `rc` was null,
+   * nothing threw, and a disk with 13 GiB on it was drawn as "This directory is empty." An empty
+   * answer and an answer that never arrived are different things, and a reader cannot tell them
+   * apart unless this says so.
+   */
+  if (!rc) {
+    throw new Error(`${ path } could not be read: the listing command did not run in ${ target.pod || 'an unnamed pod' }.`);
+  }
   // The parser is plain JavaScript so `node --test` can load it, which costs this one cast:
   // TypeScript reads `filter(Boolean)` there as "still possibly null" and the string fields as
   // plain strings rather than as the unions FsEntry declares. The shape is pinned by
@@ -338,7 +352,7 @@ export async function listPodEntries(target: PodTarget, path: string): Promise<F
 
   // A non-zero find with nothing listed is a directory that could not be read - say so, rather
   // than drawing an empty directory that looks like an answer.
-  if (rc && rc[1] !== '0' && !listing.entries.length) {
+  if (rc[1] !== '0' && !listing.entries.length) {
     const why = out.split('FS-RC')[1]?.split('\n').slice(1).join(' ').trim();
 
     throw new Error(why || `${ path } could not be read in this pod`);
