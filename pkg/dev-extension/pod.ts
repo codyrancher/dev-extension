@@ -5,6 +5,7 @@
 // reads what it printed - a directory listing, a file's bytes, an image written in chunks. There
 // is no service pod behind any of it: the browser opens the socket, with the session cookie it
 // already has, which is what makes this extension something a Rancher can install on its own.
+import { FIND_FORMAT, parseListing } from './fs-listing.mjs';
 import { devFetch } from './api';
 
 /** The cluster the agent pod is in, which is this Rancher's own. */
@@ -268,6 +269,28 @@ export async function writeImageToPod(target: PodTarget, path: string, data: Arr
   }
 }
 
+/** One entry of a real directory, as fs-listing.mjs parses it out of `find -printf`. */
+export interface FsEntry {
+  name: string;
+  kind: 'dir' | 'file' | 'link' | 'other';
+  /** What a symlink resolves to, 'none' when it resolves to nothing. */
+  points: 'dir' | 'file' | 'link' | 'other' | 'none';
+  broken: boolean;
+  loop: boolean;
+  target: string;
+  links: number;
+  inode: number;
+  size: number;
+  mtime: number;
+}
+
+export interface FsListing {
+  entries: FsEntry[];
+  /** How many entries the cap left out, so a capped listing never reads as a complete one. */
+  omitted: number;
+  total: number;
+}
+
 /** Reading what a terminal is talking about, out of the pod it is attached to. */
 export interface PodPath {
   kind: 'dir' | 'file' | 'none';
@@ -283,6 +306,45 @@ export async function statPodPath(target: PodTarget, path: string): Promise<PodP
   const [kind, size] = out.trim().split(/\s+/);
 
   return { kind: (kind as PodPath['kind']) || 'none', size: parseInt(size, 10) || 0 };
+}
+
+/**
+ * One directory, with what `lstat` knows about each entry: the listing a file explorer needs.
+ *
+ * `listPodDir` below answers names and a yes/no for directories, which is all a file picker
+ * wants. It is not enough to understand this node's disk, which is held together by things a
+ * name does not show: `bin/gh` is a symlink into a shared store, and a file under node_modules
+ * usually has six other names in six other workspaces because a sweep collapsed them into one
+ * inode. See fs-listing.mjs for the format and why the name is the last field.
+ *
+ * Reads, and nothing else. There is no write path here and no file contents - a listing is
+ * metadata, and the explorer that uses it is for looking at the shape of the disk.
+ */
+export async function listPodEntries(target: PodTarget, path: string): Promise<FsListing> {
+  const quoted = shellQuote(path);
+  // `-mindepth 1` so the directory does not list itself; stderr kept, because "Permission
+  // denied" is an answer and a silent empty directory is not. find's own lines do not parse as
+  // entries, so they are dropped by the parser and reported by the exit status instead.
+  const out = await inPod(
+    target,
+    `find ${ quoted } -maxdepth 1 -mindepth 1 -printf '${ FIND_FORMAT }' 2>/tmp/.fs-err; echo "FS-RC $?"; head -c 400 /tmp/.fs-err 2>/dev/null; rm -f /tmp/.fs-err`,
+  );
+  const rc = /FS-RC (\d+)/.exec(out);
+  // The parser is plain JavaScript so `node --test` can load it, which costs this one cast:
+  // TypeScript reads `filter(Boolean)` there as "still possibly null" and the string fields as
+  // plain strings rather than as the unions FsEntry declares. The shape is pinned by
+  // tests/fs-listing.test.mjs instead, against output taken from a real run in the pod.
+  const listing = parseListing(out) as FsListing;
+
+  // A non-zero find with nothing listed is a directory that could not be read - say so, rather
+  // than drawing an empty directory that looks like an answer.
+  if (rc && rc[1] !== '0' && !listing.entries.length) {
+    const why = out.split('FS-RC')[1]?.split('\n').slice(1).join(' ').trim();
+
+    throw new Error(why || `${ path } could not be read in this pod`);
+  }
+
+  return listing;
 }
 
 /** One directory, directories first - the order a file manager uses. */

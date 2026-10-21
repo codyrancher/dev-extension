@@ -36,12 +36,14 @@ import { readPrefs, savePrefs } from '../prefs';
 import { log } from '../dev-log.mjs';
 import { CLI_CHOICES } from '../agent-clis.mjs';
 import { DEV_PRODUCT, BLANK_CLUSTER, SKILLS_ROUTE } from '../config/constants';
+import DevModal from '../components/DevModal';
+import FileExplorer from '../components/FileExplorer';
 
 export default {
   name: 'DevSettings',
 
   components: {
-    Loading, AsyncButton, Banner, RcButton, LabeledInput, BrandImage
+    Loading, AsyncButton, Banner, RcButton, LabeledInput, BrandImage, DevModal, FileExplorer
   },
 
   async fetch() {
@@ -83,6 +85,8 @@ export default {
       /** Which CLI new conversations are held with. '' reads as claude. */
       cli:          '',
       showActivity: false,
+      /** The filesystem explorer, which is a dialog rather than a section: it wants the room. */
+      showFiles:    false,
       unwatch:      null,
       keys:     [],
       // Every App, and which of them this person has hidden. See prefs.ts.
@@ -753,6 +757,34 @@ export default {
     </section>
 
     <!--
+      The disk itself.
+
+      Everything else on this page is a setting; this is a window onto what those settings
+      produced. It is here because the questions it answers are this page's questions - where
+      did the space go, is that tool one install or seven, did the artifacts survive the
+      workspace - and because there was nowhere in the product to simply look.
+
+      A dialog, not a card: a directory listing wants the width of the window, and this is
+      something you open, read and shut rather than something the page should always be showing.
+    -->
+    <section class="dev-settings__card">
+      <div class="dev-settings__card-head">
+        <i class="dev-settings__card-icon icon icon-folder" />
+        <div class="dev-settings__card-title">
+          <h3>Filesystem</h3>
+          <p>The node's own disk as the agent pod sees it - every workspace, its checkout, the shared package stores and the kept artifacts. Real directories, read live: symlinks are drawn with their target, and a file that shares an inode with other workspaces says how many names it has.</p>
+        </div>
+      </div>
+
+      <RcButton
+        secondary
+        @click="showFiles = true"
+      >
+        Browse the filesystem
+      </RcButton>
+    </section>
+
+    <!--
       What the page has been doing. Last, and shut: it is the answer to "why is this empty?",
       which is a question somebody asks occasionally and nobody asks on the way past.
     -->
@@ -808,6 +840,14 @@ export default {
         </ul>
       </template>
     </section>
+
+    <DevModal
+      v-if="showFiles"
+      title="Filesystem"
+      @close="showFiles = false"
+    >
+      <FileExplorer @close="showFiles = false" />
+    </DevModal>
   </div>
 </template>
 
