@@ -1355,13 +1355,27 @@ export default {
       this.editDraft = '';
     },
 
+    /**
+     * Save an edit, and keep it on screen if it did not save.
+     *
+     * This closed the editor and cleared the draft unconditionally, because `changeComment`
+     * catches its own failures - so a save that threw looked exactly like a save that worked,
+     * and the typing went with it. There was a banner, which is not where somebody is looking
+     * when the box they were typing in has just closed on its own.
+     *
+     * It is not a hypothetical. For seven hours the service could not write its store at all
+     * (a read-only mount), every edit failed, and the next thing anybody saw was the old text
+     * back in the card - and then posted to GitHub, because the store never changed.
+     */
     async saveEdit(c) {
       const body = this.editDraft.trim();
 
       if (!body) {
         return;
       }
-      await this.changeComment(c, () => updateComment(this.status.pr, c.id, { body }));
+      if (!await this.changeComment(c, () => updateComment(this.status.pr, c.id, { body }))) {
+        return;
+      }
       this.editingId = 0;
       this.editDraft = '';
     },
@@ -1483,14 +1497,17 @@ export default {
         this.commentBusy = 0;
 
         // A write that failed leaves the page exactly as it was; re-reading would only redraw
-        // the same thing, and the error above is what there is to say about it.
-        return;
+        // the same thing, and the error above is what there is to say about it. `false` is the
+        // part the caller needs: see saveEdit, which used to throw the typing away regardless.
+        return false;
       }
       this.commentBusy = 0;
 
       // Not awaited: the button is already free, and these only redraw from what is now held.
       this.refreshEvidence();
       this.refreshStatus(false);
+
+      return true;
     },
 
     /** Everything pushed since a moment, as one diff: the commits of that section together. */
