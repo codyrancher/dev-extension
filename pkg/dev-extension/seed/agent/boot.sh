@@ -108,13 +108,30 @@ HOME_DIR="$AGENT_HOME" /bin/sh /seed/terminal-tools.sh >"$WORKSPACE/.terminal-to
 # Deferred five minutes so a pod that is still installing tmux, claude and a checkout is not
 # also reading every file on the disk, then daily. See dedupe-trees.mjs for what it refuses to
 # touch and why that makes it safe to run under a working agent.
+#
+# `/workspaces`, not `$WORKSPACE`: the trees it is for are the workspaces' on the node's own
+# hostPath, and this pod's `/workspace` is its own sessions directory - which is what it was
+# passed, so the sweep on the timer had been walking a tree with nothing in it to collapse.
 (
   sleep 300
   while true; do
-    node /seed/dedupe-trees.mjs "$WORKSPACE" 2>&1 || true
+    node /seed/dedupe-trees.mjs /workspaces 2>&1 || true
     sleep 86400
   done
 ) >"$WORKSPACE/.dedupe.log" 2>&1 &
+
+# Every live workspace's artifacts, kept where deleting the workspace cannot reach them.
+#
+# Quarter-hourly rather than daily: this is the window in which a workspace can be deleted by
+# some route that does not run the capture, and losing a morning's recordings is worse than
+# a walk over a few thousand names that writes nothing. See keep-artifacts.sh.
+(
+  sleep 120
+  while true; do
+    /bin/sh /seed/keep-artifacts.sh /workspaces 2>&1 || true
+    sleep 900
+  done
+) >"$WORKSPACE/.artifacts.log" 2>&1 &
 
 # kernel, reparented ones included, so nothing has to call wait() at all. SIGTERM is handled
 # explicitly because PID 1 is exempt from default signal dispositions - without a handler the

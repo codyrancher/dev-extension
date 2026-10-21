@@ -34,6 +34,18 @@ const JQ_VERSION = '1.7.1';
 // through one of those two, so writing the tree's own name into thirty scripts would be thirty
 // chances to write the wrong one.
 const BIN = '$WS/bin';
+/*
+ * One copy of a downloaded tool for the whole node.
+ *
+ * `gh` is a 54 MiB static binary and every workspace used to hold its own: seven of them, 380
+ * MiB of a disk whose whole point is to hold checkouts. Nothing about it is per-workspace - it
+ * is the same bytes at the same version - so it lives here once and each `bin` holds a symlink
+ * to it.
+ *
+ * The name carries the version, so a bump installs beside the old one and every workspace's
+ * link is repointed as it is next seeded, instead of one download racing seven readers.
+ */
+const SHARED_TOOLS = '/workspaces/.shared/tools';
 const ENV_FILE = '$WS/.env';
 const SEED_MARKER = '$WS/.dev-seed';
 
@@ -255,24 +267,48 @@ async function ensureSeed(target: WorkspaceTarget, ctx: WorkspaceContext): Promi
   }
 }
 
-/** `gh` and `jq`, static builds, in the workspace's bin. Downloaded once; the bin is on a hostPath. */
+/**
+ * `gh` and `jq`: downloaded once for the node, linked into the workspace's bin.
+ *
+ * The check is on the link's target rather than on the file being executable, so a workspace
+ * seeded before the shared store existed - holding its own 54 MiB copy - is migrated the next
+ * time it is seeded: `ln -sf` replaces the real file with the link and the copy's last name is
+ * gone.
+ *
+ * The download lands on a temporary name and is moved into place with `mv -n`, which is the
+ * whole concurrency story: two workspaces seeding at once each fetch, and the loser's copy is
+ * discarded rather than written over a file the winner may already be executing.
+ */
 async function ensureTools(target: WorkspaceTarget): Promise<void> {
-  const have = await asNode(target, `for t in gh jq; do [ -x ${ BIN }/$t ] && printf '%s ' $t; done; true`);
-  const missing = ['gh', 'jq'].filter((tool) => !have.includes(tool));
+  const wanted = [
+    { tool: 'gh', version: GH_VERSION },
+    { tool: 'jq', version: JQ_VERSION },
+  ];
+  const linked = await asNode(target, wanted.map(({ tool, version }) => (
+    `[ "$(readlink ${ BIN }/${ tool } 2>/dev/null)" = "${ SHARED_TOOLS }/${ tool }-${ version }" ] && printf '%s ' ${ tool }`
+  )).concat('true').join('\n'));
+  const missing = wanted.filter(({ tool }) => !linked.includes(tool));
 
   if (!missing.length) {
     return;
   }
 
-  const steps = ['set -e'];
+  const steps = ['set -e', `mkdir -p ${ SHARED_TOOLS }`];
 
-  if (missing.includes('jq')) {
-    steps.push(`curl -fsSL -o ${ BIN }/jq https://github.com/jqlang/jq/releases/download/jq-${ JQ_VERSION }/jq-linux-amd64 && chmod +x ${ BIN }/jq`);
+  for (const { tool, version } of missing) {
+    const shared = `${ SHARED_TOOLS }/${ tool }-${ version }`;
+    const temp = `${ shared }.$$`;
+    const fetch = tool === 'jq'
+      ? `curl -fsSL -o ${ temp } https://github.com/jqlang/jq/releases/download/jq-${ version }/jq-linux-amd64`
+      : `curl -fsSL https://github.com/cli/cli/releases/download/v${ version }/gh_${ version }_linux_amd64.tar.gz | tar -xz -C /tmp && mv /tmp/gh_${ version }_linux_amd64/bin/gh ${ temp } && rm -rf /tmp/gh_${ version }_linux_amd64`;
+
+    steps.push(
+      `if [ ! -x ${ shared } ]; then ${ fetch } && chmod +x ${ temp } && mv -n ${ temp } ${ shared }; rm -f ${ temp }; fi`,
+      `ln -sf ${ shared } ${ BIN }/${ tool }`,
+      `ln -sf ${ shared } $WS/.home/.local/bin/${ tool }`,
+    );
   }
-  if (missing.includes('gh')) {
-    steps.push(`curl -fsSL https://github.com/cli/cli/releases/download/v${ GH_VERSION }/gh_${ GH_VERSION }_linux_amd64.tar.gz | tar -xz -C /tmp && mv /tmp/gh_${ GH_VERSION }_linux_amd64/bin/gh ${ BIN }/gh && rm -rf /tmp/gh_${ GH_VERSION }_linux_amd64`);
-  }
-  steps.push(`for f in gh jq; do ln -sf ${ BIN }/$f $WS/.home/.local/bin/$f; done`, 'echo TOOLS-OK');
+  steps.push('echo TOOLS-OK');
 
   const out = await asNode(target, steps.join('\n'));
 

@@ -14,7 +14,9 @@
 // rather than editing it, so a workspace that installs later breaks its own link and leaves
 // everybody else's copy alone.
 //
-// What it will not touch, because those ARE edited in place:
+// What it will not touch, because those ARE written in place - and a write through one path of a
+// hardlink is a write to every path that holds it:
+//   - a checkout's own working files: an editor and an agent's edit tool both write O_TRUNC
 //   - anything under a `.cache`, `.vite`, `.turbo` or `.git` directory
 //   - `node_modules/.bin` (symlinks, and rewritten by every install)
 //   - anything that is not a regular file, or is already the same inode
@@ -31,30 +33,77 @@ const ROOTS = process.argv.slice(2).length ? process.argv.slice(2) : ['/workspac
 /** Below this a link saves nothing worth the inode churn: a block is 4 KiB. */
 const MIN_BYTES = 4096;
 
-const SKIP_DIRS = new Set(['.cache', '.vite', '.turbo', '.git', '.bin', '.yarn-integrity']);
+/*
+ * What is never collapsed, and why each one.
+ *
+ * `.git` - git rewrites an index and a packfile by writing a new one and renaming over the old,
+ *   which is safe for a hardlink, but it also keeps a lock file and a reflog it appends to. A
+ *   repository is not worth the argument: it is 71 MiB of the ~1 GiB this sweep is after, and
+ *   sharing git objects properly is `alternates`, not inode tricks.
+ * `.cache`, `.vite`, `.turbo` - build caches, written in place by design.
+ * `.bin` - symlinks and shims an install rewrites.
+ * `.home/.claude`, `.home/.gemini` - a CLI's state: transcripts, settings and a conversation's
+ *   own files, appended to while it runs.
+ */
+const SKIP_DIRS = new Set([
+  '.cache', '.vite', '.turbo', '.git', '.bin', '.yarn-integrity', '.claude', '.gemini', '.npm',
+]);
 
-/** Every node_modules tree worth looking at, without walking the whole disk to find them. */
+/**
+ * The trees worth walking: the ones nothing edits in place.
+ *
+ * It began as node_modules only, which is where the duplication was assumed to be. Measured
+ * afterwards, node_modules was 3.9 GiB of it and the rest was everywhere else - 380 MiB of
+ * `bin` across seven workspaces because each carries its own 54 MiB `gh`, and 1.3 GiB of homes
+ * carrying their own copies of claude, jq and gh again.
+ *
+ * It is deliberately NOT the whole workspace. A hardlink is shared by every path that holds it,
+ * so a write THROUGH one path is a write to all of them - and the one thing a workspace exists
+ * for is somebody editing its checkout. An editor saving a file, or an agent's edit tool, opens
+ * it O_TRUNC and writes in place: collapse two branches' identical `Card.vue` and an edit in one
+ * workspace silently rewrites the other's checkout and leaves it dirty. So the checkout's own
+ * working files are off limits, and what is left is the three kinds of tree nothing writes
+ * through: installed packages, the tool binaries, and a home's cached toolchain.
+ */
 function trees(root) {
   const found = [];
+  const add = (...parts) => {
+    const candidate = path.join(...parts);
+
+    if (isDir(candidate)) {
+      found.push(candidate);
+    }
+  };
 
   for (const entry of read(root)) {
-    // /workspaces/<name>/dashboard/node_modules and /workspaces/.shared/template/<hash>/node_modules
-    for (const candidate of [
-      path.join(root, entry, 'dashboard', 'node_modules'),
-      path.join(root, entry, 'node_modules'),
-    ]) {
-      if (isDir(candidate)) {
-        found.push(candidate);
-      }
-    }
     if (entry === '.shared') {
       for (const hash of read(path.join(root, entry, 'template'))) {
-        const candidate = path.join(root, entry, 'template', hash, 'node_modules');
-
-        if (isDir(candidate)) {
-          found.push(candidate);
-        }
+        add(root, entry, 'template', hash, 'node_modules');
       }
+      continue;
+    }
+    // `.artifacts` is somebody's evidence, already hardlinked into place by the capture.
+    if (entry.startsWith('.')) {
+      continue;
+    }
+
+    const workspace = path.join(root, entry);
+
+    if (!isDir(workspace)) {
+      continue;
+    }
+
+    // The leased tools and the home's own `.local/bin`: `gh`, `jq`, `claude`, `agy`.
+    add(workspace, 'bin');
+    add(workspace, '.home');
+    add(workspace, 'node_modules');
+
+    // Each checkout beside them contributes its node_modules and nothing else.
+    for (const child of read(workspace)) {
+      if (child === 'bin' || child === '.home' || child === 'artifacts' || child.startsWith('.')) {
+        continue;
+      }
+      add(workspace, child, 'node_modules');
     }
   }
 
