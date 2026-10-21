@@ -433,6 +433,13 @@ async function ensureEnvironment(target: WorkspaceTarget, github: string, browse
     `GH_TOKEN=${ github || '$GH_KEEP' }`,
     `GITHUB_TOKEN=${ github || '$GH_KEEP' }`,
     'KUBECONFIG=$WS/.kube/config',
+    // The shared package stores, so a shell gets them whether or not its pod was started with
+    // them in its environment: the App sets these too, but a workspace that has been running
+    // since before it did would otherwise keep filling a cache of its own.
+    'YARN_CACHE_FOLDER=/workspaces/.shared/yarn',
+    'npm_config_cache=/workspaces/.shared/npm',
+    'CYPRESS_CACHE_FOLDER=/workspaces/.shared/cypress',
+    'PLAYWRIGHT_BROWSERS_PATH=/workspaces/.shared/playwright',
     'EOF',
     `chown node:node ${ ENV_FILE } && chmod 600 ${ ENV_FILE }`,
     // bashrc: the same three lines init.sh appended, once.
@@ -787,6 +794,7 @@ async function startBuilder(workspace: string, kind: ShareKind, base: string, re
                 { name: 'YARN_CACHE_FOLDER', value: '/workspaces/.shared/yarn' },
                 { name: 'CYPRESS_CACHE_FOLDER', value: '/workspaces/.shared/cypress' },
                 { name: 'npm_config_cache', value: '/workspaces/.shared/npm' },
+                { name: 'PLAYWRIGHT_BROWSERS_PATH', value: '/workspaces/.shared/playwright' },
               ],
               resources:    { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: BUILDER_CPU, memory: BUILDER_MEMORY } },
               volumeMounts: [{ name: 'work', mountPath: '/workspaces' }],

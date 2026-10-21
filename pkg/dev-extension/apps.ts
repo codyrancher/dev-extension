@@ -517,7 +517,7 @@ const WORKSPACE_SCRIPT = [
     'WS=/workspaces/${install}',
     'SHARED=/workspaces/.shared',
     'export HOME=$WS/.home',
-    'export YARN_CACHE_FOLDER=$SHARED/yarn CYPRESS_CACHE_FOLDER=$SHARED/cypress npm_config_cache=$SHARED/npm',
+    'export YARN_CACHE_FOLDER=$SHARED/yarn CYPRESS_CACHE_FOLDER=$SHARED/cypress npm_config_cache=$SHARED/npm PLAYWRIGHT_BROWSERS_PATH=$SHARED/playwright',
     // `\${repo}` and `\${port}` are Apps Plus's to substitute when the App is rendered, so
     // they are written as text here rather than interpolated.
     //
@@ -860,6 +860,11 @@ export function rancherWorkspaceApp(): Json {
             '              value: /workspaces/.shared/npm',
             '            - name: CYPRESS_CACHE_FOLDER',
             '              value: /workspaces/.shared/cypress',
+            // Playwright keeps its browsers under the home by default, which the dedupe will
+            // not touch (a `.cache` is written in place by too many other things to collapse),
+            // so a workspace that runs one test holds its own Chromium, Firefox and WebKit.
+            '            - name: PLAYWRIGHT_BROWSERS_PATH',
+            '              value: /workspaces/.shared/playwright',
             '            - name: NODE_OPTIONS',
             '              value: --max_old_space_size=4096',
             '            - name: DEV_PROXY_PATH',

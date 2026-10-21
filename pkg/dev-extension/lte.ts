@@ -89,7 +89,7 @@ const LTE_SCRIPT = [
     'SHARED=/workspaces/.shared',
     'export HOME=$WS/.home',
     'mkdir -p $SHARED/yarn $SHARED/npm $SHARED/template 2>/dev/null || true',
-    'export YARN_CACHE_FOLDER=$SHARED/yarn npm_config_cache=$SHARED/npm',
+    'export YARN_CACHE_FOLDER=$SHARED/yarn npm_config_cache=$SHARED/npm PLAYWRIGHT_BROWSERS_PATH=$SHARED/playwright',
     // init + fetch rather than clone: the agent seed writes `.claude` into this tree and may
     // get there first, and clone refuses a directory that is not empty.
     '[ -d $WS/dashboard/.git ] || ( mkdir -p $WS/dashboard && cd $WS/dashboard && git init -q && { git remote add origin https://github.com/${repo} 2>/dev/null || true; } && D=$(git ls-remote --symref origin HEAD | sed -n "s@^ref: refs/heads/\\(.*\\)[[:space:]]HEAD@\\1@p") && git fetch --depth 1 origin "$D" && git checkout -f -B "$D" FETCH_HEAD )',
@@ -237,6 +237,11 @@ export function lteWorkspaceApp(): Json {
             '              value: /workspaces/.shared/npm',
             '            - name: CYPRESS_CACHE_FOLDER',
             '              value: /workspaces/.shared/cypress',
+            // Playwright keeps its browsers under the home by default, which the dedupe will
+            // not touch (a `.cache` is written in place by too many other things to collapse),
+            // so a workspace that runs one test holds its own Chromium, Firefox and WebKit.
+            '            - name: PLAYWRIGHT_BROWSERS_PATH',
+            '              value: /workspaces/.shared/playwright',
             '            - name: NODE_OPTIONS',
             '              value: --max_old_space_size=4096',
             '            - name: NODE_IP',
@@ -475,7 +480,7 @@ function devServerToolApp(): Json {
             command:    ['/bin/sh', '-c', [
               'set -e',
               'export HOME=/workspaces/${workspace}/.home',
-              'export YARN_CACHE_FOLDER=/workspaces/.shared/yarn npm_config_cache=/workspaces/.shared/npm',
+              'export YARN_CACHE_FOLDER=/workspaces/.shared/yarn npm_config_cache=/workspaces/.shared/npm PLAYWRIGHT_BROWSERS_PATH=/workspaces/.shared/playwright',
               // The workspace installs the dependencies; this waits rather than installing a
               // second copy. Exiting is the wait: the kubelet backs off and tries again, and
               // the tool comes up by itself once the tree is ready.
@@ -722,7 +727,7 @@ function storybookToolApp(): Json {
             command:    ['/bin/sh', '-c', `exec setpriv --reuid=1000 --regid=1000 --init-groups /bin/sh -c '${ [
               'set -e',
               'export HOME=/workspaces/${workspace}/.home',
-              'export YARN_CACHE_FOLDER=/workspaces/.shared/yarn npm_config_cache=/workspaces/.shared/npm',
+              'export YARN_CACHE_FOLDER=/workspaces/.shared/yarn npm_config_cache=/workspaces/.shared/npm PLAYWRIGHT_BROWSERS_PATH=/workspaces/.shared/playwright',
               'cd /workspaces/${workspace}/dashboard/storybook || { echo "[storybook] this checkout has no storybook directory"; sleep 30; exit 1; }',
               '[ -d ../node_modules ] || { echo "[storybook] waiting for the workspace to finish installing its dependencies"; sleep 20; exit 1; }',
               '[ -d node_modules ] || yarn install --frozen-lockfile --network-timeout 600000',

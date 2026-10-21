@@ -39,9 +39,15 @@ for src in "$ROOT"/*/artifacts; do
   dst="$SETS/$ws"
   mkdir -p "$dst" 2>/dev/null || continue
 
-  # `-n` so a name already in the set is left exactly as it is: this must never write over
-  # evidence that was kept from an earlier run, whatever the workspace holds now.
-  cp -aln "$src/." "$dst/" 2>/dev/null || cp -an "$src/." "$dst/" 2>/dev/null || true
+  # `-u`, not `-n`. `-n` leaves every name already in the set exactly as it is, which is right
+  # for a recording - written once, under a name nothing reuses - and wrong for the one kind of
+  # artifact that is rewritten in place: a review note an agent keeps adding to. With `-n` the
+  # set would hold the first paragraph it ever wrote and never the finished note. `-u` keeps the
+  # newer of the two, and `-f` is what lets it: a hardlink cannot be made over an existing name,
+  # so the old one is unlinked first - which removes the set's own name for it, not the file.
+  # An unchanged file has the same timestamp and is skipped, so a run over a settled workspace
+  # still writes nothing.
+  cp -alfu "$src/." "$dst/" 2>/dev/null || cp -afu "$src/." "$dst/" 2>/dev/null || true
 
   # Only when there is nothing there to say it: a tag written at capture time carries a
   # `capturedAt` and may say what the name cannot, and this is not the place to overrule it.
