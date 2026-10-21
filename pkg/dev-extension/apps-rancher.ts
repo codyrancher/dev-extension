@@ -33,7 +33,11 @@ export function rancherSingleApp(): Json {
         adminPassword: "rancher-ha-changeme",
         cloudCredentials: "# no cloud credentials selected",
         githubClientId: "Ov23liZrckyC1PFKoW6b",
-        githubClientSecret: "81bfeb9378237e4c39b856a975365fca9be3aef6",
+        // Empty, and filled in at create time from the managing Rancher's own GitHub config -
+        // see githubSecretValues in ranchers.ts. It used to be the literal secret, committed
+        // here: every reader of this repository had an org's OAuth credential, and rotating it
+        // silently broke every instance already installed, because nothing compared the two.
+        githubClientSecret: "",
         githubUserId: "55104481",
         host: "none",
         image: "rancher/rancher:v2.15.1",
@@ -51,6 +55,11 @@ region: \${region}
 zone: \${zone}
 instanceType: \${instanceType}
 rootSize: "\${rootSize}"
+# gp3, not the driver's gp2 default: a gp2 volume's baseline is 3 IOPS per GiB, so the 100 GiB
+# root these run on gets 300 - and that root carries etcd, which is the one thing on a
+# single-node Rancher whose latency everything else waits behind. gp3 is a flat 3000 IOPS and
+# 125 MB/s at any size, and is cheaper per GiB than gp2.
+volumeType: gp3
 securityGroup:
   - rancher-nodes
 securityGroupReadonly: true

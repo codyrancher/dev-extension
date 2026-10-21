@@ -320,6 +320,48 @@ export async function nextRancherName(store: Store): Promise<string> {
  * node through this Rancher and installs Rancher on it. The values are the App's defaults; the
  * address is `<name>.<node ip>.sslip.io` once the node is up, and listRanchers shows it.
  */
+/**
+ * The two values a new instance has to take from the Rancher that is making it, rather than from
+ * a literal in this file.
+ *
+ * `kubernetesVersion`: a pinned string goes stale the moment the managing Rancher updates its
+ * own default, and then every instance this product makes is a version behind the clusters a
+ * person makes by hand - which was already true here (pinned v1.36.4+k3s1, the parent's
+ * `k3s-default-version` reads 1.36.5+k3s1). The setting carries no `v` and provisioning wants
+ * one.
+ *
+ * `githubClientSecret`: the App's default used to BE the secret, written into this repository.
+ * The managing Rancher has the same one in the Secret its own GitHub auth reads, and the
+ * browser asking for it is the person's own session asking for something they can already see -
+ * the same move `cloudCredentialsManifest` makes. Copying it at create time also means a
+ * rotation reaches the next instance instead of only the ones made before it.
+ *
+ * Both fall back to the App's own defaults rather than failing: an instance with a slightly old
+ * Kubernetes, or one whose GitHub login has to be filled in by hand, is worth more than no
+ * instance at all.
+ */
+async function managedValues(): Promise<Record<string, string>> {
+  const values: Record<string, string> = {};
+
+  const version = await devFetch('/v3/settings/k3s-default-version').catch(() => null) as Json;
+  const want = String(version?.value || version?.default || '').trim();
+
+  if (/^v?\d+\.\d+\.\d+\+k3s\d+$/.test(want)) {
+    values.kubernetesVersion = want.startsWith('v') ? want : `v${ want }`;
+  }
+
+  const secret = await devFetch('/v1/secrets/cattle-global-data/githubconfig-clientsecret').catch(() => null) as Json;
+  const encoded = secret?.data?.clientsecret;
+
+  if (encoded) {
+    try {
+      values.githubClientSecret = atob(String(encoded));
+    } catch { /* a Secret shaped unexpectedly is one to leave alone */ }
+  }
+
+  return values;
+}
+
 export async function createRancherInstance(store: Store, name: string, app = RANCHER_SINGLE_APP): Promise<void> {
   const clean = name.trim().toLowerCase();
 
@@ -329,7 +371,7 @@ export async function createRancherInstance(store: Store, name: string, app = RA
   // The cloud credentials chosen in Settings, copied into the instance so it can provision
   // clusters on the same clouds. Read live at provision time, so there is nothing to keep in
   // sync; an instance created with none chosen simply gets none.
-  const values: Record<string, string> = { ...RANCHER_INSTANCE_VALUES };
+  const values: Record<string, string> = { ...RANCHER_INSTANCE_VALUES, ...(await managedValues()) };
   const cloudCredentials = await cloudCredentialsManifest().catch(() => '');
 
   if (cloudCredentials) {
@@ -379,10 +421,36 @@ export async function setDefaultRancher(url: string): Promise<void> {
  * itself: every API call through the share answers 502, including the ones this dashboard
  * makes. The Rancher's own `server-url` is the address it says it is at, whoever is asking.
  */
+/**
+ * Which Rancher new work points at: the one somebody starred, if it still exists.
+ *
+ * The star is remembered as a URL, and an instance's URL carries its node's public IP - so an
+ * instance rebuilt (which is routine: three in one day while this was written) leaves a
+ * remembered address that resolves to a terminated machine. Nothing noticed, and every workspace
+ * made afterwards was pointed at it.
+ *
+ * So the star is checked against the Ranchers that are actually there before it is used. A
+ * remembered address nobody serves any more is dropped, and the fall-back is this Rancher, which
+ * is the one address that cannot go stale. The list is already read on every sidebar poll, so
+ * this is a cache hit in the common case.
+ */
 export async function talksToDefault(store: Store): Promise<string> {
   const starred = await defaultRancher().catch(() => '');
 
-  return starred || await ownRancherUrl(store);
+  if (!starred) {
+    return ownRancherUrl(store);
+  }
+  const live = await listRanchers(store).catch(() => []);
+
+  // An empty list means the read failed, not that nothing exists: in that case the star is
+  // honoured, because refusing it would send work to the wrong Rancher on a network blip.
+  if (live.length && !live.some((rancher) => rancher.url === starred)) {
+    await setDefaultRancher('').catch(() => {});
+
+    return ownRancherUrl(store);
+  }
+
+  return starred;
 }
 
 /**
