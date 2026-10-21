@@ -3342,7 +3342,21 @@ export async function ensureWorkspaceApi(): Promise<void> {
               // only, so the evidence a review agent attaches to a comment - a recording, a
               // screenshot under /workspace/artifacts - can be served to the review panel.
               { name: 'agent-workspace', mountPath: AGENT_WORKSPACE_MOUNT, readOnly: true },
-              { name: 'workspaces', mountPath: WORKSPACES_MOUNT, readOnly: true },
+              /*
+               * Writable, and that is a deliberate change rather than an oversight.
+               *
+               * It was read-only while this service only ever looked at a workspace's artifacts.
+               * It now holds the review state too - the comments an agent has written and not yet
+               * posted - which used to be a ConfigMap nobody could see and is now a file in the
+               * artifact store, staged into the workspace (see reviewPaths in server.mjs).
+               *
+               * The alternative was to write through an exec into the workspace's own pod, and it
+               * does not work for the case that matters: 54 of the 60 pull requests with review
+               * state on this node have no workspace at all, so there is no pod to exec into and
+               * the write has nowhere to go. This service is the only writer of that data either
+               * way.
+               */
+              { name: 'workspaces', mountPath: WORKSPACES_MOUNT },
             ],
             readinessProbe: { httpGet: { path: '/', port: API_PORT }, periodSeconds: 10 },
           }],

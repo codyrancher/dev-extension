@@ -887,12 +887,127 @@ async function ciFailureLog(repo, num, checkId) {
 
 const reviewMap = (num) => `dev-review-pr-${ num }`;
 
+/*
+ * Where a pull request's review state lives, and why it moved out of a ConfigMap.
+ *
+ * It was `dev-review-pr-<n>` in dev-system, one ConfigMap per pull request, holding the pending
+ * comments an agent has written and not yet posted. That put a person's unposted work somewhere
+ * they could not see it, edit it, or find it with anything they already use: not in the
+ * workspace the agent was working in, not among the artifacts that workspace keeps, not on the
+ * disk at all.
+ *
+ * It is a file now, and WHERE is the part worth being careful about. The obvious answer - the
+ * workspace directory - is wrong on its own, and measurably: of the 60 pull requests with review
+ * state on this node, 54 have no workspace any more. Pending comments outlive the workspace that
+ * wrote them, nearly always, so a home inside one would have stranded or lost nine in ten.
+ *
+ * So the home is the artifact store, keyed by subject - the same `/workspaces/.artifacts/<subject>`
+ * that recordings and reports already go to, which nothing deletes but a person - and the
+ * workspace stages it as a SYMLINK to that file. One file, two names: an agent in the workspace
+ * reads and writes `artifacts/review/comments.json` like any file it owns, and there is no second
+ * copy to diverge from it or to decide between when the workspace goes away.
+ */
+// A function, not a const: WORKSPACES_ROOT is declared further down this file, and a `const`
+// up here that read it would throw at import - the whole service, not this one store - the
+// moment anything touched it. Caught before shipping; the lazy form cannot be ordered wrongly.
+const reviewStore = () => `${ WORKSPACES_ROOT }/.artifacts`;
+
+/** The workspace on this node for a pull request, by name. `pr-<n>`, with or without a prefix. */
+function workspaceForPr(num) {
+  const wanted = new RegExp(`(^|-)pr-${ Number(num) }$`);
+
+  try {
+    return fs.readdirSync(WORKSPACES_ROOT).find((name) => !name.startsWith('.') && wanted.test(name)) || '';
+  } catch {
+    return '';
+  }
+}
+
+/** The file a review document is held in, and the name the workspace stages it under. */
+function reviewPaths(num, key) {
+  const home = `${ reviewStore() }/pr-${ Number(num) }/review`;
+  const workspace = workspaceForPr(num);
+
+  return {
+    file:  `${ home }/${ key }`,
+    home,
+    staged: workspace ? `${ WORKSPACES_ROOT }/${ workspace }/artifacts/review/${ key }` : '',
+  };
+}
+
+/**
+ * Read a review document: the file, then the ConfigMap it used to be in.
+ *
+ * The fallback is not forever - it is how the sixty that exist today are still readable before
+ * anything has written them again - and a read that finds one writes it out, so a store moves
+ * itself across the first time somebody opens it.
+ */
+async function readReview(num, key) {
+  const { file } = reviewPaths(num, key);
+
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) ?? null;
+  } catch { /* not there yet, or not readable: try where it used to be */ }
+
+  const legacy = await readDoc(reviewMap(num), key).catch(() => null);
+
+  if (legacy !== null) {
+    await writeReview(num, key, legacy).catch(() => undefined);
+  }
+
+  return legacy;
+}
+
+/**
+ * Write a review document, and stage it in the workspace.
+ *
+ * Written to a temporary name and renamed over the target, so a reader never sees half a
+ * document - and so the symlink below is never pointed at a file that is mid-write.
+ *
+ * The staged name is a symlink and is only ever created, never written through: if something is
+ * already there and is not our symlink - a real file from an older build - it is left exactly as
+ * it is, because the one thing this must not do is delete somebody's unposted comments while
+ * tidying up where they are kept.
+ */
+async function writeReview(num, key, value) {
+  const { file, home, staged } = reviewPaths(num, key);
+
+  fs.mkdirSync(home, { recursive: true });
+
+  const temp = `${ file }.${ process.pid }.tmp`;
+
+  fs.writeFileSync(temp, JSON.stringify(value));
+  // Owned by the node user, which is who reads and writes it through the staged name. This
+  // service runs as root, so without it the file an agent is told it owns is one it cannot
+  // write - and the symlink below would be a promise this does not keep. Best effort: a
+  // filesystem that refuses the chown is not a reason to lose the write.
+  try {
+    fs.chownSync(temp, 1000, 1000);
+  } catch { /* not every filesystem allows it; the content still landed */ }
+  fs.renameSync(temp, file);
+
+  if (staged) {
+    try {
+      fs.mkdirSync(path.dirname(staged), { recursive: true });
+
+      const already = fs.existsSync(staged) ? fs.lstatSync(staged) : null;
+
+      if (!already) {
+        fs.symlinkSync(file, staged);
+      } else if (already.isSymbolicLink() && fs.readlinkSync(staged) !== file) {
+        fs.unlinkSync(staged);
+        fs.symlinkSync(file, staged);
+      }
+    } catch { /* a workspace we cannot write into is not a reason to lose the write above */ }
+  }
+}
+
 async function localComments(num) {
-  return (await readDoc(reviewMap(num), 'comments.json')) || [];
+  return (await readReview(num, 'comments.json')) || [];
 }
 
 async function saveComments(num, comments) {
-  await writeDoc(reviewMap(num), 'comments.json', comments, { 'dev.rancher.io/pr': String(num) });
+  await writeReview(num, 'comments.json', comments);
 }
 
 // Where the agent pod's files are, as this pod sees them. The Studio's agent keeps its
@@ -2884,7 +2999,7 @@ async function prDetail(repo, num) {
       id: c.id, author: c.user?.login, body: c.body, createdAt: c.created_at,
     })),
     localComments: (await localComments(num)).map(decorate),
-    run:           await readDoc(reviewMap(num), 'run.json'),
+    run:           await readReview(num, 'run.json'),
     viewer:        await githubViewer(),
     // Every review submitted on the PR, whoever submitted it and from wherever: the rail's
     // "Submitted" reads these too, so a review left on GitHub itself counts.
@@ -4853,7 +4968,7 @@ const routes = [
     return { combined: false, files: [...byFile.values()].sort((a, b) => a.path.localeCompare(b.path)) };
   }],
   ['GET', /^\/my-work\/pr\/(\d+)\/review-run$/, async(m) => {
-    const run = await readDoc(reviewMap(Number(m[1])), 'run.json');
+    const run = await readReview(Number(m[1]), 'run.json');
 
     rememberReviewWorkspace(m[1], run);
 
@@ -4867,7 +4982,7 @@ const routes = [
       throw failure(400, `bad state; one of ${ RUN_STATES.join(', ') }`);
     }
 
-    const previous = (await readDoc(reviewMap(num), 'run.json')) || {};
+    const previous = (await readReview(num, 'run.json')) || {};
     const run = {
       pr:        num,
       project:   typeof body.project === 'string' ? body.project : (previous.project || null),
@@ -4877,7 +4992,7 @@ const routes = [
       updatedAt: new Date().toISOString(),
     };
 
-    await writeDoc(reviewMap(num), 'run.json', run, { 'dev.rancher.io/pr': String(num) });
+    await writeReview(num, 'run.json', run);
     rememberReviewWorkspace(num, run);
 
     return { run };
