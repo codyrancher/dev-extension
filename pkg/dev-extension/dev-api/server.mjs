@@ -5295,6 +5295,67 @@ function workspaceFromInstance(inst) {
   };
 }
 
+/**
+ * Every workspace tree on this node: the thing that says a workspace exists.
+ *
+ * A directory under /workspaces IS the workspace. Everything else about one - its namespace, its
+ * Installation, its pod - is machinery that can be absent, late, or left behind, and for a long
+ * time the sidebar was built out of that machinery instead: a list of Installations, enriched
+ * with namespaces. So a workspace could be listed with nothing on disk behind it, and a tree
+ * could sit on the disk for weeks with nothing listing it - 25 of them, at one point, which
+ * nobody saw because nothing was looking at the disk.
+ *
+ * Dotted names are not workspaces. `.artifacts`, `.shared` and `.store` are this node's own,
+ * and `safeName` in the extension refuses a leading dot for exactly that reason.
+ */
+function workspaceDirs() {
+  try {
+    return fs.readdirSync(WORKSPACES_ROOT, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => e.name);
+  } catch {
+    // The mount is missing or unreadable. An empty list here would delete every workspace from
+    // the sidebar, so the caller is told nothing rather than told "none" - see reconcileRegistrar.
+    return null;
+  }
+}
+
+/**
+ * A workspace that is only a directory: no namespace, no Installation, nothing running.
+ *
+ * Which is a real state and not an error. It is what a workspace is after its cluster objects
+ * are gone but its checkout, its artifacts and its conversations are not - and what the Apps
+ * Plus side looks like while a cluster is unreachable. Listing it is the honest answer: the work
+ * is on the disk, and a person can open it, read it, or delete it for good.
+ */
+function workspaceFromDirectory(name) {
+  return {
+    name,
+    title:     '',
+    namespace: `dev-${ name }`,
+    cluster:   'local',
+    app:       '',
+    port:      DEFAULT_WORKSPACE_PORT,
+    scheme:    DEFAULT_WORKSPACE_SCHEME,
+    preview:   false,
+    state:     'stopped',
+    createdAt: statCreated(name),
+    image:     '',
+    replicas:  0,
+    ready:     0,
+    detail:    'on disk; nothing running',
+  };
+}
+
+/** When the tree was made, which is the closest thing a directory has to a creation time. */
+function statCreated(name) {
+  try {
+    return new Date(fs.statSync(`${ WORKSPACES_ROOT }/${ name }`).mtime).toISOString();
+  } catch {
+    return '';
+  }
+}
+
 // Index labelled objects by workspace name (last wins, as listWorkspaces' own map build does).
 function byWorkspace(list) {
   const map = new Map();
@@ -5332,15 +5393,47 @@ async function reconcileRegistrar(instances) {
   const downstream = (await readDoc(DOWNSTREAM_STATE, 'state.json').catch(() => null)) || {};
   const workspaces = [];
 
-  for (const inst of instances.items || []) {
-    const labels = inst.metadata?.labels || {};
-    const name = labels[LABEL_WORKSPACE];
+  /*
+   * What exists is what is on the disk, plus what is on its way there.
+   *
+   * The disk comes first and is the reason a workspace is listed at all: a tree under
+   * /workspaces IS the workspace, and its namespace and Installation are machinery that may be
+   * absent, late, or left behind. An Installation with no tree yet is kept too, because the
+   * tree is made by the pod a minute or so after the Installation is - and a workspace that
+   * vanished from the sidebar for the first minute of its life would be a worse bug than the
+   * one this fixes.
+   *
+   * A directory listing that FAILED is not an empty disk: `workspaceDirs` answers null for that,
+   * and the registrar is left alone this tick for the same reason the three reads above do it.
+   */
+  const dirs = workspaceDirs();
 
-    if (!name) continue;
+  if (!dirs) {
+    console.error('[dev-api] reconcileRegistrar: the workspaces disk could not be read, leaving registrar unchanged this tick');
+
+    return;
+  }
+
+  const instBy = new Map();
+
+  for (const inst of instances.items || []) {
+    const name = inst.metadata?.labels?.[LABEL_WORKSPACE];
+
+    if (name) {
+      instBy.set(name, inst);
+    }
+  }
+
+  for (const name of [...new Set([...dirs, ...instBy.keys()])]) {
+    const inst = instBy.get(name) || null;
+    const labels = inst?.metadata?.labels || {};
     const cluster = labels[LABEL_CLUSTER] || 'local';
     let ws;
 
-    if (cluster === 'local' && nsBy.has(name)) {
+    if (!inst && !nsBy.has(name)) {
+      // A tree and nothing else. Listed, because the work in it is still there to open.
+      ws = workspaceFromDirectory(name);
+    } else if (cluster === 'local' && nsBy.has(name)) {
       ws = workspaceFromLocal(nsBy.get(name), depBy.get(name), podBy.get(name));
     } else {
       ws = workspaceFromInstance(inst);
@@ -5355,7 +5448,7 @@ async function reconcileRegistrar(instances) {
         }
       }
     }
-    if (inst.metadata?.deletionTimestamp) ws.state = 'removing';
+    if (inst?.metadata?.deletionTimestamp) ws.state = 'removing';
     ws.role = labels[LABEL_ROLE] || '';
     workspaces.push(ws);
   }
