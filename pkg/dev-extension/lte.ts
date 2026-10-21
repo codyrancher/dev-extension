@@ -218,6 +218,25 @@ export function lteWorkspaceApp(): Json {
             '            - -c',
             `            - ${ JSON.stringify(LTE_SCRIPT) }`,
             '          env:',
+            // Where a package manager keeps what it downloads: one store on the node, for
+            // every workspace on it.
+            //
+            // The init script already exported these before its own `yarn install`, and that is
+            // why there IS a shared store - but an export in one shell reaches one shell. An
+            // agent typing `yarn install` in a pane, which is most of the installs that happen
+            // after the first, inherited nothing and filled `$HOME/.cache/yarn` instead: 6.0 GB
+            // of per-workspace caches across seven workspaces, 3.0 GB of it in one created the
+            // day before this was written, all of it a second copy of what is already in the
+            // store. On the pod they reach every process in it.
+            //
+            // The store is on the same filesystem as the checkouts, so a cache hit is a local
+            // copy rather than a download - which is the spin-up time, not the disk.
+            '            - name: YARN_CACHE_FOLDER',
+            '              value: /workspaces/.shared/yarn',
+            '            - name: npm_config_cache',
+            '              value: /workspaces/.shared/npm',
+            '            - name: CYPRESS_CACHE_FOLDER',
+            '              value: /workspaces/.shared/cypress',
             '            - name: NODE_OPTIONS',
             '              value: --max_old_space_size=4096',
             '            - name: NODE_IP',
