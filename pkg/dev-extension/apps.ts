@@ -383,13 +383,25 @@ async function stampRendered(instance: Json, stamp: string): Promise<void> {
  * having changed - and it happens once per change rather than once per poll, because the
  * fingerprint is written back.
  *
- * Only Installations this product renders from its own Apps: a Rancher instance is somebody's
- * cluster, and re-rendering that on a definition edit is a bigger promise than this makes.
+ * Rancher instances are rendered too, and that is a deliberate reversal.
+ *
+ * This used to skip them - "a Rancher instance is somebody's cluster, and re-rendering that on a
+ * definition edit is a bigger promise than this makes" - which sounds careful and had the
+ * opposite effect. It meant a fix to the App could not reach an instance built from it, ever, by
+ * any route. A defect that killed the parent's cluster agent on every instance from its first
+ * minute survived for weeks behind that rule, and the only remedy left was to delete somebody's
+ * Rancher and build another.
+ *
+ * What makes it safe enough to do is what the rule was afraid of, measured rather than assumed:
+ * the fingerprint fires once per definition change, not once per poll; Fleet applies the release
+ * in place; and a Deployment whose content has not changed is not restarted by re-applying it.
+ * A definition edit that DOES change the Deployment will roll the instance's Rancher - which is
+ * the honest cost of having changed it, and is the same cost every workspace already pays.
  */
 async function rerenderIfStale(instance: Json, stamp: string): Promise<void> {
   const rendered = instance.metadata?.annotations?.[RENDERED_FROM] || '';
 
-  if (!stamp || instance.metadata?.labels?.['dev.rancher.io/kind'] === 'rancher') {
+  if (!stamp) {
     return;
   }
   // Nothing recorded means it was rendered before this existed, which is exactly the set of
