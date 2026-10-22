@@ -26,7 +26,7 @@ import {
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
 import {
-  workspaceStatuses, agentLabel, statusLine, stageName, attentionTone, autoStopIdle
+  workspaceStatuses, agentLabel, statusLine, stageName, attentionTone, attentionReason, autoStopIdle
 } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import { ensureCertControllers } from '../certs';
@@ -642,6 +642,8 @@ export default {
           // The row's colour says one thing: whether this workspace is waiting on me. See
           // attentionTone - the stage's words are beside it and the PR's checks are on the PR.
           tone:   status ? attentionTone(status) : undefined,
+          // What that colour means, for the tooltip on the dot. See attentionReason.
+          dotTitle: status ? attentionReason(status) : '',
           // The agent's state is carried by the row's status disc (its colour), not a glyph; the
           // words are on the card.
           agent:  status?.agent,

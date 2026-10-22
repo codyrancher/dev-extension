@@ -8,7 +8,7 @@
 // background; the sidebar shows whatever was last read and never waits on it.
 import { prDetail, DEFAULT_REPO } from './reviews';
 import { linkedPullRequest, branchPullRequest, issueBody } from './github';
-import { conversationStates, ConversationState } from './conversations';
+import { conversationStates, agentConversations, ConversationState } from './conversations';
 import { setWorkspaceRunning } from './api';
 import { isLte } from './config/constants';
 import { reconcileStage } from './stages';
@@ -163,6 +163,34 @@ export function attentionTone(status: Pick<WorkspaceStatus, 'tone' | 'agent'>): 
   return status.tone === 'muted' ? 'attention' : status.tone;
 }
 
+/**
+ * Why the dot is the colour it is, in a sentence - the tooltip on it.
+ *
+ * Beside attentionTone rather than wherever a dot is drawn, because a colour and the words for
+ * it have to be decided together or they drift: the tooltip used to be the workspace pod's
+ * lifecycle state ("Running"), which the colour stopped being about, and a row reading
+ * "Developer responded" with no agent in it under a tooltip saying Running is two answers to
+ * one question.
+ */
+export function attentionReason(status: Pick<WorkspaceStatus, 'tone' | 'agent'>): string {
+  if (status.agent === 'input') {
+    return 'An agent asked something and stopped until it hears back';
+  }
+  if (status.agent === 'working') {
+    return 'An agent is working';
+  }
+  switch (attentionTone(status)) {
+  case 'attention':
+    return 'Nothing is running - this is waiting on you';
+  case 'waiting':
+    return 'Waiting on somebody else';
+  case 'green':
+    return 'Nothing is waiting on you';
+  default:
+    return 'Nothing is running';
+  }
+}
+
 export function agentLabel(state: AgentState): string {
   return AGENT_LABEL[state];
 }
@@ -276,12 +304,33 @@ async function refreshAgents(): Promise<void> {
     agentsInFlight = (async() => {
       try {
         const next: Record<string, AgentState> = {};
+        /*
+         * The pod's own answer first: which conversations each workspace HAS, crossed with what
+         * each one is DOING. See agentConversations.
+         *
+         * The fallback below infers the first from the second, and that is the inaccuracy it
+         * replaces - a state left behind by a conversation that has gone still names a workspace,
+         * because the workspace is read out of the id, so the workspace went on reporting an
+         * idle agent with nothing in it. Every state here belongs to a conversation the pod has
+         * just listed.
+         */
+        const asked = await agentConversations();
 
-        for (const c of await conversationStates()) {
-          const state = agentStateOf(c);
+        if (asked) {
+          for (const row of asked) {
+            if (RANK[row.state] > RANK[next[row.workspace] || 'none']) {
+              next[row.workspace] = row.state;
+            }
+          }
+        } else {
+          // The agents half cannot answer: an older bundle on the page, or a pod that is away.
+          // The watcher's document is less exact and is still better than going blank.
+          for (const c of await conversationStates()) {
+            const state = agentStateOf(c);
 
-          if (RANK[state] > RANK[next[c.workspace] || 'none']) {
-            next[c.workspace] = state;
+            if (RANK[state] > RANK[next[c.workspace] || 'none']) {
+              next[c.workspace] = state;
+            }
           }
         }
         agents = next;

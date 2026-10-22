@@ -31,7 +31,7 @@ import StageSteps from './StageSteps.vue';
 import CodeView from './code/CodeView.vue';
 import { fromRailRows } from './code/rows';
 import {
-  readStatusNow, knownStatus, provisionalStatus, agentLabel, agentStateOf, displayTone, setManualStage, clearManualStage, isManual
+  readStatusNow, knownStatus, provisionalStatus, agentLabel, displayTone, setManualStage, clearManualStage, isManual
 } from '../workspace-status';
 import {
   stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
@@ -39,7 +39,7 @@ import {
 import { prFile, openConversation } from '../reviews';
 import { toggleTask } from '../pr-body.mjs';
 import {
-  listConversations, startConversation, queuePrompt, startPaneDetached, conversationStates, sendToPane, renameConversation, endConversation
+  listConversations, startConversation, queuePrompt, startPaneDetached, workspaceAgentStates, sendToPane, renameConversation, endConversation
 } from '../conversations';
 import { ensureWorkspaceReady, putArtifact, saveArtifact, devServerState, stopDevServer, startDevServer} from '../workspace-tools';
 import WorkspaceTools from './WorkspaceTools.vue';
@@ -1736,13 +1736,6 @@ export default {
       this.openComments = { ...this.openComments, [c.id]: !(this.openComments[c.id] ?? !c.answered) };
     },
 
-    /**
-     * Which of this workspace's conversations have a pane up, and what each is doing.
-     *
-     * `conversationStates` is one exec for every workspace at once, so this filters rather than
-     * asks for its own. A conversation that has just been started is not in `conversations`
-     * yet, so the listing is refreshed when the set of live ids changes.
-     */
     /** Tabbed says which conversation is on show; the terminal follows it. */
     onLiveTab({ tab }) {
       this.liveShown = tab.name;
@@ -1931,8 +1924,20 @@ export default {
       await this.refreshLive();
     },
 
+    /**
+     * What each of this workspace's conversations is doing.
+     *
+     * Asked of the agents half about THIS workspace: its conversations, and the state of each
+     * (workspaceAgentStates). It used to read every conversation in the dashboard out of
+     * dev-api's watcher document and keep the lines whose id parsed to this workspace's name -
+     * which meant a state left behind by a conversation that had gone still lit a tab, and a
+     * workspace with nothing in it still reported an idle agent. The pod lists what is actually
+     * there, and a state for anything it does not list is not this workspace's business.
+     *
+     * A conversation that has never run is `none` and is not a pane; everything else is.
+     */
     async refreshLive() {
-      const states = await conversationStates().catch(() => null);
+      const states = await workspaceAgentStates(this.workspace.name).catch(() => null);
 
       if (!states) {
         return;
@@ -1940,9 +1945,9 @@ export default {
 
       const next = {};
 
-      for (const c of states) {
-        if (c.workspace === this.workspace.name && c.alive) {
-          next[c.id] = agentStateOf(c);
+      for (const [id, state] of Object.entries(states)) {
+        if (state !== 'none') {
+          next[id] = state;
         }
       }
       const before = Object.keys(this.live).sort().join(',');
@@ -2019,9 +2024,14 @@ export default {
       const newest = shown || about[about.length - 1] || conversations[conversations.length - 1];
 
       if (newest && reuse) {
-        const alive = (await conversationStates().catch(() => [])).find((c) => c.id === newest.id)?.alive;
+        // Is there a claude in that pane to type into. Asked of the same pair the strip's dots
+        // come from, so one answer: `finished` is a pane whose claude has exited and `none` is a
+        // conversation that has never run, and both want the queue-and-start path below - which
+        // is what restarts claude - rather than a keystroke into a pane with nothing reading it.
+        const states = await workspaceAgentStates(this.workspace.name).catch(() => ({}));
+        const running = ['working', 'input', 'idle'].includes(states[newest.id]);
 
-        if (alive) {
+        if (running) {
           // Typed into the pane, because a queued prompt is only read when claude starts: on a
           // conversation already running it would sit in the queue and nothing would happen.
           await sendToPane(newest.id, text);

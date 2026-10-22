@@ -23,7 +23,7 @@ import { activityBucket } from './chat-state.mjs';
 // there rather than spelled as a regex here, because the same question is asked in four other
 // places and they have to agree. See conversation-id.mjs.
 import {
-  locationSlug, isConversationId, isDrawerConversationId, isProjectConversationId, conversationOrdinal,
+  locationSlug, isConversationId, isDrawerConversationId, isProjectConversationId, conversationOrdinal, conversationProject,
 } from './conversation-id.mjs';
 import type { InstallStep } from './ensure';
 import { VERSION_ANNOTATION, contentVersion, ensureCurrent } from './ensure';
@@ -693,6 +693,67 @@ export async function agentSessions(): Promise<AgentSession[]> {
     // sort reads; see conversation-id.mjs.
     .filter((session) => isDrawerConversationId(session.id))
     .sort((a, b) => conversationOrdinal(a.id) - conversationOrdinal(b.id));
+}
+
+/** A workspace's conversation as the pod holds it: who it belongs to, and what it is doing. */
+export interface PodConversation {
+  id: string;
+  /** The workspace the id names. Never empty - a conversation whose id names none is left out. */
+  project: string;
+  title: string;
+  cli: string;
+  state: AgentActivity;
+}
+
+/**
+ * What each conversation is doing, by id, for a caller outside this bundle.
+ *
+ * `sessionStates` is the real work and is private because the bucket it applies has to be the
+ * one this extension applies everywhere; this is the same answer as a plain object, which is
+ * what crosses a `window` boundary without a Map's identity going with it. A conversation that
+ * has never run has no entry - see sessions.sh, which keys the verb on the state files - so a
+ * missing id is `none` and the caller reads it that way.
+ */
+export async function conversationActivity(project = ''): Promise<Record<string, AgentActivity>> {
+  return Object.fromEntries(await sessionStates(project));
+}
+
+/**
+ * Every workspace conversation the pod holds, with what each is doing.
+ *
+ * The same two facts `agentSessions` crosses for the drawer's tabs, for the workspaces' - and
+ * for the same reason the drawer asks the pod rather than remembering: the pod is the only
+ * place a conversation exists. `list` is which conversations ARE there; `states` is what each
+ * is doing, and only the ones that have run have a line. A conversation in the first and not
+ * the second is `none`, which is a conversation nobody has opened; an id in the second and not
+ * the first is a conversation that has gone, and it is dropped, because a state for something
+ * that is not there is the thing a status read off states alone gets wrong.
+ *
+ * Two execs for every workspace in the dashboard, not two per workspace: that is why this
+ * lists the pod and divides the answer up, rather than being asked a workspace at a time.
+ *
+ * It throws rather than answering with an empty list, unlike `agentSessions`. An empty list is
+ * the honest answer for a pod that is still booting when a panel is being drawn; it is not an
+ * honest answer to "what is every workspace doing", where it would mark nine workspaces as
+ * having no agent at all. A caller keeps what it had and asks again.
+ */
+export async function projectConversations(): Promise<PodConversation[]> {
+  const [listing, states] = await Promise.all([
+    sessionScript(['list'], 'read the conversations in the agent pod'),
+    sessionStates(),
+  ]);
+
+  return listing.split('\n')
+    .map((line) => line.replace(/\r$/, ''))
+    .filter(Boolean)
+    .map(sessionLine)
+    .map((session) => ({
+      ...session,
+      project: conversationProject(session.id) || '',
+      state:   states.get(session.id) || ('none' as AgentActivity),
+    }))
+    // The drawer's own (`agent-<n>`) name no workspace and are not any workspace's business.
+    .filter((session) => !!session.project);
 }
 
 /** Where a conversation's directory and the files beside it live in the pod. */

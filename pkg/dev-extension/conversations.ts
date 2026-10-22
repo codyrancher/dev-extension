@@ -27,7 +27,7 @@ type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 import {
   workspaceWorkdir, workspaceShellWrapper, AGENT_HOME, AGENT_WORKSPACE
 } from './config/constants';
-import type { SessionMode, ConversationOrigin } from './agent';
+import type { SessionMode, ConversationOrigin, AgentActivity } from './agent';
 // One answer to every "which workspace is this id's" and "is this an id at all", shared with
 // agent.ts, the pod's sessions.sh and the in-cluster API. See conversation-id.mjs.
 import { conversationProject, conversationLabel, isConversationId, conversationBase } from './conversation-id.mjs';
@@ -259,6 +259,57 @@ export async function conversationStates(): Promise<ConversationState[]> {
   }
 
   return conversationStatesByExec();
+}
+
+/**
+ * What every workspace's agents are doing, asked of the agents half itself.
+ *
+ * Two questions, crossed, and that is the whole of the fix this is:
+ *
+ *   1. which conversations a workspace HAS - the pod's own session directories.
+ *   2. what each conversation is DOING - the pod's own states verb.
+ *
+ * `conversationStates` below answers the second alone and infers the first from it, which is
+ * how a workspace came to read "agent idle" with nothing running in it: the states it reads
+ * come from dev-api's watcher document, a conversation's entry outlives the conversation, and
+ * an id is attributed to a workspace by parsing it - so one leftover entry naming
+ * `p-lte-pr-19380-2` made the workspace idle whether or not that conversation was still there.
+ * A state for a conversation the pod does not list is now dropped rather than counted.
+ *
+ * `null` when the agents half cannot answer - a bundle older than this one, or a pod that is
+ * away - so a caller can keep what it had rather than publish "nothing is running anywhere".
+ */
+export async function agentConversations(): Promise<{ id: string; workspace: string; state: AgentActivity }[] | null> {
+  const api = studioApi();
+
+  if (!api?.agent?.projectConversations) {
+    return null;
+  }
+
+  try {
+    const rows = await api.agent.projectConversations();
+
+    return rows.map((row) => ({ id: row.id, workspace: row.project, state: row.state }));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One workspace's conversations and what each is doing, by id.
+ *
+ * The same pair as above for a single workspace, which is two execs scoped to it rather than to
+ * the pod: what a page already looking at one workspace wants. A conversation the pod lists but
+ * the states verb does not mention has never run, and comes back as `none`.
+ */
+export async function workspaceAgentStates(workspace: string): Promise<Record<string, AgentActivity>> {
+  const api = await requireAgents();
+  const [sessions, states] = await Promise.all([
+    api.agent.projectSessions(workspace),
+    api.agent.states ? api.agent.states(workspace) : Promise.resolve({} as Record<string, AgentActivity>),
+  ]);
+
+  return Object.fromEntries(sessions.map((session) => [session.id, states[session.id] || 'none']));
 }
 
 /** Look now, for a caller that has just changed something. One call, best effort. */
@@ -666,6 +717,16 @@ export interface StudioBrowserApi {
     /** `cli` is which CLI holds it, from the pane's own record. Optional: an older bundle on
      * the page answers without it, and '' and undefined both read as claude. */
     projectSessions(project: string): Promise<{ id: string; title: string; cli?: string }[]>;
+    /**
+     * What each conversation is doing, by id, as the pod decides it. A conversation that has
+     * never run has no entry, so a missing id means no agent.
+     *
+     * Optional, like `cli` above and for the same reason: a page can be holding a bundle older
+     * than this one, and every caller has a path that does not need it.
+     */
+    states?(project?: string): Promise<Record<string, AgentActivity>>;
+    /** Every workspace conversation in the pod with what each is doing; see agent.ts. */
+    projectConversations?(): Promise<{ id: string; project: string; title: string; cli: string; state: AgentActivity }[]>;
     /** A new drawer conversation; its id. `from` is where it was started, for the id to carry. */
     start(from?: ConversationOrigin): Promise<string>;
     /** `from` is where it was started, which the id carries; see conversation-id.mjs. */

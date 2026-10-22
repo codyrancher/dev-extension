@@ -16,8 +16,9 @@ import PodTerminal from './components/PodTerminal.vue';
 import {
   AGENT_CONTAINER, agentPod, agentSessions, projectSessions, startAgentSession, startProjectSession,
   renameAgentSession, endAgentSession, queueSessionPrompt, sessionCommand, sessionPane,
+  conversationActivity, projectConversations,
 } from './agent';
-import type { ConversationOrigin } from './agent';
+import type { ConversationOrigin, AgentActivity, PodConversation } from './agent';
 import { AGENT_NS } from './pod';
 
 /** Where the API is: `window.__agents`. */
@@ -67,6 +68,27 @@ export interface AgentsBrowserApi {
      * drawer never lists. */
     projectSessions(project: string): Promise<{ id: string; title: string; cli?: string }[]>;
     /**
+     * What each conversation is doing, by id: working, input, idle, finished.
+     *
+     * The pod decides it, because the two facts it turns on are reachable from nowhere else - a
+     * tmux server answers only to a process inside the pod, and a turn spent inside subagents
+     * fires no hook, so the only sign of it is a transcript file moving. One project's
+     * conversations, or every one in the pod when no project is named.
+     *
+     * A conversation that has never run has no entry; read a missing id as having no agent.
+     * This says what is running, and NOT what exists - pair it with `projectSessions` or use
+     * `projectConversations`, which is the pair already crossed.
+     */
+    states(project?: string): Promise<Record<string, AgentActivity>>;
+    /**
+     * Every workspace conversation in the pod, with what each is doing: which conversations a
+     * workspace has and what each of them is up to, in two execs for the whole dashboard.
+     *
+     * Throws rather than answering empty, so a caller can keep what it had while the pod is
+     * away instead of reporting that nothing is running anywhere.
+     */
+    projectConversations(): Promise<PodConversation[]>;
+    /**
      * Start a free-standing conversation.
      *
      * It is marked as started through this API, which is what keeps it out of the agent panel's
@@ -102,6 +124,8 @@ export function installBrowserApi(version: string): AgentsBrowserApi {
       command:        sessionCommand,
       sessions:       agentSessions,
       projectSessions,
+      states:         conversationActivity,
+      projectConversations,
       // 'api' and not the default: see `start` above. Everything that is not the panel itself
       // comes through here, so this is the one place it has to be said.
       start:          (from?: ConversationOrigin) => startAgentSession('api', from),

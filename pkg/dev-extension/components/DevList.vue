@@ -225,8 +225,25 @@ export default {
       return TONE_DOT[row.tone] || colorForState(row.state);
     },
 
+    /**
+     * What the dot means, in words.
+     *
+     * The dot's colour says whether the row is waiting on a person (attentionTone); its tooltip
+     * said "Running", which is the pod's lifecycle state and the one thing the colour has not
+     * been about since it stopped being drawn from `row.state`. A row reading "Developer
+     * responded" with nothing running in it, under a tooltip saying Running, is the disagreement
+     * this removes. The lifecycle is still the tooltip where it is still the colour: a row that
+     * is stopped, erroring or has no status yet is drawn from its state, and says so.
+     */
     stateLabel(row) {
-      return this.isDeleting(row) ? 'Deleting' : stateDisplay(row.state);
+      if (this.isDeleting(row)) {
+        return 'Deleting';
+      }
+      if (row.state && row.state !== 'running') {
+        return stateDisplay(row.state);
+      }
+
+      return row.dotTitle || row.agentTitle || stateDisplay(row.state);
     },
 
     /**
