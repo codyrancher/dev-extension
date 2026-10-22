@@ -110,7 +110,13 @@ export default {
         const prompt = this.lines
           ? linesPrompt(this.pr, this.lines, message, this.repo)
           : discussPrompt(this.pr, this.comment, message, this.repo);
-        const conversation = await startDiscussion(this.workspace, this.title, prompt);
+        // The file and the line go into the conversation's id as well as into the prompt, so
+        // that coming back to this comment tomorrow - or finding the pane in `tmux ls` - says
+        // which line it was about. See conversation-id.mjs.
+        const at = this.lines || this.comment || {};
+        const conversation = await startDiscussion(this.workspace, this.title, prompt, {
+          path: at.path || '', line: at.line || 0, label: `pr-${ this.pr }-comment`,
+        });
 
         this.current = conversation.id;
         this.draft = '';

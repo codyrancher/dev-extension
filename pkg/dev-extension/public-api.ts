@@ -17,6 +17,7 @@ import {
   AGENT_CONTAINER, agentPod, agentSessions, projectSessions, startAgentSession, startProjectSession,
   renameAgentSession, endAgentSession, queueSessionPrompt, sessionCommand, sessionPane,
 } from './agent';
+import type { ConversationOrigin } from './agent';
 import { AGENT_NS } from './pod';
 
 /** Where the API is: `window.__agents`. */
@@ -62,7 +63,8 @@ export interface AgentsBrowserApi {
      * the older shape still type-checks.
      */
     sessions(): Promise<{ id: string; title: string; cli?: string }[]>;
-    /** One project's conversations - `p-<project>-<n>`, which the drawer never lists. */
+    /** One project's conversations - `p-<project>-<n>` and `p-<project>_<where>-<n>`, which the
+     * drawer never lists. */
     projectSessions(project: string): Promise<{ id: string; title: string; cli?: string }[]>;
     /**
      * Start a free-standing conversation.
@@ -72,9 +74,14 @@ export interface AgentsBrowserApi {
      * machinery started turning up there as a tab nobody opened - closable, and closing it
      * ended the work - is what this is for. Reach it by its id, with the terminal component or
      * `pane`, which is how whatever started it knows about it in the first place.
+     *
+     * `from` is where it is being started: `{ path, line }`, a label, or an already slugged
+     * location. It goes into the id itself - `agent_pr-19630-review-4` - so the conversation
+     * can be found again, resumed, or ended with the thing it was about. Leave it out when
+     * there is nowhere in particular; the id then keeps the short form.
      */
-    start(): Promise<string>;
-    startInProject(project: string, title?: string, prompt?: string): Promise<string>;
+    start(from?: ConversationOrigin): Promise<string>;
+    startInProject(project: string, title?: string, prompt?: string, from?: ConversationOrigin): Promise<string>;
     /** Queue what a conversation opens with; read the first time a pane attaches. */
     queue(id: string, prompt: string): Promise<void>;
     rename(id: string, title: string): Promise<void>;
@@ -97,7 +104,7 @@ export function installBrowserApi(version: string): AgentsBrowserApi {
       projectSessions,
       // 'api' and not the default: see `start` above. Everything that is not the panel itself
       // comes through here, so this is the one place it has to be said.
-      start:          () => startAgentSession('api'),
+      start:          (from?: ConversationOrigin) => startAgentSession('api', from),
       startInProject: startProjectSession,
       queue:          queueSessionPrompt,
       rename:         renameAgentSession,

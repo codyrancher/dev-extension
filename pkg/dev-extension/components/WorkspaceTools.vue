@@ -180,7 +180,17 @@ export default {
     async rebuild(kind) {
       this.shareBusy = kind;
       try {
-        await rebuildPreview(this.workspace, 'local', kind);
+        /*
+         * The cluster the share is actually ON, not `local`.
+         *
+         * rebuildPreview deletes the share's pods to make it build again, and it looks for
+         * them on the cluster it is given. Hardcoding `local` meant that for every share with
+         * a public sslip address - which is exactly the ones hosted on a Rancher instance's
+         * node - it listed pods on the wrong cluster, found none, deleted nothing, and the
+         * panel said "the share is rebuilding" while nothing happened. `shareWorkspace` has
+         * always used `state.hostedOn || host.id`; this did not.
+         */
+        await rebuildPreview(this.workspace, this.shares[kind]?.hostedOn || 'local', kind);
         this.$emit('notice', `The ${ kind } share is rebuilding from the branch as it is now.`);
         await this.readShares();
       } catch (e) {

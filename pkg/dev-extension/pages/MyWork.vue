@@ -49,6 +49,8 @@ import {
   DEV_PRODUCT, BLANK_CLUSTER, SETTINGS_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_APP, LTE_APP, lteName, isLte
 } from '../config/constants';
 import { NarrowMixin } from '../design/narrow';
+import DevDialog from '../components/DevDialog.vue';
+import ask from '../components/ask';
 
 /**
  * What a phone shows of each table: what the row is, what it is called, and the way in.
@@ -186,7 +188,7 @@ function tabFromHash(hash) {
 export default {
   name: 'DevMyWork',
 
-  mixins: [NarrowMixin],
+  mixins: [NarrowMixin, ask],
 
   watch: {
     /**
@@ -215,7 +217,7 @@ export default {
   },
 
   components: {
-    SortableTable, Tabbed, Tab, Banner, RcButton, AsyncButton, StageSteps,
+    SortableTable, Tabbed, Tab, Banner, RcButton, AsyncButton, StageSteps, DevDialog,
   },
 
   async fetch() {
@@ -1207,7 +1209,9 @@ export default {
     async merge(pr, done) {
       this.error = '';
 
-      if (!window.confirm(`Squash and merge #${ pr.number }?\n\n${ pr.title }`)) {
+      if (!await this.askQuestion({
+        title: `Squash and merge #${ pr.number }?`, message: pr.title, confirmLabel: 'Squash and merge'
+      })) {
         done(false);
 
         return;
@@ -1313,7 +1317,11 @@ export default {
     async mergeBotPr(pr, done) {
       this.error = '';
 
-      if (!window.confirm(`Approve and merge #${ pr.number }?\n\n${ pr.title }\n\nApproves, squash-merges, then deletes ${ pr.branch }.`)) {
+      if (!await this.askQuestion({
+        title:        `Approve and merge #${ pr.number }?`,
+        message:      `${ pr.title } - approves, squash-merges, then deletes ${ pr.branch }.`,
+        confirmLabel: 'Approve and merge',
+      })) {
         done(false);
 
         return;
@@ -2488,6 +2496,12 @@ export default {
         </SortableTable>
       </Tab>
     </Tabbed>
+    <DevDialog
+      v-if="asking"
+      v-bind="asking.question"
+      @confirm="asking.answer(true)"
+      @cancel="asking.answer(false)"
+    />
   </div>
 </template>
 

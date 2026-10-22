@@ -24,6 +24,8 @@ import CommentAttachments from './pr/CommentAttachments.vue';
 import PrButton from './pr/PrButton.vue';
 import { vGrow } from './pr/grow';
 import PrBadge from './pr/PrBadge.vue';
+import DevDialog from './DevDialog.vue';
+import { useAsk } from './ask';
 import {
   prDetail, listComments, addComment, updateComment, deleteComment, approvePr, submitReview, mergePr,
   replyToComment, prFile, commitsDiff, ciFailures, ciFailureDetail, reviewRun, cancelReview,
@@ -53,9 +55,11 @@ function toast(message: string, kind: 'success' | 'error' | 'info' = 'success', 
   store.dispatch(`growl/${ kind }`, { title: title || (kind === 'error' ? 'Pull request' : ''), message, timeout: kind === 'error' ? 8000 : 4000 }, { root: true });
 }
 
-function confirmAction(message: string): boolean {
-  return window.confirm(message);
-}
+// Every yes/no question this panel asks goes through DevDialog (see components/ask.ts): the
+// browser's own confirm() cannot be themed, blocks the event loop, and is suppressed outright
+// in an embedded or sandboxed iframe - where it returns false with nothing drawn, so Cancel the
+// review or Delete this comment would quietly do nothing at all.
+const { asking, ask } = useAsk();
 
 // ── Which PR, in which repo ──
 const number = ref(0);
@@ -912,7 +916,13 @@ async function pollRun() {
 }
 
 async function cancelRun() {
-  if (!confirmAction('Cancel the review? The agent and every subagent it started are stopped. Comments already filed are kept.')) {
+  if (!await ask({
+    title:        'Cancel the review?',
+    message:      'The agent and every subagent it started are stopped. Comments already filed are kept.',
+    confirmLabel: 'Cancel the review',
+    cancelLabel:  'Keep reviewing',
+    danger:       true,
+  })) {
     return;
   }
   try {
@@ -1031,7 +1041,9 @@ async function doMerge() {
   if (merging.value || !detail.value) {
     return;
   }
-  if (!confirmAction(`Squash and merge #${ number.value }?\n\n${ detail.value.meta.title }`)) {
+  if (!await ask({
+    title: `Squash and merge #${ number.value }?`, message: detail.value.meta.title, confirmLabel: 'Squash and merge'
+  })) {
     return;
   }
   merging.value = true;
@@ -1533,7 +1545,12 @@ async function removeAttachment(c: LocalComment, path: string) {
 }
 
 async function removeComment(c: LocalComment) {
-  if (!confirmAction('Delete this pending comment? It has not been submitted to GitHub, so it is only removed from here.')) {
+  if (!await ask({
+    title:        'Delete this pending comment?',
+    message:      'It has not been submitted to GitHub, so it is only removed from here.',
+    confirmLabel: 'Delete',
+    danger:       true,
+  })) {
     return;
   }
   try {
@@ -2911,6 +2928,12 @@ async function doSubmit() {
         </div>
       </div>
     </template>
+    <DevDialog
+      v-if="asking"
+      v-bind="asking.question"
+      @confirm="asking.answer(true)"
+      @cancel="asking.answer(false)"
+    />
   </div>
 </template>
 

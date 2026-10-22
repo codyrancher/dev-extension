@@ -23,6 +23,7 @@ import CodeView from './code/CodeView.vue';
 import { fromDiffRows } from './code/rows';
 import type { CodeRow } from './code/rows';
 import { listConversations, startConversation, queuePrompt, paneCommand } from '../conversations';
+import type { ConversationOrigin } from '../agent';
 import type { ProjectConversation } from '../conversations';
 import { readInWorkspace, ensureWorkspaceReady } from '../workspace-tools';
 import { listApps } from '../apps';
@@ -276,8 +277,14 @@ function intro(): string {
   return `Review feedback on your changes on branch ${ branch.value || '(current)' } in ${ dir.value }, from the person reviewing them in the Rancher dashboard. Address it: make the change if it asks for one, answer it here if it is a question, and say what you did. Do not open a pull request unless asked.`;
 }
 
-/** Send one message to the chosen conversation (a new one, or an existing one), and show its pane. */
-async function sendText(text: string): Promise<boolean> {
+/**
+ * Send one message to the chosen conversation (a new one, or an existing one), and show its pane.
+ *
+ * `from` is where the comment was written - a file and a line, or the whole-change box - and it
+ * goes into the new conversation's id, so "Review feedback" is no longer five conversations with
+ * one name between them. See conversation-id.mjs.
+ */
+async function sendText(text: string, from: ConversationOrigin = ''): Promise<boolean> {
   if (sending.value) {
     return false;
   }
@@ -287,7 +294,7 @@ async function sendText(text: string): Promise<boolean> {
     if (target.value === 'new') {
       await ensureWorkspaceReady(props.workspace.name);
 
-      const conversation = await startConversation(props.workspace.name, 'Review feedback', text);
+      const conversation = await startConversation(props.workspace.name, 'Review feedback', text, '', from);
 
       session.value = conversation.id;
       // Keep sending to the conversation just made, so a second comment joins the first.
@@ -325,7 +332,7 @@ async function sendComposer() {
   }
   const text = `${ intro() }\n\n${ c.path }:${ c.line }${ c.side === 'LEFT' ? ' (the removed line)' : '' } - on \`${ c.code.trim().slice(0, 160) }\`:\n${ body }`;
 
-  if (await sendText(text)) {
+  if (await sendText(text, { path: c.path, line: c.line })) {
     composer.value = null;
     composerDraft.value = '';
   }
@@ -338,7 +345,8 @@ async function sendGeneral() {
   if (!body) {
     return;
   }
-  if (await sendText(`${ intro() }\n\n${ body }`)) {
+  // The whole-change box is a place too, and a different one from any line in the diff.
+  if (await sendText(`${ intro() }\n\n${ body }`, 'review-whole-change')) {
     general.value = '';
   }
 }

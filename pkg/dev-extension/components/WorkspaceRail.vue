@@ -18,6 +18,8 @@ import WorkspacePr from './WorkspacePr.vue';
 import WorkspaceBrowser from './WorkspaceBrowser.vue';
 import WorkspaceShare from './WorkspaceShare.vue';
 import DevModal from './DevModal.vue';
+import DevDialog from './DevDialog.vue';
+import ask from './ask';
 import PromptEditor from './PromptEditor.vue';
 import PrButton from './pr/PrButton.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
@@ -68,8 +70,15 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView, StageSteps,
+    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, DevDialog, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView, StageSteps,
   },
+
+  // Every question this rail asks goes through DevDialog (components/ask.ts). The browser's
+  // own confirm() cannot be themed, blocks the event loop, and is suppressed outright in an
+  // embedded or sandboxed iframe - where it returns false with nothing drawn, so Ask for
+  // changes or Delete the workspace would quietly do nothing while the person watched.
+  // `askQuestion`, not `ask`: this component already has an `ask` for asking a reviewer.
+  mixins: [ask],
 
   props: {
     workspace: {
@@ -1486,8 +1495,12 @@ export default {
     },
 
     async dropFinding(c) {
-      // eslint-disable-next-line no-alert
-      if (!window.confirm('Delete this finding? It has not been submitted to GitHub, so it only goes from here.')) {
+      if (!await this.askQuestion({
+        title:        'Delete this finding?',
+        message:      'It has not been submitted to GitHub, so it only goes from here.',
+        confirmLabel: 'Delete',
+        danger:       true,
+      })) {
         return;
       }
       await this.changeComment(c, () => deleteComment(this.status.pr, c.id));
@@ -1890,8 +1903,14 @@ export default {
      * the feedback's - before a scratch one somebody opened from the pane bar. A conversation
      * whose pane is gone is started again to read what was queued for it, since a prompt
      * queued to nobody just sat there.
+     *
+     * `from` is what goes into the id, and by default it is the title - which here is the
+     * action that was pressed, `Fix #18264` or `CI #19630` - so the conversation's directory,
+     * its tmux session and its pane record all say what started it. A press with no title is
+     * the reuse case and makes no conversation; the + button above passes nothing at all and
+     * keeps the short id. See conversation-id.mjs.
      */
-    async say(title, text, reuse = !title) {
+    async say(title, text, reuse = !title, from = title) {
       await ensureWorkspaceReady(this.workspace.name);
       const conversations = await listConversations(this.workspace.name).catch(() => []);
       const shown = conversations.find((c) => c.id === this.currentConversation);
@@ -1918,7 +1937,7 @@ export default {
         return newest;
       }
 
-      const started = await startConversation(this.workspace.name, title, text);
+      const started = await startConversation(this.workspace.name, title, text, '', from);
 
       await this.loadConversations();
       this.currentConversation = started.id;
@@ -2040,8 +2059,11 @@ export default {
       const n = this.findingCount;
       const what = event === 'REQUEST_CHANGES' ? 'as changes to make' : 'as an approval';
 
-      // eslint-disable-next-line no-alert
-      if (!window.confirm(`Submit ${ n || 'the' } finding${ n === 1 ? '' : 's' } to PR #${ this.status.pr } ${ what }? They become public comments on GitHub.`)) {
+      if (!await this.askQuestion({
+        title:        `Submit ${ n || 'the' } finding${ n === 1 ? '' : 's' } to PR #${ this.status.pr } ${ what }?`,
+        message:      'They become public comments on GitHub, and there is no unsending them.',
+        confirmLabel: event === 'REQUEST_CHANGES' ? 'Ask for changes' : (event === 'APPROVE' ? 'Ship it' : 'Post comments'),
+      })) {
         return;
       }
       const { url, posted } = await submitReview(this.status.pr, this.repo, event);
@@ -2158,7 +2180,9 @@ export default {
     async merge() {
       const pr = this.status?.pr;
 
-      if (!pr || !window.confirm(`Merge PR #${ pr }?`)) {
+      if (!pr || !await this.askQuestion({
+        title: `Merge PR #${ pr }?`, confirmLabel: 'Merge',
+      })) {
         return;
       }
       await mergePr(pr);
@@ -2167,7 +2191,12 @@ export default {
     },
 
     async remove() {
-      if (!window.confirm(`Delete the workspace ${ this.workspace.name }? The PR and the conversations' transcripts stay.`)) {
+      if (!await this.askQuestion({
+        title:        `Delete the workspace ${ this.workspace.name }?`,
+        message:      "The PR and the conversations' transcripts stay.",
+        confirmLabel: 'Delete',
+        danger:       true,
+      })) {
         return;
       }
       await deleteWorkspace(this.$store, this.workspace.name);
@@ -3368,6 +3397,12 @@ export default {
         </div>
       </DevModal>
     </section>
+    <DevDialog
+      v-if="asking"
+      v-bind="asking.question"
+      @confirm="asking.answer(true)"
+      @cancel="asking.answer(false)"
+    />
   </div>
 </template>
 

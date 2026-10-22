@@ -24,6 +24,7 @@ import {
 import {
   listConversations, startConversation, endConversation, queuePrompt, startPaneDetached, queuedNotStarted, conversationStates, sendToPane, Attachment, ProjectConversation
 } from './conversations';
+import type { ConversationOrigin } from './agent';
 import {
   ensureWorkspaceReady, waitForWorkspacePod, conversationPane
 } from './workspace-tools';
@@ -598,8 +599,11 @@ async function wakeWorkspace(workspace: string, onNote?: (note: string) => void)
   });
 }
 
-async function openWith(workspace: string, title: string, prompt: string, ctx?: WorkspaceContext, onNote?: (note: string) => void, store?: Store): Promise<ProjectConversation> {
-  const conversation = await startConversation(workspace, title);
+async function openWith(workspace: string, title: string, prompt: string, ctx?: WorkspaceContext, onNote?: (note: string) => void, store?: Store, from: ConversationOrigin = ''): Promise<ProjectConversation> {
+  // `from` is where this was started, and it goes into the conversation's id rather than only
+  // into its title: a title is renamed, by a person or by claude, and the id is what a
+  // transcript, a tmux session and a pane record are all filed under. See conversation-id.mjs.
+  const conversation = await startConversation(workspace, title, '', '', from);
 
   // Queue the opening prompt now, up front, not after the workspace is ready. It goes into the
   // agent pod (queueSessionPrompt writes `<agent home>/.queue/<id>`), which is always up and has
@@ -678,7 +682,7 @@ async function openWith(workspace: string, title: string, prompt: string, ctx?: 
  * it. So the window it opens is given something to show: the same start every other action
  * makes, with nothing queued, so whoever pressed it can type.
  */
-export async function openConversation(workspace: string, title = 'Conversation', onNote?: (note: string) => void): Promise<ProjectConversation> {
+export async function openConversation(workspace: string, title = 'Conversation', onNote?: (note: string) => void, from: ConversationOrigin = ''): Promise<ProjectConversation> {
   const existing = await listConversations(workspace).catch(() => [] as ProjectConversation[]);
 
   /*
@@ -702,7 +706,7 @@ export async function openConversation(workspace: string, title = 'Conversation'
    */
   const found = existing.find((conversation) => conversation.title === title) || existing[0];
 
-  return found || openWith(workspace, title, '', undefined, onNote);
+  return found || openWith(workspace, title, '', undefined, onNote, undefined, from);
 }
 
 export interface Started {
@@ -780,7 +784,7 @@ export async function startPrReview(store: Store, pr: { number: number; title?: 
   }
 
   const conversation = await openWith(workspace, title, reviewPrompt(pr.number, repo), { pr: pr.number, issue: pr.issue?.number || null },
-    (note) => setReviewRun(pr.number, 'starting', note, workspace).catch(() => {}), store);
+    (note) => setReviewRun(pr.number, 'starting', note, workspace).catch(() => {}), store, `pr-${ pr.number }-review`);
 
   await setReviewRun(pr.number, 'starting', 'conversation opened; waiting for the workspace', workspace).catch(() => {});
 
@@ -808,7 +812,7 @@ export async function startIssueFix(store: Store, issue: { number: number; title
     return { workspace, conversation: existing, created };
   }
 
-  const conversation = await openWith(workspace, title, fixPrompt(issue.number, repo), { issue: issue.number }, undefined, store);
+  const conversation = await openWith(workspace, title, fixPrompt(issue.number, repo), { issue: issue.number }, undefined, store, `issue-${ issue.number }-fix`);
 
   return { workspace, conversation, created };
 }
@@ -835,7 +839,7 @@ export async function startAlertFix(store: Store, group: Json, repo = DEFAULT_RE
     return { workspace, conversation: existing, created };
   }
 
-  const conversation = await openWith(workspace, title, alertPrompt);
+  const conversation = await openWith(workspace, title, alertPrompt, undefined, undefined, undefined, `alert-${ group.slug || group.packages?.[0] || '' }-fix`);
 
   return { workspace, conversation, created };
 }
@@ -847,7 +851,7 @@ export async function startDependabotReview(store: Store, pr: { number: number }
   const title = `Dependabot review #${ pr.number }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
   const reviewText = `/my-dependabot-review Review ${ repo } PR #${ pr.number } — a dependabot bump. Its full context: curl -s "$CLAUDE_HARNESS_API/my-work/dependabot/pr/${ pr.number }/review-context". Finish with MERGE or STOP alone on the last line.`;
-  const conversation = existing || await openWith(workspace, title, reviewText, { pr: pr.number });
+  const conversation = existing || await openWith(workspace, title, reviewText, { pr: pr.number }, undefined, undefined, `dependabot-pr-${ pr.number }-review`);
 
   if (existing) {
     await deliverTo(workspace, existing, reviewText);
@@ -873,7 +877,8 @@ export async function startCiTriage(store: Store, pr: { number: number; title?: 
     // Named in prose, not as `/my-ci-triage`: a pane's claude answers "Unknown command" to a
     // `/<skill>` it has no registered command for, and the prompt never reaches the model. Same for
     // the my-ci-fix reference below. See workspace-rail's skillTemplate.
-    `Use the my-ci-triage skill. ${ repo } PR #${ pr.number } is red. The failing checks:\n\n${ details || '(read them from $CLAUDE_HARNESS_API/my-work/pr/' + pr.number + '/ci)' }\n\nDecide whether this PR's own change caused them. If they are ours, fix them with the my-ci-fix skill, verify, commit and push; if not, re-run the failed jobs with gh. Finish with OURS or FLAKE alone on the last line.`);
+    `Use the my-ci-triage skill. ${ repo } PR #${ pr.number } is red. The failing checks:\n\n${ details || '(read them from $CLAUDE_HARNESS_API/my-work/pr/' + pr.number + '/ci)' }\n\nDecide whether this PR's own change caused them. If they are ours, fix them with the my-ci-fix skill, verify, commit and push; if not, re-run the failed jobs with gh. Finish with OURS or FLAKE alone on the last line.`,
+    undefined, undefined, undefined, `pr-${ pr.number }-ci-triage`);
 
   return { workspace, conversation, created };
 }
@@ -914,8 +919,8 @@ export function linesPrompt(num: number, lines: { path: string; line: number; st
 }
 
 /** A discussion: a conversation in the workspace, opened with its context, the pod made ready. */
-export async function startDiscussion(workspace: string, title: string, prompt: string): Promise<ProjectConversation> {
-  return openWith(workspace, title, prompt);
+export async function startDiscussion(workspace: string, title: string, prompt: string, from: ConversationOrigin = ''): Promise<ProjectConversation> {
+  return openWith(workspace, title, prompt, undefined, undefined, undefined, from);
 }
 
 /** The workspace made ready for whatever a person types: the same preparation an action gets. */

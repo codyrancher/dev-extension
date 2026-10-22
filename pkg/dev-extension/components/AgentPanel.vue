@@ -50,6 +50,9 @@ import SMenu from './ui/SMenu.vue';
 import {
   panelSessions, startAgentSession, renameAgentSession, endAgentSession,
 } from '../agent';
+// The label an unnamed tab gets. An id may now carry where it came from, so "everything after
+// `agent-`" is no longer the ordinal and would have put the whole id on the tab.
+import { conversationLabel } from '../conversation-id.mjs';
 import { ensureAgentCredential } from '../credential';
 import {
   readDrawerState, writeDrawerState, arrange, PLACEMENTS, DEFAULT_PLACEMENT, MIN_SIZE, VIEWPORT_MARGIN,
@@ -928,7 +931,7 @@ export default {
         const id = await startAgentSession();
 
         this.sessions = [...this.sessions, {
-          id, title: id.replace(/^agent-/, ''), state: 'none', cli: cli === 'claude' ? '' : cli,
+          id, title: conversationLabel(id), state: 'none', cli: cli === 'claude' ? '' : cli,
         }];
         this.select(id);
       } catch (e) {

@@ -19,6 +19,7 @@ import StudioTerminal from '../components/StudioTerminal.vue';
 import DevList from '../components/DevList.vue';
 import ConversationHeader from '../components/ConversationHeader.vue';
 import { CLI_CHOICES, cliMark } from '../agent-clis.mjs';
+import { conversationLabel } from '../conversation-id.mjs';
 import { readPrefs } from '../prefs';
 import DevModal from '../components/DevModal.vue';
 import { listAllWorkspaces, globalBrowserUrl } from '../api';
@@ -232,7 +233,7 @@ export default {
         this.groups = this.groups.map((group) => (group.workspace ? group : {
           ...group,
           conversations: [...group.conversations, {
-            id, title: id.replace(/^agent-/, ''), cli: cli === 'claude' ? '' : cli, attach: { command: null },
+            id, title: conversationLabel(id), cli: cli === 'claude' ? '' : cli, attach: { command: null },
           }],
         }));
         await this.refresh();

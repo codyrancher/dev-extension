@@ -11,6 +11,8 @@
 // numbered, and a file that is none of those named and sized with a way to take it away. Text
 // can also be edited here, when the caller says how it is saved.
 import CodeMirror from '@shell/components/CodeMirror';
+import DevDialog from '../DevDialog.vue';
+import ask from '../ask';
 import { artifactKind, artifactLanguage, editorMode, isTextKind, looksBinary, sizeDisplay } from '../../artifact-kind';
 import { highlight } from '../../highlight';
 import { renderMarkdown } from '../../chat';
@@ -34,7 +36,9 @@ async function sha256(buffer) {
 export default {
   name: 'ArtifactViewer',
 
-  components: { CodeMirror },
+  components: { CodeMirror, DevDialog },
+
+  mixins: [ask],
 
   props: {
     src:     { type: String, required: true },
@@ -162,7 +166,9 @@ export default {
 
   mounted() {
     this.onKey = (event) => {
-      if (event.key === 'Escape') {
+      // The discard question is a dialog of ours now, and it answers Escape itself. Without
+      // this, one Escape would cancel the question and re-open it in the same keypress.
+      if (event.key === 'Escape' && !this.asking) {
         this.close();
       }
     };
@@ -250,8 +256,8 @@ export default {
     },
 
     /** Out of the editor, back to the preview. Asked about first when there is something to lose. */
-    stopEditing() {
-      if (this.dirty && !window.confirm(`Discard your changes to ${ this.baseName }?`)) { // eslint-disable-line no-alert
+    async stopEditing() {
+      if (this.dirty && !await this.askDiscard()) {
         return;
       }
       this.editing = false;
@@ -296,11 +302,17 @@ export default {
       await this.load();
     },
 
-    close() {
-      if (this.dirty && !window.confirm(`Discard your changes to ${ this.baseName }?`)) { // eslint-disable-line no-alert
+    async close() {
+      if (this.dirty && !await this.askDiscard()) {
         return;
       }
       this.$emit('close');
+    },
+
+    askDiscard() {
+      return this.askQuestion({
+        title: `Discard your changes to ${ this.baseName }?`, confirmLabel: 'Discard', danger: true
+      });
     },
 
     // The image zooms about the pointer and pans by dragging: a screenshot of a whole dashboard
@@ -587,6 +599,12 @@ export default {
         </div>
       </div>
     </div>
+    <DevDialog
+      v-if="asking"
+      v-bind="asking.question"
+      @confirm="asking.answer(true)"
+      @cancel="asking.answer(false)"
+    />
   </div>
 </template>
 

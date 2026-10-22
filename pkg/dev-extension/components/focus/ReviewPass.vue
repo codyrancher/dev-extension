@@ -25,6 +25,7 @@ import type { NoteMedia } from '../../focus-review';
 import InlineChat from './InlineChat.vue';
 import { listConversations, startConversation, queuePrompt, paneCommand } from '../../conversations';
 import { startAgentSession } from '../../agent';
+import type { ConversationOrigin } from '../../agent';
 
 /** What you decided about one comment. The prototype's word for it, and its four states. */
 type NoteVerdict = 'pending' | 'good' | 'edited' | 'dropped';
@@ -262,7 +263,11 @@ async function discuss(note: ReviewNote) {
 
   try {
     const where = note.path ? `${ note.path.split('/').pop() }${ note.line ? ` line ${ note.line }` : '' }` : 'the change as a whole';
-    const conversation = await conversationFor(`${ where } · ${ note.severity }`);
+    // The finding's own file and line go into the id, so the pane is findable from the review
+    // later and not only from this card. See conversation-id.mjs.
+    const conversation = await conversationFor(`${ where } · ${ note.severity }`, {
+      path: note.path || '', line: note.line || 0, label: `review-${ note.severity || 'note' }`,
+    });
 
     set({ session: conversation.id, draft: contextFor(note) });
   } catch (e) {
@@ -314,9 +319,9 @@ const talking = ref<Record<string, { session: string; opening: boolean; error: s
  * own, which is the same fallback the deck's bar uses. Those have no title to find them by, so
  * there it is one per press.
  */
-async function conversationFor(title: string): Promise<{ id: string; attach: unknown }> {
+async function conversationFor(title: string, from: ConversationOrigin = ''): Promise<{ id: string; attach: unknown }> {
   if (!props.workspace) {
-    const id = await startAgentSession('panel');
+    const id = await startAgentSession('panel', from);
 
     return { id, attach: { session: id } };
   }
@@ -332,7 +337,7 @@ async function conversationFor(title: string): Promise<{ id: string; attach: unk
    * file tree lists the ones started on each file so they can be opened and read. See
    * `talksOn`.
    */
-  return startConversation(props.workspace, title);
+  return startConversation(props.workspace, title, '', '', from);
 }
 
 

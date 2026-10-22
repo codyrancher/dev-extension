@@ -1798,7 +1798,7 @@ const OPENAPI = {
     },
     '/conversations/{id}/events': {
       parameters: [{
-        name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: '`agent-<n>` or `p-<workspace>-<n>`.',
+        name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: '`agent-<n>` or `p-<workspace>-<n>`, either of which may carry where it was started: `p-<workspace>_<where>-<n>`.',
       }],
       get: {
         operationId: 'readConversationEvents',
@@ -2008,7 +2008,7 @@ const OPENAPI = {
     },
     '/conversations/{id}': {
       parameters: [{
-        name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: "A conversation's id: `agent-<n>`, or `p-<workspace>-<n>`.",
+        name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: "A conversation's id: `agent-<n>`, or `p-<workspace>-<n>`; either may carry where it was started, as `_<where>` before the ordinal.",
       }],
       get: {
         operationId: 'conversation',
@@ -3984,7 +3984,24 @@ const SPEAKS_LAST = new Set(['Stop', 'SessionEnd', 'Notification']);
 /** The states that mean it has stopped and the work is a person's again. */
 const SETTLED = new Set(['input', 'idle', 'finished']);
 const QUESTION_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
-const CONVERSATION_ID = /^(agent-\d+|p-[a-z0-9-]+-\d+)$/;
+/**
+ * What a conversation is called: `agent-<n>` or `p-<workspace>-<n>`, each of which may carry
+ * where it was started between the base and the ordinal - `p-lte-pr-19630_shell-dialog-vue-l193-2`.
+ *
+ * The boundary is `_` because a workspace name contains dashes, so `p-foo-bar-2` would
+ * otherwise be both "workspace foo at bar" and "workspace foo-bar"; workspace names are
+ * Kubernetes object names, so `_` cannot occur in one. conversation-id.mjs is where this is
+ * explained and tested. It is spelled again here because this file is one self-contained
+ * script in a ConfigMap and can import nothing from the bundle - so when one changes, both do.
+ */
+const CONVERSATION_ID = /^(agent(?:_[a-z0-9-]+)?-\d+|p-[a-z0-9-]+(?:_[a-z0-9-]+)?-\d+)$/;
+
+/** The workspace an id belongs to, or '' for the drawer's. Mirrors conversationProject. */
+function conversationProject(id) {
+  const m = /^p-([a-z0-9-]+?)(?:_[a-z0-9-]+)?-\d+$/.exec(String(id || ''));
+
+  return m ? m[1] : '';
+}
 
 /** Which agent pod the last listing came from, and when this process first saw that one. */
 let agentSeen = { pod: '', since: 0 };
@@ -4232,10 +4249,12 @@ function rowOf(id, head) {
     hook = JSON.parse(head || '{}');
   } catch { /* a state file caught between the hook's write and its rename; next tick reads it whole */ }
 
+  const workspace = conversationProject(id);
+
   return {
     id,
-    kind:         id.startsWith('agent-') ? 'drawer' : 'workspace',
-    workspace:    id.startsWith('agent-') ? '' : id.replace(/^p-/, '').replace(/-\d+$/, ''),
+    kind:         workspace ? 'workspace' : 'drawer',
+    workspace,
     event:        String(hook.event || ''),
     notification: String(hook.notification || ''),
     message:      String(hook.message || '').slice(0, 500),
@@ -4693,7 +4712,7 @@ const routes = [
   // the conversation when the card is drawn. The sequence, when somebody wants it, is the hook's
   // own events.jsonl: see /conversations/{id}/events.
   ['GET', /^\/conversations$/, async(m, url) => conversationsAnswer(url)],
-  ['GET', /^\/conversations\/(agent-\d+|p-[a-z0-9-]+-\d+)$/, async(m) => {
+  ['GET', /^\/conversations\/(agent(?:_[a-z0-9-]+)?-\d+|p-[a-z0-9-]+(?:_[a-z0-9-]+)?-\d+)$/, async(m) => {
     const held = (await conversationDoc()).items?.[m[1]];
 
     if (!held) {
@@ -4704,7 +4723,7 @@ const routes = [
   }],
   // The sequence, read off the hook's own log rather than from a log of our own. The id pattern
   // is spelled out rather than `[^/]+` because this one interpolates into a path.
-  ['GET', /^\/conversations\/(agent-\d+|p-[a-z0-9-]+-\d+)\/events$/, async(m, url) => ({
+  ['GET', /^\/conversations\/(agent(?:_[a-z0-9-]+)?-\d+|p-[a-z0-9-]+(?:_[a-z0-9-]+)?-\d+)\/events$/, async(m, url) => ({
     id: m[1], ...hookEvents(m[1], Number(url.searchParams.get('limit') || 50)),
   })],
   // Look now rather than at the next tick. One caller: a page that has just set an agent

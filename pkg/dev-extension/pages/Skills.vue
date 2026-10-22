@@ -21,6 +21,8 @@ import NavRow from '../components/NavRow.vue';
 import NavHead from '../components/NavHead.vue';
 import HoverCard from '../components/HoverCard.vue';
 import hoverCard from '../components/hover-card';
+import DevDialog from '../components/DevDialog.vue';
+import ask from '../components/ask';
 import {
   listSkills, readSkill, saveSkill, resetSkill, refreshSkillsEverywhere
 } from '../skills';
@@ -32,10 +34,10 @@ export default {
   name: 'DevSkills',
 
   components: {
-    Loading, Banner, RcButton, NavRow, NavHead, HoverCard
+    Loading, Banner, RcButton, NavRow, NavHead, HoverCard, DevDialog
   },
 
-  mixins: [hoverCard],
+  mixins: [hoverCard, ask],
 
   async fetch() {
     await this.load();
@@ -122,7 +124,9 @@ export default {
     },
 
     async open(name) {
-      if (this.dirty && !window.confirm('Drop the unsaved change to this file?')) {
+      if (this.dirty && !await this.askQuestion({
+        title: 'Drop the unsaved change to this file?', confirmLabel: 'Drop it', danger: true
+      })) {
         return;
       }
       this.selected = name;
@@ -149,8 +153,12 @@ export default {
      * when the skill was opened, and asking it again - against a draft that belongs to a file
      * of the skill being left - is asking about something that is no longer on screen.
      */
-    show(path, force = false) {
-      if (!force && path !== this.path && this.dirty && !window.confirm('Drop the unsaved change to this file?')) {
+    async show(path, force = false) {
+      // `&&` short-circuits before the await, so the forced call from `open` still runs
+      // through to the end synchronously, as it did when the question was a blocking one.
+      if (!force && path !== this.path && this.dirty && !await this.askQuestion({
+        title: 'Drop the unsaved change to this file?', confirmLabel: 'Drop it', danger: true
+      })) {
         return;
       }
       this.path = path;
@@ -207,8 +215,10 @@ export default {
       });
     },
 
-    reset() {
-      if (!window.confirm(`Drop the edit and go back to the shipped ${ this.path }?`)) {
+    async reset() {
+      if (!await this.askQuestion({
+        title: `Drop the edit and go back to the shipped ${ this.path }?`, confirmLabel: 'Back to shipped', danger: true
+      })) {
         return;
       }
 
@@ -408,6 +418,12 @@ export default {
       :card="card"
       @keep="keepCard"
       @hide="hideCard"
+    />
+    <DevDialog
+      v-if="asking"
+      v-bind="asking.question"
+      @confirm="asking.answer(true)"
+      @cancel="asking.answer(false)"
     />
   </div>
 </template>

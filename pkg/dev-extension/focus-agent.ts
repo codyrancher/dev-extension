@@ -49,7 +49,10 @@ export async function conversationFor(task: FocusTask | null): Promise<AskTarget
   if (task?.workspace) {
     // The workspace's own conversation, made if there is none. Everything the agent would need
     // to act on this - the checkout, the branch, the tools - is in there and nowhere else.
-    const conversation = await openConversation(task.workspace, 'Focus');
+    // 'focus' is where it was started, and it goes into the id: a workspace full of
+    // `p-<ws>-<n>` gave no way to tell the deck's conversation from a review's. See
+    // conversation-id.mjs.
+    const conversation = await openConversation(task.workspace, 'Focus', undefined, 'focus');
 
     return { id: conversation.id, workspace: task.workspace };
   }
@@ -68,7 +71,7 @@ export async function conversationFor(task: FocusTask | null): Promise<AskTarget
 export async function panelConversation(): Promise<string> {
   const sessions = await agentSessions().catch(() => []);
 
-  return sessions.length ? sessions[sessions.length - 1].id : startAgentSession('panel');
+  return sessions.length ? sessions[sessions.length - 1].id : startAgentSession('panel', 'focus');
 }
 
 /**
@@ -85,7 +88,7 @@ export async function queueForLater(task: FocusTask | null, prompt: string): Pro
     return;
   }
   if (task?.workspace) {
-    const conversation = await openConversation(task.workspace, 'Focus');
+    const conversation = await openConversation(task.workspace, 'Focus', undefined, 'focus');
 
     await sayInConversation(conversation, prompt);
 

@@ -28,6 +28,7 @@ import InlineChat from './InlineChat.vue';
 import Markdown from './Markdown.vue';
 import { listConversations, startConversation, queuePrompt, paneCommand } from '../../conversations';
 import { startAgentSession } from '../../agent';
+import type { ConversationOrigin } from '../../agent';
 import { linesPrompt, discussPrompt } from '../../reviews';
 
 const props = withDefaults(defineProps<{
@@ -467,7 +468,7 @@ function threadAt(hunk: number, index: number) {
  * conversation in this workspace", which is right for "talk to the agent" and wrong here: a
  * question about these four lines must not land in the thread about the last four.
  */
-async function conversationFor(title: string): Promise<{ id: string; attach: unknown }> {
+async function conversationFor(title: string, from: ConversationOrigin = ''): Promise<{ id: string; attach: unknown }> {
   /*
    * No workspace, no checkout - but still an agent.
    *
@@ -478,7 +479,7 @@ async function conversationFor(title: string): Promise<{ id: string; attach: unk
    * find them by, so this is one per press rather than one per comment for ever.
    */
   if (!props.workspace) {
-    const id = await startAgentSession('panel');
+    const id = await startAgentSession('panel', from);
 
     return { id, attach: { session: id } };
   }
@@ -494,7 +495,7 @@ async function conversationFor(title: string): Promise<{ id: string; attach: unk
    * file tree lists the ones started on each file so they can be opened and read. See
    * `talksOn`.
    */
-  return startConversation(props.workspace, title);
+  return startConversation(props.workspace, title, '', '', from);
 }
 
 /**
@@ -518,7 +519,11 @@ async function openThread(thread: CodeThread, code: string): Promise<void> {
   const title = `${ thread.path.split('/').pop() } ${ thread.label }`;
 
   try {
-    const conversation = await conversationFor(title);
+    // The file and the first line of the run go into the id as well as into the title, which
+    // is what makes the pane findable later - a question about shell/dialog/AddAuthProviderDialog.vue
+    // line 193 is held in `p-<ws>_shell-dialog-add-auth-provider-dialog-vue-l193-<n>`, not in
+    // one of nine identical names. See conversation-id.mjs.
+    const conversation = await conversationFor(title, { path: thread.path, line: thread.from });
     const prompt = props.pr
       ? linesPrompt(props.pr, {
         path: thread.path, line: thread.to, startLine: thread.from === thread.to ? null : thread.from, side: 'RIGHT', code,

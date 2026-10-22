@@ -53,9 +53,25 @@ ID=$2
 # a workspace's conversations out of the terminal strip: not a filter in the browser, which a
 # second caller would have to know to apply, but the list itself, which answers one question.
 #
-# `list` and `new` take the project as their second argument. `end` and `rename` take an id,
-# which already says which it is.
+# Either kind may also say where it was started from, between the two:
+#
+#   agent-7                                      the drawer's + button
+#   agent_pr-19630-review-4                      the drawer, from a pull request
+#   p-lte-pr-19630-1                             a workspace's + button
+#   p-lte-pr-19630_shell-add-auth-dialog-vue-l193-2
+#
+# `_` and not `-` as the boundary, because a project name contains dashes and `p-foo-bar-2`
+# would otherwise be both "project foo at bar" and "project foo-bar": project names are
+# `[a-z0-9-]`, so `_` cannot occur in one. tmux takes it in a session name (it rejects only `.`
+# and `:`), a filename takes it, and a URL leaves it alone. The ordinal stays LAST so that
+# everything which reads it off the end - `title_of` below, the sorts in the browser - goes on
+# reading what it always read. This is the shell's half of conversation-id.mjs, which does the
+# same thing for the browser; the two have to agree.
+#
+# `list` and `new` take the project as their second argument, and `new` takes the location as
+# its third. `end` and `rename` take an id, which already says which it is.
 PROJECT=''
+LOCATION=''
 
 case "$VERB" in
   list|new|states) PROJECT=$2; ID='' ;;
@@ -63,6 +79,8 @@ case "$VERB" in
   # exec rather than one per project. It takes no project by definition.
   states-all) PROJECT=''; ID='' ;;
 esac
+
+[ "$VERB" = new ] && LOCATION=$3
 
 case "$PROJECT" in
   '') ;;
@@ -72,23 +90,87 @@ case "$PROJECT" in
     ;;
 esac
 
+# The location is slugged by the caller and checked here, the way the project is: it becomes
+# part of a directory name, and the parse on the other side only works while it holds no `_`.
+# 48 is the cap conversation-id.mjs applies, repeated rather than trusted.
+case "$LOCATION" in
+  '') ;;
+  *[!a-z0-9-]*|-*|*-)
+    echo "not a location: $LOCATION" >&2
+    exit 2
+    ;;
+  *)
+    if [ "${#LOCATION}" -gt 48 ]; then
+      echo "location too long: $LOCATION" >&2
+      exit 2
+    fi
+    ;;
+esac
+
 if [ -n "$PROJECT" ]; then
-  PREFIX="p-$PROJECT-"
+  BASE="p-$PROJECT"
 else
-  PREFIX="agent-"
+  BASE="agent"
 fi
 
 mkdir -p "$SESSIONS"
 
 # An id names a directory, so it is checked rather than trusted. Everything that reaches here
 # was made by `new` below, but the check is what keeps that true when something else calls it.
+# `_` is in the set now - it is the boundary before a location - but never first, which would
+# mean an id with no base at all.
 case "$ID" in
   '') ;;
-  -*|*[!a-zA-Z0-9-]*)
+  -*|_*|*[!a-zA-Z0-9_-]*)
     echo "not a session id: $ID" >&2
     exit 2
     ;;
 esac
+
+# Whether an id belongs to the base this run is about: the base, then either `-<ordinal>` or
+# `_<location>-<ordinal>` and nothing else.
+#
+# A test and not a prefix match, because the glob the callers use is `$BASE*` and that is wider
+# than it looks: for project `foo` it also matches `p-foobar-1`, and `p-foo-bar-2` is project
+# `foo-bar`'s, not an ordinal called `bar-2`.
+under_base() {
+  ub_rest=${1#"$BASE"}
+  ub_loc=''
+
+  case "$ub_rest" in
+    -*) ub_rest=${ub_rest#-} ;;
+    _*)
+      ub_rest=${ub_rest#_}
+      case "$ub_rest" in
+        *-*) ub_loc=${ub_rest%-*}; ub_rest=${ub_rest##*-} ;;
+        *) return 1 ;;
+      esac
+      case "$ub_loc" in
+        ''|*[!a-z0-9-]*|-*|*-) return 1 ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+
+  case "$ub_rest" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  return 0
+}
+
+# Whether any conversation under this base already has this ordinal, wherever it was started
+# from. Two globs rather than one, because `$BASE*-$n` would also catch project `foo-bar`'s
+# directories while looking at project `foo`; `$BASE-$n` and `$BASE`_*`-$n` cannot.
+ordinal_taken() {
+  for ot_dir in "$SESSIONS/$BASE-$1" "$SESSIONS/$BASE"_*"-$1"; do
+    if [ -d "$ot_dir" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
 
 # What a person called this conversation, or the ordinal it was given.
 #
@@ -148,25 +230,38 @@ title_of() {
 
   [ -n "$found" ] || found=$(ai_title_of "$1")
 
-  # Ordinal, which is what the id ends in whichever kind it is, so a conversation nobody has
-  # named still has a short label rather than a blank tab.
-  [ -n "$found" ] || found=${1##*-}
+  # Failing both, what the id itself says. The location when it carries one - that is what it
+  # was put there for - and the ordinal otherwise, which is what the id ends in whichever kind
+  # it is, so a conversation nobody has named still has a short label rather than a blank tab.
+  # conversationLabel in conversation-id.mjs answers the same question for the browser.
+  if [ -z "$found" ]; then
+    found=${1##*-}
+
+    case "$1" in
+      *_*-*)
+        where=${1#*_}
+        where=${where%-*}
+        case "$where" in
+          ''|*[!a-z0-9-]*) ;;
+          *) found=$where ;;
+        esac
+        ;;
+    esac
+  fi
 
   printf '%s' "$found"
 }
 
 case "$VERB" in
   list)
-    for dir in "$SESSIONS"/"$PREFIX"*/; do
+    for dir in "$SESSIONS"/"$BASE"*/; do
       [ -d "$dir" ] || continue
 
       id=$(basename "$dir")
 
-      # The prefix is a glob, and a glob for project `foo` also matches project `foo-bar`, so
-      # what follows the prefix has to be nothing but the ordinal.
-      case "${id#"$PREFIX"}" in
-        ''|*[!0-9]*) continue ;;
-      esac
+      # The base is a glob, and a glob for project `foo` also matches project `foo-bar`, so what
+      # follows it has to be an ordinal, or a location and an ordinal. See `under_base`.
+      under_base "$id" || continue
 
       # Tab separated, one line each, because a title may contain spaces and an id may not -
       # and `title_of` strips control characters, tabs included, so three fields stay three.
@@ -210,7 +305,7 @@ case "$VERB" in
     if [ "$VERB" = states-all ]; then
       GLOB="$SESSIONS"/*.state.json
     else
-      GLOB="$SESSIONS/$PREFIX"*.state.json
+      GLOB="$SESSIONS/$BASE"*.state.json
     fi
 
     for state in $GLOB; do
@@ -220,20 +315,18 @@ case "$VERB" in
 
       # Whether this id is one of the kind this run is listing.
       #
-      # With a prefix, what follows it must be nothing but the ordinal - the prefix is a glob, and
-      # a glob for project `foo` also matches project `foo-bar`. With no prefix both kinds are
-      # being listed at once, so the shape itself is the test: `agent-<n>`, or `p-<project>-<n>`
-      # whose project may itself contain dashes.
+      # With a base, what follows it must be the ordinal, or a location and the ordinal - the
+      # base is a glob, and a glob for project `foo` also matches project `foo-bar`. With no
+      # base both kinds are being listed at once, so the shape itself is the test: `agent-<n>`
+      # or `agent_<where>-<n>`, and `p-<project>-<n>` whose project may itself contain dashes.
       if [ "$VERB" = states-all ]; then
         case "$id" in
-          agent-*) case "${id#agent-}" in ''|*[!0-9]*) continue ;; esac ;;
-          p-*-*)   case "${id##*-}"    in ''|*[!0-9]*) continue ;; esac ;;
+          agent-*|agent_*-*) case "${id##*-}" in ''|*[!0-9]*) continue ;; esac ;;
+          p-*-*)             case "${id##*-}" in ''|*[!0-9]*) continue ;; esac ;;
           *) continue ;;
         esac
       else
-        case "${id#"$PREFIX"}" in
-          ''|*[!0-9]*) continue ;;
-        esac
+        under_base "$id" || continue
       fi
 
       alive=no
@@ -296,14 +389,26 @@ case "$VERB" in
     # picking one whose directory already exists reopens a finished conversation. mkdir is the
     # only thing on this side that is both a question and an answer: it fails if the name is
     # taken, and taking it is what creating it means.
+    #
+    # The ordinal is counted across the whole base rather than across this location, so a
+    # workspace's conversations are 1, 2, 3 whatever each was started from. Without that,
+    # `_review-1` and `_fix-1` would both be "1" on their tabs and in `title_of`, and mkdir
+    # would not notice, because they are different directory names. The scan is the counting;
+    # mkdir is still what settles a race, and the loop goes on to the next ordinal when it
+    # loses one.
+    SUFFIX=''
+    [ -n "$LOCATION" ] && SUFFIX="_$LOCATION"
+
     n=1
 
     while [ "$n" -lt 1000 ]; do
-      id="$PREFIX$n"
+      if ! ordinal_taken "$n"; then
+        id="$BASE$SUFFIX-$n"
 
-      if mkdir "$SESSIONS/$id" 2>/dev/null; then
-        printf '%s\n' "$id"
-        exit 0
+        if mkdir "$SESSIONS/$id" 2>/dev/null; then
+          printf '%s\n' "$id"
+          exit 0
+        fi
       fi
 
       n=$((n + 1))

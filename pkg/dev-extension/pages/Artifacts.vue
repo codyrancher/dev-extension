@@ -23,6 +23,8 @@ import DevPage from '../components/DevPage.vue';
 import { RcButton } from '@components/RcButton';
 import ArtifactViewer from '../components/pr/ArtifactViewer.vue';
 import WorkspaceArtifacts from '../components/WorkspaceArtifacts.vue';
+import DevDialog from '../components/DevDialog.vue';
+import ask from '../components/ask';
 import { listArtifactSources, removeArtifactSet } from '../api';
 import { groupSubjects } from '../artifact-subjects.mjs';
 import { issuesByNumber } from '../github';
@@ -33,8 +35,10 @@ export default {
   name: 'DevArtifacts',
 
   components: {
-    Banner, RcButton, ArtifactViewer, WorkspaceArtifacts, DevPage
+    Banner, RcButton, ArtifactViewer, WorkspaceArtifacts, DevPage, DevDialog
   },
+
+  mixins: [ask],
 
   data() {
     return {
@@ -118,7 +122,12 @@ export default {
 
     async remove(source) {
       // Asked for, because this is the only thing that deletes evidence and it cannot be undone.
-      if (!confirm(`Delete the artifacts kept from ${ source.workspace }? This cannot be undone.`)) { // eslint-disable-line no-alert
+      if (!await this.askQuestion({
+        title:        `Delete the artifacts kept from ${ source.workspace }?`,
+        message:      'The recordings, screenshots and notes kept from that workspace go for good.',
+        confirmLabel: 'Delete',
+        danger:       true,
+      })) {
         return;
       }
 
@@ -276,6 +285,12 @@ export default {
         @close="shot = null"
       />
     </Teleport>
+    <DevDialog
+      v-if="asking"
+      v-bind="asking.question"
+      @confirm="asking.answer(true)"
+      @cancel="asking.answer(false)"
+    />
   </DevPage>
 </template>
 

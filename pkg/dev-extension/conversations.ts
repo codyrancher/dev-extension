@@ -15,8 +15,9 @@
 // both sides, so a path means the same thing wherever it is read.
 //
 // What the agents extension keeps is the registry - which conversations a workspace has, their
-// titles, the ids (`p-<workspace>-<n>`) - the queue, and the terminal component every pane is
-// drawn with. Nothing here holds a credential or opens a socket of its own.
+// titles, the ids (`p-<workspace>-<n>`, or `p-<workspace>_<where>-<n>` for one started from a
+// place worth naming - see conversation-id.mjs) - the queue, and the terminal component every
+// pane is drawn with. Nothing here holds a credential or opens a socket of its own.
 
 import {
   workspaceNamespace, workspacePod, WORKSPACE_CONTAINER, podExecOnce, clusterBase, devFetch
@@ -26,7 +27,10 @@ type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 import {
   workspaceWorkdir, workspaceShellWrapper, AGENT_HOME, AGENT_WORKSPACE
 } from './config/constants';
-import type { SessionMode } from './agent';
+import type { SessionMode, ConversationOrigin } from './agent';
+// One answer to every "which workspace is this id's" and "is this an id at all", shared with
+// agent.ts, the pod's sessions.sh and the in-cluster API. See conversation-id.mjs.
+import { conversationProject, conversationLabel, isConversationId, conversationBase } from './conversation-id.mjs';
 
 /** Where the agents extension's API is. The agents extension made the agent pod, so this is its cluster. */
 export const STUDIO_CLUSTER = 'local';
@@ -125,13 +129,17 @@ export async function startedConversations(workspace: string): Promise<Set<strin
     return new Set();
   }
   const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', `ls ${ AGENT_WORKSPACE }/sessions 2>/dev/null`], AGENT_BASE).catch(() => '');
-  const prefix = `p-${ workspace }-`;
+  // The base and not a prefix with a dash on it: an id that carries a location has a `_` where
+  // that dash used to be (`p-lte-pr-19630_review-2`), and matching on `p-lte-pr-19630-` would
+  // have said none of those had ever run. The id is parsed afterwards, which is what keeps
+  // project `foo` from claiming project `foo-bar`'s files.
+  const base = conversationBase(workspace);
 
   return new Set(listing.split('\n')
     .map((line) => line.replace(/\r$/, ''))
-    .filter((file) => file.startsWith(prefix))
+    .filter((file) => file.startsWith(base))
     .map((file) => file.match(/^(.+)\.(id|state\.json)$/)?.[1] || '')
-    .filter(Boolean));
+    .filter((id) => conversationProject(id) === workspace));
 }
 
 export interface ConversationState {
@@ -299,7 +307,11 @@ async function conversationStatesByExec(): Promise<ConversationState[]> {
   for (const line of listing.split('\n')) {
     const [id, alive, wrote, json] = line.replace(/\r$/, '').split('\t');
 
-    if (!id || !/^p-.+-\d+$/.test(id)) {
+    // A workspace's conversation, whatever its id carries: `conversationProject` is what tells
+    // `p-foo-bar-2` (workspace foo-bar) from `p-foo_bar-2` (workspace foo, started at `bar`).
+    const workspace = conversationProject(id);
+
+    if (!workspace) {
       continue;
     }
     let event: Json = {};
@@ -308,7 +320,7 @@ async function conversationStatesByExec(): Promise<ConversationState[]> {
       event = JSON.parse(json || '{}');
     } catch { /* a state file caught mid-write; the next poll reads it whole */ }
     out.push({
-      id, workspace: id.replace(/^p-/, '').replace(/-\d+$/, ''), alive: alive === 'yes', event: String(event.event || ''), notification: String(event.notification || ''), at: String(event.at || ''), wroteAgo: Number(wrote ?? -1),
+      id, workspace, alive: alive === 'yes', event: String(event.event || ''), notification: String(event.notification || ''), at: String(event.at || ''), wroteAgo: Number(wrote ?? -1),
     });
   }
 
@@ -424,7 +436,8 @@ export async function transcriptPathOf(workspace: string, id: string): Promise<s
   const api = await requireAgents();
   const pod = await api.agent.pod().catch(() => null);
 
-  if (!pod || !/^p-.+-\d+$/.test(id)) {
+  // Checked, not trusted: the id goes into a shell command below.
+  if (!pod || !isConversationId(id)) {
     return '';
   }
   const dir = `${ AGENT_HOME }/.claude/projects/${ workspaceWorkdir(workspace).replace(/\//g, '-') }`;
@@ -465,8 +478,8 @@ export async function queuedNotStarted(): Promise<{ id: string; workspace: strin
 
   return listing.split('\n')
     .map((line) => line.trim())
-    .filter((id) => /^p-.+-\d+$/.test(id))
-    .map((id) => ({ id, workspace: id.replace(/^p-/, '').replace(/-\d+$/, '') }));
+    .map((id) => ({ id, workspace: conversationProject(id) }))
+    .filter((queued) => !!queued.workspace);
 }
 
 /**
@@ -476,14 +489,22 @@ export async function queuedNotStarted(): Promise<{ id: string; workspace: strin
  * the workspace's pod, where the pane will run. A workspace whose pod is not up yet takes the
  * registration and rejects the prompt: callers that can wait (reviews.ts) queue it themselves
  * once the pod is there.
+ *
+ * `from` is where it was started - a path and a line, or a label - and the pod puts it in the
+ * id, so the conversation says what it is about before anybody opens it. A caller with nowhere
+ * in particular passes nothing and gets the short id it would have got before.
  */
-export async function startConversation(workspace: string, title = '', prompt = '', cli = ''): Promise<ProjectConversation> {
+export async function startConversation(workspace: string, title = '', prompt = '', cli = '', from: ConversationOrigin = ''): Promise<ProjectConversation> {
   const api = await requireAgents();
   const before = new Set((await api.agent.projectSessions(workspace).catch(() => [])).map((s) => s.id));
   let id: string;
 
   try {
-    id = await api.agent.startInProject(workspace, title);
+    // The fourth argument is where this was started from, and it ends up in the id. An older
+    // agents bundle on the page ignores it and answers with the short form, which is the same
+    // id it would have given before - so a page that is half upgraded still works, it just
+    // makes conversations that cannot say where they came from.
+    id = await api.agent.startInProject(workspace, title, '', from);
   } catch (e) {
     // The registry's exec answers through a websocket the apiserver proxy sometimes closes
     // before the final status frame, and the agents extension reports that as a failure even
@@ -504,7 +525,7 @@ export async function startConversation(workspace: string, title = '', prompt = 
   // pane then records it, so reopening this conversation later gets the same one without
   // anything here having to remember. See seed/shell.sh.
   const mode: SessionMode = cli === 'agy' ? 'agy' : 'claude';
-  const conversation = { id, title: title || id.slice(id.lastIndexOf('-') + 1), attach: attachment(workspace, id, (await workspacePod(workspace).catch(() => null)) || '', mode) };
+  const conversation = { id, title: title || conversationLabel(id), attach: attachment(workspace, id, (await workspacePod(workspace).catch(() => null)) || '', mode) };
 
   if (prompt) {
     await api.agent.queue(id, prompt);
@@ -645,9 +666,10 @@ export interface StudioBrowserApi {
     /** `cli` is which CLI holds it, from the pane's own record. Optional: an older bundle on
      * the page answers without it, and '' and undefined both read as claude. */
     projectSessions(project: string): Promise<{ id: string; title: string; cli?: string }[]>;
-    /** A new drawer conversation; its id. */
-    start(): Promise<string>;
-    startInProject(project: string, title?: string, prompt?: string): Promise<string>;
+    /** A new drawer conversation; its id. `from` is where it was started, for the id to carry. */
+    start(from?: ConversationOrigin): Promise<string>;
+    /** `from` is where it was started, which the id carries; see conversation-id.mjs. */
+    startInProject(project: string, title?: string, prompt?: string, from?: ConversationOrigin): Promise<string>;
     queue(id: string, prompt: string): Promise<void>;
     rename(id: string, title: string): Promise<void>;
     end(id: string): Promise<void>;

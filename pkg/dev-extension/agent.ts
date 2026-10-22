@@ -19,6 +19,12 @@ import {
 } from './pod';
 // The coarse bucket, shared and tested. See activityBucket there.
 import { activityBucket } from './chat-state.mjs';
+// What an id is made of, and how to take one apart. Every shape question about an id is asked
+// there rather than spelled as a regex here, because the same question is asked in four other
+// places and they have to agree. See conversation-id.mjs.
+import {
+  locationSlug, isConversationId, isDrawerConversationId, isProjectConversationId, conversationOrdinal,
+} from './conversation-id.mjs';
 import type { InstallStep } from './ensure';
 import { VERSION_ANNOTATION, contentVersion, ensureCurrent } from './ensure';
 import { AGENT_FILES } from './seed.generated';
@@ -682,8 +688,11 @@ export async function agentSessions(): Promise<AgentSession[]> {
 
       return { ...session, state: states.get(session.id) || 'none' as AgentActivity };
     })
-    .filter((session) => /^agent-\d+$/.test(session.id))
-    .sort((a, b) => Number(a.id.slice(6)) - Number(b.id.slice(6)));
+    // The drawer's, which is `agent-<n>` and now also `agent_<where>-<n>` for one started from
+    // somewhere in particular. The ordinal is still the last thing in either, which is what the
+    // sort reads; see conversation-id.mjs.
+    .filter((session) => isDrawerConversationId(session.id))
+    .sort((a, b) => conversationOrdinal(a.id) - conversationOrdinal(b.id));
 }
 
 /** Where a conversation's directory and the files beside it live in the pod. */
@@ -704,6 +713,16 @@ const AGENT_SESSIONS = `${ AGENT_WORKSPACE }/sessions`;
 export type SessionOrigin = 'panel' | 'api';
 
 /**
+ * Where a conversation was started from, for the id to carry.
+ *
+ * A path and a line is the common one - the Discuss button on a line of a diff - but a label is
+ * enough for the places that are not a file ("PR #19630 review"), and a string that is already
+ * a slug passes through unchanged, which is what lets this cross the browser API as one word.
+ * '' is a real answer: see startAgentSession.
+ */
+export type ConversationOrigin = string | { path?: string; line?: number | null; label?: string };
+
+/**
  * Write who made a conversation, beside it in the pod.
  *
  * In the pod rather than in localStorage, because the question is about the conversation and not
@@ -714,7 +733,7 @@ export type SessionOrigin = 'panel' | 'api';
 async function markSessionOrigin(id: string, by: SessionOrigin): Promise<void> {
   const pod = await agentPod();
 
-  if (!pod || !SESSION_ID_RE.test(id)) {
+  if (!pod || !isSessionId(id)) {
     return;
   }
   await podExecResult(pod, ['/bin/sh', '-c', `mkdir -p ${ AGENT_SESSIONS } && printf %s ${ by } > ${ AGENT_SESSIONS }/${ id }.by`], 15000, AGENT_CONTAINER);
@@ -766,11 +785,16 @@ export async function panelSessions(): Promise<AgentSession[]> {
  * is not free even when no tmux session is using it: `tmux new-session -A` would attach to
  * whatever is there, so + would reopen a finished conversation instead of starting one. The pod
  * answers both with a mkdir. See the `new` verb in pod/agent/sessions.sh.
+ *
+ * `from` is where the conversation was started - a path and a line, a label, or an already
+ * slugged location - and it ends up IN the name: `agent_pr-19630-review-4`. Nothing is invented
+ * when there is none, because most of these come from a + button that is about nothing in
+ * particular, and those keep the short `agent-<n>` they have always had.
  */
-export async function startAgentSession(by: SessionOrigin = 'panel'): Promise<string> {
-  const id = (await sessionScript(['new'], 'start a conversation')).trim();
+export async function startAgentSession(by: SessionOrigin = 'panel', from: ConversationOrigin = ''): Promise<string> {
+  const id = (await sessionScript(['new', '', locationSlug(from)], 'start a conversation')).trim();
 
-  if (!/^agent-\d+$/.test(id)) {
+  if (!isDrawerConversationId(id)) {
     throw new Error(`The agent pod answered "${ id }", which is not a conversation name.`);
   }
   await markSessionOrigin(id, by).catch(() => {});
@@ -797,8 +821,16 @@ function assertProject(project: string): string {
   return project;
 }
 
+/**
+ * Whether an id is this project's.
+ *
+ * Asked of the parser rather than of a prefix, which was wrong in both directions once ids
+ * could carry a location: `^p-foo-\d+$` does not match `p-foo_review-2`, and a prefix test
+ * would have claimed project `foo-bar`'s ids for project `foo`. See conversation-id.mjs, where
+ * that ambiguity is the reason the boundary is `_`.
+ */
 export function isProjectSession(project: string, id: string): boolean {
-  return new RegExp(`^p-${ project }-\\d+$`).test(id);
+  return isProjectConversationId(project, id);
 }
 
 export async function projectSessions(project: string): Promise<AgentSession[]> {
@@ -810,12 +842,19 @@ export async function projectSessions(project: string): Promise<AgentSession[]> 
     .filter(Boolean)
     .map(sessionLine)
     .filter((session) => isProjectSession(name, session.id))
-    .sort((a, b) => Number(a.id.slice(a.id.lastIndexOf('-') + 1)) - Number(b.id.slice(b.id.lastIndexOf('-') + 1)));
+    .sort((a, b) => conversationOrdinal(a.id) - conversationOrdinal(b.id));
 }
 
-export async function startProjectSession(project: string, title = '', prompt = ''): Promise<string> {
+/**
+ * Start one of a project's conversations.
+ *
+ * `from` is where it was started - see ConversationOrigin - and the pod puts it in the name:
+ * `p-lte-pr-19630_shell-add-auth-dialog-vue-l193-2`. A caller with no location passes nothing
+ * and gets `p-lte-pr-19630-2`, which is what every id looked like before.
+ */
+export async function startProjectSession(project: string, title = '', prompt = '', from: ConversationOrigin = ''): Promise<string> {
   const name = assertProject(project);
-  const id = (await sessionScript(['new', name], `start a conversation in ${ name }`)).trim();
+  const id = (await sessionScript(['new', name, locationSlug(from)], `start a conversation in ${ name }`)).trim();
 
   if (!isProjectSession(name, id)) {
     throw new Error(`The agent pod answered "${ id }", which is not a conversation name.`);
@@ -835,7 +874,17 @@ export async function startProjectSession(project: string, title = '', prompt = 
 /** Where a queued prompt waits: shell.sh reads `$(dirname home)/.queue/<session>` on a pane's first start. */
 const AGENT_QUEUE = `${ AGENT_WORKSPACE }/.queue`;
 
-const SESSION_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
+/**
+ * The guard on every id that is interpolated into a shell command below.
+ *
+ * It was a charset - `[a-z0-9-]` - and a charset had to be widened the moment ids could carry a
+ * `_`. Widening a charset by hand is how the next thing gets let through, so this asks the
+ * parser instead: the answer is yes only for a string that is a whole conversation id, old form
+ * or new, which is a narrower thing than any charset.
+ */
+function isSessionId(id: string): boolean {
+  return isConversationId(id);
+}
 
 /**
  * Queue what a conversation opens with.
@@ -847,7 +896,7 @@ const SESSION_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
  * owned by the pane's user, which is who reads it.
  */
 export async function queueSessionPrompt(id: string, prompt: string): Promise<void> {
-  if (!SESSION_ID_RE.test(id)) {
+  if (!isSessionId(id)) {
     throw new Error(`"${ id }" is not a conversation id.`);
   }
 
@@ -902,7 +951,7 @@ export type SessionMode = 'claude' | 'agy' | 'shell' | 'start';
  * whatever was queued for it has not run yet.
  */
 export async function sessionPane(id: string, lines = 60): Promise<{ text: string; running: boolean }> {
-  if (!SESSION_ID_RE.test(id)) {
+  if (!isSessionId(id)) {
     throw new Error(`"${ id }" is not a conversation id.`);
   }
 

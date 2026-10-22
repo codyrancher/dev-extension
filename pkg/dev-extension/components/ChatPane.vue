@@ -28,11 +28,15 @@
 import { useConversation, escapeText, customizeFor } from '../chat-conversation';
 import { readLook, writeLook } from '../look';
 import PodFileViewer from './PodFileViewer.vue';
+import DevDialog from './DevDialog.vue';
+import ask from './ask';
 
 export default {
   name: 'ChatPane',
 
-  components: { PodFileViewer },
+  components: { PodFileViewer, DevDialog },
+
+  mixins: [ask],
 
   props: {
     session:   { type: String, default: 'agent-1' },
@@ -536,8 +540,12 @@ export default {
 
     async clearConversation() {
       this.menu = '';
-      // eslint-disable-next-line no-alert
-      if (!window.confirm(`Clear this conversation? ${ this.agentName } forgets everything said so far.`)) {
+      if (!await this.askQuestion({
+        title:        'Clear this conversation?',
+        message:      `${ this.agentName } forgets everything said so far.`,
+        confirmLabel: 'Clear',
+        danger:       true,
+      })) {
         return;
       }
       await this.sendCommand('/clear');
@@ -1656,6 +1664,12 @@ export default {
       </div>
     </div>
     </slot>
+    <DevDialog
+      v-if="asking"
+      v-bind="asking.question"
+      @confirm="asking.answer(true)"
+      @cancel="asking.answer(false)"
+    />
   </div>
 </template>
 

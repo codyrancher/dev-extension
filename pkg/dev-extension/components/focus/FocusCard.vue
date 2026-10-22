@@ -24,6 +24,7 @@ import PromptEditor from '../PromptEditor.vue';
 import InlineChat from './InlineChat.vue';
 import { startConversation, paneCommand } from '../../conversations';
 import { startAgentSession } from '../../agent';
+import type { ConversationOrigin } from '../../agent';
 import AppButton from './AppButton.vue';
 import KindChip from './KindChip.vue';
 import AppIcon from './AppIcon.vue';
@@ -757,14 +758,14 @@ const asking = ref<{ label: string; session: string; opening: boolean; error: st
  * one also meant the agent's own context from an earlier press silently steering the new
  * answer. The ones worth returning to are the review findings, and Discuss keeps those.
  */
-async function conversationFor(title: string): Promise<{ id: string }> {
+async function conversationFor(title: string, from: ConversationOrigin = ''): Promise<{ id: string }> {
   const workspace = props.task.workspace;
 
   if (!workspace) {
-    return { id: await startAgentSession('panel') };
+    return { id: await startAgentSession('panel', from) };
   }
 
-  return startConversation(workspace, title);
+  return startConversation(workspace, title, '', '', from);
 }
 
 async function askOnCard(action: CardAction) {
@@ -779,7 +780,8 @@ async function askOnCard(action: CardAction) {
   };
 
   try {
-    const made = await conversationFor(`${ label } · ${ props.task.what }`.slice(0, 80));
+    // Which action on which card, in the id: `_focus-discuss-4` rather than another `-4`.
+    const made = await conversationFor(`${ label } · ${ props.task.what }`.slice(0, 80), `focus-${ label }`);
 
     set({ session: made.id, draft: actionPrompt(action, props.task, props.prompts) });
   } catch (e) {
