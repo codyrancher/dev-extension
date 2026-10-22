@@ -20,11 +20,11 @@ import { fromDiffLines, highlighted } from '../code/rows';
 import CommentBody from './CommentBody.vue';
 import TextModal from './TextModal.vue';
 import MediaViewer from './MediaViewer.vue';
-import { ghAssetUrl, discussPrompt } from '../../reviews';
+import { ghAssetUrl, discussPrompt, startDiscussion } from '../../reviews';
 import type { NoteMedia } from '../../focus-review';
 import InlineChat from './InlineChat.vue';
-import { listConversations, startConversation, queuePrompt, paneCommand } from '../../conversations';
-import { startAgentSession } from '../../agent';
+import { listConversations, paneCommand } from '../../conversations';
+import { startAgentSession, queueSessionPrompt } from '../../agent';
 import type { ConversationOrigin } from '../../agent';
 
 /** What you decided about one comment. The prototype's word for it, and its four states. */
@@ -238,8 +238,17 @@ async function saveEdit(note: ReviewNote) {
  * something, closing and reopening started a new one.
  *
  * So the press does what the label says. The conversation is made on the first open and kept,
- * so reopening returns to it. The context goes into the chat's own box as a draft - editable,
- * and not sent until you send it.
+ * so reopening returns to it.
+ *
+ * The context is QUEUED with the conversation, not left in the chat's box as a draft, and that
+ * is the difference between this working and not. A queued prompt is written beside the
+ * conversation in the agent pod and read by the pane's runner on claude's first start; a draft
+ * has to be typed into a terminal that is already up, and the chat refuses to type into one
+ * showing something it cannot answer - which a claude that has just started and is asking about
+ * trust, or a plan, always is. What that looked like was the whole prompt sitting in the card
+ * under "not recorded / send again", with "your message was not delivered" beneath it, and no
+ * way to start a discussion at all. The rail has always queued it (CommentDiscussion,
+ * startDiscussion); this is the same call.
  */
 async function discuss(note: ReviewNote) {
   const id = String(note.id);
@@ -255,9 +264,9 @@ async function discuss(note: ReviewNote) {
     return;
   }
 
-  talking.value = { ...talking.value, [id]: { session: '', opening: true, error: '', draft: '' } };
+  talking.value = { ...talking.value, [id]: { session: '', opening: true, error: '' } };
 
-  const set = (fields: Partial<{ session: string; opening: boolean; error: string; draft: string }>) => {
+  const set = (fields: Partial<{ session: string; opening: boolean; error: string }>) => {
     talking.value = { ...talking.value, [id]: { ...talking.value[id], ...fields } };
   };
 
@@ -267,9 +276,9 @@ async function discuss(note: ReviewNote) {
     // later and not only from this card. See conversation-id.mjs.
     const conversation = await conversationFor(`${ where } · ${ note.severity }`, {
       path: note.path || '', line: note.line || 0, label: `review-${ note.severity || 'note' }`,
-    });
+    }, contextFor(note));
 
-    set({ session: conversation.id, draft: contextFor(note) });
+    set({ session: conversation.id });
   } catch (e) {
     set({ error: (e as Error)?.message || String(e) });
   } finally {
@@ -308,7 +317,7 @@ function contextFor(note: ReviewNote): string {
  * list of findings and judging one often means asking about the one before it. They are
  * separate conversations, so the answers do not arrive interleaved in one transcript.
  */
-const talking = ref<Record<string, { session: string; opening: boolean; error: string; draft: string }>>({});
+const talking = ref<Record<string, { session: string; opening: boolean; error: string }>>({});
 
 /**
  * Where a conversation about a finding goes.
@@ -319,9 +328,15 @@ const talking = ref<Record<string, { session: string; opening: boolean; error: s
  * own, which is the same fallback the deck's bar uses. Those have no title to find them by, so
  * there it is one per press.
  */
-async function conversationFor(title: string, from: ConversationOrigin = ''): Promise<{ id: string; attach: unknown }> {
+async function conversationFor(title: string, from: ConversationOrigin = '', prompt = ''): Promise<{ id: string; attach: unknown }> {
   if (!props.workspace) {
     const id = await startAgentSession('panel', from);
+
+    // The same queue, for a conversation with no workspace behind it: written into the agent
+    // pod beside the conversation and read when claude starts, rather than typed at a pane.
+    if (prompt) {
+      await queueSessionPrompt(id, prompt).catch(() => undefined);
+    }
 
     return { id, attach: { session: id } };
   }
@@ -337,7 +352,13 @@ async function conversationFor(title: string, from: ConversationOrigin = ''): Pr
    * file tree lists the ones started on each file so they can be opened and read. See
    * `talksOn`.
    */
-  return startConversation(props.workspace, title, '', '', from);
+  /*
+   * `startDiscussion` and not `startConversation`, because only one of them delivers the prompt.
+   * `startConversation`'s own `prompt` argument is dead - it passes '' to `startInProject` - and
+   * the queueing is done by `openWith`, which is what `startDiscussion` calls. Asking the wrong
+   * one is how the context ended up as something a person had to send by hand.
+   */
+  return startDiscussion(props.workspace, title, prompt, from);
 }
 
 
@@ -552,12 +573,13 @@ function pickedRun(note: ReviewNote): [number, number] | null {
           {{ talking[String(selected.id)].error }}
         </p>
         <!--
-          The conversation, with the context already in its box and not yet sent.
+          The conversation. The context was queued with it, so the agent is already reading the
+          finding by the time this appears and the box is for what you want to ask about it.
 
           No second input beside it: this has one, and a box of our own above it was a second
           place to type the same thing - and the one that sent before you could read what it was
-          sending. `draft-text` is read when the chat first appears, which is why the component
-          is keyed on the note: a different finding is a different chat, not this one reused.
+          sending. Keyed on the note, so a different finding is a different chat rather than
+          this one reused with somebody else's transcript in it.
         -->
         <InlineChat
           v-else-if="talking[String(selected.id)]?.session"
@@ -565,7 +587,6 @@ function pickedRun(note: ReviewNote): [number, number] | null {
           class="thread__chat"
           :session="talking[String(selected.id)].session"
           :command="workspace ? paneCommand(workspace, talking[String(selected.id)].session) : null"
-          :draft-text="talking[String(selected.id)].draft"
           :live="live"
         />
       </div>

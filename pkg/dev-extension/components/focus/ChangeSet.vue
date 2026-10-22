@@ -26,8 +26,8 @@ import CodeView from '../code/CodeView.vue';
 import { fromDiffLines, highlighted } from '../code/rows';
 import InlineChat from './InlineChat.vue';
 import Markdown from './Markdown.vue';
-import { listConversations, startConversation, queuePrompt, paneCommand } from '../../conversations';
-import { startAgentSession } from '../../agent';
+import { listConversations, startConversation, paneCommand } from '../../conversations';
+import { startAgentSession, queueSessionPrompt } from '../../agent';
 import type { ConversationOrigin } from '../../agent';
 import { linesPrompt, discussPrompt } from '../../reviews';
 
@@ -297,7 +297,11 @@ async function discuss(comment: CardComment): Promise<void> {
         'Anything after this sentence is their question - answer that first if there is one.',
       ].join(' ');
 
-    await queuePrompt((conversation as { attach: never }).attach, prompt).catch(() => {});
+    // By id, not through `attach`. `queuePrompt` reads `attach.id`, and the no-workspace branch
+    // of `conversationFor` returns `{ session: id }` with no `id` on it - so for a card with no
+    // workspace, which is exactly the card with other people's comments on it, this queued
+    // `undefined` and the catch swallowed it: a conversation opened about nothing at all.
+    await queueSessionPrompt(conversation.id, prompt).catch(() => {});
     set({ session: conversation.id });
   } catch (e) {
     set({ error: (e as Error)?.message || String(e) });
@@ -530,7 +534,11 @@ async function openThread(thread: CodeThread, code: string): Promise<void> {
       }, thread.text)
       : `About ${ thread.path } ${ thread.label }:\n\n\`\`\`\n${ code }\n\`\`\`\n\n${ thread.text }`;
 
-    await queuePrompt((conversation as { attach: never }).attach, prompt).catch(() => {});
+    // By id, not through `attach`. `queuePrompt` reads `attach.id`, and the no-workspace branch
+    // of `conversationFor` returns `{ session: id }` with no `id` on it - so for a card with no
+    // workspace, which is exactly the card with other people's comments on it, this queued
+    // `undefined` and the catch swallowed it: a conversation opened about nothing at all.
+    await queueSessionPrompt(conversation.id, prompt).catch(() => {});
     patch(thread.id, { session: conversation.id });
   } catch (e) {
     patch(thread.id, { error: (e as Error)?.message || String(e) });

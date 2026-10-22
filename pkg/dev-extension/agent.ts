@@ -576,7 +576,21 @@ export async function agentPodStartedAt(): Promise<number> {
  * no line and so no entry, which the caller reads as `none`.
  */
 async function sessionStates(project = '', strict = false): Promise<Map<string, AgentActivity>> {
-  const args = project ? ['states', project] : ['states'];
+  /*
+   * `states` is scoped to a base and `states-all` is not, and that distinction is the whole
+   * reason the second verb exists.
+   *
+   * With no project the base falls back to `agent`, so `states` answers for the DRAWER's
+   * conversations and no workspace's. Measured in this pod: `states` answers 11 lines with no
+   * `p-` among them; `states-all` answers 194, of which 183 are workspaces'. Asking the narrow
+   * one for a pod-wide answer is how `projectConversations` came to report that nothing was
+   * running anywhere.
+   *
+   * So a project-less call asks the wide verb. `agentSessions` is the other caller and now gets
+   * the extra rows; it looks its own ids up by key and never iterates, so they cost it one map
+   * and change nothing it answers.
+   */
+  const args = project ? ['states', project] : ['states-all'];
   /*
    * `strict` is whether "the pod did not answer" is allowed to look like "nothing is running".
    *
@@ -758,9 +772,9 @@ export async function projectConversations(): Promise<PodConversation[]> {
    * workspace's. Crossed with the states, that made every row empty, and an empty answer
    * published as fact is every workspace in the dashboard reporting no agent at all.
    *
-   * `states` needs no crossing. It is keyed on the state files in the pod - the pod's own disk,
-   * read now - so a conversation that has gone has no line and a conversation that has never
-   * run has none either, which is `none` and is what a missing id already means. The stale
+   * `states-all` needs no crossing. It is keyed on the state files in the pod - the pod's own
+   * disk, read now - so a conversation that has gone has no line and a conversation that has
+   * never run has none either, which is `none` and is what a missing id already means. The stale
    * entries this was written to get rid of came from dev-api's watcher DOCUMENT, which outlives
    * what it describes; the pod does not.
    */
