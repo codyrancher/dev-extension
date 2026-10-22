@@ -148,7 +148,20 @@ async function ubuntu(cred) {
  * The two sysctls are not optional - Rancher runs k3s inside this container and the default
  * inotify limits are too low for it, which shows up as a Rancher that starts and then wedges.
  */
-function userData(image, password) {
+function userData(image, password, registryAuth = '') {
+  /*
+   * A Prime image comes from a registry that refuses an anonymous pull, so the box logs in
+   * before it runs anything. The credentials are passed to docker on stdin rather than as
+   * `-p` - `docker login -p` puts them in the process list, where every other process on the
+   * box can read them - and the whole script is still user-data, which anything on the box can
+   * read from the metadata service, so this is no worse than the bootstrap password already
+   * sitting beside it and no better either. Empty for a community image, where it costs a shell
+   * branch and nothing else.
+   */
+  const login = registryAuth
+    ? `printf '%s' '${ registryAuth.password }' | docker login ${ registryAuth.host } -u '${ registryAuth.user }' --password-stdin\n`
+    : '';
+
   return Buffer.from(`#!/bin/bash
 set -eux
 export DEBIAN_FRONTEND=noninteractive
@@ -176,7 +189,7 @@ IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/latest/m
 HOST="\${IP}.sslip.io"
 echo "$HOST" > /var/log/rancher-host
 
-docker run -d --name rancher --privileged --restart=unless-stopped \\
+${ login }docker run -d --name rancher --privileged --restart=unless-stopped \\
   -p 80:80 -p 443:443 \\
   -e CATTLE_BOOTSTRAP_PASSWORD='${ password }' \\
   ${ image } --acme-domain "$HOST"
@@ -186,6 +199,53 @@ touch /var/log/rancher-bootstrap-done
 
 /** The name this instance's certificate is for, and what server-url has to say. */
 const hostFor = (ip) => `${ ip }.sslip.io`;
+
+/** Which build of Rancher, by where it is pulled from. Kept in step with ranchers.ts. */
+const REGISTRIES = {
+  community:       '',
+  'prime-staging': 'stgregistry.suse.com',
+  prime:           'registry.rancher.com',
+};
+
+/** The default, and the same number the extension's create form starts on. */
+const DEFAULT_VERSION = 'v2.12.3';
+
+/**
+ * The image to run: the registry host in front of a tag.
+ *
+ * The repository is `rancher/rancher` in every one of them - community and both SUSE
+ * registries - so a version is a version whichever is chosen and only the host changes.
+ * RANCHER_EC2_IMAGE still wins over both, for a build that is not any of these.
+ */
+function rancherImage(version, registry) {
+  const host = REGISTRIES[registry || 'community'] ?? '';
+  const tag = String(version || DEFAULT_VERSION).trim().replace(/^:/, '');
+
+  return `${ host ? `${ host }/` : '' }rancher/rancher:${ tag }`;
+}
+
+/**
+ * What to log in to the registry with, or '' when there is nothing to log in to.
+ *
+ * Both SUSE registries refuse an anonymous pull, so a Prime instance with no credentials would
+ * boot, pull nothing and sit at a docker error nobody is watching - the kind of failure this
+ * tool exists to not have. It is refused here instead, while there is somebody to tell.
+ */
+function registryAuth(registry) {
+  const host = REGISTRIES[registry || 'community'] ?? '';
+
+  if (!host) {
+    return '';
+  }
+  const user = (process.env.PRIME_REGISTRY_USER || '').trim();
+  const password = (process.env.PRIME_REGISTRY_PASSWORD || '').trim();
+
+  if (!user || !password) {
+    throw new Error(`${ host } refuses an anonymous pull, so a Prime instance needs PRIME_REGISTRY_USER and PRIME_REGISTRY_PASSWORD in the environment.`);
+  }
+
+  return { host, user, password };
+}
 
 /**
  * Where to put it, when nobody said.
@@ -274,7 +334,7 @@ async function create(cred, name, opts) {
     InstanceType:                                  opts.type,
     MinCount:                                      '1',
     MaxCount:                                      '1',
-    UserData:                                      userData(opts.image, password),
+    UserData:                                      userData(opts.image, password, opts.registryAuth),
     'BlockDeviceMapping.1.DeviceName':             '/dev/sda1',
     'BlockDeviceMapping.1.Ebs.VolumeSize':         String(opts.rootSize),
     // gp3 for the same reason the Apps Plus app chose it: a gp2 root's baseline is 3 IOPS per
@@ -774,7 +834,8 @@ async function main() {
     credential:    process.env.RANCHER_EC2_CREDENTIAL || '',
     type:          process.env.RANCHER_EC2_TYPE || 't3.xlarge',
     rootSize:      process.env.RANCHER_EC2_ROOT || '100',
-    image:         process.env.RANCHER_EC2_IMAGE || 'rancher/rancher:v2.12.3',
+    image:         process.env.RANCHER_EC2_IMAGE || rancherImage(process.env.RANCHER_EC2_VERSION, process.env.RANCHER_EC2_REGISTRY),
+    registryAuth:  registryAuth(process.env.RANCHER_EC2_REGISTRY),
     securityGroup: process.env.RANCHER_EC2_SG || '',
     subnet:        process.env.RANCHER_EC2_SUBNET || '',
     keyName:       process.env.RANCHER_EC2_KEY || '',

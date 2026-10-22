@@ -6,7 +6,7 @@
 // a workspace made from My Work or the Create page is pointed at when nobody says otherwise.
 // Kept per person, beside the other preferences (prefs.ts).
 
-import { devFetch, clusterBase, cloudCredentialsManifest, DEV_SYSTEM_NAMESPACE } from './api';
+import { devFetch, clusterBase, cloudCredentialsManifest, secretValue, DEV_SYSTEM_NAMESPACE } from './api';
 import { APP_INSTANCE } from './config/constants';
 import { AGENT_NS, AGENT_BASE } from './pod';
 import { readPrefs, savePrefs } from './prefs';
@@ -474,7 +474,79 @@ async function managedValues(): Promise<Record<string, string>> {
   return values;
 }
 
-export async function createRancherInstance(store: Store, name: string, app = RANCHER_SINGLE_APP): Promise<void> {
+/**
+ * Which build of Rancher an instance runs: the community one, or Prime.
+ *
+ * Prime is the same server from a SUSE registry rather than Docker Hub - the hint remuda
+ * carries (pkg/remuda/utils/constants.ts, BACKEND_IMAGE_SOURCES) and what a probe of the
+ * registries confirms: the repository path is `rancher/rancher` in all three, so a version is
+ * a version whichever is picked and only the host in front of it changes.
+ *
+ * Both SUSE registries answer 401 to an anonymous pull (`www-authenticate: Bearer
+ * realm=.../api/registry/authorize`), so a Prime instance needs credentials - see
+ * PRIME_REGISTRY_USER in secrets.ts. That is the whole of the difference, and it is why Prime
+ * is a choice rather than a default.
+ *
+ * Staging first because it is where pre-GA Prime builds are, which is what a Rancher made here
+ * is usually for; remuda picks the same one.
+ */
+export const RANCHER_REGISTRIES = [
+  { id: 'community', label: 'Community (Docker Hub)', host: '', help: 'rancher/rancher, pulled anonymously. No credentials needed.' },
+  { id: 'prime-staging', label: 'Prime (staging)', host: 'stgregistry.suse.com', help: 'Pre-GA Prime builds. Needs SUSE registry credentials in Settings.' },
+  { id: 'prime', label: 'Prime (released)', host: 'registry.rancher.com', help: 'Released Prime builds. Needs SUSE registry credentials in Settings.' },
+] as const;
+
+export type RancherRegistryId = typeof RANCHER_REGISTRIES[number]['id'];
+
+/** Whether a registry choice is a Prime one, and so needs credentials. */
+export function isPrimeRegistry(id: string): boolean {
+  return !!RANCHER_REGISTRIES.find((r) => r.id === id)?.host;
+}
+
+/**
+ * The image an instance runs, from the version and where it comes from.
+ *
+ * The repository is `rancher/rancher` everywhere, so this is the registry host in front of a
+ * tag and nothing more. An empty version falls back to the App's own default rather than
+ * producing `rancher/rancher:` - a reference a kubelet reads as `:latest`, which for this
+ * image is years old.
+ */
+export function rancherImage(version: string, registry: string = 'community'): string {
+  const tag = String(version || '').trim().replace(/^:/, '');
+
+  if (!tag) {
+    return RANCHER_INSTANCE_VALUES.image;
+  }
+  const host = RANCHER_REGISTRIES.find((r) => r.id === registry)?.host || '';
+
+  return `${ host ? `${ host }/` : '' }rancher/rancher:${ tag }`;
+}
+
+/**
+ * The docker config a Prime instance pulls with, base64 as a `.dockerconfigjson` wants it.
+ *
+ * `{}` for a community instance, which is a valid and empty config: the Secret is in the bundle
+ * either way because Apps Plus substitutes exact `${names}` and has no conditionals, so a
+ * resource cannot be left out - see apps-rancher.ts 25-pull-secret.yaml. An empty one costs a
+ * kubelet one lookup and changes nothing about an anonymous pull.
+ */
+export async function primeAuth(registry: string): Promise<string> {
+  const host = RANCHER_REGISTRIES.find((r) => r.id === registry)?.host || '';
+
+  if (!host) {
+    return btoa('{}');
+  }
+  const user = (await secretValue('PRIME_REGISTRY_USER').catch(() => '')).trim();
+  const password = (await secretValue('PRIME_REGISTRY_PASSWORD').catch(() => '')).trim();
+
+  if (!user || !password) {
+    throw new Error(`A Prime instance pulls from ${ host }, which refuses an anonymous pull. Put your SUSE registry username and password in Settings → Tokens first.`);
+  }
+
+  return btoa(JSON.stringify({ auths: { [host]: { auth: btoa(`${ user }:${ password }`) } } }));
+}
+
+export async function createRancherInstance(store: Store, name: string, app = RANCHER_SINGLE_APP, options: { version?: string; registry?: string } = {}): Promise<void> {
   const clean = name.trim().toLowerCase();
 
   if (!/^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(clean)) {
@@ -484,7 +556,16 @@ export async function createRancherInstance(store: Store, name: string, app = RA
   // clusters on the same clouds. Read live at provision time, so there is nothing to keep in
   // sync; an instance created with none chosen simply gets none.
   const agentToken = agentBearer();
-  const values: Record<string, string> = { ...RANCHER_INSTANCE_VALUES, ...(await managedValues()), agentToken };
+  const registry = options.registry || 'community';
+  const values: Record<string, string> = {
+    ...RANCHER_INSTANCE_VALUES,
+    ...(await managedValues()),
+    agentToken,
+    image:     rancherImage(options.version || '', registry),
+    // Before the Installation is written, so a Prime instance with no credentials is refused
+    // rather than created and then left pulling an image it cannot reach for ever.
+    primeAuth: await primeAuth(registry),
+  };
   const cloudCredentials = await cloudCredentialsManifest().catch(() => '');
 
   if (cloudCredentials) {

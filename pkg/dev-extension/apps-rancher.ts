@@ -21,6 +21,15 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
 
+/**
+ * The Rancher an instance runs when nobody picks a version.
+ *
+ * Here rather than in ranchers.ts because this App owns the `image` value and its default has
+ * to be the same number the create form starts on; ranchers.ts imports it (nothing in this file
+ * imports anything, so there is no cycle to make).
+ */
+export const DEFAULT_RANCHER_VERSION = 'v2.15.1';
+
 /** A Rancher server of its own: one node, GitHub login, an sslip address. */
 export function rancherSingleApp(): Json {
   return {
@@ -44,12 +53,18 @@ export function rancherSingleApp(): Json {
         // hand - in which case no machine account is created and nothing else changes.
         agentToken: "",
         host: "none",
-        image: "rancher/rancher:v2.15.1",
+        image: `rancher/rancher:${ DEFAULT_RANCHER_VERSION }`,
+        // `{}` base64, which is an empty and valid docker config: a community instance pulls
+        // anonymously and this changes nothing. A Prime instance gets a real one at create time
+        // (ranchers.ts, primeAuth). The resource is in the bundle either way because Apps Plus
+        // substitutes exact `${names}` and has no conditionals - see 25-pull-secret.yaml.
+        primeAuth: "e30=",
       },
       valueLabels: {
         adminPassword: "Admin password",
         host: "Public name this Rancher answers on, so it can be given a certificate; none for the address alone",
         image: "Rancher image",
+        primeAuth: "Docker config the image is pulled with, base64; e30= (an empty config) for a community image",
       },
       clusterTemplate: `apiVersion: rke-machine-config.cattle.io/v1
 kind: Amazonec2Config
@@ -160,6 +175,30 @@ metadata:
 type: Opaque
 stringData:
   bootstrapPassword: \${adminPassword}
+`,
+        },
+        {
+          name:    "25-pull-secret.yaml",
+          content: `# What the server image is pulled with.
+#
+# Always here, never conditional: Apps Plus renders a bundle by substituting exact \${names} and
+# has no way to leave a resource out, so the choice is expressed in the value rather than in
+# whether the file exists. \`e30=\` is \`{}\` - a valid, empty docker config - which is what a
+# community instance gets, and a kubelet pulling anonymously is unaffected by it.
+#
+# A Prime instance gets a real config: both SUSE registries refuse an anonymous pull
+# (\`www-authenticate: Bearer realm="https://scc.suse.com/api/registry/authorize"\`), so without
+# this the pods sit in ImagePullBackOff saying "unauthorized" and nothing else explains why.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: \${install}-rancher-pull
+  namespace: cattle-system
+  labels:
+    app: \${install}-rancher
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: \${primeAuth}
 `,
         },
         {
@@ -296,6 +335,11 @@ spec:
         app: \${install}-rancher
     spec:
       serviceAccountName: rancher
+      # Named whatever the image is from. A kubelet that finds no credentials for the registry
+      # in it falls through to an anonymous pull, so this is inert for a community image rather
+      # than a second thing to keep in step with the first.
+      imagePullSecrets:
+        - name: \${install}-rancher-pull
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

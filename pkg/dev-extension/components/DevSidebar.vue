@@ -21,7 +21,8 @@ import {
 } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
 import {
-  listRanchers, setDefaultRancher, createRancherInstance, deleteRancherInstance, nextRancherName, rancherAddress, ensureRancherHosts, RANCHER_STEPS
+  listRanchers, setDefaultRancher, createRancherInstance, deleteRancherInstance, nextRancherName, rancherAddress, ensureRancherHosts, RANCHER_STEPS,
+  RANCHER_REGISTRIES, isPrimeRegistry
 } from '../ranchers';
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
@@ -33,6 +34,9 @@ import { ensureCertControllers } from '../certs';
 import DevList from './DevList.vue';
 import ToolMark from './ToolMark.vue';
 import DevDialog from './DevDialog.vue';
+import DevModal from './DevModal.vue';
+import { rancherReleases } from '../github';
+import { DEFAULT_RANCHER_VERSION } from '../apps-rancher';
 import NavRow from './NavRow.vue';
 import NavHead from './NavHead.vue';
 import HoverCard from './HoverCard.vue';
@@ -136,7 +140,7 @@ export default {
   name: 'DevSidebar',
 
   components: {
-    DevList, Stack, Row, ClaudeLogo, ToolMark, DevDialog, RancherPicker, NavRow, NavHead, HoverCard
+    DevList, Stack, Row, ClaudeLogo, ToolMark, DevDialog, DevModal, RancherPicker, NavRow, NavHead, HoverCard
   },
 
   mixins: [hoverCard],
@@ -149,6 +153,14 @@ export default {
       defaultRancher: cache.defaultRancher,
       askingRancher: false,
       proposedRancher: '',
+      /** What the new Rancher will run: a released tag, or whatever is typed. */
+      rancherVersion:  DEFAULT_RANCHER_VERSION,
+      /** Where its image comes from; see RANCHER_REGISTRIES. */
+      rancherRegistry: 'community',
+      /** The released versions, read from GitHub when the form opens. */
+      rancherReleaseList: [],
+      /** Whether that read is still going, so the field says so rather than looking empty. */
+      readingReleases: false,
       /** The Clusters block is a header until it is opened; the choice is kept per browser. */
       /** The Rancher a delete is being confirmed for, or null. */
       deletingRancher: null,
@@ -459,10 +471,29 @@ export default {
       return total ? `${ readableBytes(Math.max(0, total - free)) } / ${ readableBytes(total) }` : readableBytes(free);
     },
 
-    /** A Rancher of your own, from the single-node App: named here, confirmed, then provisioned. */
+    /** A Rancher of your own, from the single-node App: named here, set up, then provisioned. */
     async newRancher() {
       this.proposedRancher = await nextRancherName(this.$store).catch(() => 'otter');
+      this.rancherVersion = DEFAULT_RANCHER_VERSION;
+      this.rancherRegistry = 'community';
       this.askingRancher = true;
+      // After the form is up, not before: the versions are a convenience and the name is the
+      // only thing needed to press Create, so nothing waits on GitHub to open.
+      if (!this.rancherReleaseList.length) {
+        this.readingReleases = true;
+        this.rancherReleaseList = await rancherReleases().catch(() => []);
+        this.readingReleases = false;
+      }
+    },
+
+    /** The registries, for the form. A method because an imported array is not on the component. */
+    registries() {
+      return RANCHER_REGISTRIES;
+    },
+
+    /** Whether what is picked needs SUSE credentials, so the form can say so before Create. */
+    needsPrimeCredentials() {
+      return isPrimeRegistry(this.rancherRegistry);
     },
 
     async makeRancher() {
@@ -483,7 +514,7 @@ export default {
         title: `Creating ${ name }`, message: 'One EC2 node, then Rancher on it: about ten minutes. Its progress is under Ranchers.', timeout: 6000,
       }, { root: true });
       try {
-        await createRancherInstance(this.$store, name);
+        await createRancherInstance(this.$store, name, undefined, { version: this.rancherVersion, registry: this.rancherRegistry });
         this.error = '';
         await this.refresh();
       } catch (e) {
@@ -950,14 +981,108 @@ export default {
       @confirm="deleteRancher"
       @cancel="deletingRancher = null; deletingShares = []"
     />
-    <DevDialog
+    <!--
+      Naming it was never the whole question. Which version it runs and whether it is Prime are
+      decided once, at create: the image is baked into the instance's values and changing it
+      afterwards is a re-provision, so a confirm dialog with nothing but Create was asking the
+      easy half and defaulting the rest.
+    -->
+    <DevModal
       v-if="askingRancher"
-      :title="`Create the Rancher ${ proposedRancher }?`"
-      :message="rancherHint(proposedRancher)"
-      confirm-label="Create"
-      @confirm="makeRancher"
-      @cancel="askingRancher = false"
-    />
+      title="Create a Rancher"
+      @close="askingRancher = false"
+    >
+      <form
+        class="dev-sidebar__form"
+        @submit.prevent="makeRancher"
+      >
+        <label class="dev-sidebar__field">
+          <span class="dev-sidebar__field-label">Name</span>
+          <input
+            v-model="proposedRancher"
+            class="dev-sidebar__input"
+            type="text"
+            autofocus
+          >
+          <span class="dev-sidebar__field-help">{{ rancherHint(proposedRancher) }}</span>
+        </label>
+
+        <label class="dev-sidebar__field">
+          <span class="dev-sidebar__field-label">Version</span>
+          <!--
+            A text field with the releases behind it rather than a select: `head`, a `vX.Y-head`
+            floating tag and a build nobody released are all legitimate here, and a select would
+            make the list the limit instead of the convenience. GitHub's releases, not a
+            registry's tags - `rancher/rancher` on Docker Hub has 25,308 of those.
+          -->
+          <input
+            v-model="rancherVersion"
+            class="dev-sidebar__input"
+            type="text"
+            list="dev-rancher-versions"
+            placeholder="v2.12.3"
+          >
+          <datalist id="dev-rancher-versions">
+            <option
+              v-for="release in rancherReleaseList"
+              :key="release.tag"
+              :value="release.tag"
+            >{{ release.prerelease ? 'prerelease' : '' }}</option>
+          </datalist>
+          <span class="dev-sidebar__field-help">
+            {{ readingReleases ? 'Reading the released versions…' : rancherReleaseList.length ? `${ rancherReleaseList.length } released versions to pick from, newest first. Any tag can be typed.` : 'Any tag of the Rancher server image.' }}
+          </span>
+        </label>
+
+        <fieldset class="dev-sidebar__field">
+          <span class="dev-sidebar__field-label">Build</span>
+          <label
+            v-for="registry in registries()"
+            :key="registry.id"
+            class="dev-sidebar__radio"
+          >
+            <input
+              v-model="rancherRegistry"
+              type="radio"
+              :value="registry.id"
+            >
+            <span>
+              <span class="dev-sidebar__radio-label">{{ registry.label }}</span>
+              <span class="dev-sidebar__field-help">{{ registry.help }}</span>
+            </span>
+          </label>
+        </fieldset>
+
+        <!--
+          Said before Create, not after: a Prime instance with no credentials provisions a node,
+          pulls nothing and sits in ImagePullBackOff, which costs ten minutes to find out.
+        -->
+        <p
+          v-if="needsPrimeCredentials()"
+          class="dev-sidebar__field-help dev-sidebar__field-help--warn"
+        >
+          Prime images are pulled as you: put your SUSE registry username and password in
+          Settings → Tokens, or this will be refused rather than left pulling.
+        </p>
+
+        <div class="dev-sidebar__form-actions">
+          <button
+            type="submit"
+            class="btn role-primary btn-sm"
+            :disabled="!proposedRancher.trim()"
+          >
+            Create
+          </button>
+          <button
+            type="button"
+            class="btn role-secondary btn-sm"
+            @click="askingRancher = false"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </DevModal>
     <div
       v-if="error"
       class="dev-sidebar__error"
@@ -1366,5 +1491,78 @@ export default {
     &__row, &__rancher-row { padding-top: var(--dev-space-3); padding-bottom: var(--dev-space-3); }
 
   }
+}
+
+/*
+ * The create form, at the TOP LEVEL rather than inside `.dev-sidebar`.
+ *
+ * DevModal teleports to <body>, so the dialog is not a descendant of this component's root
+ * element and a selector nested under `.dev-sidebar` compiles to `.dev-sidebar .dev-sidebar__form`
+ * and matches nothing. Scoping still applies - Vue puts the scope attribute on the teleported
+ * nodes too - it is only the ancestor that is gone. The chooser in WorkspaceTools is written out
+ * here for the same reason, and learned it the same way.
+ */
+.dev-sidebar__form {
+  display:        flex;
+  flex-direction: column;
+  gap:            18px;
+  min-width:      min(420px, 80vw);
+}
+
+.dev-sidebar__field {
+  display:        flex;
+  flex-direction: column;
+  gap:            4px;
+  margin:         0;
+  padding:        0;
+  border:         none;
+}
+
+.dev-sidebar__field-label {
+  color:          var(--muted);
+  font-size:      12px;
+  font-weight:    600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.dev-sidebar__input {
+  width:         100%;
+  min-height:    0;
+  padding:       6px 10px;
+  border:        1px solid var(--border);
+  border-radius: var(--r-sm);
+  background:    var(--input-bg, var(--box-bg));
+  color:         var(--body-text);
+  font-size:     14px;
+}
+
+.dev-sidebar__field-help {
+  color:     var(--muted);
+  font-size: 12px;
+
+  &--warn { color: var(--status-input); }
+}
+
+.dev-sidebar__radio {
+  display:     flex;
+  align-items: flex-start;
+  gap:         8px;
+  margin:      0;
+  font-weight: 400;
+
+  input { margin-top: 3px; }
+
+  span { display: block; }
+}
+
+.dev-sidebar__radio-label {
+  color:     var(--body-text);
+  font-size: 14px;
+}
+
+.dev-sidebar__form-actions {
+  display: flex;
+  gap:     8px;
 }
 </style>

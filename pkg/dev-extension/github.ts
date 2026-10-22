@@ -1134,6 +1134,40 @@ export async function requestReviewers(repo: string, pr: number, logins: string[
   return { asked, refused };
 }
 
+/** One released Rancher server version, as a tag anyone can pull. */
+export interface RancherRelease {
+  /** The image tag: `v2.12.3`. */
+  tag: string;
+  /** An alpha, rc or patch candidate. Offered, but not as a default. */
+  prerelease: boolean;
+  at: string;
+}
+
+/**
+ * The Rancher server versions there are, newest first.
+ *
+ * Asked of GitHub's releases rather than of a registry's tag list, and that is not a detail:
+ * `rancher/rancher` on Docker Hub has 25,308 tags - every rc, every per-commit `vX.Y-<sha>-head`
+ * - with no ordering the API will honour, so a list built from it is unusable. GitHub's releases
+ * are the versions that were actually released, in order, each already saying whether it is a
+ * prerelease. The same tags exist in the Prime registries, which publish the same builds under
+ * the same names, so one list serves both.
+ *
+ * A tag not in the list can still be typed: `head`, a `vX.Y-head` floating tag, a build nobody
+ * released. The list is a convenience, never the limit.
+ */
+export async function rancherReleases(limit = 30): Promise<RancherRelease[]> {
+  const rows = await rest('GET', `/repos/rancher/rancher/releases?per_page=${ Math.min(100, Math.max(1, limit)) }`).catch(() => null);
+
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+
+  return rows
+    .filter((row: Json) => !row?.draft && row?.tag_name)
+    .map((row: Json) => ({ tag: String(row.tag_name), prerelease: !!row.prerelease, at: String(row.published_at || '') }));
+}
+
 /**
  * Take a review request back.
  *

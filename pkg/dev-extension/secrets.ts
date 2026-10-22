@@ -69,6 +69,20 @@ export const GLOBAL_SECRETS: DevSecret[] = [
     group:    'access',
   },
   {
+    key:      'PRIME_REGISTRY_USER',
+    label:    'SUSE registry username',
+    help:     'Your SUSE Customer Center login. A Rancher instance built on a Prime image pulls it from stgregistry.suse.com or registry.rancher.com, and both refuse an anonymous pull - without this a Prime instance sits in ImagePullBackOff saying "unauthorized". Not needed for a community instance.',
+    required: false,
+    group:    'access',
+  },
+  {
+    key:      'PRIME_REGISTRY_PASSWORD',
+    label:    'SUSE registry password',
+    help:     'The password or registry token that goes with the username above. It is turned into the instance\'s own pull Secret at create time and is not stored on the instance in any other form.',
+    required: false,
+    group:    'access',
+  },
+  {
     key:      'LETSENCRYPT_EMAIL',
     label:    'Account email',
     help:     'The contact address for the ACME account; no registration needed, just an address you own. Empty means no share asks for a certificate.',

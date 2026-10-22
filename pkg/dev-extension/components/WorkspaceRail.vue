@@ -4091,6 +4091,30 @@ export default {
      */
     flex:           none;
 
+    /*
+     * One border around this box, not three.
+     *
+     * The frame is this element's. Inside it the shell-fork draws two more at the same seam -
+     * `.tabs.horizontal` borders itself on three sides, and `.tabs.horizontal + .tab-container`
+     * borders the panel below it - so the top and sides carried 1px of this box, 1px of the
+     * strip and 1px of the panel stacked together, which is what reads as a double or a thicker
+     * edge beside the single-bordered boxes above it (the action groups and the tools strip).
+     *
+     * Removed here rather than in ConversationTabbed.vue: that file is a verbatim fork of the
+     * shell's Tabbed with one slot added and says to keep it that way, and this is a decision
+     * about this one box rather than about every strip in the product. The rule the strip keeps
+     * is the one that does work - the line under the tabs, which is what separates them from
+     * what they are showing.
+     */
+    :deep(.tabs.horizontal) {
+      border:        none;
+      border-bottom: 1px solid var(--border);
+    }
+
+    :deep(.tabs.horizontal + .tab-container) {
+      border: none;
+    }
+
     &--asked {
       outline:        2px solid var(--status-input);
       outline-offset: 2px;
