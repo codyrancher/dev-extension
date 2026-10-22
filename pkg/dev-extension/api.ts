@@ -353,6 +353,8 @@ const MAX_NAME_LENGTH = 40;
 export type WorkspaceState = 'running' | 'stopped' | 'starting' | 'creating' | 'removing' | 'error';
 
 export interface DevWorkspace {
+  /** The GitHub repository this workspace is for; rancher/dashboard unless it says otherwise. */
+  repo?: string;
   /** The cluster it is hosted on, from its namespace's label. See LABEL_CLUSTER. */
   cluster: string;
   name: string;

@@ -14,6 +14,10 @@ import {
   workspaceTools, startTool, stopTool, renewTool, toolHref, toolState, TOOLS, TOOL_ORDER
 } from '../tools';
 import { DEFAULT_LEASE_MINUTES } from '../config/constants';
+import {
+  previewState, shareWorkspace, rebuildPreview, removePreview, retargetPreview, preferredShareHost,
+} from '../previews';
+import { listRanchers } from '../ranchers';
 
 export default {
   name: 'WorkspaceTools',
@@ -52,6 +56,17 @@ export default {
       /** Whether this visit has already released the dev server for a stage that cannot use it. */
       released: false,
       timer:    null,
+      /*
+       * The two shares, beside the tools rather than on a tab of their own.
+       *
+       * A share is not a leased tool - it is an Installation that outlives the lease and has a
+       * public address - but it answers the same question the tools row answers, "what can
+       * this workspace give me", and it was two clicks away on another tab.
+       */
+      shares:   { dashboard: null, storybook: null },
+      /** Which Rancher a share talks to; the starred one unless somebody picks another. */
+      ranchers: [],
+      shareBusy: '',
     };
   },
 
@@ -63,6 +78,25 @@ export default {
      * say what *can* be attached as what is: the agent knows the four, and the person looking at
      * the page should not have to.
      */
+    /** The two shares, as rows of the same shape the tools use. */
+    shareRows() {
+      return [
+        { kind: 'dashboard', label: 'Rancher share', icon: 'icon-cloud', what: 'Build this branch and serve it on a public address' },
+        { kind: 'storybook', label: 'Storybook share', icon: 'icon-folder', what: 'Build this branch\'s Storybook and serve it on a public address' },
+      ].map((row) => {
+        const state = this.shares[row.kind];
+
+        return {
+          ...row,
+          state,
+          // The public sslip name when there is one, else whatever address it has.
+          href:  state?.host ? `https://${ state.host }` : (state?.url || ''),
+          up:    !!state?.url || !!state?.host,
+          where: state?.rancherUrl || '',
+        };
+      });
+    },
+
     rows() {
       return TOOL_ORDER.map((kind) => {
         const tool = this.tools.find((t) => t.kind === kind) || { kind, workspace: this.workspace, running: false };
@@ -81,13 +115,16 @@ export default {
   },
 
   async fetch() {
-    await this.read();
+    await Promise.all([this.read(), this.readShares()]);
   },
 
   mounted() {
     // A tool that was just attached is still starting, and its lease is counting down while
     // nobody is pressing anything, so the list refreshes itself.
-    this.timer = setInterval(() => this.read().catch(() => {}), 20000);
+    this.timer = setInterval(() => {
+      this.read().catch(() => {});
+      this.readShares().catch(() => {});
+    }, 20000);
   },
 
   beforeUnmount() {
@@ -95,6 +132,88 @@ export default {
   },
 
   methods: {
+    /** What each share is, now. A failed read leaves what is on screen alone. */
+    async readShares() {
+      for (const kind of ['dashboard', 'storybook']) {
+        const state = await previewState(this.$store, this.workspace, 'local', kind).catch(() => null);
+
+        if (state) {
+          this.shares = { ...this.shares, [kind]: state };
+        }
+      }
+      if (!this.ranchers.length) {
+        this.ranchers = (await listRanchers(this.$store).catch(() => []))
+          .filter((r) => r.url && (r.kind === 'host' || r.phase === 'ready'));
+      }
+    },
+
+    /**
+     * Build it and serve it.
+     *
+     * The host is the starred Rancher's node when there is one, and this cluster otherwise -
+     * `preferredShareHost` already decides that, and deciding it again here would be a second
+     * opinion to keep in step. Which RANCHER the build talks to is a separate choice and is
+     * the select beside the row.
+     */
+    async share(kind) {
+      this.shareBusy = kind;
+      try {
+        const host = await preferredShareHost(this.$store);
+        const target = this.shares[kind]?.rancherUrl || this.ranchers[0]?.url || '';
+
+        await shareWorkspace(this.$store, this.workspace, kind, target, 'local', host);
+        this.$emit('notice', `The ${ kind } share is building. The link appears here when it is up.`);
+        await this.readShares();
+      } catch (e) {
+        this.$emit('error', e);
+      } finally {
+        this.shareBusy = '';
+      }
+    },
+
+    /** Build it again from the branch as it is now. */
+    async rebuild(kind) {
+      this.shareBusy = kind;
+      try {
+        await rebuildPreview(this.workspace, 'local', kind);
+        this.$emit('notice', `The ${ kind } share is rebuilding from the branch as it is now.`);
+        await this.readShares();
+      } catch (e) {
+        this.$emit('error', e);
+      } finally {
+        this.shareBusy = '';
+      }
+    },
+
+    /** Point the built share at another Rancher. A build is routed, so this rebuilds it. */
+    async retarget(kind, url) {
+      if (!url) {
+        return;
+      }
+      this.shareBusy = kind;
+      try {
+        await retargetPreview(this.$store, this.workspace, kind, url);
+        this.$emit('notice', `The ${ kind } share now talks to ${ url }; it is rebuilding for it.`);
+        await this.readShares();
+      } catch (e) {
+        this.$emit('error', e);
+      } finally {
+        this.shareBusy = '';
+      }
+    },
+
+    async unshare(kind) {
+      this.shareBusy = kind;
+      try {
+        await removePreview(this.$store, this.workspace, kind);
+        this.shares = { ...this.shares, [kind]: null };
+      } catch (e) {
+        this.$emit('error', e);
+      } finally {
+        this.shareBusy = '';
+      }
+    },
+
     async read() {
       if (!this.workspace) {
         return;
@@ -190,6 +309,75 @@ export default {
   >
     <span class="workspace-tools__label">Tools</span>
     <div class="workspace-tools__rows">
+      <!--
+        The two shares, in the same list as the tools.
+        A share is not a leased tool - it outlives the lease and has a public address of its
+        own - but it answers the question this list answers, and it was on another tab.
+      -->
+      <div
+        v-for="row in shareRows"
+        :key="`share-${ row.kind }`"
+        class="workspace-tools__row"
+        :class="{ 'workspace-tools__row--up': row.up }"
+        :title="row.what"
+      >
+        <i
+          class="icon workspace-tools__icon"
+          :class="row.icon"
+        />
+        <span class="workspace-tools__name">{{ row.label }}</span>
+        <span class="workspace-tools__state">{{ row.up ? 'built' : 'not built' }}</span>
+        <a
+          v-if="row.href"
+          :href="row.href"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="workspace-tools__link"
+        >Open</a>
+        <!-- Which Rancher the build talks to. A build is routed for its target, so changing it rebuilds. -->
+        <select
+          v-if="ranchers.length"
+          class="workspace-tools__pick"
+          :value="row.where"
+          :disabled="!!shareBusy"
+          title="The Rancher this share talks to"
+          @change="retarget(row.kind, $event.target.value)"
+        >
+          <option
+            v-for="r in ranchers"
+            :key="r.id"
+            :value="r.url"
+          >{{ r.name }}</option>
+        </select>
+        <button
+          v-if="row.up"
+          class="workspace-tools__link"
+          :disabled="!!shareBusy"
+          title="Build it again from the branch as it is now."
+          @click="rebuild(row.kind)"
+        >
+          {{ shareBusy === row.kind ? 'Working…' : 'Rebuild' }}
+        </button>
+        <button
+          v-else
+          class="workspace-tools__link"
+          :disabled="!!shareBusy"
+          :title="row.what"
+          @click="share(row.kind)"
+        >
+          {{ shareBusy === row.kind ? 'Building…' : 'Share' }}
+        </button>
+        <button
+          v-if="row.up"
+          class="workspace-tools__link"
+          :disabled="!!shareBusy"
+          title="Take the share down."
+          @click="unshare(row.kind)"
+        >
+          Release
+        </button>
+      </div>
+
       <div
         v-for="row in rows"
         :key="row.kind"

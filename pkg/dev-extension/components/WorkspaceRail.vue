@@ -249,8 +249,17 @@ export default {
     },
 
     /** The repository these workspaces are of. One, for now, as everywhere else here. */
+    /**
+     * The repository this workspace is for, which is not always rancher/dashboard.
+     *
+     * This returned the constant, so every GitHub read for every workspace asked about
+     * rancher/dashboard - and a workspace made for a pull request in another repository
+     * answered `GET /repos/rancher/dashboard/pulls/1202 -> 404` and then said it was "not
+     * named for an issue or a PR, so it has no stages". The App has always had a `repo` value
+     * and it has always been overridable; nothing read it.
+     */
     repo() {
-      return DEFAULT_REPO;
+      return this.workspace?.repo || DEFAULT_REPO;
     },
 
     steps() {

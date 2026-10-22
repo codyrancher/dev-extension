@@ -5394,6 +5394,11 @@ function workspaceFromInstance(inst) {
     namespace: inst.spec?.namespace || `dev-${ name }`,
     cluster:   labels[LABEL_CLUSTER] || 'local',
     app:       labels[LABEL_APP] || '',
+    // Which repository this workspace is for. The App's own value, which defaults to
+    // rancher/dashboard and is overridable per workspace - a pull request in another
+    // repository is a workspace with another `repo`, and until this was carried the pages
+    // asked GitHub about rancher/dashboard whatever the workspace said and got a 404.
+    repo:      String(values.repo || '') || DEFAULT_REPO,
     port:      Number(values.port) || DEFAULT_WORKSPACE_PORT,
     scheme:    values.scheme === 'https' ? 'https' : DEFAULT_WORKSPACE_SCHEME,
     preview:   inst.spec?.app === PREVIEW_APP,

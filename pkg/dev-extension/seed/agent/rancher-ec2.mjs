@@ -556,16 +556,29 @@ function parentGithub() {
     '-o', 'jsonpath={.data.clientsecret}',
   ]);
 
+  const allowed = (() => {
+    try {
+      return JSON.parse(principals || '[]');
+    } catch {
+      return [];
+    }
+  })();
+
+  /*
+   * The rancher org, always.
+   *
+   * An instance is made to be shown to somebody - a share, a reviewer, whoever is being asked
+   * to look at the thing - and an allow-list of one person is a Rancher only its maker can
+   * open. `github_org://9343010` is the rancher organisation, which is the same id the Apps
+   * Plus app has written into every instance it has ever made; this keeps the two paths
+   * agreeing about who gets in.
+   */
+  const RANCHER_ORG = 'github_org://9343010';
+
   return {
     clientId,
     clientSecret: secret ? Buffer.from(secret, 'base64').toString('utf8') : '',
-    allowed:      (() => {
-      try {
-        return JSON.parse(principals || '[]');
-      } catch {
-        return [];
-      }
-    })(),
+    allowed:      [...new Set([...allowed, RANCHER_ORG])],
   };
 }
 
