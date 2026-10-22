@@ -6,7 +6,7 @@
 // a workspace made from My Work or the Create page is pointed at when nobody says otherwise.
 // Kept per person, beside the other preferences (prefs.ts).
 
-import { devFetch, clusterBase, cloudCredentialsManifest } from './api';
+import { devFetch, clusterBase, cloudCredentialsManifest, DEV_SYSTEM_NAMESPACE } from './api';
 import { APP_INSTANCE } from './config/constants';
 import { AGENT_NS, AGENT_BASE } from './pod';
 import { readPrefs, savePrefs } from './prefs';
@@ -50,6 +50,48 @@ export const RANCHER_STEPS = ['cluster asked for', 'node provisioning', 'Rancher
  * Rancher chart the bundle installs on that cluster, then the address once Rancher answers
  * there, `<name>.dev-extension.<node ip>.sslip.io`.
  */
+/**
+ * The Ranchers made directly on EC2, which is the other way of having one.
+ *
+ * `seed/agent/rancher-ec2.mjs` launches an instance whose user-data runs `rancher/rancher` in
+ * docker - three moving parts instead of the seven an Apps Plus instance needs, and no cluster
+ * registered with this Rancher, so none of the agent-tunnel failure that has dogged those.
+ *
+ * A browser cannot call EC2, so the tool keeps a record where the browser can read it: one
+ * ConfigMap in dev-system, rewritten on every create, delete and sync. This reads it and
+ * nothing else - if the record is stale the list is stale, which is why the tool rewrites it
+ * rather than anything here polling AWS.
+ *
+ * `clusterId` is deliberately absent. These are not clusters of this Rancher's, so nothing
+ * that needs to reach one through the parent's proxy - Fleet delivery, and therefore shares -
+ * can use them yet, and `pickShareHost` requires a clusterId so it will not pick one by
+ * accident. Listing them is what this does; making them share hosts is a separate piece of
+ * work with its own delivery path.
+ */
+async function ec2Ranchers(): Promise<RancherTarget[]> {
+  const cm = await devFetch(`${ clusterBase('local') }/v1/configmaps/${ DEV_SYSTEM_NAMESPACE }/dev-rancher-ec2`).catch(() => null);
+
+  try {
+    const doc = JSON.parse(cm?.data?.['instances.json'] || '{}');
+
+    return (doc.instances || []).map((i: Json): RancherTarget => ({
+      id:     `ec2:${ i.name }`,
+      name:   i.name,
+      url:    i.url || '',
+      kind:   'instance',
+      // `running` is the instance, not Rancher - the box can be up a few minutes before the
+      // container answers - so it reads as installing until there is an address to go to.
+      phase:  i.state === 'running' && i.url ? 'ready' : (i.state === 'running' ? 'installing' : 'created'),
+      step:   i.state === 'running' && i.url ? 3 : 1,
+      detail: i.state === 'running' ? '' : `EC2 instance ${ i.state }`,
+      since:  doc.at || '',
+      nodeIp: i.ip || '',
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export async function listRanchers(store: Store): Promise<RancherTarget[]> {
   const out: RancherTarget[] = [{
     // Its own address, not the page's: read through a share, the origin is the share's name.
@@ -91,6 +133,17 @@ export async function listRanchers(store: Store): Promise<RancherTarget[]> {
       continue;
     }
     out.push(await instanceTarget(name, instance.metadata?.creationTimestamp || '', cluster, bundle, machine));
+  }
+
+  // And the ones made directly on EC2, which have no Installation to be found by the loop
+  // above. A name already listed wins: an Apps Plus instance and an EC2 record of the same
+  // name is somebody's migration in progress, and the richer entry is the one to show.
+  const taken = new Set(out.map((r) => r.name));
+
+  for (const extra of await ec2Ranchers()) {
+    if (!taken.has(extra.name)) {
+      out.push(extra);
+    }
   }
 
   return out;

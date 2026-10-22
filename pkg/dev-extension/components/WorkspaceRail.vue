@@ -52,7 +52,7 @@ import { markReadyForReview, requestReviewers, describePr } from '../github';
 import {
   deleteWorkspace, devFetch, workspaceMediaListUrl, setWorkspaceRunning, workspaceProxyUrl, secretValue
 } from '../api';
-import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE } from '../config/constants';
+import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, FOCUS_ROUTE } from '../config/constants';
 
 const STATUS_MS = 15000;
 const EVIDENCE_MS = 60000;
@@ -1002,6 +1002,22 @@ export default {
     },
 
     /** The conversation is on the page; every other view opens over it. */
+    /**
+     * This workspace's card in the deck, not the deck's first card.
+     *
+     * `ws:<name>` is the key priority.ts gives a workspace item, and Focus already reads a
+     * `card` query out of the URL to decide which one it opens on - so this is a link, with no
+     * new mechanism behind it. A workspace with no card in the deck right now still opens
+     * Focus; it lands on the deck rather than on nothing.
+     */
+    openFocus() {
+      this.$router.push({
+        name:   FOCUS_ROUTE,
+        params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER },
+        query:  { card: `ws:${ this.workspace.name }` },
+      });
+    },
+
     openTab(name) {
       // A conversation is its own window now, so "go to the conversation" opens it rather
       // than scrolling to a pane that is no longer on the page.
@@ -1270,7 +1286,22 @@ export default {
       if (!this.action) {
         return [];
       }
-      const all = [...this.action.tools, { ...this.action.primary, isPrimary: true }];
+      /*
+       * Focus is on every stage, and it is added here rather than written into each one.
+       *
+       * The deck is where this work is meant to live - the rail is the one piece of it that
+       * still has its own page - so every stage offers the way across, to this workspace's own
+       * card rather than to the top of the deck. Written once because it belongs to all of
+       * them equally: a stage-by-stage copy would be ten chances for one to be forgotten, and
+       * the stages that gained buttons this week would have been the ones that missed it.
+       *
+       * It is a decision, not a prompt, so it sits with "your call" and never on the agent's
+       * side.
+       */
+      const focus = this.workspace?.name
+        ? [{ label: 'Focus', run: 'openFocus', isFocus: true }]
+        : [];
+      const all = [...this.action.tools, ...focus, { ...this.action.primary, isPrimary: true }];
 
       return all.filter((a) => (kind === 'agent' ? this.agentSide(a) : !this.agentSide(a)));
     },

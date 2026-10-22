@@ -167,8 +167,86 @@ touch /var/log/rancher-bootstrap-done
 `).toString('base64');
 }
 
+/**
+ * Where to put it, when nobody said.
+ *
+ * The point of this tool is that `create <name>` works, so the network it needs is discovered
+ * rather than configured: the account's default VPC, one of its default subnets, and a security
+ * group of this tool's own. A caller that knows better still passes RANCHER_EC2_SUBNET and
+ * RANCHER_EC2_SG and none of this runs.
+ */
+async function defaultNetwork(cred) {
+  const vpcs = await ec2(cred, {
+    Action: 'DescribeVpcs', 'Filter.1.Name': 'isDefault', 'Filter.1.Value.1': 'true',
+  });
+  const vpcId = one(vpcs, 'vpcId');
+
+  if (!vpcId) {
+    throw new Error('no default VPC in this region; set RANCHER_EC2_SUBNET and RANCHER_EC2_SG');
+  }
+
+  const subnets = await ec2(cred, {
+    Action: 'DescribeSubnets', 'Filter.1.Name': 'vpc-id', 'Filter.1.Value.1': vpcId,
+  });
+  const subnet = all(subnets, 'item').map((i) => one(i, 'subnetId')).filter(Boolean)[0];
+
+  return { vpcId, subnet };
+}
+
+/**
+ * The security group, found or made.
+ *
+ * 80 and 443 from anywhere, because the whole point of this Rancher is that it has a public
+ * address a browser and an agent can reach. Nothing else is opened - no 22, because this box is
+ * not meant to be logged into: it runs one container and `docker logs` is reachable through
+ * nothing here. Add SSH deliberately if you want it.
+ */
+async function securityGroup(cred, vpcId) {
+  const existing = await ec2(cred, {
+    Action:             'DescribeSecurityGroups',
+    'Filter.1.Name':    'group-name',
+    'Filter.1.Value.1': 'rancher-ec2',
+    'Filter.2.Name':    'vpc-id',
+    'Filter.2.Value.1': vpcId,
+  });
+  const found = one(existing, 'groupId');
+
+  if (found) {
+    return found;
+  }
+
+  const made = await ec2(cred, {
+    Action:           'CreateSecurityGroup',
+    GroupName:        'rancher-ec2',
+    GroupDescription: 'Rancher on one EC2 instance (dev-extension)',
+    VpcId:            vpcId,
+  });
+  const id = one(made, 'groupId');
+
+  for (const [n, port] of [80, 443].entries()) {
+    await ec2(cred, {
+      Action:                                  'AuthorizeSecurityGroupIngress',
+      GroupId:                                 id,
+      [`IpPermissions.${ n + 1 }.IpProtocol`]: 'tcp',
+      [`IpPermissions.${ n + 1 }.FromPort`]:   String(port),
+      [`IpPermissions.${ n + 1 }.ToPort`]:     String(port),
+      [`IpPermissions.${ n + 1 }.IpRanges.1.CidrIp`]: '0.0.0.0/0',
+    });
+  }
+
+  return id;
+}
+
 async function create(cred, name, opts) {
   const ami = opts.ami || await ubuntu(cred);
+  let { subnet, securityGroup: sg } = opts;
+
+  if (!subnet || !sg) {
+    const net = await defaultNetwork(cred);
+
+    subnet = subnet || net.subnet;
+    sg = sg || await securityGroup(cred, net.vpcId);
+  }
   const password = opts.password || crypto.randomBytes(16).toString('base64url');
   const params = {
     Action:                                        'RunInstances',
@@ -190,14 +268,36 @@ async function create(cred, name, opts) {
     'TagSpecification.1.Tag.2.Value':              name,
   };
 
-  if (opts.securityGroup) {
-    params['SecurityGroupId.1'] = opts.securityGroup;
+  if (sg) {
+    params['SecurityGroupId.1'] = sg;
   }
-  if (opts.subnet) {
-    params.SubnetId = opts.subnet;
+  if (subnet) {
+    params.SubnetId = subnet;
   }
   if (opts.keyName) {
     params.KeyName = opts.keyName;
+  }
+  // AWS validates everything and launches nothing, which is how this tool is tested without
+  // billing somebody for a box. It answers with a DryRunOperation error on success, so that
+  // one error is the pass.
+  if (opts.dryRun) {
+    params.DryRun = 'true';
+
+    try {
+      await ec2(cred, params);
+    } catch (e) {
+      const ok = /DryRunOperation|Request would have succeeded/.test(String(e.message || e));
+
+      console.log(JSON.stringify({
+        dryRun: true, ok, ami, subnet, securityGroup: sg, detail: ok ? 'would launch' : String(e.message || e),
+      }));
+
+      return '';
+    }
+
+    console.log(JSON.stringify({ dryRun: true, ok: false, detail: 'AWS did not answer DryRunOperation' }));
+
+    return '';
   }
 
   const xml = await ec2(cred, params);
@@ -221,14 +321,27 @@ async function list(cred) {
     'Filter.2.Value.3': 'stopped',
   });
 
-  // One item per instance, and the tag set is nested inside it - so the instance's own id is
-  // the first instanceId in the block, not any that a tag happens to carry.
-  return all(xml, 'instancesSet').flatMap((set) => all(set, 'item')).map((i) => ({
-    name:  (all(i, 'item').map((t) => (one(t, 'key') === TAG ? one(t, 'value') : '')).find(Boolean)) || '',
-    id:    one(i, 'instanceId'),
-    state: one(one(i, 'instanceState'), 'name'),
-    ip:    one(i, 'ipAddress'),
-  })).filter((i) => i.id);
+  /*
+   * Sliced on `<instanceId>` rather than on `<item>`.
+   *
+   * EC2 nests items three deep - reservationSet > item > instancesSet > item - and the tag set
+   * inside an instance is a list of items too, so matching `<item>` with a regex pairs the
+   * wrong open and close tags and the name came back empty. `instanceId` is the first field of
+   * each instance, so the text from one to the next is exactly that instance's own fields.
+   */
+  const at = [...xml.matchAll(/<instanceId>([^<]+)<\/instanceId>/g)];
+
+  return at.map((m, n) => {
+    const block = xml.slice(m.index, n + 1 < at.length ? at[n + 1].index : undefined);
+    const tags = all(one(block, 'tagSet'), 'item');
+
+    return {
+      name:  tags.map((t) => (one(t, 'key') === TAG ? one(t, 'value') : '')).find(Boolean) || '',
+      id:    m[1],
+      state: one(one(block, 'instanceState'), 'name'),
+      ip:    one(block, 'ipAddress'),
+    };
+  }).filter((i) => i.id);
 }
 
 async function remove(cred, name) {
@@ -243,6 +356,44 @@ async function remove(cred, name) {
   console.log(JSON.stringify({ terminated: found.map((i) => i.id) }));
 }
 
+/**
+ * What the extension reads, because a browser cannot call EC2.
+ *
+ * One ConfigMap in dev-system holding every instance this tool knows about. Written after each
+ * create, delete and sync, so the list in the sidebar is the list in the account rather than a
+ * second thing to keep in step by hand.
+ *
+ * The bootstrap password is NOT in here. It is shown once, by `create`, and this record is read
+ * by every page of the dashboard; a password in it would be a password in everybody's browser.
+ */
+async function record(cred) {
+  const instances = await list(cred);
+  const doc = JSON.stringify({
+    at: new Date().toISOString(),
+    instances: instances.filter((i) => i.name).map((i) => ({
+      name: i.name, instanceId: i.id, state: i.state, ip: i.ip, url: i.ip ? `https://${ i.ip }` : '',
+    })),
+  });
+
+  // Rendered once and applied through a pipe, so it is a create-or-update rather than a create
+  // that fails the second time.
+  const yaml = execFileSync('kubectl', [
+    'create', 'configmap', 'dev-rancher-ec2', '-n', 'dev-system',
+    `--from-literal=instances.json=${ doc }`, '--dry-run=client', '-o', 'yaml',
+  ], { encoding: 'utf8' });
+
+  // The LABELLED output is what gets applied. Piping `yaml` here instead was a label that was
+  // computed, printed to nowhere and dropped - the ConfigMap landed unlabelled and nothing
+  // selecting on the label could find it.
+  const labelled = execFileSync('kubectl', [
+    'label', '--local', '-f', '-', 'dev.rancher.io/kind=rancher-ec2', '--dry-run=client', '-o', 'yaml',
+  ], { encoding: 'utf8', input: yaml });
+
+  execFileSync('kubectl', ['apply', '-f', '-'], { encoding: 'utf8', input: labelled });
+
+  return instances;
+}
+
 async function main() {
   const [verb, name] = process.argv.slice(2);
   const opts = {
@@ -255,6 +406,7 @@ async function main() {
     keyName:       process.env.RANCHER_EC2_KEY || '',
     ami:           process.env.RANCHER_EC2_AMI || '',
     password:      process.env.RANCHER_EC2_PASSWORD || '',
+    dryRun:        process.env.RANCHER_EC2_DRYRUN === '1',
   };
 
   if (!opts.credential) {
@@ -267,6 +419,11 @@ async function main() {
       throw new Error('create needs a name');
     }
     await create(cred, name, opts);
+    await record(cred).catch(() => undefined);
+  } else if (verb === 'sync') {
+    // What boot.sh runs on a timer: the account is the truth, this copies it where the
+    // dashboard can see it.
+    console.log(JSON.stringify(await record(cred), null, 1));
   } else if (verb === 'list') {
     console.log(JSON.stringify(await list(cred), null, 1));
   } else if (verb === 'delete') {
@@ -274,8 +431,9 @@ async function main() {
       throw new Error('delete needs a name');
     }
     await remove(cred, name);
+    await record(cred).catch(() => undefined);
   } else {
-    console.error('usage: rancher-ec2.mjs create <name> | list | delete <name>');
+    console.error('usage: rancher-ec2.mjs create <name> | list | sync | delete <name>');
     process.exit(2);
   }
 }
