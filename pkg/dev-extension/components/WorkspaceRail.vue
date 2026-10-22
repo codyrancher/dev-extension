@@ -19,6 +19,9 @@ import WorkspaceBrowser from './WorkspaceBrowser.vue';
 import WorkspaceShare from './WorkspaceShare.vue';
 import DevModal from './DevModal.vue';
 import DevDialog from './DevDialog.vue';
+import SplitButton from './SplitButton.vue';
+import { CLI_CHOICES } from '../agent-clis.mjs';
+import { readPrefs } from '../prefs';
 import ask from './ask';
 import PromptEditor from './PromptEditor.vue';
 import PrButton from './pr/PrButton.vue';
@@ -84,7 +87,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, DevDialog, PrButton, CommentDiscussion, CommentAttachments, Reviewers, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView, StageSteps,
+    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, SplitButton, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, DevDialog, PrButton, CommentDiscussion, CommentAttachments, Reviewers, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView, StageSteps,
   },
 
   // Every question this rail asks goes through DevDialog (components/ask.ts). The browser's
@@ -233,6 +236,8 @@ export default {
       resuming:  '',
       /** A conversation is being started from the strip's + button. */
       starting:  false,
+      /** Which CLI the plain press of the + uses; the drawer's choice, read from the prefs. */
+      defaultCli: '',
       /**
        * What the last "answer this" link pointed at, so the thing it opened says so for a
        * moment. A key rather than a boolean: the strip and each finding's discussion are
@@ -243,6 +248,9 @@ export default {
   },
 
   computed: {
+    /** The CLIs a conversation can be held with. A constant is not on the component. */
+    CLI_CHOICES: () => CLI_CHOICES,
+
     /**
      * Whether this stage has nothing to serve: a fix whose PR is up and waiting on a person, or
      * one already merged. The dev server is released once when it does - a webpack compiling
@@ -441,7 +449,14 @@ export default {
       // No "open on GitHub" among these: the header already links the issue and the PR, and
       // what belongs here is what the page itself can do - the steps that would otherwise be
       // taken by hand.
-      const conversation = { label: 'Open the conversation', run: 'openTab', arg: 'conversations' };
+      /*
+       * There is no "Open the conversation" action any more, at any stage.
+       *
+       * It was the primary at three of them and a tool at a fourth, and it never did anything
+       * the page was not already doing: the conversation strip is directly below these buttons,
+       * with the running pane in it. A button whose whole effect is "look slightly lower" is a
+       * button that makes the row longer and the real decision harder to find.
+       */
 
       if (s.kind === 'fix') {
         switch (stage) {
@@ -456,7 +471,7 @@ export default {
             return s.agent === 'input' ? {
               headline: 'The agent is waiting for an answer', detail: 'It asked something in its conversation and stopped until it hears back.', primary: { label: 'Answer it', run: 'openTab', arg: 'conversations' }, tools: [],
             } : {
-              headline: s.agent === 'working' ? 'The agent is working' : 'Nothing is on this branch yet', detail: 'This workspace is not for an issue: say what it is for in its conversation.', primary: conversation, tools: [],
+              headline: s.agent === 'working' ? 'The agent is working' : 'Nothing is on this branch yet', detail: 'This workspace is not for an issue: say what it is for in its conversation.', primary: null, tools: [],
             };
           }
           if (s.agent === 'input') {
@@ -466,12 +481,12 @@ export default {
           }
           if (s.agent === 'working') {
             return {
-              headline: 'The agent is looking at the issue', detail: 'Follow along in the conversation, or tell it to go ahead and fix it.', primary: conversation, tools: [{ label: 'Fix it', run: 'startFix' }],
+              headline: 'The agent is looking at the issue', detail: 'Follow along in the conversation, or tell it to go ahead and fix it.', primary: { label: 'Fix it', run: 'startFix' }, tools: [],
             };
           }
 
           return {
-            headline: s.agent === 'none' ? 'Nothing has started on this issue' : 'The agent stopped before opening a PR', detail: 'Fix it starts a conversation that reproduces the issue, fixes it, verifies the fix and opens a draft PR.', primary: { label: 'Fix it', run: 'startFix' }, tools: s.agent === 'none' ? [] : [conversation],
+            headline: s.agent === 'none' ? 'Nothing has started on this issue' : 'The agent stopped before opening a PR', detail: 'Fix it starts a conversation that reproduces the issue, fixes it, verifies the fix and opens a draft PR.', primary: { label: 'Fix it', run: 'startFix' }, tools: [],
           };
         case 'code':
           if (s.agent === 'input') {
@@ -481,7 +496,7 @@ export default {
           }
 
           return {
-            headline: s.agent === 'working' ? 'The agent is working on the fix' : 'The agent stopped before opening a PR', detail: s.agent === 'working' ? 'Follow along in the conversation, or ask it something below.' : 'Read its report on the left; ask it to carry on, or to change course, below.', primary: conversation, tools: [{ label: 'Open the PR flow again', run: 'startFix' }],
+            headline: s.agent === 'working' ? 'The agent is working on the fix' : 'The agent stopped before opening a PR', detail: s.agent === 'working' ? 'Follow along in the conversation, or ask it something below.' : 'Read its report on the left; ask it to carry on, or to change course, below.', primary: null, tools: [],
           };
         case 'draft':
           return {
@@ -502,7 +517,7 @@ export default {
           // here than anywhere else. So the way in stays on the page; only deleting the
           // workspace takes it away.
           return {
-            headline: s.label === 'Approved' ? 'Approved' : 'Merged', detail: 'Nothing is waiting on you. The agent is still here for follow-up questions; deleting the workspace is what ends it (the PR and the transcript stay).', primary: { label: 'Open the conversation', run: 'focusAsk' }, tools: [...(s.label === 'Approved' ? [{ label: 'Merge', run: 'merge' }] : []), { label: 'Delete the workspace', run: 'remove' }],
+            headline: s.label === 'Approved' ? 'Approved' : 'Merged', detail: 'Nothing is waiting on you. The agent is still here for follow-up questions; deleting the workspace is what ends it (the PR and the transcript stay).', primary: s.label === 'Approved' ? { label: 'Merge', run: 'merge' } : null, tools: [{ label: 'Delete the workspace', run: 'remove' }],
           };
         }
       }
@@ -524,9 +539,9 @@ export default {
             };
           }
 
-          // `conversation` ("Open the conversation") is deliberately not here: the conversation
-          // is already on this page, in the strip above this box, so a button to open what is
-          // open was one of three things to read past before starting a review.
+          // This stage never had "Open the conversation" and no stage has it now, for the reason
+          // that kept it off this one: the conversation is already on this page, in the strip
+          // above this box, so a button to open what is open is one more thing to read past.
           return {
             headline: s.agent === 'working' ? 'The agent is reviewing' : 'The agent stopped', detail: 'Its findings land on the left as it goes; go through them once it is done.', primary: { label: 'Full review', run: 'startReview' }, tools: [],
           };
@@ -585,7 +600,7 @@ export default {
           return {
             // Your part is over either way: merging is the author's, so what is left here is
             // to let the workspace go. The conversations and the PR outlive it.
-            headline: s.label === 'Merged' ? 'Merged' : 'Approved', detail: s.label === 'Merged' ? 'Nothing is waiting on you. The agent is still here if you want to ask it something about what it found.' : 'Your review is done and the author merges. The agent is still here for anything you want to ask about it.', primary: { label: 'Open the conversation', run: 'focusAsk' }, tools: [{ label: 'Delete the workspace', run: 'remove' }],
+            headline: s.label === 'Merged' ? 'Merged' : 'Approved', detail: s.label === 'Merged' ? 'Nothing is waiting on you. The agent is still here if you want to ask it something about what it found.' : 'Your review is done and the author merges. The agent is still here for anything you want to ask about it.', primary: null, tools: [{ label: 'Delete the workspace', run: 'remove' }],
           };
         }
       }
@@ -636,6 +651,11 @@ export default {
   },
 
   mounted() {
+    // Which CLI this person holds conversations with, for the split button's plain press. The
+    // same preference the drawer reads, so the + means the same thing in both places.
+    readPrefs().then((prefs) => {
+      this.defaultCli = prefs.cli || '';
+    }).catch(() => undefined);
     this.load();
     this.loadConversations();
     readPrompts().then((p) => {
@@ -1471,7 +1491,17 @@ export default {
       const focus = this.workspace?.name
         ? [{ label: 'Focus', run: 'openFocus', isFocus: true }]
         : [];
-      const all = [...this.action.tools, ...focus, { ...this.action.primary, isPrimary: true }];
+      /*
+       * A stage may have no primary at all, and that is a real state rather than a gap.
+       *
+       * "Open the conversation" used to be the one thing to press at three stages, and it was
+       * never a decision: the conversation is on the page, under the buttons. Taking it away
+       * leaves those stages with nothing to press, which is the honest answer - the work there
+       * is reading what the agent is doing. Spreading a null primary would have rendered a
+       * button with no label and no action, which is the one outcome worse than no button.
+       */
+      const primary = this.action.primary ? [{ ...this.action.primary, isPrimary: true }] : [];
+      const all = [...this.action.tools, ...focus, ...primary];
 
       return all.filter((a) => (kind === 'agent' ? this.agentSide(a) : !this.agentSide(a)));
     },
@@ -2051,7 +2081,8 @@ export default {
      * A new, empty conversation from the strip's + button, started and shown. Through
      * ensureWorkspaceReady like every other way in, so its pane has a dev-shell to run in.
      */
-    async newConversation() {
+    /** `cli` is which program holds it, from the split button; empty is the default. */
+    async newConversation(cli = '') {
       if (this.starting) {
         return;
       }
@@ -2059,7 +2090,7 @@ export default {
       this.error = '';
       try {
         await ensureWorkspaceReady(this.workspace.name);
-        const started = await startConversation(this.workspace.name);
+        const started = await startConversation(this.workspace.name, '', '', typeof cli === 'string' ? cli : '');
 
         await startPaneDetached(this.workspace.name, started.id);
         await this.loadConversations();
@@ -2866,17 +2897,25 @@ export default {
             />
           </template>
           <template #tab-row-extras>
+            <!--
+              The same split the drawer's strip has, and for the same reason: a pane runs its CLI
+              for as long as it lives, so which one is a decision made when the conversation is
+              made and never afterwards. A plain + here meant a workspace could only ever start
+              the default one, and the other CLI was reachable only from the drawer - which is
+              not where the work is.
+            -->
             <li class="workspace-rail__new">
-              <button
-                type="button"
-                class="workspace-rail__new-button"
-                aria-label="New conversation"
-                title="New conversation"
+              <SplitButton
+                class="workspace-rail__new-split"
+                main-class="workspace-rail__new-button"
+                label="New conversation"
+                :value="defaultCli"
+                :options="CLI_CHOICES"
                 :disabled="starting"
-                @click="newConversation"
+                @pick="newConversation"
               >
                 <i :class="starting ? 'icon icon-spinner icon-spin' : 'icon icon-plus'" />
-              </button>
+              </SplitButton>
             </li>
           </template>
           <Tab
@@ -4239,6 +4278,35 @@ export default {
     display: flex;
     align-items: center;
     list-style: none;
+  }
+
+  /*
+   * The caret beside the +, drawn the way the strip's own controls are.
+   *
+   * SplitButton ships a bordered pair, which is right on a toolbar and wrong in a tab row: the
+   * `main-class` above already strips the border off the plus, so without this the caret would
+   * be a bordered box next to a borderless glyph. The drawer's strip solves it the same way
+   * (AgentPanel, `:deep(.split-btn__more)`), and the two rows should not look different.
+   */
+  &__new-split {
+    display:     inline-flex;
+    align-items: center;
+
+    :deep(.split-btn__more) {
+      width:      14px;
+      padding:    0;
+      border:     0;
+      background: transparent;
+      color:      var(--body-text);
+      font-size:  9px;
+      opacity:    .7;
+
+      &:hover:not(:disabled),
+      &:focus-visible {
+        opacity: 1;
+        color:   var(--link);
+      }
+    }
   }
 
   &__new-button {
