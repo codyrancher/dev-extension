@@ -2499,7 +2499,7 @@ export default {
     <DevDialog
       v-if="asking"
       v-bind="asking.question"
-      @confirm="asking.answer(true)"
+      @confirm="asking.answer(true, $event)"
       @cancel="asking.answer(false)"
     />
   </div>

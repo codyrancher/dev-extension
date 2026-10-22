@@ -4972,6 +4972,29 @@ const routes = [
   // The harness's /my-work API, as far as its skills need it.
   ['GET', /^\/my-work\/pr\/(\d+)$/, (m, url) => prDetail(repoOf(url), Number(m[1]))],
   ['GET', /^\/my-work\/pr\/(\d+)\/comments$/, async(m) => (await localComments(Number(m[1]))).map(decorate)],
+  /*
+   * When the comments last changed, and nothing else.
+   *
+   * A finding edited by an agent - the commonest thing that happens to one - took up to a minute
+   * to appear, because the column is re-read on a 60-second timer and nothing told it sooner.
+   * The browser cannot poll the comments themselves at any speed worth having: that read goes
+   * through the memoised pull request detail, which is the diff, the commits and every thread.
+   *
+   * This is a `stat`. One syscall, no GitHub, no JSON parsed - so it can be asked every couple of
+   * seconds, and the expensive read happens only when the answer has moved. `at` is 0 for a pull
+   * request nobody has filed a comment on, which is a real state and not an error.
+   */
+  ['GET', /^\/my-work\/pr\/(\d+)\/comments\/revision$/, (m) => {
+    const { file } = reviewPaths(Number(m[1]), 'comments.json');
+
+    try {
+      const stat = fs.statSync(file);
+
+      return { at: Math.round(stat.mtimeMs), size: stat.size };
+    } catch {
+      return { at: 0, size: 0 };
+    }
+  }],
   ['POST', /^\/my-work\/pr\/(\d+)\/comments$/, async(m, url, body) => {
     const num = Number(m[1]);
     const prLevel = body.level === 'pr' || !body.path;

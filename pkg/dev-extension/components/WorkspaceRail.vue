@@ -48,7 +48,7 @@ import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
   startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers,
-  replyToComment, commentOnPr, quoted, DEFAULT_REPO
+  replyToComment, commentOnPr, quoted, commentsRevision, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
@@ -61,6 +61,17 @@ import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, FOCUS_ROUTE } from '../co
 
 const STATUS_MS = 15000;
 const EVIDENCE_MS = 60000;
+/*
+ * How often the comments' own change marker is asked for.
+ *
+ * The column is re-read on EVIDENCE_MS, which is a minute, and that is the right cadence for
+ * what it costs: the pull request detail behind it is the diff, the commits and every thread.
+ * But the commonest thing that happens to a finding is an agent editing it, and waiting an
+ * average of thirty seconds to see that is the difference between watching a discussion and
+ * refreshing a page. So the cheap question - has anything changed - is asked on its own, and the
+ * expensive read happens only when the answer has moved. See commentsRevision: it is a stat.
+ */
+const COMMENTS_MS = 2500;
 /**
  * How often the page asks GitHub where the work is, when nothing has been pressed. It used to
  * be five minutes, which is how long a stage that had already moved could sit there saying the
@@ -169,6 +180,8 @@ export default {
       settleTimer: null,
       /** Clears the `flash` an "answer this" link set. */
       flashTimer: null,
+      /** The comments' change marker as of the last read, so a change can be told from a tick. */
+      commentsAt: '',
       /** A GitHub read queued because the agent just stopped; cleared when the page goes. */
       agentSettleTimer: null,
       /** Which sections are folded away: `{ [title]: true }`, seeded from the section itself. */
@@ -615,6 +628,7 @@ export default {
       this.liveShown = '';
       this.currentConversation = '';
       this.popped = false;
+      this.commentsAt = '';
       this.load();
       this.loadConversations();
       this.refreshLive();
@@ -637,6 +651,7 @@ export default {
       setInterval(() => this.refreshLive(), STATUS_MS),
       setInterval(() => this.refreshStatus(true), GITHUB_MS),
       setInterval(() => this.refreshEvidence(), EVIDENCE_MS),
+      setInterval(() => this.watchComments(), COMMENTS_MS),
     ];
   },
 
@@ -1901,6 +1916,42 @@ export default {
       this.showAsk('live');
     },
 
+    /**
+     * Notice a comment that changed under us, and read the column again when one has.
+     *
+     * An agent editing a finding is the commonest thing that happens to one, and nothing told
+     * the page: it waited for the minute timer, so the edit the agent had just announced in the
+     * discussion below took up to a minute to appear above it.
+     *
+     * The marker is a stat (commentsRevision), so asking every couple of seconds costs nothing
+     * worth counting. The detail is forgotten rather than amended because what changed is not
+     * known here - a body, an attachment, a comment filed or dropped - and a fresh read is the
+     * only thing that is right for all of them. Only ever on a change, so the expensive read
+     * happens exactly as often as something happened.
+     */
+    async watchComments() {
+      const pr = this.status?.pr;
+
+      if (!pr || this.reading) {
+        return;
+      }
+      const { at, size } = await commentsRevision(pr).catch(() => ({ at: 0, size: 0 }));
+      const mark = `${ at }:${ size }`;
+
+      // Nothing filed yet, or the same answer as last time.
+      if (!at || mark === this.commentsAt) {
+        return;
+      }
+      // The first read of a workspace is not a change; it is what there was when we arrived.
+      const first = !this.commentsAt;
+
+      this.commentsAt = mark;
+      if (!first) {
+        forgetPrDetail(pr, this.repo);
+        await this.refreshEvidence();
+      }
+    },
+
     /** Where a finding is drawn: its section, and its page in that section's pager. */
     placeOfFinding(id) {
       for (const section of this.evidence) {
@@ -2273,15 +2324,29 @@ export default {
       }
       const n = this.findingCount;
       const what = event === 'REQUEST_CHANGES' ? 'as changes to make' : 'as an approval';
-
-      if (!await this.askQuestion({
+      /*
+       * The box is for what the review says at the top - the sentence a person writes above
+       * their line comments, which GitHub calls the review body.
+       *
+       * It had nowhere to go. A review could only say something at the top by having a finding
+       * filed with no path, so the one thing most reviews want to say had to be filed as a
+       * finding first or left unsaid. Asked here because this is the moment it is written.
+       *
+       * `askText` and not `askQuestion`: an empty box and a cancelled dialog are different
+       * answers, and a caller that cannot tell them apart posts a review on a cancel.
+       */
+      const note = await this.askText({
         title:        `Submit ${ n || 'the' } finding${ n === 1 ? '' : 's' } to PR #${ this.status.pr } ${ what }?`,
-        message:      'They become public comments on GitHub, and there is no unsending them.',
+        message:      'They become public comments on GitHub, and there is no unsending them. Anything you write here goes at the top of the review.',
+        input:        true,
+        placeholder:  'A word about the change as a whole - optional',
         confirmLabel: event === 'REQUEST_CHANGES' ? 'Ask for changes' : (event === 'APPROVE' ? 'Ship it' : 'Post comments'),
-      })) {
+      });
+
+      if (note === null) {
         return;
       }
-      const { url, posted } = await submitReview(this.status.pr, this.repo, event);
+      const { url, posted } = await submitReview(this.status.pr, this.repo, event, note);
 
       this.notice = `${ posted } comment${ posted === 1 ? '' : 's' } posted to PR #${ this.status.pr } ${ what }.${ url ? ` ${ url }` : '' }`;
       await this.settle();
@@ -3661,7 +3726,7 @@ export default {
     <DevDialog
       v-if="asking"
       v-bind="asking.question"
-      @confirm="asking.answer(true)"
+      @confirm="asking.answer(true, $event)"
       @cancel="asking.answer(false)"
     />
   </div>

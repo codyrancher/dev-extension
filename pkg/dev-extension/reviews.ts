@@ -118,6 +118,24 @@ export const prDetail = source(
   amend: (change: (value: Json) => Json | undefined, num: number, repo?: string) => boolean;
 };
 
+/**
+ * When this pull request's comments last changed, and how big the file is.
+ *
+ * A `stat` in dev-api and nothing more, so it can be asked every couple of seconds. The point is
+ * what it is NOT: reading the comments themselves means reading the memoised pull request detail,
+ * which carries the diff, the commits and every thread - far too much to poll. This is what lets
+ * a page notice an agent's edit at once and pay for the real read only when there has been one.
+ *
+ * `at: 0` means nobody has filed a comment on this pull request, which is a state and not a
+ * failure. `size` rides along because two edits inside the same millisecond are possible and a
+ * body that changed length says so when the mtime does not.
+ */
+export async function commentsRevision(num: number): Promise<{ at: number; size: number }> {
+  const answer = await api(`/my-work/pr/${ num }/comments/revision`).catch(() => null);
+
+  return { at: Number(answer?.at) || 0, size: Number(answer?.size) || 0 };
+}
+
 export async function listComments(num: number): Promise<LocalComment[]> {
   return api(`/my-work/pr/${ num }/comments`);
 }
@@ -295,7 +313,7 @@ export async function approvePr(num: number, body = '', repo = DEFAULT_REPO): Pr
  * PR-level ones become the review's body while the line ones ride as inline comments. Then they
  * are stamped submitted here, so the next review starts from nothing.
  */
-export async function submitReview(num: number, repo = DEFAULT_REPO, event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES' = 'COMMENT'): Promise<{ url: string | null; posted: number }> {
+export async function submitReview(num: number, repo = DEFAULT_REPO, event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES' = 'COMMENT', note = ''): Promise<{ url: string | null; posted: number }> {
   const comments = (await listComments(num)).filter((c) => !c.submitted_at);
 
   if (!comments.length) {
@@ -320,7 +338,18 @@ export async function submitReview(num: number, repo = DEFAULT_REPO, event: 'COM
   // repaired - the comments are public by then, and re-submitting would double them.
   const withEvidence = await Promise.all(comments.map(async(c) => ({ ...c, body: await bodyWithEvidence(num, c, repo) })));
   const inline = withEvidence.filter((c) => c.path);
-  const body = withEvidence.filter((c) => !c.path).map((c) => c.body).join('\n\n');
+  /*
+   * The review's own body: what was typed when it was submitted, then the findings that are
+   * about the pull request rather than a line of it.
+   *
+   * `note` first, because it is the thing being said about the review as a whole and the
+   * PR-level findings are evidence for it. A review could only ever say something at the top by
+   * having a finding filed with no path, which meant the one thing most reviews want to say -
+   * a sentence about the change - had to be filed as a finding first or not said at all.
+   */
+  const body = [String(note || '').trim(), ...withEvidence.filter((c) => !c.path).map((c) => c.body)]
+    .filter(Boolean)
+    .join('\n\n');
   const review = await gh('POST', `/repos/${ repo }/pulls/${ num }/reviews`, {
     event,
     ...(body ? { body } : {}),

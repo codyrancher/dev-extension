@@ -36,21 +36,30 @@ export interface AskQuestion {
   cancelLabel?: string;
   /** A destructive confirmation: the confirm button is red. */
   danger?: boolean;
+  /** Ask for a line of text as well as a yes. `askText` reads it back; `askQuestion` ignores it. */
+  input?: boolean;
+  placeholder?: string;
+  value?: string;
 }
 
 /** A question on screen: what DevDialog is given, and the way back to whoever asked it. */
 export interface Asking {
   question: AskQuestion;
-  answer: (ok: boolean) => void;
+  /**
+   * `text` is what was typed, which DevDialog already emits with its confirm. Carried through
+   * so a question can ask for a word as well as a yes - the callers that want only the yes are
+   * unaffected, because the boolean is still what `askQuestion` resolves to.
+   */
+  answer: (ok: boolean, text?: string) => void;
 }
 
-function put(q: AskQuestion, show: (asking: Asking | null) => void): Promise<boolean> {
+function put(q: AskQuestion, show: (asking: Asking | null) => void): Promise<string | null> {
   return new Promise((resolve) => {
     let answered = false;
 
     show({
       question: q,
-      answer(ok: boolean) {
+      answer(ok: boolean, text = '') {
         // Escape and the backdrop both reach here, and so does unmounting: answering twice
         // would resolve a promise that has already moved on.
         if (answered) {
@@ -58,7 +67,10 @@ function put(q: AskQuestion, show: (asking: Asking | null) => void): Promise<boo
         }
         answered = true;
         show(null);
-        resolve(ok);
+        // `null` is "no", and a string - empty or not - is "yes". That distinction is the whole
+        // reason this does not resolve the text alone: an empty box and a cancelled dialog are
+        // different answers, and a caller that cannot tell them apart posts on a cancel.
+        resolve(ok ? text : null);
       },
     });
   });
@@ -75,7 +87,11 @@ export function useAsk() {
   // waiting on a promise nothing will ever settle.
   onBeforeUnmount(() => asking.value?.answer(false));
 
-  return { asking, ask: (q: AskQuestion) => put(q, show) };
+  return {
+    asking,
+    ask:     (q: AskQuestion) => put(q, show).then((text) => text !== null),
+    askText: (q: AskQuestion) => put(q, show),
+  };
 }
 
 /**
@@ -96,6 +112,11 @@ export default defineComponent({
 
   methods: {
     askQuestion(q: AskQuestion): Promise<boolean> {
+      return this.askText(q).then((text) => text !== null);
+    },
+
+    /** The same question with a box in it: what was typed, or null if it was not confirmed. */
+    askText(q: AskQuestion): Promise<string | null> {
       return put(q, (next) => {
         this.asking = next;
       });
