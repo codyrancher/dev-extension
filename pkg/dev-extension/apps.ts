@@ -29,6 +29,8 @@ import { WORKSPACE_VUE_CONFIG } from './workspace-config';
 import { lteApps } from './lte';
 import { rancherSingleApp, rancherShareApp } from './apps-rancher';
 import { ensureAppsPlusCrds } from './apps-plus';
+// The product's own log, which Settings shows: a render that failed must be findable.
+import { note } from './dev-log.mjs';
 // The same-origin fetch and cluster path every other Rancher call in this product goes through.
 // Imported rather than reinvented so the CSRF header and the error shape stay in one place.
 import { devFetch, clusterBase, activeCluster, currentOwner, GITHUB_BROWSER_CDP } from './api';
@@ -342,7 +344,14 @@ export async function reconcileUnrendered(store: Store): Promise<void> {
       continue;
     }
     if (!instance.bundle) {
-      await instance.reconcile().catch(() => {});
+      // Same rule as rerenderIfStale below: a render that threw is not a render, and stamping it
+      // would be a promise that it had happened.
+      try {
+        await instance.reconcile();
+      } catch (e: any) {
+        note('render', `${ instance.metadata?.name } could not be rendered`, String(e?.message || e).slice(0, 200));
+        continue;
+      }
       await stampRendered(instance, definitions.get(instance.spec?.app || '') || '');
       continue;
     }
@@ -419,7 +428,26 @@ async function rerenderIfStale(instance: Json, stamp: string): Promise<void> {
 
     return;
   }
-  await instance.reconcile().catch(() => {});
+  /*
+   * Stamped only if it actually rendered.
+   *
+   * This was `reconcile().catch(() => {})` followed by an unconditional stamp, so a render that
+   * threw was recorded as done and never tried again. heron is how that was found: the App
+   * reached the cluster, the instance was stamped `0.3.491|5943fbd0` within seconds, and its
+   * Bundle was still the one generated two days earlier - the one object the whole fix depended
+   * on, marked delivered and never retried.
+   *
+   * The error is also no longer swallowed in silence: it goes to the install log that Settings
+   * shows, because "it silently did nothing" is the hardest kind of failure to find and this one
+   * cost an evening.
+   */
+  try {
+    await instance.reconcile();
+  } catch (e: any) {
+    note('render', `${ instance.metadata?.name } could not be rendered`, String(e?.message || e).slice(0, 200));
+
+    return;
+  }
   await stampRendered(instance, stamp);
 }
 
