@@ -14,6 +14,7 @@ import {
   workspaceTools, startTool, stopTool, renewTool, toolHref, toolState, TOOLS, TOOLS_SHOWN
 } from '../tools';
 import { DEFAULT_LEASE_MINUTES } from '../config/constants';
+import DevModal from './DevModal';
 import {
   previewState, shareWorkspace, rebuildPreview, removePreview, retargetPreview, preferredShareHost,
 } from '../previews';
@@ -21,6 +22,8 @@ import { listRanchers } from '../ranchers';
 
 export default {
   name: 'WorkspaceTools',
+
+  components: { DevModal },
 
   props: {
     /** The workspace's name. */
@@ -67,6 +70,8 @@ export default {
       /** Which Rancher a share talks to; the starred one unless somebody picks another. */
       ranchers: [],
       shareBusy: '',
+      /** The share kind whose Rancher is being chosen, '' when the modal is shut. */
+      picking:   '',
     };
   },
 
@@ -92,7 +97,8 @@ export default {
           // The public sslip name when there is one, else whatever address it has.
           href:  state?.host ? `https://${ state.host }` : (state?.url || ''),
           up:    !!state?.url || !!state?.host,
-          where: state?.rancherUrl || '',
+          where:     state?.rancherUrl || '',
+          whereName: (this.ranchers.find((r) => r.url === state?.rancherUrl) || {}).name || '',
         };
       });
     },
@@ -155,11 +161,10 @@ export default {
      * opinion to keep in step. Which RANCHER the build talks to is a separate choice and is
      * the select beside the row.
      */
-    async share(kind) {
+    async share(kind, target = '') {
       this.shareBusy = kind;
       try {
         const host = await preferredShareHost(this.$store);
-        const target = this.shares[kind]?.rancherUrl || this.ranchers[0]?.url || '';
 
         await shareWorkspace(this.$store, this.workspace, kind, target, 'local', host);
         this.$emit('notice', `The ${ kind } share is building. The link appears here when it is up.`);
@@ -182,6 +187,26 @@ export default {
         this.$emit('error', e);
       } finally {
         this.shareBusy = '';
+      }
+    },
+
+    /**
+     * A Rancher was picked: share it, or point an existing share at it.
+     *
+     * One handler for both, because from here they are the same act - "serve this branch,
+     * talking to that Rancher" - and which code path it takes is just whether a build exists.
+     */
+    async chose(url) {
+      const kind = this.picking;
+
+      this.picking = '';
+      if (!kind || !url) {
+        return;
+      }
+      if (this.shares[kind]) {
+        await this.retarget(kind, url);
+      } else {
+        await this.share(kind, url);
       }
     },
 
@@ -334,21 +359,11 @@ export default {
           rel="noopener noreferrer"
           class="workspace-tools__link"
         >Open</a>
-        <!-- Which Rancher the build talks to. A build is routed for its target, so changing it rebuilds. -->
-        <select
-          v-if="ranchers.length"
-          class="workspace-tools__pick"
-          :value="row.where"
-          :disabled="!!shareBusy"
-          title="The Rancher this share talks to"
-          @change="retarget(row.kind, $event.target.value)"
-        >
-          <option
-            v-for="r in ranchers"
-            :key="r.id"
-            :value="r.url"
-          >{{ r.name }}</option>
-        </select>
+        <!-- Which Rancher it talks to, said rather than chosen here: picking one is a modal. -->
+        <span
+          v-if="row.up && row.whereName"
+          class="workspace-tools__state"
+        >→ {{ row.whereName }}</span>
         <button
           v-if="row.up"
           class="workspace-tools__link"
@@ -359,11 +374,20 @@ export default {
           {{ shareBusy === row.kind ? 'Working…' : 'Rebuild' }}
         </button>
         <button
+          v-if="row.up"
+          class="workspace-tools__link"
+          :disabled="!!shareBusy"
+          title="Point it at another Rancher. A build is routed for its target, so this rebuilds it."
+          @click="picking = row.kind"
+        >
+          Point at…
+        </button>
+        <button
           v-else
           class="workspace-tools__link"
           :disabled="!!shareBusy"
           :title="row.what"
-          @click="share(row.kind)"
+          @click="picking = row.kind"
         >
           {{ shareBusy === row.kind ? 'Building…' : 'Share' }}
         </button>
@@ -436,7 +460,45 @@ export default {
         />
       </div>
     </div>
-  </div>
+  
+    <!--
+      Choosing the Rancher is a question, so it is asked rather than parked in the row.
+      It was a select between the name and the buttons: two of them, on one line, in a strip
+      whose whole job is to be glanceable.
+    -->
+    <DevModal
+      v-if="picking"
+      :title="`Which Rancher should the ${ picking } share talk to?`"
+      @close="picking = ''"
+    >
+      <p
+        v-if="!ranchers.length"
+        class="workspace-tools__empty"
+      >
+        No Rancher is ready to point at. This Rancher is always an option once the page has
+        read it; an instance appears here when it is up.
+      </p>
+      <ul
+        v-else
+        class="workspace-tools__choices"
+      >
+        <li
+          v-for="r in ranchers"
+          :key="r.id"
+        >
+          <button
+            type="button"
+            class="workspace-tools__choice"
+            :disabled="!!shareBusy"
+            @click="chose(r.url)"
+          >
+            <span class="workspace-tools__choice-name">{{ r.name }}</span>
+            <span class="workspace-tools__choice-url">{{ r.url }}</span>
+          </button>
+        </li>
+      </ul>
+    </DevModal>
+</div>
 </template>
 
 <style lang="scss" scoped>
