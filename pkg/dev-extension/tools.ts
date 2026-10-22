@@ -93,6 +93,19 @@ export const SHARED_TOOLS: ToolKind[] = (Object.keys(TOOLS) as ToolKind[]).filte
 /** The order they are offered in: the one almost every piece of work wants, first. */
 export const TOOL_ORDER: ToolKind[] = ['dev-server', 'browser', 'firefox', 'storybook', 'rancher'];
 
+/**
+ * The tools a PERSON is offered, which is not all of them.
+ *
+ * A dev server, the shared browser and Firefox are what an AGENT attaches to do its work: it
+ * leases one, drives it, and releases it, and the row said "not running · Attach" at somebody
+ * who was never going to press it. They are still tools, still leased, still released, and
+ * `tools start dev-server` in a workspace works exactly as it did - this is only what the
+ * panel draws.
+ *
+ * Storybook and Rancher stay because they are things you look at.
+ */
+export const TOOLS_SHOWN: ToolKind[] = ['storybook', 'rancher'];
+
 export async function workspaceTools(workspace: string): Promise<Tool[]> {
   const answer = await devApi(`/tools/${ encodeURIComponent(workspace) }`).catch(() => null);
 

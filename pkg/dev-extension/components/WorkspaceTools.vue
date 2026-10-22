@@ -11,7 +11,7 @@
 // calls. So a dev server attached from a conversation appears on this list, and one released
 // here is gone for the agent too; there is no second path that can drift.
 import {
-  workspaceTools, startTool, stopTool, renewTool, toolHref, toolState, TOOLS, TOOL_ORDER
+  workspaceTools, startTool, stopTool, renewTool, toolHref, toolState, TOOLS, TOOLS_SHOWN
 } from '../tools';
 import { DEFAULT_LEASE_MINUTES } from '../config/constants';
 import {
@@ -98,7 +98,7 @@ export default {
     },
 
     rows() {
-      return TOOL_ORDER.map((kind) => {
+      return TOOLS_SHOWN.map((kind) => {
         const tool = this.tools.find((t) => t.kind === kind) || { kind, workspace: this.workspace, running: false };
 
         return {
