@@ -159,13 +159,33 @@ sysctl -w fs.inotify.max_user_instances=1024 || true
 sysctl -w fs.inotify.max_user_watches=524288 || true
 echo 'fs.inotify.max_user_instances=1024' >> /etc/sysctl.conf
 echo 'fs.inotify.max_user_watches=524288' >> /etc/sysctl.conf
+
+# The certificate, decided here because only here knows the address.
+#
+# Let's Encrypt needs a NAME, and this box is given an IP minutes after anything that could
+# have written a name into this script. sslip.io resolves <ip>.sslip.io straight back to that
+# ip with no DNS to own, which is the same trick the shares already use - so the instance asks
+# the metadata service what it is and hands Rancher --acme-domain for that name. Rancher then
+# gets and renews the certificate itself; there is no cert-manager and nothing to expire
+# quietly.
+#
+# IMDSv2: the token call first, because a plain GET of the metadata service is refused on a
+# modern AMI and would leave HOST empty.
+TOK=$(curl -sX PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' || true)
+IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/latest/meta-data/public-ipv4 || true)
+HOST="\${IP}.sslip.io"
+echo "$HOST" > /var/log/rancher-host
+
 docker run -d --name rancher --privileged --restart=unless-stopped \\
   -p 80:80 -p 443:443 \\
   -e CATTLE_BOOTSTRAP_PASSWORD='${ password }' \\
-  ${ image }
+  ${ image } --acme-domain "$HOST"
 touch /var/log/rancher-bootstrap-done
 `).toString('base64');
 }
+
+/** The name this instance's certificate is for, and what server-url has to say. */
+const hostFor = (ip) => `${ ip }.sslip.io`;
 
 /**
  * Where to put it, when nobody said.
@@ -303,6 +323,10 @@ async function create(cred, name, opts) {
   const xml = await ec2(cred, params);
   const id = one(xml, 'instanceId');
 
+  // Kept in a Secret, not the ConfigMap the dashboard reads: `configure` needs it minutes
+  // later, and asking somebody to copy a password out of a log is how it ends up in one.
+  savePassword(name, password);
+
   console.log(JSON.stringify({
     name, instanceId: id, ami, password, state: 'pending',
   }));
@@ -371,7 +395,9 @@ async function record(cred) {
   const doc = JSON.stringify({
     at: new Date().toISOString(),
     instances: instances.filter((i) => i.name).map((i) => ({
-      name: i.name, instanceId: i.id, state: i.state, ip: i.ip, url: i.ip ? `https://${ i.ip }` : '',
+      // The sslip name, not the bare address: that is the name the Let's Encrypt certificate
+      // is issued for, so it is the only one a browser opens without a warning.
+      name: i.name, instanceId: i.id, state: i.state, ip: i.ip, url: i.ip ? `https://${ hostFor(i.ip) }` : '',
     })),
   });
 
@@ -392,6 +418,178 @@ async function record(cred) {
   execFileSync('kubectl', ['apply', '-f', '-'], { encoding: 'utf8', input: labelled });
 
   return instances;
+}
+
+// ── Making it a Rancher somebody can actually use ──────────────────────────────────────────
+//
+// A box running `rancher/rancher` is a login prompt, not a Rancher: no address it knows itself
+// by, no Cluster Management, no way in but a bootstrap password nobody wants to share. The
+// Apps Plus app does the rest with a sidecar that has kubectl inside the cluster; there is no
+// sidecar here, so the same work is done over Rancher's own API from this pod.
+//
+// Everything below is idempotent. `configure` is safe to run again, and running it again is how
+// a half-finished instance is finished.
+
+/** A token for the instance, from the bootstrap password. */
+async function login(url, password) {
+  const r = await fetch(`${ url }/v3-public/localProviders/local?action=login`, {
+    method:  'POST',
+    headers: { 'content-type': 'application/json' },
+    body:    JSON.stringify({ username: 'admin', password, ttl: 3600000 }),
+  });
+
+  if (!r.ok) {
+    throw new Error(`login -> ${ r.status } (is the bootstrap password right?)`);
+  }
+
+  return (await r.json()).token;
+}
+
+async function api(url, token, path, method = 'GET', body = null) {
+  const r = await fetch(`${ url }${ path }`, {
+    method,
+    headers: {
+      authorization: `Bearer ${ token }`,
+      ...(body ? { 'content-type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await r.text();
+
+  if (!r.ok) {
+    throw new Error(`${ method } ${ path } -> ${ r.status }: ${ text.slice(0, 200) }`);
+  }
+
+  return text ? JSON.parse(text) : null;
+}
+
+/** What this Rancher's own GitHub login should look like: whatever the parent's does. */
+function parentGithub() {
+  const read = (args) => {
+    try {
+      return execFileSync('kubectl', args, { encoding: 'utf8' }).trim();
+    } catch {
+      return '';
+    }
+  };
+  const clientId = read(['get', 'authconfig', 'github', '-o', 'jsonpath={.clientId}']);
+  const principals = read(['get', 'authconfig', 'github', '-o', 'jsonpath={.allowedPrincipalIds}']);
+  const secret = read([
+    'get', 'secret', '-n', 'cattle-global-data', 'githubconfig-clientsecret',
+    '-o', 'jsonpath={.data.clientsecret}',
+  ]);
+
+  return {
+    clientId,
+    clientSecret: secret ? Buffer.from(secret, 'base64').toString('utf8') : '',
+    allowed:      (() => {
+      try {
+        return JSON.parse(principals || '[]');
+      } catch {
+        return [];
+      }
+    })(),
+  };
+}
+
+/**
+ * Everything the sidecar does for an Apps Plus instance, over the API instead.
+ *
+ * Order matters in one place only: the client secret has to exist before the AuthConfig that
+ * names it, because Rancher resolves `cattle-global-data:githubconfig-clientsecret` when the
+ * config is saved and refuses one that points at nothing.
+ */
+async function configure(cred, name, opts) {
+  const found = (await list(cred)).find((i) => i.name === name);
+
+  if (!found?.ip) {
+    throw new Error(`no running instance called ${ name }`);
+  }
+  const host = hostFor(found.ip);
+  const url = `https://${ found.ip }`;
+  const password = opts.password || readPassword(name);
+
+  if (!password) {
+    throw new Error(`no bootstrap password for ${ name }; pass RANCHER_EC2_PASSWORD`);
+  }
+
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // its cert is for the sslip name, not the ip
+  const token = await login(url, password);
+  const done = [];
+
+  // 1. The address it tells everything else to reach it on - the sslip name the certificate
+  //    is for, not the bare ip, or every agent it ever provisions gets a TLS error.
+  await api(url, token, '/v3/settings/server-url', 'PUT', { name: 'server-url', value: `https://${ host }` });
+  done.push(`server-url https://${ host }`);
+
+  // 2. Cluster Management and the rest. Not dynamic: they take on the next start, and Rancher
+  //    in this container restarts itself when a feature changes.
+  for (const flag of ['multi-cluster-management', 'fleet', 'rke2']) {
+    await api(url, token, `/v3/features/${ flag }`, 'PUT', { name: flag, value: true }).catch(() => undefined);
+  }
+  done.push('features: multi-cluster-management, fleet, rke2');
+
+  // 3. GitHub, mirroring the parent's own configuration so the same people get in.
+  const gh = parentGithub();
+
+  if (!gh.clientId || !gh.clientSecret) {
+    done.push('github login SKIPPED: the parent has no clientId/secret to copy');
+  } else if (!gh.allowed.length) {
+    /*
+     * Refused rather than guessed at, and this is the one place in this file worth being
+     * timid. `accessMode: restricted` with an empty allow-list is a Rancher that lets nobody
+     * in through GitHub - and since enabling GitHub is also what stops the local admin being
+     * the way in, getting this wrong locks the owner out of a box they are paying for.
+     */
+    done.push('github login SKIPPED: the parent lists no allowed principals, and enabling restricted access with an empty list would lock everyone out');
+  } else {
+    /*
+     * `/v3/githubConfigs/github`, not the Steve path.
+     *
+     * `PUT /v1/management.cattle.io.authconfigs/github` answers 403 "Method PUT not
+     * supported" - Steve does not take writes for this kind. The v3 resource advertises an
+     * `update` link and takes the whole config, with the client secret as a literal; Rancher
+     * puts it in cattle-global-data itself, so there is no secret to create first.
+     */
+    await api(url, token, '/v3/githubConfigs/github', 'PUT', {
+      name:                'github',
+      type:                'githubConfig',
+      enabled:             true,
+      accessMode:          'restricted',
+      allowedPrincipalIds: gh.allowed,
+      clientId:            gh.clientId,
+      clientSecret:        gh.clientSecret,
+      hostname:            'github.com',
+      tls:                 true,
+    });
+    done.push(`github login for ${ gh.allowed.length } principal(s)`);
+  }
+
+  console.log(JSON.stringify({
+    name, url: `https://${ host }`, ip: found.ip, configured: done,
+  }, null, 1));
+}
+
+/** The bootstrap password, kept where only an admin can read it - never in the ConfigMap. */
+function savePassword(name, password) {
+  const yaml = execFileSync('kubectl', [
+    'create', 'secret', 'generic', `dev-rancher-ec2-${ name }`, '-n', 'dev-system',
+    `--from-literal=password=${ password }`, '--dry-run=client', '-o', 'yaml',
+  ], { encoding: 'utf8' });
+
+  execFileSync('kubectl', ['apply', '-f', '-'], { encoding: 'utf8', input: yaml });
+}
+
+function readPassword(name) {
+  try {
+    const b64 = execFileSync('kubectl', [
+      'get', 'secret', '-n', 'dev-system', `dev-rancher-ec2-${ name }`, '-o', 'jsonpath={.data.password}',
+    ], { encoding: 'utf8' }).trim();
+
+    return b64 ? Buffer.from(b64, 'base64').toString('utf8') : '';
+  } catch {
+    return '';
+  }
 }
 
 async function main() {
@@ -420,6 +618,11 @@ async function main() {
     }
     await create(cred, name, opts);
     await record(cred).catch(() => undefined);
+  } else if (verb === 'configure') {
+    if (!name) {
+      throw new Error('configure needs a name');
+    }
+    await configure(cred, name, opts);
   } else if (verb === 'sync') {
     // What boot.sh runs on a timer: the account is the truth, this copies it where the
     // dashboard can see it.
@@ -433,7 +636,7 @@ async function main() {
     await remove(cred, name);
     await record(cred).catch(() => undefined);
   } else {
-    console.error('usage: rancher-ec2.mjs create <name> | list | sync | delete <name>');
+    console.error('usage: rancher-ec2.mjs create <name> | configure <name> | list | sync | delete <name>');
     process.exit(2);
   }
 }
