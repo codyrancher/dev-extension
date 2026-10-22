@@ -105,73 +105,8 @@ export interface WorkspaceStatus {
    */
   round: number;
   pr: number;
-  /**
-   * What the PR's checks are doing, once there is a PR to have any: passing, still running, or
-   * failing. '' before GitHub has been read, and for work that has no PR yet.
-   */
-  ci: CiState;
-  /** The same in words, with the counts, for the row's hover card and its title. */
-  ciNote: string;
   /** When GitHub was last read for it; 0 when it never has been. */
   readAt: number;
-}
-
-/** A PR's checks, as one word. */
-export type CiState = '' | 'passing' | 'pending' | 'failing';
-
-/**
- * The three colours the checks are said in. Its own scale rather than the row's `Tone`: the
- * row's colour says how much the work wants a person, and a red check is a fact about the PR
- * whatever the work is waiting on.
- */
-export type CiTone = 'green' | 'attention' | 'error';
-
-/**
- * The checks on a PR, from what prDetail already read.
- *
- * Failing first, then pending: a run with one failure and six still going needs a person
- * whatever the six turn into, and saying "pending" until they finish is how a red PR sits in a
- * list looking fine all afternoon.
- */
-function ciOf(detail: Json): { ci: CiState; ciNote: string } {
-  const ci = detail?.meta?.ci;
-
-  if (!ci || !ci.total) {
-    return { ci: '', ciNote: '' };
-  }
-  if (ci.failing) {
-    return { ci: 'failing', ciNote: `${ ci.failing } of ${ ci.total } checks failing` };
-  }
-  if (ci.pending) {
-    return { ci: 'pending', ciNote: `${ ci.pending } of ${ ci.total } checks still running` };
-  }
-
-  return { ci: 'passing', ciNote: `${ ci.total } checks passing` };
-}
-
-/**
- * The stages at which a PR's checks are worth a word in a list: every stage from the draft PR
- * on, which is every stage at which there is a PR being checked. Before that a fix is being
- * assessed or written and there is nothing to check; a review workspace is about somebody
- * else's PR and so has checks from the first moment.
- */
-const CI_STAGES: Stage[] = ['draft', 'review', 'feedback', 'merged', 'agent', 'findings', 'submitted', 'response', 'approved'];
-
-/**
- * The CI chip for a row: its word, its colour, and the counts behind it.
- *
- * One definition, so the sidebar and anything else that shows it agree on when it appears and
- * what it says. `null` when there is nothing to say - no PR, no checks, or work that has not
- * reached a PR yet.
- */
-export function ciChip(status: Pick<WorkspaceStatus, 'ci' | 'ciNote' | 'stage' | 'pr'>): { label: string; tone: CiTone; title: string } | null {
-  if (!status.ci || !status.pr || !CI_STAGES.includes(status.stage as Stage)) {
-    return null;
-  }
-
-  const tone: CiTone = status.ci === 'failing' ? 'error' : status.ci === 'pending' ? 'attention' : 'green';
-
-  return { label: `CI ${ status.ci }`, tone, title: status.ciNote };
 }
 
 const AGENT_LABEL: Record<AgentState, string> = {
@@ -195,6 +130,37 @@ const AGENT_LABEL: Record<AgentState, string> = {
  */
 export function displayTone(status: Pick<WorkspaceStatus, 'tone' | 'agent'>): Tone {
   return status.agent === 'working' ? 'working' : status.tone;
+}
+
+/**
+ * The colour a workspace is drawn with in a list: whether it is waiting on YOU.
+ *
+ * The list used to say two things at once - the stage in its own tone, and a CI chip beside it -
+ * and neither answered the only question a list of eight workspaces is read to answer: which of
+ * these is stuck on me. So the colour answers that, and nothing else; the stage's words say
+ * where the work is, and what its checks are doing is on the PR, where it can be acted on.
+ *
+ * Three readings, in this order:
+ *
+ *   - an agent asked something and stopped: yours to answer, whatever the stage says.
+ *   - an agent is working: in flight, and a row that asks for a person who is not needed yet is
+ *     how a list of amber dots stops meaning anything.
+ *   - nothing is running: the stage's own tone, EXCEPT that a stage nothing is moving is not
+ *     quiet. `muted` is what a stage with no agent and no GitHub fact behind it comes out as -
+ *     "not started", "no PR yet", "nothing left to go through" - and every one of those is a
+ *     workspace that has stopped and wants a person. Waiting on a reviewer or on the developer
+ *     stays its own waiting colour, because that is somebody else's turn, and merged stays
+ *     green.
+ */
+export function attentionTone(status: Pick<WorkspaceStatus, 'tone' | 'agent'>): Tone {
+  if (status.agent === 'input') {
+    return 'attention';
+  }
+  if (status.agent === 'working') {
+    return 'working';
+  }
+
+  return status.tone === 'muted' ? 'attention' : status.tone;
 }
 
 export function agentLabel(state: AgentState): string {
@@ -231,7 +197,7 @@ let reading = false;
 
 function empty(): WorkspaceStatus {
   return {
-    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0, kind: 'other', stage: '', stageLabel: '', reviewed: false, round: 1, pr: 0, ci: '', ciNote: '',
+    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0, kind: 'other', stage: '', stageLabel: '', reviewed: false, round: 1, pr: 0,
   };
 }
 
@@ -268,8 +234,12 @@ function isFix(name: string): boolean {
 
 // ── The agents ──────────────────────────────────────────────────────────────────────────────
 
+// A question outranks work in progress. A workspace's state is the busiest of its
+// conversations', and with `working` on top a question went invisible behind a sibling that
+// happened to be busy - the one state a person has to act on, hidden by one they do not. It
+// blocks: that conversation has stopped and will not move again until it hears back.
 const RANK: Record<AgentState, number> = {
-  none: 0, finished: 1, idle: 2, input: 3, working: 4,
+  none: 0, finished: 1, idle: 2, working: 3, input: 4,
 };
 
 /** One conversation's state from the last hook event its pane recorded, and whether the pane is there. */
@@ -544,7 +514,7 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
     const rec = await reconcileStage(name, toDerived('review', w, pr));
 
     return {
-      ...display(rec, w), ...ciOf(d), title: d.meta?.title || '', links, kind: 'review', pr,
+      ...display(rec, w), title: d.meta?.title || '', links, kind: 'review', pr,
     };
   }
   if (isFix(name)) {
@@ -562,7 +532,7 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
     const title = d?.meta?.title || (issue ? await issueBody(DEFAULT_REPO, issue).catch(() => ({ title: '' })).then((i) => i.title) : '') || '';
 
     return {
-      ...display(rec, w), ...ciOf(d), title, links, kind: 'fix', pr: n,
+      ...display(rec, w), title, links, kind: 'fix', pr: n,
     };
   }
 

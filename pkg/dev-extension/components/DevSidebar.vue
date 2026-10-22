@@ -26,7 +26,7 @@ import {
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
 import {
-  workspaceStatuses, agentLabel, statusLine, stageName, displayTone, autoStopIdle, ciChip
+  workspaceStatuses, agentLabel, statusLine, stageName, attentionTone, autoStopIdle
 } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import { ensureCertControllers } from '../certs';
@@ -625,11 +625,10 @@ export default {
       return workspaces.map((workspace) => {
         const status = this.statuses[workspace.name];
         const title = workspace.title || status?.title || '';
-        // The row says where the work is and what the agent is doing - "In review · agent
-        // idle" - in the rail's own words for the stage. What that stage is waiting on is a
-        // sentence, not a column's width, so it waits for the card under the pointer.
+        // The row says the stage, in the rail's own words for it, and nothing else. What that
+        // stage is waiting on is a sentence rather than a column's width, so it waits - with
+        // what the agent is doing - for the card under the pointer: "In review · agent idle".
         const lines = status ? [statusLine(status), agentLabel(status.agent)].filter(Boolean) : [];
-        const row = status ? [stageName(status)].filter(Boolean) : [];
 
         return {
           key:    workspace.name,
@@ -639,11 +638,10 @@ export default {
           label:  this.rowLabel(workspace, title),
           title:  [workspace.name, title, workspace.cluster && workspace.cluster !== 'local' ? workspace.cluster : ''].filter(Boolean).join(' · '),
           state:  workspace.state,
-          detail: row.join(' · '),
-          // The PR's checks, from the draft PR on: which of these needs attention is a question
-          // about the checks, and reading the rows was the only way to answer it.
-          ci:     status ? ciChip(status) : null,
-          tone:   status ? displayTone(status) : undefined,
+          detail: status ? stageName(status) : '',
+          // The row's colour says one thing: whether this workspace is waiting on me. See
+          // attentionTone - the stage's words are beside it and the PR's checks are on the PR.
+          tone:   status ? attentionTone(status) : undefined,
           // The agent's state is carried by the row's status disc (its colour), not a glyph; the
           // words are on the card.
           agent:  status?.agent,
