@@ -367,6 +367,32 @@ export async function replyToComment(num: number, commentId: number, body: strin
   return { id: reply?.id, url: reply?.html_url || '' };
 }
 
+/**
+ * A message on the pull request itself, under the conversation rather than on a line.
+ *
+ * A separate call because GitHub keeps the two in separate places: a review comment is on a
+ * line and replies go into its thread (above), while the discussion under a pull request is
+ * issue comments and has no threads at all. Replying to one through the review-comment endpoint
+ * is a 404, which is what a single "reply" would have done for every message in the discussion.
+ */
+export async function commentOnPr(num: number, body: string, repo = DEFAULT_REPO): Promise<{ id: number; url: string }> {
+  const made = await gh('POST', `/repos/${ repo }/issues/${ num }/comments`, { body });
+
+  return { id: made?.id, url: made?.html_url || '' };
+}
+
+/**
+ * One message as a markdown quote, the way GitHub's own Quote reply writes it.
+ *
+ * Every line prefixed, empty lines included - a blank line without the marker ends the
+ * blockquote, so a quoted two-paragraph comment would come out as one quote and one reply of
+ * somebody else's words. A blank line after it, so what gets typed next is not inside it.
+ */
+export function quoted(body: string): string {
+  return `${ String(body || '').replace(/\r/g, '').split('\n').map((line) => `> ${ line }`.trimEnd())
+    .join('\n') }\n\n`;
+}
+
 const CODE_LANG: Record<string, string> = {
   '.ts': 'ts', '.js': 'js', '.mjs': 'js', '.vue': 'vue', '.json': 'json', '.yaml': 'yaml', '.yml': 'yaml', '.sh': 'bash', '.log': 'text', '.txt': 'text', '.md': 'md',
 };

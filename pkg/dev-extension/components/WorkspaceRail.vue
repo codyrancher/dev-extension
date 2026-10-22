@@ -46,7 +46,8 @@ import WorkspaceTools from './WorkspaceTools.vue';
 import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
-  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers, DEFAULT_REPO
+  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers,
+  replyToComment, commentOnPr, quoted, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
@@ -131,6 +132,10 @@ export default {
       readSeq:     0,
       /** What the reviewers block could not do, said under it. */
       reviewerError: '',
+      /** The thread a reply is being written in, by its root comment's id; '' when none is. */
+      replyTo:   '',
+      replyDraft: '',
+      replySending: false,
       readying:      false,
       /** A box being written back, by its index, so it cannot be pressed twice. */
       tickingTask:   -1,
@@ -674,6 +679,74 @@ export default {
         this.reviewerError = `The box could not be ticked: ${ e.message || e }`;
       } finally {
         this.tickingTask = -1;
+      }
+    },
+
+    /**
+     * Open or shut the reply box on a thread. Shutting it drops what was typed, which is what
+     * Cancel means; the second press on Reply is the same thing.
+     */
+    toggleReply(c) {
+      const open = this.replyTo !== String(c.id);
+
+      this.replyTo = open ? String(c.id) : '';
+      this.replyDraft = '';
+    },
+
+    /**
+     * Quote one message into the reply box, as GitHub's own Quote reply does.
+     *
+     * It appends rather than replaces, so two messages of a thread can be answered in one reply
+     * - GitHub behaves the same way, and a second press that wiped the first quote would be a
+     * surprise with somebody's typing in it. The box opens if it is not open.
+     */
+    quoteReply(c, message) {
+      const quote = quoted(message.body || '');
+
+      this.replyTo = String(c.id);
+      this.replyDraft = this.replyDraft ? `${ this.replyDraft.replace(/\n*$/, '') }\n\n${ quote }` : quote;
+      this.$nextTick(() => {
+        const box = this.$el?.querySelector?.(`[data-reply="${ c.id }"] textarea`);
+
+        if (box) {
+          box.focus();
+          box.selectionStart = box.selectionEnd = box.value.length;
+        }
+      });
+    },
+
+    /**
+     * Post the reply. It goes to GitHub now - there is no draft for a reply, unlike a finding.
+     *
+     * Which call depends on what the thread is, and the two are not interchangeable: a thread on
+     * a line is a review comment and the reply goes into that thread; the discussion under a
+     * pull request is issue comments, which have no threads, so a message there is a new comment
+     * on the pull request. `where` is what tells them apart (see `threads` in workspace-rail.ts).
+     */
+    async sendReply(c) {
+      const body = this.replyDraft.trim();
+
+      if (!body || this.replySending) {
+        return;
+      }
+      this.replySending = true;
+      this.error = '';
+      try {
+        if (c.where === 'discussion') {
+          await commentOnPr(this.status.pr, body, this.repo);
+        } else {
+          await replyToComment(this.status.pr, Number(c.id), body, this.repo);
+        }
+        this.replyTo = '';
+        this.replyDraft = '';
+        // A new message in a thread, rendered by GitHub: nothing here can synthesise it, so the
+        // whole detail goes and the column reads it again.
+        forgetPrDetail(this.status.pr, this.repo);
+        await this.refreshEvidence();
+      } catch (e) {
+        this.error = `The reply was not posted: ${ e?.message || e }`;
+      } finally {
+        this.replySending = false;
       }
     },
 
@@ -3092,6 +3165,22 @@ export default {
                           v-if="t.isNew"
                           class="workspace-rail__tag workspace-rail__tag--new"
                         >new</span>
+                        <!--
+                          Quote this message into the reply box, GitHub's own Quote reply. On
+                          the message rather than on the thread, because which message is being
+                          answered is the whole of what a quote says. Not on a local finding:
+                          that is a draft of yours and has no thread on GitHub to answer in.
+                        -->
+                        <button
+                          v-if="!c.local && status.pr"
+                          type="button"
+                          class="workspace-rail__quote"
+                          :title="`Quote ${ t.who } in a reply`"
+                          :aria-label="`Quote ${ t.who } in a reply`"
+                          @click="quoteReply(c, t)"
+                        >
+                          <i class="icon icon-chat" /> Quote
+                        </button>
                       </div>
                       <div
                         class="comment-body md-body"
@@ -3105,6 +3194,55 @@ export default {
                     :pr="status.pr"
                     :attachments="c.attachments"
                   />
+                  <!--
+                    Answering a thread by hand, which this column could only send you to GitHub
+                    for. The agent's way in is Discuss, on a finding of yours; this is the other
+                    half - saying something yourself, in the thread it belongs to, without
+                    leaving the stage you are reading it on.
+                  -->
+                  <template v-if="!c.local && status.pr">
+                    <div
+                      v-if="replyTo !== String(c.id)"
+                      class="workspace-rail__comment-actions"
+                    >
+                      <PrButton
+                        size="sm"
+                        @click="toggleReply(c)"
+                      >
+                        {{ c.where === 'discussion' ? 'Comment' : 'Reply' }}
+                      </PrButton>
+                    </div>
+                    <div
+                      v-else
+                      class="workspace-rail__edit"
+                      :data-reply="c.id"
+                    >
+                      <textarea
+                        v-model="replyDraft"
+                        class="workspace-rail__edit-text"
+                        rows="4"
+                        :placeholder="c.where === 'discussion' ? 'A comment on the pull request — it posts to GitHub straight away' : 'A reply in this thread — it posts to GitHub straight away'"
+                        @keydown.esc.prevent="toggleReply(c)"
+                      />
+                      <div class="workspace-rail__comment-actions">
+                        <PrButton
+                          size="sm"
+                          variant="primary"
+                          :disabled="!replyDraft.trim() || replySending"
+                          @click="sendReply(c)"
+                        >
+                          {{ replySending ? 'Posting…' : 'Post' }}
+                        </PrButton>
+                        <PrButton
+                          size="sm"
+                          :disabled="replySending"
+                          @click="toggleReply(c)"
+                        >
+                          Cancel
+                        </PrButton>
+                      </div>
+                    </div>
+                  </template>
                   <!--
                     A finding of yours that has not gone to GitHub yet: the PR panel's own
                     actions on it, here, because going through the findings is this stage and
@@ -4463,6 +4601,32 @@ export default {
     color:       var(--pr-muted);
     font-size:   12px;
   }
+
+  /*
+   * Quote, at the end of a message's head. Out of sight until the message is under the pointer:
+   * a thread of six messages with six Quote buttons down it reads as six things to do, and the
+   * one being answered is whichever one is being read. Kept in the flow, not absolute, so it
+   * cannot land on the timestamp when a head wraps.
+   */
+  &__quote {
+    margin-left: auto;
+    padding:     0 4px;
+    min-height:  0;
+    border:      none;
+    background:  transparent;
+    color:       var(--pr-muted);
+    font-size:   11px;
+    cursor:      pointer;
+    opacity:     0;
+
+    .icon { font-size: 11px; }
+
+    &:hover,
+    &:focus-visible { color: var(--pr-accent); }
+  }
+
+  .comment:hover &__quote,
+  .comment:focus-within &__quote { opacity: 1; }
 
   &__comment-head {
     display:     flex;
