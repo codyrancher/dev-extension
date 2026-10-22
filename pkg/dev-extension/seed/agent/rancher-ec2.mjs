@@ -522,14 +522,43 @@ async function configure(cred, name, opts) {
   await api(url, token, '/v3/settings/server-url', 'PUT', { name: 'server-url', value: `https://${ host }` });
   done.push(`server-url https://${ host }`);
 
-  // 2. Cluster Management and the rest. Not dynamic: they take on the next start, and Rancher
+  /*
+   * 2. First-time setup, finished.
+   *
+   * Logging in with the bootstrap password is not the same as having set the thing up: Rancher
+   * keeps `first-login: true` until the wizard is done, and shows "Welcome to Rancher - it
+   * looks like this is your first time visiting" to everybody, including the person who has
+   * just been handed the address. The wizard sets three things and so does this.
+   *
+   * telemetry is set to `out` rather than left unset, because unset is a question Rancher will
+   * ask the first person through the door and nobody asked for this box to phone home.
+   */
+  const setting = async(nameOf, value) => {
+    try {
+      await api(url, token, `/v3/settings/${ nameOf }`, 'PUT', { name: nameOf, value });
+
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // Reported one at a time, by whether it took. The first version said "eula, telemetry out,
+  // first-login false" as one line whatever happened, and telemetry-opt had in fact failed -
+  // a summary that is written before the result is a summary that can be wrong.
+  const eula = await setting('eula-agreed', new Date().toISOString());
+  const telemetry = await setting('telemetry-opt', 'out');
+
+  await api(url, token, '/v3/settings/first-login', 'PUT', { name: 'first-login', value: 'false' });
+  done.push(`first-login false${ eula ? ', eula agreed' : ', EULA NOT set' }${ telemetry ? ', telemetry out' : ', telemetry-opt NOT set' }`);
+
+  // 3. Cluster Management and the rest. Not dynamic: they take on the next start, and Rancher
   //    in this container restarts itself when a feature changes.
   for (const flag of ['multi-cluster-management', 'fleet', 'rke2']) {
     await api(url, token, `/v3/features/${ flag }`, 'PUT', { name: flag, value: true }).catch(() => undefined);
   }
   done.push('features: multi-cluster-management, fleet, rke2');
 
-  // 3. GitHub, mirroring the parent's own configuration so the same people get in.
+  // 4. GitHub, mirroring the parent's own configuration so the same people get in.
   const gh = parentGithub();
 
   if (!gh.clientId || !gh.clientSecret) {
@@ -565,9 +594,66 @@ async function configure(cred, name, opts) {
     done.push(`github login for ${ gh.allowed.length } principal(s)`);
   }
 
+  /*
+   * 5. The cloud credentials, so this Rancher can provision something of its own.
+   *
+   * The same set the Apps Plus app hands an instance: the secrets in cattle-global-data that
+   * carry `dev.rancher.io/propagate-to-instances`, copied verbatim. They are secrets rather
+   * than /v3/cloudcredentials objects because that is what Rancher reads its credential list
+   * from, and copying the object the working path already copies is one fewer shape to get
+   * wrong.
+   */
+  for (const cc of propagatedCredentials()) {
+    await api(url, token, '/v1/secrets', 'POST', {
+      type:       'Opaque',
+      metadata:   { name: cc.name, namespace: 'cattle-global-data', annotations: cc.annotations },
+      data:       cc.data,
+    }).catch(() => undefined); // already there on a second run
+  }
+  const copied = propagatedCredentials().length;
+
+  done.push(copied ? `${ copied } cloud credential(s) copied` : 'no cloud credentials marked to propagate');
+
   console.log(JSON.stringify({
     name, url: `https://${ host }`, ip: found.ip, configured: done,
   }, null, 1));
+}
+
+/**
+ * The cloud credentials marked to travel, read from the parent.
+ *
+ * `dev.rancher.io/propagate-to-instances` is the extension's own marker and the Apps Plus path
+ * already uses it, so what an instance gets is decided in one place rather than two. The
+ * annotations Kubernetes and Helm add are dropped; `field.cattle.io/name` is kept, because
+ * without it the credential shows in Rancher's list with no name.
+ */
+function propagatedCredentials() {
+  try {
+    const raw = execFileSync('kubectl', [
+      'get', 'secrets', '-n', 'cattle-global-data',
+      '-l', 'dev.rancher.io/propagate-to-instances', '-o', 'json',
+    ], { encoding: 'utf8' });
+    let items = JSON.parse(raw).items || [];
+
+    // The marker is an annotation on these, not a label, so the selector above matches nothing
+    // and everything has to be read and filtered. Kept as a selector too in case they are ever
+    // labelled: a narrower server-side read is better when it works.
+    if (!items.length) {
+      items = (JSON.parse(execFileSync('kubectl', [
+        'get', 'secrets', '-n', 'cattle-global-data', '-o', 'json',
+      ], { encoding: 'utf8' })).items || [])
+        .filter((x) => (x.metadata?.annotations || {})['dev.rancher.io/propagate-to-instances'] === 'true');
+    }
+
+    return items.map((x) => ({
+      name:        x.metadata.name,
+      data:        x.data || {},
+      annotations: Object.fromEntries(Object.entries(x.metadata.annotations || {})
+        .filter(([k]) => k.startsWith('field.cattle.io/'))),
+    }));
+  } catch {
+    return [];
+  }
 }
 
 /** The bootstrap password, kept where only an admin can read it - never in the ConfigMap. */
