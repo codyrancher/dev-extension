@@ -70,8 +70,17 @@ export default {
       /** Which Rancher a share talks to; the starred one unless somebody picks another. */
       ranchers: [],
       shareBusy: '',
-      /** The share kind whose Rancher is being chosen, '' when the modal is shut. */
+      /** The share kind whose Rancher is being chosen, '' when nothing is being chosen. */
       picking:   '',
+      /**
+       * Which entry is open for managing, as `share:dashboard` or `tool:storybook`; '' for none.
+       *
+       * The strip used to carry every action on every row - built, Open, the Rancher it talks
+       * to, Rebuild, Point at…, Release, times two shares and two tools - which is seventeen
+       * controls on a bar whose whole job is to be glanceable, wrapping onto a second line. The
+       * bar says what there IS now; what can be done about one of them is a press away.
+       */
+      open:      '',
     };
   },
 
@@ -115,6 +124,30 @@ export default {
           ...TOOLS[kind], kind, tool, state: toolState(tool), href: toolHref(tool),
         };
       });
+    },
+
+    /**
+     * The bar: one entry per thing, shares and tools alike, each saying what it is and whether
+     * it is up. Nothing else - every action is in the entry's own view.
+     *
+     * One list rather than two loops because they read as one row and should wrap as one: a
+     * strip of four with the shares at the front is what a person scans, and two sibling loops
+     * with different markup was how the shares came to carry five controls and the tools three.
+     */
+    entries() {
+      return [
+        ...this.shareRows.map((row) => ({
+          id: `share:${ row.kind }`, kind: row.kind, label: row.label, icon: row.icon, what: row.what, up: row.up, state: row.up ? 'built' : 'not built', share: row,
+        })),
+        ...this.rows.map((row) => ({
+          id: `tool:${ row.kind }`, kind: row.kind, label: row.label, icon: row.icon, what: row.what, up: !!row.tool.running, state: row.state, tool: row,
+        })),
+      ];
+    },
+
+    /** The entry whose view is open, or null. */
+    opened() {
+      return this.entries.find((entry) => entry.id === this.open) || null;
     },
   },
 
@@ -210,6 +243,30 @@ export default {
      * One handler for both, because from here they are the same act - "serve this branch,
      * talking to that Rancher" - and which code path it takes is just whether a build exists.
      */
+    /**
+     * Open one entry's view, and read the Ranchers while it is being read.
+     *
+     * The list is only needed by a share, and only once the person is deciding something - so
+     * it is fetched here rather than with the bar, which is drawn on every workspace page.
+     */
+    openEntry(entry) {
+      this.open = entry.id;
+      this.picking = '';
+      if (entry.share && !this.ranchers.length) {
+        this.readShares().catch(() => {});
+      }
+    },
+
+    closeEntry() {
+      this.open = '';
+      this.picking = '';
+    },
+
+    /** The lease a tool is attached for, said in the Renew button rather than left to be guessed. */
+    leaseMinutes() {
+      return DEFAULT_LEASE_MINUTES;
+    },
+
     async chose(url) {
       const kind = this.picking;
 
@@ -255,6 +312,8 @@ export default {
       try {
         await removePreview(this.$store, this.workspace, kind);
         this.shares = { ...this.shares, [kind]: null };
+        // Nothing left to manage: the view goes with what it was about.
+        this.closeEntry();
       } catch (e) {
         this.$emit('error', e);
       } finally {
@@ -356,171 +415,224 @@ export default {
     :class="{ 'workspace-tools--inline': inline }"
   >
     <span class="workspace-tools__label">Tools</span>
+    <!--
+      One chip per thing: what it is, and whether it is up. Everything that can be DONE to one
+      is behind the chip, in its own view - see `open`.
+    -->
     <div class="workspace-tools__rows">
-      <!--
-        The two shares, in the same list as the tools.
-        A share is not a leased tool - it outlives the lease and has a public address of its
-        own - but it answers the question this list answers, and it was on another tab.
-      -->
-      <div
-        v-for="row in shareRows"
-        :key="`share-${ row.kind }`"
-        class="workspace-tools__row"
-        :class="{ 'workspace-tools__row--up': row.up }"
-        :title="row.what"
+      <button
+        v-for="entry in entries"
+        :key="entry.id"
+        type="button"
+        class="workspace-tools__chip"
+        :class="{ 'workspace-tools__chip--up': entry.up }"
+        :title="entry.what"
+        @click="openEntry(entry)"
       >
         <i
           class="icon workspace-tools__icon"
-          :class="row.icon"
+          :class="entry.icon"
         />
-        <span class="workspace-tools__name">{{ row.label }}</span>
-        <span class="workspace-tools__state">{{ row.up ? 'built' : 'not built' }}</span>
-        <a
-          v-if="row.href"
-          :href="row.href"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="workspace-tools__link"
-        >Open</a>
-        <!-- Which Rancher it talks to, said rather than chosen here: picking one is a modal. -->
-        <span
-          v-if="row.up && row.whereName"
-          class="workspace-tools__state"
-        >→ {{ row.whereName }}</span>
-        <button
-          v-if="row.up"
-          class="workspace-tools__link"
-          :disabled="!!shareBusy"
-          title="Build it again from the branch as it is now."
-          @click="rebuild(row.kind)"
-        >
-          {{ shareBusy === row.kind ? 'Working…' : 'Rebuild' }}
-        </button>
-        <button
-          v-if="row.up"
-          class="workspace-tools__link"
-          :disabled="!!shareBusy"
-          title="Point it at another Rancher. A build is routed for its target, so this rebuilds it."
-          @click="picking = row.kind"
-        >
-          Point at…
-        </button>
-        <button
-          v-else
-          class="workspace-tools__link"
-          :disabled="!!shareBusy"
-          :title="row.what"
-          @click="picking = row.kind"
-        >
-          {{ shareBusy === row.kind ? 'Building…' : 'Share' }}
-        </button>
-        <button
-          v-if="row.up"
-          class="workspace-tools__link"
-          :disabled="!!shareBusy"
-          title="Take the share down."
-          @click="unshare(row.kind)"
-        >
-          Release
-        </button>
-      </div>
-
-      <div
-        v-for="row in rows"
-        :key="row.kind"
-        class="workspace-tools__row"
-        :class="{ 'workspace-tools__row--up': row.tool.running }"
-        :title="row.what"
-      >
+        <span class="workspace-tools__name">{{ entry.label }}</span>
+        <span class="workspace-tools__state">{{ entry.state }}</span>
         <i
-          class="icon workspace-tools__icon"
-          :class="row.icon"
-        />
-        <span class="workspace-tools__name">{{ row.label }}</span>
-        <span class="workspace-tools__state">{{ row.state }}</span>
-        <!--
-          The shared browser has nothing to attach or release: it is one Chromium for every
-          workspace, and it costs nothing when nobody is driving it. The row is still here,
-          because "what can this workspace use" is the question the list answers.
-        -->
-        <a
-          v-if="row.href && row.tool.ready"
-          :href="row.href"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="workspace-tools__link"
-        >Open</a>
-        <button
-          v-if="row.tool.running && !row.tool.shared"
-          class="workspace-tools__link"
-          :disabled="!!busy"
-          title="Another lease's worth, for work that is not finished."
-          @click="extend(row.kind)"
-        >
-          Renew
-        </button>
-        <button
-          v-if="row.tool.running && !row.tool.shared"
-          class="workspace-tools__link"
-          :disabled="!!busy"
-          title="Give it back now. Everything it was holding goes with it."
-          @click="release(row.kind)"
-        >
-          Release
-        </button>
-        <button
-          v-else-if="!row.tool.running"
-          class="workspace-tools__link"
-          :disabled="!!busy"
-          :title="row.what"
-          @click="attach(row.kind)"
-        >
-          Attach
-        </button>
-        <i
-          v-if="busy === row.kind"
+          v-if="busy === entry.kind || shareBusy === entry.kind"
           class="icon icon-spinner icon-spin"
         />
-      </div>
+      </button>
     </div>
-  
+
     <!--
-      Choosing the Rancher is a question, so it is asked rather than parked in the row.
-      It was a select between the name and the buttons: two of them, on one line, in a strip
-      whose whole job is to be glanceable.
+      One thing, and what can be done to it. The actions are full buttons here rather than the
+      bar's small links: there is room for them, and a Release that takes a public address down
+      should not be the same weight as a label.
     -->
     <DevModal
-      v-if="picking"
-      :title="`Which Rancher should the ${ picking } share talk to?`"
-      @close="picking = ''"
+      v-if="opened"
+      :title="opened.label"
+      @close="closeEntry"
     >
-      <p
-        v-if="!ranchers.length"
-        class="workspace-tools__empty"
+      <!-- Picking the Rancher is a step inside this view, not a second window over it. -->
+      <div
+        v-if="picking"
+        class="workspace-tools__panel"
       >
-        No Rancher is ready to point at. This Rancher is always an option once the page has
-        read it; an instance appears here when it is up.
-      </p>
-      <ul
-        v-else
-        class="workspace-tools__choices"
-      >
-        <li
-          v-for="r in ranchers"
-          :key="r.id"
+        <p class="workspace-tools__what">Which Rancher should this build talk to?</p>
+        <p
+          v-if="!ranchers.length"
+          class="workspace-tools__empty"
         >
+          No Rancher is ready to point at. This Rancher is always an option once the page has
+          read it; an instance appears here when it is up.
+        </p>
+        <ul
+          v-else
+          class="workspace-tools__choices"
+        >
+          <li
+            v-for="r in ranchers"
+            :key="r.id"
+          >
+            <button
+              type="button"
+              class="workspace-tools__choice"
+              :disabled="!!shareBusy"
+              @click="chose(r.url)"
+            >
+              <span class="workspace-tools__choice-name">{{ r.name }}</span>
+              <span class="workspace-tools__choice-url">{{ r.url }}</span>
+            </button>
+          </li>
+        </ul>
+        <div class="workspace-tools__actions">
           <button
             type="button"
-            class="workspace-tools__choice"
-            :disabled="!!shareBusy"
-            @click="chose(r.url)"
+            class="btn role-secondary btn-sm"
+            @click="picking = ''"
           >
-            <span class="workspace-tools__choice-name">{{ r.name }}</span>
-            <span class="workspace-tools__choice-url">{{ r.url }}</span>
+            Cancel
           </button>
-        </li>
-      </ul>
+        </div>
+      </div>
+
+      <!-- A share: where it is, what it talks to, and the three things that change it. -->
+      <div
+        v-else-if="opened.share"
+        class="workspace-tools__panel"
+      >
+        <p class="workspace-tools__what">{{ opened.what }}</p>
+        <dl class="workspace-tools__facts">
+          <dt>State</dt>
+          <dd>{{ opened.share.up ? 'Built and serving' : 'Not built' }}</dd>
+          <template v-if="opened.share.href">
+            <dt>Address</dt>
+            <dd>
+              <a
+                :href="opened.share.href"
+                target="_blank"
+                rel="noopener noreferrer"
+              >{{ opened.share.href }}</a>
+            </dd>
+          </template>
+          <template v-if="opened.share.up">
+            <dt>Talks to</dt>
+            <dd>{{ opened.share.whereName || opened.share.where || 'nothing yet' }}</dd>
+          </template>
+        </dl>
+        <div class="workspace-tools__actions">
+          <template v-if="opened.share.up">
+            <a
+              v-if="opened.share.href"
+              :href="opened.share.href"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="btn role-primary btn-sm"
+            >Open</a>
+            <button
+              type="button"
+              class="btn role-secondary btn-sm"
+              :disabled="!!shareBusy"
+              title="Build it again from the branch as it is now."
+              @click="rebuild(opened.kind)"
+            >
+              {{ shareBusy === opened.kind ? 'Working…' : 'Rebuild' }}
+            </button>
+            <button
+              type="button"
+              class="btn role-secondary btn-sm"
+              :disabled="!!shareBusy"
+              title="Point it at another Rancher. A build is routed for its target, so this rebuilds it."
+              @click="picking = opened.kind"
+            >
+              Point at another Rancher
+            </button>
+            <button
+              type="button"
+              class="btn role-secondary btn-sm workspace-tools__danger"
+              :disabled="!!shareBusy"
+              title="Take the share down."
+              @click="unshare(opened.kind)"
+            >
+              Release
+            </button>
+          </template>
+          <button
+            v-else
+            type="button"
+            class="btn role-primary btn-sm"
+            :disabled="!!shareBusy"
+            @click="picking = opened.kind"
+          >
+            {{ shareBusy === opened.kind ? 'Building…' : 'Build and share' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- A leased tool: whether it is attached, and the lease. -->
+      <div
+        v-else-if="opened.tool"
+        class="workspace-tools__panel"
+      >
+        <p class="workspace-tools__what">{{ opened.what }}</p>
+        <dl class="workspace-tools__facts">
+          <dt>State</dt>
+          <dd>{{ opened.tool.state }}</dd>
+          <template v-if="opened.tool.href && opened.tool.tool.ready">
+            <dt>Address</dt>
+            <dd>
+              <a
+                :href="opened.tool.href"
+                target="_blank"
+                rel="noopener noreferrer"
+              >{{ opened.tool.href }}</a>
+            </dd>
+          </template>
+        </dl>
+        <div class="workspace-tools__actions">
+          <a
+            v-if="opened.tool.href && opened.tool.tool.ready"
+            :href="opened.tool.href"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="btn role-primary btn-sm"
+          >Open</a>
+          <!--
+            The shared browser has nothing to attach or release: it is one Chromium for every
+            workspace, and it costs nothing when nobody is driving it.
+          -->
+          <template v-if="opened.tool.tool.running && !opened.tool.tool.shared">
+            <button
+              type="button"
+              class="btn role-secondary btn-sm"
+              :disabled="!!busy"
+              :title="`Another ${ leaseMinutes() } minutes, for work that is not finished.`"
+              @click="extend(opened.kind)"
+            >
+              Renew the lease
+            </button>
+            <button
+              type="button"
+              class="btn role-secondary btn-sm workspace-tools__danger"
+              :disabled="!!busy"
+              title="Give it back now. Everything it was holding goes with it."
+              @click="release(opened.kind)"
+            >
+              Release
+            </button>
+          </template>
+          <button
+            v-else-if="!opened.tool.tool.running"
+            type="button"
+            class="btn role-primary btn-sm"
+            :disabled="!!busy"
+            @click="attach(opened.kind)"
+          >
+            {{ busy === opened.kind ? 'Attaching…' : 'Attach' }}
+          </button>
+        </div>
+      </div>
     </DevModal>
+
 </div>
 </template>
 
@@ -613,16 +725,37 @@ export default {
     width:          100%;
   }
 
-  &__row {
-    display:     flex;
-    align-items: center;
-    gap:         8px;
-    padding:     3px 0;
-    font-size:   12px;
-    color:       var(--input-label);
+  /*
+   * One thing, as a chip you can press.
+   *
+   * It is a button because the whole of it is: the bar says what there is and the press says
+   * "tell me about this one". The row it replaces carried its own actions as small links - up
+   * to five on a share - so pressing anywhere between them did nothing and a bar of four things
+   * was seventeen controls wrapping onto a second line.
+   */
+  &__chip {
+    display:       flex;
+    align-items:   center;
+    gap:           8px;
+    min-height:    0;
+    padding:       4px 10px;
+    border:        1px solid transparent;
+    border-radius: var(--r-sm);
+    background:    transparent;
+    color:         var(--input-label);
+    font-size:     12px;
+    text-align:    left;
+    cursor:        pointer;
 
-    // Attached is the state worth reading off the list at a glance, because it is the one that
-    // is costing something.
+    &:hover,
+    &:focus-visible {
+      border-color: var(--border);
+      background:   var(--box-bg);
+      color:        var(--body-text);
+    }
+
+    // Up is the state worth reading off the bar at a glance, because it is the one that is
+    // costing something - a node's cores, or a public address.
     &--up {
       color: var(--body-text);
 
@@ -673,7 +806,7 @@ export default {
     .workspace-tools__rows {
       flex-direction: row;
       flex-wrap:      wrap;
-      gap:            2px 28px;
+      gap:            4px 8px;
     }
 
     // The same width as the rail's group labels, so the rows line up down the page.
@@ -683,5 +816,57 @@ export default {
 
     .workspace-tools__state { flex: 0 1 auto; }
   }
+}
+
+/*
+ * One entry's view. At the TOP LEVEL for the reason the chooser above is - DevModal teleports
+ * to <body>, so a selector nested under `.workspace-tools` compiles to
+ * `.workspace-tools .workspace-tools__panel` and matches nothing once the node has moved.
+ */
+.workspace-tools__panel {
+  display:        flex;
+  flex-direction: column;
+  gap:            16px;
+  min-width:      min(460px, 80vw);
+}
+
+.workspace-tools__what {
+  margin:    0;
+  color:     var(--muted);
+  font-size: 13px;
+}
+
+/* What it is, in pairs: the label in the column the rail's own labels use. */
+.workspace-tools__facts {
+  display:               grid;
+  grid-template-columns: auto 1fr;
+  gap:                   6px 16px;
+  margin:                0;
+
+  dt {
+    color:          var(--muted);
+    font-size:      11px;
+    font-weight:    600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+
+  dd {
+    margin:     0;
+    font-size:  13px;
+    word-break: break-all;
+  }
+}
+
+.workspace-tools__actions {
+  display:   flex;
+  flex-wrap: wrap;
+  gap:       8px;
+}
+
+/* Taking a public address down is not the same weight as opening it. */
+.workspace-tools__danger {
+  color:        var(--error);
+  border-color: var(--error);
 }
 </style>
