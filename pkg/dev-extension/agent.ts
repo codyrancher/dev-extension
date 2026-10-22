@@ -575,10 +575,17 @@ export async function agentPodStartedAt(): Promise<number> {
  * reports the raw signals; the bucket is worked out here. A conversation that has never run has
  * no line and so no entry, which the caller reads as `none`.
  */
-async function sessionStates(project = ''): Promise<Map<string, AgentActivity>> {
+async function sessionStates(project = '', strict = false): Promise<Map<string, AgentActivity>> {
   const args = project ? ['states', project] : ['states'];
+  /*
+   * `strict` is whether "the pod did not answer" is allowed to look like "nothing is running".
+   *
+   * A panel drawing its tabs would rather show no dots than an error, so the default swallows it.
+   * A caller deciding what every workspace's agent is doing must not: an empty answer there is
+   * published as fact, and every workspace in the dashboard goes quiet at once.
+   */
   const [listing, podStartedMs] = await Promise.all([
-    sessionScript(args, 'read what the conversations are doing').catch(() => ''),
+    strict ? sessionScript(args, 'read what the conversations are doing') : sessionScript(args, 'read what the conversations are doing').catch(() => ''),
     agentPodStartedAt().catch(() => 0),
   ]);
   const out = new Map<string, AgentActivity>();
@@ -695,13 +702,17 @@ export async function agentSessions(): Promise<AgentSession[]> {
     .sort((a, b) => conversationOrdinal(a.id) - conversationOrdinal(b.id));
 }
 
-/** A workspace's conversation as the pod holds it: who it belongs to, and what it is doing. */
+/**
+ * A workspace's conversation as the pod holds it: who it belongs to, and what it is doing.
+ *
+ * No title and no CLI, deliberately. This comes from the pod's `states`, which is keyed on the
+ * state files and says nothing about either - and the one caller wants the state. A page that
+ * needs the names asks `projectSessions` for its own workspace, which is one exec scoped to it.
+ */
 export interface PodConversation {
   id: string;
   /** The workspace the id names. Never empty - a conversation whose id names none is left out. */
   project: string;
-  title: string;
-  cli: string;
   state: AgentActivity;
 }
 
@@ -738,22 +749,34 @@ export async function conversationActivity(project = ''): Promise<Record<string,
  * having no agent at all. A caller keeps what it had and asks again.
  */
 export async function projectConversations(): Promise<PodConversation[]> {
-  const [listing, states] = await Promise.all([
-    sessionScript(['list'], 'read the conversations in the agent pod'),
-    sessionStates(),
-  ]);
+  /*
+   * The pod's `states`, and nothing else.
+   *
+   * This asked `list` as well, for which conversations EXIST as against which have run - and
+   * `list` with no project does not list them: its base is `p-<project>`, and with no project
+   * it falls back to `agent`, so the answer was the drawer's own conversations and none of any
+   * workspace's. Crossed with the states, that made every row empty, and an empty answer
+   * published as fact is every workspace in the dashboard reporting no agent at all.
+   *
+   * `states` needs no crossing. It is keyed on the state files in the pod - the pod's own disk,
+   * read now - so a conversation that has gone has no line and a conversation that has never
+   * run has none either, which is `none` and is what a missing id already means. The stale
+   * entries this was written to get rid of came from dev-api's watcher DOCUMENT, which outlives
+   * what it describes; the pod does not.
+   */
+  const states = await sessionStates('', true);
+  const out: PodConversation[] = [];
 
-  return listing.split('\n')
-    .map((line) => line.replace(/\r$/, ''))
-    .filter(Boolean)
-    .map(sessionLine)
-    .map((session) => ({
-      ...session,
-      project: conversationProject(session.id) || '',
-      state:   states.get(session.id) || ('none' as AgentActivity),
-    }))
+  for (const [id, state] of states) {
+    const project = conversationProject(id) || '';
+
     // The drawer's own (`agent-<n>`) name no workspace and are not any workspace's business.
-    .filter((session) => !!session.project);
+    if (project) {
+      out.push({ id, project, state });
+    }
+  }
+
+  return out;
 }
 
 /** Where a conversation's directory and the files beside it live in the pod. */

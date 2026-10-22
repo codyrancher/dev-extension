@@ -726,7 +726,7 @@ export interface StudioBrowserApi {
      */
     states?(project?: string): Promise<Record<string, AgentActivity>>;
     /** Every workspace conversation in the pod with what each is doing; see agent.ts. */
-    projectConversations?(): Promise<{ id: string; project: string; title: string; cli: string; state: AgentActivity }[]>;
+    projectConversations?(): Promise<{ id: string; project: string; state: AgentActivity }[]>;
     /** A new drawer conversation; its id. `from` is where it was started, for the id to carry. */
     start(from?: ConversationOrigin): Promise<string>;
     /** `from` is where it was started, which the id carries; see conversation-id.mjs. */

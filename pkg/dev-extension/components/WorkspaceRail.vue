@@ -38,6 +38,7 @@ import {
 } from '../workspace-rail';
 import { prFile, openConversation } from '../reviews';
 import { toggleTask } from '../pr-body.mjs';
+import { isProjectConversationId } from '../conversation-id.mjs';
 import {
   listConversations, startConversation, queuePrompt, startPaneDetached, workspaceAgentStates, sendToPane, renameConversation, endConversation
 } from '../conversations';
@@ -366,6 +367,12 @@ export default {
        * refresh, knows nothing about them.
        */
       return this.conversations
+        // Belt and braces after the bug above: a conversation whose id does not name THIS
+        // workspace cannot be drawn here, whatever happens to be in the array. The id is the
+        // only thing that says whose a conversation is, and `isProjectConversationId` is what
+        // tells `p-foo-bar-2` (workspace foo-bar) from `p-foo_bar-2` (workspace foo) - a prefix
+        // test would claim one for the other. See conversation-id.mjs.
+        .filter((c) => isProjectConversationId(this.workspace.name, c.id))
         .filter((c) => !/^Discuss\b/.test(String(c.title || '')))
         .map((c) => ({
           ...c, alive: !!this.live[c.id], agent: this.live[c.id] || 'idle',
@@ -584,9 +591,33 @@ export default {
       this.$nextTick(() => this.watchMedia());
     },
 
+    /**
+     * A different workspace: everything about the last one goes, and that includes its
+     * conversations.
+     *
+     * This called `load()` alone, which reads the stage and the evidence. The conversations were
+     * read in `mounted` and never again - so moving between two workspaces (the same route, a
+     * different param, one component) left the strip showing the PREVIOUS workspace's tab with a
+     * terminal attached to the previous workspace's pane. A tab reading `Fix #7468` on a page
+     * about something else, and the scrollback of whatever was last resumed under it.
+     *
+     * The 15-second poll did not save it either: `refreshLive` sets which panes are up and only
+     * re-reads the list when the set of live ids CHANGES, which between two workspaces that each
+     * have one running conversation it does not.
+     *
+     * Cleared before the reads rather than after, so there is no tick where the new workspace is
+     * drawn with the old one's tabs.
+     */
     'workspace.name'() {
       this.viewing = '';
+      this.conversations = [];
+      this.live = {};
+      this.liveShown = '';
+      this.currentConversation = '';
+      this.popped = false;
       this.load();
+      this.loadConversations();
+      this.refreshLive();
     },
   },
 
