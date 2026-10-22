@@ -754,6 +754,20 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       repo: String(d.meta?.repo || DEFAULT_REPO),
     });
     items.push(reviewersItem(d));
+    /*
+     * The conversation, as the pull request has it.
+     *
+     * Every thread on the diff and every comment on the pull request itself, whoever wrote
+     * them - `threads(d, 0, ...)` with no `since`, so nothing is filtered to "yours" or "since
+     * your review". This section is meant to BE the pull request, so that reading it here is
+     * reading it on GitHub, and the other sections that showed slices of the same comments do
+     * not have to be visited to know what was said.
+     */
+    const conversation = threads(d, 0, kinds);
+
+    if (conversation.length) {
+      items.push({ kind: 'comments', items: conversation, paged: true });
+    }
     // First, and shut. What the PR is - its size, its checks, its description and checklist -
     // is the frame everything else in the column is read inside, so it belongs at the top; but
     // it is reference, not news, and open it was a screenful of template above the findings.
@@ -897,7 +911,10 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     case 'submitted': {
       const mine = submitted.length ? null : reviewThreads();
 
-      sections.push({ title: `Your review (${ submitted.length || mine?.length || 0 } comments)`, items: submitted.length ? [findings(submitted)] : mine?.length ? [{ kind: 'comments', items: mine.map((c) => ({ ...c, answered: c.lastByAuthor })), paged: true }] : [{ kind: 'empty', text: 'Nothing submitted yet.' }] });
+      // No "Your review" section: the Pull request section below now carries every comment on
+      // the pull request, yours among them, laid out as the pull request has them. A second
+      // list of the same comments filtered to the ones you wrote was a slice of it, and the
+      // slice is what made people check both.
       prSection();
       break;
     }

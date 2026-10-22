@@ -1095,6 +1095,29 @@ export async function assignToMe(repo: string, issue: number, login: string): Pr
  * A login that is not a collaborator is refused by GitHub for the whole call, so each is sent on
  * its own and what failed is reported by name rather than losing the ones that would have worked.
  */
+/**
+ * Everyone this repository could be asked to review, for the picker beside the suggestions.
+ *
+ * The suggestions are people who have already touched the pull request - commented on the
+ * diff, reviewed it before, been asked on another of yours. That is a good list and it is
+ * empty on exactly the pull request that needs it most: a new one nobody has looked at yet,
+ * where there is nobody to suggest and, until now, no way to name anybody either.
+ *
+ * Collaborators with push are the right pool: GitHub refuses a review request from anyone
+ * without it, so offering a name that cannot be asked would be offering an error. One page of
+ * a hundred, which is every team this is used by; a repository larger than that still takes a
+ * typed name, because the field is free text and this only fills the suggestions under it.
+ */
+export async function reviewerPool(repo: string): Promise<string[]> {
+  const rows = await rest('GET', `/repos/${ repo }/collaborators?permission=push&per_page=100`).catch(() => null);
+
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+
+  return rows.map((r: Json) => String(r?.login || '')).filter(Boolean).sort((a, b) => a.localeCompare(b));
+}
+
 export async function requestReviewers(repo: string, pr: number, logins: string[]): Promise<{ asked: string[]; refused: Record<string, string> }> {
   const asked: string[] = [];
   const refused: Record<string, string> = {};

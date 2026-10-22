@@ -122,6 +122,10 @@ export default {
       /** Who has just been asked from here, so their row says so before the next read lands. */
       asked:         [],
       reviewerBusy:  '',
+      /** A login typed into the reviewers block, for somebody the suggestions do not know. */
+      reviewerTyped: '',
+      /** The repository's collaborators, read once when the field is first focused. */
+      reviewerPoolList: [],
       reviewerError: '',
       readying:      false,
       /** A box being written back, by its index, so it cannot be pressed twice. */
@@ -617,6 +621,32 @@ export default {
         this.reviewerError = `The box could not be ticked: ${ e.message || e }`;
       } finally {
         this.tickingTask = -1;
+      }
+    },
+
+    /**
+     * The repository's collaborators, once, on first focus.
+     *
+     * On focus rather than with the panel: it is a GitHub call for a field most people never
+     * use, and the suggestions above answer the common case without it.
+     */
+    async loadReviewerPool(item) {
+      if (this.reviewerPoolList.length) {
+        return;
+      }
+      this.reviewerPoolList = await reviewerPool(item.repo).catch(() => []);
+    },
+
+    /** Ask whoever was typed, which is how somebody the suggestions never heard of gets asked. */
+    async askTyped(item) {
+      const who = this.reviewerTyped.trim().replace(/^@/, '');
+
+      if (!who) {
+        return;
+      }
+      await this.ask(item, who);
+      if (!this.reviewerError) {
+        this.reviewerTyped = '';
       }
     },
 
@@ -3008,26 +3038,43 @@ export default {
                   class="workspace-rail__who-has workspace-rail__empty"
                 >Nobody has been asked yet.</p>
 
-                <ul
-                  v-if="item.suggested.length"
-                  class="workspace-rail__suggest"
+                <!--
+                  One field, which replaced a list of four.
+                  The suggestions were everyone who had already touched the pull request, each
+                  with an Ask button - four rows of people who had commented, which is not the
+                  same question as "who should review this" and was empty on a new pull request
+                  anyway, the one place it was needed. A login goes in here; the datalist fills
+                  with the repository's collaborators, so it is usually a pick rather than
+                  typing, and anybody can be named whether or not they have been near it.
+                -->
+                <form
+                  class="workspace-rail__ask-any"
+                  @submit.prevent="askTyped(item)"
                 >
-                  <li
-                    v-for="candidate in item.suggested"
-                    :key="candidate.who"
+                  <input
+                    v-model="reviewerTyped"
+                    list="workspace-rail-reviewers"
+                    class="workspace-rail__ask-input"
+                    placeholder="Ask someone else — GitHub username"
+                    :disabled="!!reviewerBusy"
+                    @focus="loadReviewerPool(item)"
                   >
-                    <span class="workspace-rail__who-name">{{ candidate.who }}</span>
-                    <span class="workspace-rail__why">{{ candidate.why }}</span>
-                    <RcButton
-                      variant="secondary"
-                      size="small"
-                      :disabled="reviewerBusy === candidate.who || asked.includes(candidate.who)"
-                      @click="ask(item, candidate.who)"
-                    >
-                      {{ asked.includes(candidate.who) ? 'Asked' : reviewerBusy === candidate.who ? 'Asking…' : 'Ask' }}
-                    </RcButton>
-                  </li>
-                </ul>
+                  <datalist id="workspace-rail-reviewers">
+                    <option
+                      v-for="who in reviewerPoolList"
+                      :key="who"
+                      :value="who"
+                    />
+                  </datalist>
+                  <RcButton
+                    variant="secondary"
+                    size="small"
+                    :disabled="!reviewerTyped.trim() || !!reviewerBusy"
+                    @click="askTyped(item)"
+                  >
+                    {{ reviewerBusy === reviewerTyped.trim() ? 'Asking…' : 'Ask' }}
+                  </RcButton>
+                </form>
 
                 <div
                   v-if="item.draft"
@@ -4255,6 +4302,24 @@ export default {
 }
 
 /* Who is looking at it, and who to ask. A list of rows, each ending in the one press. */
+.workspace-rail__ask-any {
+  display:     flex;
+  gap:         6px;
+  align-items: center;
+  margin-top:  8px;
+}
+
+.workspace-rail__ask-input {
+  flex:          1;
+  min-width:     0;
+  padding:       3px 8px;
+  border:        1px solid var(--border);
+  border-radius: var(--r-sm);
+  background:    var(--input-bg, var(--box-bg));
+  color:         var(--body-text);
+  font-size:     13px;
+}
+
 .workspace-rail__reviewers {
   display:        flex;
   flex-direction: column;
