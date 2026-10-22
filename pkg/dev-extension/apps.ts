@@ -1153,10 +1153,30 @@ const PREVIEW_BUILD = [
   'fetch() { rm -rf /work/site.new; mkdir -p /work/site.new; curl -fsSL -H "Authorization: Bearer ${sourceToken}" "${sourceUrl}" | tar -xzf - -C /work/site.new && [ -f /work/site.new/index.html ] && rm -rf /work/site && mv /work/site.new /work/site; }',
   'if [ "${sourceUrl}" != none ]; then',
   '  SITE=/work/site',
-  // Fetched again on every start, so a rebuild in the workspace reaches here with a pod
-  // restart; a fetch that fails keeps what was already there.
-  '  fetch || true',
-  '  until [ -f "$SITE/index.html" ]; do echo "the workspace build is not fetchable yet; retrying"; sleep 15; fetch || true; done',
+  /*
+   * Fetched again on every start, so a rebuild in the workspace reaches here with a pod restart.
+   *
+   * The loop waits on the FETCH, not on a file, and that is the fix for a share that came up
+   * serving the build before the one it was deployed for. `shareWorkspace` starts the build and
+   * deploys without waiting for it, so the first fetch is usually made while the build is still
+   * going - and dev-api now refuses to answer with a build routed for another base (409), which
+   * is what the old `until [ -f "$SITE/index.html" ]` could not see: /work is a hostPath and
+   * survives a restart, so a stale index.html from a previous deploy satisfied that test on the
+   * first pass and the pod stopped asking.
+   *
+   * Two ceilings, because the two cases want different patience. With a build already here, ten
+   * minutes of refusals and then serve what we have - stale is better than a blank page, and the
+   * next restart tries again. With nothing here, an hour: there is nothing to serve either way,
+   * and a dashboard build on a busy node genuinely takes that long sometimes.
+   */
+  '  n=0',
+  '  while ! fetch; do',
+  '    n=$((n + 1))',
+  '    if [ -f "$SITE/index.html" ] && [ "$n" -ge 40 ]; then echo "the fetch keeps being refused; serving the build already here"; break; fi',
+  '    if [ "$n" -ge 240 ]; then echo "giving up on the fetch"; break; fi',
+  '    echo "the workspace build for this base is not fetchable yet; retrying"',
+  '    sleep 15',
+  '  done',
   'elif [ "${sourceDir}" != none ]; then',
   '  SITE=/workspaces/${sourceDir}',
   '  until [ -f "$SITE/index.html" ]; do echo "waiting for the workspace to build into $SITE"; sleep 10; done',

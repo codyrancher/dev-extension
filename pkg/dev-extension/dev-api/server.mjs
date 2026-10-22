@@ -5943,6 +5943,49 @@ http.createServer(async(req, res) => {
     if (!['index.html', 'uiplugins.json', 'dashboard/index.html'].some((f) => fs.existsSync(path.join(dir, f)))) {
       return send(res, 404, { error: 'No build there yet.' });
     }
+
+    /*
+     * `?base=` - the build the fetcher is actually asking for, and the fix for a share that
+     * came up loading its scripts from an address that answers 401.
+     *
+     * A dashboard build is routed for where it will be served: `/dashboard/` on a public name,
+     * the proxy path behind this Rancher. The share pod fetches this URL as it starts, and
+     * `shareWorkspace` starts the build and deploys without waiting for it - so the pod fetched
+     * whatever was in the directory, which is the PREVIOUS build, routed for the other base. Its
+     * init loop then stopped retrying, because its only test was whether an index.html had
+     * arrived, and a stale one had.
+     *
+     * So the directory is not enough to answer with: the status file says which base the build
+     * in it was routed for (workspace-tools.ts, buildShare) and this refuses to serve one routed
+     * for anything else. The pod's loop keeps retrying every fifteen seconds and picks the right
+     * build up the moment it lands - no waiting in the browser, and no orchestration to get
+     * wrong. 409 rather than 404, because the distinction is "not this one yet" rather than
+     * "nothing here", and the pod's log then says which.
+     *
+     * Absent, nothing is checked, and that is deliberate: a rancher-share packs a shell build
+     * under a name of its own (the my-rancher-share skill) with no status file and no base to
+     * speak of, and those fetches must keep working exactly as they did.
+     */
+    const wantBase = url.searchParams.get('base') || '';
+
+    if (wantBase) {
+      const statusFile = path.join(WORKSPACES_ROOT, share[1], '.share', `${ share[2] }.status`);
+      const status = (() => {
+        try {
+          return fs.readFileSync(statusFile, 'utf8').trim().split(/\s+/);
+        } catch {
+          return [];
+        }
+      })();
+      const [state = '', , , , builtBase = ''] = status;
+
+      if (state !== 'ok') {
+        return send(res, 409, { error: `The build is ${ state || 'not started' }, not ready.`, state, base: builtBase });
+      }
+      if (builtBase && builtBase !== wantBase) {
+        return send(res, 409, { error: `That build is routed for ${ builtBase }, not ${ wantBase }.`, state, base: builtBase });
+      }
+    }
     res.writeHead(200, { 'content-type': 'application/gzip', 'access-control-allow-origin': '*', 'cache-control': 'no-store' });
     const tar = spawn('tar', ['-czf', '-', '-C', dir, '.']);
 

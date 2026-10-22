@@ -167,8 +167,15 @@ async function mintShareToken(workspace: string): Promise<string> {
  * Rancher. Its own address rather than the page's origin - a pod on another cluster fetches
  * this later, and the origin might be a share, or the apiserver's proxy path.
  */
-export function shareTarballUrl(workspace: string, kind: ShareKind, base: string): string {
-  return `${ base.replace(/\/$/, '') }/k8s/clusters/local/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy/share/${ workspace }/${ kind }.tar.gz`;
+export function shareTarballUrl(workspace: string, kind: ShareKind, base: string, routedFor = ''): string {
+  // `?base=` is which build it wants, and dev-api refuses to answer with one routed for
+  // anything else (server.mjs). The pod fetches this as it starts, and the build it is for is
+  // usually still going - so without it the pod took the PREVIOUS build, routed for the other
+  // base, and its init loop stopped retrying because an index.html had arrived. See the share
+  // endpoint for the whole of it.
+  const query = routedFor ? `?base=${ encodeURIComponent(routedFor) }` : '';
+
+  return `${ base.replace(/\/$/, '') }/k8s/clusters/local/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy/share/${ workspace }/${ kind }.tar.gz${ query }`;
 }
 
 export type ShareKind = 'dashboard' | 'storybook';
@@ -231,7 +238,13 @@ export async function shareWorkspace(store: Store, workspace: string, kind: Shar
   // A build is routed for where it will be served: /dashboard/ on a public name, the proxied
   // path here. So moving a share is a rebuild. `ref` is a branch of the checkout to build
   // instead of the one it is on (workspace-tools.ts, buildShare: a worktree).
-  await buildShare(workspace, kind, remote ? (kind === 'storybook' ? '/' : '/dashboard/') : previewBase(workspace, cluster, kind), ref);
+  //
+  // Held in a name rather than computed twice: the pod asks dev-api for the build routed for
+  // exactly this base, and the two disagreeing is the bug that made a share come up loading its
+  // scripts from an address that answers 401.
+  const routedFor = remote ? (kind === 'storybook' ? '/' : '/dashboard/') : previewBase(workspace, cluster, kind);
+
+  await buildShare(workspace, kind, routedFor, ref);
 
   const state = await previewState(store, workspace, cluster, kind);
   const asWanted = state.exists && state.host === hostname && (remote || !!state.sourceDir);
@@ -249,7 +262,7 @@ export async function shareWorkspace(store: Store, workspace: string, kind: Shar
   }
   if (remote) {
     await deployPreview(store, workspace, {
-      repo: 'rancher/dashboard', ref: branch || 'HEAD', kind, rancherUrl, host: hostname, sourceUrl: shareTarballUrl(workspace, kind, await ownRancherUrl(store)), sourceToken: await mintShareToken(workspace),
+      repo: 'rancher/dashboard', ref: branch || 'HEAD', kind, rancherUrl, host: hostname, sourceUrl: shareTarballUrl(workspace, kind, await ownRancherUrl(store), routedFor), sourceToken: await mintShareToken(workspace),
     }, host.id, host.fleet);
   } else {
     await deployPreview(store, workspace, {

@@ -661,14 +661,23 @@ export async function buildShare(workspace: string, kind: ShareKind, base: strin
     'WT=$WS/.share/src-$KIND',
     'git worktree remove --force $WT >/dev/null 2>&1; rm -rf $WT; mkdir -p $WT',
     'if [ -n "$REF" ] && [ "$REF" != "$branch" ]; then',
-    '  rmdir $WT; git worktree add --detach $WT "$REF" >/dev/null 2>&1 || { echo "failed $(date -u +%FT%TZ) $REF unknown" > $S; exit 1; }',
+    '  rmdir $WT; git worktree add --detach $WT "$REF" >/dev/null 2>&1 || { echo "failed $(date -u +%FT%TZ) $REF unknown $BASE" > $S; exit 1; }',
     '  branch=$REF; sha=$(git -C $WT rev-parse --short HEAD 2>/dev/null)',
     'else',
     "  tar --exclude=./node_modules --exclude='./*/node_modules' --exclude='./pkg/*/node_modules' --exclude=./.git -cf - . | tar -C $WT -xf -",
     'fi',
     "for d in $(find . -maxdepth 3 -name node_modules -type d -not -path '*/node_modules/*'); do mkdir -p $WT/$(dirname $d); cp -al $d $WT/$d; rm -rf $WT/$d/.cache; done",
     'cd $WT',
-    'echo "building $(date -u +%FT%TZ) $branch $sha" > $S',
+    // The BASE is recorded, not just the branch and the sha.
+    //
+    // A build is routed for where it will be served - `/dashboard/` on a public name, the proxy
+    // path behind this Rancher - and the two are not interchangeable: a build routed for one and
+    // served on the other loads its scripts from an address that answers 401 and HTML, which the
+    // browser reports as "Refused to execute script ... MIME type". That is what a share pod
+    // fetching a build made for the other base looks like, and nothing could tell, because the
+    // status said `ok` either way. A fifth field, so a reader that splits on whitespace and takes
+    // four is unaffected - shareStatus does exactly that.
+    'echo "building $(date -u +%FT%TZ) $branch $sha $BASE" > $S',
     // At the lowest priority either way: a build is background work, and one that takes the whole
     // node has taken k3s down with it. In the builder it is alone with a limit of its own, so it
     // takes the cores and the heap it was given; anywhere else it leaves half the node alone.
@@ -699,14 +708,14 @@ export async function buildShare(workspace: string, kind: ShareKind, base: strin
     '  OLD=$WS/share/$KIND.old-$(date +%s)-$$',
     '  [ -e $WS/share/$KIND ] && mv $WS/share/$KIND $OLD',
     '  if mv $WS/share/$KIND.next $WS/share/$KIND; then',
-    '    echo "ok $(date -u +%FT%TZ) $branch $sha" > $S',
+    '    echo "ok $(date -u +%FT%TZ) $branch $sha $BASE" > $S',
     '  else',
     '    [ -e $OLD ] && mv $OLD $WS/share/$KIND',
-    '    echo "failed $(date -u +%FT%TZ) $branch $sha" > $S',
+    '    echo "failed $(date -u +%FT%TZ) $branch $sha $BASE" > $S',
     '  fi',
     '  rm -rf $WS/share/$KIND.old-* $WS/share/$KIND.old 2>/dev/null',
     'else',
-    '  echo "failed $(date -u +%FT%TZ) $branch $sha" > $S',
+    '  echo "failed $(date -u +%FT%TZ) $branch $sha $BASE" > $S',
     'fi',
     '',
   ].join('\n');
