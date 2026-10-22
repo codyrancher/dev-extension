@@ -16,7 +16,7 @@ import {
 import { DEFAULT_LEASE_MINUTES } from '../config/constants';
 import DevModal from './DevModal';
 import {
-  previewState, shareWorkspace, rebuildPreview, removePreview, retargetPreview, preferredShareHost,
+  previewState, shareWorkspace, rebuildPreview, removePreview, retargetPreview, preferredShareHost, agentShares,
 } from '../previews';
 import { listRanchers } from '../ranchers';
 
@@ -69,6 +69,8 @@ export default {
       shares:   { dashboard: null, storybook: null },
       /** Which Rancher a share talks to; the starred one unless somebody picks another. */
       ranchers: [],
+      /** Shares an agent made with the rancher-share App; see agentShares. */
+      agentMade: [],
       shareBusy: '',
       /** The share kind whose Rancher is being chosen, '' when nothing is being chosen. */
       picking:   '',
@@ -99,17 +101,33 @@ export default {
         { kind: 'storybook', label: 'Storybook share', icon: 'icon-folder', what: 'Build this branch\'s Storybook and serve it on a public address' },
       ].map((row) => {
         const state = this.shares[row.kind];
+        /*
+         * A share an agent made counts as this one being built.
+         *
+         * The panel asked only about its own mechanism, so a workspace with two working public
+         * links reported "not built" beside them. Matched by the suffix the skill uses: a
+         * `-storybook` one is the Storybook row and anything else is the dashboard's, which is
+         * as much as the name says and more than nothing.
+         */
+        const mine = this.agentMade.filter((a) => (row.kind === 'storybook'
+          ? /storybook/i.test(a.suffix)
+          : !/storybook/i.test(a.suffix)));
 
         return {
           ...row,
           state,
+          agent: mine,
           // The public sslip name when there is one, else whatever address it has.
           // Where to go, when there is somewhere: the public name first, else the proxied url.
-          href:  state?.host ? `https://${ state.host }` : (state?.url || ''),
+          href:  state?.host ? `https://${ state.host }` : (state?.url || mine[0]?.url || ''),
           // Whether a share EXISTS, which is not the same as whether it is serving yet. The
           // buttons key off this - offering "Share" for one that already exists would try to
           // create a second Installation under a name that is derived and therefore taken.
-          up:    !!state?.exists,
+          // Built by either route. `exists` alone is this panel's own share and was the whole
+          // of the wrong answer.
+          up:    !!state?.exists || mine.length > 0,
+          /** Whether the only thing built here is an agent's, which this panel cannot manage. */
+          agentOnly: !state?.exists && mine.length > 0,
           where:     state?.rancherUrl || '',
           whereName: (this.ranchers.find((r) => r.url === state?.rancherUrl) || {}).name || '',
         };
@@ -184,6 +202,8 @@ export default {
           this.shares = { ...this.shares, [kind]: state };
         }
       }
+      // The other kind of share, which this panel used to be blind to.
+      this.agentMade = await agentShares(this.$store, this.workspace).catch(() => []);
       if (!this.ranchers.length) {
         this.ranchers = (await listRanchers(this.$store).catch(() => []))
           .filter((r) => r.url && (r.kind === 'host' || r.phase === 'ready'));
@@ -504,6 +524,31 @@ export default {
         <dl class="workspace-tools__facts">
           <dt>State</dt>
           <dd>{{ opened.share.up ? 'Built and serving' : 'Not built' }}</dd>
+          <!--
+            Said out loud when the thing that is serving is not this panel's. An agent's share
+            is a different App under a different name, so Rebuild, Point at and Release here
+            would act on a share that does not exist and report success doing it.
+          -->
+          <template v-if="opened.share.agent.length">
+            <dt>Made by</dt>
+            <dd>
+              <span>the agent, with the rancher-share skill</span>
+              <ul class="workspace-tools__agent-shares">
+                <li
+                  v-for="a in opened.share.agent"
+                  :key="a.name"
+                >
+                  <a
+                    v-if="a.url"
+                    :href="a.url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >{{ a.name }}</a>
+                  <span v-else>{{ a.name }} — no public name yet</span>
+                </li>
+              </ul>
+            </dd>
+          </template>
           <template v-if="opened.share.href">
             <dt>Address</dt>
             <dd>
@@ -519,8 +564,16 @@ export default {
             <dd>{{ opened.share.whereName || opened.share.where || 'nothing yet' }}</dd>
           </template>
         </dl>
+        <p
+          v-if="opened.share.agentOnly"
+          class="workspace-tools__what"
+        >
+          This one was built by an agent and is managed where it was made - ask it to rebuild or
+          take it down. Building one here puts a second share beside it, under this panel's own
+          name.
+        </p>
         <div class="workspace-tools__actions">
-          <template v-if="opened.share.up">
+          <template v-if="opened.share.up && !opened.share.agentOnly">
             <a
               v-if="opened.share.href"
               :href="opened.share.href"
@@ -556,14 +609,22 @@ export default {
               Release
             </button>
           </template>
-          <button
-            v-else
-            type="button"
+          <a
+            v-if="opened.share.agentOnly && opened.share.href"
+            :href="opened.share.href"
+            target="_blank"
+            rel="noopener noreferrer"
             class="btn role-primary btn-sm"
+          >Open</a>
+          <button
+            v-if="!opened.share.up || opened.share.agentOnly"
+            type="button"
+            class="btn btn-sm"
+            :class="opened.share.agentOnly ? 'role-secondary' : 'role-primary'"
             :disabled="!!shareBusy"
             @click="picking = opened.kind"
           >
-            {{ shareBusy === opened.kind ? 'Building…' : 'Build and share' }}
+            {{ shareBusy === opened.kind ? 'Building…' : opened.share.agentOnly ? 'Build one here as well' : 'Build and share' }}
           </button>
         </div>
       </div>
@@ -865,6 +926,14 @@ export default {
 }
 
 /* Taking a public address down is not the same weight as opening it. */
+.workspace-tools__agent-shares {
+  list-style: none;
+  margin:     4px 0 0;
+  padding:    0;
+  font-size:  12px;
+  word-break: break-all;
+}
+
 .workspace-tools__danger {
   color:        var(--error);
   border-color: var(--error);

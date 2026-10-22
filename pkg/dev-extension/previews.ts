@@ -13,7 +13,8 @@ import { LABEL_CLUSTER } from './config/constants';
 
 export { deleteWorkspace };
 import { createWorkspaceInstance, deleteWorkspaceInstance, workspaceInstance } from './apps';
-import { PREVIEW_APP } from './apps';
+import { PREVIEW_APP, RANCHER_SHARE_APP } from './apps';
+import { APP_INSTANCE } from './config/constants';
 import {
   buildShare, workspaceBranch, readInWorkspace, workspaceTarget
 } from './workspace-tools';
@@ -352,6 +353,51 @@ export async function retargetPreview(store: Store, workspace: string, kind: Sha
   refuseSelf(rancherUrl, String(instance.spec?.values?.host || ''));
   instance.spec.values = { ...(instance.spec.values || {}), rancherUrl: rancherUrl.replace(/\/$/, '') };
   await instance.save();
+}
+
+/**
+ * A share an agent made, which this product did not.
+ *
+ * There are two ways a workspace ends up with a public link and only one of them was ever
+ * looked for. The Share tab installs the `dashboard-preview` App as `preview-<workspace>`, which
+ * is what `previewState` reads. An agent running the my-rancher-share skill installs the
+ * `rancher-share` App instead, under a name of its own - `share-<workspace>-rcdrawer`,
+ * `share-<workspace>-storybook` - and labels it with no workspace at all. So a workspace with
+ * two working shares on it reported "not built", beside the links, in the same panel.
+ *
+ * Attributed by name, because the label is not there to ask: `share-<workspace>-` as an exact
+ * prefix, trailing dash included. Without the dash `share-lte-issue-1490-` would claim
+ * `share-lte-issue-14904-rcdrawer`, which is a different workspace's share and a worse answer
+ * than none.
+ */
+export interface AgentShare {
+  name: string;
+  /** What it is called after the workspace: `rcdrawer`, `storybook`. */
+  suffix: string;
+  /** The public name its ingress serves, or '' while it has none yet. */
+  host: string;
+  url: string;
+  hostedOn: string;
+}
+
+export async function agentShares(store: Store, workspace: string): Promise<AgentShare[]> {
+  const prefix = `share-${ workspace }-`;
+  const instances: Json[] = await store.dispatch('management/findAll', { type: APP_INSTANCE }).catch(() => []);
+
+  return instances
+    .filter((i) => i.spec?.app === RANCHER_SHARE_APP && String(i.metadata?.name || '').startsWith(prefix))
+    .map((i) => {
+      const host = String(i.spec?.values?.host || '');
+      const name = String(i.metadata?.name || '');
+
+      return {
+        name,
+        suffix:   name.slice(prefix.length),
+        host:     host === 'none' ? '' : host,
+        url:      host && host !== 'none' ? `https://${ host }` : '',
+        hostedOn: i.metadata?.labels?.[LABEL_CLUSTER] || (i.spec?.targets || [])[0]?.clusterName || '',
+      };
+    });
 }
 
 export async function previewState(store: Store, workspace: string, cluster = 'local', kind: ShareKind = 'dashboard'): Promise<PreviewState> {
