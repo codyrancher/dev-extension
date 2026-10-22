@@ -368,12 +368,67 @@ async function list(cred) {
   }).filter((i) => i.id);
 }
 
+/**
+ * Every instance in the account, tagged or not.
+ *
+ * Because the ones that cost money quietly are the ones nothing lists. A node left behind by a
+ * deleted Rancher keeps running, keeps its public address, and in at least one case kept
+ * dialling the parent 6,302 times in six hours - and `list` could not see it, because `list`
+ * only knows instances this tool tagged.
+ */
+async function orphans(cred) {
+  const xml = await ec2(cred, {
+    Action:             'DescribeInstances',
+    'Filter.1.Name':    'instance-state-name',
+    'Filter.1.Value.1': 'running',
+    'Filter.1.Value.2': 'pending',
+  });
+  const at = [...xml.matchAll(/<instanceId>([^<]+)<\/instanceId>/g)];
+
+  return at.map((m, n) => {
+    const block = xml.slice(m.index, n + 1 < at.length ? at[n + 1].index : undefined);
+    const tags = all(one(block, 'tagSet'), 'item');
+    const named = (key) => tags.map((t) => (one(t, 'key') === key ? one(t, 'value') : '')).find(Boolean) || '';
+
+    return {
+      id:      m[1],
+      ours:    !!named(TAG),
+      name:    named(TAG) || named('Name') || '(untagged)',
+      ip:      one(block, 'ipAddress'),
+      state:   one(one(block, 'instanceState'), 'name'),
+      since:   one(block, 'launchTime'),
+    };
+  }).filter((i) => i.id);
+}
+
+/**
+ * Terminate, by this tool's name for it or by instance id.
+ *
+ * The id form exists for the ones this tool did not create: a node left behind by a deleted
+ * Rancher is not tagged, so `list` cannot see it, and the only handle anybody has is the id or
+ * the Name tag that shows in `orphans`.
+ *
+ * It refuses an ambiguous match rather than picking one. This call cannot be undone, the
+ * account has a dozen instances belonging to other people in it, and "it matched two, so I did
+ * the first" is not a sentence worth being able to write afterwards.
+ */
 async function remove(cred, name) {
-  const found = (await list(cred)).filter((i) => i.name === name || i.id === name);
+  let found = (await list(cred)).filter((i) => i.name === name || i.id === name);
 
   if (!found.length) {
-    throw new Error(`no instance tagged ${ name }`);
+    found = (await orphans(cred))
+      .filter((i) => i.id === name || i.name === name)
+      .map((i) => ({ name: i.name, id: i.id, state: i.state, ip: i.ip }));
   }
+
+  if (found.length > 1) {
+    throw new Error(`${ name } matches ${ found.length } instances (${ found.map((i) => i.id).join(', ') }); name one by id`);
+  }
+
+  if (!found.length) {
+    throw new Error(`no instance called ${ name }`);
+  }
+  console.error(`terminating ${ found[0].id } (${ found[0].name }, ${ found[0].ip || 'no public ip'})`);
   for (const [n, instance] of found.entries()) {
     await ec2(cred, { Action: 'TerminateInstances', [`InstanceId.${ n + 1 }`]: instance.id });
   }
@@ -390,11 +445,33 @@ async function remove(cred, name) {
  * The bootstrap password is NOT in here. It is shown once, by `create`, and this record is read
  * by every page of the dashboard; a password in it would be a password in everybody's browser.
  */
+/**
+ * Is Rancher actually answering, as opposed to the box being switched on?
+ *
+ * `state: running` is EC2's opinion of the hardware and says nothing about the container - a
+ * box that is up but pulling the image, or whose Rancher has fallen over, reports `running`
+ * just the same. The status beside an instance should be the status of the thing you click
+ * through to, so the record carries the answer to /ping.
+ */
+async function answering(ip) {
+  try {
+    const r = await fetch(`https://${ hostFor(ip) }/ping`, { signal: AbortSignal.timeout(8000) });
+
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function record(cred) {
   const instances = await list(cred);
+  const health = Object.fromEntries(await Promise.all(
+    instances.filter((i) => i.ip).map(async(i) => [i.id, await answering(i.ip)]),
+  ));
   const doc = JSON.stringify({
     at: new Date().toISOString(),
     instances: instances.filter((i) => i.name).map((i) => ({
+      up: !!health[i.id],
       // The sslip name, not the bare address: that is the name the Let's Encrypt certificate
       // is issued for, so it is the only one a browser opens without a warning.
       name: i.name, instanceId: i.id, state: i.state, ip: i.ip, url: i.ip ? `https://${ hostFor(i.ip) }` : '',
@@ -704,6 +781,13 @@ async function main() {
     }
     await create(cred, name, opts);
     await record(cred).catch(() => undefined);
+  } else if (verb === 'orphans') {
+    const rows = await orphans(cred);
+
+    console.log(JSON.stringify({
+      ours:  rows.filter((r) => r.ours),
+      other: rows.filter((r) => !r.ours),
+    }, null, 1));
   } else if (verb === 'configure') {
     if (!name) {
       throw new Error('configure needs a name');
@@ -722,7 +806,7 @@ async function main() {
     await remove(cred, name);
     await record(cred).catch(() => undefined);
   } else {
-    console.error('usage: rancher-ec2.mjs create <name> | configure <name> | list | sync | delete <name>');
+    console.error('usage: rancher-ec2.mjs create <name> | configure <name> | list | orphans | sync | delete <name>');
     process.exit(2);
   }
 }

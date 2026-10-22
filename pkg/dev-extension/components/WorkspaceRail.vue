@@ -436,6 +436,15 @@ export default {
           };
         }
       }
+      /*
+       * No "Open the whole PR" anywhere in here.
+       *
+       * Every stage that had it already carries the pull request: its number and its link are
+       * in the header, the Pull request section below holds the description, the checks, the
+       * checklist and now the whole conversation, and each finding links to its own thread on
+       * GitHub. A button to open what is already open, next to links that already go there,
+       * was a third way to say the same thing.
+       */
       if (s.kind === 'review') {
         switch (stage) {
         case 'agent':
@@ -467,7 +476,6 @@ export default {
               primary:  { label: 'Ship it', run: 'openApprove' },
               tools:    [
                 { label: 'Review this PR again', run: s.reviewed ? 'reviewAgain' : 'startReview' },
-                { label: 'Open the whole PR', run: 'openTab', arg: 'pr' },
                 { label: 'Ask the agent', run: 'focusAsk' },
               ],
             };
@@ -484,7 +492,6 @@ export default {
               // a finished pass can do, and the only one that was not on this row.
               { label: 'Post comments', run: 'postComments' },
               ...(s.reviewed ? [{ label: 'Review the new commits again', run: 'reviewAgain' }] : []),
-              { label: 'Open the whole PR', run: 'openTab', arg: 'pr' },
               // On a re-pass there is one thing to ask the agent and `reviewAgain` above is it;
               // a general "Ask the agent" beside it is a second way to say the same thing.
               ...(s.reviewed ? [] : [{ label: 'Ask the agent', run: 'focusAsk' }]),
@@ -502,7 +509,7 @@ export default {
           // Nothing is filed yet: what the agent finds puts the rail back on Your pass, which
           // is where findings are gone through, whichever round it is.
           return {
-            headline: 'The developer responded', detail: 'New commits and replies since your review are on the left. The agent can review what changed against your comments; what it finds comes back here as a second pass.', primary: { label: 'Review the new commits', run: 'reviewAgain' }, tools: [{ label: 'Open the whole PR', run: 'openTab', arg: 'pr' }, { label: 'Approve', run: 'openApprove' }],
+            headline: 'The developer responded', detail: 'New commits and replies since your review are on the left. The agent can review what changed against your comments; what it finds comes back here as a second pass.', primary: { label: 'Review the new commits', run: 'reviewAgain' }, tools: [{ label: 'Approve', run: 'openApprove' }],
           };
         case 'approved':
           return {
