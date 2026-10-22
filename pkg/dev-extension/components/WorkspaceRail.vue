@@ -2238,7 +2238,9 @@ export default {
       if (editedReview) {
         await this.say(`Review #${ this.pr }`, expandPrompt(editedReview, this.varsNow()), true);
       } else {
-        await startPrReview(this.$store, { number: this.pr, title: this.workspace.title || '' }, DEFAULT_REPO, this.workspace.name);
+        // This workspace's repository, not the product's: a review started on a pull request in
+        // another repository asked GitHub about rancher/dashboard and got somebody else's number.
+        await startPrReview(this.$store, { number: this.pr, title: this.workspace.title || '' }, this.repo, this.workspace.name);
       }
       this.notice = 'The review has started; its findings land on the left as it goes.';
       await this.loadConversations();

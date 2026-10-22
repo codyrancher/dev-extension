@@ -243,9 +243,29 @@ function numbers(name: string): { pr: number; issue: number } {
  */
 const roles: Record<string, string> = {};
 const branches: Record<string, string> = {};
+/**
+ * The repository each workspace is for.
+ *
+ * Not every workspace is a `rancher/dashboard` one - `lte-pr-1202` is a pull request in
+ * `harvester/harvester-ui-extension` - and every GitHub read here used the constant, so that
+ * workspace asked for `rancher/dashboard` PR 1202, was told 404, and fell through to "not named
+ * for an issue or a PR, so it has no stages". No rail, no review, nothing to press, on a
+ * workspace whose own record has said `repo: harvester/harvester-ui-extension` from the day it
+ * was made. Noted the way the role is, from the list the sidebar already passes in.
+ */
+const repos: Record<string, string> = {};
 
 export function noteRole(name: string, role: string): void {
   roles[name] = role || '';
+}
+
+export function noteRepo(name: string, repo: string): void {
+  repos[name] = repo || '';
+}
+
+/** The repository a workspace is for, falling back to this product's own. */
+export function repoOf(name: string): string {
+  return repos[name] || DEFAULT_REPO;
 }
 
 /** The branch a workspace's checkout is on - told by the page, which reads the checkout. */
@@ -551,14 +571,16 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
   const { pr, issue } = numbers(name);
   const agent = agents[name] || 'none';
   const links: WorkspaceStatus['links'] = [];
+  // The workspace's own, not this product's. See `repos`.
+  const repo = repoOf(name);
 
   if (issue) {
-    links.push({ label: `Issue #${ issue }`, url: `https://github.com/${ DEFAULT_REPO }/issues/${ issue }` });
+    links.push({ label: `Issue #${ issue }`, url: `https://github.com/${ repo }/issues/${ issue }` });
   }
   if (pr) {
-    const d = await prDetail(pr);
+    const d = await prDetail(pr, repo);
 
-    links.push({ label: `PR #${ pr }`, url: d.meta?.url || `https://github.com/${ DEFAULT_REPO }/pull/${ pr }` });
+    links.push({ label: `PR #${ pr }`, url: d.meta?.url || `https://github.com/${ repo }/pull/${ pr }` });
     const w = reviewWork(d, agent);
     const rec = await reconcileStage(name, toDerived('review', w, pr));
 
@@ -567,18 +589,18 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
     };
   }
   if (isFix(name)) {
-    const n = await (issue ? linkedPullRequest(DEFAULT_REPO, issue) : branchPullRequest(DEFAULT_REPO, branches[name] || '')).catch(() => 0);
-    const d = n ? await prDetail(n) : null;
+    const n = await (issue ? linkedPullRequest(repo, issue) : branchPullRequest(repo, branches[name] || '')).catch(() => 0);
+    const d = n ? await prDetail(n, repo) : null;
 
     if (n) {
-      links.push({ label: `PR #${ n }`, url: d?.meta?.url || `https://github.com/${ DEFAULT_REPO }/pull/${ n }` });
+      links.push({ label: `PR #${ n }`, url: d?.meta?.url || `https://github.com/${ repo }/pull/${ n }` });
     }
     const w = fixWork(d, agent, coded[name] || false);
     const rec = await reconcileStage(name, toDerived('fix', w, n));
     // The PR's title once there is one; until then the issue's own title, so a fix reads as the work
     // it is rather than its `issue-<n>` name. Without this a fix with no PR yet had no title at all,
     // and the row fell back to the bare number.
-    const title = d?.meta?.title || (issue ? await issueBody(DEFAULT_REPO, issue).catch(() => ({ title: '' })).then((i) => i.title) : '') || '';
+    const title = d?.meta?.title || (issue ? await issueBody(repo, issue).catch(() => ({ title: '' })).then((i) => i.title) : '') || '';
 
     return {
       ...display(rec, w), title, links, kind: 'fix', pr: n,
@@ -599,12 +621,16 @@ export function noteCoded(name: string, value: boolean): void {
 export function provisionalStatus(name: string): WorkspaceStatus {
   const { pr, issue } = numbers(name);
   const links: WorkspaceStatus['links'] = [];
+  // Whatever has been noted for it, which before the first listing is this product's own. These
+  // links are replaced by the real read a moment later; the point is that they are not wrong in
+  // the meantime for a workspace that is somebody else's repository.
+  const repo = repoOf(name);
 
   if (issue) {
-    links.push({ label: `Issue #${ issue }`, url: `https://github.com/${ DEFAULT_REPO }/issues/${ issue }` });
+    links.push({ label: `Issue #${ issue }`, url: `https://github.com/${ repo }/issues/${ issue }` });
   }
   if (pr) {
-    links.push({ label: `PR #${ pr }`, url: `https://github.com/${ DEFAULT_REPO }/pull/${ pr }` });
+    links.push({ label: `PR #${ pr }`, url: `https://github.com/${ repo }/pull/${ pr }` });
   }
 
   return {
@@ -693,14 +719,17 @@ async function readStale(names: string[]): Promise<void> {
  * more than fifteen seconds old, the work's read in the background when more than five
  * minutes old. Returns at once with what there is.
  */
-export async function workspaceStatuses(workspaces: { name: string; cluster?: string; preview?: boolean; role?: string }[]): Promise<Record<string, WorkspaceStatus>> {
+export async function workspaceStatuses(workspaces: { name: string; cluster?: string; preview?: boolean; role?: string; repo?: string }[]): Promise<Record<string, WorkspaceStatus>> {
   // Every workspace, not only local ones. The status is GitHub work (read by PR/issue number, the
   // same from any cluster) plus the agent state (read from the one agent pod, which tracks a
   // conversation by workspace name whatever cluster it runs on) - neither is cluster-scoped, so a
   // downstream-hosted workspace gets its status line and dot like any other. Previews have none.
   const names = workspaces.filter((w) => !w.preview).map((w) => w.name);
 
-  workspaces.forEach((w) => noteRole(w.name, w.role || ''));
+  workspaces.forEach((w) => {
+    noteRole(w.name, w.role || '');
+    noteRepo(w.name, w.repo || '');
+  });
   /*
    * Awaited, where the other two reads are not, because the statuses it fills are read back
    * synchronously below - and whoever reads them ranks on what is there at that moment.

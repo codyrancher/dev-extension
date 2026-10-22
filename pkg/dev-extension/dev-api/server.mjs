@@ -5608,6 +5608,22 @@ async function reconcileRegistrar(instances) {
     }
     if (inst?.metadata?.deletionTimestamp) ws.state = 'removing';
     ws.role = labels[LABEL_ROLE] || '';
+    /*
+     * Which repository the workspace is for, from its Installation, whichever branch above
+     * built the row.
+     *
+     * `workspaceFromInstance` reads it; the other two cannot - a local workspace's row is built
+     * from its namespace, Deployment and pod, and a directory's from the disk, and the value
+     * lives on the Installation. So a local workspace for a pull request in another repository
+     * was published with no `repo`, every page read `rancher/dashboard`, and GitHub answered
+     * 404 for a number that is somebody else's. `lte-pr-1202` is
+     * harvester/harvester-ui-extension and had no rail at all because of it.
+     */
+    const repo = String(inst?.spec?.values?.repo || '').trim();
+
+    if (repo) {
+      ws.repo = repo;
+    }
     workspaces.push(ws);
   }
   workspaces.sort((a, b) => a.name.localeCompare(b.name));

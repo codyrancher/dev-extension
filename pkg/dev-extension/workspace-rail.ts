@@ -20,7 +20,7 @@ import {
 import type { DiffRow } from './components/pr/diff';
 import { latestAgentReport } from './conversations';
 import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from './api';
-import { noteCoded, noteBranch, isBot, STAGE_LABELS } from './workspace-status';
+import { noteCoded, noteBranch, isBot, repoOf, STAGE_LABELS } from './workspace-status';
 import type { WorkspaceStatus, Stage } from './workspace-status';
 import { artifactKind } from './artifact-kind';
 import { numberTaskBoxes } from './pr-body.mjs';
@@ -543,11 +543,11 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
       have.artifacts = r.v;
       have.failed = { ...have.failed, media: !r.ok };
     }),
-    tried('pr', status.pr ? prDetail(status.pr) : Promise.resolve(null)).then((r) => {
+    tried('pr', status.pr ? prDetail(status.pr, repoOf(workspace)) : Promise.resolve(null)).then((r) => {
       have.d = r.v;
       have.failed = { ...have.failed, pr: !!status.pr && !r.v };
     }),
-    tried('issue', issue && status.kind === 'fix' ? issueBody(DEFAULT_REPO, issue) : Promise.resolve(null)).then((r) => { have.issue = r.v; }),
+    tried('issue', issue && status.kind === 'fix' ? issueBody(repoOf(workspace), issue) : Promise.resolve(null)).then((r) => { have.issue = r.v; }),
   ];
   let pending = reads.length;
   const emit = (done: boolean) => {
