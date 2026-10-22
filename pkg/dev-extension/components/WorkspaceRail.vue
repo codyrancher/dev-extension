@@ -321,9 +321,25 @@ export default {
      * exists being invisible until something happens to be running.
      */
     railConversations() {
-      return this.conversations.map((c) => ({
-        ...c, alive: !!this.live[c.id], agent: this.live[c.id] || 'idle',
-      }));
+      /*
+       * A discussion about one finding is not a conversation of the workspace's.
+       *
+       * Pressing Discuss on a finding opens a conversation under that finding, which is where
+       * it belongs and where it is read - but it is a conversation in the agent pod like any
+       * other, so it also appeared as a tab up here. A review of ten findings put ten
+       * `Discuss comment #N` tabs across the strip, between the two conversations that are
+       * actually about the workspace, and closing one from the strip ends a thread somebody is
+       * reading further down the page.
+       *
+       * Matched on the title because that is what survives a reload: `discussSession` is this
+       * component's memory of the discussions IT opened, and a second tab, or this one after a
+       * refresh, knows nothing about them.
+       */
+      return this.conversations
+        .filter((c) => !/^Discuss\b/.test(String(c.title || '')))
+        .map((c) => ({
+          ...c, alive: !!this.live[c.id], agent: this.live[c.id] || 'idle',
+        }));
     },
 
     /** The one the panel draws, across running and not: the picked tab, else the newest. */
@@ -425,8 +441,11 @@ export default {
             };
           }
 
+          // `conversation` ("Open the conversation") is deliberately not here: the conversation
+          // is already on this page, in the strip above this box, so a button to open what is
+          // open was one of three things to read past before starting a review.
           return {
-            headline: s.agent === 'working' ? 'The agent is reviewing' : 'The agent stopped', detail: 'Its findings land on the left as it goes; go through them once it is done.', primary: conversation, tools: [],
+            headline: s.agent === 'working' ? 'The agent is reviewing' : 'The agent stopped', detail: 'Its findings land on the left as it goes; go through them once it is done.', primary: { label: 'Full review', run: 'startReview' }, tools: [],
           };
         case 'findings':
           // A pass ends one of three ways, and all three are here: send the findings back as
@@ -457,14 +476,23 @@ export default {
             tools:    [
               { label: 'Ship it with comments', run: 'shipWithComments' },
               { label: 'Ship it', run: 'openApprove' },
+              // Filing what is pending without a verdict on the pull request - the third thing
+              // a finished pass can do, and the only one that was not on this row.
+              { label: 'Post comments', run: 'postComments' },
               ...(s.reviewed ? [{ label: 'Review the new commits again', run: 'reviewAgain' }] : []),
               { label: 'Open the whole PR', run: 'openTab', arg: 'pr' },
-              { label: 'Ask the agent', run: 'focusAsk' },
+              // On a re-pass there is one thing to ask the agent and `reviewAgain` above is it;
+              // a general "Ask the agent" beside it is a second way to say the same thing.
+              ...(s.reviewed ? [] : [{ label: 'Ask the agent', run: 'focusAsk' }]),
             ],
           };
         case 'submitted':
+          // One button, because there is one thing to do. The review is with the developer:
+          // the stage either waits or it is approved, and "Go through the findings" and
+          // "Review the branch" were two more ways to look at what is already on the page
+          // below - offered at the one stage with nothing to decide but that.
           return {
-            headline: 'Your review is with the developer', detail: 'This moves on when they push or reply. Your comments are on the left; the PR and its diff are a click away.', primary: { label: 'Approve', run: 'openApprove' }, tools: [{ label: 'Go through the findings', run: 'openTab', arg: 'pr' }, { label: 'Review the branch', run: 'openTab', arg: 'review' }],
+            headline: 'Your review is with the developer', detail: 'This moves on when they push or reply. Your comments are on the left; the PR and its diff are a click away.', primary: { label: 'Approve', run: 'openApprove' }, tools: [],
           };
         case 'response':
           // Nothing is filed yet: what the agent finds puts the rail back on Your pass, which
@@ -1230,7 +1258,7 @@ export default {
 
     /** The skills worth running where the work is; each one is a prompt into its conversation. */
     skillButtons() {
-      return this.status ? skillsFor(this.status.kind, this.shown) : [];
+      return this.status ? skillsFor(this.status.kind, this.shown, !!this.status.reviewed) : [];
     },
 
     /**
@@ -1951,6 +1979,11 @@ export default {
 
     shipWithComments() {
       return this.submitFindings('APPROVE');
+    },
+
+    /** File the pending comments and say nothing about the pull request itself. */
+    postComments() {
+      return this.submitFindings('COMMENT');
     },
 
     async openApprove() {

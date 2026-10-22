@@ -684,7 +684,19 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
   if (have.failed?.pr) {
     sections.push({ title: 'The pull request could not be read', items: [{ kind: 'empty', text: 'GitHub or the in-cluster API did not answer. Trying again in a moment.' }] });
   }
-  const reportSection = (title = 'Agent\'s report') => report && sections.push({ title, items: [{ kind: 'text', text: report.text, html: renderMd(report.text), at: report.at }] });
+  /*
+   * The agent's report is not drawn, at any stage.
+   *
+   * It was the agent's prose summary of what it had just done, at the top of the column - and
+   * what it summarised is on the same page in a form you can act on: the findings are cards,
+   * the commits are a list, the recordings are playable, the pull request is below it. The
+   * report restated them at length, so the first screenful of every stage was the part with
+   * nothing to click.
+   *
+   * The report itself is still written and still kept with the conversation; this only stops
+   * the column opening with it.
+   */
+  const reportSection = (_title = '') => undefined;
   // Everything in the workspace's artifacts directory, as the directory it is. The directories
   // this stage's own work writes into come first; then the loose files; then the rest, the most
   // recently written first.
@@ -1135,19 +1147,29 @@ export interface SkillButton {
   fresh?: boolean;
 }
 
-export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage): SkillButton[] {
+export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage, reviewed = false): SkillButton[] {
   // `my-pr-checklist` is not here on the review side: the PR template's checklist is the
   // author's work, and a reviewer ticking it is doing somebody else's job. It belongs to the
   // fix stages below, where this person is the author.
   if (kind === 'review') {
     switch (stage) {
     case 'agent':
+      // Two, not three. `my-pr-review` ("Comments only") is the first half of what Full review
+      // already does, and offering both at the stage where a review has not started yet is
+      // asking somebody to choose between a review and most of a review.
       return [
         { label: 'Full review', skill: 'my-pr-full-review', note: 'Demo the change, demo the issue, review the diff, verify, refine and final-pass every comment', fresh: true },
-        { label: 'Comments only', skill: 'my-pr-review', note: 'Short pending inline comments, nothing submitted' },
         { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes, against its own build' },
       ];
     case 'findings':
+      // A second pass has one question - what did they change - and `reviewAgain` on the stage
+      // itself is the button that asks it. Verifying, sharpening and final-passing are for
+      // comments that have not been filed yet; by round two they have been, and offering them
+      // again is offering to rewrite what the developer is already reading.
+      if (reviewed) {
+        return [];
+      }
+
       return [
         { label: 'Verify the findings', skill: 'my-pr-comment-verify', note: 'Prove each comment with a recording or a screenshot attached to it' },
         { label: 'Sharpen the wording', skill: 'my-pr-comment-refinement', note: 'Rewrite each pending comment into impact, why it matters, and evidence' },
@@ -1155,9 +1177,12 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage): SkillBut
         { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes, against its own build' },
       ];
     case 'submitted':
-      // Nothing to ask for while it is with the developer; a re-read of the diff is the one
-      // thing that can still be useful.
-      return [{ label: 'Read the diff again', skill: 'my-pr-review', note: 'Another pass over the diff, as pending comments' }];
+      // Nothing. The review is filed and it is the developer's turn, so there is no pass over
+      // the diff worth starting here - a second set of pending comments on a PR you have
+      // already submitted on is work nobody asked for. "Read the diff again" lived here on the
+      // theory that it might still be useful; it was not, and an unused button at a stage whose
+      // whole content is "wait, or approve" is just something to read past.
+      return [];
     case 'response':
       // Not `my-pr-review` here: the stage's own action already asks for exactly that, and two
       // buttons with one label is worse than one.
