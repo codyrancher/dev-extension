@@ -163,6 +163,23 @@ export function amendPrComment(num: number, id: number, comment: LocalComment | 
   }, num, repo);
 }
 
+/**
+ * Who is being asked to review, in the cached detail.
+ *
+ * Here for the reason amendPrComment is: adding or removing a reviewer is a one-field change,
+ * and forgetting the whole detail to show it would refetch the commits, the diff and every
+ * comment thread on the pull request. The next real read replaces this with GitHub's own answer.
+ */
+export function amendPrReviewers(num: number, reviewers: string[], repo = DEFAULT_REPO): boolean {
+  return prDetail.amend((detail: Json) => {
+    if (!detail?.meta) {
+      return undefined;
+    }
+
+    return { ...detail, meta: { ...detail.meta, reviewers } };
+  }, num, repo);
+}
+
 export function forgetPrDetail(num: number, repo = DEFAULT_REPO): void {
   prDetail.forget(num, repo);
 }

@@ -1134,6 +1134,21 @@ export async function requestReviewers(repo: string, pr: number, logins: string[
   return { asked, refused };
 }
 
+/**
+ * Take a review request back.
+ *
+ * One call for the lot, unlike requestReviewers: a DELETE either removes every login named or
+ * fails, and there is no per-login refusal to report - GitHub ignores a login that is not
+ * currently requested rather than erroring on it. Somebody who has already reviewed is no longer
+ * a requested reviewer, so removing them is that same no-op; their review stays, which is right.
+ */
+export async function removeReviewers(repo: string, pr: number, logins: string[]): Promise<void> {
+  if (!logins.length) {
+    return;
+  }
+  await rest('DELETE', `/repos/${ repo }/pulls/${ pr }/requested_reviewers`, { reviewers: logins });
+}
+
 /** Say what it does, after the fact. The title and the description, either or both. */
 export async function describePr(repo: string, pr: number, changes: { title?: string; body?: string }): Promise<void> {
   await rest('PATCH', `/repos/${ repo }/pulls/${ pr }`, changes);

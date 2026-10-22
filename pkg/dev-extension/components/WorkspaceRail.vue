@@ -24,6 +24,7 @@ import PromptEditor from './PromptEditor.vue';
 import PrButton from './pr/PrButton.vue';
 import CommentDiscussion from './pr/CommentDiscussion.vue';
 import CommentAttachments from './pr/CommentAttachments.vue';
+import Reviewers from './pr/Reviewers.vue';
 import ArtifactViewer from './pr/ArtifactViewer.vue';
 import WorkspaceArtifacts from './WorkspaceArtifacts.vue';
 import StageSteps from './StageSteps.vue';
@@ -45,12 +46,12 @@ import WorkspaceTools from './WorkspaceTools.vue';
 import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
-  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, DEFAULT_REPO
+  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
 } from '../skills';
-import { markReadyForReview, requestReviewers, describePr } from '../github';
+import { markReadyForReview, describePr } from '../github';
 import {
   deleteWorkspace, devFetch, workspaceMediaListUrl, setWorkspaceRunning, workspaceProxyUrl, secretValue
 } from '../api';
@@ -70,7 +71,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, DevDialog, PrButton, CommentDiscussion, CommentAttachments, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView, StageSteps,
+    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, DevDialog, PrButton, CommentDiscussion, CommentAttachments, Reviewers, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView, StageSteps,
   },
 
   // Every question this rail asks goes through DevDialog (components/ask.ts). The browser's
@@ -128,13 +129,7 @@ export default {
       reading:     false,
       /** Which read of the first column is the current one; an older one landing is ignored. */
       readSeq:     0,
-      /** Who has just been asked from here, so their row says so before the next read lands. */
-      asked:         [],
-      reviewerBusy:  '',
-      /** A login typed into the reviewers block, for somebody the suggestions do not know. */
-      reviewerTyped: '',
-      /** The repository's collaborators, read once when the field is first focused. */
-      reviewerPoolList: [],
+      /** What the reviewers block could not do, said under it. */
       reviewerError: '',
       readying:      false,
       /** A box being written back, by its index, so it cannot be pressed twice. */
@@ -166,6 +161,8 @@ export default {
       errorTone:   'error',
       /** The second look after a change to the PR; cleared when the page goes. */
       settleTimer: null,
+      /** Clears the `flash` an "answer this" link set. */
+      flashTimer: null,
       /** A GitHub read queued because the agent just stopped; cleared when the page goes. */
       agentSettleTimer: null,
       /** Which sections are folded away: `{ [title]: true }`, seeded from the section itself. */
@@ -217,6 +214,12 @@ export default {
       resuming:  '',
       /** A conversation is being started from the strip's + button. */
       starting:  false,
+      /**
+       * What the last "answer this" link pointed at, so the thing it opened says so for a
+       * moment. A key rather than a boolean: the strip and each finding's discussion are
+       * different boxes and only the one that was asked for lights up. See goToAsk.
+       */
+      flash:     '',
     };
   },
 
@@ -369,6 +372,30 @@ export default {
       const all = this.railConversations;
 
       return all.find((c) => c.id === this.liveShown) || all[all.length - 1] || null;
+    },
+
+    /**
+     * The conversations that asked something and stopped, with where each one is drawn.
+     *
+     * The header links to these (see goToAsk). A question is the one thing on this page that
+     * nothing else can move: the agent will sit there until it hears back, and the only sign of
+     * it was an amber dot on a tab that may be a screen further down, or inside a finding's
+     * discussion that is closed. The link is at the top because that is where a page is read
+     * from; the conversation stays where it is, because answering a question means reading what
+     * it is about, and what it is about is the page around it.
+     *
+     * `comment` is the finding a discussion belongs to, taken from its title: `Discuss comment
+     * #<id>` is what CommentDiscussion names one, and the title is the only part that survives
+     * a reload (discussSession is this component's memory of the ones IT opened).
+     */
+    asks() {
+      return this.conversations
+        .filter((c) => this.live[c.id] === 'input')
+        .map((c) => {
+          const discussed = /^Discuss comment #(\d+)/.exec(String(c.title || ''));
+
+          return { id: c.id, title: c.title || 'Conversation', comment: discussed ? discussed[1] : '' };
+        });
     },
 
     /**
@@ -583,6 +610,7 @@ export default {
     clearTimeout(this.evidenceRetryTimer);
     clearTimeout(this.settleTimer);
     clearTimeout(this.agentSettleTimer);
+    clearTimeout(this.flashTimer);
   },
 
   methods: {
@@ -650,49 +678,17 @@ export default {
     },
 
     /**
-     * The repository's collaborators, once, on first focus.
+     * A reviewer asked or un-asked in the block above, in the column's own copy of the PR.
      *
-     * On focus rather than with the panel: it is a GitHub call for a field most people never
-     * use, and the suggestions above answer the common case without it.
+     * The list has to change on the press. A fresh read of the pull request is the only other
+     * way to get it, and that is the commits, the diff and every comment thread for a one-field
+     * change - which is why `amendPrReviewers` exists; the next real read replaces it with
+     * GitHub's own answer. `refreshEvidence` then rebuilds the column from the amended copy.
      */
-    async loadReviewerPool(item) {
-      if (this.reviewerPoolList.length) {
-        return;
-      }
-      this.reviewerPoolList = await reviewerPool(item.repo).catch(() => []);
-    },
-
-    /** Ask whoever was typed, which is how somebody the suggestions never heard of gets asked. */
-    async askTyped(item) {
-      const who = this.reviewerTyped.trim().replace(/^@/, '');
-
-      if (!who) {
-        return;
-      }
-      await this.ask(item, who);
-      if (!this.reviewerError) {
-        this.reviewerTyped = '';
-      }
-    },
-
-    /** Ask one person for a review, from the row that suggested them. */
-    async ask(item, who) {
-      this.reviewerBusy = who;
+    async reviewersChanged(item, asked) {
       this.reviewerError = '';
-      try {
-        const { refused } = await requestReviewers(item.repo, item.pr, [who]);
-
-        if (refused[who]) {
-          this.reviewerError = `${ who } could not be asked: ${ refused[who] }`;
-        } else {
-          this.asked = [...this.asked, who];
-        }
-        await this.refreshEvidence();
-      } catch (e) {
-        this.reviewerError = `${ who } could not be asked: ${ e.message || e }`;
-      } finally {
-        this.reviewerBusy = '';
-      }
+      amendPrReviewers(item.pr, asked, item.repo);
+      await this.refreshEvidence();
     },
 
     /**
@@ -1752,6 +1748,111 @@ export default {
       this.liveShown = tab.name;
     },
 
+    /**
+     * Go to the conversation that asked something, wherever on this page it is drawn.
+     *
+     * The conversation is not brought up here. A question is read against what it is about -
+     * the finding, the diff, the stage - and that context is the page itself, so moving the
+     * conversation to the top of it would cost exactly what makes the question answerable. The
+     * link opens whatever box holds it instead, and says which one it opened.
+     *
+     * Three places, because a conversation can be in any of them:
+     *
+     *   - a finding's discussion, which is drawn under that finding and may be closed, and on a
+     *     column that is paged may not even be the finding on show.
+     *   - the strip, where it is a tab that might be a screen below the fold.
+     *   - the larger view, when that is already up: the person asked for the big window, so the
+     *     window is what switches rather than something behind it.
+     */
+    async goToAsk(ask) {
+      if (ask.comment) {
+        const place = this.placeOfFinding(ask.comment);
+
+        if (place) {
+          this.goTo(place.section, place.index);
+          if (!this.discussing[ask.comment]) {
+            this.discussing = { ...this.discussing, [ask.comment]: true };
+            rememberOpenDiscussion(this.status?.pr || 0, ask.comment, this.discussSession[ask.comment] || '');
+          }
+          await this.$nextTick();
+          this.showAsk(`finding-${ ask.comment }`);
+
+          return;
+        }
+
+        /*
+         * Its finding is not drawn on this stage - a discussion left from a round this view is
+         * not looking at, or a comment that has since gone. There is nowhere on the page to
+         * point at, so the window is the honest answer: a link that scrolls to nothing is worse
+         * than one that opens something.
+         */
+        this.currentConversation = ask.id;
+        this.popped = true;
+
+        return;
+      }
+
+      this.liveShown = ask.id;
+      if (this.popped) {
+        this.currentConversation = ask.id;
+
+        return;
+      }
+      // The strip owns which tab is on show; `liveShown` alone would not move it.
+      this.$refs.liveTabs?.select?.(ask.id);
+      await this.$nextTick();
+      this.showAsk('live');
+    },
+
+    /** Where a finding is drawn: its section, and its page in that section's pager. */
+    placeOfFinding(id) {
+      for (const section of this.evidence) {
+        for (const item of section.items) {
+          if (item.kind !== 'comments') {
+            continue;
+          }
+          const index = item.items.findIndex((c) => String(c.id) === String(id));
+
+          if (index >= 0) {
+            return { section, item, index };
+          }
+        }
+      }
+
+      return null;
+    },
+
+    /**
+     * Light the box a link opened, and bring it into view.
+     *
+     * Only the rail's own scroller is moved. `scrollIntoView` walks every scrollable ancestor,
+     * which here scrolls the shell's content area as well and takes the header - and the link
+     * just pressed - off the top of the screen. The rail is `overflow: auto`, so it is the box
+     * to move; if it is not scrolling (a short page), `nearest` is enough and moves least.
+     */
+    showAsk(key) {
+      this.flash = key;
+      clearTimeout(this.flashTimer);
+      this.flashTimer = setTimeout(() => {
+        this.flash = '';
+      }, 2400);
+
+      const box = this.$el;
+      const el = box?.querySelector?.(`[data-ask="${ key }"]`);
+
+      if (!el) {
+        return;
+      }
+      if (box.scrollHeight <= box.clientHeight + 4) {
+        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+        return;
+      }
+      const top = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+
+      box.scrollTo({ top: Math.max(0, top - 16), behavior: 'smooth' });
+    },
+
     /** The live conversation a tab is for; its `name` is the conversation id (see the Tab loop). */
     liveByTab(name) {
       return this.liveConversations.find((c) => c.id === name) || null;
@@ -2255,6 +2356,27 @@ export default {
             v-if="workspace.title || status.title"
             class="workspace-rail__subject"
           >{{ workspace.title || status.title }}</span>
+          <!--
+            A question, at the top, where a page is read from. One link per conversation that
+            asked something and stopped; pressing it opens the box that conversation is drawn in
+            and lights it, rather than bringing the conversation up here - see goToAsk.
+          -->
+          <div
+            v-if="asks.length"
+            class="workspace-rail__asks"
+          >
+            <button
+              v-for="ask in asks"
+              :key="ask.id"
+              type="button"
+              class="workspace-rail__ask"
+              @click="goToAsk(ask)"
+            >
+              <i class="icon icon-chat" />
+              <span class="workspace-rail__ask-text">{{ ask.title }}</span>
+              <span class="workspace-rail__ask-note">needs an answer</span>
+            </button>
+          </div>
         </div>
         <div class="workspace-rail__meta">
           <a
@@ -2539,8 +2661,13 @@ export default {
         The strip is here whether or not there is a conversation yet: its + starts one, the way
         the Agents drawer's does, so a workspace nobody has spoken to is not a dead end.
       -->
-      <section class="workspace-rail__live">
+      <section
+        class="workspace-rail__live"
+        :class="{ 'workspace-rail__live--asked': flash === 'live' }"
+        data-ask="live"
+      >
         <ConversationTabbed
+          ref="liveTabs"
           class="workspace-rail__live-tabs"
           flat
           :default-tab="shownConversation ? shownConversation.id : ''"
@@ -2867,6 +2994,8 @@ export default {
                   v-for="(c, j) in shownThreads(section, item)"
                   :key="c.id || j"
                   class="workspace-rail__thread-card"
+                  :class="{ 'workspace-rail__thread-card--asked': flash === `finding-${ c.id }` }"
+                  :data-ask="`finding-${ c.id }`"
                 >
                   <header class="workspace-rail__comment-head">
                     <button
@@ -3063,63 +3192,16 @@ export default {
                 v-else-if="item.kind === 'reviewers'"
                 class="workspace-rail__reviewers"
               >
-                <p
-                  v-if="item.asked.length || item.approved.length"
-                  class="workspace-rail__who-has"
-                >
-                  <span
-                    v-for="who in item.approved"
-                    :key="`a-${ who }`"
-                    class="workspace-rail__who workspace-rail__who--approved"
-                  >{{ who }} approved</span>
-                  <span
-                    v-for="who in item.asked"
-                    :key="`r-${ who }`"
-                    class="workspace-rail__who"
-                  >{{ who }} asked</span>
-                </p>
-                <p
-                  v-else
-                  class="workspace-rail__who-has workspace-rail__empty"
-                >Nobody has been asked yet.</p>
-
-                <!--
-                  One field, which replaced a list of four.
-                  The suggestions were everyone who had already touched the pull request, each
-                  with an Ask button - four rows of people who had commented, which is not the
-                  same question as "who should review this" and was empty on a new pull request
-                  anyway, the one place it was needed. A login goes in here; the datalist fills
-                  with the repository's collaborators, so it is usually a pick rather than
-                  typing, and anybody can be named whether or not they have been near it.
-                -->
-                <form
-                  class="workspace-rail__ask-any"
-                  @submit.prevent="askTyped(item)"
-                >
-                  <input
-                    v-model="reviewerTyped"
-                    list="workspace-rail-reviewers"
-                    class="workspace-rail__ask-input"
-                    placeholder="Ask someone else — GitHub username"
-                    :disabled="!!reviewerBusy"
-                    @focus="loadReviewerPool(item)"
-                  >
-                  <datalist id="workspace-rail-reviewers">
-                    <option
-                      v-for="who in reviewerPoolList"
-                      :key="who"
-                      :value="who"
-                    />
-                  </datalist>
-                  <RcButton
-                    variant="secondary"
-                    size="small"
-                    :disabled="!reviewerTyped.trim() || !!reviewerBusy"
-                    @click="askTyped(item)"
-                  >
-                    {{ reviewerBusy === reviewerTyped.trim() ? 'Asking…' : 'Ask' }}
-                  </RcButton>
-                </form>
+                <Reviewers
+                  :repo="item.repo"
+                  :pr="item.pr"
+                  :asked="item.asked"
+                  :approved="item.approved"
+                  :suggested="item.suggested"
+                  :author="item.author"
+                  @changed="reviewersChanged(item, $event)"
+                  @error="reviewerError = $event"
+                />
 
                 <div
                   v-if="item.draft"
@@ -3461,6 +3543,57 @@ export default {
 
     &--working { color: var(--status-working); }
     &--input { color: var(--status-input); }
+  }
+
+  /*
+   * The question, under the subject: the loudest thing in the header and the only one that is a
+   * button. In the attention colour because that is what the dot on its tab and its row in the
+   * nav are drawn in - one question, one colour, wherever it is said.
+   */
+  &__asks {
+    display:   flex;
+    flex-wrap: wrap;
+    gap:       8px;
+    margin-top: 4px;
+  }
+
+  &__ask {
+    display:       inline-flex;
+    align-items:   center;
+    gap:           6px;
+    max-width:     100%;
+    min-height:    0;
+    padding:       3px 10px;
+    border:        1px solid var(--status-input);
+    border-radius: var(--r-sm);
+    background:    transparent;
+    color:         var(--status-input);
+    font-size:     13px;
+    cursor:        pointer;
+
+    &:hover,
+    &:focus-visible {
+      background: var(--status-input);
+      color:      var(--body-bg);
+    }
+
+    .icon { font-size: 13px; }
+  }
+
+  // The title gives way, not the words that say what it is: a conversation can be called
+  // anything and "needs an answer" is the half that has to stay readable.
+  &__ask-text {
+    overflow:      hidden;
+    text-overflow: ellipsis;
+    white-space:   nowrap;
+    min-width:     0;
+    font-weight:   600;
+  }
+
+  &__ask-note {
+    flex:        0 0 auto;
+    white-space: nowrap;
+    opacity:     .85;
   }
 
   /*
@@ -3809,6 +3942,12 @@ export default {
      * scrolls, which is what `overflow: auto` up there is for.
      */
     flex:           none;
+
+    &--asked {
+      outline:        2px solid var(--status-input);
+      outline-offset: 2px;
+      animation:      workspace-rail-asked 2.4s ease-out forwards;
+    }
   }
 
   &__live-head {
@@ -3953,6 +4092,11 @@ export default {
     flex-direction: column;
     gap:           10px;
 
+    &--asked {
+      outline:        2px solid var(--status-input);
+      outline-offset: 2px;
+      animation:      workspace-rail-asked 2.4s ease-out forwards;
+    }
   }
 
   &__msg--author { border-left: 3px solid var(--pr-accent); }
@@ -4352,25 +4496,7 @@ export default {
   }
 }
 
-/* Who is looking at it, and who to ask. A list of rows, each ending in the one press. */
-.workspace-rail__ask-any {
-  display:     flex;
-  gap:         6px;
-  align-items: center;
-  margin-top:  8px;
-}
-
-.workspace-rail__ask-input {
-  flex:          1;
-  min-width:     0;
-  padding:       3px 8px;
-  border:        1px solid var(--border);
-  border-radius: var(--r-sm);
-  background:    var(--input-bg, var(--box-bg));
-  color:         var(--body-text);
-  font-size:     13px;
-}
-
+/* Who is looking at it, and who to ask - the block the Reviewers component fills. */
 .workspace-rail__reviewers {
   display:        flex;
   flex-direction: column;
@@ -4378,39 +4504,7 @@ export default {
   padding:        var(--dev-space-3) 0 0;
 }
 
-.workspace-rail__who-has {
-  display:   flex;
-  flex-wrap: wrap;
-  gap:       var(--dev-space-2);
-  margin:    0;
-}
-
-.workspace-rail__who {
-  padding:       0 var(--dev-space-3);
-  border-radius: var(--r-md);
-  background:    var(--default);
-  color:         var(--muted);
-  font-size:     11px;
-}
-
-.workspace-rail__who--approved { background: var(--success-banner-bg); color: var(--success); }
-
-.workspace-rail__suggest {
-  list-style: none;
-  margin:     0;
-  padding:    0;
-
-  li {
-    display:       flex;
-    align-items:   center;
-    gap:           var(--dev-space-3);
-    padding:       var(--dev-space-2) 0;
-    border-bottom: 1px solid var(--border);
-  }
-}
-
-.workspace-rail__who-name { font-weight: 600; font-size: 13px; }
-
+/* The one sentence left in the block: why a draft is not being reviewed yet. */
 .workspace-rail__why {
   flex:          1 1 auto;
   min-width:     0;
@@ -4430,5 +4524,18 @@ export default {
 /* A description whose boxes can be pressed says so by letting the pointer change over them. */
 .workspace-rail__md--live input[type="checkbox"] {
   cursor: pointer;
+}
+
+/*
+ * What a question's link opened, said for a moment.
+ *
+ * A ring in the attention colour that fades out, rather than one that stays: the box is not in
+ * an attention state, it is the box that was just asked for, and a mark that outlives the
+ * arrival stops meaning "here" and starts meaning "wrong". `outline` rather than `border`, so
+ * nothing moves by a pixel when it appears.
+ */
+@keyframes workspace-rail-asked {
+  from { outline-color: var(--status-input); }
+  to   { outline-color: transparent; }
 }
 </style>

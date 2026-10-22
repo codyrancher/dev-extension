@@ -64,7 +64,7 @@ export type EvidenceItem =
   | { kind: 'review'; label: string }
   | { kind: 'links'; items: { label: string; url: string }[] }
   /** Who is looking at it, and who to ask. `draft` is what the ready-for-review press needs. */
-  | { kind: 'reviewers'; asked: string[]; approved: string[]; suggested: { who: string; why: string }[]; draft: boolean; pr: number; repo: string }
+  | { kind: 'reviewers'; asked: string[]; approved: string[]; suggested: { who: string; why: string }[]; author: string; draft: boolean; pr: number; repo: string }
   | { kind: 'empty'; text: string };
 
 /** One file under a workspace's artifacts. `path` is from the artifacts root; `label` is its path inside its group. */
@@ -664,6 +664,8 @@ function reviewersItem(d: Json): EvidenceItem {
     asked,
     approved,
     suggested,
+    // The picker leaves the author out of its list rather than offering a name GitHub refuses.
+    author,
     draft: !!d.meta?.draft,
     pr:    Number(d.meta?.number) || 0,
     repo:  String(d.meta?.repo || DEFAULT_REPO),
