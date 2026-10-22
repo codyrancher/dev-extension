@@ -121,15 +121,30 @@ export function shareHostname(workspace: string, kind: ShareKind, host: ShareHos
 }
 
 /**
- * A share must not be pointed at itself. nginx would proxy to its own address and answer 502
- * to everything - and the page that did it would be the share, since a Dev page opened there
- * has the share for its origin.
+ * A share must not be pointed at its OWN address: nginx would proxy to itself and answer 502 to
+ * everything (see the preview App's `location /`).
+ *
+ * Its own address is `host`, the public sslip name it is served on - and only that. This used to
+ * refuse `window.location.host` as well, which is the bug that made sharing look broken for
+ * weeks: this Rancher is the default target, `talksToDefault` returns it whenever no Rancher is
+ * starred, and it is the first row of the chooser - so the commonest and most correct choice
+ * threw, including on every automatic share.
+ *
+ * It is not self-talk. A share with a public name proxies to a different host, which is the
+ * design - the whole point of `rancherUrl` is that the build talks to a Rancher somewhere else.
+ * A share with no public name is served through this Rancher's own service proxy, so the
+ * browser is already same-origin with Rancher and reaches it directly; nginx's proxy is not in
+ * that path at all, and there is no address for it to loop through.
+ *
+ * The case the old check was reaching for - a Dev page read inside a share, where the origin is
+ * the share's name - needs no check: "This Rancher" is the Rancher's own configured address,
+ * not the page's (see listRanchers), so a share's name is never what gets picked.
  */
 function refuseSelf(rancherUrl: string, host: string): void {
   const target = String(rancherUrl || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
 
-  if (target && (target === host || target === window.location.host)) {
-    throw new Error(`A shared build cannot talk to itself (${ target }). Pick the Rancher it should talk to on the Share tab.`);
+  if (target && host && target === host) {
+    throw new Error(`A shared build cannot talk to itself (${ target }). Pick a different Rancher for it to talk to.`);
   }
 }
 
