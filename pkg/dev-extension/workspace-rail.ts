@@ -1201,14 +1201,17 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage, reviewed 
       // whole content is "wait, or approve" is just something to read past.
       return [];
     case 'response':
-      // Not `my-pr-review` here: the stage's own action already asks for exactly that, and two
-      // buttons with one label is worse than one.
-      return [
-        { label: 'Verify the answers', skill: 'my-pr-comment-verify', note: 'Check what the developer says they fixed' },
-        { label: 'Sharpen the wording', skill: 'my-pr-comment-refinement', note: 'Rewrite each pending comment into impact, why it matters, and evidence' },
-        { label: 'Final pass', skill: 'my-pr-comment-final-pass', note: 'Cut each pending comment to 1-3 sentences: the problem and why to fix it' },
-        { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes now' },
-      ];
+      /*
+       * Nothing, and `my-pr-review` least of all - the stage's own action asks for exactly
+       * that, and two buttons with one meaning is worse than one.
+       *
+       * The developer has answered; the thing worth doing is reading what they changed, which
+       * is `reviewAgain` and is already the first button in the row. Verifying, sharpening and
+       * final-passing all act on PENDING comments, and by this stage there are none - the
+       * review went to the developer a step ago - so the three of them offered to polish
+       * comments somebody else is already reading.
+       */
+      return [];
     default:
       return [];
     }
