@@ -95,8 +95,12 @@ export default {
           ...row,
           state,
           // The public sslip name when there is one, else whatever address it has.
+          // Where to go, when there is somewhere: the public name first, else the proxied url.
           href:  state?.host ? `https://${ state.host }` : (state?.url || ''),
-          up:    !!state?.url || !!state?.host,
+          // Whether a share EXISTS, which is not the same as whether it is serving yet. The
+          // buttons key off this - offering "Share" for one that already exists would try to
+          // create a second Installation under a name that is derived and therefore taken.
+          up:    !!state?.exists,
           where:     state?.rancherUrl || '',
           whereName: (this.ranchers.find((r) => r.url === state?.rancherUrl) || {}).name || '',
         };
@@ -213,7 +217,16 @@ export default {
       if (!kind || !url) {
         return;
       }
-      if (this.shares[kind]) {
+      /*
+       * `exists`, not the object.
+       *
+       * previewState answers with a FULL PreviewState whose `exists` is false when there is no
+       * share - name, kind, empty url, `state: 'absent'` - so `this.shares[kind]` is truthy the
+       * moment the panel has polled once. Branching on the object meant every press took the
+       * retarget path and nothing was ever created: the modal closed, the row stayed "not
+       * built", and no share appeared.
+       */
+      if (this.shares[kind]?.exists) {
         await this.retarget(kind, url);
       } else {
         await this.share(kind, url);
@@ -512,6 +525,70 @@ export default {
 </template>
 
 <style lang="scss" scoped>
+/*
+ * The Rancher chooser, styled at the TOP LEVEL rather than inside `.workspace-tools`.
+ *
+ * DevModal teleports its content to <body>, so the dialog is not a descendant of this
+ * component's root element: a selector nested under `.workspace-tools` compiles to
+ * `.workspace-tools .workspace-tools__choice` and matches nothing once the node has moved.
+ * Scoping still works - Vue puts the scope attribute on the teleported nodes too - it is only
+ * the ancestor that is gone.
+ *
+ * This was unstyled on first ship, and what that looks like is the name and the address run
+ * together into "This Rancherhttps://rancher.ourhome.dev" with a list bullet beside it.
+ */
+.workspace-tools__choices {
+  list-style:     none;
+  margin:         0;
+  padding:        0;
+  display:        flex;
+  flex-direction: column;
+  gap:            8px;
+}
+
+.workspace-tools__choice {
+  display:        flex;
+  flex-direction: column;
+  align-items:    flex-start;
+  gap:            2px;
+  width:          100%;
+  text-align:     left;
+  padding:        10px 12px;
+  border:         1px solid var(--border);
+  border-radius:  var(--r-sm);
+  background:     var(--box-bg);
+  color:          var(--body-text);
+  cursor:         pointer;
+
+  &:hover:not(:disabled) {
+    background:   var(--accent-btn-hover);
+    border-color: var(--primary);
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor:  default;
+  }
+}
+
+.workspace-tools__choice-name {
+  font-weight: 600;
+  font-size:   14px;
+}
+
+.workspace-tools__choice-url {
+  color:       var(--muted);
+  font-size:   12px;
+  font-family: monospace;
+  word-break:  break-all;
+}
+
+.workspace-tools__empty {
+  margin:    0;
+  color:     var(--muted);
+  font-size: 13px;
+}
+
 .workspace-tools {
   display:        flex;
   flex-direction: column;
