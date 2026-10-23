@@ -641,7 +641,21 @@ export function fixPrompt(num: number, repo = DEFAULT_REPO): string {
   return `Use the my-issue-fix skill to fix ${ repo } issue #${ num } — this project was created for it.`;
 }
 
-async function ensureWorkspace(store: Store, name: string, title = ''): Promise<boolean> {
+/**
+ * The workspace this work needs, made if it is not there.
+ *
+ * `repo` is written into the Installation, and that is the whole of what makes a workspace for
+ * another repository work. Everything downstream reads it from there - the registrar, the page,
+ * the rail, every GitHub call - and nothing can infer it, because `pr-1208` says a number and
+ * not whose. A workspace created without it asks rancher/dashboard about somebody else's pull
+ * request, is told 404, and has no stages, no rail and nothing to press. `lte-pr-1202` and
+ * `lte-pr-1208` both arrived that way, and every caller below has known the repository all
+ * along without passing it.
+ *
+ * Only when it is not the default, so an ordinary dashboard workspace's values stay exactly as
+ * they were rather than gaining a key that says what omission already said.
+ */
+async function ensureWorkspace(store: Store, name: string, title = '', repo = DEFAULT_REPO): Promise<boolean> {
   const existing = (await listAllWorkspaces().catch(() => [])).some((workspace) => workspace.name === name);
 
   if (!existing) {
@@ -651,7 +665,9 @@ async function ensureWorkspace(store: Store, name: string, title = ''): Promise<
     // it beside the `pr-<n>` / `issue-<n>` name.
     // Which kind of workspace the name says it is. `workspaceFor` decides that above: work that
     // already has a workspace keeps whichever kind it is, and new work is leased.
-    await createWorkspace(store, name, isLte(name) ? LTE_APP : DEFAULT_APP, undefined, await defaultRancherValues(store), title);
+    const values = { ...(await defaultRancherValues(store)), ...(repo && repo !== DEFAULT_REPO ? { repo } : {}) };
+
+    await createWorkspace(store, name, isLte(name) ? LTE_APP : DEFAULT_APP, undefined, values, title);
   }
 
   return !existing;
@@ -887,7 +903,7 @@ export function prWorkspaceName(pr: { number: number; issue?: { number: number }
 /** Review a PR: the harness's "Review" button. Reattaches to a review already running. */
 export async function startPrReview(store: Store, pr: { number: number; title?: string; issue?: { number: number } | null }, repo = DEFAULT_REPO, inWorkspace = ''): Promise<Started> {
   const workspace = inWorkspace || await workspaceFor(prWorkspaceName(pr));
-  const created = await ensureWorkspace(store, workspace, pr.title || '');
+  const created = await ensureWorkspace(store, workspace, pr.title || '', repo);
   const title = `Review #${ pr.number }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
 
@@ -916,7 +932,7 @@ export async function startPrReview(store: Store, pr: { number: number; title?: 
  */
 export async function startIssueFix(store: Store, issue: { number: number; title: string }, repo = DEFAULT_REPO): Promise<Started> {
   const workspace = await workspaceFor(`issue-${ issue.number }`);
-  const created = await ensureWorkspace(store, workspace, issue.title || '');
+  const created = await ensureWorkspace(store, workspace, issue.title || '', repo);
   const title = `Fix #${ issue.number }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
 
@@ -940,7 +956,7 @@ export function alertWorkspaceName(group: { packages: string[]; slug: string }):
 /** Fix a Dependabot advisory: the harness's "Start fix" on an alert group. */
 export async function startAlertFix(store: Store, group: Json, repo = DEFAULT_REPO): Promise<Started> {
   const workspace = await workspaceFor(alertWorkspaceName(group));
-  const created = await ensureWorkspace(store, workspace);
+  const created = await ensureWorkspace(store, workspace, '', repo);
   const title = `Fix ${ group.packages[0] || group.slug }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
 
@@ -961,7 +977,7 @@ export async function startAlertFix(store: Store, group: Json, repo = DEFAULT_RE
 /** Review a Dependabot PR: the harness's merge checklist, ending in MERGE or STOP. */
 export async function startDependabotReview(store: Store, pr: { number: number }, repo = DEFAULT_REPO): Promise<Started> {
   const workspace = await workspaceFor(`pr-${ pr.number }`);
-  const created = await ensureWorkspace(store, workspace);
+  const created = await ensureWorkspace(store, workspace, '', repo);
   const title = `Dependabot review #${ pr.number }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
   const reviewText = `/my-dependabot-review Review ${ repo } PR #${ pr.number } — a dependabot bump. Its full context: curl -s "$CLAUDE_HARNESS_API/my-work/dependabot/pr/${ pr.number }/review-context". Finish with MERGE or STOP alone on the last line.`;
@@ -984,7 +1000,7 @@ export async function startDependabotReview(store: Store, pr: { number: number }
 /** Triage red CI: the first step of the harness's smart rerun, as a conversation. */
 export async function startCiTriage(store: Store, pr: { number: number; title?: string; issue?: { number: number } | null }, repo = DEFAULT_REPO, inWorkspace = ''): Promise<Started> {
   const workspace = inWorkspace || await workspaceFor(prWorkspaceName(pr));
-  const created = await ensureWorkspace(store, workspace, pr.title || '');
+  const created = await ensureWorkspace(store, workspace, pr.title || '', repo);
   const failures = await ciFailures(pr.number, repo).catch(() => ({ checks: [] }));
   const details = (failures.checks || []).slice(0, 6).map((c: Json) => `- ${ c.name }: ${ c.conclusion }${ c.title ? ` - ${ c.title }` : '' }${ c.summary ? `\n  ${ c.summary.slice(0, 300) }` : '' } (${ c.url })`).join('\n');
   const conversation = await openWith(workspace, `CI #${ pr.number }`,

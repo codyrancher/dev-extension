@@ -99,7 +99,20 @@ const LTE_SCRIPT = [
     // longer waits on GitHub for its code. Measured on the seven workspaces migrated onto it:
     // 877 MiB of .git became 15 MiB.
     'STORE=/workspaces/.store/git/dashboard.git',
-    '[ -d $WS/dashboard/.git ] || [ ! -d $STORE ] || ( mkdir -p $WS/dashboard/.git && cd $WS/dashboard && git init -q && mkdir -p .git/objects/info && echo $STORE/objects > .git/objects/info/alternates && { git remote add origin https://github.com/${repo} 2>/dev/null || true; } && D=$(git --git-dir=$STORE symbolic-ref --short HEAD 2>/dev/null || echo master) && git fetch --no-tags -q $STORE "+refs/heads/*:refs/remotes/origin/*" && git checkout -f -B "$D" "refs/remotes/origin/$D" )',
+    /*
+     * The store holds ONE repository - rancher/dashboard - and the fast path below fetches from
+     * it and checks out ITS default branch, whatever `repo` says. For a dashboard workspace that
+     * is the whole point: the objects are already on the disk. For any other repository it is
+     * silently the wrong code - a harvester workspace with `origin` pointed at
+     * harvester-ui-extension and dashboard's master checked out into it, which is a workspace
+     * that cannot review the pull request it was made for and does not say so.
+     *
+     * So the store is used only when this workspace IS a dashboard one. Matched on the
+     * repository's name rather than the whole path, because the dashboard is cloned from a fork
+     * as often as from upstream (`codyrancher/dashboard`) and both are the same history.
+     */
+    'case "${repo}" in */dashboard) SAME_REPO=yes ;; *) SAME_REPO=no ;; esac',
+    '[ -d $WS/dashboard/.git ] || [ ! -d $STORE ] || [ "$SAME_REPO" = no ] || ( mkdir -p $WS/dashboard/.git && cd $WS/dashboard && git init -q && mkdir -p .git/objects/info && echo $STORE/objects > .git/objects/info/alternates && { git remote add origin https://github.com/${repo} 2>/dev/null || true; } && D=$(git --git-dir=$STORE symbolic-ref --short HEAD 2>/dev/null || echo master) && git fetch --no-tags -q $STORE "+refs/heads/*:refs/remotes/origin/*" && git checkout -f -B "$D" "refs/remotes/origin/$D" )',
     // And the way it has always worked, for the first workspace on a node that has no store yet,
     // or one whose store could not be read. Shallow, because without a store beside it the thing
     // that matters is how fast one branch arrives.
@@ -124,7 +137,7 @@ export function lteWorkspaceApp(): Json {
     kind:       'App',
     metadata:   { name: LTE_APP, labels: { [APP_KIND_LABEL]: APP_KIND_WORKSPACE } },
     spec:       {
-      description: 'A unit of work and the commands that act on it: a rancher/dashboard checkout with its dependencies installed, its artifacts and recordings, and a toolbelt (git, gh, jq, ImageMagick, ffmpeg, kubectl). Nothing runs in it - a dev server, a storybook, a Rancher or a browser is started as a tool when it is needed and released when it is not.',
+      description: 'A unit of work and the commands that act on it: a checkout of its repository with its dependencies installed, its artifacts and recordings, and a toolbelt (git, gh, jq, ImageMagick, ffmpeg, kubectl). Nothing runs in it - a dev server, a storybook, a Rancher or a browser is started as a tool when it is needed and released when it is not.',
       values:      {
         repo:        'rancher/dashboard',
         image:       'node:24',
