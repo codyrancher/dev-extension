@@ -682,7 +682,22 @@ export async function readStatusNow(name: string, github = true): Promise<Worksp
 /** GitHub's own bots, which are not reviewers. */
 export const isBot = (login: string) => /\[bot\]$/i.test(login || '') || /^(github-actions|dependabot|codecov|renovate)/i.test(login || '');
 
-/** GitHub, one workspace at a time, the stalest first; never two at once. */
+/**
+ * How many workspaces one pass reads. The reason it is not one, and not all of them.
+ *
+ * It was one. That is a queue, and the time to notice anything is the length of it: with a
+ * dozen workspaces a verdict could sit wrong for the better part of an hour, and the symptom is
+ * a row that says "Developer responded" about a pull request you approved. The stage itself was
+ * right - run the rule over the data and it answers Approved - it had simply not been asked
+ * again yet.
+ *
+ * Not all of them either. Each is several GitHub calls, and a dozen workspaces times a page
+ * that reloads is how a token meets its rate limit. Three at a time, oldest first, is a full
+ * sweep in a few passes and a handful of calls per pass.
+ */
+const READ_AT_ONCE = 3;
+
+/** GitHub, the stalest few first; never two passes at once. */
 async function readStale(names: string[]): Promise<void> {
   if (reading) {
     return;
@@ -697,18 +712,21 @@ async function readStale(names: string[]): Promise<void> {
   }
   reading = true;
   try {
-    const { name } = due[0];
-    const before = statuses.get(name) || empty();
+    // Together rather than in turn: they are independent reads of different pull requests, and
+    // the slowest of three is a great deal less than the sum of three.
+    await Promise.all(due.slice(0, READ_AT_ONCE).map(async({ name }) => {
+      const before = statuses.get(name) || empty();
 
-    try {
-      statuses.set(name, { ...before, ...(await readWork(name)), readAt: Date.now() });
-      persist();
-    } catch (e) {
-      // Read again next time round, not on every poll: the failure is usually GitHub's rate
-      // limit or a token, and either is the same in five seconds.
-      statuses.set(name, { ...before, readAt: Date.now() });
-      note('dev', `the status of ${ name } could not be read`, e);
-    }
+      try {
+        statuses.set(name, { ...before, ...(await readWork(name)), readAt: Date.now() });
+      } catch (e) {
+        // Read again next time round, not on every poll: the failure is usually GitHub's rate
+        // limit or a token, and either is the same in five seconds.
+        statuses.set(name, { ...before, readAt: Date.now() });
+        note('dev', `the status of ${ name } could not be read`, e);
+      }
+    }));
+    persist();
   } finally {
     reading = false;
   }
