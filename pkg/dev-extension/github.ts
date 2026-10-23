@@ -1168,6 +1168,46 @@ export async function rancherReleases(limit = 30): Promise<RancherRelease[]> {
     .map((row: Json) => ({ tag: String(row.tag_name), prerelease: !!row.prerelease, at: String(row.published_at || '') }));
 }
 
+/** A version offered in the create form: the tag, and why it is on the list. */
+export interface RancherVersion {
+  tag: string;
+  note: string;
+}
+
+/**
+ * The versions a Rancher can be built from: the floating tags first, then the releases.
+ *
+ * A release list alone is not the answer, and the form that offered one was wrong in the way
+ * that matters most here - the newest thing is not a release. `head` is the line being
+ * developed on main and is published as a plain tag; older branched lines get a `vX.Y-head`
+ * alias that moves with the branch (see remuda's `backendImageForBranch`, which works the same
+ * thing out for a dashboard branch). Neither appears among the releases, and both are what
+ * somebody testing a change actually wants.
+ *
+ * The `vX.Y-head` ones are derived from the releases rather than guessed: the minor versions
+ * that have actually shipped are the lines that exist, newest three, which is as far back as
+ * anybody builds. A tag not on the list can still be typed - this is a convenience, and the
+ * field stays free text.
+ */
+export async function rancherVersions(): Promise<RancherVersion[]> {
+  const releases = await rancherReleases(60).catch(() => [] as RancherRelease[]);
+  const minors: string[] = [];
+
+  for (const release of releases) {
+    const minor = /^v?(\d+\.\d+)\./.exec(release.tag)?.[1];
+
+    if (minor && !minors.includes(minor)) {
+      minors.push(minor);
+    }
+  }
+
+  return [
+    { tag: 'head', note: 'the line being developed on main' },
+    ...minors.slice(0, 3).map((minor) => ({ tag: `v${ minor }-head`, note: `the ${ minor } branch as it is now` })),
+    ...releases.map((release) => ({ tag: release.tag, note: release.prerelease ? 'prerelease' : '' })),
+  ];
+}
+
 /**
  * Take a review request back.
  *

@@ -12,6 +12,17 @@ export default {
     message:      { type: String, default: '' },
     /** Ask for text: the box, its placeholder and its starting value. */
     input:        { type: Boolean, default: false },
+    /**
+     * Whether the box may be left empty.
+     *
+     * Off by default, because the first thing a box is usually for is a name, and confirming a
+     * rename with nothing in it is a mistake rather than a choice. On, an empty box is an
+     * answer: the review's own body is the case - most reviews say nothing above their line
+     * comments, and refusing to submit until something is typed turns an optional sentence
+     * into a required one. Without this the confirm silently refocused the box and the dialog
+     * could not be got past at all.
+     */
+    optional:     { type: Boolean, default: false },
     placeholder:  { type: String, default: '' },
     value:        { type: String, default: '' },
     confirmLabel: { type: String, default: 'OK' },
@@ -42,7 +53,7 @@ export default {
 
   methods: {
     confirm() {
-      if (this.input && !this.text.trim()) {
+      if (this.input && !this.optional && !this.text.trim()) {
         this.$refs.box?.focus();
 
         return;

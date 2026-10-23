@@ -38,6 +38,8 @@ export interface AskQuestion {
   danger?: boolean;
   /** Ask for a line of text as well as a yes. `askText` reads it back; `askQuestion` ignores it. */
   input?: boolean;
+  /** Whether an empty box is an answer. Off by default; see DevDialog. */
+  optional?: boolean;
   placeholder?: string;
   value?: string;
 }

@@ -843,6 +843,7 @@ export default {
 
     <DevModal
       v-if="showFiles"
+      size="large"
       title="Filesystem"
       @close="showFiles = false"
     >

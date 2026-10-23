@@ -2372,6 +2372,10 @@ export default {
         title:        `Submit ${ n || 'the' } finding${ n === 1 ? '' : 's' } to PR #${ this.status.pr } ${ what }?`,
         message:      'They become public comments on GitHub, and there is no unsending them. Anything you write here goes at the top of the review.',
         input:        true,
+        // Leaving it empty is an answer: the review goes with its line comments and says
+        // nothing at the top, which is what most reviews do. Without this the dialog refused to
+        // confirm an empty box and there was no way past it at all.
+        optional:     true,
         placeholder:  'A word about the change as a whole - optional',
         confirmLabel: event === 'REQUEST_CHANGES' ? 'Ask for changes' : (event === 'APPROVE' ? 'Ship it' : 'Post comments'),
       });
@@ -3536,6 +3540,7 @@ export default {
       <!-- The approval: what it says, and the evidence that goes with it. -->
       <DevModal
         v-if="approving"
+        size="medium"
         :title="`Approve PR #${ status.pr }`"
         @close="approving = null"
       >
@@ -3655,6 +3660,7 @@ export default {
       -->
       <DevModal
         v-if="inspecting"
+        size="medium"
         :title="`${ inspecting.label }: what it runs`"
         @close="inspecting = null"
       >
@@ -3680,6 +3686,7 @@ export default {
 
       <DevModal
         v-if="modal"
+        size="large"
         :title="modalTitle()"
         @close="modal = ''; loadConversations()"
       >
@@ -3746,6 +3753,7 @@ export default {
       <!-- The bigger view of whichever conversation the panel above is showing. -->
       <DevModal
         v-if="popped"
+        size="large"
         :title="`${ workspace.name } · ${ (conversations.find((c) => c.id === currentConversation) || {}).title || 'conversation' }`"
         @close="popped = false"
       >

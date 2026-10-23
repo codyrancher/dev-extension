@@ -582,6 +582,7 @@ export default {
       <!-- The larger view of the selected conversation, over the page. -->
       <DevModal
         v-if="popped && selected"
+        size="large"
         :title="selected.title || 'conversation'"
         @close="popped = false"
       >

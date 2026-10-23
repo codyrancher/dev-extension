@@ -35,7 +35,7 @@ import DevList from './DevList.vue';
 import ToolMark from './ToolMark.vue';
 import DevDialog from './DevDialog.vue';
 import DevModal from './DevModal.vue';
-import { rancherReleases } from '../github';
+import { rancherVersions } from '../github';
 import { DEFAULT_RANCHER_VERSION } from '../apps-rancher';
 import NavRow from './NavRow.vue';
 import NavHead from './NavHead.vue';
@@ -157,8 +157,8 @@ export default {
       rancherVersion:  DEFAULT_RANCHER_VERSION,
       /** Where its image comes from; see RANCHER_REGISTRIES. */
       rancherRegistry: 'community',
-      /** The released versions, read from GitHub when the form opens. */
-      rancherReleaseList: [],
+      /** The versions offered, read from GitHub when the form opens. See rancherVersions. */
+      rancherVersionList: [],
       /** Whether that read is still going, so the field says so rather than looking empty. */
       readingReleases: false,
       /** The Clusters block is a header until it is opened; the choice is kept per browser. */
@@ -479,9 +479,9 @@ export default {
       this.askingRancher = true;
       // After the form is up, not before: the versions are a convenience and the name is the
       // only thing needed to press Create, so nothing waits on GitHub to open.
-      if (!this.rancherReleaseList.length) {
+      if (!this.rancherVersionList.length) {
         this.readingReleases = true;
-        this.rancherReleaseList = await rancherReleases().catch(() => []);
+        this.rancherVersionList = await rancherVersions().catch(() => []);
         this.readingReleases = false;
       }
     },
@@ -1007,32 +1007,48 @@ export default {
           <span class="dev-sidebar__field-help">{{ rancherHint(proposedRancher) }}</span>
         </label>
 
-        <label class="dev-sidebar__field">
+        <div class="dev-sidebar__field">
           <span class="dev-sidebar__field-label">Version</span>
           <!--
-            A text field with the releases behind it rather than a select: `head`, a `vX.Y-head`
-            floating tag and a build nobody released are all legitimate here, and a select would
-            make the list the limit instead of the convenience. GitHub's releases, not a
-            registry's tags - `rancher/rancher` on Docker Hub has 25,308 of those.
+            A text field, because `head`, a `vX.Y-head` floating tag and a build nobody released
+            are all legitimate and a select would make the list the limit rather than the
+            convenience. But the list is DRAWN rather than hidden in a `<datalist>`: a datalist
+            shows nothing until you have typed a letter that happens to match, so a field
+            offering twenty-nine versions looked like a field offering one. The reviewers field
+            had the same fault and lost its datalist for the same reason.
           -->
           <input
             v-model="rancherVersion"
             class="dev-sidebar__input"
             type="text"
-            list="dev-rancher-versions"
-            placeholder="v2.12.3"
+            placeholder="head"
           >
-          <datalist id="dev-rancher-versions">
-            <option
-              v-for="release in rancherReleaseList"
-              :key="release.tag"
-              :value="release.tag"
-            >{{ release.prerelease ? 'prerelease' : '' }}</option>
-          </datalist>
           <span class="dev-sidebar__field-help">
-            {{ readingReleases ? 'Reading the released versions…' : rancherReleaseList.length ? `${ rancherReleaseList.length } released versions to pick from, newest first. Any tag can be typed.` : 'Any tag of the Rancher server image.' }}
+            {{ readingReleases ? 'Reading the versions…' : 'Any tag of the Rancher server image; these are the ones there are.' }}
           </span>
-        </label>
+          <ul
+            v-if="rancherVersionList.length"
+            class="dev-sidebar__versions"
+          >
+            <li
+              v-for="v in rancherVersionList"
+              :key="v.tag"
+            >
+              <button
+                type="button"
+                class="dev-sidebar__version"
+                :class="{ 'dev-sidebar__version--on': v.tag === rancherVersion }"
+                @click="rancherVersion = v.tag"
+              >
+                <span class="dev-sidebar__version-tag">{{ v.tag }}</span>
+                <span
+                  v-if="v.note"
+                  class="dev-sidebar__version-note"
+                >{{ v.note }}</span>
+              </button>
+            </li>
+          </ul>
+        </div>
 
         <fieldset class="dev-sidebar__field">
           <span class="dev-sidebar__field-label">Build</span>
@@ -1542,6 +1558,55 @@ export default {
   font-size: 12px;
 
   &--warn { color: var(--status-input); }
+}
+
+/*
+ * The versions, as a list you can read. Scrolls at about six rows: the whole point is that the
+ * choices are visible, and a list that pushes the Create button off the dialog has traded one
+ * invisible thing for another.
+ */
+.dev-sidebar__versions {
+  display:        flex;
+  flex-direction: column;
+  gap:            2px;
+  max-height:     190px;
+  margin:         4px 0 0;
+  padding:        4px;
+  border:         1px solid var(--border);
+  border-radius:  var(--r-sm);
+  background:     var(--box-bg);
+  list-style:     none;
+  overflow-y:     auto;
+}
+
+.dev-sidebar__version {
+  display:       flex;
+  align-items:   baseline;
+  gap:           10px;
+  width:         100%;
+  min-height:    0;
+  padding:       4px 8px;
+  border:        none;
+  border-radius: var(--r-sm);
+  background:    transparent;
+  color:         var(--body-text);
+  font-size:     13px;
+  text-align:    left;
+  cursor:        pointer;
+
+  &:hover { background: var(--dropdown-hover-bg, var(--default-hover-bg)); }
+
+  &--on {
+    background:  var(--dropdown-hover-bg, var(--default-hover-bg));
+    font-weight: 600;
+  }
+}
+
+.dev-sidebar__version-tag { font-family: var(--pr-mono, monospace); }
+
+.dev-sidebar__version-note {
+  color:     var(--muted);
+  font-size: 11px;
 }
 
 .dev-sidebar__radio {

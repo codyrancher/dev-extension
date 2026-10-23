@@ -59,7 +59,7 @@ function toast(message: string, kind: 'success' | 'error' | 'info' = 'success', 
 // browser's own confirm() cannot be themed, blocks the event loop, and is suppressed outright
 // in an embedded or sandboxed iframe - where it returns false with nothing drawn, so Cancel the
 // review or Delete this comment would quietly do nothing at all.
-const { asking, ask } = useAsk();
+const { asking, ask, askText } = useAsk();
 
 // ── Which PR, in which repo ──
 const number = ref(0);
@@ -1565,9 +1565,30 @@ async function doSubmit() {
   if (!canSubmit.value || submitting.value) {
     return;
   }
+  /*
+   * The same box the rail's three give: what the review says above its line comments.
+   *
+   * Empty is an answer and the commonest one - the review goes with its comments and says
+   * nothing at the top. `null` is the cancel, which is why this reads the string rather than a
+   * boolean: a caller that cannot tell the two apart posts a public review on a cancel.
+   */
+  const note = await askText({
+    // `openComments`, not `pendingCount`: pending means "not marked good yet", and `canSubmit`
+    // requires it to be zero - so the count in the title would always have been nought.
+    title:        `Post ${ openComments.value.length || 'the' } comment${ openComments.value.length === 1 ? '' : 's' } to PR #${ number.value }?`,
+    message:      'They become public comments on GitHub, and there is no unsending them. Anything you write here goes at the top of the review.',
+    input:        true,
+    optional:     true,
+    placeholder:  'A word about the change as a whole - optional',
+    confirmLabel: 'Post comments',
+  });
+
+  if (note === null) {
+    return;
+  }
   submitting.value = true;
   try {
-    const r = await submitReview(number.value, repo.value);
+    const r = await submitReview(number.value, repo.value, 'COMMENT', note);
 
     toast(`Posted ${ r.posted } comment${ r.posted === 1 ? '' : 's' } to GitHub as one review.${ r.url ? ` ${ r.url }` : '' }`);
     await load();

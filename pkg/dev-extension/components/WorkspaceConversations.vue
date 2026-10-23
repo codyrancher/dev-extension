@@ -560,6 +560,7 @@ export default {
       <!-- The larger view of the current conversation, over the page rather than instead of it. -->
       <DevModal
         v-if="popped && currentConversation"
+        size="large"
         :title="`${ workspace.name } · ${ currentConversation.title || 'conversation' }`"
         @close="popped = false"
       >
