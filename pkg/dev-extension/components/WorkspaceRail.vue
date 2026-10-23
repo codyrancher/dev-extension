@@ -561,7 +561,6 @@ export default {
               primary:  { label: 'Ship it', run: 'openApprove' },
               tools:    [
                 { label: 'Review this PR again', run: s.reviewed ? 'reviewAgain' : 'startReview' },
-                { label: 'Ask the agent', run: 'focusAsk' },
               ],
             };
           }
@@ -577,9 +576,9 @@ export default {
               // a finished pass can do, and the only one that was not on this row.
               { label: 'Post comments', run: 'postComments' },
               ...(s.reviewed ? [{ label: 'Review the new commits again', run: 'reviewAgain' }] : []),
-              // On a re-pass there is one thing to ask the agent and `reviewAgain` above is it;
-              // a general "Ask the agent" beside it is a second way to say the same thing.
-              ...(s.reviewed ? [] : [{ label: 'Ask the agent', run: 'focusAsk' }]),
+              // No "Ask the agent" at this stage, on either round. The conversation is on the
+              // page under these buttons, and the row here is for deciding what happens to the
+              // findings - a general "ask it something" is not one of those decisions.
             ],
           };
         case 'submitted':

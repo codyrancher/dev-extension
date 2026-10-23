@@ -1189,10 +1189,18 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage, reviewed 
         return [];
       }
 
+      /*
+       * Two of these went: Sharpen the wording and Final pass.
+       *
+       * Both rewrite comments that are already written - one into impact-and-evidence, the
+       * other down to three sentences - and between them they made a row of five where the
+       * stage has two things worth starting: prove a finding, and show the change. A pass that
+       * wants different words is a pass where you edit the finding, which the card under it
+       * does. The skills are still there to be run from a conversation; they are not a button
+       * on the one row a person reads before deciding.
+       */
       return [
         { label: 'Verify the findings', skill: 'my-pr-comment-verify', note: 'Prove each comment with a recording or a screenshot attached to it' },
-        { label: 'Sharpen the wording', skill: 'my-pr-comment-refinement', note: 'Rewrite each pending comment into impact, why it matters, and evidence' },
-        { label: 'Final pass', skill: 'my-pr-comment-final-pass', note: 'Cut each pending comment to 1-3 sentences: the problem and why to fix it' },
         { label: 'Demo the change', skill: 'my-pr-demo-changes', note: 'Record what the PR changes, against its own build' },
       ];
     case 'submitted':
