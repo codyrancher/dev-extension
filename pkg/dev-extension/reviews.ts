@@ -136,6 +136,26 @@ export async function commentsRevision(num: number): Promise<{ at: number; size:
   return { at: Number(answer?.at) || 0, size: Number(answer?.size) || 0 };
 }
 
+/**
+ * Whether the shared browser can upload evidence to GitHub as you.
+ *
+ * A cookie read in the browser, no page loaded; see dev-api's githubBrowserSession. Worth
+ * asking before a review with attachments is submitted, because the alternative is finding out
+ * from the upload - sixty seconds per image, after the dialog, as "nothing was submitted".
+ *
+ * A failure to ask is `signedIn: true`. This is a warning in front of something the person
+ * already chose to do, and a probe that cannot answer must not be the thing that stops them.
+ */
+export async function githubBrowserSession(): Promise<{ signedIn: boolean; reachable: boolean; detail: string }> {
+  const answer = await api('/github/session').catch(() => null);
+
+  if (!answer) {
+    return { signedIn: true, reachable: false, detail: '' };
+  }
+
+  return { signedIn: answer.signedIn !== false, reachable: answer.reachable !== false, detail: String(answer.detail || '') };
+}
+
 export async function listComments(num: number): Promise<LocalComment[]> {
   return api(`/my-work/pr/${ num }/comments`);
 }

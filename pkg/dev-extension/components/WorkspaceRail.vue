@@ -51,7 +51,7 @@ import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
   startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers,
-  replyToComment, commentOnPr, quoted, commentsRevision, DEFAULT_REPO
+  replyToComment, commentOnPr, quoted, commentsRevision, githubBrowserSession, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
@@ -1981,6 +1981,18 @@ export default {
       }
     },
 
+    /**
+     * How many images or recordings this submit would have to upload.
+     *
+     * Only an unsubmitted finding's, because those are the ones going out; and only the kinds
+     * that go through the browser - a text file is inlined as a code block and needs no session.
+     */
+    evidenceToUpload() {
+      return this.shownComments
+        .filter((c) => c.local && !c.answered)
+        .reduce((total, c) => total + (c.attachments || []).filter((a) => !/\.(txt|log|md|json|ya?ml)$/i.test(String(a.path || a.name || ''))).length, 0);
+    },
+
     /** Where a finding is drawn: its section, and its page in that section's pager. */
     placeOfFinding(id) {
       for (const section of this.evidence) {
@@ -2356,6 +2368,25 @@ export default {
       }
       const n = this.findingCount;
       const what = event === 'REQUEST_CHANGES' ? 'as changes to make' : 'as an approval';
+      /*
+       * Evidence is uploaded through the shared browser's GitHub session, and if that session
+       * is gone the whole submit fails - deliberately, because a review that lands with its
+       * evidence missing cannot be repaired. The cost was finding out afterwards: sixty seconds
+       * of waiting per image, then "nothing was submitted", with the dialog already answered.
+       *
+       * So it is asked first, and only when there is something to upload. A cookie read, no page
+       * loaded. A probe that cannot answer says yes - this is a warning in front of something
+       * already chosen, not a gate.
+       */
+      if (this.evidenceToUpload() > 0) {
+        const session = await githubBrowserSession();
+
+        if (!session.signedIn) {
+          this.error = `${ session.detail } Nothing has been submitted.`;
+
+          return;
+        }
+      }
       /*
        * The box is for what the review says at the top - the sentence a person writes above
        * their line comments, which GitHub calls the review body.
@@ -2910,7 +2941,6 @@ export default {
             <li class="workspace-rail__new">
               <SplitButton
                 class="workspace-rail__new-split"
-                main-class="workspace-rail__new-button"
                 label="New conversation"
                 :value="defaultCli"
                 :options="CLI_CHOICES"
@@ -4288,49 +4318,49 @@ export default {
   }
 
   /*
-   * The caret beside the +, drawn the way the strip's own controls are.
+   * Both halves of the +, drawn the way the strip's own controls are.
    *
-   * SplitButton ships a bordered pair, which is right on a toolbar and wrong in a tab row: the
-   * `main-class` above already strips the border off the plus, so without this the caret would
-   * be a bordered box next to a borderless glyph. The drawer's strip solves it the same way
-   * (AgentPanel, `:deep(.split-btn__more)`), and the two rows should not look different.
+   * SplitButton ships a bordered pair, which is right on a toolbar and wrong in a tab row. This
+   * used to strip the border off the plus through `main-class` - and that class and
+   * SplitButton's own `.split-btn__main` have the same specificity, one class plus a scope
+   * attribute each, so which of them won came down to which stylesheet the build happened to
+   * inject last. It lost: a boxed plus beside a bare caret, next to a drawer whose + is neither.
+   *
+   * Both halves are styled from the wrapper instead. `.workspace-rail__new-split[data-v] .split-btn__main`
+   * carries two classes to the component's one, so it wins by specificity rather than by luck.
    */
   &__new-split {
     display:     inline-flex;
     align-items: center;
 
+    :deep(.split-btn__main),
     :deep(.split-btn__more) {
-      width:      14px;
-      padding:    0;
-      border:     0;
-      background: transparent;
-      color:      var(--body-text);
-      font-size:  9px;
-      opacity:    .7;
+      border:        0;
+      border-radius: var(--dev-r-xs);
+      background:    transparent;
+      color:         var(--body-text);
+      opacity:       .7;
 
       &:hover:not(:disabled),
       &:focus-visible {
-        opacity: 1;
-        color:   var(--link);
+        opacity:    1;
+        color:      var(--link);
+        background: var(--default-hover-bg, var(--box-bg));
       }
-    }
-  }
 
-  &__new-button {
-    padding: 4px 10px;
-    border: 0;
-    background: transparent;
-    color: var(--body-text);
-    cursor: pointer;
-
-    &:hover:not(:disabled),
-    &:focus-visible {
-      color: var(--link);
+      &:disabled { opacity: .4; }
     }
 
-    &:disabled {
-      cursor: default;
-      opacity: 0.6;
+    :deep(.split-btn__main) {
+      min-width: 0;
+      padding:   4px 8px;
+      font-size: 14px;
+    }
+
+    :deep(.split-btn__more) {
+      width:     14px;
+      padding:   0;
+      font-size: 9px;
     }
   }
 

@@ -2700,6 +2700,53 @@ async function cdpBase() {
   return parsed.origin;
 }
 
+/**
+ * Whether the shared browser is signed in to GitHub, asked without loading a page.
+ *
+ * The only thing that knew was the upload itself: it opens the pull request, waits sixty
+ * seconds for GitHub's uploader to appear, and calls its absence a signed-out browser. True,
+ * and far too late - by then a person has been through the submit dialog, and the answer comes
+ * back as "nothing was submitted" after a minute per image.
+ *
+ * Cookies answer it in one call and no navigation. GitHub sets `logged_in=yes` on a signed-in
+ * browser and `user_session` with it; either alone is enough to be worth trying, and neither
+ * present is a browser that will not be able to upload. `Storage.getCookies` on the browser
+ * target reads the whole jar, so nothing has to be open on github.com for this to work.
+ *
+ * Deliberately not a verdict on whether the session is still VALID - an expired cookie is still
+ * a cookie. It is the cheap, certain half: a definite no before the work starts, rather than a
+ * promise of yes.
+ */
+async function githubBrowserSession() {
+  const base = await cdpBase();
+  const info = await fetch(`${ base }/json/version`, { signal: AbortSignal.timeout(5000) })
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null);
+
+  if (!info?.webSocketDebuggerUrl) {
+    return { signedIn: false, reachable: false, detail: 'The shared browser is not answering.' };
+  }
+
+  const session = cdpSession(info.webSocketDebuggerUrl);
+
+  try {
+    const { cookies } = await session.send('Storage.getCookies', {});
+    const mine = (cookies || []).filter((c) => String(c.domain || '').endsWith('github.com'));
+    const named = new Set(mine.map((c) => c.name));
+    const signedIn = mine.some((c) => c.name === 'logged_in' && c.value === 'yes') || named.has('user_session');
+
+    return {
+      signedIn,
+      reachable: true,
+      detail:    signedIn ? '' : 'The shared browser is signed out of GitHub. Open it from the Conversations page and sign in; evidence is uploaded as you, through its session.',
+    };
+  } catch (e) {
+    return { signedIn: false, reachable: true, detail: `The shared browser could not be asked: ${ e?.message || e }` };
+  } finally {
+    session.close?.();
+  }
+}
+
 /** One CDP session on one target: send a command, wait for its id to come back. */
 function cdpSession(wsUrl) {
   const socket = new WebSocket(wsUrl);
@@ -2988,7 +3035,33 @@ async function uploadToGithub(file, hostUrl) {
         break;
       }
       if (Date.now() > deadline) {
-        throw new Error('the PR page never rendered GitHub\'s uploader - the shared browser is probably signed out of GitHub (open it from the Conversations page and sign in).');
+        /*
+         * What the page actually was, rather than a guess at why.
+         *
+         * This used to say "the shared browser is probably signed out of GitHub - sign in",
+         * and when it was wrong it was expensively wrong: it sent somebody to sign in to a
+         * browser that was already signed in as themselves, and said nothing about the page it
+         * had been looking at for a minute. One guess, stated as the likely cause, with none of
+         * the evidence that would have ruled it out.
+         *
+         * So the tab is asked what it is showing. The title, the address it ended on (a
+         * redirect to /login is the signed-out case saying so itself), and whether a sign-in
+         * form is on the page - which separates "not signed in" from "signed in, and this page
+         * has no uploader" without anybody having to guess between them.
+         */
+        const seen = await evaluate(session, () => ({
+          title: document.title,
+          url:   location.href,
+          login: !!document.querySelector('form[action^="/session"], input[name="login"]'),
+          notFound: /404|not found/i.test(document.title),
+        })).catch(() => null);
+        const where = seen ? `it ended on ${ seen.url } ("${ seen.title }")` : 'and the page could not be read';
+        const why = !seen ? ''
+          : seen.login ? ' That is a sign-in page: the shared browser is signed out of GitHub, so open it from the Conversations page and sign in.'
+            : seen.notFound ? ' That is a 404: the pull request is not where this looked for it, which usually means the workspace is pointed at the wrong repository.'
+              : ' The browser is signed in and the page loaded, so this is a page GitHub no longer gives the classic uploader - the upload needs another way in.';
+
+        throw new Error(`GitHub's uploader never appeared on ${ hostUrl } after 60s - ${ where }.${ why }`);
       }
       await new Promise((r) => setTimeout(r, 1000));
     }
@@ -4971,6 +5044,8 @@ const routes = [
 
   // The harness's /my-work API, as far as its skills need it.
   ['GET', /^\/my-work\/pr\/(\d+)$/, (m, url) => prDetail(repoOf(url), Number(m[1]))],
+  // Whether evidence can be uploaded at all, before a review is submitted rather than after.
+  ['GET', /^\/github\/session$/, () => githubBrowserSession()],
   ['GET', /^\/my-work\/pr\/(\d+)\/comments$/, async(m) => (await localComments(Number(m[1]))).map(decorate)],
   /*
    * When the comments last changed, and nothing else.
