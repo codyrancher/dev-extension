@@ -776,19 +776,36 @@ export function useConversation(source: () => ConversationSource) {
          * from the same id file - the pane writes it (claude-session.sh, agy-session.sh) - so the
          * difference here is a path and nothing else.
          *
-         * Without an id file, claude falls back to the directory's transcript only when there is
-         * exactly one. Conversations share a working directory - every conversation of a workspace
-         * runs in its checkout - so "the newest transcript" was somebody else's for the seconds
-         * before a new conversation's id file landed, and the chat opened on eighteen messages
-         * that were not this conversation's. agy gets no such fallback at all: its id lives in a
-         * map keyed by that shared directory, so the guess there is not "probably somebody else's"
-         * but "certainly whoever ran last" - see claimed_elsewhere in agy-session.sh.
+         * Without an id file, claude falls back to the directory's transcript - but only one no
+         * other conversation has claimed. Conversations share a working directory, because every
+         * conversation of a workspace runs in its checkout, so "the newest transcript" is
+         * somebody else's as often as not.
+         *
+         * "Exactly one transcript" was the guard and it is not enough. A workspace with two
+         * conversations where only the first has ever run has exactly one transcript, and the
+         * second - which has no id file, because it has never started - was handed the first's.
+         * Two tabs, the same history under both, which is what it looks like from outside.
+         *
+         * So the candidate is refused when another conversation's `.id` file names it. Those
+         * files hold the transcript's uuid, so this asks the question directly and without
+         * taking an id apart in shell - the thing conversation-id.mjs exists so that nothing
+         * does. The case the fallback is actually for still works: a conversation whose id file
+         * has not landed yet, in a workspace where nothing else claims the transcript.
+         *
+         * agy gets no such fallback at all: its id lives in a map keyed by that shared
+         * directory, so the guess there is not "probably somebody else's" but "certainly whoever
+         * ran last" - see claimed_elsewhere in agy-session.sh.
          */
         ...(cli.value === 'agy' ? [
           'BRAIN="$HOME/.gemini/antigravity-cli/brain"',
           'if [ -n "$uuid" ] && [ -f "$BRAIN/$uuid/.system_generated/logs/transcript.jsonl" ]; then FILE="$BRAIN/$uuid/.system_generated/logs/transcript.jsonl"; fi',
         ] : [
-          'if [ -n "$uuid" ] && [ -f "$PROJ/$uuid.jsonl" ]; then FILE="$PROJ/$uuid.jsonl"; elif [ "$(ls "$PROJ"/*.jsonl 2>/dev/null | wc -l)" -eq 1 ]; then FILE=$(ls "$PROJ"/*.jsonl 2>/dev/null | head -1); fi',
+          'if [ -n "$uuid" ] && [ -f "$PROJ/$uuid.jsonl" ]; then FILE="$PROJ/$uuid.jsonl";',
+          'elif [ "$(ls "$PROJ"/*.jsonl 2>/dev/null | wc -l)" -eq 1 ]; then',
+          '  CAND=$(ls "$PROJ"/*.jsonl 2>/dev/null | head -1); CU=$(basename "$CAND" .jsonl)',
+          '  SESS="$(dirname "$HOME")/sessions"',
+          '  if ! grep -lFx "$CU" "$SESS"/*.id 2>/dev/null | grep -qv "^$SESS/$ID\.id$"; then FILE="$CAND"; fi',
+          'fi',
         ]),
         'echo "@@FILE-$N $FILE"',
         'if [ -n "$FILE" ] && [ -f "$FILE" ]; then size=$(wc -c < "$FILE"); echo "@@SIZE-$N $size"; FROM=$OFF; if [ "$OFF" -eq 0 ] && [ "$size" -gt "$CAP" ]; then FROM=$((size - CAP)); fi; echo "@@FROM-$N $FROM"; if [ "$size" -gt "$FROM" ]; then echo "@@DATA-$N"; tail -c +$((FROM+1)) "$FILE"; echo; echo "@@ENDDATA-$N"; fi; fi',
