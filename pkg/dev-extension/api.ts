@@ -678,6 +678,9 @@ export function workspaceFromInstance(instance: Json): DevWorkspace {
     cluster:   labels[LABEL_CLUSTER] || activeCluster(),
     app:       labels[LABEL_APP] || '',
     role:      labels[LABEL_ROLE] || '',
+    // Which repository this workspace is for; see `repo` on DevWorkspace. The Installation is
+    // the only place it is written, so it is the only place it can be read from.
+    repo:      String(values.repo || '') || undefined,
     port:      Number(values.port) || DEFAULT_WORKSPACE_PORT,
     scheme:    values.scheme === 'https' ? 'https' : DEFAULT_WORKSPACE_SCHEME,
     preview:   false,
@@ -961,10 +964,29 @@ async function listAllWorkspacesLive(): Promise<DevWorkspace[]> {
  */
 export async function getWorkspace(name: string): Promise<DevWorkspace | null> {
   const namespace = workspaceNamespace(name);
-  const [record, deployments, pods] = await Promise.all([
+  /*
+   * The Installation is read beside the namespace, for one field: `repo`.
+   *
+   * A workspace's row is built from its namespace, its Deployment and its pod, and none of the
+   * three carries which repository the work is in - that is a value on the Installation. So the
+   * page's own workspace object had no repo, `repo()` on the rail fell back to rancher/dashboard,
+   * and every GitHub read the PAGE made went to the wrong repository even after the registrar
+   * had been taught to carry it. The registrar feeds the sidebar; this feeds the page, and
+   * fixing one is not fixing the other - which is how `lte-pr-1202` came to upload its evidence
+   * to `rancher/dashboard/pull/1202`, a number that is an issue there, and sit on an issue page
+   * for sixty seconds waiting for a pull request's uploader.
+   *
+   * A fourth request in a call that already makes three, in parallel with them, and a failure
+   * is simply no repo - which is the default, and exactly where this was before.
+   */
+  const [record, deployments, pods, instance] = await Promise.all([
     devFetch(`${ BASE }/v1/namespaces/${ namespace }`).catch(() => null),
     devFetch(`${ BASE }/v1/apps.deployments/${ namespace }`).catch(() => null),
     devFetch(`${ BASE }/v1/pods/${ namespace }`).catch(() => null),
+    // On `local` explicitly, not `BASE`: every workspace's Installation lives on local whatever
+    // cluster the workspace itself runs on, and BASE follows the workspace - so a downstream one
+    // would 404 here and quietly lose its repository again.
+    devFetch(`${ clusterBase(DEFAULT_CLUSTER) }/v1/${ APP_INSTANCE }s/${ name }`, { timeoutMs: 4000 }).catch(() => null),
   ]);
 
   // A namespace without the label is not a workspace, whatever it is called.
@@ -975,7 +997,10 @@ export async function getWorkspace(name: string): Promise<DevWorkspace | null> {
   const deployment = (deployments?.data || []).find((candidate: Json) => ownedByWorkspace(candidate, name));
   const pod = (pods?.data || []).find((candidate: Json) => ownedByWorkspace(candidate, name));
 
-  return workspaceFrom(record, deployment, pod);
+  const built = workspaceFrom(record, deployment, pod);
+  const repo = String(instance?.spec?.values?.repo || '').trim();
+
+  return repo ? { ...built, repo } : built;
 }
 
 
