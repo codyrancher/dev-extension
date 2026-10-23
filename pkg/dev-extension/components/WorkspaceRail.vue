@@ -1822,7 +1822,7 @@ export default {
         return;
       }
       try {
-        const text = await prFile(this.status.pr, c.path, c.headSha);
+        const text = await prFile(this.status.pr, c.path, c.headSha, this.repo);
         const extra = contextRows(c.path, text, from, to);
 
         if (where === 'up') {
@@ -2298,7 +2298,7 @@ export default {
       if (!this.status?.pr) {
         throw new Error('There is no PR to mark ready yet.');
       }
-      await markReadyForReview(DEFAULT_REPO, this.status.pr);
+      await markReadyForReview(this.repo, this.status.pr);
       this.notice = `PR #${ this.status.pr } is ready for review. Request a reviewer on GitHub.`;
       await this.settle();
     },
@@ -2468,7 +2468,7 @@ export default {
         // The media list is relative to the workspace's artifacts; the upload wants the path
         // from the workspace's root, which is where `putArtifact` already puts its own.
         const path = file.path.startsWith('artifacts/') ? file.path : `artifacts/${ file.path }`;
-        const { embed, name } = await attachToPr(this.status.pr, path);
+        const { embed, name } = await attachToPr(this.status.pr, path, this.repo);
         const message = this.approving.message;
 
         this.approving = {
@@ -2516,7 +2516,7 @@ export default {
       }
       this.approveBusy = 'approve';
       try {
-        const { url, discarded } = await approvePr(this.status.pr, this.approving.message.trim());
+        const { url, discarded } = await approvePr(this.status.pr, this.approving.message.trim(), this.repo);
 
         this.approving = null;
         this.notice = `PR #${ this.status.pr } approved${ discarded ? `; ${ discarded } unsubmitted comment${ discarded === 1 ? '' : 's' } dropped` : '' }.${ url ? ` ${ url }` : '' }`;
@@ -2537,7 +2537,7 @@ export default {
       })) {
         return;
       }
-      await mergePr(pr);
+      await mergePr(pr, this.repo);
       this.notice = `PR #${ pr } merged.`;
       await this.settle();
     },

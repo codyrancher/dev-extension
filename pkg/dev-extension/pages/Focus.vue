@@ -1516,9 +1516,9 @@ async function readWholeFile(): Promise<{ text: string; patch: string }> {
   if (!at) {
     return { text: '', patch: '' };
   }
-  const detail = await prDetail(at.pr).catch(() => null);
+  const detail = await prDetail(at.pr, cardRepo()).catch(() => null);
   const file = (detail?.files || []).find((entry: Json) => entry.path === at.path);
-  const text = await prFile(at.pr, at.path, detail?.meta?.headSha || detail?.meta?.headRef || 'HEAD');
+  const text = await prFile(at.pr, at.path, detail?.meta?.headSha || detail?.meta?.headRef || 'HEAD', cardRepo());
 
   return { text, patch: file?.patch || '' };
 }
@@ -1554,7 +1554,7 @@ async function readyForReview(task: FocusTask) {
 
     return;
   }
-  await markReadyForReview(DEFAULT_REPO, pr);
+  await markReadyForReview(cardRepo(), pr);
   say(`${ task.what } is ready for review.`);
   await done(task);
 }
@@ -1578,6 +1578,12 @@ async function openThePr(task: FocusTask) {
 
     return;
   }
+  /*
+   * The default, and knowingly so: this opens a pull request that does not exist yet, so there
+   * is no PR summary to take a repository from. It should be the WORKSPACE's repo - the one
+   * thing on this path that knows - and Focus does not hold that today. A workspace in another
+   * repository cannot open its first pull request from here; it can from its own page.
+   */
   const made = await createPullRequest(DEFAULT_REPO, {
     head:  branch,
     base:  'master',
@@ -1611,7 +1617,7 @@ async function describeIt(task: FocusTask) {
 
     return;
   }
-  await describePr(DEFAULT_REPO, pr, { body: drafted });
+  await describePr(cardRepo(), pr, { body: drafted });
   say(`${ task.what } now says what it does.`);
 }
 
@@ -1647,7 +1653,7 @@ async function askReviewer(task: FocusTask, who: string | string[]) {
   }
   busy.value = true;
   try {
-    const { asked, refused } = await requestReviewers(DEFAULT_REPO, pr, whom);
+    const { asked, refused } = await requestReviewers(cardRepo(), pr, whom);
 
     if (asked.length) {
       say(`Asked ${ asked.join(', ') } to review ${ task.what }.`);
@@ -1730,7 +1736,7 @@ async function postTheReview(task: FocusTask) {
   if (!pr) {
     return;
   }
-  const { posted, url } = await submitReview(pr);
+  const { posted, url } = await submitReview(pr, cardRepo());
 
   say(posted ? `Posted ${ posted } comment${ posted === 1 ? '' : 's' } on ${ task.what }.` : 'Nothing was left to post.');
   if (url) {
@@ -1774,7 +1780,7 @@ async function finishReview(task: FocusTask, action: CardAction) {
     return;
   }
 
-  const { posted, url } = await submitReview(pr, undefined, event);
+  const { posted, url } = await submitReview(pr, cardRepo(), event);
   const verdict = { APPROVE: 'Approved', REQUEST_CHANGES: 'Asked for changes on', COMMENT: 'Commented on' }[event];
 
   say(`${ verdict } ${ task.what } with ${ posted } comment${ posted === 1 ? '' : 's' }.`);
@@ -1799,12 +1805,24 @@ async function finishReview(task: FocusTask, action: CardAction) {
  * does not merge it; GitHub will, for anyone who means it, and saying so is better than either
  * doing it quietly or hiding the button.
  */
+/**
+ * The repository the card on screen is about.
+ *
+ * Every action below acted on rancher/dashboard by name, so a card for a pull request anywhere
+ * else - a harvester one, say - approved, merged, marked ready or asked for reviewers against
+ * whatever number that is in the dashboard, and was told 404 when there was nothing there. The
+ * PR summary has carried `repo` all along (focus-artifacts, PrSummary).
+ */
+function cardRepo(): string {
+  return artifacts.value?.pr?.repo || DEFAULT_REPO;
+}
+
 async function mergeOne(pr: number): Promise<string> {
   const detail = await prDetail(pr).catch(() => null);
   const mine = String(detail?.meta?.author || '').toLowerCase() === me.value.toLowerCase();
 
   if (mine) {
-    await mergePr(pr);
+    await mergePr(pr, cardRepo());
 
     return '';
   }

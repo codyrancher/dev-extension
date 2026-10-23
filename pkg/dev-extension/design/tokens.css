@@ -81,30 +81,33 @@
    * mistake. The same argument the spacing scale makes about 10px.
    */
   /*
-   * One radius for everything with a box around it, and it is RcButton's: 2px.
+   * One radius for everything with a box around it, and it is the button's: 4px.
    *
-   * The rungs below used to be a scale - 3px for a chip, Rancher's 4px for a control, 8px for a
-   * row, 12px for a card - and a scale is only worth having if a person can tell which rung
-   * they are looking at and why. In a column holding a button, a tools strip, a conversation
-   * and a findings panel, four radii within 9px of each other read as four accidents rather
-   * than as four decisions. So they are one decision, taken from the control this product puts
-   * beside everything else it draws.
+   * The rungs below used to be a scale - 3px for a chip, 4px for a control, 8px for a row, 12px
+   * for a card - and a scale is only worth having if a person can tell which rung they are
+   * looking at and why. In a column holding a button, a tools strip, a conversation and a
+   * findings panel, four radii within 9px of each other read as four accidents rather than as
+   * four decisions. So they are one decision, taken from the control this product puts beside
+   * everything else it draws.
    *
-   * 2px is RcButton's own, not Rancher's `--border-radius` (4px): the button component renders
-   * at 2px and it is the thing our boxes actually sit next to.
+   * It was 2px, on the strength of RcButton.vue's own `border-radius: 2px`. That is not what a
+   * button renders at. Rancher's global `.btn` rule sets `border-radius: var(--border-radius)`,
+   * which is 4px, it is unscoped, and it wins - so every box in this product sat at 2px beside
+   * buttons at 4px, which is the mismatch the scale was collapsed to avoid. Measured, not read:
+   * the built CSS gives `--r-sm: 2px` on the group box and the shell gives 4px on `.btn`.
    *
    * The names stay, and stay distinct, because they say what a thing IS - the grep that finds
    * every card in this product is `--r-md` - and because a later decision to give cards their
    * own corner again is then one line here rather than a sweep.
    */
   /* a chip, a tag, an inline code span */
-  --dev-r-xs:  2px;
+  --dev-r-xs:  4px;
   /* anything that is a control: a button, an input, a select */
-  --dev-r-ctl: 2px;
+  --dev-r-ctl: 4px;
   /* a row, a thumbnail, a small surface */
-  --r-sm:   2px;
+  --r-sm:   4px;
   /* a card, a panel, a dialog */
-  --r-md:   2px;
+  --r-md:   4px;
   /*
    * The deck's own, and deliberately not 2px: Focus is a different surface - big soft cards
    * floating over a dimmed page, nothing of Rancher's beside them - and squaring those off
