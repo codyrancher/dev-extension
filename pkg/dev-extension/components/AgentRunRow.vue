@@ -3,7 +3,7 @@
 // it actually said. A component of its own because the card shows the last few and the history
 // modal shows all of them, and a row that is written twice is a row that stops matching itself.
 import {
-  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CONVERSATIONS_ROUTE
+  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE
 } from '../config/constants';
 
 export default {
@@ -16,13 +16,6 @@ export default {
     workspaceTo() {
       return this.run.workspace ? {
         name: WORKSPACE_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: this.run.workspace }, hash: '#conversations',
-      } : null;
-    },
-
-    /** The run's own conversation: what it said and did, with its artifacts. */
-    conversationTo() {
-      return this.run.conversation ? {
-        name: CONVERSATIONS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER }, query: { c: this.run.conversation },
       } : null;
     },
 
@@ -80,18 +73,12 @@ export default {
       title="A conversation in the agents drawer"
     >{{ run.conversation || '…' }}</span>
     <span class="agent-run__dur">{{ duration }}</span>
-    <router-link
-      v-if="conversationTo"
-      :to="conversationTo"
-      class="agent-run__open"
-      title="Open this run's conversation: its output, tool calls and artifacts"
-    >
-      output
-    </router-link>
-    <span
-      v-else
-      class="agent-run__open text-muted"
-    >&nbsp;</span>
+    <!--
+      There was an `output` link here, to the Conversations page, which is gone. It is not
+      re-pointed because the row already has the way in: the workspace link above opens that
+      workspace on its conversations, which is where this run's own conversation is. A run with
+      no workspace is a drawer conversation and the drawer is where it is read.
+    -->
   </li>
 </template>
 

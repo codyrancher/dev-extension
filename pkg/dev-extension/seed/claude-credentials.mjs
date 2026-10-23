@@ -257,7 +257,7 @@ function syncOnce() {
     // a timer, and this turn comes round every fifteen seconds: while a login was being
     // refreshed - a normal hour of a working day - every pane in the pod was killed and
     // started again, repeatedly, whatever it was doing. Whoever is using them decides when
-    // that is worth it: the Conversations page has a button, and it runs `reconnect` below.
+    // that is worth it: Settings has a button for the shared browser, and it runs `reconnect` below.
     say('a newer shared login arrived; panes keep the token they started with until they are restarted');
   }
 }

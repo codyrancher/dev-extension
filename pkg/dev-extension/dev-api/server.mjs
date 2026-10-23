@@ -2738,7 +2738,7 @@ async function githubBrowserSession() {
     return {
       signedIn,
       reachable: true,
-      detail:    signedIn ? '' : 'The shared browser is signed out of GitHub. Open it from the Conversations page and sign in; evidence is uploaded as you, through its session.',
+      detail:    signedIn ? '' : 'The shared browser is signed out of GitHub. Open it from Settings and sign in; evidence is uploaded as you, through its session.',
     };
   } catch (e) {
     return { signedIn: false, reachable: true, detail: `The shared browser could not be asked: ${ e?.message || e }` };
@@ -3057,7 +3057,7 @@ async function uploadToGithub(file, hostUrl) {
         })).catch(() => null);
         const where = seen ? `it ended on ${ seen.url } ("${ seen.title }")` : 'and the page could not be read';
         const why = !seen ? ''
-          : seen.login ? ' That is a sign-in page: the shared browser is signed out of GitHub, so open it from the Conversations page and sign in.'
+          : seen.login ? ' That is a sign-in page: the shared browser is signed out of GitHub, so open it from Settings and sign in.'
             : seen.notFound ? ' That is a 404: the pull request is not where this looked for it, which usually means the workspace is pointed at the wrong repository.'
               : ' The browser is signed in and the page loaded, so this is a page GitHub no longer gives the classic uploader - the upload needs another way in.';
 

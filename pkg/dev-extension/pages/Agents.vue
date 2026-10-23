@@ -1,7 +1,8 @@
 <script>
 // The agents: definitions that start conversations by themselves (agent-defs.ts). The
-// conversations themselves, live, are the Conversations page - which is also where the shared
-// GitHub browser is opened from.
+// conversations themselves, live, are in the workspace they belong to and in the drawer; the
+// page that listed them all is gone, and the shared GitHub browser it also opened is in
+// Settings now.
 import AgentCards from '../components/AgentCards.vue';
 
 export default {

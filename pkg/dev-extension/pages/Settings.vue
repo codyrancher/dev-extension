@@ -28,7 +28,7 @@ import { LabeledInput } from '@components/Form/LabeledInput';
 import BrandImage from '@shell/components/BrandImage';
 import {
   setSecretKeys, saveSecrets, secretValue, migrateGithubToken,
-  listCloudCredentials, setCloudCredentialPropagate, installProblems
+  listCloudCredentials, setCloudCredentialPropagate, installProblems, globalBrowserUrl
 } from '../api';
 import { GLOBAL_SECRETS, SECRET_GROUPS } from '../secrets';
 import { listApps } from '../apps';
@@ -156,6 +156,16 @@ export default {
   },
 
   methods: {
+    /**
+     * The shared Chromium, in a tab of its own.
+     *
+     * A new window rather than anything in the page: it is a browser, it holds a real GitHub
+     * session, and signing in is something a person does in a browser chrome they recognise.
+     */
+    openGithubBrowser() {
+      window.open(globalBrowserUrl(), '_blank', 'noopener');
+    },
+
     /** Hold new conversations with this CLI from now on. */
     async setCli(id) {
       this.cli = id;
@@ -781,6 +791,31 @@ export default {
         @click="showFiles = true"
       >
         Browse the filesystem
+      </RcButton>
+    </section>
+
+    <!--
+      The one Chromium every workspace shares, and the one thing a person has to do to it.
+      
+      It holds the github.com session that evidence is uploaded through, so when a review will
+      not submit because the uploader never appeared, this is where to come. It used to be a
+      button on the Conversations page, which is gone - and it never belonged there anyway: a
+      browser everything shares is a setting, not a property of one conversation.
+    -->
+    <section class="dev-settings__card">
+      <div class="dev-settings__card-head">
+        <i class="dev-settings__card-icon icon icon-globe" />
+        <div class="dev-settings__card-title">
+          <h3>Shared GitHub browser</h3>
+          <p>One Chromium for the whole dashboard, signed in to GitHub as you. Evidence attached to a review - a screenshot, a recording - is uploaded through its session, so a review that will not submit because GitHub's uploader never appeared is usually this being signed out. Open it and sign in; nothing else needs doing.</p>
+        </div>
+      </div>
+
+      <RcButton
+        secondary
+        @click="openGithubBrowser"
+      >
+        Open the GitHub browser
       </RcButton>
     </section>
 

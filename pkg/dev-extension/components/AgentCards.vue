@@ -15,7 +15,7 @@ import {
 } from '../agent-defs';
 import { readSkill } from '../skills';
 import {
-  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, AGENT_EDIT_ROUTE, CONVERSATIONS_ROUTE, DEV_API_IN_CLUSTER
+  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, AGENT_EDIT_ROUTE, DEV_API_IN_CLUSTER
 } from '../config/constants';
 
 /** How many runs a card shows before the rest go behind its History link. */
@@ -125,7 +125,7 @@ export default {
     },
 
 
-    /** The run's own conversation, on the Conversations page: what it said and did, with its artifacts. */
+    /** The run's own conversation: what it said and did, with its artifacts. */
 
     apiUrl(def) {
       return `${ DEV_API_IN_CLUSTER }/agents/${ def.name }/trigger`;
