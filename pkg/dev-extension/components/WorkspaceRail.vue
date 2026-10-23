@@ -1753,7 +1753,12 @@ export default {
         const updated = await run();
 
         // `deleteComment` answers with nothing, which is how a removal is told from an edit.
-        amendPrComment(this.status.pr, c.id, updated?.id ? updated : null);
+        //
+        // With the repository, which this was missing. The cache is keyed `<repo>#<number>`, so
+        // on a workspace that is not rancher/dashboard the amend landed under a key nothing
+        // reads and the edit stayed invisible until the next full read of the pull request -
+        // the comment on screen still saying what it said before it was changed.
+        amendPrComment(this.status.pr, c.id, updated?.id ? updated : null, this.repo);
       } catch (e) {
         this.error = e?.message || String(e);
         this.commentBusy = 0;

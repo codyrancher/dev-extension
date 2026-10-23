@@ -446,7 +446,20 @@ const CODE_LANG: Record<string, string> = {
   '.ts': 'ts', '.js': 'js', '.mjs': 'js', '.vue': 'vue', '.json': 'json', '.yaml': 'yaml', '.yml': 'yaml', '.sh': 'bash', '.log': 'text', '.txt': 'text', '.md': 'md',
 };
 const ATTACH_MARKER = /\[\[attach:([^\]]+)\]\]/g;
-const MAX_INLINE = 60_000;
+/*
+ * How much of a text attachment goes into the comment itself.
+ *
+ * It was 60,000 characters, which is not a quotation - it is the whole file. A GitHub comment
+ * holds 65,536, so one log could fill the comment on its own and push the finding that was
+ * supposed to be the point of it off the top; two of them cannot be posted at all. And a
+ * reviewer opening a thread to read one sentence about one line does not want a run's entire
+ * output above it.
+ *
+ * 4,000 is a long look at a test failure and still something a person scrolls past rather than
+ * through. What does not fit is said rather than silently dropped, with the path, because the
+ * file is in the workspace and can be read there.
+ */
+const MAX_INLINE = 4_000;
 
 /**
  * A screenshot or a recording as markdown GitHub will render, having put the bytes on its CDN.
@@ -496,8 +509,17 @@ async function bodyWithEvidence(num: number, c: LocalComment, repo: string): Pro
     if (CODE_LANG[ext] && item.found) {
       const text = await fetch(artifactUrl(num, item.path), { credentials: 'same-origin' }).then((r) => (r.ok ? r.text() : '')).catch(() => '');
 
-      if (text && text.length <= MAX_INLINE) {
-        embed = `\`\`\`${ CODE_LANG[ext] }\n${ text.replace(/\`\`\`/g, '\u0060\u0060\u0060') }\n\`\`\``;
+      if (text) {
+        const fenced = (t: string) => `\`\`\`${ CODE_LANG[ext] }\n${ t.replace(/\`\`\`/g, '\u0060\u0060\u0060') }\n\`\`\``;
+        // The tail, not the head: a log's reason for existing is at the end of it.
+        const kept = text.length <= MAX_INLINE ? text : text.slice(-MAX_INLINE);
+        const trimmed = kept.length < text.length
+          ? `_The last ${ kept.length } of ${ text.length } characters of \`${ item.name }\`; the whole file is in the workspace at \`${ item.path }\`._\n\n`
+          : '';
+
+        // Folded, so a comment is its finding with the evidence under it rather than the other
+        // way round. GitHub renders <details> in a comment and opens it on a click.
+        embed = `${ trimmed }<details><summary>${ item.name }</summary>\n\n${ fenced(kept) }\n\n</details>`;
       }
     }
 
