@@ -34,7 +34,7 @@ import StageSteps from './StageSteps.vue';
 import CodeView from './code/CodeView.vue';
 import { fromRailRows } from './code/rows';
 import {
-  readStatusNow, knownStatus, provisionalStatus, agentLabel, displayTone, setManualStage, clearManualStage, isManual
+  readStatusNow, knownStatus, provisionalStatus, agentLabel, displayTone, setManualStage, clearManualStage, isManual, workspaceTitle
 } from '../workspace-status';
 import {
   stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
@@ -115,8 +115,6 @@ export default {
       default: '',
     },
   },
-
-  emits: ['open-tab', 'switch-view'],
 
   data() {
     return {
@@ -341,8 +339,14 @@ export default {
       return !!this.viewing && this.viewing !== this.current;
     },
 
-    agentLine() {
-      return this.status ? agentLabel(this.status.agent) : '';
+    /**
+     * What to call this workspace, which is what the sidebar row calls it.
+     *
+     * `workspaceTitle` owns the rule; the status's title is passed as the fallback because a
+     * downstream workspace carries none of its own. See workspace-status.ts.
+     */
+    title() {
+      return workspaceTitle(this.workspace, this.status?.title || '');
     },
 
     /**
@@ -500,7 +504,10 @@ export default {
           };
         case 'draft':
           return {
-            headline: 'The draft PR is ready for you to read', detail: 'Read the description and the change on the left. Marking it ready is yours; so is the reviewer, on GitHub.', primary: { label: 'Mark ready for review', run: 'markReady' }, tools: [{ label: 'Ask for a change', run: 'focusAsk' }],
+            // No "Ask for a change" beside it: the conversation is on this page, under this
+            // bar, with its own box to type in. A button whose whole job is to move the cursor
+            // into a box the reader can already see is a button that reads as another decision.
+            headline: 'The draft PR is ready for you to read', detail: 'Read the description and the change on the left. Marking it ready is yours; so is the reviewer, on GitHub.', primary: { label: 'Mark ready for review', run: 'markReady' }, tools: [],
           };
         case 'review':
           return {
@@ -2586,27 +2593,14 @@ export default {
       <div class="workspace-rail__head">
         <div class="workspace-rail__title">
           <!--
-            The name, what the agent is doing, and the way out of this view, in that order and
-            against each other. What the agent is doing belongs to the name, not to the row: on
-            the far side of the header it read as one more link among the PR's.
+            The piece of work, named the way the list beside it names it - see workspaceTitle.
+            The pod's name, what the agent is doing and the subject on a second line were all
+            here and are not now: the row in the nav says the title, so a page that answered
+            with `lte-issue-7468` and put the title underneath read as a different workspace
+            from the one that was clicked. What the agent is doing is on its conversation's tab,
+            where the conversation is; the issue and the PR are on the row's hover card.
           -->
-          <div class="workspace-rail__name-row">
-            <span class="workspace-rail__name">{{ workspace.name }}</span>
-            <span
-              v-if="agentLine"
-              class="workspace-rail__agent"
-              :class="`workspace-rail__agent--${ status.agent }`"
-            >({{ agentLine }})</span>
-            <a
-              class="workspace-rail__view-switch"
-              href="#"
-              @click.prevent="$emit('switch-view', 'tabs')"
-            >(Tabbed view)</a>
-          </div>
-          <span
-            v-if="workspace.title || status.title"
-            class="workspace-rail__subject"
-          >{{ workspace.title || status.title }}</span>
+          <span class="workspace-rail__name">{{ title }}</span>
           <!--
             A question, at the top, where a page is read from. One link per conversation that
             asked something and stopped; pressing it opens the box that conversation is drawn in
@@ -2628,15 +2622,6 @@ export default {
               <span class="workspace-rail__ask-note">needs an answer</span>
             </button>
           </div>
-        </div>
-        <div class="workspace-rail__meta">
-          <a
-            v-for="link in status.links"
-            :key="link.url"
-            :href="link.url"
-            target="_blank"
-            rel="noopener noreferrer"
-          >{{ link.label }}</a>
         </div>
       </div>
 
@@ -3753,37 +3738,15 @@ export default {
       This workspace is not named for an issue or a PR, so it has no stages.
     </div>
     <!--
-      The other ways to look at this work. The conversation itself used to sit here behind a
-      list and a button; it is up under the action bar now, so what is left is the views, which
-      open over the page (DevModal) rather than instead of it.
+      Where the bigger view of a conversation is drawn.
+
+      An "Other views" row sat here - Review the branch, PR file by file, Browser, Share - four
+      buttons opening over the page what the page already holds: the branch and the PR are what
+      "What came back" is made of, the browser and the share are tools on the tools strip. Four
+      doors into rooms you are standing in. The modals they opened are still reachable from the
+      things that are actually about them.
     -->
     <section class="workspace-rail__col workspace-rail__col--pane">
-      <div class="workspace-rail__col-head">
-        <h3 class="workspace-rail__col-title">Other views</h3>
-        <div class="workspace-rail__views">
-          <button
-            type="button"
-            class="workspace-rail__back"
-            @click="openTab('review')"
-          >Review the branch</button>
-          <button
-            v-if="(status && status.pr) || issue"
-            type="button"
-            class="workspace-rail__back"
-            @click="openTab('pr')"
-          >PR file by file</button>
-          <button
-            type="button"
-            class="workspace-rail__back"
-            @click="openTab('browser')"
-          >Browser</button>
-          <button
-            type="button"
-            class="workspace-rail__back"
-            @click="openTab('share')"
-          >Share</button>
-        </div>
-      </div>
       <!-- The bigger view of whichever conversation the panel above is showing. -->
       <DevModal
         v-if="popped"
@@ -3847,29 +3810,6 @@ export default {
   &__name {
     font-size:   20px;
     font-weight: 700;
-  }
-
-  &__subject {
-    color: var(--muted);
-  }
-
-  &__meta {
-    display:     flex;
-    align-items: center;
-    gap:         16px;
-    flex:        0 0 auto;
-    font-size:   13px;
-    white-space: nowrap;
-  }
-
-  &__agent {
-    display:     inline-flex;
-    align-items: center;
-    gap:         6px;
-    color:       var(--muted);
-
-    &--working { color: var(--status-working); }
-    &--input { color: var(--status-input); }
   }
 
   /*
@@ -4220,18 +4160,6 @@ export default {
     padding: 10px 12px;
   }
 
-  // The running agent under the action bar. A fixed height on purpose: it is something to
-  // glance at while reading the stage below it, and left to grow it took the whole page.
-  // The name and what the agent is doing read as one thing, so the gap between them is a word
-  // space rather than the header's.
-  &__name-row {
-    display:     flex;
-    align-items: baseline;
-    gap:         6px;
-    flex-wrap:   wrap;
-    min-width:   0;
-  }
-
   // No box of its own: the tabbed strip below is the box. A bordered, padded wrapper around it
   // made two boxes nested, which is what this drops.
   /*
@@ -4523,11 +4451,6 @@ export default {
     color:           #fff;
     font-size:       11px;
     font-weight:     700;
-  }
-
-  &__views {
-    display: flex;
-    gap:     12px;
   }
 
   &__list--plain {

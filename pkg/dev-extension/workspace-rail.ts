@@ -1240,13 +1240,26 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage, reviewed 
         { label: 'Open the PR', skill: 'my-pr-create', note: 'Branch, push, upload the media, open the draft PR' },
       ];
     case 'draft':
+      /*
+       * One, not three. Checklist and Rewrite the body both went.
+       *
+       * Both act on a PR body that is already written - one ticking its template's boxes, the
+       * other composing the body again from that template - and a draft PR the agent has just
+       * opened has both of those done. What is left at this stage is the thing that is not done
+       * yet: the recording of the bug, which is what a reviewer opens the PR wanting to see.
+       *
+       * The skills are still there to be run from a conversation. They are not a button on the
+       * one row a person reads before deciding whether to mark the PR ready.
+       */
       return [
-        { label: 'Checklist', skill: 'my-pr-checklist', note: 'Work every item of the PR template checklist' },
-        { label: 'Rewrite the body', skill: 'my-pr-fill-template', note: 'Compose the PR body from the template' },
         { label: 'Demo the issue', skill: 'my-pr-demo-issue', note: 'Record the bug on a build without the fix' },
       ];
     case 'review':
-      return [{ label: 'Checklist', skill: 'my-pr-checklist', note: 'Work every item of the PR template checklist' }];
+      // Nothing. The PR is with a reviewer and the stage's own words are "nothing here is yours
+      // until someone comments" - so the one button offered here was Checklist, which ticks
+      // boxes on a body the reviewer is already reading. A pass over your own PR while somebody
+      // else reviews it is work that lands as a force-push under them.
+      return [];
     case 'feedback':
       return [
         { label: 'Address the feedback', skill: 'my-pr-address-feedback', note: 'Fix what has merit, answer what does not, push' },

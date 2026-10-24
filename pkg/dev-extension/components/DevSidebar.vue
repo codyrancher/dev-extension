@@ -17,7 +17,7 @@ import {
   listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp, workspaceInstance, RANCHER_SHARE_APP
 } from '../apps';
 import {
-  LEGACY_WORKSPACE_APPS, LTE_PREFIX, isLte, LABEL_CLUSTER, APP_INSTANCE
+  LEGACY_WORKSPACE_APPS, LABEL_CLUSTER, APP_INSTANCE
 } from '../config/constants';
 import { readPrefs, shownApps } from '../prefs';
 import {
@@ -27,7 +27,7 @@ import {
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
 import {
-  workspaceStatuses, agentLabel, statusLine, stageName, attentionTone, attentionReason, autoStopIdle
+  workspaceStatuses, agentLabel, statusLine, stageName, attentionTone, attentionReason, autoStopIdle, workspaceTitle
 } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import { ensureCertControllers } from '../certs';
@@ -692,21 +692,13 @@ export default {
      * rather than wrapped; the full name and title are on the row's hover card.
      */
     rowLabel(workspace, resolved = '') {
-      // The title is the label when there is one: the row's job is to say which piece of work this
-      // is, and the title does that better than a number. It comes from the workspace where that
-      // carries it, else from the GitHub status read for it (`resolved`) - a downstream workspace
-      // has no title of its own here, so without the status fallback its row was the bare name. The
-      // `issue-`/`pr-` name is the last resort, and there it keeps its prefix, because the bare
-      // number would be a mystery with nothing beside it. The full name is always on the hover card.
-      const full = workspace.title || resolved || '';
-      const title = full
-        ? (full.length > 42 ? `${ full.slice(0, 42).trimEnd() }…` : full)
-        : '';
-      // A leased workspace says so in the nav, whatever its row happens to be labelled with.
-      // The marker is in the name, so a row that falls back to the name already carries it; a
-      // row showing a title would otherwise look exactly like an all-in-one workspace, and the
-      // two are worth telling apart at a glance - one is holding a dev server, the other is not.
-      const parts = [title && isLte(workspace.name) ? `${ LTE_PREFIX }${ title }` : (title || workspace.name)];
+      // What to call this workspace is `workspaceTitle`'s rule, shared with the workspace page's
+      // own heading so the row and the page it opens agree. All that is left here is what is
+      // true of a row and not of a heading: it has one line, so a long title is trimmed to it
+      // (the full one is on the hover card), and the cluster is appended when it is not the
+      // local one, which is where most workspaces are.
+      const full = workspaceTitle(workspace, resolved);
+      const parts = [full.length > 42 ? `${ full.slice(0, 42).trimEnd() }…` : full];
 
       if (workspace.cluster && workspace.cluster !== 'local') {
         parts.push(workspace.cluster);

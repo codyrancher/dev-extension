@@ -41,7 +41,7 @@ import {
   getWorkspace, listAllWorkspaces, setWorkspaceRunning, workspacePod, workspaceLogTail, workspaceServing, setCluster, activeCluster, workspaceFromInstance, missingCluster
 } from '../api';
 import {
-  rememberWorkspace, rememberTab, lastTab, workspaceView, rememberWorkspaceView
+  rememberWorkspace, rememberTab, lastTab
 } from '../recent';
 import {
   WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB, LABEL_CLUSTER, LABEL_ROLE, isLte
@@ -99,11 +99,6 @@ export default {
       framable:     false,
       /** The tab Tabbed is actually showing, which is what an unusable hash is corrected to. */
       active:       DEFAULT_WORKSPACE_TAB,
-      /**
-       * The rail or the tabs. The rail is the default; the tabs stay a link away, and a jump
-       * from the rail into one tab shows the tabs for this visit without changing the default.
-       */
-      view:         workspaceView(),
     };
   },
 
@@ -223,8 +218,16 @@ export default {
       return !!this.workspace && !this.workspace.preview && (this.prNumber > 0 || this.issueNumber > 0 || this.role === 'developer');
     },
 
+    /*
+     * The rail, whenever this workspace has one.
+     *
+     * It used to be a choice: the rail or the tabs, switched by a link in each and remembered
+     * across visits. Nobody switched. What is left is the rule that was always underneath -
+     * a workspace named for an issue or a PR is a piece of work with stages, and that is the
+     * rail; anything else (a preview, which has no pod to work in) is the tabs.
+     */
     showRail() {
-      return this.railable && this.view === 'rail';
+      return this.railable;
     },
 
   },
@@ -290,20 +293,6 @@ export default {
   },
 
   methods: {
-    /** The explicit switch: remembered, so the next workspace opens the same way. */
-    setView(view) {
-      this.view = view;
-      rememberWorkspaceView(view);
-    },
-
-    /** A jump from the rail into one tab: the tabs for now, the rail again next time. */
-    openTab(name) {
-      this.view = 'tabs';
-      this.seen[name] = true;
-      this.active = name;
-      this.$router.replace({ ...this.$route, hash: `#${ name }` }).catch(() => {});
-    },
-
     /**
      * A tab became the active one. Recorded so its content is mounted from here on, and
      * remembered so the next workspace opens on it.
@@ -662,27 +651,11 @@ export default {
       </p>
     </div>
 
-    <!--
-      Only the tabbed view needs a row of its own to get out of. The stage view puts its own
-      link in its header, beside the title and what the agent is doing, so this row would be a
-      second copy of it above the page.
-    -->
-    <div
-      v-if="!stopped && !notReady && railable && !showRail"
-      class="dev-workspace__switch"
-    >
-      <a
-        @click.prevent="setView('rail')"
-      >Stage view</a>
-    </div>
-
     <WorkspaceRail
       v-if="!stopped && !notReady && showRail"
       :workspace="workspace"
       :pr="prNumber"
       :issue="issueNumber"
-      @open-tab="openTab"
-      @switch-view="setView"
     />
 
     <!--
@@ -843,27 +816,6 @@ export default {
 
     &--message {
       padding: var(--dev-space-5);
-    }
-
-    // The way to the other view. In the flow rather than over it: floated in the corner it sat
-    // on top of whatever the page put there - the rail's primary button, most of the time.
-    &__switch {
-      display:         flex;
-      justify-content: flex-end;
-      flex:            0 0 auto;
-      // No height of its own: it is laid over the tab strip's row, which is already there. A
-      // row of the page for one 12px link is a row the conversation under it does not get.
-      height:          0;
-      padding:         0 24px;
-      overflow:        visible;
-
-      a {
-        position:   relative;
-        z-index:    2;
-        top:        10px;
-        font-size:  12px;
-        cursor:     pointer;
-      }
     }
 
     // The tools strip sits above the tabs, full width and out of their flex.

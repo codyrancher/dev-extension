@@ -10,7 +10,7 @@ import { prDetail, DEFAULT_REPO } from './reviews';
 import { linkedPullRequest, branchPullRequest, issueBody } from './github';
 import { conversationStates, agentConversations, ConversationState } from './conversations';
 import { setWorkspaceRunning } from './api';
-import { isLte } from './config/constants';
+import { isLte, LTE_PREFIX } from './config/constants';
 import { reconcileStage } from './stages';
 import type { DerivedStage, StageRecord } from './stages';
 
@@ -193,6 +193,33 @@ export function attentionReason(status: Pick<WorkspaceStatus, 'tone' | 'agent'>)
 
 export function agentLabel(state: AgentState): string {
   return AGENT_LABEL[state];
+}
+
+/**
+ * What to call a workspace in front of a person: the piece of work, not the pod.
+ *
+ * One rule, in one place, because it is read in two: the sidebar row and the workspace page's
+ * own heading. They disagreed - the row said "Migrate project from Webpack to Vite", the page
+ * said "lte-issue-7468" - so the list and the thing the list opened looked like two different
+ * workspaces.
+ *
+ * The title is the name of the work: it comes from the workspace where that carries one, else
+ * from the GitHub status read for it (`resolved`), because a downstream workspace has no title
+ * of its own. The `issue-`/`pr-` name is the last resort, and keeps its prefix there, since a
+ * bare number with nothing beside it is a mystery. A leased workspace says so either way: the
+ * marker is in its name, so a heading that falls back to the name already carries it, and one
+ * showing a title would otherwise look exactly like an all-in-one workspace.
+ *
+ * Untrimmed. Where it has to fit a row, the caller trims it - see DevSidebar's `rowLabel`.
+ */
+export function workspaceTitle(workspace: { name: string; title?: string }, resolved = ''): string {
+  const title = workspace.title || resolved || '';
+
+  if (!title) {
+    return workspace.name;
+  }
+
+  return isLte(workspace.name) ? `${ LTE_PREFIX }${ title }` : title;
 }
 
 // The agent's state is shown by the status disc's colour (see displayTone), not by a glyph of its
