@@ -10,9 +10,13 @@
 // It goes in ConversationTabbed's `tab-header` slot. Purely presentational: it emits, and the page
 // that owns the conversation does the renaming, popping and ending, because those are API calls.
 import { agentLabel } from '../../workspace-status';
+import { cliMark } from '../../agent-clis.mjs';
+import CliMark from '../CliMark.vue';
 
 export default {
   name: 'ConversationTab',
+
+  components: { CliMark },
 
   emits: ['rename', 'popout', 'close'],
 
@@ -34,6 +38,19 @@ export default {
       type:    Boolean,
       default: false,
     },
+
+    /**
+     * Which CLI holds this conversation, for the mark beside the dot. '' draws none.
+     *
+     * The dot says what the pane is DOING; this says what it IS, which you cannot otherwise
+     * tell without opening the tab - and with two CLIs in one strip that is the first thing you
+     * want to know. Absent for a conversation that has never run, because nothing has decided
+     * yet.
+     */
+    cli: {
+      type:    String,
+      default: '',
+    },
   },
 
   data() {
@@ -50,6 +67,11 @@ export default {
 
     title() {
       return this.conversation.title || 'Conversation';
+    },
+
+    /** The CLI's mark, or '' for a conversation whose CLI nothing has decided. */
+    mark() {
+      return cliMark(this.cli || this.conversation.cli || '');
     },
   },
 
@@ -114,6 +136,12 @@ export default {
         :class="`conversation-tab__dot--${ agent }`"
         :title="label"
       />
+      <CliMark
+        v-if="mark"
+        class="conversation-tab__cli"
+        :mark="mark"
+        :size="12"
+      />
       <span
         class="conversation-tab__name"
         :title="title"
@@ -174,6 +202,11 @@ export default {
       &--input    { background: var(--status-input); }
       &--finished { background: var(--status-done); }
       &--idle     { background: var(--status-idle); }
+    }
+
+    &__cli {
+      flex:         0 0 auto;
+      margin-right: 6px;
     }
 
     &__name {

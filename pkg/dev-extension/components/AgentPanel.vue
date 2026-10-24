@@ -42,8 +42,10 @@ import { isAdminUser } from '@shell/store/type-map';
 import '../design/studio';
 import PodTerminal from './PodTerminal';
 import SplitButton from './SplitButton.vue';
-import { CLI_CHOICES, cliMark } from '../agent-clis.mjs';
-import CliMark from './CliMark.vue';
+import { CLI_CHOICES } from '../agent-clis.mjs';
+import Tab from '@shell/components/Tabbed/Tab';
+import ConversationTabbed from './tabbed/ConversationTabbed.vue';
+import ConversationTab from './tabbed/ConversationTab.vue';
 import { readPrefs } from '../prefs';
 import SIcon from './ui/SIcon.vue';
 import SMenu from './ui/SMenu.vue';
@@ -130,7 +132,7 @@ export default {
   name: 'AgentPanel',
 
   components: {
-    PodTerminal, SIcon, SMenu, SplitButton, CliMark },
+    PodTerminal, SIcon, SMenu, SplitButton, Tab, ConversationTabbed, ConversationTab },
 
   data() {
     const stored = readDrawerState();
@@ -152,8 +154,6 @@ export default {
       // and its scrollback is intact, while one nobody has opened here holds no socket at all.
       seen:     [],
       loading:  false,
-      /** The id being renamed, and the text in the box, or null when nothing is. */
-      renaming: null,
       error:    '',
       /** The Rancher user the pod is currently acting as, or '' when it has no identity. */
       identity: '',
@@ -164,16 +164,6 @@ export default {
       order:     stored.order,
       /** The drag in progress, or null. See onGrab. */
       drag:      null,
-      /** The tab being dragged along the row, or null. See onTabGrab. */
-      tabDrag:   null,
-      /** How far the dragged tab is drawn from its slot, in pixels. See liftToPointer. */
-      tabOffset: 0,
-      // Set for the moment between a drag ending and the click that mouseup produces, which
-      // would otherwise select whichever tab had slid under the pointer. See onTabClick.
-      dropped:   false,
-      // Collected with function refs rather than string ones, which is what Tabbed does and for
-      // the same reason: a string ref inside v-for is an array whose order is not the list's.
-      renameRef:  null,
     };
   },
 
@@ -190,11 +180,6 @@ export default {
      */
     admin() {
       return isAdminUser(this.$store.getters);
-    },
-
-    /** The conversation being dragged, once the pointer has said that is what this is. */
-    lifted() {
-      return this.tabDrag?.moved ? this.tabDrag.id : '';
     },
 
     /**
@@ -298,7 +283,6 @@ export default {
 
     this.stopPolling();
     this.endGrab();
-    this.endTabDrag();
     window.removeEventListener('resize', this.clamp);
   },
 
@@ -553,19 +537,6 @@ export default {
       });
     },
 
-    /** The provider's mark for a conversation's CLI, or null for one that has never run. */
-    cliMark,
-
-    /** The status dot's tooltip: what its colour means, in words, for a hover. */
-    statusLabel(state) {
-      return {
-        working:  'Agent working',
-        input:    'Agent waiting for input',
-        idle:     'Agent idle',
-        finished: 'Agent finished',
-      }[state] || '';
-    },
-
     /** Show one conversation, mounting its terminal the first time. */
     select(id) {
       if (!id) {
@@ -579,341 +550,6 @@ export default {
       }
 
       this.remember();
-    },
-
-    // -----------------------------------------------------------------------
-    // Rearranging: dragging a tab along the row
-    // -----------------------------------------------------------------------
-
-    /**
-     * A click on a tab, unless it was the end of a drag.
-     *
-     * mouseup fires a click, and by then the tab under the pointer is not the tab the drag
-     * started on - the whole point of the drag is that the row has moved underneath. Selecting
-     * on mousedown instead would take this away and take something worse with it: a tab nobody
-     * has opened yet mounts its terminal when it is selected, so dragging one into place would
-     * open a shell in the pod that nobody asked for.
-     */
-    onTabClick(id) {
-      if (!this.dropped) {
-        this.select(id);
-      }
-    },
-
-    /**
-     * Start dragging a tab, once the pointer has said that is what this is.
-     *
-     * Nothing happens here but measuring: where the press was, and where inside the tab it
-     * landed, so the tab does not jump under the pointer when it lifts. The drag itself begins
-     * in onTabDrag, DRAG_THRESHOLD pixels later, so a press that turns out to be a click leaves
-     * the row exactly as it found it. Listeners go on the window rather than the tab for the
-     * reason onGrab gives: a tab that stopped tracking when the pointer left it would be a tab
-     * that cannot be dragged past its neighbour.
-     */
-    onTabGrab(id, event) {
-      // Left button only - middle closes the tab - and not on the hover controls, which have
-      // their own jobs, nor on the rename box, where the pointer is selecting text.
-      if (event.button !== 0 || this.renaming?.id === id || event.target.closest('.mc-agent__tab-control')) {
-        return;
-      }
-
-      this.tabOffset = 0;
-      this.tabDrag = {
-        id,
-        startX:    event.clientX,
-        x:         event.clientX,
-        /** Where in the tab the pointer took hold, measured from its left edge. */
-        grab:      event.clientX - event.currentTarget.getBoundingClientRect().left,
-        moved:     false,
-        cancelled: false,
-        frame:     null,
-      };
-
-      window.addEventListener('mousemove', this.onTabDrag);
-      window.addEventListener('mouseup', this.endTabDrag);
-      window.addEventListener('keydown', this.onTabDragKey, true);
-    },
-
-    onTabDrag(event) {
-      const drag = this.tabDrag;
-
-      if (!drag || drag.cancelled) {
-        return;
-      }
-      if (!drag.moved && Math.abs(event.clientX - drag.startX) < DRAG_THRESHOLD) {
-        return;
-      }
-      if (!drag.moved) {
-        drag.moved = true;
-        drag.frame = requestAnimationFrame(this.tabFrame);
-      }
-      drag.x = event.clientX;
-      // Dragging is not selecting: the labels would otherwise highlight across the row as the
-      // pointer crosses them.
-      event.preventDefault();
-    },
-
-    /**
-     * One frame of the drag.
-     *
-     * A frame rather than a mousemove, because two of the three things here have to keep
-     * happening when the pointer is not moving: a drag parked against the end of the row goes
-     * on scrolling it, and the tabs it scrolls past go on being passed. The third, putting the
-     * lifted tab under the pointer, has to be measured after Vue has laid the row out again -
-     * which a frame is, since Vue patches the DOM on a microtask and microtasks run first.
-     */
-    tabFrame() {
-      const drag = this.tabDrag;
-
-      if (!drag || drag.cancelled) {
-        return;
-      }
-      this.edgeScroll();
-      this.reorderAt(drag.x);
-      this.liftToPointer();
-      drag.frame = requestAnimationFrame(this.tabFrame);
-    },
-
-    /**
-     * Where each tab sits in the row, with whatever is being drawn on it taken off.
-     *
-     * Every measurement in a drag is asking where the row has *put* a tab, and two different
-     * things here are drawing tabs somewhere else: the lift, which follows the pointer, and
-     * the slide, which is a tab travelling to a place it has already been given. A rect is
-     * where a tab is being drawn, so both would be measured instead of the slot - the dragged
-     * one would chase the pointer it is supposed to be compared against, and a tab still
-     * travelling would be passed at the position it is leaving.
-     *
-     * So the correction is one rule rather than one special case: subtract the transform that
-     * is actually on the element, interpolated value and all. A transform does not affect
-     * layout, so what is left is the slot.
-     */
-    tabSlots() {
-      const row = this.$refs.tabs;
-
-      if (!row) {
-        return [];
-      }
-
-      return [...row.querySelectorAll('.mc-agent__tab')].map((el) => {
-        const box = el.getBoundingClientRect();
-        const shift = new DOMMatrixReadOnly(getComputedStyle(el).transform).m41;
-
-        return { left: box.left - shift, right: box.right - shift, width: box.width };
-      });
-    },
-
-    /**
-     * Move the dragged tab if the pointer has passed a neighbour.
-     *
-     * "Passed" is the midpoint of the neighbour, measured in the direction of travel. Swapping
-     * as soon as the pointer is anywhere over a neighbour oscillates when the two are different
-     * widths: the move puts the pointer back over the other one, which moves it back. The
-     * midpoint rule cannot, because after the move the pointer is behind it.
-     */
-    reorderAt(clientX) {
-      const drag = this.tabDrag;
-
-      if (!drag) {
-        return;
-      }
-      const slots = this.tabSlots();
-      const from = this.sessions.findIndex((session) => session.id === drag.id);
-      const over = slots.findIndex((slot) => clientX >= slot.left && clientX <= slot.right);
-
-      if (from < 0 || over < 0 || over === from) {
-        return;
-      }
-      const middle = slots[over].left + (slots[over].width / 2);
-
-      if (over > from ? clientX > middle : clientX < middle) {
-        this.moveTab(from, over);
-      }
-    },
-
-    /**
-     * Draw the dragged tab under the pointer, held inside the row.
-     *
-     * Inside, because this is rearranging rather than tearing out: a tab that could be dragged
-     * off the end would be offering something the row does not do. While it is held at an end
-     * edgeScroll is bringing the rest of the row past it, which is the same gesture and reads
-     * as one.
-     */
-    liftToPointer() {
-      const drag = this.tabDrag;
-      const row = this.$refs.tabs;
-      const slot = this.tabSlots()[this.sessions.findIndex((session) => session.id === drag?.id)];
-
-      if (!drag || !row || !slot) {
-        return;
-      }
-      const box = row.getBoundingClientRect();
-      const wanted = drag.x - drag.grab;
-      const held = Math.min(Math.max(wanted, box.left), Math.max(box.left, box.right - slot.width));
-
-      this.tabOffset = held - slot.left;
-    },
-
-    /**
-     * Scroll the row while the drag is held against either end.
-     *
-     * The row scrolls sideways when there are more conversations than fit, and a drag that
-     * could only move tabs it can already see would not reach the ones it cannot.
-     */
-    edgeScroll() {
-      const drag = this.tabDrag;
-      const row = this.$refs.tabs;
-
-      if (!drag || !row) {
-        return;
-      }
-      const box = row.getBoundingClientRect();
-
-      if (drag.x < box.left + EDGE_ZONE) {
-        row.scrollLeft -= EDGE_SCROLL;
-      } else if (drag.x > box.right - EDGE_ZONE) {
-        row.scrollLeft += EDGE_SCROLL;
-      }
-    },
-
-    /**
-     * Escape puts the row back the way it was, which is what Escape means everywhere else.
-     *
-     * The drag is marked rather than ended, because the button is still down and the click it
-     * will produce still has to be swallowed: ending here would leave that click to select
-     * whichever tab the pointer happens to be over.
-     */
-    onTabDragKey(event) {
-      if (event.key !== 'Escape' || !this.tabDrag || this.tabDrag.cancelled) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      this.tabDrag.cancelled = true;
-      this.tabOffset = 0;
-      this.sessions = arrange(this.sessions, this.order);
-    },
-
-    endTabDrag() {
-      const drag = this.tabDrag;
-
-      if (!drag) {
-        return;
-      }
-      if (drag.frame) {
-        cancelAnimationFrame(drag.frame);
-      }
-      this.tabDrag = null;
-      this.tabOffset = 0;
-      window.removeEventListener('mousemove', this.onTabDrag);
-      window.removeEventListener('mouseup', this.endTabDrag);
-      window.removeEventListener('keydown', this.onTabDragKey, true);
-
-      if (!drag.moved) {
-        return;
-      }
-      // The click this mouseup is about to fire lands on whatever is under the pointer now,
-      // which after a drag is not the tab that was pressed. Cleared on a timeout rather than on
-      // the next tick: the click is dispatched in the same task as this mouseup, and a
-      // macrotask is the first thing that runs after it.
-      this.dropped = true;
-      setTimeout(() => {
-        this.dropped = false;
-      }, 0);
-
-      if (!drag.cancelled) {
-        this.remember();
-      }
-    },
-
-    /** Put one tab at another's index, without disturbing the rest. */
-    moveTab(from, to) {
-      const row = this.$refs.tabs;
-      const was = row ? new Map([...row.querySelectorAll('.mc-agent__tab')]
-        .map((el, i) => [this.sessions[i]?.id, el.getBoundingClientRect().left])) : null;
-      const next = [...this.sessions];
-      const [moved] = next.splice(from, 1);
-
-      next.splice(to, 0, moved);
-      this.sessions = next;
-
-      if (was) {
-        this.$nextTick(() => this.slideAside(was));
-      }
-    },
-
-    /**
-     * Slide the tabs that moved aside, rather than letting them jump.
-     *
-     * The row reorders by re-rendering, and a re-render is not something CSS can transition -
-     * the tab is simply somewhere else on the next frame. So the oldest trick: put each one
-     * back where it was with a transform, then take the transform off with the transition on,
-     * and it travels the distance it had already jumped. The dragged tab is left out; its
-     * transform is the pointer's and must not be animated behind it.
-     */
-    slideAside(was) {
-      const row = this.$refs.tabs;
-
-      if (!row) {
-        return;
-      }
-      const put = [];
-
-      [...row.querySelectorAll('.mc-agent__tab')].forEach((el, i) => {
-        const id = this.sessions[i]?.id;
-        const before = was.get(id);
-
-        if (!id || before === undefined || id === this.tabDrag?.id) {
-          return;
-        }
-        const delta = before - el.getBoundingClientRect().left;
-
-        if (!delta) {
-          return;
-        }
-        el.style.transition = 'none';
-        el.style.transform = `translateX(${ delta }px)`;
-        put.push(el);
-      });
-
-      if (!put.length) {
-        return;
-      }
-      // Measure, for the side effect: the browser has to lay the row out to answer, which
-      // commits that start position as a style of its own. Without the read the two writes
-      // either side of it coalesce into one and there is nothing to travel from.
-      //
-      // It has to be this frame. Taking the transform off in the next one instead left every
-      // tab parked at the position it was about to leave for the whole of the frame in
-      // between - and a drag asks where the tabs are once per frame, so the next reorder
-      // measured that parked position and started the next slide from it. Three tabs passed
-      // quickly and a tab was travelling from three places ago, which is the flicker: a snap
-      // out to the end of the row, then the slide back.
-      row.getBoundingClientRect();
-      put.forEach((el) => {
-        el.style.transition = '';
-        el.style.transform = '';
-      });
-    },
-
-    /**
-     * Move the focused tab one place, for a keyboard.
-     *
-     * The controls on a tab appear on focus as well as on hover so they can be reached without
-     * a mouse, and rearranging is the same promise. Alt rather than a bare arrow, because a
-     * bare arrow in a tablist is how focus moves between tabs and that is worth leaving free.
-     */
-    nudgeTab(id, step) {
-      const from = this.sessions.findIndex((session) => session.id === id);
-      const to = from + step;
-
-      if (from < 0 || to < 0 || to >= this.sessions.length) {
-        return;
-      }
-      this.moveTab(from, to);
-      this.remember();
-      // The tab moved; focus stayed on the element that was in its place.
-      this.$nextTick(() => this.$refs.tabs?.querySelectorAll('.mc-agent__tab')[to]?.focus());
     },
 
     /** Start another conversation. The pod picks the name; see startAgentSession for why. */
@@ -976,42 +612,43 @@ export default {
     // Naming
     // -----------------------------------------------------------------------
 
-    startRename(id) {
-      const session = this.sessions.find((entry) => entry.id === id);
-
-      if (!session) {
-        return;
-      }
-
-      this.select(id);
-      this.renaming = { id: session.id, title: session.title };
-      this.$nextTick(() => this.renameRef?.select());
+    /**
+     * A conversation by id, for the tab header to draw.
+     *
+     * The strip knows a tab by its name, which is the conversation's id; everything the header
+     * shows - the title, the dot, the CLI - is on the session.
+     */
+    byId(id) {
+      return this.sessions.find((entry) => entry.id === id) || null;
     },
 
-    async commitRename() {
-      const pending = this.renaming;
+    /** A tab became the active one. The strip decides which; this records it. */
+    onTabChanged({ tab }) {
+      if (tab?.name) {
+        this.select(tab.name);
+      }
+    },
 
-      if (!pending) {
+    /**
+     * A conversation renamed from its tab.
+     *
+     * Optimistic, then confirmed by a re-read: the name lives in the pod, so this is the one
+     * place where what is on screen and what is true can differ, and the re-read is what closes
+     * that rather than trusting the write.
+     */
+    async renameTo(id, title) {
+      const session = this.sessions.find((entry) => entry.id === id);
+      const wanted = (title || '').trim();
+
+      if (!session || !wanted || wanted === session.title) {
         return;
       }
 
-      this.renaming = null;
-
-      const title = pending.title.trim();
-      const session = this.sessions.find((entry) => entry.id === pending.id);
-
-      if (!session || title === session.title) {
-        return;
-      }
-
-      // Optimistic, then confirmed by a re-read: the name lives in the pod, so this is the one
-      // place where what is on screen and what is true can differ, and the re-read is what
-      // closes that rather than trusting the write.
-      session.title = title;
+      session.title = wanted;
 
       try {
-        await renameAgentSession(pending.id, title);
-        this.sessions = this.withRename(await panelSessions(), pending.id, title);
+        await renameAgentSession(id, wanted);
+        this.sessions = this.withRename(await panelSessions(), id, wanted);
       } catch (e) {
         this.error = e?.message || String(e);
       }
@@ -1070,182 +707,108 @@ export default {
       @mousedown="onGrab('w', $event)"
     />
 
-    <div class="mc-agent__row">
-      <!--
-        Conversations as tabs: one per conversation, click to switch, drag to rearrange. The
-        rename pencil and the close control appear on hover, and on keyboard focus so they are
-        reachable without a mouse; they sit in reserved trailing space, so a tab does not change
-        width as the pointer crosses it. The row scrolls sideways when there are more tabs than
-        fit, and the new-conversation button rides at its end where a new tab would appear.
+    <!--
+      The conversations, as the product's one conversation strip.
 
-        The order a tab is dragged into is this browser's, not the pod's: see the note in
-        drawer.ts for which half of this panel is a fact about the cluster and which half is
-        one person's arrangement of it.
-      -->
-      <div
-        ref="tabs"
-        class="mc-agent__tabs"
-        :class="{ 'mc-agent__tabs--dragging': !!tabDrag }"
-        role="tablist"
-        aria-label="Conversations"
-      >
-        <div
-          v-for="session in sessions"
-          :id="`tab-${ session.id }`"
-          :key="session.id"
-          class="mc-agent__tab"
-          :class="{
-            'mc-agent__tab--active': session.id === active,
-            'mc-agent__tab--lifted': lifted === session.id,
-          }"
-          :style="lifted === session.id ? { transform: `translateX(${ tabOffset }px)` } : null"
-          role="tab"
-          :tabindex="session.id === active ? 0 : -1"
-          :aria-selected="session.id === active"
-          :aria-controls="session.id"
-          :title="session.title"
-          @click="onTabClick(session.id)"
-          @keydown.enter.prevent="select(session.id)"
-          @keydown.alt.left.prevent="nudgeTab(session.id, -1)"
-          @keydown.alt.right.prevent="nudgeTab(session.id, 1)"
-          @dblclick="startRename(session.id)"
-          @mousedown="onTabGrab(session.id, $event)"
-          @mousedown.middle.prevent="closeSession(session.id)"
-        >
-          <input
-            v-if="renaming && renaming.id === session.id"
-            :ref="(el) => { if (el) renameRef = el; }"
-            v-model="renaming.title"
-            class="mc-agent__rename"
-            aria-label="Name this conversation"
-            @click.stop
-            @keydown.enter.prevent="commitRename"
-            @keydown.esc.prevent="renaming = null"
-            @blur="commitRename"
-          >
-          <template v-else>
-            <!--
-              The agent-status dot: what this conversation's pane is doing, read from the pod (see
-              agent.ts `states`). Present only when there is something to say - a conversation that
-              has never run carries no dot rather than a misleading one. It sits before the title
-              and is not one of the hover controls, so it never moves the label as the pointer
-              crosses the tab; its `title` gives the state in words for a hover.
-            -->
-            <span
-              v-if="session.state && session.state !== 'none'"
-              class="mc-agent__dot"
-              :class="`mc-agent__dot--${ session.state }`"
-              :title="statusLabel(session.state)"
-            />
-            <!--
-              Which CLI holds it. The dot beside it says what the pane is DOING; this says what
-              the pane IS, which you cannot otherwise tell without opening the tab - and with two
-              CLIs in one strip that is the first thing you want to know. Absent for a
-              conversation that has never run, because nothing has decided yet.
-            -->
-            <CliMark
-              v-if="cliMark(session.cli)"
-              class="mc-agent__tab-cli"
-              :mark="cliMark(session.cli)"
-              :size="12"
-            />
-            <span class="mc-agent__tab-title">{{ session.title }}</span>
-            <button
-              type="button"
-              class="mc-agent__tab-control mc-agent__tab-control--rename"
-              aria-label="Rename conversation"
-              title="Rename"
-              tabindex="-1"
-              @click.stop="startRename(session.id)"
-            >
-              <SIcon
-                name="edit"
-                :size="12"
-              />
-            </button>
-            <button
-              type="button"
-              class="mc-agent__tab-control mc-agent__tab-control--close"
-              aria-label="End conversation"
-              title="End conversation"
-              tabindex="-1"
-              @click.stop="closeSession(session.id)"
-            >
-              <SIcon
-                name="close"
-                :size="12"
-              />
-            </button>
-          </template>
-        </div>
+      This panel used to draw its own: a flex row of tabs, with the status dot, the CLI mark,
+      the rename and the close written out here because the shell's Tabbed renders a label as
+      escaped text with no slot to put any of that in. The workspace page then hit the same wall
+      and solved it the other way, by forking Tabbed and adding the slot - so the product had two
+      conversation strips that looked and behaved differently depending on which half of it you
+      were in.
 
-        <!--
-          New conversation, at the end of the tabs where a new one would appear. A split
-          button: the press makes one with the CLI you usually use, and the caret is where the
-          others are - the choice belongs here because a pane runs its CLI for life, so it is
-          made when the conversation is, not afterwards in Settings.
-        -->
-        <SplitButton
-          class="mc-agent__new-split"
-          main-class="mc-agent__new"
-          label="New conversation"
-          :value="defaultCli"
-          :options="CLI_CHOICES"
-          @pick="startNew"
-        >
-          <SIcon
-            name="plus"
-            :size="14"
-          />
-        </SplitButton>
-      </div>
+      There is one now, and this is it: ConversationTabbed with ConversationTab in its
+      `tab-header` slot, exactly as the workspace page mounts it. What differs between the two is
+      the CONTEXT, which is all that should: this one is pointed at the agent pod (see agent.ts),
+      the page's at that workspace's project.
 
-      <!--
-        Outside the scroller, pinned to the right edge: however many conversations are open, and
-        however far the row has been scrolled, the options button is where it was.
-      -->
-      <div class="mc-agent__end">
-        <span
-          v-if="loading"
-          class="mc-agent__note"
-        >Reading the pod</span>
-        <span
-          v-else-if="error"
-          class="mc-agent__note mc-agent__note--error"
-        >{{ error }}</span>
-
-        <SMenu
-          :items="menuItems"
-          icon="more"
-          :icon-size="12"
-          aria-label="Agent panel options"
-          @select="onMenu"
+      Dragging a tab along the row went with the old strip, and so did alt+left / alt+right: the
+      strip owns its row's keys now, and a reorder that only half the product has is the thing
+      this change is undoing. The order a browser already had is still honoured - `arrange` still
+      sorts the sessions and the weights below carry that into the strip - it just cannot be
+      changed by hand any more. If it should be, it goes in ConversationTabbed, once, for both.
+    -->
+    <ConversationTabbed
+      class="mc-agent__tabbed"
+      flat
+      :default-tab="active"
+      @changed="onTabChanged"
+    >
+      <template #tab-header="{ tab }">
+        <ConversationTab
+          v-if="byId(tab.name)"
+          :conversation="byId(tab.name)"
+          :agent="byId(tab.name).state || 'none'"
+          :cli="byId(tab.name).cli || ''"
+          :active="tab.active"
+          @rename="renameTo(tab.name, $event)"
+          @close="closeSession(tab.name)"
         />
-      </div>
-    </div>
+      </template>
+      <template #tab-row-extras>
+        <!--
+          New conversation, at the end of the tabs where a new one would appear. A split button:
+          the press makes one with the CLI you usually use, and the caret is where the others
+          are - the choice belongs here because a pane runs its CLI for life, so it is made when
+          the conversation is, not afterwards in Settings.
+        -->
+        <li class="mc-agent__new">
+          <SplitButton
+            class="mc-agent__new-split"
+            label="New conversation"
+            :value="defaultCli"
+            :options="CLI_CHOICES"
+            @pick="startNew"
+          >
+            <SIcon
+              name="plus"
+              :size="14"
+            />
+          </SplitButton>
+        </li>
+        <!--
+          Pushed to the right edge by `margin-left: auto`: however many conversations are open,
+          the options button is where it was.
+        -->
+        <li class="mc-agent__end">
+          <span
+            v-if="loading"
+            class="mc-agent__note"
+          >Reading the pod</span>
+          <span
+            v-else-if="error"
+            class="mc-agent__note mc-agent__note--error"
+          >{{ error }}</span>
 
-    <div class="tab-container tab-container--flat">
+          <SMenu
+            :items="menuItems"
+            icon="more"
+            :icon-size="12"
+            aria-label="Agent panel options"
+            @select="onMenu"
+          />
+        </li>
+      </template>
       <!--
-        Mounted on first visit and then kept: an inactive panel is hidden rather than unmounted,
-        so coming back to a conversation is instant and its scrollback is intact, while one
-        nobody has opened in this browser holds no exec socket at all.
+        Mounted on first visit and then kept: the strip hides an inactive panel with v-show
+        rather than unmounting it, so coming back to a conversation is instant and its
+        scrollback is intact, while one nobody has opened in this browser holds no exec socket
+        at all.
       -->
-      <section
-        v-for="session in sessions"
-        v-show="session.id === active"
-        :id="session.id"
+      <Tab
+        v-for="(session, i) in sessions"
         :key="session.id"
-        role="tabpanel"
-        :aria-hidden="session.id !== active"
-        :aria-labelledby="`tab-${ session.id }`"
+        :name="session.id"
+        :label="session.title || 'Conversation'"
+        :weight="sessions.length - i"
       >
         <PodTerminal
           v-if="seen.includes(session.id)"
           :session="session.id"
           :mode="session.cli || ''"
         />
-      </section>
-    </div>
+      </Tab>
+    </ConversationTabbed>
   </div>
 </template>
 
@@ -1320,132 +883,54 @@ export default {
 
   }
 
-  &__row {
-    display: flex;
-    align-items: stretch;
-    flex: 0 0 auto;
-    min-width: 0;
-    border-bottom: 1px solid var(--border);
-    background: var(--header-bg, var(--body-bg));
-  }
 
-  // -------------------------------------------------------------------------
-  // Rancher's tab row, from @shell/components/Tabbed. Its styles are scoped to that
-  // component, so the class names alone bring nothing with them and the rules it applies to a
-  // horizontal row are reproduced here. Metrics, hover and focus are its own; the two
-  // differences are the controls on each tab and the active tab not being accented.
-  // -------------------------------------------------------------------------
-  .tabs {
-    list-style-type: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: row;
-    flex: 1 1 auto;
-    min-width: 0;
-    // Not Rancher's: a resource page has four tabs and a panel can have as many conversations
-    // as somebody opens, so the row scrolls rather than crushing them.
-    overflow-x: auto;
 
-    // Keyboard focus is shown on the tab, and only for keyboard focus.
-    //
-    // The underline that used to accompany this was on `:focus` rather than `:focus-visible`,
-    // so clicking a tab with the mouse boxed and underlined its label - which read as the label
-    // being highlighted rather than as focus, and was reported three times as exactly that. The
-    // outline alone says where the keyboard is, and a mouse user now gets nothing, which is
-    // what they expect.
-    &:focus-visible .tab.active {
-      @include focus-outline;
-      outline-offset: -2px;
-    }
-
-    .tab {
-      position: relative;
-      // Rancher floats these; this row also carries two controls per tab, which have to sit
-      // beside the label rather than under it. Everything else about the box is Rancher's:
-      // 4px either side, the anchor's 10px/15px, and therefore the same 38px tall row.
-      display: flex;
-      align-items: center;
-      flex: 0 0 auto;
-      padding: 0 var(--studio-space-4, 4px);
-      cursor: pointer;
-      // Double click on a tab renames it, and without this the gesture also selects the label,
-      // leaving a filled rectangle around the words that reads as a box drawn on the tab.
-      user-select: none;
-
-      a {
-        display: flex;
-        align-items: center;
-        // Rancher's 10px/15px on three sides. The trailing padding is wider because the
-        // pencil is drawn inside it rather than beside it: 20px for the control plus the same
-        // 4px join every other gap in this row is made of. Nothing about it depends on whether
-        // the pencil is currently shown, which is what makes hovering a tab move nothing.
-        padding: 10px 24px 10px 15px;
-        // Rancher leaves this to the global link colour and accents the active one. Neither
-        // happens here: an accent on a terminal's chrome fights the terminal, so active reads
-        // as active from the underline and the weight below.
-        color: var(--body-text);
-
-        &:hover {
-          text-decoration: none;
-
-          span {
-            text-decoration: underline;
-          }
-        }
-      }
-
-      &.active {
-        // Rancher draws this as a border-bottom, which takes two pixels of the tab's height and
-        // so centres everything inside the active tab one pixel higher than everything inside
-        // the others. On a resource page, where a tab holds only text, nobody sees it; on a row
-        // where the tabs carry controls and the row also carries an add button and a menu, it is
-        // four icons on three different lines. An inset shadow paints the same 2px line and
-        // takes no layout space at all.
-        box-shadow: inset 0 -2px 0 var(--body-text);
-
-        > a {
-          text-decoration: none;
-          font-weight: 600;
-        }
-      }
-
-      // Rancher shows keyboard focus by outlining the active tab when the list itself is
-      // focused. These anchors and buttons are focusable in their own right, so the ring is put
-      // on the tab that contains whatever the keyboard reached rather than on the anchor, whose
-      // box hugs the label and reads as a box drawn around the words.
-      //
-      // `:focus-visible` rather than `:focus-within`, so a click does not draw one - a ring on
-      // every click is the thing this whole treatment is trying not to be.
-      &:has(a:focus-visible),
-      &:has(button:focus-visible) {
-        @include focus-outline;
-        outline-offset: -2px;
-      }
-    }
-  }
-
-  // Rancher nests this inside the tab list, and so does this row: the add control travels with
-  // the tabs and scrolls with them.
-  .tab-list-footer {
-    display: flex;
-    align-items: center;
-    flex: 0 0 auto;
-    list-style: none;
-    margin: 0;
-    padding: 0 var(--studio-space-4, 4px);
-
-    li {
-      display: flex;
-      align-items: center;
-    }
-  }
 
   // Outside the scroller, so it keeps its place at the right edge no matter how long the row is.
+  /*
+   * The strip fills the panel, and the terminal inside it fills the strip.
+   *
+   * Four elements stand between this box and the terminal - the strip's root, the fork's
+   * `.tab-container`, the Tab's `[role=tabpanel]`, and the pane - and a flex box only hands its
+   * height down through children that are themselves flex and allowed to shrink below their
+   * content. `v-show` hides an inactive panel with an inline `display: none`, which beats these
+   * rules, so making every panel a flex column does not unhide the ones behind it.
+   */
+  &__tabbed {
+    display:        flex;
+    flex-direction: column;
+    flex:           1 1 auto;
+    min-height:     0;
+    min-width:      0;
+
+    :deep(.tab-container) {
+      display:        flex;
+      flex-direction: column;
+      flex:           1 1 auto;
+      min-height:     0;
+      padding:        0;
+    }
+
+    :deep([role='tabpanel']) {
+      display:        flex;
+      flex-direction: column;
+      flex:           1 1 auto;
+      min-height:     0;
+    }
+  }
+
+  /*
+   * The notes and the options button, at the right end of the tab row.
+   *
+   * It is an `li` in the strip's own row now rather than a box beside it, so `margin-left: auto`
+   * is what pins it: however many conversations are open, it is where it was.
+   */
   &__end {
     display: flex;
     align-items: center;
     flex: 0 0 auto;
+    margin-left: auto;
+    list-style: none;
     padding: 0 var(--studio-space-4, 4px);
 
     // The menu's trigger is one more control on this bar, so it is the same control: same box,
@@ -1461,203 +946,14 @@ export default {
     }
   }
 
-  // The controls on a tab: rename (pencil) and end (close). Square hover targets, absolutely
-  // placed in the tab's reserved trailing padding, and hidden until the tab is hovered or holds
-  // focus - a tab at rest is just its name. Out of the flow, so showing them costs the tab no
-  // width and the row does not shift as the pointer crosses it.
-  &__tab-control {
-    display: none;
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    align-items: center;
-    justify-content: center;
-    // A square, so the hover surface is centred on the glyph rather than sized by each icon.
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    // Rancher gives every button a 40px min-height, which would stretch these past the row.
-    min-height: 0;
-    border: none;
-    border-radius: var(--dev-r-xs);
-    background: none;
-    color: var(--body-text);
-    cursor: pointer;
-    opacity: 0.6;
-
-    &:hover {
-      opacity: 1;
-      background: var(--default-hover-bg, var(--body-bg));
-    }
-
-    // The close at the tab's right edge; the rename pencil immediately left of it.
-    &--close {
-      right: 4px;
-    }
-
-    &--rename {
-      right: 26px;
-    }
-  }
-
-  &__tab:hover &__tab-control,
-  &__tab:focus-within &__tab-control {
-    display: flex;
-  }
-
-  // The rename box, in place of the tab's title while a tab is being renamed. Fills the tab it
-  // sits in; the tab drops its trailing control padding while it holds one (see &__tab).
-  &__rename {
-    width: 100%;
-    min-width: 80px;
-    padding: 3px 6px;
-    border: 1px solid var(--border);
-    border-radius: var(--dev-r-xs);
-    background: var(--body-bg);
-    color: var(--body-text);
-    font-size: 13px;
-  }
-
-  // ── The conversations, as tabs ──
-  //
-  // A horizontal row that scrolls when there are more tabs than fit, so switching is one click
-  // and the whole set is visible at a glance rather than behind a dropdown.
-  &__tabs {
-    flex: 1 1 auto;
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    min-width: 0;
-    overflow-x: auto;
-    // A thin scrollbar; the platform's full one is most of a 32px row's height. Firefox reads
-    // the first line, WebKit the second.
-    scrollbar-width: thin;
-
-    &::-webkit-scrollbar {
-      height: 6px;
-    }
-
-    // While a tab is being dragged the whole row is the drag: the cursor stays closed wherever
-    // the pointer goes, and nothing in the row takes a text selection as it passes.
-    &--dragging {
-      cursor: grabbing;
-      user-select: none;
-    }
-  }
-
-  &__tab {
-    position: relative;
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    max-width: 200px;
-    min-width: 0;
-    height: 32px;
-    margin: 2px 0;
-    // Trailing room for the two controls (close at 4px, rename at 26px, each 20px wide),
-    // reserved so they can appear on hover without moving the label.
-    padding: 0 48px 0 10px;
-    border: none;
-    // Flat tabs with a straight underline on the active one - the Dev extension's conversation
-    // tabs (the shell Tabbed look), not a rounded box. Every tab reserves the 2px underline in
-    // transparent so the row does not shift when a tab becomes active.
-    border-radius: 0;
-    border-bottom: 2px solid transparent;
-    background: none;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 13px;
-    white-space: nowrap;
-
-    &:hover {
-      color: var(--body-text);
-    }
-
-    // The open conversation: the one the terminal below is showing. A straight underline and the
-    // label in the accent colour - no box, no fill.
-    &--active {
-      color: var(--active, var(--primary));
-      border-bottom-color: var(--active, var(--primary));
-    }
-
-    // While renaming there is an input, not a label and controls, so the reserved trailing
-    // space is given back to the box.
-    &:has(.mc-agent__rename) {
-      padding-right: 10px;
-    }
-
-    // A tab that has moved aside for a drag travels there rather than appearing there. The
-    // distance is set in slideAside, which is also where the dragged tab is kept out of this:
-    // its transform is the pointer's, and a transition on that is the tab lagging behind the
-    // hand holding it.
-    transition: transform 120ms ease;
-
-    // The tab being dragged. It rides above the row under the pointer, faint enough to read as
-    // held rather than placed. The slot it was lifted out of is left empty, and that gap - which
-    // the neighbours slide to open and close - is where it lands when the button comes up.
-    //
-    // The resting cursor stays `pointer`: a tab is a thing you click, and browser tabs have
-    // spent twenty years teaching that one can also be dragged without a hand to say so.
-    &--lifted {
-      z-index: 2;
-      opacity: 0.6;
-      background: var(--default-hover-bg, var(--body-bg));
-      border-radius: var(--dev-r-xs);
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-      cursor: grabbing;
-      transition: none;
-    }
-  }
 
 
-  &__tab-cli {
-    flex:         0 0 auto;
-    margin-right: 6px;
-    color:        var(--muted);
-    opacity:      .9;
-  }
 
-  &__tab-title {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
-  // The agent-status dot, before the title. A small filled circle in the Studio's status
-  // colours: it is out of the row's hover controls, so it never shifts the label, and it is
-  // shown only for a conversation that has a state to report. The colours are the same three the
-  // Dev extension's sidebar uses for the same words, taken from the Studio's own tokens rather
-  // than that extension's variables: accent for working, amber for waiting, green for finished,
-  // grey for idle. Rancher's own --primary/--warning/--success lead so the dot tracks the theme,
-  // with the Studio token as the fallback.
-  &__dot {
-    flex: 0 0 auto;
-    width: 7px;
-    height: 7px;
-    margin-right: 6px;
-    border-radius: 50%;
-    background: var(--muted, var(--studio-neutral, #8B8B96));
 
-    &--working {
-      background: var(--primary, var(--studio-info, #3D98D3));
-      // A gentle pulse says the work is live rather than a colour that happens to be blue. It is
-      // opacity only - the dot keeps its size, so the title beside it never moves.
-      animation: mc-agent-dot-pulse 1.4s ease-in-out infinite;
-    }
 
-    &--input {
-      background: var(--warning, var(--studio-warning, #C9A227));
-    }
 
-    &--finished {
-      background: var(--success, var(--studio-success, #3E8C4F));
-    }
 
-    &--idle {
-      background: var(--muted, var(--studio-neutral, #8B8B96));
-    }
-  }
 
   @keyframes mc-agent-dot-pulse {
     0%, 100% { opacity: 1; }
@@ -1704,27 +1000,13 @@ export default {
     }
   }
 
+  /* The + rides at the end of the conversations, as one more item in the strip's row. */
   &__new {
-    flex: 0 0 auto;
-    display: flex;
+    display:     flex;
     align-items: center;
-    justify-content: center;
-    width: 28px;
-    min-height: 32px;
-    margin: 2px 0;
-    padding: 0;
-    border: none;
-    border-radius: var(--dev-r-xs);
-    background: none;
-    color: var(--body-text);
-    cursor: pointer;
-    opacity: 0.7;
-
-    &:hover {
-      opacity: 1;
-      background: var(--default-hover-bg, var(--body-bg));
-    }
+    list-style:  none;
   }
+
 
   &__note {
     padding: 0 var(--studio-space-8, 8px);
