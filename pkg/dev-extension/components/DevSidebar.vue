@@ -249,6 +249,8 @@ export default {
       error:        '',
       /** What each workspace needs and what its agent is doing, by name. See workspace-status.ts. */
       statuses:     seedStatuses(cache.workspaces),
+      /** What is typed in the nav's search box; '' is every workspace. */
+      search:       '',
       refreshTimer: null,
       /**
        * The entries that are not workspaces, as an icon row at the foot.
@@ -310,11 +312,22 @@ export default {
       // Workspaces, not previews and not the other things Apps Plus installs: an App this
       // product calls a workspace app, one of the names it used to go by, or one whose App is
       // hidden in Settings or gone altogether (which is still a workspace, and still yours).
-      return this.rolesIn(this.workspaces.filter((workspace) => {
+      const mine = this.workspaces.filter((workspace) => {
         const app = known.get(workspace.app);
 
-        return LEGACY_WORKSPACE_APPS.includes(workspace.app) || !app || app.workspace;
-      }));
+        return (LEGACY_WORKSPACE_APPS.includes(workspace.app) || !app || app.workspace) && this.hits(workspace);
+      });
+      const groups = this.rolesIn(mine);
+
+      // While something is typed, a heading with nothing under it is noise - it says a part you
+      // play rather than a result. With the box empty the headings stand whatever is in them,
+      // because then they are the shape of the list rather than an answer to a question.
+      return this.search.trim() ? groups.filter((group) => group.rows.length) : groups;
+    },
+
+    /** Whether anything matched what is typed; the box says so rather than the list going blank. */
+    noMatches() {
+      return !!this.search.trim() && !this.roleGroups.some((group) => group.rows.length);
     },
 
     currentWorkspace() {
@@ -727,6 +740,46 @@ export default {
       return ROLES.map((role) => ({ ...role, rows: this.rowsFor(workspaces.filter((workspace) => roleOf(workspace) === role.id)) }));
     },
 
+    /**
+     * Whether a workspace is one of the ones being looked for.
+     *
+     * What a person has to go on is what the row shows - the issue or PR title - and the number
+     * they came from GitHub with. So: a plain substring against the title and the pod's name,
+     * which covers both and covers a number typed inside a name like `lte-issue-19380`; and,
+     * for a bare number, the issue or PR that number names, which is not always in the name -
+     * a workspace called `issue-19380` has a PR and you may well be looking for it by PR.
+     *
+     * Deliberately not fuzzy. A nav of a dozen rows does not need ranking, and a match that
+     * accepts letters in any order is a match you cannot predict.
+     */
+    hits(workspace) {
+      const q = this.search.trim().toLowerCase();
+
+      if (!q) {
+        return true;
+      }
+      const status = this.statuses[workspace.name];
+      const words = [workspace.name, workspace.title || '', status?.title || ''].join(' ').toLowerCase();
+
+      if (words.includes(q)) {
+        return true;
+      }
+
+      // `#1202` and `1202` are the same question.
+      const digits = q.replace(/^#/, '');
+
+      if (!/^\d+$/.test(digits)) {
+        return false;
+      }
+
+      return [
+        /(?:^|-)issue-(\d+)/.exec(workspace.name)?.[1],
+        /(?:^|-)pr-(\d+)/.exec(workspace.name)?.[1],
+        status?.pr,
+        status?.issue,
+      ].filter(Boolean).map(String).some((n) => n.includes(digits));
+    },
+
     /** A workspace as a row: its name, its state, and the page it opens. */
     rowsFor(workspaces) {
       return workspaces.map((workspace) => {
@@ -857,6 +910,40 @@ export default {
       ref="scroll"
       class="dev-sidebar__scroll"
     >
+      <!--
+        Find one, by what the rows say or by the number you came from GitHub with.
+
+        At the top because that is where a list is searched, and it filters only the workspaces
+        - the Ranchers below are a handful of fixed things, not a list you lose something in.
+        Typed, not pressed: there is no button, because the list is already narrowing.
+      -->
+      <div class="dev-sidebar__find">
+        <i class="icon icon-search dev-sidebar__find-icon" />
+        <input
+          v-model="search"
+          type="search"
+          class="dev-sidebar__find-input"
+          placeholder="Find a workspace"
+          aria-label="Find a workspace by title, issue or PR number"
+          @keydown.esc.prevent="search = ''"
+        >
+        <button
+          v-if="search"
+          type="button"
+          class="dev-sidebar__find-clear"
+          aria-label="Clear the search"
+          @click="search = ''"
+        >
+          <i class="icon icon-close" />
+        </button>
+      </div>
+      <div
+        v-if="noMatches"
+        class="dev-sidebar__find-none"
+      >
+        No workspace matches “{{ search.trim() }}”.
+      </div>
+
       <!--
         One list, with a heading for each part you play - Developer, Reviewer, Other - so the
         work you own and the work you are judging are not in one heap. The + makes a workspace,
@@ -1234,6 +1321,66 @@ export default {
       // Nothing here is meant to be scrolled sideways: a name too long for the column is
       // truncated, and a popover is sized to fit it.
       overflow-x: hidden;
+    }
+
+    /*
+     * The find box. Quiet: it is a tool for the list, not a thing in the list.
+     *
+     * The nav's own inset (16px, the one a DevList row is indented by) so it starts on the same
+     * vertical line the rows it filters start on.
+     */
+    &__find {
+      position:      relative;
+      display:       flex;
+      align-items:   center;
+      margin:        6px 12px 2px;
+      border:        1px solid var(--border);
+      border-radius: var(--dev-r-ctl, 4px);
+      background:    var(--body-bg);
+
+      &:focus-within { border-color: var(--link); }
+    }
+
+    &__find-icon {
+      flex:       0 0 auto;
+      margin:     0 4px 0 6px;
+      font-size:  12px;
+      color:      var(--muted);
+    }
+
+    &__find-input {
+      flex:       1 1 auto;
+      min-width:  0;
+      height:     24px;
+      padding:    0;
+      border:     none;
+      background: transparent;
+      color:      var(--body-text);
+      font-size:  12px;
+
+      &:focus { outline: none; box-shadow: none; }
+
+      // The browser's own clear control, which is a second × beside ours and does not match it.
+      &::-webkit-search-cancel-button { appearance: none; }
+    }
+
+    &__find-clear {
+      flex:        0 0 auto;
+      min-height:  0;
+      padding:     0 6px;
+      border:      none;
+      background:  none;
+      color:       var(--muted);
+      cursor:      pointer;
+
+      .icon { font-size: 11px; }
+      &:hover { color: var(--body-text); }
+    }
+
+    &__find-none {
+      padding:   2px 16px 6px;
+      color:     var(--muted);
+      font-size: 11px;
     }
 
     // The template, above the clusters its workspaces are on. Same metrics as a DevList heading,
