@@ -901,13 +901,19 @@ export default {
     flex-direction: column;
     flex:           1 1 auto;
     min-height:     0;
+    // The fork sets `min-width: fit-content` on its own root, which makes the strip as wide as
+    // the widest line in any pane. Both of these, for the reason WorkspaceRail's copy gives.
     min-width:      0;
+    max-width:      100%;
 
     :deep(.tab-container) {
       display:        flex;
       flex-direction: column;
       flex:           1 1 auto;
       min-height:     0;
+      min-width:      0;
+      max-width:      100%;
+      overflow:       hidden;
       padding:        0;
     }
 
@@ -916,6 +922,9 @@ export default {
       flex-direction: column;
       flex:           1 1 auto;
       min-height:     0;
+      min-width:      0;
+      max-width:      100%;
+      overflow:       hidden;
     }
   }
 

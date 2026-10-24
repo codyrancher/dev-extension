@@ -1178,6 +1178,24 @@ export default {
       });
     },
 
+    /**
+     * One of "what came back", pressed.
+     *
+     * A section whose whole content is the way into the diff viewer goes straight there, rather
+     * than opening a modal whose only content is a button that opens the next modal. "The
+     * change" is that section - see branchSection in workspace-rail.ts, which deliberately
+     * reduced it to one button - and the test is the section's shape, not its title, so a
+     * section that becomes a single link later behaves the same way without being named here.
+     */
+    openCameBack(section) {
+      if (section?.items?.length === 1 && section.items[0].kind === 'review') {
+        this.openTab('review');
+
+        return;
+      }
+      this.opened = section.title;
+    },
+
     openTab(name) {
       // A conversation is its own window now, so "go to the conversation" opens it rather
       // than scrolling to a pane that is no longer on the page.
@@ -2822,42 +2840,37 @@ export default {
         line, and the conversation underneath takes everything left (see `--live`).
       -->
       <section class="workspace-rail__came-back">
-        <div class="workspace-rail__col-head">
-          <h3 class="workspace-rail__col-title">{{ lookingBack ? `What ${ shownLabel } left behind` : current ? 'What came back' : 'Reading where this is… meanwhile, the latest' }}</h3>
-          <button
-            v-if="lookingBack"
-            type="button"
-            class="workspace-rail__back"
-            @click="backToNow"
-          >
-            Back to now
-          </button>
-          <i
-            v-else-if="reading"
-            class="icon icon-spinner icon-spin workspace-rail__reading"
-          />
-        </div>
+        <h3 class="workspace-rail__came-back-label">{{ lookingBack ? `What ${ shownLabel } left behind` : current ? 'What came back' : 'Reading where this is… meanwhile, the latest' }}</h3>
         <div
           v-if="!evidence.length"
-          class="workspace-rail__empty"
+          class="workspace-rail__came-back-empty"
         >
           {{ reading ? 'Reading…' : 'Nothing to show for this stage yet.' }}
         </div>
-        <div
-          v-else
-          class="workspace-rail__came-back-row"
-        >
+        <template v-else>
           <button
             v-for="section in evidence"
             :key="section.title"
             type="button"
             class="workspace-rail__came-back-item"
-            @click="opened = section.title"
+            @click="openCameBack(section)"
           >
             <span class="workspace-rail__came-back-name">{{ section.title }}</span>
             <i class="icon icon-chevron-right" />
           </button>
-        </div>
+        </template>
+        <button
+          v-if="lookingBack"
+          type="button"
+          class="workspace-rail__back workspace-rail__came-back-now"
+          @click="backToNow"
+        >
+          Back to now
+        </button>
+        <i
+          v-else-if="reading"
+          class="icon icon-spinner icon-spin workspace-rail__reading workspace-rail__came-back-now"
+        />
       </section>
 
       <!--
@@ -3693,29 +3706,33 @@ export default {
       doors into rooms you are standing in. The modals they opened are still reachable from the
       things that are actually about them.
     -->
-    <section class="workspace-rail__col workspace-rail__col--pane">
-      <!-- The bigger view of whichever conversation the panel above is showing. -->
-      <DevModal
-        v-if="popped"
-        size="large"
-        :title="`${ workspace.name } · ${ (conversations.find((c) => c.id === currentConversation) || {}).title || 'conversation' }`"
-        @close="popped = false"
-      >
-        <div class="workspace-rail__popped">
-          <template
-            v-for="c in conversations"
-            :key="c.id"
-          >
-            <StudioTerminal
-              v-if="c.id === currentConversation"
-              class="workspace-rail__terminal"
-              :session="c.id"
-              :command="c.attach.command"
-            />
-          </template>
-        </div>
-      </DevModal>
-    </section>
+    <!--
+      The bigger view of whichever conversation the panel above is showing.
+
+      Not in a card of its own. A modal draws nothing until it is opened, and the bordered box
+      it sat in was the "Other views" card - so with that gone the page ended on an empty
+      rectangle at every stage.
+    -->
+    <DevModal
+      v-if="popped"
+      size="large"
+      :title="`${ workspace.name } · ${ (conversations.find((c) => c.id === currentConversation) || {}).title || 'conversation' }`"
+      @close="popped = false"
+    >
+      <div class="workspace-rail__popped">
+        <template
+          v-for="c in conversations"
+          :key="c.id"
+        >
+          <StudioTerminal
+            v-if="c.id === currentConversation"
+            class="workspace-rail__terminal"
+            :session="c.id"
+            :command="c.attach.command"
+          />
+        </template>
+      </div>
+    </DevModal>
     <DevDialog
       v-if="asking"
       v-bind="asking.question"
@@ -3737,7 +3754,14 @@ export default {
   padding:        8px 24px 24px;
   height:         100%;
   min-height:     0;
+  // The conversation absorbs the slack (see `--live`), so in the ordinary case there is nothing
+  // to scroll here and the page holds still. `auto` rather than `hidden` is the safety valve for
+  // a viewport too short for the stage, the actions, the tools and the conversation's minimum
+  // all at once - then, and only then, the column scrolls.
   overflow:       auto;
+  // A flex column's items are as wide as their content unless told otherwise, and one of them
+  // is a terminal full of file paths. Without this the whole page scrolled sideways.
+  min-width:      0;
 
   &__head {
     display:         flex;
@@ -4095,9 +4119,6 @@ export default {
     resize:        vertical;
   }
 
-  &__col--pane {
-    padding: 10px 12px;
-  }
 
   // No box of its own: the tabbed strip below is the box. A bordered, padded wrapper around it
   // made two boxes nested, which is what this drops.
@@ -4132,16 +4153,19 @@ export default {
      * in the DOM, and 0px tall. The symptom was a conversation that flashed on load and vanished,
      * which reads like a data problem and is not one.
      *
-     * `flex-shrink: 0` is the half that was missing: nothing may squeeze this box, and the rail
-     * scrolls instead, which is what `overflow: auto` up there is for.
+     * `min-height` is the half that was missing. The box clips to its corners, so a flex child
+     * allowed to shrink with no floor shrank to nothing and clipped the terminal out of
+     * existence - present in the DOM, in the right place in it, and 0px tall.
      *
-     * It GROWS, though, which it did not before. What came back used to sit beside the
-     * conversation and is now a row of three buttons above it, so this is the last thing on the
-     * page and there is room under it; `flex-grow: 1` is what reaches it. The minimum is what
-     * the terminal was fixed at, so a short viewport is no worse than it was.
+     * With a floor it can do what it should: GROW into whatever the stage, the actions, the
+     * tools and what-came-back leave over, and give room back when the window is short, so the
+     * conversation scrolls inside its own box instead of scrolling the page out from under the
+     * stage. `1 0 auto` was the first attempt at the growing half and it was the wrong half -
+     * a box that may not shrink pushes the page taller than the window every time.
      */
-    flex:           1 0 auto;
-    min-height:     420px;
+    flex:           1 1 auto;
+    min-height:     320px;
+    min-width:      0;
 
     /*
      * One border around this box, not three.
@@ -4197,17 +4221,34 @@ export default {
     flex-direction: column;
     flex:           1 1 auto;
     min-height:     0;
+    /*
+     * And the width, which is the same fight on the other axis.
+     *
+     * The fork's own `.tabbed-container { min-width: fit-content }` makes the strip as wide as
+     * the widest thing in any pane - a terminal line, a tool row holding an absolute path - and
+     * takes the page sideways with it. The max is not enough on its own: a flex child's minimum
+     * is its content, so the strip stayed wider than the box and put a horizontal scrollbar
+     * under the whole page. Both, as WorkspaceDetail found for the tabs it draws.
+     */
+    min-width:      0;
+    max-width:      100%;
 
     :deep(.tab-container) {
       display:        flex;
       flex-direction: column;
       flex:           1 1 auto;
       min-height:     0;
+      min-width:      0;
+      max-width:      100%;
+      overflow:       hidden;
     }
 
     :deep([role='tabpanel']) {
       flex:       1 1 auto;
       min-height: 0;
+      min-width:  0;
+      max-width:  100%;
+      overflow:   hidden;
     }
   }
 
@@ -4491,40 +4532,50 @@ export default {
     margin-top:     6px;
   }
 
-  &__col {
-    display:        flex;
-    flex-direction: column;
-    gap:            14px;
-    padding:        12px 14px;
-    border:         1px solid var(--border);
-    border-radius:  var(--r-sm);
-    background:     var(--box-bg);
-    min-width:      0;
-  }
 
   /*
-   * What came back: the column's card, one line tall.
+   * What came back: one row, read the way the tools strip above it is read.
    *
-   * Three buttons that each open a modal, laid along a row that wraps rather than scrolls -
-   * there are three of them and they are words, so a row is enough and a list would be three
-   * lines of mostly nothing.
+   * Label on the left, the things on the same line beside it. It was a heading with the
+   * buttons on a second line under it, which made a card three lines tall for three words and
+   * broke the rhythm of the two strips above it - Your call and Tools - that say what they are
+   * on the same line as what they hold. The buttons are the tools strip's chip metrics too, so
+   * the three rows read as one stack rather than as three different ideas about a button.
    */
   &__came-back {
-    display:        flex;
-    flex-direction: column;
-    gap:            10px;
-    flex:           0 0 auto;
-    padding:        12px 14px;
-    border:         1px solid var(--border);
-    border-radius:  var(--r-sm);
-    background:     var(--box-bg);
-    min-width:      0;
+    display:       flex;
+    align-items:   center;
+    flex-wrap:     wrap;
+    gap:           8px;
+    flex:          0 0 auto;
+    padding:       10px 12px;
+    border:        1px solid var(--border);
+    border-radius: var(--r-sm);
+    background:    var(--box-bg);
+    min-width:     0;
   }
 
-  &__came-back-row {
-    display:   flex;
-    flex-wrap: wrap;
-    gap:       8px;
+  // The label: the tools strip's, to the letter, so the two line up down the page.
+  &__came-back-label {
+    margin:         0;
+    margin-right:   8px;
+    flex:           0 0 auto;
+    font-size:      11px;
+    font-weight:    700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color:          var(--input-label);
+  }
+
+  &__came-back-empty {
+    color:     var(--muted);
+    font-size: 12px;
+  }
+
+  // Pushed to the far end, where "Back to now" and the reading spinner were when the heading
+  // had a row to itself.
+  &__came-back-now {
+    margin-left: auto;
   }
 
   &__came-back-item {
@@ -4532,41 +4583,27 @@ export default {
     align-items:   center;
     gap:           6px;
     min-height:    0;
-    padding:       6px 10px;
-    border:        1px solid var(--border);
-    border-radius: var(--dev-r-ctl);
-    background:    var(--body-bg);
-    color:         var(--body-text);
-    font-size:     13px;
+    padding:       4px 10px;
+    border:        1px solid transparent;
+    border-radius: var(--r-sm);
+    background:    transparent;
+    color:         var(--input-label);
+    font-size:     12px;
     font-weight:   600;
     cursor:        pointer;
 
     .icon {
-      font-size: 11px;
+      font-size: 10px;
       opacity:   .6;
     }
 
-    &:hover {
-      border-color: var(--link);
-      color:        var(--link);
+    &:hover,
+    &:focus-visible {
+      border-color: var(--border);
+      color:        var(--body-text);
     }
   }
 
-  &__col-head {
-    display:         flex;
-    align-items:     center;
-    justify-content: space-between;
-    gap:             10px;
-  }
-
-  &__col-title {
-    margin:         0;
-    font-size:      12px;
-    font-weight:    700;
-    letter-spacing: .06em;
-    text-transform: uppercase;
-    color:          var(--muted);
-  }
 
   /*
    * These read as links and text, not as buttons, but they are buttons - and the theme gives

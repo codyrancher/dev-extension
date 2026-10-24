@@ -2101,6 +2101,9 @@ export default {
     align-items: baseline;
     max-width:   100%;
     width:       100%;
+    // A flex item's minimum is its content, so without this the summary's ellipsis never
+    // engaged and a long path pushed the row wider than the pane instead of being cut.
+    min-width:   0;
 
     &::before {
       content:   '▸';
