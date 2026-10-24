@@ -29,7 +29,7 @@ const CUT = 6000;
     :open="toolIo"
   >
     <summary class="tool__head">
-      <span class="tool__name">{{ call.name }}</span>
+      <span class="tool__name">{{ call.label || call.name }}</span>
       <!-- The summary carries marked-up paths, which is why it is HTML and not text. -->
       <span class="tool__what" v-html="call.summaryHtml" />
       <span v-if="call.result === undefined" class="tool__state">…</span>

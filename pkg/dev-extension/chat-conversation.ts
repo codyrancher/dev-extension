@@ -26,6 +26,7 @@
 // is silently dead in the installed plugin. A host creates one of these and passes what it
 // returns to its children as props, which is the one arrangement that cannot break that way.
 
+import { canonicalTool } from './chat-format.mjs';
 import {
   computed, onBeforeUnmount, onMounted, ref, watch,
 } from 'vue';
@@ -550,9 +551,15 @@ export function useConversation(source: () => ConversationSource) {
     queued:   !!m.queued,
     inQueue:  !!m.inQueue,
     failed:   !!m.failed,
-    toolRows: m.tools.map((t: ChatToolCall) => ({
-      ...t, summary: toolSummary(t), summaryHtml: linkPaths(escapeText(toolSummary(t))),
-    })),
+    // Through the canonical layer on the way to the view: a tool call arrives here in whatever
+    // vocabulary its CLI writes, and leaves with the badge and the one-line summary the view
+    // draws, keyed on what the call DID. See chat-format.mjs - this is the one place a message
+    // becomes something drawable, so it is the one place that has to do it.
+    toolRows: m.tools.map((t: ChatToolCall) => {
+      const call = canonicalTool(t);
+
+      return { ...call, summaryHtml: linkPaths(escapeText(call.summary)) };
+    }),
   })));
 
   /** Every command that could be typed here: claude's own, then this pod's own. */

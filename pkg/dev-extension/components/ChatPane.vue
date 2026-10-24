@@ -910,7 +910,7 @@ export default {
             :aria-expanded="toolOpen(t.id) ? 'true' : 'false'"
             @click="toggleTool(t.id)"
           >
-            <span class="mc-chat__tool-name">{{ t.name }}</span>
+            <span class="mc-chat__tool-name">{{ t.label || t.name }}</span>
             <span
               class="mc-chat__tool-summary"
               v-html="t.summaryHtml"

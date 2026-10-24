@@ -16,6 +16,7 @@
 // Everything here is pure: given text, it answers with structure. ChatPane.vue does the
 // fetching and the sending.
 
+import { toolKind, toolSummary as canonicalSummary } from './chat-format.mjs';
 import { highlight } from './highlight';
 import { splitPasted } from './chat-state.mjs';
 import { transcriptKind, parseAgyTranscript } from './agent-clis.mjs';
@@ -286,25 +287,17 @@ function resultText(content: unknown): string {
 }
 
 /** One line that says what a tool call did, for the collapsed row. */
+/**
+ * The line beside a tool call's badge.
+ *
+ * This was a switch on claude's own tool names, which is why a conversation held with another
+ * CLI read differently: `run_command` matched nothing and fell to the default, which printed
+ * the first string it found - the whole shell command - where claude printed a sentence. The
+ * switch lives in chat-format.mjs now, keyed on what a call DID rather than on what one CLI
+ * calls it, and this is kept as the name the rest of this file already imports.
+ */
 export function toolSummary(call: ChatToolCall): string {
-  const input = (call.input || {}) as Record<string, unknown>;
-
-  switch (call.name) {
-  case 'Bash': return String(input.description || input.command || '').slice(0, 140);
-  case 'Read': return String(input.file_path || '');
-  case 'Edit': case 'Write': case 'MultiEdit': return String(input.file_path || '');
-  case 'Grep': return `${ input.pattern || '' }${ input.path ? ` in ${ input.path }` : '' }`;
-  case 'Glob': return String(input.pattern || '');
-  case 'Agent': case 'Task': return String(input.description || input.prompt || '').slice(0, 140);
-  case 'Skill': return String(input.skill || '');
-  case 'AskUserQuestion': return 'asked a question';
-  case 'TodoWrite': return 'updated the plan';
-  default: {
-    const first = Object.values(input).find((v) => typeof v === 'string');
-
-    return String(first || '').slice(0, 140);
-  }
-  }
+  return canonicalSummary(toolKind(call.name), call.input as Record<string, unknown>);
 }
 
 // ── Markdown, enough of it ──────────────────────────────────────────────────────────────────
