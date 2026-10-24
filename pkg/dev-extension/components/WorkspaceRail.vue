@@ -45,7 +45,7 @@ import { isProjectConversationId } from '../conversation-id.mjs';
 import {
   listConversations, startConversation, queuePrompt, startPaneDetached, workspaceAgentStates, sendToPane, renameConversation, endConversation
 } from '../conversations';
-import { ensureWorkspaceReady, putArtifact, saveArtifact, devServerState, stopDevServer, startDevServer} from '../workspace-tools';
+import { ensureWorkspaceReady, putArtifact, saveArtifact, devServerState, stopDevServer } from '../workspace-tools';
 import WorkspaceTools from './WorkspaceTools.vue';
 import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
@@ -58,7 +58,7 @@ import {
 } from '../skills';
 import { markReadyForReview, describePr } from '../github';
 import {
-  deleteWorkspace, devFetch, workspaceMediaListUrl, setWorkspaceRunning, workspaceProxyUrl, secretValue
+  deleteWorkspace, devFetch, workspaceMediaListUrl, workspaceProxyUrl, secretValue
 } from '../api';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, FOCUS_ROUTE } from '../config/constants';
 
@@ -912,43 +912,6 @@ export default {
       }
     },
 
-    /** Start it again, because somebody pressed the button. */
-    async startServer() {
-      this.busy = 'startServer';
-      this.error = '';
-      try {
-        const said = await startDevServer(this.workspace.name);
-
-        // Remembered for this browser: the automatic stop must not undo a person's start the
-        // next time they open the workspace, which is what made this feel like a fight.
-        try {
-          sessionStorage.setItem(`dev-extension.dev-server-kept.${ this.workspace.name }`, '1');
-        } catch { /* a browser without storage just gets the stop again */ }
-        this.devServer = { running: true, paused: false };
-        this.notice = said.trim().split('\n').pop() || 'The dev server is starting; it takes a minute or two to compile.';
-      } catch (e) {
-        this.noteError(e);
-      } finally {
-        this.busy = '';
-      }
-    },
-
-    /** Stop it because somebody pressed the button. */
-    async stopServer() {
-      this.busy = 'stopServer';
-      this.error = '';
-      try {
-        const said = await stopDevServer(this.workspace.name);
-
-        this.devServer = { running: false, paused: true };
-        this.notice = said.trim().split('\n').pop() || 'The dev server is stopped.';
-      } catch (e) {
-        this.noteError(e);
-      } finally {
-        this.busy = '';
-      }
-    },
-
     /**
      * Make sure this workspace can be worked in, once per visit, behind the page.
      *
@@ -1534,19 +1497,14 @@ export default {
         return [];
       }
 
+      // No dev server here. There were two buttons reading "Stop the dev server" on this page,
+      // doing different things: this one stopped the whole workspace, the other stopped webpack
+      // inside it. The server is on the tools strip now, as the one that runs `bin/dev-server`,
+      // and stopping the workspace itself belongs to the nav, where a workspace is deleted.
       return [
-        { label: this.workspace?.state === 'stopped' ? 'Start the dev server' : 'Stop the dev server', run: 'toggleServer' },
         { label: 'Open the app', run: 'openApp' },
         { label: 'Copy password', run: 'copyPassword' },
       ];
-    },
-
-    /** Start the dev server if it is stopped, else stop it; the page's own poll flips the label. */
-    async toggleServer() {
-      const start = this.workspace?.state === 'stopped';
-
-      await setWorkspaceRunning(this.workspace.name, start, this.workspace.cluster || 'local');
-      this.notice = start ? 'Starting the dev server - it is ready to open once it says Running.' : 'Stopping the dev server.';
     },
 
     /** Open the workspace's running app in a new tab, to look at the change for real. */
@@ -2802,49 +2760,18 @@ export default {
               </RcButton>
             </div>
           </div>
+          <!--
+            Decisions about the work, and nothing else. Starting and stopping the dev server
+            were here too - the most expensive thing on the node under a heading about what
+            happens to the PR - and they are tools, so they are on the tools strip above, at
+            every stage, which is where the rest of what this workspace runs already is.
+          -->
           <div
-            v-if="actionsFor('you').length || (!leased && devServer.running)"
+            v-if="actionsFor('you').length"
             class="workspace-rail__group workspace-rail__group--decide"
           >
             <span class="workspace-rail__group-label">Your call</span>
             <div class="workspace-rail__group-buttons">
-              <!--
-                Only while there is one to stop. A dev server costs about two gigabytes of the
-                node whether or not anybody is looking at it, and every stage of every
-                workspace can have one, so the button belongs wherever the server is - not on
-                one page somebody has to remember.
-              -->
-              <RcButton
-                v-if="!leased && devServer.running"
-                variant="secondary"
-                :disabled="!!busy"
-                title="Stop this workspace's dev server and keep it stopped, freeing about 2 GB."
-                @click="stopServer"
-              >
-                <i
-                  v-if="busy === 'stopServer'"
-                  class="icon icon-spinner icon-spin"
-                />
-                Stop the dev server
-              </RcButton>
-              <!--
-                And back again. Without this the only way to undo a stop was the agent's own
-                command line, which is a poor answer to a button that stopped it - and this
-                product stops one by itself when a fix reaches In review.
-              -->
-              <RcButton
-                v-if="!leased && devServer.paused"
-                variant="secondary"
-                :disabled="!!busy"
-                title="Let this workspace run its dev server again. It takes a minute or two to compile."
-                @click="startServer"
-              >
-                <i
-                  v-if="busy === 'startServer'"
-                  class="icon icon-spinner icon-spin"
-                />
-                Start the dev server
-              </RcButton>
               <RcButton
                 v-for="a in actionsFor('you')"
                 :key="a.label"
@@ -2869,11 +2796,17 @@ export default {
         widest thing in a panel about what to press next - and it went away with that panel on a
         stage with nothing to press.
       -->
+      <!--
+        What this workspace runs. A leased one lists what is attached to it; an all-in-one one
+        has nothing to attach and lists the one thing it is - its own dev server, which used to
+        be two buttons down in "Your call".
+      -->
       <WorkspaceTools
-        v-if="leased"
+        v-if="!workspace.preview"
         inline
         :workspace="workspace.name"
         :idle-stage="idleStage"
+        :server="!leased"
         @notice="notice = $event"
         @error="noteError"
       />

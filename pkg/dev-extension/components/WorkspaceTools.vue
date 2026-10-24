@@ -19,6 +19,7 @@ import {
   previewState, shareWorkspace, rebuildPreview, removePreview, retargetPreview, preferredShareHost, agentShares,
 } from '../previews';
 import { listRanchers } from '../ranchers';
+import { devServerState, stopDevServer, startDevServer } from '../workspace-tools';
 
 export default {
   name: 'WorkspaceTools',
@@ -48,6 +49,20 @@ export default {
       type:    Boolean,
       default: false,
     },
+
+    /**
+     * Whether this workspace runs a dev server of its own, which is to say it is not leased.
+     *
+     * An all-in-one workspace HAS no tools to attach: the pod either runs webpack or does not,
+     * and `$WS/bin/dev-server` is what decides. Its start and stop were two buttons in the
+     * stage's "Your call" row instead - the most expensive thing on the node, about two
+     * gigabytes while it compiles, under a heading about deciding what happens to the PR. It is
+     * a tool. It belongs here, at every stage, which is what this prop is for.
+     */
+    server: {
+      type:    Boolean,
+      default: false,
+    },
   },
 
   emits: ['notice', 'error'],
@@ -56,6 +71,8 @@ export default {
     return {
       tools:    [],
       busy:     '',
+      /** This workspace's own dev server, when it has one. See the `server` prop. */
+      own:      { running: false, paused: false },
       /** Whether this visit has already released the dev server for a stage that cannot use it. */
       released: false,
       timer:    null,
@@ -152,12 +169,40 @@ export default {
      * strip of four with the shares at the front is what a person scans, and two sibling loops
      * with different markup was how the shares came to carry five controls and the tools three.
      */
+    /**
+     * The workspace's own dev server as a chip, for a workspace that is not leased.
+     *
+     * First in the row, because for such a workspace it is the only one of these that is the
+     * workspace itself rather than something hung off it.
+     */
+    selfRows() {
+      if (!this.server) {
+        return [];
+      }
+
+      return [{
+        id:    'self:dev-server',
+        kind:  'dev-server',
+        label: TOOLS['dev-server'].label,
+        icon:  TOOLS['dev-server'].icon,
+        what:  TOOLS['dev-server'].what,
+        up:    this.own.running,
+        // Stopped on purpose and not running at all are different things to a person deciding
+        // whether to press Start: one of them means somebody meant it.
+        state: this.own.running ? 'running' : (this.own.paused ? 'stopped' : 'not running'),
+        self:  true,
+      }];
+    },
+
     entries() {
       return [
+        ...this.selfRows,
         ...this.shareRows.map((row) => ({
           id: `share:${ row.kind }`, kind: row.kind, label: row.label, icon: row.icon, what: row.what, up: row.up, state: row.up ? 'built' : 'not built', share: row,
         })),
-        ...this.rows.map((row) => ({
+        // Leased tools only. An all-in-one workspace has none to attach, and listing them as
+        // "not attached" would offer something it cannot do.
+        ...(this.server ? [] : this.rows).map((row) => ({
           id: `tool:${ row.kind }`, kind: row.kind, label: row.label, icon: row.icon, what: row.what, up: !!row.tool.running, state: row.state, tool: row,
         })),
       ];
@@ -176,7 +221,7 @@ export default {
   },
 
   async fetch() {
-    await Promise.all([this.read(), this.readShares()]);
+    await Promise.all([this.read(), this.readShares(), this.readOwn()]);
   },
 
   mounted() {
@@ -185,6 +230,7 @@ export default {
     this.timer = setInterval(() => {
       this.read().catch(() => {});
       this.readShares().catch(() => {});
+      this.readOwn().catch(() => {});
     }, 20000);
   },
 
@@ -193,6 +239,48 @@ export default {
   },
 
   methods: {
+    /**
+     * Start this workspace's own dev server if it is stopped, else stop it.
+     *
+     * The page that owns the workspace polls its state, so the chip's words follow from that
+     * read rather than from anything guessed here; all this does is ask and say so.
+     */
+    async toggleSelf() {
+      const start = !this.own.running;
+
+      this.busy = 'self';
+      try {
+        await (start ? startDevServer(this.workspace) : stopDevServer(this.workspace));
+        if (start) {
+          // Remembered for this browser, under the key the rail's automatic stop reads: a stage
+          // that releases the server on sight must not undo a start somebody just asked for,
+          // which is what used to make this feel like a fight. See WorkspaceRail's stopForStage.
+          try {
+            sessionStorage.setItem(`dev-extension.dev-server-kept.${ this.workspace }`, '1');
+          } catch { /* a browser without storage just gets the stop again */ }
+        }
+        // Said now rather than waited for: `bin/dev-server start` returns before webpack has
+        // compiled, and the twenty-second read below is what corrects the chip either way.
+        this.own = { running: start, paused: !start };
+        this.$emit('notice', start
+          ? 'Starting the dev server - it is ready to open once it says Running.'
+          : 'Stopping the dev server.');
+        this.open = '';
+      } catch (e) {
+        this.$emit('error', e);
+      } finally {
+        this.busy = '';
+      }
+    },
+
+    /** This workspace's own dev server, as the pod has it. Only asked when it has one. */
+    async readOwn() {
+      if (!this.server) {
+        return;
+      }
+      this.own = await devServerState(this.workspace).catch(() => this.own);
+    },
+
     /** What each share is, now. A failed read leaves what is on screen alone. */
     async readShares() {
       for (const kind of ['dashboard', 'storybook']) {
@@ -625,6 +713,32 @@ export default {
             @click="picking = opened.kind"
           >
             {{ shareBusy === opened.kind ? 'Building…' : opened.share.agentOnly ? 'Build one here as well' : 'Build and share' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- The workspace's own dev server: the one thing that can be done to it. -->
+      <div
+        v-else-if="opened.self"
+        class="workspace-tools__panel"
+      >
+        <p class="workspace-tools__what">{{ opened.what }}</p>
+        <dl class="workspace-tools__facts">
+          <dt>State</dt>
+          <dd>{{ opened.state }}</dd>
+        </dl>
+        <div class="workspace-tools__actions">
+          <button
+            type="button"
+            class="btn btn-sm"
+            :class="opened.up ? 'role-secondary workspace-tools__danger' : 'role-primary'"
+            :disabled="busy === 'self'"
+            :title="opened.up
+              ? 'Stop this workspace\'s dev server and keep it stopped, freeing about 2 GB.'
+              : 'Let this workspace run its dev server again. It takes a minute or two to compile.'"
+            @click="toggleSelf"
+          >
+            {{ busy === 'self' ? 'Working…' : opened.up ? 'Stop the dev server' : 'Start the dev server' }}
           </button>
         </div>
       </div>
