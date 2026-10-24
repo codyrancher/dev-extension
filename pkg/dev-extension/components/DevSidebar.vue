@@ -27,7 +27,7 @@ import {
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
 import {
-  workspaceStatuses, agentLabel, statusLine, stageName, attentionTone, attentionReason, autoStopIdle, workspaceTitle
+  workspaceStatuses, agentLabel, statusLine, stageName, attentionTone, attentionReason, autoStopIdle, workspaceTitle, knownStatus
 } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import { ensureCertControllers } from '../certs';
@@ -100,14 +100,91 @@ function elapsed(ms) {
 // unmounts this product's page template and this sidebar with it. Fetching everything again
 // on each mount drew an empty column for a second on every click; drawn from here instead, the
 // column comes back exactly as it was and the refresh that follows changes what changed.
-const cache = {
-  workspaces: [],
-  clusters:   [],
-  apps:       [],
-  ranchers:   [],
-  defaultRancher: '',
-  scroll:     0,
-};
+/**
+ * What the nav last showed, so that opening it shows something.
+ *
+ * Two levels. In one page load this is a module object, and moving between Rancher's pages
+ * redraws the column from it without a request - that part is old. What is new is the second
+ * level: it is also written to localStorage, so a cold load draws the same column before the
+ * first read comes back, instead of an empty nav that fills in over a second or two while five
+ * calls go out (every workspace, every cluster, every App, the preferences, every Rancher).
+ *
+ * This is all our own: Installations, AppInstances, clusters and Ranchers out of our own
+ * cluster, not somebody else's API we have to be polite to. So the rule is the one the statuses
+ * already follow (see workspace-status.ts) - show what was last true, ask behind it, and write
+ * the answer back. A row for a workspace somebody deleted in another browser survives until the
+ * first refresh lands, which is the same trade the statuses make and the same seconds either
+ * way.
+ *
+ * Guarded at every turn: a browser with storage off gets exactly what it got before any of this
+ * existed, which is an empty nav and a wait.
+ */
+const CACHE_KEY = 'dev-extension.nav';
+
+function hydrateCache() {
+  const empty = {
+    workspaces: [], clusters: [], apps: [], ranchers: [], defaultRancher: '', scroll: 0,
+  };
+
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(CACHE_KEY) || '{}');
+
+    return {
+      ...empty,
+      workspaces: Array.isArray(stored.workspaces) ? stored.workspaces : [],
+      clusters:   Array.isArray(stored.clusters) ? stored.clusters : [],
+      apps:       Array.isArray(stored.apps) ? stored.apps : [],
+      ranchers:   Array.isArray(stored.ranchers) ? stored.ranchers : [],
+      defaultRancher: typeof stored.defaultRancher === 'string' ? stored.defaultRancher : '',
+    };
+  } catch {
+    return empty;
+  }
+}
+
+const cache = hydrateCache();
+
+/**
+ * The stages those remembered workspaces were last at, read straight out of the status store.
+ *
+ * `workspaceStatuses` is the live read and it awaits one GET for the agents before it answers,
+ * so on a cold load the rows arrived a round trip before their stage did - the nav drew, then
+ * every second line filled in underneath. The store it reads from is already on disk (see
+ * workspace-status.ts), so there is no reason to wait for the network to say what it said last
+ * time. This is that, synchronously, and the live read corrects it a moment later.
+ */
+function seedStatuses(workspaces) {
+  const seeded = {};
+
+  for (const workspace of workspaces) {
+    const status = knownStatus(workspace?.name || '');
+
+    if (status) {
+      seeded[workspace.name] = status;
+    }
+  }
+
+  return seeded;
+}
+
+/**
+ * The column as it now is, kept for the next cold load.
+ *
+ * `scroll` is left out on purpose: where this browser had scrolled to is worth keeping for a
+ * navigation and not for a page load, where the column has been rebuilt under it anyway. A
+ * quota error is nothing to report - the nav works, it just starts empty next time.
+ */
+function rememberCache() {
+  try {
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({
+      workspaces: cache.workspaces,
+      clusters:   cache.clusters,
+      apps:       cache.apps,
+      ranchers:   cache.ranchers,
+      defaultRancher: cache.defaultRancher,
+    }));
+  } catch { /* storage off or full: the nav is live either way */ }
+}
 // Whether this page load has already asked for the default App; see refresh().
 let seeded = false;
 
@@ -171,7 +248,7 @@ export default {
       apps:         cache.apps,
       error:        '',
       /** What each workspace needs and what its agent is doing, by name. See workspace-status.ts. */
-      statuses:     {},
+      statuses:     seedStatuses(cache.workspaces),
       refreshTimer: null,
       /**
        * The entries that are not workspaces, as an icon row at the foot.
@@ -343,6 +420,8 @@ export default {
         cache.workspaces = workspaces;
         cache.clusters = clusters;
         cache.apps = this.apps;
+        // And kept for the next cold load, which is the whole point of writing it down.
+        rememberCache();
 
         // A workspace made by the in-cluster API is an Installation nobody has rendered yet.
         // This browser is the one that can; see apps.ts.
