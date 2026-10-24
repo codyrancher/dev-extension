@@ -1324,40 +1324,55 @@ export default {
     }
 
     /*
-     * The find box. Quiet: it is a tool for the list, not a thing in the list.
+     * The find box: a row of this column, not a control dropped on top of one.
      *
-     * The nav's own inset (16px, the one a DevList row is indented by) so it starts on the same
-     * vertical line the rows it filters start on.
+     * It had a box of its own - a border and a radius, inset by numbers that were nobody
+     * else's - which made two frames inside one column and started the typing a few pixels
+     * right of every name under it. So it takes the column's own grammar instead, the one
+     * NavHead and NavRow are built on: the row height, the same left inset, and a leading
+     * glyph slot exactly one inset wide with the same gap after it, which is the rule that
+     * makes every name in the nav start at the same x. The search icon sits in that slot, so
+     * what you type lines up with what it is filtering.
+     *
+     * No border. The column has a hairline under this row already and one line is enough to
+     * say the box is not a workspace; the focus is said by the icon taking the accent and the
+     * row lifting a shade, the way a row under the pointer does.
      */
     &__find {
-      position:      relative;
       display:       flex;
       align-items:   center;
-      margin:        6px 12px 2px;
-      border:        1px solid var(--border);
-      border-radius: var(--dev-r-ctl, 4px);
-      background:    var(--body-bg);
+      height:        var(--dev-row);
+      padding:       0 var(--dev-space-3) 0 var(--dev-inset);
+      border-bottom: 1px solid var(--border);
 
-      &:focus-within { border-color: var(--link); }
+      &:focus-within {
+        background: var(--dev-row-hover, var(--default-hover-bg, transparent));
+
+        .dev-sidebar__find-icon { color: var(--dev-accent, var(--link)); }
+      }
     }
 
+    // The glyph's slot, the inset wide, so the placeholder starts where the names do.
     &__find-icon {
-      flex:       0 0 auto;
-      margin:     0 4px 0 6px;
-      font-size:  12px;
-      color:      var(--muted);
+      flex:         0 0 var(--dev-inset);
+      width:        var(--dev-inset);
+      margin-right: var(--dev-space-3);
+      font-size:    12px;
+      color:        var(--muted);
     }
 
     &__find-input {
       flex:       1 1 auto;
       min-width:  0;
-      height:     24px;
+      height:     100%;
       padding:    0;
       border:     none;
       background: transparent;
       color:      var(--body-text);
-      font-size:  12px;
+      font-size:  13px;
+      line-height: 16px;
 
+      &::placeholder { color: var(--muted); }
       &:focus { outline: none; box-shadow: none; }
 
       // The browser's own clear control, which is a second × beside ours and does not match it.
@@ -1367,7 +1382,7 @@ export default {
     &__find-clear {
       flex:        0 0 auto;
       min-height:  0;
-      padding:     0 6px;
+      padding:     0 var(--dev-space-2);
       border:      none;
       background:  none;
       color:       var(--muted);
@@ -1377,10 +1392,13 @@ export default {
       &:hover { color: var(--body-text); }
     }
 
+    // Said on the same line the names are on, so it reads as the list's answer rather than as
+    // a note about the box.
     &__find-none {
-      padding:   2px 16px 6px;
+      padding:   var(--dev-space-2) var(--dev-space-3) var(--dev-space-2)
+                 calc(var(--dev-inset) + var(--dev-inset) + var(--dev-space-3));
       color:     var(--muted);
-      font-size: 11px;
+      font-size: 12px;
     }
 
     // The template, above the clusters its workspaces are on. Same metrics as a DevList heading,

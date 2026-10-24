@@ -343,6 +343,40 @@ export default {
     },
 
     /**
+     * Everything there is to do at this stage, as one row.
+     *
+     * Two strips became one - see the note in the template - so the ordering has to carry what
+     * the two labels used to. The one thing to press leads, whichever side it came from: a
+     * stage's primary is the sentence the headline just made, and burying it behind three
+     * secondaries because it happens to be the agent's would be the old split in a new form.
+     * After it, the decisions, then the agent's actions, then the skills, which is the order
+     * the two strips read in top to bottom.
+     *
+     * `ai` is what draws the mark, and it is the whole of what the "Ask the agent" label said.
+     * `button` is carried on a skill because runSkill and onAux want the skill itself, not the
+     * row built around it.
+     */
+    actionRow() {
+      const mine = this.actionsFor('you').map((a) => ({
+        ...a, key: `you:${ a.label }`, ai: false, title: '',
+      }));
+      const theirs = this.actionsFor('agent').map((a) => ({
+        ...a, key: `agent:${ a.label }`, ai: true, title: 'Middle click to see the prompt and the skill',
+      }));
+      const skills = this.skillButtons().map((button) => ({
+        label:   button.label,
+        skill:   button.skill,
+        button,
+        key:     `skill:${ button.skill }`,
+        ai:      true,
+        title:   `${ button.note } · middle click to see the prompt and the skill`,
+      }));
+      const all = [...mine, ...theirs, ...skills];
+
+      return [...all.filter((a) => a.isPrimary), ...all.filter((a) => !a.isPrimary)];
+    },
+
+    /**
      * The section of what came back that is open over the page, or null.
      *
      * Held by title rather than as the object: `evidence` is rebuilt on every status read, and
@@ -482,7 +516,8 @@ export default {
           // the agent is doing: it runs the whole my-issue-fix flow - reproduce, fix, verify, open a
           // draft PR. It is the primary while nothing is being worked, and a tool while the agent is
           // mid-assessment so it does not cut across a conversation already going. The assessment
-          // skills (reproduce, root cause) sit beside it under "Ask the agent".
+          // skills (reproduce, root cause) sit beside it on the Actions row, marked as the
+          // agent's.
           // A developer workspace not named for an issue has nothing for "Fix it" to start from.
           if (!this.issue) {
             return s.agent === 'input' ? {
@@ -2718,54 +2753,6 @@ export default {
             pressing it starts or continues a conversation rather than doing the thing itself.
           -->
           <div
-            v-if="skillButtons().length || actionsFor('agent').length"
-            class="workspace-rail__group"
-          >
-            <span class="workspace-rail__group-label">Ask the agent</span>
-            <div class="workspace-rail__group-buttons">
-              <RcButton
-                v-for="a in actionsFor('agent')"
-                :key="a.label"
-                :variant="a.isPrimary ? 'primary' : 'secondary'"
-                :disabled="!!busy"
-                title="Middle click to see the prompt and the skill"
-                @click="run(a)"
-                @mousedown="onAux(a, $event)"
-                @auxclick="onAux(a, $event)"
-              >
-                <i
-                  v-if="busy === a.run"
-                  class="icon icon-spinner icon-spin"
-                />
-                <i
-                  v-else
-                  class="icon icon-ai workspace-rail__group-ai"
-                />
-                {{ a.label }}
-              </RcButton>
-              <RcButton
-                v-for="button in skillButtons()"
-                :key="button.skill"
-                variant="secondary"
-                :disabled="!!busy"
-                :title="`${ button.note } · middle click to see the prompt and the skill`"
-                @click="runSkill(button)"
-                @mousedown="onAux(button, $event)"
-                @auxclick="onAux(button, $event)"
-              >
-                <i
-                  v-if="busy === button.skill"
-                  class="icon icon-spinner icon-spin"
-                />
-                <i
-                  v-else
-                  class="icon icon-ai workspace-rail__group-ai"
-                />
-                {{ button.label }}
-              </RcButton>
-            </div>
-          </div>
-          <div
             v-if="verifyTools().length"
             class="workspace-rail__group workspace-rail__group--verify"
           >
@@ -2787,27 +2774,41 @@ export default {
             </div>
           </div>
           <!--
-            Decisions about the work, and nothing else. Starting and stopping the dev server
-            were here too - the most expensive thing on the node under a heading about what
-            happens to the PR - and they are tools, so they are on the tools strip above, at
-            every stage, which is where the rest of what this workspace runs already is.
+            Everything there is to do here, on one row.
+
+            It was two: "Ask the agent" over "Your call". Nobody reads a stage asking which of
+            the two halves of their own page they are addressing - they read it asking what to
+            do next - and splitting the answer across two labelled strips made the reader sort
+            the buttons before choosing one. The mark on a button says which are the agent's,
+            which is the only part of that distinction worth keeping and is already on them.
+
+            Starting and stopping the dev server used to be here too. They are tools, so they
+            are on the tools strip above, at every stage, with the rest of what this workspace
+            runs.
           -->
           <div
-            v-if="actionsFor('you').length"
+            v-if="actionRow.length"
             class="workspace-rail__group workspace-rail__group--decide"
           >
-            <span class="workspace-rail__group-label">Your call</span>
+            <span class="workspace-rail__group-label">Actions</span>
             <div class="workspace-rail__group-buttons">
               <RcButton
-                v-for="a in actionsFor('you')"
-                :key="a.label"
+                v-for="a in actionRow"
+                :key="a.key"
                 :variant="a.isPrimary ? 'primary' : 'secondary'"
                 :disabled="!!busy"
-                @click="run(a)"
+                :title="a.title"
+                @click="a.skill ? runSkill(a.button) : run(a)"
+                @mousedown="a.ai ? onAux(a.button || a, $event) : undefined"
+                @auxclick="a.ai ? onAux(a.button || a, $event) : undefined"
               >
                 <i
-                  v-if="busy === a.run"
+                  v-if="busy === (a.skill || a.run)"
                   class="icon icon-spinner icon-spin"
+                />
+                <i
+                  v-else-if="a.ai"
+                  class="icon icon-ai workspace-rail__group-ai"
                 />
                 {{ a.label }}
               </RcButton>
@@ -4545,13 +4546,14 @@ export default {
 
 
   /*
-   * For review: one row, on the same grid as the three strips above it.
+   * For review: one row, on the same grid as the strips above it.
    *
-   * Four strips stack here - Ask the agent, Your call, Tools, For review - and they are the same
-   * shape: a label, then the things. So they are the same measurements, to the pixel, and read
-   * as one table rather than as four boxes that happen to be near each other. The numbers are
-   * the action groups' own (`&__group`): 8px/14px of padding, a 20px gap, and a 96px label,
-   * which is also what WorkspaceTools' inline row uses. Change one, change all four.
+   * They all stack here - Actions, Verify the work where there is a build to look at, Tools,
+   * For review - and they are the same shape: a label, then the things. So they are the same
+   * measurements, to the pixel, and read as one table rather than as boxes that happen to be
+   * near each other. The numbers are the action groups' own (`&__group`): 8px/14px of padding,
+   * a 20px gap, and a 96px label, which is also what WorkspaceTools' inline row uses. Change
+   * one, change all of them.
    *
    * "What came back" was the heading; the label column is 96px and that wrapped in it. It is
    * what the row is FOR, said in two words.
