@@ -47,6 +47,7 @@ import {
 } from '../conversations';
 import { ensureWorkspaceReady, putArtifact, saveArtifact, devServerState, stopDevServer } from '../workspace-tools';
 import WorkspaceTools from './WorkspaceTools.vue';
+import { watchPopouts } from '../md-popout.mjs';
 import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
@@ -187,6 +188,8 @@ export default {
       agentSettleTimer: null,
       /** Which section of what came back is open over the page, by title; '' is none. */
       opened:      '',
+      /** Stops the popout watcher over this page's comments; see md-popout.mjs. */
+      stopPopouts: null,
       /** The conversation, in its own window over the page. */
       popped:      false,
       /** The workspace's own recordings and screenshots, for attaching to one. */
@@ -689,9 +692,14 @@ export default {
       setInterval(() => this.refreshEvidence(), EVIDENCE_MS),
       setInterval(() => this.watchComments(), COMMENTS_MS),
     ];
+    // A way out of a comment, for the parts of one that do not fit: a table or a fenced block
+    // wider than the column gets a button that opens it over the page. One watcher over the
+    // page, so the evidence modal's comments are covered as they are drawn. See md-popout.mjs.
+    this.stopPopouts = watchPopouts(this.$el);
   },
 
   beforeUnmount() {
+    this.stopPopouts?.();
     this.timers.forEach((t) => clearInterval(t));
     clearTimeout(this.statusRetryTimer);
     clearTimeout(this.evidenceRetryTimer);

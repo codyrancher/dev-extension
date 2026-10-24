@@ -16,7 +16,9 @@
  * the same here as it does there, and authored HTML is escaped rather than run - comment bodies
  * come from arbitrary GitHub users.
  */
+import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { renderMd } from '../pr/diff';
+import { watchPopouts } from '../../md-popout.mjs';
 
 withDefaults(defineProps<{
   text: string;
@@ -115,11 +117,28 @@ const alerted = (html: string) => html.replace(
 );
 
 const drawn = (text: string) => alerted(renderMd(embedded(text)));
+
+/*
+ * A way out, for the parts of this that do not fit in it.
+ *
+ * A table or a fenced block wider than the column it is in gets a button in its corner that
+ * opens it over the page; everything that fits is left alone. Here rather than at each place
+ * that draws a comment, because this is the one component that draws markdown - see the note
+ * at the top of this file - and the scan re-runs when the body changes, so text replaced after
+ * mount is covered too. md-popout.mjs says why it is DOM rather than a component.
+ */
+const body = ref<HTMLElement | null>(null);
+let stopPopouts = () => {};
+
+onMounted(() => {
+  stopPopouts = watchPopouts(body.value);
+});
+onBeforeUnmount(() => stopPopouts());
 </script>
 
 <template>
   <!-- eslint-disable-next-line vue/no-v-html -- renderMd escapes authored HTML before marking up. -->
-  <div class="md-body" :class="{ 'md-body--dense': dense, 'md-body--card': card }" v-html="drawn(text)" />
+  <div ref="body" class="md-body" :class="{ 'md-body--dense': dense, 'md-body--card': card }" v-html="drawn(text)" />
 </template>
 
 <style scoped>

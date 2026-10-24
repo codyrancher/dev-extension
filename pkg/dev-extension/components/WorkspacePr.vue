@@ -13,6 +13,7 @@ import {
   computed, onBeforeUnmount, onMounted, reactive, ref, watch, nextTick
 } from 'vue';
 import { useStore } from 'vuex';
+import { watchPopouts } from '../md-popout.mjs';
 import {
   parseHunks, highlightRows, hl, escapeHtml, renderMd
 } from './pr/diff';
@@ -202,6 +203,10 @@ onMounted(async() => {
   if (rootEl.value) {
     rootObserver.observe(rootEl.value);
   }
+  // Comments on this page are drawn with `renderMd` straight into `v-html` rather than through
+  // the Markdown component, so the popouts are armed here as well: one watcher over the whole
+  // panel, covering every comment it has now and every one it loads later.
+  stopPopouts = watchPopouts(rootEl.value);
   narrowMq = window.matchMedia('(max-width: 760px)');
   isNarrow.value = narrowMq.matches;
   narrowMq.addEventListener('change', onNarrow);
@@ -242,6 +247,7 @@ onBeforeUnmount(() => {
   narrowMq?.removeEventListener('change', onNarrow);
   nearObserver?.disconnect();
   nearObserver = null;
+  stopPopouts();
   rootObserver?.disconnect();
   rootObserver = null;
 });
@@ -861,6 +867,8 @@ const reviewTermState = ref('');
 // under 500px, where a fixed 380px panel would leave the diff a 40px slot. Measured, not a
 // percentage: a percentage height inside a flex column resolves against nothing definite here.
 const rootEl = ref<HTMLElement | null>(null);
+/** Stops the popout watcher; see md-popout.mjs. */
+let stopPopouts = () => {};
 const reviewPanelHeight = ref(320);
 let rootObserver: ResizeObserver | null = null;
 
