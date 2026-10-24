@@ -2840,14 +2840,17 @@ export default {
         line, and the conversation underneath takes everything left (see `--live`).
       -->
       <section class="workspace-rail__came-back">
-        <h3 class="workspace-rail__came-back-label">{{ lookingBack ? `What ${ shownLabel } left behind` : current ? 'What came back' : 'Reading where this is… meanwhile, the latest' }}</h3>
+        <h3 class="workspace-rail__came-back-label">{{ lookingBack ? `From ${ shownLabel }` : current ? 'For review' : 'Reading…' }}</h3>
         <div
           v-if="!evidence.length"
           class="workspace-rail__came-back-empty"
         >
           {{ reading ? 'Reading…' : 'Nothing to show for this stage yet.' }}
         </div>
-        <template v-else>
+        <div
+          v-else
+          class="workspace-rail__came-back-items"
+        >
           <button
             v-for="section in evidence"
             :key="section.title"
@@ -2858,7 +2861,7 @@ export default {
             <span class="workspace-rail__came-back-name">{{ section.title }}</span>
             <i class="icon icon-chevron-right" />
           </button>
-        </template>
+        </div>
         <button
           v-if="lookingBack"
           type="button"
@@ -4534,37 +4537,48 @@ export default {
 
 
   /*
-   * What came back: one row, read the way the tools strip above it is read.
+   * For review: one row, on the same grid as the three strips above it.
    *
-   * Label on the left, the things on the same line beside it. It was a heading with the
-   * buttons on a second line under it, which made a card three lines tall for three words and
-   * broke the rhythm of the two strips above it - Your call and Tools - that say what they are
-   * on the same line as what they hold. The buttons are the tools strip's chip metrics too, so
-   * the three rows read as one stack rather than as three different ideas about a button.
+   * Four strips stack here - Ask the agent, Your call, Tools, For review - and they are the same
+   * shape: a label, then the things. So they are the same measurements, to the pixel, and read
+   * as one table rather than as four boxes that happen to be near each other. The numbers are
+   * the action groups' own (`&__group`): 8px/14px of padding, a 20px gap, and a 96px label,
+   * which is also what WorkspaceTools' inline row uses. Change one, change all four.
+   *
+   * "What came back" was the heading; the label column is 96px and that wrapped in it. It is
+   * what the row is FOR, said in two words.
    */
   &__came-back {
     display:       flex;
     align-items:   center;
     flex-wrap:     wrap;
-    gap:           8px;
+    gap:           20px;
     flex:          0 0 auto;
-    padding:       10px 12px;
+    padding:       8px 14px;
     border:        1px solid var(--border);
     border-radius: var(--r-sm);
     background:    var(--box-bg);
     min-width:     0;
   }
 
-  // The label: the tools strip's, to the letter, so the two line up down the page.
+  // The label column, the same 96px the other three use.
   &__came-back-label {
     margin:         0;
-    margin-right:   8px;
-    flex:           0 0 auto;
+    flex:           0 0 96px;
     font-size:      11px;
     font-weight:    700;
     letter-spacing: .06em;
     text-transform: uppercase;
-    color:          var(--input-label);
+    color:          var(--pr-muted);
+  }
+
+  // The things, in the second column: one group, so the 20px gap after the label is the column
+  // and the 8px between the chips is theirs.
+  &__came-back-items {
+    display:   flex;
+    flex-wrap: wrap;
+    gap:       8px;
+    min-width: 0;
   }
 
   &__came-back-empty {
