@@ -185,8 +185,8 @@ export default {
       commentsAt: '',
       /** A GitHub read queued because the agent just stopped; cleared when the page goes. */
       agentSettleTimer: null,
-      /** Which sections are folded away: `{ [title]: true }`, seeded from the section itself. */
-      shut:        {},
+      /** Which section of what came back is open over the page, by title; '' is none. */
+      opened:      '',
       /** The conversation, in its own window over the page. */
       popped:      false,
       /** The workspace's own recordings and screenshots, for attaching to one. */
@@ -337,6 +337,16 @@ export default {
 
     lookingBack() {
       return !!this.viewing && this.viewing !== this.current;
+    },
+
+    /**
+     * The section of what came back that is open over the page, or null.
+     *
+     * Held by title rather than as the object: `evidence` is rebuilt on every status read, and
+     * a modal holding the old object would go on showing what the page no longer believes.
+     */
+    shownSection() {
+      return this.evidence.find((s) => s.title === this.opened) || null;
     },
 
     /**
@@ -1170,15 +1180,6 @@ export default {
       // The caption rides on the element: a body is `v-html`, so by the time this runs the only
       // thing it has is the image that was clicked. See placeAttached in workspace-rail.ts.
       this.shot = { src: img.src, name: img.alt || 'screenshot', caption: img.dataset?.caption || '' };
-    },
-
-    /** Whether a section is folded: what was chosen for it here, else what it asked for. */
-    isShut(section) {
-      return this.shut[section.title] ?? !!section.collapsed;
-    },
-
-    toggleSection(section) {
-      this.shut = { ...this.shut, [section.title]: !this.isShut(section) };
     },
 
     async run(action) {
@@ -2878,6 +2879,55 @@ export default {
       />
 
       <!--
+        What came back, above the conversation rather than in a column beside it.
+
+        It was a stack of folds down the left while the conversation sat in the other half of
+        the page, so the two things a person moves between - what the agent produced, and the
+        agent - each had half the width and neither had the height. The evidence is a read: you
+        open the pull request, or the change, or the artifacts, look, and close it. The
+        conversation is where you stay. So the evidence is a row of three buttons that take one
+        line, and the conversation underneath takes everything left (see `--live`).
+      -->
+      <section class="workspace-rail__came-back">
+        <div class="workspace-rail__col-head">
+          <h3 class="workspace-rail__col-title">{{ lookingBack ? `What ${ shownLabel } left behind` : current ? 'What came back' : 'Reading where this is… meanwhile, the latest' }}</h3>
+          <button
+            v-if="lookingBack"
+            type="button"
+            class="workspace-rail__back"
+            @click="backToNow"
+          >
+            Back to now
+          </button>
+          <i
+            v-else-if="reading"
+            class="icon icon-spinner icon-spin workspace-rail__reading"
+          />
+        </div>
+        <div
+          v-if="!evidence.length"
+          class="workspace-rail__empty"
+        >
+          {{ reading ? 'Reading…' : 'Nothing to show for this stage yet.' }}
+        </div>
+        <div
+          v-else
+          class="workspace-rail__came-back-row"
+        >
+          <button
+            v-for="section in evidence"
+            :key="section.title"
+            type="button"
+            class="workspace-rail__came-back-item"
+            @click="opened = section.title"
+          >
+            <span class="workspace-rail__came-back-name">{{ section.title }}</span>
+            <i class="icon icon-chevron-right" />
+          </button>
+        </div>
+      </section>
+
+      <!--
         The running agent, under the button that started it.
 
         A conversation used to be reachable only through a button that opened it over the page,
@@ -2993,113 +3043,119 @@ export default {
         </div>
       </section>
 
-      <div class="workspace-rail__columns">
-        <!-- Column one: what there is to judge, for the stage being looked at. -->
-        <section class="workspace-rail__col">
-          <div class="workspace-rail__col-head">
-            <h3 class="workspace-rail__col-title">{{ lookingBack ? `What ${ shownLabel } left behind` : current ? 'What came back' : 'Reading where this is… meanwhile, the latest' }}</h3>
+      <!--
+        One of those three, opened over the page. The same content the fold held, in the room it
+        needs: a diff, a description and a list of comments are each wider than half a column.
+      -->
+      <DevModal
+        v-if="shownSection"
+        size="large"
+        :title="shownSection.title"
+        @close="opened = ''"
+      >
+        <div class="workspace-rail__section workspace-rail__section--opened">
+          <!--
+            The "as one diff" link, on its own row above the list it is about.
+          -->
+          <div
+            v-if="combinedItem(shownSection)"
+            class="workspace-rail__section-head"
+          >
             <button
-              v-if="lookingBack"
               type="button"
               class="workspace-rail__back"
-              @click="backToNow"
+              @click="showCombined(combinedItem(shownSection))"
+            >{{ combinedFor(combinedItem(shownSection)) ? 'Hide the combined diff' : `All ${ combinedItem(shownSection).items.length } commits${ combinedItem(shownSection).since ? ` since ${ combinedItem(shownSection).since }` : '' } as one diff` }}</button>
+          </div>
+          <template
+            v-for="(item, i) in shownSection.items"
+            :key="i"
+          >
+            <div
+              v-if="item.kind === 'text'"
+              class="workspace-rail__text"
             >
-              Back to now
-            </button>
-            <i
-              v-else-if="reading"
-              class="icon icon-spinner icon-spin workspace-rail__reading"
-            />
-          </div>
-          <div
-            v-if="!evidence.length"
-            class="workspace-rail__empty"
-          >
-            {{ reading ? 'Reading…' : 'Nothing to show for this stage yet.' }}
-          </div>
-          <div
-            v-for="section in evidence"
-            :key="section.title"
-            class="workspace-rail__section"
-          >
-            <div class="workspace-rail__section-head">
-              <!--
-                Every section folds; only the pull request opens shut, because it is the frame
-                the rest is read inside rather than something that happened.
-              -->
-              <h4 class="workspace-rail__section-title">
+              <span
+                v-if="item.at"
+                class="workspace-rail__when"
+              >{{ ago(item.at) }}</span>
+              <div
+                v-if="item.html"
+                class="md-body workspace-rail__md"
+                :class="{ 'workspace-rail__md--live': item.taskBody }"
+                @click="(event) => onBodyClick(event, item)"
+                v-html="item.html"
+              />
+              <template v-else>{{ item.text }}</template>
+            </div>
+            <dl
+              v-else-if="item.kind === 'kv'"
+              class="workspace-rail__kv"
+            >
+              <template
+                v-for="row in item.rows"
+                :key="row.k"
+              >
+                <dt>{{ row.k }}</dt>
+                <dd :class="row.tone ? `workspace-rail__tone--${ row.tone }` : ''">{{ row.v }}</dd>
+              </template>
+            </dl>
+            <template v-else-if="item.kind === 'commits'">
+              <div
+                v-if="combinedFor(item) === 'reading'"
+                class="workspace-rail__empty"
+              >Reading the combined diff…</div>
+              <div
+                v-else-if="combinedFor(item) === 'none'"
+                class="workspace-rail__empty"
+              >The combined diff could not be read.</div>
+              <div
+                v-else-if="combinedFor(item)"
+                class="workspace-rail__files"
+              >
+                <div
+                  v-for="f in combinedFor(item)"
+                  :key="f.path"
+                  class="prm-file"
+                >
+                  <div class="prm-file-head"><code>{{ f.path }}</code><span
+                    v-if="f.status"
+                    class="workspace-rail__tag"
+                  >{{ f.status }}</span></div>
+                  <CodeView :rows="fromRailRows(f.rows)" />
+                </div>
+              </div>
+              <ul class="workspace-rail__list workspace-rail__list--plain">
+              <li
+                v-for="c in item.items"
+                :key="c.sha"
+                class="workspace-rail__commit"
+              >
                 <button
                   type="button"
-                  class="workspace-rail__fold"
-                  :title="isShut(section) ? 'Show this' : 'Fold this away'"
-                  @click="toggleSection(section)"
+                  class="workspace-rail__row-btn"
+                  :title="openCommits[c.sha] ? 'Hide the change' : 'Show the change'"
+                  @click="toggleCommit(c, item)"
                 >
                   <i
                     class="icon"
-                    :class="isShut(section) ? 'icon-chevron-right' : 'icon-chevron-down'"
-                  />{{ section.title }}
+                    :class="openCommits[c.sha] ? 'icon-chevron-down' : 'icon-chevron-right'"
+                  /><code>{{ c.sha.slice(0, 7) }}</code> {{ c.message }} <span class="workspace-rail__when">{{ c.who }} · {{ ago(c.at) }}</span>
                 </button>
-              </h4>
-              <!--
-                The "as one diff" link belongs on the title's row: it is about the list under
-                it, and on a row of its own it cost more height than the two commits it was
-                offering to combine.
-              -->
-              <button
-                v-if="combinedItem(section)"
-                type="button"
-                class="workspace-rail__back"
-                @click="showCombined(combinedItem(section))"
-              >{{ combinedFor(combinedItem(section)) ? 'Hide the combined diff' : `All ${ combinedItem(section).items.length } commits${ combinedItem(section).since ? ` since ${ combinedItem(section).since }` : '' } as one diff` }}</button>
-            </div>
-            <template
-              v-for="(item, i) in (isShut(section) ? [] : section.items)"
-              :key="i"
-            >
-              <div
-                v-if="item.kind === 'text'"
-                class="workspace-rail__text"
-              >
-                <span
-                  v-if="item.at"
-                  class="workspace-rail__when"
-                >{{ ago(item.at) }}</span>
                 <div
-                  v-if="item.html"
-                  class="md-body workspace-rail__md"
-                  :class="{ 'workspace-rail__md--live': item.taskBody }"
-                  @click="(event) => onBodyClick(event, item)"
-                  v-html="item.html"
-                />
-                <template v-else>{{ item.text }}</template>
-              </div>
-              <dl
-                v-else-if="item.kind === 'kv'"
-                class="workspace-rail__kv"
-              >
-                <template
-                  v-for="row in item.rows"
-                  :key="row.k"
-                >
-                  <dt>{{ row.k }}</dt>
-                  <dd :class="row.tone ? `workspace-rail__tone--${ row.tone }` : ''">{{ row.v }}</dd>
-                </template>
-              </dl>
-              <template v-else-if="item.kind === 'commits'">
-                <div
-                  v-if="combinedFor(item) === 'reading'"
-                  class="workspace-rail__empty"
-                >Reading the combined diff…</div>
-                <div
-                  v-else-if="combinedFor(item) === 'none'"
-                  class="workspace-rail__empty"
-                >The combined diff could not be read.</div>
-                <div
-                  v-else-if="combinedFor(item)"
+                  v-if="openCommits[c.sha]"
                   class="workspace-rail__files"
                 >
+                  <p
+                    v-if="commitFiles[c.sha] === null"
+                    class="workspace-rail__empty"
+                  >Reading the change…</p>
+                  <p
+                    v-else-if="!(commitFiles[c.sha] || []).length"
+                    class="workspace-rail__empty"
+                  >The commit's diff could not be read.</p>
                   <div
-                    v-for="f in combinedFor(item)"
+                    v-for="f in commitFiles[c.sha] || []"
                     :key="f.path"
                     class="prm-file"
                   >
@@ -3110,435 +3166,393 @@ export default {
                     <CodeView :rows="fromRailRows(f.rows)" />
                   </div>
                 </div>
-                <ul class="workspace-rail__list workspace-rail__list--plain">
-                <li
-                  v-for="c in item.items"
-                  :key="c.sha"
-                  class="workspace-rail__commit"
-                >
+                </li>
+              </ul>
+            </template>
+            <!--
+              The change, read in the tool built for it: file tree, whole-file context, the
+              diff options, all of it over the page. The column used to list every path with
+              its own accordion, which was thirty-one rows of nothing much.
+            -->
+            <div
+              v-if="item.kind === 'review'"
+              class="workspace-rail__review-open"
+            >
+              <PrButton
+                size="sm"
+                variant="primary"
+                @click="openTab('review')"
+              >
+                {{ item.label }}
+              </PrButton>
+            </div>
+            <!--
+              The workspace's artifacts directory, all of it: a group per directory, a
+              thumbnail per file whatever kind of file it is. One opens in the viewer below,
+              which is kept at the page's root so that a refresh of this column cannot take an
+              editor with unsaved work in it away.
+            -->
+            <WorkspaceArtifacts
+              v-if="item.kind === 'artifacts'"
+              :workspace="workspace.name"
+              :groups="item.groups"
+              :total="item.total"
+              :truncated="item.truncated"
+              :lead="item.lead"
+              @open="shot = $event"
+            />
+            <div
+              v-else-if="item.kind === 'comments'"
+              class="workspace-rail__comments"
+            >
+              <!--
+                One thread at a time where there are many: the pager walks them in GitHub's
+                order, and a number jumps straight to one. A thread still waiting on an
+                answer is marked in the pager too, so it can be found without walking.
+              -->
+              <div
+                v-if="item.paged && item.items.length > 1"
+                class="workspace-rail__pager"
+              >
+                <button
+                  type="button"
+                  class="workspace-rail__page-step"
+                  :disabled="pageOf(shownSection, item) === 0"
+                  @click="turn(shownSection, item, -1)"
+                >‹ Previous</button>
+                <span class="workspace-rail__page-nums">
+                  <button
+                    v-for="(c, n) in item.items"
+                    :key="c.id || n"
+                    type="button"
+                    class="workspace-rail__page-num"
+                    :class="{
+                      'workspace-rail__page-num--on': n === pageOf(shownSection, item),
+                      'workspace-rail__page-num--approved': !c.answered && c.local && c.status === 'approved',
+                      'workspace-rail__page-num--open': !c.answered && !(c.local && c.status === 'approved'),
+                    }"
+                    :title="`${ c.where }${ c.answered ? '' : c.status === 'approved' ? ' · approved' : ' · waiting' }`"
+                    @click="goTo(shownSection, n)"
+                  >{{ n + 1 }}</button>
+                </span>
+                <button
+                  type="button"
+                  class="workspace-rail__page-step"
+                  :disabled="pageOf(shownSection, item) >= item.items.length - 1"
+                  @click="turn(shownSection, item, 1)"
+                >Next ›</button>
+                <span class="workspace-rail__page-of">{{ pageOf(shownSection, item) + 1 }} of {{ item.items.length }}</span>
+              </div>
+              <!--
+                One card per thread, in GitHub's order (the file's place in the PR, then the
+                line). The code it is on is the hunk, numbered both sides, the commented line
+                marked; every message is rendered, the PR's author told apart from the rest.
+              -->
+              <article
+                v-for="(c, j) in shownThreads(shownSection, item)"
+                :key="c.id || j"
+                class="workspace-rail__thread-card"
+                :class="{ 'workspace-rail__thread-card--asked': flash === `finding-${ c.id }` }"
+                :data-ask="`finding-${ c.id }`"
+              >
+                <header class="workspace-rail__comment-head">
                   <button
                     type="button"
                     class="workspace-rail__row-btn"
-                    :title="openCommits[c.sha] ? 'Hide the change' : 'Show the change'"
-                    @click="toggleCommit(c, item)"
-                  >
-                    <i
-                      class="icon"
-                      :class="openCommits[c.sha] ? 'icon-chevron-down' : 'icon-chevron-right'"
-                    /><code>{{ c.sha.slice(0, 7) }}</code> {{ c.message }} <span class="workspace-rail__when">{{ c.who }} · {{ ago(c.at) }}</span>
-                  </button>
-                  <div
-                    v-if="openCommits[c.sha]"
-                    class="workspace-rail__files"
-                  >
-                    <p
-                      v-if="commitFiles[c.sha] === null"
-                      class="workspace-rail__empty"
-                    >Reading the change…</p>
-                    <p
-                      v-else-if="!(commitFiles[c.sha] || []).length"
-                      class="workspace-rail__empty"
-                    >The commit's diff could not be read.</p>
-                    <div
-                      v-for="f in commitFiles[c.sha] || []"
-                      :key="f.path"
-                      class="prm-file"
-                    >
-                      <div class="prm-file-head"><code>{{ f.path }}</code><span
-                        v-if="f.status"
-                        class="workspace-rail__tag"
-                      >{{ f.status }}</span></div>
-                      <CodeView :rows="fromRailRows(f.rows)" />
-                    </div>
-                  </div>
-                  </li>
-                </ul>
-              </template>
-              <!--
-                The change, read in the tool built for it: file tree, whole-file context, the
-                diff options, all of it over the page. The column used to list every path with
-                its own accordion, which was thirty-one rows of nothing much.
-              -->
-              <div
-                v-if="item.kind === 'review'"
-                class="workspace-rail__review-open"
-              >
-                <PrButton
-                  size="sm"
-                  variant="primary"
-                  @click="openTab('review')"
-                >
-                  {{ item.label }}
-                </PrButton>
-              </div>
-              <!--
-                The workspace's artifacts directory, all of it: a group per directory, a
-                thumbnail per file whatever kind of file it is. One opens in the viewer below,
-                which is kept at the page's root so that a refresh of this column cannot take an
-                editor with unsaved work in it away.
-              -->
-              <WorkspaceArtifacts
-                v-if="item.kind === 'artifacts'"
-                :workspace="workspace.name"
-                :groups="item.groups"
-                :total="item.total"
-                :truncated="item.truncated"
-                :lead="item.lead"
-                @open="shot = $event"
-              />
-              <div
-                v-else-if="item.kind === 'comments'"
-                class="workspace-rail__comments"
-              >
-                <!--
-                  One thread at a time where there are many: the pager walks them in GitHub's
-                  order, and a number jumps straight to one. A thread still waiting on an
-                  answer is marked in the pager too, so it can be found without walking.
-                -->
+                    :title="(openComments[c.id] ?? !c.answered) ? 'Hide the code' : 'Show the code it is on'"
+                    @click="toggleComment(c)"
+                  ><i
+                    class="icon"
+                    :class="(openComments[c.id] ?? !c.answered) ? 'icon-chevron-down' : 'icon-chevron-right'"
+                  /><code>{{ c.where }}</code></button>
+                  <span
+                    v-if="c.thread.length > 1"
+                    class="workspace-rail__tag"
+                  >{{ c.thread.length }} messages</span>
+                  <!--
+                    A local finding you have marked good reads as approved, in green, here and in
+                    the pager - not "waiting on you", which is only for one you have not been
+                    through yet. A submitted comment (answered) shows neither; its state is its own.
+                  -->
+                  <span
+                    v-if="!c.answered && c.local && c.status === 'approved'"
+                    class="workspace-rail__tag workspace-rail__tag--approved"
+                  >approved</span>
+                  <span
+                    v-else-if="!c.answered"
+                    class="workspace-rail__tag workspace-rail__tag--open"
+                  >{{ status.kind === 'review' && shown === 'response' ? 'no reply from the developer' : 'waiting on you' }}</span>
+                  <a
+                    v-if="c.url"
+                    :href="c.url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="workspace-rail__when"
+                  >on GitHub</a>
+                </header>
                 <div
-                  v-if="item.paged && item.items.length > 1"
-                  class="workspace-rail__pager"
+                  v-if="openComments[c.id] ?? !c.answered"
+                  class="prm-file"
                 >
-                  <button
-                    type="button"
-                    class="workspace-rail__page-step"
-                    :disabled="pageOf(section, item) === 0"
-                    @click="turn(section, item, -1)"
-                  >‹ Previous</button>
-                  <span class="workspace-rail__page-nums">
+                  <template v-if="c.rows.length">
                     <button
-                      v-for="(c, n) in item.items"
-                      :key="c.id || n"
+                      v-if="c.path && c.headSha && status.pr"
                       type="button"
-                      class="workspace-rail__page-num"
-                      :class="{
-                        'workspace-rail__page-num--on': n === pageOf(section, item),
-                        'workspace-rail__page-num--approved': !c.answered && c.local && c.status === 'approved',
-                        'workspace-rail__page-num--open': !c.answered && !(c.local && c.status === 'approved'),
-                      }"
-                      :title="`${ c.where }${ c.answered ? '' : c.status === 'approved' ? ' · approved' : ' · waiting' }`"
-                      @click="goTo(section, n)"
-                    >{{ n + 1 }}</button>
-                  </span>
-                  <button
-                    type="button"
-                    class="workspace-rail__page-step"
-                    :disabled="pageOf(section, item) >= item.items.length - 1"
-                    @click="turn(section, item, 1)"
-                  >Next ›</button>
-                  <span class="workspace-rail__page-of">{{ pageOf(section, item) + 1 }} of {{ item.items.length }}</span>
-                </div>
-                <!--
-                  One card per thread, in GitHub's order (the file's place in the PR, then the
-                  line). The code it is on is the hunk, numbered both sides, the commented line
-                  marked; every message is rendered, the PR's author told apart from the rest.
-                -->
-                <article
-                  v-for="(c, j) in shownThreads(section, item)"
-                  :key="c.id || j"
-                  class="workspace-rail__thread-card"
-                  :class="{ 'workspace-rail__thread-card--asked': flash === `finding-${ c.id }` }"
-                  :data-ask="`finding-${ c.id }`"
-                >
-                  <header class="workspace-rail__comment-head">
+                      class="workspace-rail__expander"
+                      title="Show the lines above"
+                      @click="extend(c, 'up')"
+                    >↑ more above</button>
+                    <CodeView :rows="fromRailRows(rowsAround(c))" />
                     <button
+                      v-if="c.path && c.headSha && status.pr"
                       type="button"
-                      class="workspace-rail__row-btn"
-                      :title="(openComments[c.id] ?? !c.answered) ? 'Hide the code' : 'Show the code it is on'"
-                      @click="toggleComment(c)"
-                    ><i
-                      class="icon"
-                      :class="(openComments[c.id] ?? !c.answered) ? 'icon-chevron-down' : 'icon-chevron-right'"
-                    /><code>{{ c.where }}</code></button>
-                    <span
-                      v-if="c.thread.length > 1"
-                      class="workspace-rail__tag"
-                    >{{ c.thread.length }} messages</span>
-                    <!--
-                      A local finding you have marked good reads as approved, in green, here and in
-                      the pager - not "waiting on you", which is only for one you have not been
-                      through yet. A submitted comment (answered) shows neither; its state is its own.
-                    -->
-                    <span
-                      v-if="!c.answered && c.local && c.status === 'approved'"
-                      class="workspace-rail__tag workspace-rail__tag--approved"
-                    >approved</span>
-                    <span
-                      v-else-if="!c.answered"
-                      class="workspace-rail__tag workspace-rail__tag--open"
-                    >{{ status.kind === 'review' && shown === 'response' ? 'no reply from the developer' : 'waiting on you' }}</span>
-                    <a
-                      v-if="c.url"
-                      :href="c.url"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="workspace-rail__when"
-                    >on GitHub</a>
-                  </header>
-                  <div
-                    v-if="openComments[c.id] ?? !c.answered"
-                    class="prm-file"
-                  >
-                    <template v-if="c.rows.length">
-                      <button
-                        v-if="c.path && c.headSha && status.pr"
-                        type="button"
-                        class="workspace-rail__expander"
-                        title="Show the lines above"
-                        @click="extend(c, 'up')"
-                      >↑ more above</button>
-                      <CodeView :rows="fromRailRows(rowsAround(c))" />
-                      <button
-                        v-if="c.path && c.headSha && status.pr"
-                        type="button"
-                        class="workspace-rail__expander"
-                        title="Show the lines below"
-                        @click="extend(c, 'down')"
-                      >↓ more below</button>
-                    </template>
-                    <p
-                      v-else
-                      class="workspace-rail__empty"
-                    >{{ c.noPatch ? 'The diff is too large for GitHub to send; open it there.' : c.path ? 'The line is not in the PR\'s diff any more.' : 'A comment on the PR as a whole.' }}</p>
-                  </div>
-                  <div class="workspace-rail__thread">
-                    <!--
-                      The highlight is on the comment, not the thread: a message that arrived
-                      since the last round, and the one still waiting for an answer - the last
-                      of an unanswered thread - carry the same yellow border.
-                    -->
-                    <div
-                      v-for="(t, k) in c.thread"
-                      :key="k"
-                      class="comment"
-                      :class="[t.author ? 'workspace-rail__msg--author' : 'gh-comment', { 'workspace-rail__msg--flag': t.isNew || (!c.answered && k === c.thread.length - 1) }]"
-                    >
-                      <div class="comment-head">
-                        <span class="workspace-rail__avatar">{{ (t.who || '?').slice(0, 1).toUpperCase() }}</span>
-                        <span class="comment-author">{{ t.who }}</span>
-                        <span
-                          v-if="t.author"
-                          class="comment-age"
-                        >author</span>
-                        <span class="comment-age">{{ ago(t.at) }}</span>
-                        <span
-                          v-if="t.isNew"
-                          class="workspace-rail__tag workspace-rail__tag--new"
-                        >new</span>
-                        <!--
-                          Quote this message into the reply box, GitHub's own Quote reply. On
-                          the message rather than on the thread, because which message is being
-                          answered is the whole of what a quote says. Not on a local finding:
-                          that is a draft of yours and has no thread on GitHub to answer in.
-                        -->
-                        <button
-                          v-if="!c.local && status.pr"
-                          type="button"
-                          class="workspace-rail__quote"
-                          :title="`Quote ${ t.who } in a reply`"
-                          :aria-label="`Quote ${ t.who } in a reply`"
-                          @click="quoteReply(c, t)"
-                        >
-                          <i class="icon icon-chat" /> Quote
-                        </button>
-                      </div>
-                      <div
-                        class="comment-body md-body"
-                        @click="openShot"
-                        v-html="t.html"
-                      />
-                    </div>
-                  </div>
-                  <CommentAttachments
-                    v-if="c.attachments && c.attachments.length"
-                    :pr="status.pr"
-                    :attachments="c.attachments"
-                  />
-                  <!--
-                    Answering a thread by hand, which this column could only send you to GitHub
-                    for. The agent's way in is Discuss, on a finding of yours; this is the other
-                    half - saying something yourself, in the thread it belongs to, without
-                    leaving the stage you are reading it on.
-                  -->
-                  <template v-if="!c.local && status.pr">
-                    <div
-                      v-if="replyTo !== String(c.id)"
-                      class="workspace-rail__comment-actions"
-                    >
-                      <PrButton
-                        size="sm"
-                        @click="toggleReply(c)"
-                      >
-                        {{ c.where === 'discussion' ? 'Comment' : 'Reply' }}
-                      </PrButton>
-                    </div>
-                    <div
-                      v-else
-                      class="workspace-rail__edit"
-                      :data-reply="c.id"
-                    >
-                      <textarea
-                        v-model="replyDraft"
-                        class="workspace-rail__edit-text"
-                        rows="4"
-                        :placeholder="c.where === 'discussion' ? 'A comment on the pull request — it posts to GitHub straight away' : 'A reply in this thread — it posts to GitHub straight away'"
-                        @keydown.esc.prevent="toggleReply(c)"
-                      />
-                      <div class="workspace-rail__comment-actions">
-                        <PrButton
-                          size="sm"
-                          variant="primary"
-                          :disabled="!replyDraft.trim() || replySending"
-                          @click="sendReply(c)"
-                        >
-                          {{ replySending ? 'Posting…' : 'Post' }}
-                        </PrButton>
-                        <PrButton
-                          size="sm"
-                          :disabled="replySending"
-                          @click="toggleReply(c)"
-                        >
-                          Cancel
-                        </PrButton>
-                      </div>
-                    </div>
+                      class="workspace-rail__expander"
+                      title="Show the lines below"
+                      @click="extend(c, 'down')"
+                    >↓ more below</button>
                   </template>
+                  <p
+                    v-else
+                    class="workspace-rail__empty"
+                  >{{ c.noPatch ? 'The diff is too large for GitHub to send; open it there.' : c.path ? 'The line is not in the PR\'s diff any more.' : 'A comment on the PR as a whole.' }}</p>
+                </div>
+                <div class="workspace-rail__thread">
                   <!--
-                    A finding of yours that has not gone to GitHub yet: the PR panel's own
-                    actions on it, here, because going through the findings is this stage and
-                    sending someone to another page to do it is what the rail is for.
+                    The highlight is on the comment, not the thread: a message that arrived
+                    since the last round, and the one still waiting for an answer - the last
+                    of an unanswered thread - carry the same yellow border.
                   -->
                   <div
-                    v-if="c.local && editingId === c.id"
+                    v-for="(t, k) in c.thread"
+                    :key="k"
+                    class="comment"
+                    :class="[t.author ? 'workspace-rail__msg--author' : 'gh-comment', { 'workspace-rail__msg--flag': t.isNew || (!c.answered && k === c.thread.length - 1) }]"
+                  >
+                    <div class="comment-head">
+                      <span class="workspace-rail__avatar">{{ (t.who || '?').slice(0, 1).toUpperCase() }}</span>
+                      <span class="comment-author">{{ t.who }}</span>
+                      <span
+                        v-if="t.author"
+                        class="comment-age"
+                      >author</span>
+                      <span class="comment-age">{{ ago(t.at) }}</span>
+                      <span
+                        v-if="t.isNew"
+                        class="workspace-rail__tag workspace-rail__tag--new"
+                      >new</span>
+                      <!--
+                        Quote this message into the reply box, GitHub's own Quote reply. On
+                        the message rather than on the thread, because which message is being
+                        answered is the whole of what a quote says. Not on a local finding:
+                        that is a draft of yours and has no thread on GitHub to answer in.
+                      -->
+                      <button
+                        v-if="!c.local && status.pr"
+                        type="button"
+                        class="workspace-rail__quote"
+                        :title="`Quote ${ t.who } in a reply`"
+                        :aria-label="`Quote ${ t.who } in a reply`"
+                        @click="quoteReply(c, t)"
+                      >
+                        <i class="icon icon-chat" /> Quote
+                      </button>
+                    </div>
+                    <div
+                      class="comment-body md-body"
+                      @click="openShot"
+                      v-html="t.html"
+                    />
+                  </div>
+                </div>
+                <CommentAttachments
+                  v-if="c.attachments && c.attachments.length"
+                  :pr="status.pr"
+                  :attachments="c.attachments"
+                />
+                <!--
+                  Answering a thread by hand, which this column could only send you to GitHub
+                  for. The agent's way in is Discuss, on a finding of yours; this is the other
+                  half - saying something yourself, in the thread it belongs to, without
+                  leaving the stage you are reading it on.
+                -->
+                <template v-if="!c.local && status.pr">
+                  <div
+                    v-if="replyTo !== String(c.id)"
+                    class="workspace-rail__comment-actions"
+                  >
+                    <PrButton
+                      size="sm"
+                      @click="toggleReply(c)"
+                    >
+                      {{ c.where === 'discussion' ? 'Comment' : 'Reply' }}
+                    </PrButton>
+                  </div>
+                  <div
+                    v-else
                     class="workspace-rail__edit"
+                    :data-reply="c.id"
                   >
                     <textarea
-                      v-model="editDraft"
+                      v-model="replyDraft"
                       class="workspace-rail__edit-text"
-                      rows="6"
+                      rows="4"
+                      :placeholder="c.where === 'discussion' ? 'A comment on the pull request — it posts to GitHub straight away' : 'A reply in this thread — it posts to GitHub straight away'"
+                      @keydown.esc.prevent="toggleReply(c)"
                     />
                     <div class="workspace-rail__comment-actions">
                       <PrButton
                         size="sm"
                         variant="primary"
-                        :disabled="commentBusy === c.id"
-                        @click="saveEdit(c)"
+                        :disabled="!replyDraft.trim() || replySending"
+                        @click="sendReply(c)"
                       >
-                        Save
+                        {{ replySending ? 'Posting…' : 'Post' }}
                       </PrButton>
                       <PrButton
                         size="sm"
-                        @click="cancelEdit"
+                        :disabled="replySending"
+                        @click="toggleReply(c)"
                       >
                         Cancel
                       </PrButton>
                     </div>
                   </div>
-                  <div
-                    v-else-if="c.local"
-                    class="workspace-rail__comment-actions"
-                  >
+                </template>
+                <!--
+                  A finding of yours that has not gone to GitHub yet: the PR panel's own
+                  actions on it, here, because going through the findings is this stage and
+                  sending someone to another page to do it is what the rail is for.
+                -->
+                <div
+                  v-if="c.local && editingId === c.id"
+                  class="workspace-rail__edit"
+                >
+                  <textarea
+                    v-model="editDraft"
+                    class="workspace-rail__edit-text"
+                    rows="6"
+                  />
+                  <div class="workspace-rail__comment-actions">
                     <PrButton
                       size="sm"
-                      :variant="c.status === 'approved' ? 'success' : 'primary'"
+                      variant="primary"
                       :disabled="commentBusy === c.id"
-                      @click="markGood(c)"
+                      @click="saveEdit(c)"
                     >
-                      {{ c.status === 'approved' ? 'Approved' : 'Mark good' }}
+                      Save
                     </PrButton>
                     <PrButton
                       size="sm"
-                      @click="startEdit(c)"
+                      @click="cancelEdit"
                     >
-                      Edit
-                    </PrButton>
-                    <PrButton
-                      size="sm"
-                      :variant="discussing[c.id] ? 'accent' : 'default'"
-                      @click="toggleDiscuss(c)"
-                    >
-                      {{ discussing[c.id] ? 'Discussing' : 'Discuss' }}
-                    </PrButton>
-                    <PrButton
-                      size="sm"
-                      variant="danger"
-                      :disabled="commentBusy === c.id"
-                      @click="dropFinding(c)"
-                    >
-                      Delete
+                      Cancel
                     </PrButton>
                   </div>
-                  <CommentDiscussion
-                    v-if="c.local && discussing[c.id]"
-                    :pr="status.pr"
-                    :repo="repo"
-                    :workspace="workspace.name"
-                    :comment="c"
-                    :session="discussSession[c.id] || ''"
-                    @session="rememberDiscussion(c, $event)"
-                    @close="toggleDiscuss(c)"
-                  />
-                </article>
-              </div>
-              <p
-                v-else-if="item.kind === 'links'"
-                class="workspace-rail__links"
-              >
-                <a
-                  v-for="l in item.items"
-                  :key="l.url"
-                  :href="l.url"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >{{ l.label }}</a>
-              </p>
-              <!--
-                Who is looking at it, and who to ask - the thing a draft is usually waiting on,
-                and the one part of a pull request this column could only send you to GitHub for.
-              -->
-              <div
-                v-else-if="item.kind === 'reviewers'"
-                class="workspace-rail__reviewers"
-              >
-                <Reviewers
-                  :repo="item.repo"
-                  :pr="item.pr"
-                  :asked="item.asked"
-                  :approved="item.approved"
-                  :suggested="item.suggested"
-                  :author="item.author"
-                  @changed="reviewersChanged(item, $event)"
-                  @error="reviewerError = $event"
-                />
-
-                <div
-                  v-if="item.draft"
-                  class="workspace-rail__ready"
-                >
-                  <RcButton
-                    variant="primary"
-                    size="small"
-                    :disabled="readying"
-                    @click="readyForReview()"
-                  >
-                    {{ readying ? 'Marking…' : 'Ready for review' }}
-                  </RcButton>
-                  <span class="workspace-rail__why">It is a draft, so nobody is being asked to look at it yet.</span>
                 </div>
-                <p
-                  v-if="reviewerError"
-                  class="workspace-rail__empty workspace-rail__tone--error"
-                >{{ reviewerError }}</p>
+                <div
+                  v-else-if="c.local"
+                  class="workspace-rail__comment-actions"
+                >
+                  <PrButton
+                    size="sm"
+                    :variant="c.status === 'approved' ? 'success' : 'primary'"
+                    :disabled="commentBusy === c.id"
+                    @click="markGood(c)"
+                  >
+                    {{ c.status === 'approved' ? 'Approved' : 'Mark good' }}
+                  </PrButton>
+                  <PrButton
+                    size="sm"
+                    @click="startEdit(c)"
+                  >
+                    Edit
+                  </PrButton>
+                  <PrButton
+                    size="sm"
+                    :variant="discussing[c.id] ? 'accent' : 'default'"
+                    @click="toggleDiscuss(c)"
+                  >
+                    {{ discussing[c.id] ? 'Discussing' : 'Discuss' }}
+                  </PrButton>
+                  <PrButton
+                    size="sm"
+                    variant="danger"
+                    :disabled="commentBusy === c.id"
+                    @click="dropFinding(c)"
+                  >
+                    Delete
+                  </PrButton>
+                </div>
+                <CommentDiscussion
+                  v-if="c.local && discussing[c.id]"
+                  :pr="status.pr"
+                  :repo="repo"
+                  :workspace="workspace.name"
+                  :comment="c"
+                  :session="discussSession[c.id] || ''"
+                  @session="rememberDiscussion(c, $event)"
+                  @close="toggleDiscuss(c)"
+                />
+              </article>
+            </div>
+            <p
+              v-else-if="item.kind === 'links'"
+              class="workspace-rail__links"
+            >
+              <a
+                v-for="l in item.items"
+                :key="l.url"
+                :href="l.url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >{{ l.label }}</a>
+            </p>
+            <!--
+              Who is looking at it, and who to ask - the thing a draft is usually waiting on,
+              and the one part of a pull request this column could only send you to GitHub for.
+            -->
+            <div
+              v-else-if="item.kind === 'reviewers'"
+              class="workspace-rail__reviewers"
+            >
+              <Reviewers
+                :repo="item.repo"
+                :pr="item.pr"
+                :asked="item.asked"
+                :approved="item.approved"
+                :suggested="item.suggested"
+                :author="item.author"
+                @changed="reviewersChanged(item, $event)"
+                @error="reviewerError = $event"
+              />
+
+              <div
+                v-if="item.draft"
+                class="workspace-rail__ready"
+              >
+                <RcButton
+                  variant="primary"
+                  size="small"
+                  :disabled="readying"
+                  @click="readyForReview()"
+                >
+                  {{ readying ? 'Marking…' : 'Ready for review' }}
+                </RcButton>
+                <span class="workspace-rail__why">It is a draft, so nobody is being asked to look at it yet.</span>
               </div>
               <p
-                v-else-if="item.kind === 'empty'"
-                class="workspace-rail__empty"
-              >{{ item.text }}</p>
-            </template>
-          </div>
-        </section>
+                v-if="reviewerError"
+                class="workspace-rail__empty workspace-rail__tone--error"
+              >{{ reviewerError }}</p>
+            </div>
+            <p
+              v-else-if="item.kind === 'empty'"
+              class="workspace-rail__empty"
+            >{{ item.text }}</p>
+          </template>
+        </div>
+      </DevModal>
 
-      </div>
       <!--
         A screenshot, a recording, a script, a report: whatever it is, in the viewer that shows
         it. One of the workspace's own files can be edited there and is saved back into it.
@@ -4148,14 +4162,6 @@ export default {
     resize:        vertical;
   }
 
-  // The two columns
-  &__columns {
-    display:               grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap:                   16px;
-    align-items:           start;
-  }
-
   &__col--pane {
     padding: 10px 12px;
   }
@@ -4179,7 +4185,7 @@ export default {
     background:     var(--box-bg);
     overflow:       hidden;
     /*
-     * It keeps its own height, and this line is why the conversation can be seen at all.
+     * It takes what is left of the page, and this block is why it can be seen at all.
      *
      * The rail is a flex column with `height: 100%` and `overflow: auto`, so every section in
      * it is a flex item that SHRINKS once the column's content is taller than the viewport -
@@ -4193,10 +4199,16 @@ export default {
      * in the DOM, and 0px tall. The symptom was a conversation that flashed on load and vanished,
      * which reads like a data problem and is not one.
      *
-     * `flex: none` is the half that was missing: the box is its content's height, the rail
-     * scrolls, which is what `overflow: auto` up there is for.
+     * `flex-shrink: 0` is the half that was missing: nothing may squeeze this box, and the rail
+     * scrolls instead, which is what `overflow: auto` up there is for.
+     *
+     * It GROWS, though, which it did not before. What came back used to sit beside the
+     * conversation and is now a row of three buttons above it, so this is the last thing on the
+     * page and there is room under it; `flex-grow: 1` is what reaches it. The minimum is what
+     * the terminal was fixed at, so a short viewport is no worse than it was.
      */
-    flex:           none;
+    flex:           1 0 auto;
+    min-height:     420px;
 
     /*
      * One border around this box, not three.
@@ -4236,8 +4248,38 @@ export default {
     flex-wrap:   wrap;
   }
 
+  /*
+   * The chain from the box to the terminal.
+   *
+   * Four elements stand between them - this strip's own root, the shell fork's `.tab-container`,
+   * the Tab's `[role=tabpanel]`, and the terminal - and a flex box only hands its height down
+   * through children that are themselves flex and allowed to shrink below their content. Miss
+   * one and the terminal keeps the height it was given and the box grows empty underneath it.
+   *
+   * `v-show` hides an inactive panel with an inline `display: none`, which beats these rules, so
+   * making every panel a flex column does not unhide the ones behind it.
+   */
+  &__live-tabs {
+    display:        flex;
+    flex-direction: column;
+    flex:           1 1 auto;
+    min-height:     0;
+
+    :deep(.tab-container) {
+      display:        flex;
+      flex-direction: column;
+      flex:           1 1 auto;
+      min-height:     0;
+    }
+
+    :deep([role='tabpanel']) {
+      flex:       1 1 auto;
+      min-height: 0;
+    }
+  }
+
   &__live-terminal {
-    height:     360px;
+    height:     100%;
     min-height: 0;
   }
 
@@ -4525,6 +4567,56 @@ export default {
     border-radius:  var(--r-sm);
     background:     var(--box-bg);
     min-width:      0;
+  }
+
+  /*
+   * What came back: the column's card, one line tall.
+   *
+   * Three buttons that each open a modal, laid along a row that wraps rather than scrolls -
+   * there are three of them and they are words, so a row is enough and a list would be three
+   * lines of mostly nothing.
+   */
+  &__came-back {
+    display:        flex;
+    flex-direction: column;
+    gap:            10px;
+    flex:           0 0 auto;
+    padding:        12px 14px;
+    border:         1px solid var(--border);
+    border-radius:  var(--r-sm);
+    background:     var(--box-bg);
+    min-width:      0;
+  }
+
+  &__came-back-row {
+    display:   flex;
+    flex-wrap: wrap;
+    gap:       8px;
+  }
+
+  &__came-back-item {
+    display:       inline-flex;
+    align-items:   center;
+    gap:           6px;
+    min-height:    0;
+    padding:       6px 10px;
+    border:        1px solid var(--border);
+    border-radius: var(--dev-r-ctl);
+    background:    var(--body-bg);
+    color:         var(--body-text);
+    font-size:     13px;
+    font-weight:   600;
+    cursor:        pointer;
+
+    .icon {
+      font-size: 11px;
+      opacity:   .6;
+    }
+
+    &:hover {
+      border-color: var(--link);
+      color:        var(--link);
+    }
   }
 
   &__col-head {
