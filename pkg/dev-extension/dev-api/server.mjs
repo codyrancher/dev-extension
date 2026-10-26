@@ -25,6 +25,15 @@ const SA = '/var/run/secrets/kubernetes.io/serviceaccount';
 const TOKEN = fs.readFileSync(`${ SA }/token`, 'utf8').trim();
 const NAMESPACE = process.env.DEV_SYSTEM_NAMESPACE || 'dev-system';
 const DEFAULT_REPO = process.env.DEV_REPO || 'rancher/dashboard';
+/*
+ * What a repository name is, in one place.
+ *
+ * `owner/name` and nothing else: anything else is a search qualifier somebody typed by accident,
+ * and a malformed one makes GitHub reject the whole query rather than ignore the bad part. There
+ * were two copies of this and now three callers, which is one copy too many for a rule that
+ * decides what a workspace is for.
+ */
+const REPO_NAME = /^[\w.-]+\/[\w.-]+$/;
 
 const APPS = '/apis/appsplus.io/v1alpha1/apps';
 const INSTANCES = '/apis/appsplus.io/v1alpha1/appinstances';
@@ -645,7 +654,7 @@ async function graphql(query, variables) {
 function repoOf(url) {
   const asked = url.searchParams.get('repo') || '';
 
-  return /^[\w.-]+\/[\w.-]+$/.test(asked) ? asked : DEFAULT_REPO;
+  return REPO_NAME.test(asked) ? asked : DEFAULT_REPO;
 }
 
 // -- CI --------------------------------------------------------------------------------------
@@ -1593,7 +1602,7 @@ async function writeFocus(body) {
   // `owner/name` only, both ways: anything else is a search qualifier somebody typed by
   // accident, and a malformed one makes GitHub reject the whole query rather than ignore the
   // bad part.
-  const named = (list) => list.filter((repo) => /^[\w.-]+\/[\w.-]+$/.test(String(repo || '').trim()));
+  const named = (list) => list.filter((repo) => REPO_NAME.test(String(repo || '').trim()));
 
   if (Array.isArray(body?.repos)) {
     data['repos.json'] = JSON.stringify(named(body.repos), null, 2);
@@ -1661,7 +1670,7 @@ const OPENAPI = {
     '/workspaces': {
       get: {
         operationId: 'listWorkspaces',
-        summary:     'Every workspace, with its namespace, its App and which cluster it is on.',
+        summary:     'Every workspace, with its namespace, its App, which cluster it is on and which repository it is for.',
         responses:   { 200: { description: 'The workspaces.' } },
       },
       post: {
@@ -1672,8 +1681,36 @@ const OPENAPI = {
           'else: the checkout and the command-line tools, with nothing running until a tool is',
           'attached. A leased workspace wears its kind in its name, so a name without the `lte-`',
           'prefix is given one; the answer says the name it ended up with.',
+          '',
+          '`repo` is what the workspace clones and what every page about it asks GitHub about.',
+          `It defaults to ${ DEFAULT_REPO }; name another as owner/name and a workspace is made`,
+          'for that repository instead. Anything that is not owner/name is a 400 rather than a',
+          'fallback, because the fallback would be a clone, an install and a compile of the',
+          'wrong tree.',
+          '',
+          'Two things under the checkout have not caught up with it, and an agent working in a',
+          'workspace for another repository should check rather than assume: the tree is called',
+          '`dashboard` whatever the repository is, and the `upstream` remote and the one-time',
+          `pull-request fetch both still point at ${ DEFAULT_REPO }. Read \`git remote -v\` and`,
+          'pass `gh -R owner/name` explicitly.',
         ].join('\n'),
-        responses: { 200: { description: 'The workspace.' }, 409: { description: 'One of that name already exists.' } },
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type:       'object',
+                required:   ['name'],
+                properties: {
+                  name:    { type: 'string', description: 'Lowercase letters, numbers and dashes, 40 characters or fewer.' },
+                  app:     { type: 'string', description: `The Apps Plus app to make it from. Defaults to ${ LTE_APP }.` },
+                  cluster: { type: 'string', description: 'Which cluster it runs on. Defaults to local.' },
+                  repo:    { type: 'string', description: `owner/name. Defaults to ${ DEFAULT_REPO }.` },
+                },
+              },
+            },
+          },
+        },
+        responses: { 200: { description: 'The workspace: the name it ended up with, its namespace, its App and its repository.' }, 400: { description: 'The name or the repository is not one.' }, 409: { description: 'One of that name already exists.' } },
       },
     },
     '/workspaces/{name}': {
@@ -2097,6 +2134,14 @@ const OPENAPI = {
         responses:   { 200: { description: '{ runs }' } },
       },
     },
+    '/github/session': {
+      get: {
+        operationId: 'githubBrowserSession',
+        summary:     'Whether evidence can be uploaded to GitHub at all.',
+        description: 'Asked before a review is submitted rather than after, so a review with a screenshot in it fails while there is still something to do about it.',
+        responses:   { 200: { description: 'The session.' } },
+      },
+    },
     '/my-work/pr/{num}': {
       parameters: [{
         name: 'num', in: 'path', required: true, schema: { type: 'integer' },
@@ -2124,6 +2169,22 @@ const OPENAPI = {
         operationId: 'addPrComment',
         summary:     'Draft a comment on a line of the diff.',
         responses:   { 200: { description: 'The comment as stored.' } },
+      },
+    },
+    '/my-work/pr/{num}/comments/revision': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }],
+      get: {
+        operationId: 'prCommentsRevision',
+        summary:     'When the drafted comments last changed, and nothing else.',
+        description: [
+          'A `stat`: one syscall, no GitHub, no JSON parsed, so it can be asked every couple of',
+          'seconds and the expensive read of the comments happens only when the answer has',
+          'moved. `at` is 0 for a pull request nobody has drafted a comment on, which is a real',
+          'state rather than an error.',
+        ].join('\n'),
+        responses: { 200: { description: '{ at, size }' } },
       },
     },
     '/my-work/pr/{num}/comments/{commentId}': {
@@ -3418,7 +3479,7 @@ function nameError(name) {
   return /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name) ? '' : 'A name can hold lowercase letters, numbers and dashes, and has to start and end with one of the first two.';
 }
 
-async function makeWorkspace(name, appId, cluster = 'local', owner = '') {
+async function makeWorkspace(name, appId, cluster = 'local', owner = '', repo = '') {
   const known = await apps();
 
   if (!known.some((app) => app.id === appId)) {
@@ -3447,7 +3508,25 @@ async function makeWorkspace(name, appId, cluster = 'local', owner = '') {
       },
     },
     spec:       {
-      app: appId, namespace, targets: [{ clusterName: cluster }], values: { hostCluster: cluster }, provisionCluster: { enabled: false },
+      app:              appId,
+      namespace,
+      targets:          [{ clusterName: cluster }],
+      /*
+       * Which repository this workspace is for.
+       *
+       * Every workspace App carries a `repo` value defaulting to rancher/dashboard, the clone in
+       * its template is `https://github.com/${ repo }`, and the pages read it back off the
+       * Installation - so the whole way down was ready and this was the one step that could not
+       * say it. A workspace made through here was always rancher/dashboard's, whatever it was
+       * for, which is the one thing this route could not express and a person creating one from
+       * the page already could (reviews.ts, ensureWorkspace).
+       *
+       * Written only when it is not the default, the same rule the page follows: an ordinary
+       * dashboard workspace's values stay exactly as they were rather than gaining a key that
+       * says what omission already said.
+       */
+      values:           { hostCluster: cluster, ...(repo && repo !== DEFAULT_REPO ? { repo } : {}) },
+      provisionCluster: { enabled: false },
     },
   });
 
@@ -3455,7 +3534,9 @@ async function makeWorkspace(name, appId, cluster = 'local', owner = '') {
     throw failure(409, `A workspace called ${ name } already exists.`);
   }
 
-  return { name, namespace, app: appId, rendered: false };
+  return {
+    name, namespace, app: appId, repo: repo || DEFAULT_REPO, rendered: false,
+  };
 }
 
 // -- Tools: leased, rendered here, swept here ------------------------------------------------
@@ -4964,6 +5045,11 @@ const routes = [
         namespace: instance.spec?.namespace || `dev-${ instance.metadata.labels[LABEL_WORKSPACE] }`,
         app:       instance.spec?.app || '',
         cluster:   instance.metadata.labels[LABEL_CLUSTER] || 'local',
+        // Which repository it is for, so a caller that can now choose one can also read back
+        // what it got. Resolved the same way workspaceFromInstance resolves it, because a
+        // second answer to "which repository is this workspace for" is how the pages came to
+        // ask GitHub about the wrong one.
+        repo:      String(instance.spec?.values?.repo || '') || DEFAULT_REPO,
         createdAt: instance.metadata.creationTimestamp,
       })),
     };
@@ -4975,10 +5061,23 @@ const routes = [
       throw failure(400, problem);
     }
 
+    /*
+     * Which repository. Refused rather than ignored when it is not `owner/name`: the fallback
+     * `repoOf` does for a read is right there - a bad query parameter answers about
+     * rancher/dashboard instead of 400ing - but this call makes something, and silently making
+     * a rancher/dashboard workspace for somebody who asked for another repository is a clone,
+     * an install and a compile spent on the wrong tree before anyone can see it was wrong.
+     */
+    const repo = String(body.repo || '').trim();
+
+    if (repo && !REPO_NAME.test(repo)) {
+      throw failure(400, `"${ repo }" is not a repository. Name one as owner/name, like ${ DEFAULT_REPO }.`);
+    }
+
     // The leased App by default, which is what new work gets everywhere else: this is the path
     // with no browser behind it - an agent, a script - and it used to be the one place that
     // still made an all-in-one workspace without being asked to.
-    return makeWorkspace(body.name, body.app || body.template || LTE_APP, body.cluster || 'local', await ownerOfCaller(req));
+    return makeWorkspace(body.name, body.app || body.template || LTE_APP, body.cluster || 'local', await ownerOfCaller(req), repo);
   }],
 
   /*
