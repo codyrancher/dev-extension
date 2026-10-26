@@ -16,7 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, duration, tokens, promptKey, reconcilePending
+  loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, promptTextOf, duration, tokens, promptKey, reconcilePending
 } from '../chat-state.mjs';
 
 // ── The login flow: the one state only the pane shows ──────────────────────────────────────
@@ -111,6 +111,24 @@ test('splitPasted separates a pasted block from what was typed', () => {
 
 test('unwrapPasted is a no-op on text with nothing pasted', () => {
   assert.equal(unwrapPasted('just a sentence'), 'just a sentence');
+});
+
+test('a prompt recorded as content blocks reads as the sentence, not as its parts', () => {
+  // The symptom: `[object Object],[object Object]` under YOU in the chat. A message with a
+  // screenshot attached is recorded as the blocks claude was handed rather than as a string,
+  // and `String()` of those names the parts instead of saying what the person said. promptKey
+  // compared that against a sentence too, so the copy waiting for it never retired.
+  const blocks = [
+    { type: 'text', text: '[Image #3]Make it easy to copy the tokens' },
+    {
+      type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0' },
+    },
+  ];
+
+  assert.equal(promptTextOf(blocks), '[Image #3]Make it easy to copy the tokens');
+  assert.equal(unwrapPasted(blocks), '[Image #3]Make it easy to copy the tokens');
+  assert.equal(promptKey(blocks), promptKey('Make it easy to copy the tokens'), 'the marker is the CLI\'s, not the person\'s');
+  assert.equal(promptTextOf('typed, nothing attached'), 'typed, nothing attached');
 });
 
 // ── The small formatters, which are easy to get subtly wrong ───────────────────────────────

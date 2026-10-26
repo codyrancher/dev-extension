@@ -508,13 +508,35 @@ const PASTE_ID = /^[0-9a-f]{4}$/;
 /** @typedef {{ kind: 'text'|'paste', text: string }} PromptPart */
 
 /**
+ * A recorded prompt as text, whatever shape it was recorded in.
+ *
+ * Typed, a prompt is a string. With a file attached to it, the channels that record one write
+ * the content blocks claude was handed instead - a text block and an image block, the same
+ * shape a user line carries - and `String()` of those is `[object Object],[object Object]`.
+ * Which is what the chat printed where a person's sentence belonged, and what promptKey then
+ * compared against one, so a message with a screenshot in it never matched the copy waiting
+ * for it and sat there reading "not recorded".
+ *
+ * @param {unknown} prompt
+ * @returns {string}
+ */
+export function promptTextOf(prompt) {
+  if (prompt === null || prompt === undefined || typeof prompt === 'string') {
+    return String(prompt || '');
+  }
+  const blocks = Array.isArray(prompt) ? prompt : [prompt];
+
+  return blocks.filter((b) => b?.type === 'text').map((b) => String(b.text || '')).join('\n');
+}
+
+/**
  * A recorded prompt split into what was typed and what was pasted, in order.
  *
- * @param {string} text
+ * @param {string|unknown} text
  * @returns {PromptPart[]}
  */
 export function splitPasted(text) {
-  const s = String(text || '');
+  const s = promptTextOf(text);
   /** @type {PromptPart[]} */
   const parts = [];
   let from = 0;

@@ -18,7 +18,7 @@
 
 import { toolKind, toolSummary as canonicalSummary } from './chat-format.mjs';
 import { highlight } from './highlight';
-import { splitPasted } from './chat-state.mjs';
+import { splitPasted, promptTextOf } from './chat-state.mjs';
 import { transcriptKind, parseAgyTranscript } from './agent-clis.mjs';
 
 export interface ChatToolCall {
@@ -89,7 +89,13 @@ export function parseTranscript(lines: string[]): ChatMessage[] {
     // turn, timestamped when it was typed - never as a user line. It is the person speaking all
     // the same, and without this it vanished from the log the moment claude started reading it.
     if (entry?.type === 'attachment' && entry.attachment?.type === 'queued_command') {
-      const queued: PromptPart[] = splitPasted(entry.attachment.prompt);
+      // What was queued is a string when it was typed and content blocks when something was
+      // attached to it - a screenshot pasted into the box arrives as a text block and an image
+      // block, the same shape a user line carries. Handed to splitPasted as it came, the array
+      // was stringified: that is the `[object Object],[object Object]` the chat showed where a
+      // person's sentence should have been, and the screenshot it was about was nowhere.
+      const { text: said, images: shots } = promptParts(entry.attachment.prompt);
+      const queued: PromptPart[] = splitPasted(said);
       const prompt = queued.map((part) => part.text).join('').trim();
       // A background task's completion arrives this way too when a turn is running - the CLI
       // queues it like anything typed - and it is the CLI's line, not the person's.
@@ -101,9 +107,9 @@ export function parseTranscript(lines: string[]): ChatMessage[] {
             key: entry.uuid || `${ messages.length }`, role: 'note', text: note, tools: [], thinking: '', images: [], at: entry.timestamp || '',
           });
         }
-      } else if (prompt) {
+      } else if (prompt || shots.length) {
         messages.push({
-          key: entry.uuid || `${ messages.length }`, role: 'user', text: prompt, tools: [], thinking: '', images: [], parts: queued, at: entry.timestamp || '',
+          key: entry.uuid || `${ messages.length }`, role: 'user', text: prompt, tools: [], thinking: '', images: shots, parts: queued, at: entry.timestamp || '',
         });
       }
       continue;
@@ -214,6 +220,24 @@ export function parseTranscript(lines: string[]): ChatMessage[] {
   }
 
   return messages;
+}
+
+/**
+ * A queued message's prompt as text and images.
+ *
+ * Typed, it is a string. With a file attached it is the blocks claude was handed, which carry
+ * the image's own bytes - so the picture is shown rather than named, and the `[Image #3]` the
+ * CLI leaves where the path was is furniture here exactly as it is on a user line.
+ */
+function promptParts(prompt: unknown): { text: string; images: string[] } {
+  if (prompt == null || typeof prompt === 'string') {
+    return { text: promptTextOf(prompt), images: [] };
+  }
+  const blocks: any[] = Array.isArray(prompt) ? prompt : [prompt]; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const images = blocks.filter((b) => b?.type === 'image').map((b, i) => imageUrl(b) || b.source?.path || `image ${ i + 1 }`);
+  const text = promptTextOf(prompt).replace(images.length ? /\[Image[^\]]*\]\s*/g : /$^/, '');
+
+  return { text, images };
 }
 
 /** An image block as something an <img> can show, or ''. */
