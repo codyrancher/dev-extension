@@ -4663,6 +4663,28 @@ export default {
     padding-bottom: 0;
   }
 
+  /*
+   * The same section, opened over the page.
+   *
+   * The modal's body draws no padding of its own - a diff, a browser and a terminal each fill
+   * the panel and draw their own edges - so a section opened into it had its first character
+   * against the panel's border and its last against the other one. It gets the column's own
+   * inset on all four sides instead, and the gap between sections rather than the gap between
+   * rows: 8px reads as "these belong together" in a 400px column and as "nothing was spaced"
+   * in a 1500px one.
+   */
+  &__section--opened {
+    gap:     var(--dev-space-5);
+    padding: var(--dev-inset);
+
+    /*
+     * A file's header sticks to the top of whatever scrolls, and here that is the modal's body
+     * rather than the column: panel.scss offsets it by the column's own top padding, which in
+     * this panel would park it inside the inset above.
+     */
+    .file-header { top: 0; }
+  }
+
   /* The section's title and whatever acts on the whole section, on one row. */
   &__section-head {
     display:         flex;

@@ -55,8 +55,10 @@
 .prm-header {
   display:        flex;
   flex-direction: column;
-  gap:            var(--dev-space-2);
-  padding:        var(--dev-space-3) var(--dev-space-5);
+  /* Two rows of 22-32px controls in 6px of padding is a bar with its contents against the
+     border above and the border below; the sides were already the column's inset. */
+  gap:            var(--dev-space-3);
+  padding:        var(--dev-space-4) var(--dev-space-5);
   background:     var(--pr-bg-2);
   border-bottom:  1px solid var(--pr-border);
   flex-shrink:    0;
@@ -176,13 +178,21 @@
   max-width:     46vw;
 }
 
+/*
+ * The row under the title: the diff pickers, and a note saying what is being read.
+ *
+ * `min-height` rather than `height`, because the row wraps. A fixed height on a wrapping row
+ * is a row whose second line is drawn outside it - over the file list and the first file's
+ * header, which is what the note about the agent's checkout was doing. One line still measures
+ * exactly 22px, so nothing moves in the common case.
+ */
 .prm-meta {
   color:       var(--pr-muted);
   font-size:   12px;
   display:     flex;
   align-items: center;
-  height:      22px;
-  gap:         var(--dev-space-2);
+  min-height:  22px;
+  gap:         var(--dev-space-2) var(--dev-space-3);
   flex-wrap:   wrap;
 }
 
@@ -413,14 +423,16 @@
   overflow-y:   auto;
   border-right: 1px solid var(--pr-border);
   background:   var(--pr-bg-2);
-  padding:      var(--dev-space-2) 0;
+  padding:      var(--dev-space-4) 0;
 }
 
 .filenav-item {
   display:     flex;
   align-items: center;
-  gap:         var(--dev-space-2);
-  padding:     var(--dev-space-2) var(--dev-space-4);
+  gap:         var(--dev-space-3);
+  /* A row of this column is a row of the product's lists: the same height, so thirty paths
+     read as a list rather than as a block of text with gaps in it. */
+  padding:     var(--dev-space-3) var(--dev-space-4);
   cursor:      pointer;
   font-size:   12px;
   transition:  background 0.15s;
