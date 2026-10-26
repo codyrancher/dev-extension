@@ -138,7 +138,8 @@ export interface GithubPr {
   /** The description, as much of it as matters for telling whether there is one. */
   body: string;
   /**
-   * Whether GitHub is currently asking *you* for a review (the `review-requested:@me` search).
+   * Whether GitHub is currently asking *you* for a review (the `user-review-requested:@me`
+   * search - you by name, not a team you happen to be in; see SEARCHES).
    * True the first time you are added, and again when a reviewer re-requests you after changes -
    * so it is the strongest "this wants me now" signal the list has. A PR you reviewed and are
    * only waiting on is false.
@@ -314,8 +315,23 @@ export type WorkSection = 'reviewing' | 'mine' | 'issues' | 'unassigned';
 export const ALL_SECTIONS: WorkSection[] = ['reviewing', 'mine', 'issues', 'unassigned'];
 
 const SEARCHES: Record<WorkSection, (scope: string) => string> = {
+  /*
+   * `user-review-requested`, not `review-requested`.
+   *
+   * `review-requested:@me` is "you, or any team you are in", and being in a team that gets
+   * attached to everything made this table a list of other people's work: 35 pull requests
+   * against 7 actually addressed to this person, measured on the same token. The 28 were
+   * repositories nobody here reviews, and they pushed the ones that were asked for off the
+   * first page of a table that can only show so many.
+   *
+   * It is also what the rest of the product already believed. `reviewRequested` is documented
+   * as GitHub asking for you by name, and priority.ts scores `reviewing-asked` above everything
+   * else on the strength of that - so a team request was being ranked as the strongest personal
+   * claim in the deck. A team's queue is a real thing to want, but it is a different list with
+   * a different name, not this one silently.
+   */
   reviewing: (scope) => `
-    reviewing: search(query: "${ scope }is:open is:pr review-requested:@me archived:false", type: ISSUE, first: $page) {
+    reviewing: search(query: "${ scope }is:open is:pr user-review-requested:@me archived:false", type: ISSUE, first: $page) {
       nodes { ...pr }
     }
     reviewed: search(query: "${ scope }is:open is:pr reviewed-by:@me archived:false", type: ISSUE, first: $page) {
@@ -813,7 +829,7 @@ export async function myWork(repos?: string[], without?: string[], sections: Wor
   const seen = new Set<string>();
   const reviewing: GithubPr[] = [];
 
-  // Two searches, tagged by which one a PR came from. `reviewing` is `review-requested:@me` -
+  // Two searches, tagged by which one a PR came from. `reviewing` is `user-review-requested:@me` -
   // GitHub is asking you now - and `reviewed` is `reviewed-by:@me` still open, which you are only
   // waiting on. A PR in both is a re-review (you reviewed it, then were requested again); the
   // request wins, so it is listed first and carries reviewRequested: true.

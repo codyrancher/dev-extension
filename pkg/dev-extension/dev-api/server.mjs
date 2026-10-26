@@ -1561,7 +1561,7 @@ async function readFocus() {
        * Which repositories the queue may look in.
        *
        * The personal searches behind the queue - `author:@me`, `assignee:@me`,
-       * `review-requested:@me` - mean something across the whole of GitHub, so with nothing here
+       * `user-review-requested:@me` - mean something across the whole of GitHub, so with nothing here
        * the deck fills with work from every repository the person has ever touched. Empty means
        * all of them, which is what it did before anyone could say otherwise.
        */
