@@ -88,6 +88,15 @@ export interface ArtifactGroup {
 }
 
 export interface EvidenceSection {
+  /**
+   * What this section IS, which its title is not.
+   *
+   * Several titles carry a count - `Findings (5 to go through)`, `Your threads (2 answered, 1
+   * waiting…)` - and the rail held an opened section by its title, so deleting one finding
+   * renamed the section out from under the modal showing it and the modal closed. An id is
+   * the same string before and after whatever the section is about changes.
+   */
+  id: string;
   title: string;
   items: EvidenceItem[];
   /** Drawn shut, for a section that is reference rather than news. The page remembers the rest. */
@@ -674,7 +683,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
   // Leaving the PR's sections out silently read as "there is nothing", which is a lie about
   // fifteen comment threads.
   if (have.failed?.pr) {
-    sections.push({ title: 'The pull request could not be read', items: [{ kind: 'empty', text: 'GitHub or the in-cluster API did not answer. Trying again in a moment.' }] });
+    sections.push({ id: 'pr-unread', title: 'The pull request could not be read', items: [{ kind: 'empty', text: 'GitHub or the in-cluster API did not answer. Trying again in a moment.' }] });
   }
   /*
    * The agent's report is not drawn, at any stage.
@@ -699,7 +708,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     const rank = (g: ArtifactGroup) => (first.includes(g.dir) ? first.indexOf(g.dir) : g.dir ? first.length + 1 : first.length);
     const groups = [...artifacts.groups].sort((a, b) => rank(a) - rank(b) || (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
 
-    sections.push({ title: 'Artifacts', items: [{
+    sections.push({ id: 'artifacts', title: 'Artifacts', items: [{
         kind: 'artifacts', groups, total: artifacts.total, truncated: artifacts.truncated, lead: first,
       }] });
   };
@@ -719,6 +728,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       return;
     }
     sections.push({
+      id:    'the-change',
       title: 'The change',
       items: [{ kind: 'review', label: `Review the change: ${ branch.files.length } file${ branch.files.length === 1 ? '' : 's' }` }],
     });
@@ -763,9 +773,9 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     // First, and shut. What the PR is - its size, its checks, its description and checklist -
     // is the frame everything else in the column is read inside, so it belongs at the top; but
     // it is reference, not news, and open it was a screenful of template above the findings.
-    sections.unshift({ title: 'Pull request', items, collapsed: true });
+    sections.unshift({ id: 'pull-request', title: 'Pull request', items, collapsed: true });
   };
-  const issueSection = () => have.issue && sections.push({ title: `The issue: ${ have.issue.title }`, items: [{ kind: 'text', text: have.issue.body, html: renderMd(have.issue.body || '_(no description)_') }, { kind: 'links', items: [{ label: 'On GitHub', url: have.issue.url }] }] });
+  const issueSection = () => have.issue && sections.push({ id: 'issue-body', title: `The issue: ${ have.issue.title }`, items: [{ kind: 'text', text: have.issue.body, html: renderMd(have.issue.body || '_(no description)_') }, { kind: 'links', items: [{ label: 'On GitHub', url: have.issue.url }] }] });
 
   if (status.kind === 'fix') {
     switch (stage) {
@@ -775,7 +785,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       if (have.issue) {
         issueSection();
       } else {
-        sections.push({ title: 'The issue', items: [{ kind: 'links', items: status.links.filter((l) => l.label.startsWith('Issue')) }] });
+        sections.push({ id: 'issue-links', title: 'The issue', items: [{ kind: 'links', items: status.links.filter((l) => l.label.startsWith('Issue')) }] });
       }
       break;
     case 'code':
@@ -795,7 +805,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       if (d) {
         const fb = feedback(d, 0, true, kinds);
 
-        sections.push({ title: 'Reviewers', items: fb.length ? [{ kind: 'comments', items: fb }] : [{ kind: 'empty', text: 'Nobody has commented yet.' }] });
+        sections.push({ id: 'reviewers', title: 'Reviewers', items: fb.length ? [{ kind: 'comments', items: fb }] : [{ kind: 'empty', text: 'Nobody has commented yet.' }] });
       }
       prSection();
       branchSection();
@@ -807,17 +817,17 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         const fresh = all.filter((c) => (Date.parse(c.at) || 0) > pushedAt(d));
         const older = all.filter((c) => !fresh.includes(c));
 
-        sections.push({ title: 'Since your last push', items: fresh.length ? [{ kind: 'comments', items: fresh, paged: true }] : [{ kind: 'empty', text: 'Nothing new since the last push.' }] });
+        sections.push({ id: 'since-push', title: 'Since your last push', items: fresh.length ? [{ kind: 'comments', items: fresh, paged: true }] : [{ kind: 'empty', text: 'Nothing new since the last push.' }] });
         // And the commits of this round, so the change the feedback is about can be read as one.
         const roundCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > Math.min(...all.map((x) => Date.parse(x.thread[0]?.at || '') || Date.now()))).map((c: Json) => ({
           sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
         }));
 
         if (roundCommits.length) {
-          sections.push({ title: 'Your commits this round', items: [{ kind: 'commits', pr: status.pr, items: roundCommits, since: 'the first comment of this round' }] });
+          sections.push({ id: 'round-commits', title: 'Your commits this round', items: [{ kind: 'commits', pr: status.pr, items: roundCommits, since: 'the first comment of this round' }] });
         }
         if (older.length) {
-          sections.push({ title: 'Earlier rounds', items: [{ kind: 'comments', items: older, paged: true }] });
+          sections.push({ id: 'earlier-rounds', title: 'Earlier rounds', items: [{ kind: 'comments', items: older, paged: true }] });
         }
       }
       prSection();
@@ -872,13 +882,13 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     switch (stage) {
     case 'agent':
       if (pending.length) {
-        sections.push({ title: `Findings so far (${ pending.length })`, items: [findings(pending)] });
+        sections.push({ id: 'findings-so-far', title: `Findings so far (${ pending.length })`, items: [findings(pending)] });
       }
       reportSection(status.agent === 'working' ? 'Where the agent is' : 'Agent\'s report');
       prSection();
       break;
     case 'findings': {
-      sections.push({ title: `Findings (${ pending.length } to go through)`, items: pending.length ? [findings(pending)] : [{ kind: 'empty', text: submitted.length ? 'All submitted.' : 'None yet.' }] });
+      sections.push({ id: 'findings', title: `Findings (${ pending.length } to go through)`, items: pending.length ? [findings(pending)] : [{ kind: 'empty', text: submitted.length ? 'All submitted.' : 'None yet.' }] });
       // The report under the findings: it is the agent saying what it looked at and why it
       // filed what it filed, which is half of judging any of them.
       reportSection(status.reviewed && (Date.parse(report?.at || '') || 0) > submittedAt ? 'What the agent found in the developer\'s changes' : 'Agent\'s report');
@@ -892,9 +902,9 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         }));
         const mine = reviewThreads().map((c) => ({ ...c, answered: c.lastByAuthor }));
 
-        sections.push({ title: 'Since your review', items: since.length ? [{ kind: 'commits' as const, pr: status.pr, items: since, since: 'your review' }] : [{ kind: 'empty' as const, text: 'No new commits since your review.' }] });
+        sections.push({ id: 'since-review', title: 'Since your review', items: since.length ? [{ kind: 'commits' as const, pr: status.pr, items: since, since: 'your review' }] : [{ kind: 'empty' as const, text: 'No new commits since your review.' }] });
         if (mine.length) {
-          sections.push({ title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: [{ kind: 'comments', items: mine, paged: true }] });
+          sections.push({ id: 'your-threads', title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: [{ kind: 'comments', items: mine, paged: true }] });
         }
       }
       prSection();
@@ -921,8 +931,8 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         // then heard something new in is still waiting on them.
         const mine = reviewThreads().map((c) => ({ ...c, answered: c.lastByAuthor }));
 
-        sections.push({ title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits, since: 'your review' }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
-        sections.push({ title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: mine.length ? [{ kind: 'comments', items: mine, paged: true }] : [{ kind: 'empty', text: 'You have no threads on this PR.' }] });
+        sections.push({ id: 'since-review', title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits, since: 'your review' }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
+        sections.push({ id: 'your-threads', title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: mine.length ? [{ kind: 'comments', items: mine, paged: true }] : [{ kind: 'empty', text: 'You have no threads on this PR.' }] });
       }
       if (report) {
         reportSection((Date.parse(report.at) || 0) > submittedAt ? 'What the agent found in the new commits' : 'Agent\'s review report (before the developer responded)');

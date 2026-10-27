@@ -418,11 +418,16 @@ export default {
     /**
      * The section of what came back that is open over the page, or null.
      *
-     * Held by title rather than as the object: `evidence` is rebuilt on every status read, and
-     * a modal holding the old object would go on showing what the page no longer believes.
+     * Held by id rather than as the object: `evidence` is rebuilt on every status read, and a
+     * modal holding the old object would go on showing what the page no longer believes.
+     *
+     * By ID, and not by title, which is what this used to be. Several titles carry a count -
+     * `Findings (5 to go through)` - so deleting a finding renamed the section, the lookup
+     * found nothing, and the modal you deleted it from closed under you. An id is the same
+     * string whatever the section is about does.
      */
     shownSection() {
-      return this.evidence.find((s) => s.title === this.opened) || null;
+      return this.evidence.find((s) => s.id === this.opened) || null;
     },
 
     /**
@@ -1275,7 +1280,7 @@ export default {
 
         return;
       }
-      this.opened = section.title;
+      this.opened = section.id;
     },
 
     openTab(name) {
