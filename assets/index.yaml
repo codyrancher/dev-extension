@@ -12,16 +12,38 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
-    appVersion: 0.3.545
-    created: "2026-10-27T13:09:35.336935962Z"
+    appVersion: 0.3.546
+    created: "2026-10-27T13:24:57.704463774Z"
     description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
       fixes, shares and agents
-    digest: fcb5f73cc2c0b97b2815d7a84a2e07b190cffa7ae645d7471182d3b93cc2c60b
+    digest: 597b16c72c379bcbf279d14d96ed98604b5c9da17b0ff9108dc5f4b043ff9389
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
     type: application
     urls:
-    - assets/dev-extension/dev-extension-0.3.545.tgz
+    - assets/dev-extension/dev-extension-0.3.546.tgz
+    version: 0.3.546
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/display-name: Dev Extension
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
+    apiVersion: v2
+    appVersion: 0.3.545
+    created: "2026-10-27T13:12:05.92806606Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
+    digest: 3cbe8c4d9f4d0f131505e995a01189d181f5bf6a27e86ecdc419aeb5b0ad6a15
+    icon: https://codyrancher.github.io/dev-extension/icon.svg
+    name: dev-extension
+    type: application
+    urls:
+    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.545/dev-extension-0.3.545.tgz
     version: 0.3.545
   - annotations:
       catalog.cattle.io/certified: rancher
@@ -4313,4 +4335,4 @@ entries:
     urls:
     - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.337/dev-extension-0.3.337.tgz
     version: 0.3.337
-generated: "2026-10-27T13:09:35.336428655Z"
+generated: "2026-10-27T13:24:57.703963598Z"
