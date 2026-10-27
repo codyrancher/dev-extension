@@ -36,7 +36,7 @@ import {
   type ChatAgent, type ChatMessage, type ChatToolCall,
 } from './chat';
 import {
-  deriveState, parseEntries, reconcilePending, unwrapPasted,
+  ago, deriveState, parseEntries, reconcilePending, unwrapPasted,
 } from './chat-state.mjs';
 import { AGY_COMMANDS, AGY_CUSTOMIZE, agyPhase } from './agent-clis.mjs';
 import { frameNonce, readFrames, spliceEarlier } from './chat-frames.mjs';
@@ -632,13 +632,15 @@ export function useConversation(source: () => ConversationSource) {
   /** The last few lines of it, so what has taken the pane over is at least legible. */
   const paneTail = computed(() => paneText.value.split('\n').filter((l) => l.trim()).slice(-6).join('\n'));
 
+  /**
+   * When a subagent last wrote, said the way a turn's own stamp says it.
+   *
+   * Relative, not the wall clock, for the reason ChatTurn gives: in a conversation the
+   * question is how long ago, not what o'clock. The two sat next to each other answering it
+   * differently.
+   */
   function when(iso: string): string {
-    if (!iso) {
-      return '';
-    }
-    const d = new Date(iso);
-
-    return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return ago(iso);
   }
 
   function firstLine(text: string): string {

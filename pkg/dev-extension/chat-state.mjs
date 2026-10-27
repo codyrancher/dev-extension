@@ -777,6 +777,55 @@ export function sentSeen(text, sentAt, entries, hook, queue) {
 
 const WORKING_WINDOW_SECONDS = 90;
 
+/**
+ * How long ago, in the one unit worth reading at a glance.
+ *
+ * `5m ago`, `3h ago`, `48d ago`, `2mo ago`: a message from four minutes back and one from
+ * yesterday are different in a way a wall clock does not show, and in a conversation that is
+ * the difference a reader is actually after. The exact time is still one hover away wherever
+ * this is drawn.
+ *
+ * Here rather than beside any one caller, because there were two of these already - the rail's
+ * (`5 min ago`, `3 h ago`) and My Work's (`5m ago`, `2mo ago`) - saying the same thing in two
+ * vocabularies on two halves of the same page. This is My Work's, which is the compact one and
+ * the one that fits a turn's meta line; both now delegate.
+ *
+ * @param {string} iso
+ * @returns {string}
+ */
+export function ago(iso) {
+  const at = Date.parse(iso || '');
+
+  if (!at) {
+    return '';
+  }
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+
+  // Decided in seconds, not in rounded minutes: half a minute rounds UP to one, so a message
+  // thirty seconds old read "1m ago" while the words for it were sitting right there.
+  if (seconds < 45) {
+    return 'just now';
+  }
+  const minutes = Math.round(seconds / 60);
+
+  if (minutes < 60) {
+    return `${ minutes }m ago`;
+  }
+  if (minutes < 60 * 24) {
+    return `${ Math.round(minutes / 60) }h ago`;
+  }
+  const days = Math.round(minutes / (60 * 24));
+
+  return days < 60 ? `${ days }d ago` : `${ Math.round(days / 30) }mo ago`;
+}
+
+/** The same moment in full, for the title attribute beside it. */
+export function fullTime(iso) {
+  const at = iso ? new Date(iso) : null;
+
+  return at && !Number.isNaN(at.getTime()) ? at.toLocaleString() : '';
+}
+
 /** The hooks that speak last, so a recent one outranks a transcript that is still settling. */
 const SPEAKS_LAST_EVENTS = new Set(['Stop', 'SessionEnd', 'Notification']);
 

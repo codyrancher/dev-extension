@@ -272,24 +272,14 @@ interface Branch {
   files: string[];
 }
 
-export const ago = (iso: string): string => {
-  const ms = Date.now() - (Date.parse(iso || '') || Date.now());
-  const m = Math.round(ms / 60_000);
-
-  if (m < 2) {
-    return 'just now';
-  }
-  if (m < 60) {
-    return `${ m } min ago`;
-  }
-  const h = Math.round(m / 60);
-
-  if (h < 36) {
-    return `${ h } h ago`;
-  }
-
-  return `${ Math.round(h / 24) } days ago`;
-};
+/**
+ * Re-exported, not reimplemented: see `ago` in chat-state.mjs.
+ *
+ * This said `5 min ago` and `3 h ago` where My Work said `5m ago` and `2mo ago`, which is one
+ * product speaking two dialects about the same fact, sometimes on one screen. The compact one
+ * won because it is the one that fits where these are drawn.
+ */
+export { ago } from './chat-state.mjs';
 
 /** The branch as the checkout has it: its commits over upstream, the diff's size, the files. */
 async function readBranch(workspace: string): Promise<Branch | null> {

@@ -16,7 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, promptTextOf, duration, tokens, promptKey, reconcilePending
+  loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, promptTextOf, duration, tokens, ago, promptKey, reconcilePending
 } from '../chat-state.mjs';
 
 // ── The login flow: the one state only the pane shows ──────────────────────────────────────
@@ -184,4 +184,18 @@ test('and one agy never recorded at all is still reported', () => {
   const [left] = reconcilePending(pending, { entries, now: sentAt + 30000 });
 
   assert.equal(left.failed, true);
+});
+
+test('ago says how long ago in the unit worth reading, and nothing for no date', () => {
+  // One format for the whole product: the rail and My Work each had their own, saying the same
+  // thing in two vocabularies on two halves of one page. Both delegate here now.
+  const now = Date.now();
+
+  assert.equal(ago(new Date(now - 30_000).toISOString()), 'just now');
+  assert.equal(ago(new Date(now - 5 * 60_000).toISOString()), '5m ago');
+  assert.equal(ago(new Date(now - 3 * 3600_000).toISOString()), '3h ago');
+  assert.equal(ago(new Date(now - 2 * 86400_000).toISOString()), '2d ago');
+  assert.equal(ago(new Date(now - 90 * 86400_000).toISOString()), '3mo ago');
+  assert.equal(ago(''), '', 'no date is no words, not "NaN ago"');
+  assert.equal(ago('not a date'), '');
 });

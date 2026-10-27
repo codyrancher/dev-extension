@@ -30,6 +30,7 @@ import {
 import {
   listAllWorkspaces, createWorkspace
 } from '../api';
+import { ago as agoOf } from '../chat-state.mjs';
 import { listApps } from '../apps';
 import { jiraQueue } from '../jira';
 import StageSteps from '../components/StageSteps.vue';
@@ -1343,28 +1344,13 @@ export default {
     /**
      * How long ago, in the one unit that is worth reading at a glance.
      *
-     * The harness writes these as `5m ago`, `48d ago`, `2mo ago`, and that is the whole format:
-     * a pull request nobody has touched for two months and one touched for forty-eight days are
-     * different in a way that a date does not show and this does.
+     * The format is `5m ago`, `48d ago`, `2mo ago`: a pull request nobody has touched for two
+     * months and one touched for forty-eight days are different in a way a date does not show
+     * and this does. It was written here first and lives in chat-state.mjs now, where the rail
+     * and the conversation read it too - `never` stays this page's word for no date at all.
      */
     ago(when) {
-      if (!when) {
-        return 'never';
-      }
-
-      const minutes = Math.max(0, Math.round((Date.now() - Date.parse(when)) / 60000));
-
-      if (minutes < 60) {
-        return `${ minutes }m ago`;
-      }
-
-      if (minutes < 60 * 24) {
-        return `${ Math.round(minutes / 60) }h ago`;
-      }
-
-      const days = Math.round(minutes / (60 * 24));
-
-      return days < 60 ? `${ days }d ago` : `${ Math.round(days / 30) }mo ago`;
+      return when ? agoOf(when) : 'never';
     },
 
     /**

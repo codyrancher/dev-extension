@@ -15,6 +15,7 @@
  * such - that is the whole reason the pending list exists.
  */
 import { computed } from 'vue';
+import { ago, fullTime } from '../../chat-state.mjs';
 import ChatToolRow from './ChatToolRow.vue';
 import type { ConversationTurn } from '../../chat-conversation';
 
@@ -41,7 +42,15 @@ const who = computed(() => {
   }
 });
 
-/** What the time column says, which is sometimes not a time at all. */
+/**
+ * What the time column says, which is sometimes not a time at all.
+ *
+ * How long ago rather than the wall clock. Reading a conversation, "5m ago" is the question
+ * being asked - is this still warm, did the agent stop an hour back - and `05:55 AM` makes a
+ * reader do the subtraction against a clock they have to find first. The exact moment is the
+ * hover (`exact` below), so nothing is lost, and a timestamp that is only ever read when
+ * something looks wrong is the right thing to put behind a hover.
+ */
 const stamp = computed(() => {
   if (props.turn.failed) {
     return 'not recorded';
@@ -55,10 +64,12 @@ const stamp = computed(() => {
   if (!props.times || !props.turn.at) {
     return '';
   }
-  const at = new Date(props.turn.at);
 
-  return Number.isNaN(at.getTime()) ? '' : at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return ago(props.turn.at);
 });
+
+/** The moment itself, for the hover. Empty for the states above, which are not times. */
+const exact = computed(() => (props.turn.failed || props.turn.inQueue || props.turn.queued ? '' : fullTime(props.turn.at)));
 
 /** A compact's summary is the conversation so far, folded: the first line until it is opened. */
 const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) => l.trim()) || '');
@@ -71,7 +82,11 @@ const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) =>
   >
     <header class="turn__meta">
       <span class="turn__who">{{ who }}</span>
-      <span v-if="stamp" class="turn__when">{{ stamp }}</span>
+      <span
+        v-if="stamp"
+        class="turn__when"
+        :title="exact"
+      >{{ stamp }}</span>
       <button
         v-if="turn.failed"
         type="button"
