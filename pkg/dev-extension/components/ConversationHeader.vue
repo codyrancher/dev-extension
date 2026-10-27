@@ -185,7 +185,8 @@ export default {
       .icon { font-size: 11px; }
 
       &--working  { color: var(--status-working); }
-      &--input    { color: var(--status-input); }
+      // "agent needs an answer", in the one loud colour on the page: see --status-asking.
+      &--input    { color: var(--status-asking); }
       &--finished { color: var(--status-done); }
     }
 

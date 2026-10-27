@@ -24,7 +24,12 @@ import { activityState } from './agent';
 import { note } from './dev-log.mjs';
 
 export type AgentState = 'working' | 'input' | 'idle' | 'finished' | 'none';
-export type Tone = 'green' | 'attention' | 'waiting' | 'working' | 'muted';
+/**
+ * `asking` is an agent stopped on a question; `attention` is everything else that wants a
+ * person. Two tones rather than one because they are two different asks: a question blocks
+ * the work until it is answered, and "nothing is running" has been true since yesterday.
+ */
+export type Tone = 'green' | 'asking' | 'attention' | 'waiting' | 'working' | 'muted';
 /** Where the work is, on the rail: a fix's stages, or a review's. */
 export type FixStage = 'assess' | 'code' | 'draft' | 'review' | 'feedback' | 'merged';
 export type ReviewStage = 'agent' | 'findings' | 'submitted' | 'response' | 'approved';
@@ -154,7 +159,7 @@ export function displayTone(status: Pick<WorkspaceStatus, 'tone' | 'agent'>): To
  */
 export function attentionTone(status: Pick<WorkspaceStatus, 'tone' | 'agent'>): Tone {
   if (status.agent === 'input') {
-    return 'attention';
+    return 'asking';
   }
   if (status.agent === 'working') {
     return 'working';
@@ -180,6 +185,8 @@ export function attentionReason(status: Pick<WorkspaceStatus, 'tone' | 'agent'>)
     return 'An agent is working';
   }
   switch (attentionTone(status)) {
+  case 'asking':
+    return 'An agent asked something and stopped until it hears back';
   case 'attention':
     return 'Nothing is running - this is waiting on you';
   case 'waiting':
@@ -340,6 +347,9 @@ export function agentStateOf(c: ConversationState): AgentState {
     notification: c.notification,
     at:           c.at,
     wroteAgo:     c.wroteAgo,
+    // Apart from wroteAgo, and the reason is the whole of the flicker: a Stop hook ends the
+    // main agent's turn and says nothing about its subagents. See activityBucket.
+    subAgo:       c.subAgo,
   }) as AgentState;
 }
 

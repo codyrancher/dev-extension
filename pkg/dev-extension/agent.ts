@@ -500,8 +500,15 @@ export interface SessionActivity {
   event: string;
   notification: string;
   at: string;
-  /** Seconds since the transcript (or a subagent's) last moved, or -1 when there is none. */
+  /** Seconds since the conversation's own transcript last moved, or -1 when there is none. */
   wroteAgo: number;
+  /**
+   * Seconds since the newest of its subagents' transcripts moved, or -1 when the caller cannot
+   * tell them apart from the main one - which the pod's `states` verb cannot, so this is only
+   * set on the paths that read the transcripts themselves. Apart from `wroteAgo` because a
+   * hook ends the main agent's turn and says nothing about its subagents; see activityBucket.
+   */
+  subAgo?: number;
 }
 
 /**

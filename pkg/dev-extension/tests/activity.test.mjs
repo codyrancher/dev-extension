@@ -77,3 +77,55 @@ test('a notification that is not the idle prompt is waiting on a person', () => 
     alive: true, event: 'Notification', notification: 'idle_prompt', at: agoSeconds(300), wroteAgo: 300,
   }, NOW - 600_000, NOW), 'idle');
 });
+
+// ── Subagents ───────────────────────────────────────────────────────────────────────────────
+//
+// Measured on a live conversation, `p-lte-pr-19078_pr-19078-review-1`: hook `Stop`, the main
+// transcript's last dated line a `turn_duration` (so its own mtime does not count), eleven
+// subagents and the newest of them written two seconds ago. That reads as idle for five seconds
+// after every Stop and working in between - and with background subagents reporting in, the
+// main agent stops that often.
+
+test('a subagent still writing keeps the conversation working through the main agent\'s Stop', () => {
+  assert.equal(activityBucket({
+    alive: true, event: 'Stop', notification: '', at: agoSeconds(2), wroteAgo: -1, subAgo: 2,
+  }, NOW - 600_000, NOW), 'working');
+});
+
+test('and the main agent going quiet does not end a turn its subagents are still in', () => {
+  assert.equal(activityBucket({
+    alive: true, event: 'Stop', notification: '', at: agoSeconds(400), wroteAgo: 400, subAgo: 4,
+  }, NOW - 600_000, NOW), 'working');
+});
+
+test('a question outranks its own subagents: it is the state that is about the person', () => {
+  // Six subagents writing all the while, and the main agent is stopped on a permission prompt.
+  // Weighed against the subagents this came out "working" the moment the hook's margin passed,
+  // so the one thing a person had to act on was the one thing the dot did not say.
+  assert.equal(activityBucket({
+    alive: true, event: 'Notification', notification: 'permission', at: agoSeconds(30), wroteAgo: 40, subAgo: 1,
+  }, NOW - 600_000, NOW), 'input');
+});
+
+test('a question already answered in the terminal goes back to working', () => {
+  // The main transcript moved after the notification, so the prompt was dealt with. Still the
+  // transcript outranking a stale hook - that rule is unchanged, it is just weighed against the
+  // main transcript alone now.
+  assert.equal(activityBucket({
+    alive: true, event: 'Notification', notification: 'permission', at: agoSeconds(60), wroteAgo: 3, subAgo: 1,
+  }, NOW - 600_000, NOW), 'working');
+});
+
+test('subagents long finished say nothing, and the main agent decides again', () => {
+  assert.equal(activityBucket({
+    alive: true, event: 'Stop', notification: '', at: agoSeconds(2), wroteAgo: 3, subAgo: 900,
+  }, NOW - 600_000, NOW), 'idle');
+});
+
+test('a caller that cannot tell them apart behaves exactly as before', () => {
+  // agent.ts asks the pod's own `states` verb, which reports one number for both. No subAgo
+  // means the old reading, so nothing changes there until that copy learns the same split.
+  assert.equal(activityBucket({
+    alive: true, event: 'Stop', notification: '', at: agoSeconds(2), wroteAgo: 3,
+  }, NOW - 600_000, NOW), 'idle');
+});

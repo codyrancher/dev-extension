@@ -20,6 +20,11 @@
 //   4. the pane's last lines, read for one thing only: the login flow, which no other channel
 //      carries.
 
+/**
+ * @typedef {{ alive: boolean, event: string, notification: string, at: string, wroteAgo: number,
+ *   subAgo?: number }} ActivitySignals
+ */
+
 /** @typedef {{ phase: 'absent'|'gone'|'idle'|'working'|'question'|'waiting'|'login', since: string, status: string, verb: string, queue: string[], question: object|null, login: object|null, model: string, effort: string, mode: string, permissionMode: string, title: string, cost: object|null, outputTokens: number, lastEnd: string, interrupted: boolean }} ChatState */
 import { agyUserText } from './agent-clis.mjs';
 
@@ -812,9 +817,46 @@ export function activityBucket(a, podStartedMs = 0, now = Date.now()) {
   }
 
   const hookAgo = (now - hookMs) / 1000;
-  const overruled = SPEAKS_LAST_EVENTS.has(a.event) && hookAgo <= Number(a.wroteAgo) + 5;
+  const mainAgo = Number(a.wroteAgo);
+  /*
+   * The subagents, when the caller can tell them apart from the main transcript; -1 when it
+   * cannot, and then `wroteAgo` already covers both as it always did.
+   */
+  const subAgo = a.subAgo === undefined || a.subAgo === null ? -1 : Number(a.subAgo);
 
-  if (Number(a.wroteAgo) >= 0 && Number(a.wroteAgo) <= WORKING_WINDOW_SECONDS && !overruled) {
+  /*
+   * A hook is the MAIN agent talking, so it is weighed against the main transcript alone.
+   *
+   * It used to be weighed against the newest write of the conversation and its subagents
+   * together, and that is how a conversation with eleven subagents in it flickered. Each time
+   * the main agent finished a turn - which, with background subagents reporting in, is every
+   * time one of them finishes - the Stop landed while a subagent had written a second ago, so
+   * `hookAgo <= wroteAgo + 5` held, the hook overruled the lot, and the switch below has no
+   * case for Stop: the conversation read `idle` for the five seconds until the margin expired,
+   * then `working` again. A dot that changes colour twice a minute says nothing.
+   */
+  const overruled = SPEAKS_LAST_EVENTS.has(a.event) && hookAgo <= mainAgo + 5;
+
+  /*
+   * The main agent asked something and stopped. First, because it is the one state that is
+   * about the person rather than about the machine, and it has to survive its own subagents:
+   * a question raised while six of them are still running is still a question, and it was
+   * being drawn as "working" the moment the hook stopped overruling.
+   */
+  if (overruled && a.event === 'Notification' && a.notification && a.notification !== 'idle_prompt') {
+    return 'input';
+  }
+
+  /*
+   * A subagent wrote recently: the conversation is working, whatever the main agent's last
+   * hook said. Nothing the main agent reports speaks for a subagent, so there is no margin to
+   * apply here and nothing that can overrule it.
+   */
+  if (subAgo >= 0 && subAgo <= WORKING_WINDOW_SECONDS) {
+    return 'working';
+  }
+
+  if (mainAgo >= 0 && mainAgo <= WORKING_WINDOW_SECONDS && !overruled) {
     return 'working';
   }
   // claude said it exited. The pane may well still be there - the loop that owns it restarts

@@ -152,11 +152,18 @@ export interface ConversationState {
   notification: string;
   at: string;
   /**
-   * Seconds since anything was written to the conversation's transcript or to one of its
-   * subagents', or -1 when there is no transcript to look at. The hook only fires at a turn's
-   * edges; this is what says whether the turn is still going.
+   * Seconds since the conversation's OWN transcript last moved, or -1 when there is none. The
+   * hook only fires at a turn's edges; this is what says whether the turn is still going.
    */
   wroteAgo: number;
+  /**
+   * Seconds since the newest of its subagents' transcripts moved, or -1 when it has none.
+   *
+   * Apart from `wroteAgo`, because the two answer to different things: a Stop hook ends the
+   * main agent's turn and says nothing whatever about eleven subagents still writing. Counted
+   * into one number, each Stop briefly overruled them and the dot flickered.
+   */
+  subAgo: number;
 }
 
 /**
@@ -180,6 +187,13 @@ export interface ConversationNow {
   changedAt: string;
   alive: boolean;
   wroteAgo: number;
+  /**
+   * Seconds since the newest of its subagents wrote, when the watcher can say. Optional
+   * because it cannot yet: `sessions.sh states-all` reports one number for the conversation
+   * and its subagents together, and that script is the Agents repo's. Absent reads as -1,
+   * which is "cannot tell them apart" and behaves as this always did.
+   */
+  subAgo?: number;
   event: string;
   message: string;
   said: string;
@@ -255,6 +269,11 @@ export async function conversationStates(): Promise<ConversationState[]> {
         notification: c.note || '',
         at:           c.changedAt || '',
         wroteAgo:     Number(c.wroteAgo ?? -1),
+        // -1 until dev-api's watcher reports it, which waits on `sessions.sh states-all` in
+        // the Agents repo giving the subagents a column of their own. -1 reads as "cannot
+        // tell them apart" and behaves exactly as this did before; the exec fallback below
+        // does report it today.
+        subAgo:       Number(c.subAgo ?? -1),
       }));
   }
 
@@ -334,7 +353,7 @@ async function conversationStatesByExec(): Promise<ConversationState[]> {
     'now=$(date +%s)',
     'for f in p-*.state.json; do',
     '  [ -f "$f" ] || continue',
-    '  id=${f%.state.json}; a=no',
+    '  id=${f%.state.json}; a=no; sub=0',
     '  if [ "$(id -u)" = 0 ]; then setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/workspace/.home tmux has-session -t "mc-$id" 2>/dev/null && a=yes; else tmux has-session -t "mc-$id" 2>/dev/null && a=yes; fi',
     '  t=$(sed -n \'s/.*"transcript":"\\([^"]*\\)".*/\\1/p\' "$f" | head -1); m=0',
     '  if [ -n "$t" ] && [ -f "$t" ]; then',
@@ -343,20 +362,26 @@ async function conversationStatesByExec(): Promise<ConversationState[]> {
     // for work: see `states` in seed/agent/sessions.sh, which this has to agree with.
     '    l=$(tail -c 65536 "$t" 2>/dev/null | grep \'"timestamp":"\' | tail -n 1)',
     '    case "$l" in *\'"type":"system","subtype":"turn_duration"\'*|*\'"type":"system","subtype":"stop_hook_summary"\'*|*\'"type":"system","subtype":"away_summary"\'*) m=0 ;; esac',
+    // The subagents are counted SEPARATELY rather than folded into the same number. A hook
+    // fires for the main agent and speaks only for it, so the margin that lets a Stop overrule
+    // a transcript that is still settling must be weighed against the main transcript alone -
+    // folded together, every Stop overruled the subagents too, and the state flickered to idle
+    // for a few seconds each time the main agent finished a turn. See activityBucket.
     '    for s in "${t%.jsonl}"/subagents/*.jsonl; do',
     '      [ -f "$s" ] || continue',
-    '      sm=$(stat -c %Y "$s" 2>/dev/null || echo 0); [ "$sm" -gt "$m" ] && m=$sm',
+    '      sm=$(stat -c %Y "$s" 2>/dev/null || echo 0); [ "$sm" -gt "$sub" ] && sub=$sm',
     '    done',
     '  fi',
     '  if [ "$m" -gt 0 ]; then wrote=$((now - m)); else wrote=-1; fi',
-    '  printf "%s\t%s\t%s\t%s\n" "$id" "$a" "$wrote" "$(head -c 800 "$f" | tr -d "\n\t")"',
+    '  if [ "$sub" -gt 0 ]; then subw=$((now - sub)); else subw=-1; fi',
+    '  printf "%s\t%s\t%s\t%s\t%s\n" "$id" "$a" "$wrote" "$subw" "$(head -c 800 "$f" | tr -d "\n\t")"',
     'done',
   ].join('\n');
   const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE).catch(() => '');
   const out: ConversationState[] = [];
 
   for (const line of listing.split('\n')) {
-    const [id, alive, wrote, json] = line.replace(/\r$/, '').split('\t');
+    const [id, alive, wrote, sub, json] = line.replace(/\r$/, '').split('\t');
 
     // A workspace's conversation, whatever its id carries: `conversationProject` is what tells
     // `p-foo-bar-2` (workspace foo-bar) from `p-foo_bar-2` (workspace foo, started at `bar`).
@@ -371,7 +396,14 @@ async function conversationStatesByExec(): Promise<ConversationState[]> {
       event = JSON.parse(json || '{}');
     } catch { /* a state file caught mid-write; the next poll reads it whole */ }
     out.push({
-      id, workspace, alive: alive === 'yes', event: String(event.event || ''), notification: String(event.notification || ''), at: String(event.at || ''), wroteAgo: Number(wrote ?? -1),
+      id,
+      workspace,
+      alive:        alive === 'yes',
+      event:        String(event.event || ''),
+      notification: String(event.notification || ''),
+      at:           String(event.at || ''),
+      wroteAgo:     Number(wrote ?? -1),
+      subAgo:       Number(sub ?? -1),
     });
   }
 

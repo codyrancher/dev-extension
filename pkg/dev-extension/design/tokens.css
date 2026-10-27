@@ -156,4 +156,19 @@ body {
   --status-done:    color-mix(in srgb, var(--success), var(--body-text) 45%);
   --status-idle:    color-mix(in srgb, var(--muted),   var(--body-text) 45%);
   --status-error:   color-mix(in srgb, var(--error),   var(--body-text) 45%);
+
+  /*
+   * The one state that is about the person: an agent has asked something and stopped until it
+   * hears back.
+   *
+   * Deliberately NOT softened like the six above. Those are read - a sidebar of statuses should
+   * not shout - and this one is the exception the softening makes room for: everything else on
+   * the page can wait, and this cannot, because nothing moves again until somebody answers. It
+   * shared `--status-input` with "nothing is running, your move", which is a different claim
+   * with a different urgency, and one amber for both meant neither was worth looking twice at.
+   *
+   * Rancher's `--warning` at full strength rather than a hue of our own, so it is the same
+   * orange the dashboard warns in everywhere else.
+   */
+  --status-asking: var(--warning);
 }

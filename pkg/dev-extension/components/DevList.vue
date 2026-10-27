@@ -29,6 +29,7 @@ import hoverCard from './hover-card';
 // running row reads one colour top to bottom rather than the pod's green beside an amber status.
 const TONE_DOT = {
   green:     'dev-list__dot--green',
+  asking:    'dev-list__dot--asking',
   attention: 'dev-list__dot--attention',
   waiting:   'dev-list__dot--waiting',
   working:   'dev-list__dot--working',
@@ -652,6 +653,8 @@ export default {
     // The dot coloured by a status tone, matched to the detail line beneath it. The canonical
     // status palette (workspace-status Tone), so every status disk in the product reads the same.
     &__dot--green     { color: var(--status-done); }
+    // The one dot that is allowed to be loud: see --status-asking.
+    &__dot--asking    { color: var(--status-asking); }
     &__dot--attention { color: var(--status-input); }
     &__dot--waiting   { color: var(--status-waiting); }
     &__dot--working   { color: var(--status-working); }
@@ -716,6 +719,7 @@ export default {
       // `dev-list__detail--<tone>`), so the line has been grey whatever the tone said since the
       // day it was added. `muted` keeps the base colour and needs no rule of its own.
       &--green     { color: var(--status-done); }
+      &--asking    { color: var(--status-asking); }
       &--attention { color: var(--status-input); }
       &--waiting   { color: var(--status-waiting); }
       &--working   { color: var(--status-working); }

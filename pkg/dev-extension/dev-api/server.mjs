@@ -4216,7 +4216,31 @@ function conversationState(a, podStartedMs = 0) {
   }
 
   const hookAgo = (Date.now() - hookMs) / 1000;
+  const subAgo = a.subAgo === undefined || a.subAgo === null ? -1 : Number(a.subAgo);
+  /*
+   * A hook is the MAIN agent talking, so it is weighed against the main transcript alone.
+   *
+   * Weighed against the conversation and its subagents together - which is what one number for
+   * both amounts to - every Stop briefly overruled subagents that were still writing, and a
+   * conversation with eleven of them flickered between working and idle for five seconds at a
+   * time. The same change is in chat-state.mjs's activityBucket; these two are one algorithm
+   * with two homes and they have to agree.
+   *
+   * `subAgo` is -1 here until `sessions.sh states-all` reports the subagents in a column of
+   * their own - that script is the Agents repo's - and -1 behaves exactly as this did before.
+   */
   const overruled = SPEAKS_LAST.has(a.event) && hookAgo <= a.wroteAgo + 5;
+
+  // The main agent asked something and stopped: the one state that is about the person, and it
+  // has to survive its own subagents.
+  if (overruled && a.event === 'Notification' && a.notification && a.notification !== 'idle_prompt') {
+    return 'input';
+  }
+  // A subagent still writing: working, whatever the main agent's last hook said. Nothing the
+  // main agent reports speaks for a subagent, so there is no margin to apply.
+  if (subAgo >= 0 && subAgo <= WORKING_WINDOW_S) {
+    return 'working';
+  }
 
   if (a.wroteAgo >= 0 && a.wroteAgo <= WORKING_WINDOW_S && !overruled) {
     return 'working';
