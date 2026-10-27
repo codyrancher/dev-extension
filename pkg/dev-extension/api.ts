@@ -2278,12 +2278,12 @@ export const WORKSPACE_SERVICE_ACCOUNT = 'dev-workspace';
  * used - quietly, in a pod, in a sweep nobody is watching. So its rules are compared and
  * written when they differ, and nothing else about it is touched.
  */
-async function ensureRules(type: string, name: string, body: Json): Promise<void> {
-  const path = `${ BASE }/v1/${ type }/${ name }`;
+async function ensureRules(type: string, name: string, body: Json, base = BASE): Promise<void> {
+  const path = `${ base }/v1/${ type }/${ name }`;
   const existing = await devFetch(path).catch(() => null);
 
   if (!existing) {
-    await devFetch(`${ BASE }/v1/${ type }`, { method: 'POST', body: JSON.stringify(body) }).catch(() => null);
+    await devFetch(`${ base }/v1/${ type }`, { method: 'POST', body: JSON.stringify(body) }).catch(() => null);
 
     return;
   }
@@ -2369,52 +2369,21 @@ export async function installDevResources(store: Store): Promise<void> {
  * call in this file reads, so a loop that forgets to put it back leaves the rest of the session
  * addressing whichever cluster it happened to finish on.
  */
-/**
- * Visit each cluster in turn, with the module's BASE pointed at it.
+/*
+ * `perCluster` is gone, and this note is in its place.
  *
- * ONE CALLER LEFT, and think hard before adding another. Moving BASE and awaiting means the
- * whole page addresses that cluster for the duration: every poll, every open panel, every
- * terminal's websocket. `refreshWorkspaceScripts` used to come through here and its window
- * opened on every sidebar tick, which put reads for `local` workspaces on a downstream and
- * 404'd them all. It names the cluster to the work instead. `ensureWorkspaceApi` has no such
- * parameter and runs once per cluster per page load rather than on a timer, so it stays.
+ * It visited each cluster with the module's BASE pointed at it, restoring afterwards. The
+ * restore was never the problem; the await was. For as long as the work ran, every other read
+ * on the page - a poll, an open panel, a terminal's websocket, an exec - addressed whichever
+ * cluster was being visited. Both of its callers were in the sidebar's poll, so that window
+ * opened every few seconds, and a browser console showed the result: a steady storm of
+ * `/k8s/clusters/<downstream>/v1/namespaces/dev-lte-pr-19078` 404s for workspaces on `local`,
+ * and execs failing with no reason because the namespace is not there.
+ *
+ * Both callers name the cluster to the work now (`ensureWorkspaceScripts`,
+ * `ensureWorkspaceApi`), which is what `setWorkspaceRunning` has always done. If something
+ * needs to act on another cluster, give it a base - do not move everyone else's.
  */
-async function perCluster(clusters: string[], work: (cluster: string) => Promise<void>): Promise<void> {
-  const wanted = [...new Set(clusters.filter(Boolean))];
-  /*
-   * Which of these this Rancher still has, asked once for the whole sweep.
-   *
-   * A workspace left behind on a Rancher that was deleted keeps its cluster id, and that id
-   * arrives here like any other. Sweeping it is not merely wasted: every call against a cluster
-   * that is gone hangs and then answers 500, and for the whole of that window the module-level
-   * base points at it - which `podExecUrl`, `workspaceMediaBase` and the service proxy all read
-   * at call time. So a terminal opened while this ran built its websocket against a cluster that
-   * does not exist, and so did the media list and the namespace reads. One stale workspace was
-   * doing that to every page in the session, on every load.
-   *
-   * A list that did not arrive proves nothing, so when it fails nothing is skipped - the same
-   * rule missingCluster() follows.
-   */
-  const known = await devFetch('/v3/clusters', { timeoutMs: 8000 }).catch(() => null);
-  const have: Set<string> | null = known?.data ? new Set(known.data.map((cluster: Json) => String(cluster.id))) : null;
-
-  for (const cluster of wanted) {
-    if (have && !have.has(cluster)) {
-      continue;
-    }
-    const previous = activeCluster();
-
-    setCluster(cluster);
-
-    try {
-      await work(cluster);
-    } catch {
-      // Quiet, like the rest of the install; see installProblems.
-    } finally {
-      setCluster(previous);
-    }
-  }
-}
 
 /**
  * The terminal scripts, on every cluster that has workspaces rather than only this one.
@@ -2452,7 +2421,28 @@ export async function refreshWorkspaceScripts(byCluster: { name: string; cluster
 }
 
 export async function refreshWorkspaceApis(clusters: string[]): Promise<void> {
-  await perCluster(clusters.filter((cluster) => cluster && cluster !== DEFAULT_CLUSTER), () => ensureWorkspaceApi());
+  /*
+   * Named, not moved - the other half of refreshWorkspaceScripts.
+   *
+   * Both run in the same sidebar poll, and this one holds the longer await: a ConfigMap read,
+   * a write, a rollout, a ServiceAccount and a ClusterRole, all against a downstream. Through
+   * `perCluster` that was the whole page addressing that cluster, every few seconds.
+   */
+  const wanted = [...new Set(clusters.filter((cluster) => cluster && cluster !== DEFAULT_CLUSTER))];
+
+  if (!wanted.length) {
+    return;
+  }
+  const known = await devFetch('/v3/clusters', { timeoutMs: 8000 }).catch(() => null);
+  // A list that did not arrive proves nothing, so nothing is skipped when it fails.
+  const have: Set<string> | null = known?.data ? new Set(known.data.map((cluster: Json) => String(cluster.id))) : null;
+
+  for (const cluster of wanted) {
+    if (have && !have.has(cluster)) {
+      continue;
+    }
+    await ensureWorkspaceApi(cluster).catch(() => {});
+  }
 }
 
 export function installProblems(): { what: string; why: string }[] {
@@ -2468,12 +2458,12 @@ function noteInstall(what: string, why: string | null) {
   }
 }
 
-export async function ensureDevNamespace(): Promise<void> {
+export async function ensureDevNamespace(base = BASE): Promise<void> {
   await ensure('namespaces', null, DEV_SYSTEM_NAMESPACE, {
     apiVersion: 'v1',
     kind:       'Namespace',
     metadata:   { name: DEV_SYSTEM_NAMESPACE },
-  });
+  }, base);
 }
 
 async function ensure(type: string, namespace: string | null, name: string, body: Json, base = BASE): Promise<void> {
@@ -3162,8 +3152,8 @@ const RESTART_ANNOTATION = 'dev.rancher.io/restarted-at';
  * better ended as an API running the old script for twenty seconds than as one running it until
  * somebody notices.
  */
-async function rollWorkspaceApi(namespace: string): Promise<void> {
-  const rolled = await devFetch(`${ BASE }/v1/apps.deployments/${ namespace }/${ API_NAME }`, {
+async function rollWorkspaceApi(namespace: string, base = BASE): Promise<void> {
+  const rolled = await devFetch(`${ base }/v1/apps.deployments/${ namespace }/${ API_NAME }`, {
     method:  'PATCH',
     headers: { 'Content-Type': 'application/merge-patch+json' },
     body:    JSON.stringify({
@@ -3247,12 +3237,26 @@ async function reconcileApiMounts(namespace: string): Promise<void> {
   }).catch(() => null);
 }
 
-export async function ensureWorkspaceApi(): Promise<void> {
+export async function ensureWorkspaceApi(cluster = ''): Promise<void> {
   const namespace = DEV_SYSTEM_NAMESPACE;
   const labels = { app: API_NAME };
+  /*
+   * Named, not taken from BASE - the other half of what ensureWorkspaceScripts fixed.
+   *
+   * This runs in the same sidebar poll, through `perCluster`, which moves the module's BASE and
+   * awaits. This function is the longest await in that loop: a ConfigMap read, a write, a
+   * rollout, a ServiceAccount and a ClusterRole. For all of it the whole page was addressing
+   * whichever downstream cluster was being visited, every few seconds.
+   */
+  const base = cluster ? clusterBase(cluster) : BASE;
+  // The two writers, bound to that base once rather than threaded through every call below -
+  // these are multi-line object literals and a trailing argument on each is a worse diff than
+  // two names that say where the writes go.
+  const ensureApi = (type: string, ns: string | null, name: string, body: Json) => ensure(type, ns, name, body, base);
+  const ensureApiRules = (type: string, name: string, body: Json) => ensureRules(type, name, body, base);
 
   // Before anything is written into it; see ensureDevNamespace.
-  await ensureDevNamespace();
+  await ensureDevNamespace(base);
 
   // The script, rewritten whenever it differs, so an edit in this repo reaches a service that
   // already exists. It carries no templates of its own any more: those are Apps Plus apps, which
@@ -3263,7 +3267,7 @@ export async function ensureWorkspaceApi(): Promise<void> {
     // workspace-tools.ts for why not exec). Gzipped because it always was; it is small now.
     [API_NAME, { 'server.mjs': WORKSPACE_API_SERVER, 'seed.json.gz.b64': await gzipBase64(JSON.stringify(AGENT_SEED)), version: OUR_VERSION }],
   ] as [string, Record<string, string>][]) {
-    const url = `${ BASE }/v1/configmaps/${ namespace }/${ name }`;
+    const url = `${ base }/v1/configmaps/${ namespace }/${ name }`;
     /*
      * The cheap read first, because this runs on every page load of every tab.
      *
@@ -3295,7 +3299,7 @@ export async function ensureWorkspaceApi(): Promise<void> {
     const existing = slim ? await devFetch(url).catch(() => null) : null;
 
     if (!existing) {
-      await devFetch(`${ BASE }/v1/configmaps`, {
+      await devFetch(`${ base }/v1/configmaps`, {
         method: 'POST',
         body:   JSON.stringify({
           apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace, name, labels: { ...labels, [VERSION_LABEL]: OUR_VERSION } }, data,
@@ -3334,11 +3338,11 @@ export async function ensureWorkspaceApi(): Promise<void> {
       // run; the replacement mounts the ConfigMap as it is now. Rolled rather than deleted, so
       // the Service is never without an endpoint - see `rollWorkspaceApi`. Quiet like the rest;
       // a user who may not do this changes nothing.
-      await rollWorkspaceApi(namespace);
+      await rollWorkspaceApi(namespace, base);
     }
   }
 
-  await ensure('serviceaccounts', namespace, API_NAME, {
+  await ensureApi('serviceaccounts', namespace, API_NAME, {
     apiVersion: 'v1', kind: 'ServiceAccount', metadata: { namespace, name: API_NAME },
   });
 
@@ -3347,7 +3351,7 @@ export async function ensureWorkspaceApi(): Promise<void> {
   // reconciler in server.mjs - so it may delete the namespace of a workspace whose Installation
   // is already gone, and the credentials binding that went with it; deleting the Installation
   // itself, the act that starts a teardown, stays a thing a person does from the page.
-  await ensureRules('rbac.authorization.k8s.io.clusterroles', API_NAME, {
+  await ensureApiRules('rbac.authorization.k8s.io.clusterroles', API_NAME, {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind:       'ClusterRole',
     metadata:   { name: API_NAME },
@@ -3420,7 +3424,7 @@ export async function ensureWorkspaceApi(): Promise<void> {
     ],
   });
 
-  await ensure('rbac.authorization.k8s.io.clusterrolebindings', null, API_NAME, {
+  await ensureApi('rbac.authorization.k8s.io.clusterrolebindings', null, API_NAME, {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind:       'ClusterRoleBinding',
     metadata:   { name: API_NAME },
