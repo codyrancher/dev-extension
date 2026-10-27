@@ -1088,9 +1088,25 @@ async function fleetTargetFor(clusterId: string): Promise<string> {
 
 async function resolveWorkspaceCluster(store: Store, values: Record<string, unknown>): Promise<{ cluster: string; target: string }> {
   const rancherUrl = String(values.rancherUrl || '').replace(/\/$/, '');
-  // The local cluster is the same string both ways, which is why the bug below never showed
-  // until a workspace was pointed at a downstream.
-  const local = { cluster: activeCluster(), target: activeCluster() };
+  /*
+   * The local cluster, named: not `activeCluster()`, which is where this browser session
+   * happens to be pointed.
+   *
+   * Those are the same string almost always, and the day they were not it cost two workspaces.
+   * `setCluster` moves the session's base whenever a workspace on a downstream is opened, and
+   * one path out of WorkspaceDetail leaves it moved (`refresh` sets it without recording
+   * `pointedAtCluster`, so the restore on unmount declines to act). Start a workspace from My
+   * Work after that and `activeCluster()` is a downstream's MANAGEMENT ID - which went into the
+   * Fleet target, where only a Fleet cluster NAME matches. A Bundle that matches no cluster is
+   * not an error in Fleet: `apps-plus-lte-pr-19638` and `-19711` sat at 0/0 in fleet-local with
+   * no namespace, no Deployment and no pod behind them, and the page said only "its pod is not
+   * answering yet".
+   *
+   * Which cluster a workspace lands on is a question about the Rancher it develops against -
+   * that is what the two branches below read - or about the picker on the create page, which
+   * passes a cluster outright. It is not a question about which page you were last looking at.
+   */
+  const local = { cluster: DEFAULT_CLUSTER, target: DEFAULT_CLUSTER };
 
   if (!rancherUrl) {
     return local;

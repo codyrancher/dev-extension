@@ -420,8 +420,16 @@ export default {
       // Point everything that follows at the cluster this workspace is actually on. It is set
       // here rather than by the router because a page is about one workspace and every request
       // it makes is about that workspace's cluster: see setCluster.
+      //
+      // Recorded as well as set, which the other two sites did and this one did not. The restore
+      // on unmount only acts while `activeCluster()` is still what this page pointed it at, so a
+      // move made without recording it is a move that is never undone: leave the page and the
+      // whole session goes on addressing that downstream. That is how two workspaces came to be
+      // created with a downstream's management id as their Fleet target - see
+      // resolveWorkspaceCluster, which no longer reads the session's base for this.
       if (this.workspace?.cluster) {
         setCluster(this.workspace.cluster);
+        this.pointedAtCluster = this.workspace.cluster;
       }
 
       // Opening a stopped workspace starts it: the spin-down (autoStopIdle) leaves idle ones
