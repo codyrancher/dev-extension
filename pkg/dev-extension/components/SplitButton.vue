@@ -64,6 +64,19 @@ export default {
       type:    String,
       default: '',
     },
+    /**
+     * A class for the caret, when the host wants the two halves drawn alike.
+     *
+     * Beside `mainClass` rather than folded into it, because the two are not always the same
+     * question: the tab row's `+` wants a bare glyph beside a bare caret, and the rail's
+     * verdict button wants Rancher's own primary on both halves - a blue press next to a grey
+     * caret reads as one live control beside one dead one. Empty keeps the component's own
+     * look, which is what every host had before this existed.
+     */
+    moreClass: {
+      type:    String,
+      default: '',
+    },
   },
 
   emits: ['pick'],
@@ -200,6 +213,7 @@ export default {
       v-if="choices.length > 1"
       type="button"
       class="split-btn__more"
+      :class="moreClass"
       :disabled="disabled"
       :aria-label="`${ label || 'More' }: other options`"
       :aria-expanded="open ? 'true' : 'false'"

@@ -2770,6 +2770,7 @@ export default {
                   :label="a.chosen.label"
                   :disabled="!!busy"
                   :main-class="a.isPrimary ? 'btn role-primary' : 'btn role-secondary'"
+                  :more-class="a.isPrimary ? 'btn role-primary' : 'btn role-secondary'"
                   class="workspace-rail__verdict"
                   @pick="(verdict) => run({ run: verdict })"
                 >
@@ -4067,10 +4068,13 @@ export default {
     }
 
     :deep(.split-btn__main) {
-      // `main-class` gives this `.btn role-primary|role-secondary`, so the colour is Rancher's
-      // and only the square edge against the caret is ours.
+      // Both halves carry `.btn role-primary|role-secondary`, so the colour is Rancher's own
+      // and what is left here is the shape: the two inner corners, and the gap.
       border-top-right-radius:    0;
       border-bottom-right-radius: 0;
+      // The spinner that replaces nothing while a verdict is being filed sat against the first
+      // letter of the label. The same 8px the other buttons on this row put beside their mark.
+      gap:                        var(--dev-space-3);
     }
 
     /*
@@ -4086,8 +4090,10 @@ export default {
       min-width:                 0;
       padding:                   0;
       // Over the main half's right border, so the pair reads as one control with a divider
-      // rather than as two boxes that happen to touch.
+      // rather than as two boxes that happen to touch. A 1px rule of the text's own colour
+      // stands in for the border that is now shared.
       margin-left:               -1px;
+      box-shadow:                inset 1px 0 0 rgba(0, 0, 0, .18);
       border-top-left-radius:    0;
       border-bottom-left-radius: 0;
       font-size:                 10px;
