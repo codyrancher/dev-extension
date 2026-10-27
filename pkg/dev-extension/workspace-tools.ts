@@ -15,7 +15,7 @@
 // and owned by the pane's user, the same three places the harness put them.
 
 import {
-  podExecOnce, workspacePod, workspaceNamespace, WORKSPACE_CONTAINER, githubToken, devFetch, secretValue, clusterBase, activeCluster, GITHUB_BROWSER_CDP, GITHUB_BROWSER_CDP_DOWNSTREAM, sharedBrowserCdp
+  podExecDetail, workspacePod, workspaceNamespace, WORKSPACE_CONTAINER, githubToken, devFetch, secretValue, clusterBase, activeCluster, GITHUB_BROWSER_CDP, GITHUB_BROWSER_CDP_DOWNSTREAM, sharedBrowserCdp
 } from './api';
 import { AGENT_SEED } from './agent-seed.generated';
 import { UNREWRITE_B64 } from './apps';
@@ -123,9 +123,32 @@ async function asRoot(target: WorkspaceTarget, script: string): Promise<string> 
   const file = `/tmp/.dev-${ Date.now().toString(36) }${ Math.random().toString(36).slice(2, 8) }.sh`;
   const wrapped = `WS=${ workspaceRoot(target.workspace) }\n${ script }`;
 
-  return podExecOnce(target.namespace, target.pod, WORKSPACE_CONTAINER, [
+  return ran(target, [
     '/bin/sh', '-c', `echo ${ b64(wrapped) } | base64 -d > ${ file } && /bin/bash ${ file } 2>&1; rc=$?; rm -f ${ file }; exit $rc`,
   ]);
+}
+
+/**
+ * One script in the workspace's pod, and the reason when it did not run.
+ *
+ * Every caller below checks a marker the script prints - `ENV-OK`, `TUNNEL-OK`, `CHECKOUT-OK` -
+ * and reports a failure to whoever pressed the button. An exec that never ran prints no marker
+ * and, through `podExecOnce`, carries no reason either: the apiserver's status is on a channel
+ * that function drops. So "The workspace's environment could not be written:" ended at the
+ * colon, which tells a person nothing and tells the next reader of this file nothing either.
+ *
+ * The script's own stderr is already folded into stdout by the `2>&1` above, so anything left
+ * here is the exec itself failing - a pod that went away, a timeout, a refused socket - and
+ * that is worth throwing rather than returning as an empty string.
+ */
+async function ran(target: WorkspaceTarget, command: string[]): Promise<string> {
+  const { out, status } = await podExecDetail(target.namespace, target.pod, WORKSPACE_CONTAINER, command);
+
+  if (!out && status) {
+    throw new Error(status);
+  }
+
+  return out;
 }
 
 /** The same, as the pane's user, with its home: the user the checkout and the tmux server belong to. */
@@ -138,7 +161,7 @@ async function asNode(target: WorkspaceTarget, script: string): Promise<string> 
     script,
   ].join('\n');
 
-  return podExecOnce(target.namespace, target.pod, WORKSPACE_CONTAINER, [
+  return ran(target, [
     '/bin/sh', '-c', `echo ${ b64(wrapped) } | base64 -d > ${ file } && chmod 755 ${ file } && if [ "$(id -u)" = 0 ]; then su node -s /bin/bash -c "/bin/bash ${ file }" 2>&1; else /bin/bash ${ file } 2>&1; fi; rc=$?; rm -f ${ file }; exit $rc`,
   ]);
 }
@@ -340,7 +363,11 @@ async function rancherToken(target: WorkspaceTarget, browserRancher = ''): Promi
     '[ -n "$T" ] || exit 0',
     'for C in "$U" "$PREV" "$BR"; do',
     '  [ -n "$C" ] || continue',
-    '  if [ "$(curl -sk -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $T" "$C/v3/users?me=true")" = 200 ]; then echo "$T"; exit 0; fi',
+    // `--max-time`, because this runs inside an exec that gives up at 120s and answers with
+    // whatever reached it - nothing, here, since every line of this script redirects. Three
+    // candidates times an untimed TCP connect to a Rancher that has gone is well over the
+    // budget, and the failure it produces is a blank error with no reason in it.
+    '  if [ "$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $T" "$C/v3/users?me=true")" = 200 ]; then echo "$T"; exit 0; fi',
     'done',
   ].join('\n'))).trim();
 
@@ -393,7 +420,7 @@ async function ensureEnvironment(target: WorkspaceTarget, github: string, browse
     'PICK=""',
     'for C in "$U" "$PREV" "$BR"; do',
     '  [ -n "$C" ] || continue',
-    '  if [ -n "$T" ] && [ "$(curl -sk -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $T" "$C/v3/users?me=true")" = 200 ]; then PICK="$C"; break; fi',
+    '  if [ -n "$T" ] && [ "$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $T" "$C/v3/users?me=true")" = 200 ]; then PICK="$C"; break; fi',
     'done',
     'if [ -n "$PICK" ]; then U="$PICK"; fi',
     'H=$(echo "$U" | sed -e "s|^https\\?://||" -e "s|/.*$||")',
@@ -480,7 +507,7 @@ chown -R node:node $WS/.kube && chmod 600 $WS/.kube/config` : 'true',
   ].join('\n'));
 
   if (!out.includes('ENV-OK')) {
-    throw new Error(`The workspace's environment could not be written: ${ out.trim().slice(-300) }`);
+    throw new Error(`The workspace's environment could not be written: ${ out.trim().slice(-300) || 'the script ran and printed nothing, which should not happen' }`);
   }
 }
 

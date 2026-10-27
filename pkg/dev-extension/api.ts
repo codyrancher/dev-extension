@@ -3802,8 +3802,29 @@ const EXEC_WAIT_MS = 120000;
  * It always settles. See the timer below for why that had to be said out loud.
  */
 export function podExecOnce(namespace: string, pod: string, container: string, command: string[], base = BASE, waitMs = EXEC_WAIT_MS): Promise<string> {
+  return podExecDetail(namespace, pod, container, command, base, waitMs).then((r) => r.out);
+}
+
+/**
+ * The same exec, with the reason it produced nothing.
+ *
+ * `podExecOnce` answers with stdout alone, and its note above says why: every caller it was
+ * written for is tidying up after something the person has already done. That stopped being
+ * true when writes started going through it. A write's caller checks the script's own marker,
+ * and when the exec never ran there is no marker - and no reason either, because the
+ * apiserver's status arrives on channel 3 and was dropped with the rest. That is the whole of
+ * "The workspace's environment could not be written:" with nothing after the colon: the one
+ * function in the chain that knew what went wrong threw it away.
+ *
+ * `status` is that reason, empty when the command ran. Still resolving rather than rejecting,
+ * so the tidy-up callers are unchanged.
+ */
+export function podExecDetail(
+  namespace: string, pod: string, container: string, command: string[], base = BASE, waitMs = EXEC_WAIT_MS,
+): Promise<{ out: string; status: string }> {
   return new Promise((resolve) => {
     let out = '';
+    let status = '';
     let timer: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
     // The frames carry bytes, and `atob` hands them back one character each - which is latin1,
@@ -3830,6 +3851,19 @@ export function podExecOnce(namespace: string, pod: string, container: string, c
             }
             out += decoder.decode(bytes, { stream: true });
           } catch { /* a frame that is not base64 is not output */ }
+        } else if (frame.startsWith('2') || frame.startsWith('3')) {
+          /*
+           * Channel 2 is stderr and 3 is the apiserver's own status, and between them they hold
+           * every reason an exec produces nothing: a pod that went away, a `pods/exec` the
+           * caller may not use, a container that is not there, a command that exited non-zero.
+           * Kept for `podExecDetail`; `podExecOnce` still answers with stdout and nothing else.
+           */
+          try {
+            const text = new TextDecoder().decode(Uint8Array.from(atob(frame.slice(1)), (c) => c.charCodeAt(0)));
+            const said = frame.startsWith('3') ? (JSON.parse(text).status === 'Success' ? '' : JSON.parse(text).message || '') : text;
+
+            status = [status, String(said || '').trim()].filter(Boolean).join(' ');
+          } catch { /* not JSON, or not base64: nothing to add */ }
         }
       };
 
@@ -3839,7 +3873,7 @@ export function podExecOnce(namespace: string, pod: string, container: string, c
         }
         settled = true;
         clearTimeout(timer);
-        resolve(out + decoder.decode());
+        resolve({ out: out + decoder.decode(), status });
       };
 
       /*
@@ -3856,6 +3890,7 @@ export function podExecOnce(namespace: string, pod: string, container: string, c
        * partial listing is worth more to every caller than a promise that never answers.
        */
       timer = setTimeout(() => {
+        status = status || `no answer from the pod in ${ Math.round(waitMs / 1000) }s`;
         done();
         try {
           socket.close();
@@ -3863,9 +3898,12 @@ export function podExecOnce(namespace: string, pod: string, container: string, c
       }, waitMs);
 
       socket.onclose = done;
-      socket.onerror = done;
-    } catch {
-      resolve(out);
+      socket.onerror = () => {
+        status = status || 'the connection to the pod failed';
+        done();
+      };
+    } catch (e: any) {
+      resolve({ out, status: e?.message || 'the pod could not be reached' });
     }
   });
 }
