@@ -469,6 +469,18 @@ export async function latestAgentReport(workspace: string): Promise<AgentReport 
   }
 }
 
+/** A string as base64, the way every script here hands text to the pod: bytes first, so UTF-8 survives. */
+function base64Of(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary);
+}
+
 /**
  * Type something into a conversation that is already running.
  *
@@ -479,6 +491,15 @@ export async function latestAgentReport(workspace: string): Promise<AgentReport 
  *
  * Through a buffer rather than `send-keys` with the text on the command line: a prompt holds
  * quotes, newlines and dollars, and a buffer is the one path that carries them untouched.
+ *
+ * Then checked, which is the part that was missing. The script ended `echo SENT` on a line of
+ * its own, so SENT was printed whether or not tmux had found the pane, whether or not the
+ * paste landed and whether or not the Enter submitted anything - tmux says all three on
+ * stderr, and the exec only reads stdout. Two live panes were found holding a prompt in the
+ * composer that had never been entered, under a page that had said the agent was working on
+ * it. So each tmux call now reports its own failure, and the Enter is pressed until the pane
+ * shows the prompt gone from its composer: one press is not reliably taken, because a TUI that
+ * has just been handed a bracketed paste is still reading it.
  */
 export async function sendToPane(id: string, text: string): Promise<void> {
   const api = await requireAgents();
@@ -487,32 +508,67 @@ export async function sendToPane(id: string, text: string): Promise<void> {
   if (!pod) {
     throw new Error('The agent pod is not running, so there is nothing to type into.');
   }
-  const bytes = new TextEncoder().encode(text);
-  let binary = '';
-
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
+  if (!isConversationId(id)) {
+    throw new Error(`"${ id }" is not a conversation id.`);
+  }
+  if (!text.trim()) {
+    throw new Error('There is nothing to send.');
   }
   const file = `/tmp/.say-${ Date.now().toString(36) }`;
+  const frag = `${ file }.frag`;
+  const events = `${ AGENT_WORKSPACE }/sessions/${ id }.events.jsonl`;
+  /*
+   * What to look for in the composer afterwards: enough of the first line to be this prompt and
+   * not some other text on the screen, and short enough that the composer's own wrapping cannot
+   * break it across two lines.
+   */
+  const probe = (text.split('\n').find((l) => l.trim()) || text).trim().slice(0, 48);
   const script = [
-    'export PATH=/workspace/.home/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH',
-    `echo ${ btoa(binary) } | base64 -d > ${ file }`,
-    `chmod 666 ${ file } 2>/dev/null || true`,
+    `export PATH=${ AGENT_HOME }/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH`,
+    `echo ${ base64Of(text) } | base64 -d > ${ file }`,
+    `echo ${ base64Of(probe) } | base64 -d > ${ frag }`,
+    `chmod 666 ${ file } ${ frag } 2>/dev/null || true`,
     // As the pane's user: the tmux server is theirs, and root's is a different one.
     `as_user() { if [ "$(id -u)" = 0 ]; then setpriv --reuid=1000 --regid=1000 --init-groups env HOME=${ AGENT_HOME } "$@"; else env HOME=${ AGENT_HOME } "$@"; fi; }`,
-    `as_user tmux load-buffer -b mc-send ${ file }`,
-    `as_user tmux paste-buffer -b mc-send -t mc-${ id } -d -p`,
-    'sleep 0.3',
-    `as_user tmux send-keys -t mc-${ id } Enter`,
-    `rm -f ${ file }`,
-    'echo SENT',
+    `done_() { rm -f ${ file } ${ frag }; echo "$1"; exit 0; }`,
+    // How long the transcript's event log is now, so a prompt claude accepted can be recognised
+    // below even if the composer check cannot tell.
+    `before=$(wc -c < ${ events } 2>/dev/null || echo 0)`,
+    `as_user tmux load-buffer -b mc-send ${ file } 2>/dev/null || done_ NOBUFFER`,
+    `as_user tmux paste-buffer -b mc-send -t mc-${ id } -d -p 2>/dev/null || done_ NOPANE`,
+    // Press, then look: the paste has to have been read before Enter means anything, and the
+    // screen has to have redrawn before the composer can be said to be empty. An extra press on
+    // an empty composer submits nothing, so pressing again costs nothing and is the only way
+    // past a TUI that swallowed the first one.
+    'n=0',
+    'while [ $n -lt 4 ]; do',
+    '  sleep 0.4',
+    `  as_user tmux send-keys -t mc-${ id } Enter 2>/dev/null || done_ NOPANE`,
+    '  sleep 0.5',
+    `  as_user tmux capture-pane -p -t mc-${ id } 2>/dev/null | tail -5 | grep -qF -f ${ frag } || done_ SENT`,
+    '  n=$((n+1))',
+    'done',
+    // Still on screen. The hook's log is the second opinion: a UserPromptSubmit appended since
+    // the paste means claude took it and what the composer is showing is something else.
+    `after=$(wc -c < ${ events } 2>/dev/null || echo 0)`,
+    `[ "$after" != "$before" ] && tail -1 ${ events } 2>/dev/null | grep -q UserPromptSubmit && done_ SENT`,
+    'done_ STUCK',
   ].join('\n');
   const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE);
+  const said = out.trim().split('\n').pop() || '';
 
-  if (!out.includes('SENT')) {
-    throw new Error(`The message could not be typed into ${ id }: ${ out.trim().slice(-200) || 'the pane did not answer' }`);
+  if (said === 'SENT') {
+    return;
   }
+  throw new Error(SEND_FAILURE[said] || `The message could not be typed into ${ id }: ${ out.trim().slice(-200) || 'the pane did not answer' }`);
 }
+
+/** What each thing the send script can end with means, said the way the rail shows it. */
+const SEND_FAILURE: Record<string, string> = {
+  NOBUFFER: 'The agent pod would not take the message: tmux refused the buffer it is pasted from.',
+  NOPANE:   'That conversation has no pane running to type into - reopen it and it will start again.',
+  STUCK:    'The message reached the conversation but it would not take it: the text is sitting in its prompt box unsent. Open the conversation and press Enter.',
+};
 
 /** Where one conversation's transcript is, in the agent pod: from the id its pane recorded, or its state file. */
 export async function transcriptPathOf(workspace: string, id: string): Promise<string> {

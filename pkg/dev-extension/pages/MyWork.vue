@@ -2570,7 +2570,7 @@ export default {
     background:      var(--tabbed-container-bg);
     color:           var(--muted);
 
-    &--info    { background: var(--info-banner-bg);    color: var(--status-waiting); }
+    &--info    { background: var(--info-banner-bg);    color: var(--status-info); }
     &--success { background: var(--success-banner-bg); color: var(--status-done); }
     &--warning { background: var(--warning-banner-bg); color: var(--status-input); }
     &--error   { background: var(--error-banner-bg);   color: var(--status-error); }

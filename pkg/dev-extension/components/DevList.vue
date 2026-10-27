@@ -665,7 +665,7 @@ export default {
     // so every disc in the list is drawn in the pastel, never the raw state colour.
     &__dot.text-success .icon-dot { color: var(--status-done); }
     &__dot.text-warning .icon-dot { color: var(--status-input); }
-    &__dot.text-info    .icon-dot { color: var(--status-waiting); }
+    &__dot.text-info    .icon-dot { color: var(--status-info); }
     &__dot.text-error   .icon-dot { color: var(--status-error); }
     &__dot.text-muted   .icon-dot { color: var(--status-idle); }
 

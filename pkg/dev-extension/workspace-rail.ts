@@ -698,9 +698,17 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
    * the column opening with it.
    */
   const reportSection = (_title = '') => undefined;
-  // Everything in the workspace's artifacts directory, as the directory it is. The directories
-  // this stage's own work writes into come first; then the loose files; then the rest, the most
-  // recently written first.
+  /*
+   * Everything in the workspace's artifacts directory, as the directory it is. The directories
+   * this stage's own work writes into come first; then the loose files; then the rest, the most
+   * recently written first.
+   *
+   * Called from every stage, which it was not: only a fix's first three stages asked for it, so
+   * a review workspace - where the screenshots, the recordings and the share's evidence are
+   * written - had no way to any of them, and an approved one offered a single row reading "Pull
+   * request". Artifacts are not a stage's output, they are the workspace's, and the section
+   * opens over the page like every other one, so there is no cost to it being there.
+   */
   const artifactsSection = (...first: string[]) => {
     if (!artifacts?.groups.length) {
       return;
@@ -708,7 +716,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     const rank = (g: ArtifactGroup) => (first.includes(g.dir) ? first.indexOf(g.dir) : g.dir ? first.length + 1 : first.length);
     const groups = [...artifacts.groups].sort((a, b) => rank(a) - rank(b) || (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
 
-    sections.push({ id: 'artifacts', title: 'Artifacts', items: [{
+    sections.push({ id: 'artifacts', title: `Artifacts (${ artifacts.truncated ? `${ artifacts.total }+` : artifacts.total })`, items: [{
         kind: 'artifacts', groups, total: artifacts.total, truncated: artifacts.truncated, lead: first,
       }] });
   };
@@ -809,6 +817,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       }
       prSection();
       branchSection();
+      artifactsSection('verify', 'reproduce');
       break;
     case 'feedback':
       if (d) {
@@ -832,10 +841,12 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       }
       prSection();
       reportSection();
+      artifactsSection('verify', 'reproduce');
       break;
     case 'merged':
       prSection();
       branchSection();
+      artifactsSection('verify', 'reproduce');
       break;
     }
   } else if (status.kind === 'review') {
@@ -885,6 +896,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         sections.push({ id: 'findings-so-far', title: `Findings so far (${ pending.length })`, items: [findings(pending)] });
       }
       reportSection(status.agent === 'working' ? 'Where the agent is' : 'Agent\'s report');
+      artifactsSection('review');
       prSection();
       break;
     case 'findings': {
@@ -907,6 +919,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
           sections.push({ id: 'your-threads', title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: [{ kind: 'comments', items: mine, paged: true }] });
         }
       }
+      artifactsSection('review');
       prSection();
       break;
     }
@@ -917,6 +930,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       // the pull request, yours among them, laid out as the pull request has them. A second
       // list of the same comments filtered to the ones you wrote was a slice of it, and the
       // slice is what made people check both.
+      artifactsSection('review');
       prSection();
       break;
     }
@@ -937,9 +951,11 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       if (report) {
         reportSection((Date.parse(report.at) || 0) > submittedAt ? 'What the agent found in the new commits' : 'Agent\'s review report (before the developer responded)');
       }
+      artifactsSection('review');
       prSection();
       break;
     case 'approved':
+      artifactsSection('review');
       prSection();
       break;
     }

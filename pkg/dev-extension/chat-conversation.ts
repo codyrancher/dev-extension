@@ -121,6 +121,13 @@ const MIME: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml',
 };
 
+/** What the send script can end with, said the way the chat shows it. */
+const SAY_FAILURE: Record<string, string> = {
+  NOBUFFER: 'the agent pod would not take the message: tmux refused the buffer it is pasted from',
+  NOPANE:   'this conversation has no pane running to type into - reopen it and it will start again',
+  STUCK:    'the message reached the conversation but it would not take it: the text is sitting in its prompt box unsent',
+};
+
 export function escapeText(text: unknown): string {
   return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -701,14 +708,50 @@ export function useConversation(source: () => ConversationSource) {
     await run(`tmux send-keys -t "mc-${ paneId.value }" ${ quoted }`);
   }
 
-  /** Text into the pane as one paste, then Enter: what the person typed, whatever is in it. */
+  /**
+   * Text into the pane as one paste, then Enter: what the person typed, whatever is in it.
+   *
+   * And then checked, because one Enter is not reliably taken. The chain used to be one line -
+   * paste, sleep 0.3, Enter - with nothing reading what came back, and a TUI that is still
+   * reading a bracketed paste when the Enter arrives swallows it. Two live panes were found
+   * holding a message in the composer that had never been entered, hours after the page said
+   * it had been sent. So the Enter is pressed until the pane stops showing the message in its
+   * composer, and anything else is said out loud rather than swallowed.
+   */
   async function say(text: string): Promise<void> {
-    await run([
+    if (!text.trim()) {
+      return;
+    }
+    // Enough of the first line to be this message and not some other text on the screen, and
+    // short enough that the composer's own wrapping cannot break it across two lines.
+    const probe = (firstLine(text) || text).trim().slice(0, 48);
+    const pane = `"mc-${ paneId.value }"`;
+    const out = await run([
       `F=/tmp/.chat-say-${ Date.now().toString(36) }`,
+      'P=$F.probe',
       `echo ${ b64(text) } | base64 -d > $F`,
-      `tmux load-buffer -b chat $F && tmux paste-buffer -b chat -t "mc-${ paneId.value }" -d -p && sleep 0.3 && tmux send-keys -t "mc-${ paneId.value }" Enter`,
-      'rm -f $F',
-    ].join('\n'));
+      `echo ${ b64(probe) } | base64 -d > $P`,
+      'done_() { rm -f $F $P; echo "$1"; exit 0; }',
+      'tmux load-buffer -b chat $F 2>/dev/null || done_ NOBUFFER',
+      `tmux paste-buffer -b chat -t ${ pane } -d -p 2>/dev/null || done_ NOPANE`,
+      // Press, then look: the paste has to have been read before Enter means anything, and the
+      // screen has to have redrawn before the composer can be called empty. An extra press on
+      // an empty composer submits nothing, so pressing again costs nothing.
+      'n=0',
+      'while [ $n -lt 4 ]; do',
+      '  sleep 0.4',
+      `  tmux send-keys -t ${ pane } Enter 2>/dev/null || done_ NOPANE`,
+      '  sleep 0.5',
+      `  tmux capture-pane -p -t ${ pane } 2>/dev/null | tail -5 | grep -qF -f $P || done_ SENT`,
+      '  n=$((n+1))',
+      'done',
+      'done_ STUCK',
+    ].join('\n'), 30000);
+    const said = out.trim().split('\n').pop() || '';
+
+    if (said !== 'SENT') {
+      throw new Error(SAY_FAILURE[said] || `the pane did not take the message${ out.trim() ? `: ${ out.trim().slice(-160) }` : '' }`);
+    }
   }
 
   /** Start the pane detached, so a conversation opened here first has somewhere to go. */

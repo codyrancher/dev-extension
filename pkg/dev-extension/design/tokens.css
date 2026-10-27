@@ -152,7 +152,7 @@ body {
    */
   --status-working: color-mix(in srgb, var(--primary), var(--body-text) 45%);
   --status-input:   color-mix(in srgb, var(--warning), var(--body-text) 45%);
-  --status-waiting: color-mix(in srgb, var(--info),    var(--body-text) 45%);
+  --status-info:    color-mix(in srgb, var(--info),    var(--body-text) 45%);
   --status-done:    color-mix(in srgb, var(--success), var(--body-text) 45%);
   --status-idle:    color-mix(in srgb, var(--muted),   var(--body-text) 45%);
   --status-error:   color-mix(in srgb, var(--error),   var(--body-text) 45%);
@@ -171,4 +171,21 @@ body {
    * orange the dashboard warns in everywhere else.
    */
   --status-asking: var(--warning);
+
+  /*
+   * The other state that is about whose turn it is - and it is not yours.
+   *
+   * "Waiting on somebody else" is the opposite claim to every other colour here: a reviewer has
+   * it, the developer has it, nothing is owed by the person reading the list. It was `--info`
+   * softened, which is the same blue the product accents with and a near neighbour of
+   * `--status-working`, so a row waiting on a reviewer and a row with an agent in it were two
+   * shades of one colour and the list's one question - which of these is mine - needed a second
+   * look to answer.
+   *
+   * A lavender of our own, because Rancher has no state colour for "somebody else's turn", and
+   * pulled toward the body text like the softened set above so it stays quiet in both themes:
+   * paler against the dark background, deeper against the light one. The one hue on the page
+   * that is not a Rancher state colour, and it is the one meaning Rancher does not have.
+   */
+  --status-waiting: color-mix(in srgb, #8d83d6, var(--body-text) 38%);
 }
