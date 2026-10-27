@@ -59,7 +59,7 @@ import {
 } from '../skills';
 import { markReadyForReview, describePr } from '../github';
 import {
-  deleteWorkspace, devFetch, workspaceMediaListUrl, workspaceProxyUrl, secretValue
+  deleteWorkspace, devFetch, workspaceMediaListUrl
 } from '../api';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, FOCUS_ROUTE } from '../config/constants';
 
@@ -83,6 +83,21 @@ const COMMENTS_MS = 2500;
  * happens elsewhere - a reviewer approving, the developer pushing.
  */
 const GITHUB_MS = 2 * 60000;
+
+/**
+ * The runs that file a verdict on the pull request.
+ *
+ * They are one decision with four answers - send it back, approve with the findings attached,
+ * approve, or just file the comments - and they were four buttons of equal weight in a row of
+ * seven, which is a row nobody reads as "choose one of these". One split button: the stage's
+ * own answer on the press, the other three behind the caret.
+ *
+ * A set of run names rather than a flag on each definition, because the definitions are inline
+ * literals spread across two kinds of work and five stages apiece, and the thing that actually
+ * makes one of these a verdict is the method it calls. Adding a verdict means adding its name
+ * here, next to the reason why.
+ */
+const GITHUB_VERDICTS = ['requestChanges', 'shipWithComments', 'openApprove', 'postComments'];
 
 export default {
   name: 'WorkspaceRail',
@@ -372,8 +387,32 @@ export default {
         title:   `${ button.note } · middle click to see the prompt and the skill`,
       }));
       const all = [...mine, ...theirs, ...skills];
+      const ordered = [...all.filter((a) => a.isPrimary), ...all.filter((a) => !a.isPrimary)];
+      const verdicts = ordered.filter((a) => GITHUB_VERDICTS.includes(a.run));
 
-      return [...all.filter((a) => a.isPrimary), ...all.filter((a) => !a.isPrimary)];
+      // One verdict is a button; it takes two before a caret is worth anything.
+      if (verdicts.length < 2) {
+        return ordered;
+      }
+
+      /*
+       * The press is the stage's own answer and stays that way: `value` is a computed, so
+       * picking "Ship it" from the menu runs it and does not quietly become what the button
+       * does next time. A split button that remembers is right for "which CLI to open"; it is
+       * not right for four ways of ending somebody's review.
+       */
+      const split = {
+        key:       'verdict',
+        split:     true,
+        isPrimary: verdicts.some((a) => a.isPrimary),
+        chosen:    verdicts[0],
+        options:   verdicts.map((a) => ({ id: a.run, label: a.label, icon: 'icon-github' })),
+      };
+      // Where the first of them was, so the row keeps the order the stage decided.
+      const at = ordered.findIndex((a) => GITHUB_VERDICTS.includes(a.run));
+      const rest = ordered.filter((a) => !GITHUB_VERDICTS.includes(a.run));
+
+      return [...rest.slice(0, at), split, ...rest.slice(at)];
     },
 
     /**
@@ -1537,68 +1576,15 @@ export default {
       return all.filter((a) => (kind === 'agent' ? this.agentSide(a) : !this.agentSide(a)));
     },
 
-    /**
-     * The tools for verifying the work by hand, kept apart from the decisions in their own group.
-     * They belong at the two stages where you look at a running build - Code, while the fix is
-     * being written, and Your pass, while a PR is being reviewed - and nowhere a build is not the
-     * point. A preview has no dev server of its own to drive, so it gets none of these.
+    /*
+     * "Verify the work" is gone, with `openApp` and `copyPassword`, which nothing else reached.
+     *
+     * It was a labelled strip of its own holding two buttons, above a strip of seven, on the one
+     * row of the page a person goes to to decide something. Both of its buttons are about the
+     * running build, and the running build already has a strip: the tools, directly above, which
+     * is where the dev server that serves it is started and stopped. A second place to open the
+     * same app, with its own heading, was a group label and a border spent on two links.
      */
-    verifyTools() {
-      const s = this.status;
-
-      if (!s || this.lookingBack || this.workspace?.preview) {
-        return [];
-      }
-      // The current stage, not the one being viewed (`shown` falls back to a middle stage before the
-      // first status read, which would flash these on a workspace that is really elsewhere). Looking
-      // back is already excluded above, so current and shown agree whenever this returns anything.
-      const here = (s.kind === 'fix' && this.current === 'code') || (s.kind === 'review' && this.current === 'findings');
-
-      if (!here) {
-        return [];
-      }
-
-      // No dev server here. There were two buttons reading "Stop the dev server" on this page,
-      // doing different things: this one stopped the whole workspace, the other stopped webpack
-      // inside it. The server is on the tools strip now, as the one that runs `bin/dev-server`,
-      // and stopping the workspace itself belongs to the nav, where a workspace is deleted.
-      return [
-        { label: 'Open the app', run: 'openApp' },
-        { label: 'Copy password', run: 'copyPassword' },
-      ];
-    },
-
-    /** Open the workspace's running app in a new tab, to look at the change for real. */
-    openApp() {
-      const w = this.workspace;
-
-      // A stopped deployment has no endpoints, so the proxy would open to an error page. Say so
-      // rather than hand back a dead tab. (Kept synchronous - window.open must run in the click.)
-      if (w?.state !== 'running') {
-        this.notice = 'Start the dev server first, then Open the app shows the running build.';
-
-        return;
-      }
-      window.open(workspaceProxyUrl(w.name, w.port, w.scheme), '_blank', 'noopener');
-    },
-
-    /** Copy the saved Rancher password so it can be pasted into the app's login page (user "admin"). */
-    async copyPassword() {
-      const password = await secretValue('RANCHER_PASSWORD').catch(() => '');
-
-      if (!password) {
-        this.notice = 'No Rancher password is saved yet. Add one in Settings (the gear, top right) and this copies it for the login page.';
-
-        return;
-      }
-      try {
-        await navigator.clipboard.writeText(password);
-        this.notice = 'Password copied. Paste it into the app\'s login page, with the user "admin".';
-      } catch {
-        this.error = 'The browser would not let this copy to the clipboard.';
-      }
-    },
-
     async runSkill(button) {
       if (this.busy) {
         return;
@@ -2746,34 +2732,6 @@ export default {
         </div>
         <div class="workspace-rail__buttons">
           <!--
-            Two groups, and the gap between them is the point: what to ask the agent to do
-            here, then what to decide. Each skill is a prompt into this workspace's
-            conversation, so what it starts is watched and talked to below.
-            Every button on the agent's side carries the mark the Focus cards put on theirs:
-            pressing it starts or continues a conversation rather than doing the thing itself.
-          -->
-          <div
-            v-if="verifyTools().length"
-            class="workspace-rail__group workspace-rail__group--verify"
-          >
-            <span class="workspace-rail__group-label">Verify the work</span>
-            <div class="workspace-rail__group-buttons">
-              <RcButton
-                v-for="a in verifyTools()"
-                :key="a.label"
-                variant="secondary"
-                :disabled="!!busy"
-                @click="run(a)"
-              >
-                <i
-                  v-if="busy === a.run"
-                  class="icon icon-spinner icon-spin"
-                />
-                {{ a.label }}
-              </RcButton>
-            </div>
-          </div>
-          <!--
             Everything there is to do here, on one row.
 
             It was two: "Ask the agent" over "Your call". Nobody reads a stage asking which of
@@ -2792,26 +2750,50 @@ export default {
           >
             <span class="workspace-rail__group-label">Actions</span>
             <div class="workspace-rail__group-buttons">
-              <RcButton
+              <template
                 v-for="a in actionRow"
                 :key="a.key"
-                :variant="a.isPrimary ? 'primary' : 'secondary'"
-                :disabled="!!busy"
-                :title="a.title"
-                @click="a.skill ? runSkill(a.button) : run(a)"
-                @mousedown="a.ai ? onAux(a.button || a, $event) : undefined"
-                @auxclick="a.ai ? onAux(a.button || a, $event) : undefined"
               >
-                <i
-                  v-if="busy === (a.skill || a.run)"
-                  class="icon icon-spinner icon-spin"
-                />
-                <i
-                  v-else-if="a.ai"
-                  class="icon icon-ai workspace-rail__group-ai"
-                />
-                {{ a.label }}
-              </RcButton>
+                <!--
+                  The verdicts, as one control: the stage's own answer on the press and the
+                  others behind the caret. See GITHUB_VERDICTS.
+                -->
+                <SplitButton
+                  v-if="a.split"
+                  :options="a.options"
+                  :value="a.chosen.run"
+                  :label="a.chosen.label"
+                  :disabled="!!busy"
+                  :main-class="a.isPrimary ? 'btn role-primary' : 'btn role-secondary'"
+                  class="workspace-rail__verdict"
+                  @pick="(verdict) => run({ run: verdict })"
+                >
+                  <i
+                    v-if="busy && a.options.some((o) => o.id === busy)"
+                    class="icon icon-spinner icon-spin"
+                  />
+                  {{ a.chosen.label }}
+                </SplitButton>
+                <RcButton
+                  v-else
+                  :variant="a.isPrimary ? 'primary' : 'secondary'"
+                  :disabled="!!busy"
+                  :title="a.title"
+                  @click="a.skill ? runSkill(a.button) : run(a)"
+                  @mousedown="a.ai ? onAux(a.button || a, $event) : undefined"
+                  @auxclick="a.ai ? onAux(a.button || a, $event) : undefined"
+                >
+                  <i
+                    v-if="busy === (a.skill || a.run)"
+                    class="icon icon-spinner icon-spin"
+                  />
+                  <i
+                    v-else-if="a.ai"
+                    class="icon icon-ai workspace-rail__group-ai"
+                  />
+                  {{ a.label }}
+                </RcButton>
+              </template>
             </div>
           </div>
         </div>
@@ -4022,6 +4004,42 @@ export default {
     display:   flex;
     gap:       8px;
     flex-wrap: wrap;
+  }
+
+  /*
+   * The verdict split button, drawn as the row's other buttons are.
+   *
+   * Styled from the wrapper rather than through `main-class` alone. That class and
+   * SplitButton's own `.split-btn__main` carry one class plus a scope attribute each, so which
+   * of them wins comes down to which stylesheet the build injected last - see `__new-split`
+   * above, where it lost and left a boxed plus beside a bare caret. Two classes to the
+   * component's one wins by specificity instead of by luck.
+   *
+   * The component's own sizing is a 22px control for a tab row's `+`; beside Rancher's 30px
+   * buttons that is a different control altogether.
+   */
+  &__verdict {
+    display:     inline-flex;
+    align-items: stretch;
+
+    :deep(.split-btn__main),
+    :deep(.split-btn__more) {
+      min-height: 30px;
+    }
+
+    :deep(.split-btn__main) {
+      // `main-class` gives this `.btn role-primary|role-secondary`, so the colour is Rancher's
+      // and only the square edge against the caret is ours.
+      border-top-right-radius:    0;
+      border-bottom-right-radius: 0;
+    }
+
+    :deep(.split-btn__more) {
+      padding:                   0 var(--dev-space-3);
+      border-top-left-radius:    0;
+      border-bottom-left-radius: 0;
+      font-size:                 10px;
+    }
   }
 
   &__inspect {
