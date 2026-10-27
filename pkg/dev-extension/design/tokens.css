@@ -182,10 +182,16 @@ body {
    * shades of one colour and the list's one question - which of these is mine - needed a second
    * look to answer.
    *
-   * A lavender of our own, because Rancher has no state colour for "somebody else's turn", and
+   * A mauve of our own, because Rancher has no state colour for "somebody else's turn", and
    * pulled toward the body text like the softened set above so it stays quiet in both themes:
    * paler against the dark background, deeper against the light one. The one hue on the page
    * that is not a Rancher state colour, and it is the one meaning Rancher does not have.
+   *
+   * Well off the blue rather than beside it. The first attempt at this was a blue-violet
+   * (#8d83d6, hue 246) which is a dozen degrees from `--link` - softened and sat next to a
+   * `--status-working` row it was still the same colour at a glance, which is the whole thing
+   * this was meant to fix. Hue 282 is far enough from both the accent blue and the warning
+   * amber to be told apart in a column of eight rows without reading the labels.
    */
-  --status-waiting: color-mix(in srgb, #8d83d6, var(--body-text) 38%);
+  --status-waiting: color-mix(in srgb, #a877bd, var(--body-text) 38%);
 }
