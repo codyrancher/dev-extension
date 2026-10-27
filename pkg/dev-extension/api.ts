@@ -1293,23 +1293,36 @@ async function setWorkspaceTitle(name: string, title: string): Promise<void> {
  * it is not. One GET each while nothing is wrong, which is the price of the workspace surviving
  * its own re-render.
  */
-export async function ensureWorkspaceScripts(names: string[]): Promise<void> {
+export async function ensureWorkspaceScripts(names: string[], cluster = ''): Promise<void> {
+  /*
+   * The cluster is named, not taken from the module's BASE.
+   *
+   * This swept every workspace against whatever BASE happened to hold, and the sweep's own
+   * caller used to move BASE to get it right - which worked only while nothing else was in
+   * flight. Nothing else is ever not in flight: the poll runs every few seconds, each `await`
+   * inside it is a window, and every read any other part of the page makes during that window
+   * goes to the cluster the sweep is visiting. Measured in a browser console: a burst of
+   * `/k8s/clusters/c-m-j28g6bbz/v1/namespaces/dev-lte-pr-19078` and four more like it, all 404,
+   * for workspaces that are on `local`, repeating once per poll.
+   */
+  const base = cluster ? clusterBase(cluster) : BASE;
+
   for (const name of names) {
     const namespace = workspaceNamespace(name);
-    const exists = await devFetch(`${ BASE }/v1/configmaps/${ namespace }/${ WORKSPACE_TERMINAL_MAP }`).catch(() => null);
+    const exists = await devFetch(`${ base }/v1/configmaps/${ namespace }/${ WORKSPACE_TERMINAL_MAP }`).catch(() => null);
 
     if (exists?.metadata?.name) {
       continue;
     }
     // Only where there is a namespace to write into: a workspace that is still being created,
     // or one on another cluster, is not this poll's business.
-    const ns = await devFetch(`${ BASE }/v1/namespaces/${ namespace }`).catch(() => null);
+    const ns = await devFetch(`${ base }/v1/namespaces/${ namespace }`).catch(() => null);
 
     if (!ns?.metadata?.name) {
       continue;
     }
-    await ensureWorkspaceRbac(name).catch(() => {});
-    await ensureWorkspaceTerminal(name).catch(() => {});
+    await ensureWorkspaceRbac(name, cluster).catch(() => {});
+    await ensureWorkspaceTerminal(name, cluster).catch(() => {});
   }
 }
 
@@ -1462,8 +1475,9 @@ async function resolveTerminalSeed(): Promise<Record<string, string> | null> {
 const AGENT_SEED_NAMESPACE = 'dev-agents';
 const AGENT_SEED_MAP = 'agent';
 
-async function ensureWorkspaceTerminal(name: string): Promise<void> {
+async function ensureWorkspaceTerminal(name: string, cluster = ''): Promise<void> {
   const namespace = workspaceNamespace(name);
+  const base = cluster ? clusterBase(cluster) : BASE;
   const seed = await resolveTerminalSeed();
   const data: Record<string, string> = {};
 
@@ -1479,11 +1493,11 @@ async function ensureWorkspaceTerminal(name: string): Promise<void> {
     return;
   }
 
-  const url = `${ BASE }/v1/configmaps/${ namespace }/${ WORKSPACE_TERMINAL_MAP }`;
+  const url = `${ base }/v1/configmaps/${ namespace }/${ WORKSPACE_TERMINAL_MAP }`;
   const existing = await devFetch(url).catch(() => null);
 
   if (!existing) {
-    await devFetch(`${ BASE }/v1/configmaps`, {
+    await devFetch(`${ base }/v1/configmaps`, {
       method: 'POST',
       body:   JSON.stringify({
         apiVersion: 'v1',
@@ -2355,6 +2369,16 @@ export async function installDevResources(store: Store): Promise<void> {
  * call in this file reads, so a loop that forgets to put it back leaves the rest of the session
  * addressing whichever cluster it happened to finish on.
  */
+/**
+ * Visit each cluster in turn, with the module's BASE pointed at it.
+ *
+ * ONE CALLER LEFT, and think hard before adding another. Moving BASE and awaiting means the
+ * whole page addresses that cluster for the duration: every poll, every open panel, every
+ * terminal's websocket. `refreshWorkspaceScripts` used to come through here and its window
+ * opened on every sidebar tick, which put reads for `local` workspaces on a downstream and
+ * 404'd them all. It names the cluster to the work instead. `ensureWorkspaceApi` has no such
+ * parameter and runs once per cluster per page load rather than on a timer, so it stays.
+ */
 async function perCluster(clusters: string[], work: (cluster: string) => Promise<void>): Promise<void> {
   const wanted = [...new Set(clusters.filter(Boolean))];
   /*
@@ -2401,13 +2425,30 @@ async function perCluster(clusters: string[], work: (cluster: string) => Promise
  * them could not see it.
  */
 export async function refreshWorkspaceScripts(byCluster: { name: string; cluster: string }[]): Promise<void> {
-  const clusters = byCluster.map((workspace) => workspace.cluster || DEFAULT_CLUSTER);
+  /*
+   * Each cluster named to the sweep, rather than moved under it.
+   *
+   * This went through `perCluster`, which sets the module's BASE, awaits, and puts it back.
+   * The restore is right and the window is not: every `await` inside the sweep is a moment
+   * when the whole page is addressing whichever cluster it is visiting, and the poll runs
+   * every few seconds. With a preview or a share on a downstream - which there always is -
+   * that window opened on every tick, and reads for `local` workspaces went to the downstream
+   * and 404'd. Nothing moves BASE here now, so nothing else can be dragged along with it.
+   */
+  const clusters = [...new Set(byCluster.map((workspace) => workspace.cluster || DEFAULT_CLUSTER))];
+  const known = await devFetch('/v3/clusters', { timeoutMs: 8000 }).catch(() => null);
+  // A list that did not arrive proves nothing, so when it fails nothing is skipped - the rule
+  // perCluster and missingCluster() both follow.
+  const have: Set<string> | null = known?.data ? new Set(known.data.map((cluster: Json) => String(cluster.id))) : null;
 
-  await perCluster(clusters, async(cluster) => {
+  for (const cluster of clusters) {
+    if (have && !have.has(cluster)) {
+      continue;
+    }
     const here = byCluster.filter((workspace) => (workspace.cluster || DEFAULT_CLUSTER) === cluster).map((workspace) => workspace.name);
 
-    await ensureWorkspaceScripts(here);
-  });
+    await ensureWorkspaceScripts(here, cluster).catch(() => {});
+  }
 }
 
 export async function refreshWorkspaceApis(clusters: string[]): Promise<void> {
@@ -2435,8 +2476,8 @@ export async function ensureDevNamespace(): Promise<void> {
   });
 }
 
-async function ensure(type: string, namespace: string | null, name: string, body: Json): Promise<void> {
-  const path = namespace ? `${ BASE }/v1/${ type }/${ namespace }/${ name }` : `${ BASE }/v1/${ type }/${ name }`;
+async function ensure(type: string, namespace: string | null, name: string, body: Json, base = BASE): Promise<void> {
+  const path = namespace ? `${ base }/v1/${ type }/${ namespace }/${ name }` : `${ base }/v1/${ type }/${ name }`;
   const existing = await devFetch(path).catch(() => null);
 
   if (existing) {
@@ -2446,7 +2487,7 @@ async function ensure(type: string, namespace: string | null, name: string, body
   }
 
   try {
-    await devFetch(`${ BASE }/v1/${ type }`, { method: 'POST', body: JSON.stringify(body) });
+    await devFetch(`${ base }/v1/${ type }`, { method: 'POST', body: JSON.stringify(body) });
     noteInstall(`${ type }/${ name }`, null);
   } catch (e: any) {
     const why = String(e?.message || e);
@@ -2580,14 +2621,16 @@ export async function ensureDevRbac(): Promise<void> {
  * Created with the workspace rather than by ensureDevRbac, because it is per workspace and the
  * namespace it lives in does not exist until the workspace does.
  */
-async function ensureWorkspaceRbac(name: string): Promise<void> {
+async function ensureWorkspaceRbac(name: string, cluster = ''): Promise<void> {
   const namespace = workspaceNamespace(name);
+  // Named rather than taken from BASE, for the reason ensureWorkspaceScripts gives.
+  const base = cluster ? clusterBase(cluster) : BASE;
 
   await ensure('serviceaccounts', namespace, WORKSPACE_SERVICE_ACCOUNT, {
     apiVersion: 'v1',
     kind:       'ServiceAccount',
     metadata:   { namespace, name: WORKSPACE_SERVICE_ACCOUNT },
-  });
+  }, base);
 
   // Whatever the workspace runs can manage the workspace's own namespace. It is a sandbox, and
   // this is the edge of it: `edit` is Kubernetes' own aggregated role for exactly this, so the
@@ -2600,11 +2643,11 @@ async function ensureWorkspaceRbac(name: string): Promise<void> {
       apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: 'edit'
     },
     subjects: [{ kind: 'ServiceAccount', name: WORKSPACE_SERVICE_ACCOUNT, namespace }],
-  });
+  }, base);
 
   const binding = credentialsRoleBinding(WORKSPACE_SERVICE_ACCOUNT, namespace);
 
-  await ensure('rbac.authorization.k8s.io.rolebindings', DEV_SYSTEM_NAMESPACE, binding.metadata.name, binding);
+  await ensure('rbac.authorization.k8s.io.rolebindings', DEV_SYSTEM_NAMESPACE, binding.metadata.name, binding, base);
 }
 
 /**
