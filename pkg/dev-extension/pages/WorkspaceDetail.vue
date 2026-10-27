@@ -572,11 +572,15 @@ export default {
       color="warning"
       :label="`${ name } was made on cluster ${ workspace.cluster }, which is not registered in this Rancher any more. It has no pod and cannot get one; its conversations are in the agent pod and still open. Make it again on a cluster that is here, or delete it.`"
     />
-    <Banner
-      v-else-if="restarting"
-      color="info"
-      :label="`${ name } is restarting, or this Rancher is - its pod is not answering right now. Conversations carry on.`"
-    />
+    <!--
+      No banner here for a workspace that is restarting.
+
+      The notice below says the same sentence and carries the two things that help - Look again,
+      Restart it - and the line about conversations carrying on. This one said it first, in full
+      width, with nothing to press, so the page opened with the same fact twice and the useless
+      copy on top. `restarting` is also set for a lookup that simply missed a poll while the pod
+      is up and fine, and "its pod is not answering right now" is then not even true.
+    -->
     <Banner
       v-if="error"
       color="error"
