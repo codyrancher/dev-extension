@@ -243,6 +243,35 @@ export function parseAgyTranscript(lines) {
 }
 
 /**
+ * What a subagent's last line says, out of agy's own shape.
+ *
+ * The claude reader looks in `message.content` blocks; an agy step has `content` and
+ * `tool_calls` at the top level, so the same reader finds nothing in one. Returns '' for a line
+ * it cannot make sense of, which is what a half-written last line is.
+ *
+ * @param {string} raw one JSON line
+ * @param {(call: { id: string, name: string, input: unknown }) => string} summarise
+ * @returns {string}
+ */
+export function agyTailText(raw, summarise) {
+  let entry;
+
+  try {
+    entry = JSON.parse(raw);
+  } catch {
+    return '';
+  }
+  const text = typeof entry?.content === 'string' ? entry.content.trim() : '';
+
+  if (text) {
+    return text;
+  }
+  const call = (Array.isArray(entry?.tool_calls) ? entry.tool_calls : [])[0];
+
+  return call ? `${ call.name }: ${ summarise({ id: '', name: String(call.name || ''), input: call.args ?? {} }) }` : '';
+}
+
+/**
  * Antigravity's slash commands, as agy 1.4.3 itself lists them.
  *
  * Read out of the CLI rather than written from documentation: `agy` was started in a scratch

@@ -38,7 +38,9 @@ import {
 import {
   ago, deriveState, parseEntries, reconcilePending, unwrapPasted,
 } from './chat-state.mjs';
-import { AGY_COMMANDS, AGY_CUSTOMIZE, agyPhase } from './agent-clis.mjs';
+import {
+  AGY_COMMANDS, AGY_CUSTOMIZE, agyPhase, agyTailText,
+} from './agent-clis.mjs';
 import { frameNonce, readFrames, spliceEarlier } from './chat-frames.mjs';
 import {
   modelAliases, flagChoices, parseMcpList, currentModel, isSafeOptionValue, type McpServer,
@@ -441,7 +443,7 @@ export function useConversation(source: () => ConversationSource) {
     offset: 0, lines: [], remainder: '', messages: [],
   });
   // The subagents' last words and when they last wrote, read on every poll.
-  const tails = ref<Record<string, { at: number; last: string }>>({});
+  const tails = ref<Record<string, { at: number; last: string; name: string }>>({});
 
   /* ── What is on its way ───────────────────────────────────────────────────────────────────── */
 
@@ -503,8 +505,24 @@ export function useConversation(source: () => ConversationSource) {
 
   /* ── Derived ──────────────────────────────────────────────────────────────────────────────── */
 
-  /** The subagents this conversation launched, for the tabs. */
-  const agents = computed<ChatAgent[]>(() => agentsFrom(messages.value));
+  /**
+   * The subagents this conversation launched, for the tabs.
+   *
+   * Two CLIs say it in two places. claude names one in the `Agent` call that started it and
+   * answers with its id, so the transcript holds the whole list - `agentsFrom`. agy writes a
+   * file per subagent instead (`<brain>/<session>/.system_generated/subagents/<id>.json`,
+   * carrying `subagentDescriptor.role`), and its transcript says nothing about them at all; the
+   * frame lists that directory and sends each one's name beside its mtime, so here they come
+   * off the tails. Which is also why an agy subagent appears a poll later than a claude one -
+   * it appears when the directory does.
+   */
+  const agents = computed<ChatAgent[]>(() => {
+    if (cli.value !== 'agy') {
+      return agentsFrom(messages.value);
+    }
+
+    return Object.entries(tails.value).map(([id, t]) => ({ id, description: t.name || id.slice(0, 8) }));
+  });
 
   /** The subagents with what each last said, the ones still writing first. */
   const agentRows = computed<ChatAgentRow[]>(() => {
@@ -818,10 +836,57 @@ export function useConversation(source: () => ConversationSource) {
         ]),
         'echo "@@FILE-$N $FILE"',
         'if [ -n "$FILE" ] && [ -f "$FILE" ]; then size=$(wc -c < "$FILE"); echo "@@SIZE-$N $size"; FROM=$OFF; if [ "$OFF" -eq 0 ] && [ "$size" -gt "$CAP" ]; then FROM=$((size - CAP)); fi; echo "@@FROM-$N $FROM"; if [ "$size" -gt "$FROM" ]; then echo "@@DATA-$N"; tail -c +$((FROM+1)) "$FILE"; echo; echo "@@ENDDATA-$N"; fi; fi',
-        // The subagent's transcript sits beside the session's, in a directory named for it. Capped the same way.
-        'if [ -n "$SUB" ] && [ -n "$FILE" ]; then SF="${FILE%.jsonl}/subagents/agent-$SUB.jsonl"; if [ -f "$SF" ]; then ssize=$(wc -c < "$SF"); echo "@@SSIZE-$N $ssize"; SFROM=$SOFF; if [ "$SOFF" -eq 0 ] && [ "$ssize" -gt "$CAP" ]; then SFROM=$((ssize - CAP)); fi; if [ "$ssize" -gt "$SFROM" ]; then echo "@@SDATA-$N"; tail -c +$((SFROM+1)) "$SF"; echo; echo "@@ENDSDATA-$N"; fi; fi; fi',
-        // Every subagent's last line and when it was written, for the list of them.
-        'if [ -n "$FILE" ] && [ -d "${FILE%.jsonl}/subagents" ]; then for f in "${FILE%.jsonl}"/subagents/agent-*.jsonl; do [ -f "$f" ] || continue; id=$(basename "$f" .jsonl); id=${id#agent-}; echo "@@TAIL-$N $id $(stat -c %Y "$f")"; tail -c 6000 "$f" | grep "\"type\":\"assistant\"" | tail -n 1 | cut -c1-3000; done; echo "@@ENDTAILS-$N"; fi',
+        /*
+         * The chosen subagent's own transcript, capped the same way as the session's.
+         *
+         * claude keeps them beside the session's file, in a directory named for it. agy gives
+         * each subagent a brain of its own - a directory under the same root as the parent's,
+         * named for the subagent's conversation id - so there is no "beside" to point at, only
+         * another session read exactly like this one.
+         */
+        ...(cli.value === 'agy' ? [
+          'if [ -n "$SUB" ]; then SF="$BRAIN/$SUB/.system_generated/logs/transcript.jsonl"; fi',
+        ] : [
+          'if [ -n "$SUB" ] && [ -n "$FILE" ]; then SF="${FILE%.jsonl}/subagents/agent-$SUB.jsonl"; fi',
+        ]),
+        'if [ -n "$SF" ] && [ -f "$SF" ]; then ssize=$(wc -c < "$SF"); echo "@@SSIZE-$N $ssize"; SFROM=$SOFF; if [ "$SOFF" -eq 0 ] && [ "$ssize" -gt "$CAP" ]; then SFROM=$((ssize - CAP)); fi; if [ "$ssize" -gt "$SFROM" ]; then echo "@@SDATA-$N"; tail -c +$((SFROM+1)) "$SF"; echo; echo "@@ENDSDATA-$N"; fi; fi',
+        /*
+         * Every subagent's last line and when it was written, for the list of them.
+         *
+         * The head line carries the subagent's NAME after its mtime for agy, because that is
+         * the only place agy says what one is for: claude names a subagent in the Agent call
+         * that started it, which the transcript already has, and agy records it in a file of
+         * its own - `{"subagentDescriptor":{"typeName":"repro-recorder","role":"Misc bug
+         * recorder"}}`. The reader takes everything after the mtime as the name, so claude's
+         * lines, which have nothing after it, are unchanged.
+         *
+         * NOTE the quoting. This grep used to be written `grep "\"type\":\"assistant\""`,
+         * and in a single-quoted JavaScript string `\"` is just `"` - so the shell was handed
+         * `grep ""type":"assistant""`, which it concatenates into the pattern `type:assistant`.
+         * That matches nothing in a transcript, so every subagent's last line has been empty
+         * since this was written; only the mtime beside it (and so "6 working") ever worked.
+         * Single quotes inside a template literal, which survive both languages intact.
+         */
+        ...(cli.value === 'agy' ? [
+          'SUBS="$BRAIN/$uuid/.system_generated/subagents"',
+          'if [ -n "$uuid" ] && [ -d "$SUBS" ]; then for f in "$SUBS"/*.json; do [ -f "$f" ] || continue; id=$(basename "$f" .json); T="$BRAIN/$id/.system_generated/logs/transcript.jsonl"; [ -f "$T" ] || continue;',
+          /*
+           * The backslashes are doubled on purpose.
+           *
+           * A template literal refuses `\(` as an invalid escape and `\1` as an octal one, and
+           * a single-quoted string - how the broken grep above was written - drops the
+           * backslash silently and hands sed a pattern with no group in it. `\\(` in the
+           * source is `\(` in the string, which is what sed's BRE wants.
+           */
+          `  role=$(sed -n 's/.*"role":"\\([^"]*\\)".*/\\1/p' "$f" | head -1)`,
+          '  echo "@@TAIL-$N $id $(stat -c %Y "$T") $role"',
+          `  tail -c 6000 "$T" | grep -F '"source":"MODEL"' | tail -n 1 | cut -c1-3000`,
+          'done; echo "@@ENDTAILS-$N"; fi',
+        ] : [
+          'if [ -n "$FILE" ] && [ -d "${FILE%.jsonl}/subagents" ]; then for f in "${FILE%.jsonl}"/subagents/agent-*.jsonl; do [ -f "$f" ] || continue; id=$(basename "$f" .jsonl); id=${id#agent-}; echo "@@TAIL-$N $id $(stat -c %Y "$f")";',
+          `  tail -c 6000 "$f" | grep -F '"type":"assistant"' | tail -n 1 | cut -c1-3000`,
+          'done; echo "@@ENDTAILS-$N"; fi',
+        ]),
         // The hook state file (seed/chat-hook.mjs): the last thing claude said it was doing.
         'echo "@@HOOK-$N"; cat "$(dirname "$HOME")/sessions/$ID.state.json" 2>/dev/null; echo; echo "@@ENDHOOK-$N"',
         /*
@@ -926,20 +991,30 @@ export function useConversation(source: () => ConversationSource) {
     }
 
     if (frame.tails.length) {
-      const next: Record<string, { at: number; last: string }> = {};
+      const next: Record<string, { at: number; last: string; name: string }> = {};
 
-      for (const { id, at, raw } of frame.tails) {
+      for (const { id, at, name, raw } of frame.tails) {
         let last = '';
 
-        try {
-          const entry = JSON.parse(raw);
-          const blocks = Array.isArray(entry?.message?.content) ? entry.message.content : [];
-          const text = blocks.filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ').trim();
-          const tool = blocks.find((b: any) => b.type === 'tool_use');
+        if (cli.value === 'agy') {
+          // agy's line has `content` and `tool_calls` at the top level; the reader below
+          // looks inside `message.content` and finds nothing in one. See agyTailText.
+          last = agyTailText(raw, (call) => toolSummary(call as ChatToolCall));
+        } else {
+          try {
+            const entry = JSON.parse(raw);
+            const blocks = Array.isArray(entry?.message?.content) ? entry.message.content : [];
+            const text = blocks.filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ').trim();
+            const tool = blocks.find((b: any) => b.type === 'tool_use');
 
-          last = text || (tool ? `${ tool.name }: ${ toolSummary({ id: tool.id, name: tool.name, input: tool.input }) }` : '');
-        } catch { /* a partial line; keep what we had */ }
-        next[id] = { at, last: (last || tails.value[id]?.last || '').split('\n')[0].slice(0, 140) };
+            last = text || (tool ? `${ tool.name }: ${ toolSummary({ id: tool.id, name: tool.name, input: tool.input }) }` : '');
+          } catch { /* a partial line; keep what we had */ }
+        }
+        next[id] = {
+          at,
+          last: (last || tails.value[id]?.last || '').split('\n')[0].slice(0, 140),
+          name: name || tails.value[id]?.name || '',
+        };
       }
       tails.value = next;
     }

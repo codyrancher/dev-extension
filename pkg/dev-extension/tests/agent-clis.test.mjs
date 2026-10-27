@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  transcriptKind, parseAgyTranscript, CLI_CHOICES, agyPhase
+  transcriptKind, parseAgyTranscript, CLI_CHOICES, agyPhase, agyTailText
 } from '../agent-clis.mjs';
 
 const AGY = [
@@ -220,4 +220,22 @@ test('and a model step with no call waiting is still a message', () => {
   })];
 
   assert.equal(parseAgyTranscript(lines)[0].text, 'I found 20 candidates.');
+});
+
+// ── What a subagent last said, in agy's shape ───────────────────────────────────────────────
+
+test('a subagent tail reads agy\'s own line, not claude\'s', () => {
+  const summarise = (call) => `ran ${ call.input.command }`;
+
+  assert.equal(
+    agyTailText(JSON.stringify({ step_index: 4, source: 'MODEL', content: 'Recorded the first three.' }), summarise),
+    'Recorded the first three.',
+  );
+  assert.equal(
+    agyTailText(JSON.stringify({ step_index: 5, source: 'MODEL', tool_calls: [{ name: 'run_command', args: { command: 'yarn test' } }] }), summarise),
+    'run_command: ran yarn test',
+  );
+  // A line cut in half by the 6000-byte tail, which is the usual case for the newest one.
+  assert.equal(agyTailText('{"step_index":6,"sou', summarise), '');
+  assert.equal(agyTailText('', summarise), '');
 });

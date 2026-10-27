@@ -146,10 +146,14 @@ export function readFrames(out, nonce) {
 }
 
 /**
- * Each subagent's last assistant line: `@@TAIL-<nonce> <id> <mtime>` and then the line itself.
+ * Each subagent's last line: `@@TAIL-<nonce> <id> <mtime> [name]` and then the line itself.
  *
  * Returned raw, because what is made of it - the tool summary, the first line, the 140 characters
  * - is the list's business and not the wire's.
+ *
+ * Everything after the mtime is the subagent's name, which only agy sends: it records what a
+ * subagent is for in a file of its own, where claude names it in the call that started it and
+ * the transcript already has it. claude's lines end at the mtime and come back with `name: ''`.
  */
 function readTails(out, m) {
   const at = out.indexOf(`${ m.tail } `);
@@ -161,9 +165,11 @@ function readTails(out, m) {
 
   return out.slice(at, end).split(`${ m.tail } `).slice(1).map((chunk) => {
     const [head, ...rest] = chunk.split('\n');
-    const [id, mtime] = head.trim().split(/\s+/);
+    const [id, mtime, ...name] = head.trim().split(/\s+/);
 
-    return { id: id || '', at: Number(mtime) || 0, raw: rest.join('\n').trim() };
+    return {
+      id: id || '', at: Number(mtime) || 0, name: name.join(' '), raw: rest.join('\n').trim(),
+    };
   }).filter(({ id }) => id);
 }
 
