@@ -2,6 +2,21 @@
  * The harness's panel, in Rancher's colours. Every colour below is one of these, and these are
  * Rancher's own theme variables, so the panel follows the dashboard between light and dark.
  */
+/*
+ * The palette, on a class that carries NOTHING but the palette.
+ *
+ * It used to be declared on `.pr-review` itself, which is also the panel's layout - a flex
+ * column that fills its parent and hides its overflow. So anywhere the panel's markup travelled
+ * without that element, the colours went with it: DevModal teleports its panel to `<body>`, and
+ * the rail's evidence sections opened into one have no `.pr-review` ancestor there, so every
+ * `var(--pr-*)` in them resolved to nothing. A finding in the modal had no box around its
+ * comment and no colour on its state; the same finding in the rail had both.
+ *
+ * Adding `pr-review` to the modal would have brought `overflow: hidden` and `flex: 1` with it
+ * and clipped the thing that has to scroll. Two classes instead: this one is the colours and
+ * can go anywhere, `.pr-review` is the panel and still has both.
+ */
+.pr-tokens,
 .pr-review {
   --pr-bg:           var(--body-bg);
   --pr-bg-2:         var(--sortable-table-header-bg);
@@ -32,7 +47,10 @@
   --pr-code-number:  #b25e09;
   --pr-code-comment: #7a7f87;
   --pr-code-fn:      #3d5a99;
+}
 
+/* The panel itself: what it looks like and how it is laid out, which is not the palette. */
+.pr-review {
   background:     var(--pr-bg);
   flex:           1;
   width:          100%;
@@ -43,6 +61,7 @@
 }
 
 /* The body carries Rancher's theme class; a green that reads on white is mud on charcoal. */
+:global(.theme-dark) .pr-tokens,
 :global(.theme-dark) .pr-review {
   --pr-code-string:  #9ad9a2;
   --pr-code-number:  #f0b96b;

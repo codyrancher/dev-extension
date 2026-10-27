@@ -2993,7 +2993,23 @@ export default {
         :title="shownSection.title"
         @close="opened = ''"
       >
-        <div class="workspace-rail__section workspace-rail__section--opened">
+        <!--
+          `pr-tokens`, and it is not decoration.
+          
+          DevModal teleports its panel to `<body>`. Scoped styles travel with the nodes - the
+          `data-v` attributes are on them - but an inherited custom property does not: out there
+          this section has no `.pr-review` ancestor, which is where panel.scss declares every
+          `--pr-*`, so `var(--pr-border)`, `var(--pr-bg-2)`, `var(--pr-warning)` and the rest
+          resolved to nothing. A finding opened into this modal had no box around its comment and
+          no colour on its state, while the same finding in the rail had both - and the diff
+          looked right throughout, because CodeView brings its own styles and asks for no token.
+          
+          `pr-tokens` rather than `pr-review`: the latter is also the panel's layout, and its
+          `overflow: hidden` would clip the thing that has to scroll. WorkspaceReview and
+          WorkspacePr carry `pr-review` on their own roots, which is why they kept their colours
+          inside the same modal and this section was the one view that did not.
+        -->
+        <div class="workspace-rail__section workspace-rail__section--opened pr-tokens">
           <!--
             The "as one diff" link, on its own row above the list it is about.
           -->
@@ -3210,18 +3226,19 @@ export default {
                     class="workspace-rail__tag"
                   >{{ c.thread.length }} messages</span>
                   <!--
-                    A local finding you have marked good reads as approved, in green, here and in
-                    the pager - not "waiting on you", which is only for one you have not been
-                    through yet. A submitted comment (answered) shows neither; its state is its own.
+                    Marked good says so; not-yet-gone-through says nothing here.
+                    
+                    "waiting on you" used to sit in this header, between the file's name and the
+                    file's contents, on every finding that had not been dealt with - which at the
+                    top of a pass is all of them. A label that is on everything distinguishes
+                    nothing, and this one interrupted the one thing the header is for, which is
+                    saying which line is being talked about. The state is the comment's own
+                    colour now, and the pager's.
                   -->
                   <span
                     v-if="!c.answered && c.local && c.status === 'approved'"
                     class="workspace-rail__tag workspace-rail__tag--approved"
                   >approved</span>
-                  <span
-                    v-else-if="!c.answered"
-                    class="workspace-rail__tag workspace-rail__tag--open"
-                  >{{ status.kind === 'review' && shown === 'response' ? 'no reply from the developer' : 'waiting on you' }}</span>
                   <a
                     v-if="c.url"
                     :href="c.url"
@@ -3266,7 +3283,19 @@ export default {
                     v-for="(t, k) in c.thread"
                     :key="k"
                     class="comment"
-                    :class="[t.author ? 'workspace-rail__msg--author' : 'gh-comment', { 'workspace-rail__msg--flag': t.isNew || (!c.answered && k === c.thread.length - 1) }]"
+                    :class="[
+                      /*
+                       * A finding of yours wears its verdict on its left edge - green once it
+                       * is marked good, amber until then - which is the colour panel.scss has
+                       * carried as `.local-comment.pending|.approved` all along and nothing in
+                       * the rail ever asked for. It is what makes a pass of seven readable at
+                       * a glance, and it replaces the label that used to say it in words.
+                       */
+                      c.local ? ['local-comment', c.status === 'approved' ? 'approved' : 'pending'] : (t.author ? 'workspace-rail__msg--author' : 'gh-comment'),
+                      // Not on a local finding: the edge above already says where it stands,
+                      // and two borders arguing about one comment is how neither gets read.
+                      { 'workspace-rail__msg--flag': !c.local && (t.isNew || (!c.answered && k === c.thread.length - 1)) },
+                    ]"
                   >
                     <div class="comment-head">
                       <span class="workspace-rail__avatar">{{ (t.who || '?').slice(0, 1).toUpperCase() }}</span>
@@ -4794,7 +4823,8 @@ export default {
     background:    var(--disabled-bg);
     color:         var(--body-text);
 
-    &--open { background: var(--pr-warning-fill); color: var(--pr-warning); }
+    // No `--open`: the tag that set it was "waiting on you", which is gone. The pager's own
+    // `--open` below is a different rule on a different element and stays.
     &--approved { background: var(--pr-success-fill); color: var(--pr-success); }
     &--new { background: var(--pr-accent-fill); color: var(--pr-accent); }
   }
