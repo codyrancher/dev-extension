@@ -4063,8 +4063,21 @@ export default {
       border-bottom-right-radius: 0;
     }
 
+    /*
+     * The caret is a caret, not a second button.
+     *
+     * Rancher's buttons carry a `min-width`, and the pair came out as two equal halves reading
+     * "Ask for changes" and nothing - which says the choice is between the verdict and the
+     * caret. Width stated outright, because `padding: 0` alone leaves the minimum standing.
+     */
     :deep(.split-btn__more) {
-      padding:                   0 var(--dev-space-3);
+      flex:                      0 0 auto;
+      width:                     26px;
+      min-width:                 0;
+      padding:                   0;
+      // Over the main half's right border, so the pair reads as one control with a divider
+      // rather than as two boxes that happen to touch.
+      margin-left:               -1px;
       border-top-left-radius:    0;
       border-bottom-left-radius: 0;
       font-size:                 10px;
