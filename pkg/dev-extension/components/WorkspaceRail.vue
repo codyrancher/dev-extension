@@ -3211,42 +3211,46 @@ export default {
                 :class="{ 'workspace-rail__thread-card--asked': flash === `finding-${ c.id }` }"
                 :data-ask="`finding-${ c.id }`"
               >
-                <header class="workspace-rail__comment-head">
-                  <button
-                    type="button"
-                    class="workspace-rail__row-btn"
-                    :title="(openComments[c.id] ?? !c.answered) ? 'Hide the code' : 'Show the code it is on'"
-                    @click="toggleComment(c)"
-                  ><i
-                    class="icon"
-                    :class="(openComments[c.id] ?? !c.answered) ? 'icon-chevron-down' : 'icon-chevron-right'"
-                  /><code>{{ c.where }}</code></button>
-                  <span
-                    v-if="c.thread.length > 1"
-                    class="workspace-rail__tag"
-                  >{{ c.thread.length }} messages</span>
-                  <!--
-                    Marked good says so; not-yet-gone-through says nothing here.
-                    
-                    "waiting on you" used to sit in this header, between the file's name and the
-                    file's contents, on every finding that had not been dealt with - which at the
-                    top of a pass is all of them. A label that is on everything distinguishes
-                    nothing, and this one interrupted the one thing the header is for, which is
-                    saying which line is being talked about. The state is the comment's own
-                    colour now, and the pager's.
-                  -->
-                  <span
-                    v-if="!c.answered && c.local && c.status === 'approved'"
-                    class="workspace-rail__tag workspace-rail__tag--approved"
-                  >approved</span>
-                  <a
-                    v-if="c.url"
-                    :href="c.url"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="workspace-rail__when"
-                  >on GitHub</a>
-                </header>
+                <!--
+                  The name and the file are one box.
+                  
+                  They were two: a bordered pill holding the path, the card's 10px gap, then the
+                  bordered block of code - with a status label in the gap, so the one thing that
+                  says WHICH LINES these are floated above them unattached. Wrapped together
+                  here, the header is drawn as the block's own title bar and the gap belongs
+                  between the file and the comment under it, where there is a change of subject.
+                  
+                  No status in here at all now. "waiting on you" was on every finding that had
+                  not been dealt with, which at the top of a pass is all of them, and "approved"
+                  took its place in the same spot. A finding's state is its comment's left edge
+                  and its number in the pager; the header says where the code is.
+                -->
+                <div
+                  class="workspace-rail__finding"
+                  :class="{ 'workspace-rail__finding--open': openComments[c.id] ?? !c.answered }"
+                >
+                  <header class="workspace-rail__comment-head">
+                    <button
+                      type="button"
+                      class="workspace-rail__row-btn"
+                      :title="(openComments[c.id] ?? !c.answered) ? 'Hide the code' : 'Show the code it is on'"
+                      @click="toggleComment(c)"
+                    ><i
+                      class="icon"
+                      :class="(openComments[c.id] ?? !c.answered) ? 'icon-chevron-down' : 'icon-chevron-right'"
+                    /><code>{{ c.where }}</code></button>
+                    <span
+                      v-if="c.thread.length > 1"
+                      class="workspace-rail__tag"
+                    >{{ c.thread.length }} messages</span>
+                    <a
+                      v-if="c.url"
+                      :href="c.url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="workspace-rail__when"
+                    >on GitHub</a>
+                  </header>
                 <div
                   v-if="openComments[c.id] ?? !c.answered"
                   class="prm-file"
@@ -3272,6 +3276,7 @@ export default {
                     v-else
                     class="workspace-rail__empty"
                   >{{ c.noPatch ? 'The diff is too large for GitHub to send; open it there.' : c.path ? 'The line is not in the PR\'s diff any more.' : 'A comment on the PR as a whole.' }}</p>
+                </div>
                 </div>
                 <div class="workspace-rail__thread">
                   <!--
@@ -4836,9 +4841,10 @@ export default {
     background:    var(--disabled-bg);
     color:         var(--body-text);
 
-    // No `--open`: the tag that set it was "waiting on you", which is gone. The pager's own
-    // `--open` below is a different rule on a different element and stays.
-    &--approved { background: var(--pr-success-fill); color: var(--pr-success); }
+    // Only `--new` now. `--open` went with "waiting on you" and `--approved` with the
+    // "approved" chip beside it: a finding's state is its comment's left edge and its number
+    // in the pager, neither of which is in the middle of the file it is about. The pager's own
+    // `--open`/`--approved` are different rules on a different element and stay.
     &--new { background: var(--pr-accent-fill); color: var(--pr-accent); }
   }
 
@@ -4966,6 +4972,48 @@ export default {
       border:        1px solid var(--pr-border);
       border-radius: var(--dev-r-xs);
       background:    var(--pr-bg);
+    }
+  }
+
+  /*
+   * A finding's name and the lines it is about, as one box.
+   *
+   * The wrapper exists for the gap: the card lays its rows out with one, which is right between
+   * the file and the comment about it and wrong between a file's name and the file. Inside this
+   * there is no gap at all, so the header sits on top of the block and the two borders meet.
+   */
+  &__finding {
+    display:        flex;
+    flex-direction: column;
+  }
+
+  /*
+   * Only while the code is showing. Collapsed, the header is a row on its own again and a bar
+   * with a flat bottom edge and nothing under it reads as something that failed to load.
+   */
+  &__finding--open {
+    .workspace-rail__comment-head {
+      padding:       var(--dev-space-2) var(--dev-space-4);
+      border:        1px solid var(--pr-border);
+      border-bottom: 0;
+      border-radius: var(--r-sm) var(--r-sm) 0 0;
+      background:    var(--pr-bg);
+
+      /*
+       * The path is the bar's title, so it stops being a pill of its own: a bordered chip
+       * inside a bordered bar is two boxes drawn around one string.
+       */
+      code {
+        padding:    0;
+        border:     0;
+        background: transparent;
+      }
+    }
+
+    .prm-file {
+      border-top:              0;
+      border-top-left-radius:  0;
+      border-top-right-radius: 0;
     }
   }
 
