@@ -117,8 +117,35 @@ function isTurnEnd(entry) {
   return isInterruptEntry(entry);
 }
 
+/**
+ * The conversation so far, folded and handed back to the model.
+ *
+ * A compact writes it into the transcript as a plain `user` line - not meta, real text, no
+ * tool results - so every test isPromptEntry makes says it is somebody speaking.
+ */
+function isCompactSummary(entry) {
+  return entry.isCompactSummary === true ||
+    /^This session is being continued from a previous conversation/.test(textOf(entry));
+}
+
+/**
+ * A line that starts a turn.
+ *
+ * NOT a compact's summary, and that omission is what left a finished conversation reading
+ * "Working for 104h 45m". A compact lands AFTER the turn that triggered it has ended, so its
+ * summary became the newest turn start with no end after it and `lastStart > lastEnd` stayed
+ * true for ever. Measured on six live transcripts: in every one, the summary sits after the
+ * last `turn_duration`, and `deriveState` on one of them - a workspace deleted days ago -
+ * answers `working`.
+ *
+ * A `<task-notification>` and a `<system-reminder>` DO start one: claude picks either up and
+ * works. So this is not `!isCliPrompt`, which covers all three; only the summary is excluded,
+ * because only the summary is the conversation being handed back rather than something new
+ * arriving in it.
+ */
 function isTurnStart(entry) {
-  return isPromptEntry(entry) || (entry.type === 'queue-operation' && entry.operation === 'dequeue');
+  return (isPromptEntry(entry) && !isCompactSummary(entry)) ||
+    (entry.type === 'queue-operation' && entry.operation === 'dequeue');
 }
 
 /**
@@ -628,11 +655,7 @@ export function promptKey(text) {
  * the message being delivered.
  */
 function isCliPrompt(entry) {
-  const text = textOf(entry);
-
-  return entry.isCompactSummary === true ||
-    /^\s*<(task-notification|system-reminder)>/.test(text) ||
-    /^This session is being continued from a previous conversation/.test(text);
+  return isCompactSummary(entry) || /^\s*<(task-notification|system-reminder)>/.test(textOf(entry));
 }
 
 /**

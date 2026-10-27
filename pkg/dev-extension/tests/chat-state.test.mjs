@@ -16,7 +16,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, promptTextOf, duration, tokens, ago, promptKey, reconcilePending
+  loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, promptTextOf, duration, tokens, ago, promptKey, reconcilePending,
+  parseEntries, deriveState
 } from '../chat-state.mjs';
 
 // ── The login flow: the one state only the pane shows ──────────────────────────────────────
@@ -198,4 +199,70 @@ test('ago says how long ago in the unit worth reading, and nothing for no date',
   assert.equal(ago(new Date(now - 90 * 86400_000).toISOString()), '3mo ago');
   assert.equal(ago(''), '', 'no date is no words, not "NaN ago"');
   assert.equal(ago('not a date'), '');
+});
+
+// ── A compact is not a turn ─────────────────────────────────────────────────────────────────
+//
+// The symptom: a conversation that finished days ago reading "Working for 104h 45m". A compact
+// writes the folded conversation back as a plain `user` line, so every test isPromptEntry makes
+// says somebody is speaking - and it lands AFTER the turn that triggered it has ended, so it
+// became the newest turn start with no end after it. Measured on six live transcripts: the
+// summary sits after the last `turn_duration` in every one.
+
+const turnLines = (...extra) => [
+  { type: 'user', timestamp: '2026-10-20T10:00:00Z', message: { content: 'do the thing' } },
+  { type: 'assistant', timestamp: '2026-10-20T10:00:05Z', message: { content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' } },
+  { type: 'system', subtype: 'turn_duration', timestamp: '2026-10-20T10:00:06Z' },
+  ...extra,
+].map((o) => JSON.stringify(o));
+
+test('a compact summary does not leave a finished conversation working', () => {
+  const lines = turnLines({
+    type: 'user', timestamp: '2026-10-20T10:00:09Z', isCompactSummary: true,
+    message: { content: 'This session is being continued from a previous conversation that ran out of context.' },
+  });
+  const state = deriveState({
+    entries: parseEntries(lines), paneText: '', hook: null, alive: true, attached: true,
+  });
+
+  assert.equal(state.phase, 'idle');
+  assert.equal(state.status, 'Ready');
+});
+
+test('and neither does one the CLI did not flag, which is how it reads in the file', () => {
+  // `isCompactSummary` is not always set; the sentence is the other half of the test.
+  const lines = turnLines({
+    type:    'user',
+    timestamp: '2026-10-20T10:00:09Z',
+    message: { content: [{ type: 'text', text: 'This session is being continued from a previous conversation that ran out of context. The summary below covers...' }] },
+  });
+
+  assert.equal(deriveState({
+    entries: parseEntries(lines), paneText: '', hook: null, alive: true, attached: true,
+  }).phase, 'idle');
+});
+
+test('a background task finishing DOES start a turn - claude picks it up and works', () => {
+  // The narrowing is to the summary alone. A task-notification and a system-reminder are the
+  // other two lines isCliPrompt covers, and both really do start a turn.
+  const lines = turnLines({
+    type: 'user', timestamp: '2026-10-20T10:00:09Z', message: { content: '<task-notification><summary>Background command "yarn test" completed</summary><status>completed</status></task-notification>' },
+  });
+
+  assert.equal(deriveState({
+    entries: parseEntries(lines), paneText: '', hook: null, alive: true, attached: true,
+  }).phase, 'working');
+});
+
+test('a real prompt after a compact still starts a turn', () => {
+  const lines = turnLines(
+    {
+      type: 'user', timestamp: '2026-10-20T10:00:09Z', isCompactSummary: true, message: { content: 'This session is being continued from a previous conversation that ran out of context.' },
+    },
+    { type: 'user', timestamp: '2026-10-20T10:01:00Z', message: { content: 'carry on then' } },
+  );
+
+  assert.equal(deriveState({
+    entries: parseEntries(lines), paneText: '', hook: null, alive: true, attached: true,
+  }).phase, 'working');
 });
