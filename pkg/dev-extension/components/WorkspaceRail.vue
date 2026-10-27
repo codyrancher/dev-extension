@@ -2261,7 +2261,11 @@ export default {
         }
         await this.loadConversations();
         this.currentConversation = newest.id;
-        this.notice = alive
+        // `running`, which is the name of the thing twenty lines up. This read `alive`, which is
+        // not defined anywhere in this component - so every press that reused a conversation
+        // threw `alive is not defined` AFTER the prompt had already been sent, and the rail
+        // showed a red error over work that had in fact started.
+        this.notice = running
           ? `Sent to ${ newest.title || 'the conversation' }.`
           : `Sent to ${ newest.title || 'the conversation' }; it had stopped, so it is starting again to read it.`;
 

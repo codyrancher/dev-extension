@@ -50,7 +50,12 @@ import { readPrefs } from '../prefs';
 import SIcon from './ui/SIcon.vue';
 import SMenu from './ui/SMenu.vue';
 import {
-  panelSessions, startAgentSession, renameAgentSession, endAgentSession,
+  // `agentSessions` as well as `panelSessions`: `pollStates` has always called it and it has
+  // never been imported, so every tick threw `agentSessions is not defined` into a `catch`
+  // that returns quietly - "a missed poll is a dot a few seconds stale" - and the strip's
+  // dots have only ever moved on a full refresh. The unfiltered list is right for a state
+  // lookup by id: the panel's own sessions are a subset, and the rest are never looked up.
+  agentSessions, panelSessions, startAgentSession, renameAgentSession, endAgentSession,
 } from '../agent';
 // The label an unnamed tab gets. An id may now carry where it came from, so "everything after
 // `agent-`" is no longer the ordinal and would have put the whole id on the tab.
