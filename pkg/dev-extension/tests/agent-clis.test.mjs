@@ -21,7 +21,9 @@ const AGY = [
   '{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-19T17:00:05Z","content":"reproduce the drawer bug"}',
   '{"step_index":2,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2026-10-19T17:00:09Z","content":"Looking at the drawer component."}',
   '{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-19T17:00:12Z","input_tokens":900,"output_tokens":40,"tool_calls":[{"name":"run_command","args":{"command":"yarn test drawer"}}]}',
-  '{"step_index":4,"source":"MODEL","type":"GENERIC","status":"RUNNING","created_at":"2026-10-19T17:00:20Z","content":"Running the suite."}',
+  // What agy really writes for a tool's answer, taken from a live transcript: a GENERIC step
+  // of its own, source MODEL like the call before it, carrying the run's envelope.
+  '{"step_index":4,"source":"MODEL","type":"GENERIC","status":"RUNNING","created_at":"2026-10-19T17:00:20Z","content":"Created At: 2026-10-19T17:00:20Z\\nCommand exited with code 0.\\n\\nCommand output:\\n12 passing\\n"}',
 ];
 
 const CLAUDE = [
@@ -42,8 +44,10 @@ test('a transcript says what wrote it', () => {
 test('agy steps become the shape the chat view already reads', () => {
   const messages = parseAgyTranscript(AGY);
 
-  // The banner is the CLI talking to itself, not part of the conversation.
-  assert.deepEqual(messages.map((m) => m.role), ['user', 'assistant', 'assistant', 'assistant']);
+  // The banner is the CLI talking to itself, not part of the conversation - and the step
+  // carrying a tool's answer is the tool talking, so it is folded into the call rather than
+  // being a fourth message of the agent's. See parseAgyTranscript.
+  assert.deepEqual(messages.map((m) => m.role), ['user', 'assistant', 'assistant']);
   assert.equal(messages[0].text, 'reproduce the drawer bug');
   assert.equal(messages[0].at, '2026-10-19T17:00:05Z');
   // Every message carries the fields the view indexes, even when empty.
@@ -59,13 +63,22 @@ test('a tool call survives without the id agy does not give it', () => {
   assert.deepEqual(call.input, { command: 'yarn test drawer' });
   // Made from where the call is, so it is stable across re-reads of the same transcript.
   assert.equal(call.id, '3-0');
-  // And no result, because agy records none against the call - the view must not invent one.
-  assert.equal(call.result, undefined);
+  /*
+   * And the result, which agy records as the NEXT step rather than against the call.
+   *
+   * This used to assert `undefined`, on the belief that agy recorded no result at all - which
+   * a live transcript disproves: every call is followed by a GENERIC step carrying its
+   * envelope. Believing otherwise is what put those envelopes in the conversation as things
+   * the agent had said.
+   */
+  assert.match(call.result, /12 passing/);
 });
 
 test('a step still happening says so', () => {
   const messages = parseAgyTranscript(AGY);
 
+  // The RUNNING step is the tool's answer, folded into the call on the message before it - so
+  // the turn that owns the call is what reports as running, which is the turn a reader sees.
   assert.equal(messages.at(-1).running, true);
   assert.equal(messages[1].running, false);
 });
@@ -156,4 +169,55 @@ test('agy is working while a step is RUNNING, and idle once it is done', () => {
 test('agyPhase says nothing about an empty transcript, so nothing is overridden', () => {
   assert.equal(agyPhase([]), '');
   assert.equal(agyPhase(null), '');
+});
+
+// ── agy writes a tool's answer as a step of its own ─────────────────────────────────────────
+//
+// Taken from a real transcript (brain/203a349c…/logs/transcript.jsonl): the turn is a pair,
+// a PLANNER_RESPONSE carrying the call and a GENERIC carrying what came back, both
+// `source: MODEL`. Pushed as a message, the second one opened every Antigravity conversation
+// with a wall of "Created At: … Command exited with code 0. Command output: …" attributed to
+// the agent.
+
+test('a result step is folded into the call it answers, not shown as the agent talking', () => {
+  const lines = [
+    {
+      step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-10-27T12:55:52Z', content: null,
+      tool_calls: [{ name: 'run_command', args: { command: 'which gh' } }],
+    },
+    {
+      step_index: 2, source: 'MODEL', type: 'GENERIC', status: 'DONE', created_at: '2026-10-27T12:55:53Z',
+      content: 'Created At: 2026-10-27T12:55:52Z\nCompleted At: 2026-10-27T12:55:53Z\nCommand exited with code 0.\n\nCommand output:\n/workspace/.home/.local/bin/gh\n',
+    },
+  ].map((o) => JSON.stringify(o));
+  const messages = parseAgyTranscript(lines);
+
+  assert.equal(messages.length, 1, 'one turn, not a turn and a blurb');
+  assert.equal(messages[0].tools.length, 1);
+  assert.match(messages[0].tools[0].result, /\/workspace\/\.home\/\.local\/bin\/gh/, 'the output is under the call');
+  assert.equal(messages[0].tools[0].resultIsError, false, 'exit 0 is not a failure');
+});
+
+test('a non-zero exit marks the call failed, so the collapsed row can say so', () => {
+  const lines = [
+    {
+      step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-10-27T12:55:52Z', content: null,
+      tool_calls: [{ name: 'run_command', args: { command: 'false' } }],
+    },
+    {
+      step_index: 2, source: 'MODEL', type: 'GENERIC', status: 'DONE', created_at: '2026-10-27T12:55:53Z',
+      content: 'Created At: 2026-10-27T12:55:52Z\nCommand exited with code 1.\n\nCommand output:\n',
+    },
+  ].map((o) => JSON.stringify(o));
+
+  assert.equal(parseAgyTranscript(lines)[0].tools[0].resultIsError, true);
+});
+
+test('and a model step with no call waiting is still a message', () => {
+  // The last step of a turn is the answer itself, and nothing is pending by then.
+  const lines = [JSON.stringify({
+    step_index: 9, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-10-27T12:56:30Z', content: 'I found 20 candidates.',
+  })];
+
+  assert.equal(parseAgyTranscript(lines)[0].text, 'I found 20 candidates.');
 });

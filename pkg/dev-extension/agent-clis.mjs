@@ -159,6 +159,8 @@ function roleOfStep(entry) {
  */
 export function parseAgyTranscript(lines) {
   const messages = [];
+  /** The call still waiting for its answer, so a result step can be folded into it. */
+  let pending = null;
 
   for (const line of lines || []) {
     let entry;
@@ -171,6 +173,41 @@ export function parseAgyTranscript(lines) {
     const role = entry && roleOfStep(entry);
 
     if (!role) {
+      continue;
+    }
+
+    /*
+     * What a tool said, which is not something the model said.
+     *
+     * agy writes a turn as a pair of steps: a `PLANNER_RESPONSE` carrying the `tool_calls` and
+     * no content, then a `GENERIC` carrying the result and no calls. Both are `source: MODEL`,
+     * so the second was being pushed as an assistant message - which is why an Antigravity
+     * conversation opened with a wall of
+     *
+     *     Created At: 2026-10-27T12:55:52Z
+     *     Completed At: 2026-10-27T12:55:53Z
+     *     Command exited with code 0.
+     *     Command output: ...
+     *
+     * attributed to the agent, one blurb per command it ran before it said anything.
+     *
+     * Folded into the call it answers instead, where claude's `tool_result` blocks already go,
+     * so it reads as a RUN row you can open rather than as the agent talking. Matched on there
+     * being a call waiting rather than on the type name alone: `GENERIC` is vague enough that
+     * something else may wear it one day, and anything with no call to answer is still shown.
+     */
+    if (role === 'assistant' && pending && !(entry.tool_calls || []).length && typeof entry.content === 'string' && entry.content) {
+      pending.result = entry.content;
+      // agy puts the exit status in the envelope; anything but 0 is the tool having failed,
+      // which is the one thing a collapsed row should be able to say without being opened.
+      pending.resultIsError = /Command exited with code (?!0\b)\d+/.test(entry.content);
+      // A tool that is still running means the turn is still going, and the step carrying the
+      // answer is the only one that knows: the message holding the call was written before the
+      // command started and has said DONE ever since.
+      if (entry.status === 'RUNNING' && messages.length) {
+        messages[messages.length - 1].running = true;
+      }
+      pending = null;
       continue;
     }
     const raw = typeof entry.content === 'string' ? entry.content : '';
@@ -186,6 +223,8 @@ export function parseAgyTranscript(lines) {
     if (!text && !tools.length) {
       continue;
     }
+    // The last call of this step is what the next step answers.
+    pending = tools.length ? tools[tools.length - 1] : null;
     messages.push({
       key:      `agy-${ entry.step_index }`,
       role,
