@@ -433,15 +433,23 @@ export default {
       color="warning"
       class="dev-settings__install"
     >
-      <p>
-        Some of what this extension installs could not be created on this cluster. Workspaces and
-        the queue need these; the most likely reason is that your account cannot create them.
-      </p>
-      <ul>
-        <li v-for="problem in installTrouble" :key="problem.what">
-          <code>{{ problem.what }}</code> &mdash; {{ problem.why }}
-        </li>
-      </ul>
+      <!--
+        One child, because `.banner__content` is a flex ROW: a paragraph and a list handed to it
+        side by side are laid out as two columns, which is why the reason for each failure was
+        drawn to the right of the sentence introducing it instead of under it.
+      -->
+      <div class="dev-settings__install-body">
+        <p>
+          Some of what this extension installs could not be created on this cluster. Workspaces
+          and the queue need these; the most likely reason is that your account cannot create
+          them.
+        </p>
+        <ul>
+          <li v-for="problem in installTrouble" :key="problem.what">
+            <code>{{ problem.what }}</code> &mdash; {{ problem.why }}
+          </li>
+        </ul>
+      </div>
     </Banner>
 
     <!-- Skills lives here now rather than as a rail shortcut of its own: it is something you set
@@ -480,6 +488,7 @@ export default {
       v-for="section in sections"
       :key="section.id"
       class="dev-settings__card"
+      :class="{ 'dev-settings__card--wide': open[section.id] }"
     >
       <div class="dev-settings__card-head">
         <BrandImage
@@ -635,7 +644,7 @@ export default {
       chosen ones into each instance at provision time. Changing this does not touch instances
       that already exist.
     -->
-    <section class="dev-settings__card">
+    <section class="dev-settings__card dev-settings__card--wide">
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-globe" />
         <div class="dev-settings__card-title">
@@ -689,7 +698,7 @@ export default {
       has Apps that are not for making workspaces from; the person says which, and the sidebar
       and the Create page show only those. A new App is shown until it is hidden.
     -->
-    <section class="dev-settings__card">
+    <section class="dev-settings__card dev-settings__card--wide">
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-apps" />
         <div class="dev-settings__card-title">
@@ -748,7 +757,7 @@ export default {
         </div>
       </div>
 
-      <div class="dev-settings__apps">
+      <div class="dev-settings__choices">
         <label
           v-for="choice in CLI_CHOICES"
           :key="choice.id"
@@ -823,7 +832,10 @@ export default {
       What the page has been doing. Last, and shut: it is the answer to "why is this empty?",
       which is a question somebody asks occasionally and nobody asks on the way past.
     -->
-    <section class="dev-settings__card">
+    <section
+      class="dev-settings__card"
+      :class="{ 'dev-settings__card--wide': showActivity }"
+    >
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-list-flat" />
         <div class="dev-settings__card-title">
@@ -888,26 +900,50 @@ export default {
 </template>
 
 <style lang="scss" scoped>
-  // One column, and everything on the page is that wide.
+  // Prose measure, and the narrowest a card may be before the page drops a column.
   //
-  // The page used to measure its prose in `ch` and its cards in pixels, so the paragraphs ran
-  // past the right edge of the cards under them and nothing on the page shared an edge with
-  // anything else. A column the page keeps to is most of what makes a settings page look
-  // deliberate: every card, every banner and every line of prose starts and ends in the same
-  // two places.
-  $col: 760px;
+  // The page used to be one 760px column whatever the window was: on anything wider than a
+  // laptop that is a strip of cards down the left and a third of the screen holding nothing,
+  // and the cards that hold a table - the credentials, the apps, the tokens when opened - were
+  // cramped inside it while the room they wanted sat unused beside them.
+  //
+  // Two numbers instead of one. `$card` is what a card needs to be worth reading, so the page
+  // fits as many columns as the window has room for and one column on a narrow one, with no
+  // breakpoint to pick. `$measure` is what a SENTENCE needs, which is a different question and
+  // the reason the old single column existed at all: prose set across 1500px is unreadable, so
+  // every paragraph keeps its own measure wherever its card ends up.
+  $card:    420px;
+  $measure: 74ch;
 
   .dev-settings {
-    padding:    var(--dev-inset);
-    overflow-y: auto;
+    display:       grid;
+    // `min(100%, …)` so the track never exceeds the viewport on a phone, where a fixed 420px
+    // minimum would push the grid wider than the screen and scroll the page sideways.
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, #{ $card }), 1fr));
+    align-content: start;
+    // Cards keep their own height: stretching a two-line card to match a tall one beside it is
+    // a box with a void in it, which is what a settings page looks like when nobody decided.
+    align-items:   start;
+    gap:           var(--dev-space-5);
+    padding:       var(--dev-inset);
+    overflow-y:    auto;
+  }
+
+  .dev-settings {
+    // The page's own head and its banners are about the page, not about one card, so they take
+    // the full row however many columns there are.
+    &__intro,
+    &__install,
+    &__skills,
+    .banner {
+      grid-column: 1 / -1;
+    }
 
     // Declared `block` on purpose: as a bare <header> this was laid out as a row by something
     // further up, which put the page's one line of prose beside the title instead of under it,
     // starting a long way right of the cards it describes.
     &__intro {
-      display:       block;
-      max-width:     $col;
-      margin-bottom: var(--dev-space-5);
+      display: block;
 
       h1 {
         margin-bottom: 0;
@@ -917,13 +953,17 @@ export default {
     // The page's own line under the title. Inside a card the prose is `__card-help`, which has
     // its own spacing; this one only ever sits under the h1.
     &__intro-sub {
-      max-width: $col;
+      max-width: $measure;
       margin:    var(--dev-space-2) 0 0 0;
       color:     var(--muted);
     }
 
-    .banner {
-      max-width: $col;
+    // The failures the install reports. A block, against `.banner__content`'s flex row.
+    &__install-body {
+      max-width: $measure;
+
+      p  { margin: 0; }
+      ul { margin: var(--dev-space-3) 0 0 0; padding-left: var(--dev-space-5); }
     }
 
     // ── A card ────────────────────────────────────────────────────────────────────────────────
@@ -931,12 +971,34 @@ export default {
     // The harness's shape: a mark, a name, a line about it, and a summary that opens it. A page
     // of forty fields is one nobody reads; a page of three cards saying "5 keys configured"
     // answers the usual question without being opened at all.
+    //
+    // A flex column with one gap, rather than a margin on each thing that can appear inside it.
+    // Those margins disagreed: the summary row set 10px above itself and a bare button set
+    // none, so "Browse the filesystem" sat against the sentence describing it while the
+    // identical control two cards up had room. One gap means every card has the same rhythm
+    // whatever it happens to contain, and a new row added later inherits it.
     &__card {
-      max-width:     $col;
-      margin-bottom: var(--dev-space-5);
-      padding:       var(--dev-space-5);
-      border:        1px solid var(--border);
-      border-radius: var(--r-sm);
+      display:        flex;
+      flex-direction: column;
+      gap:            var(--dev-space-4);
+      padding:        var(--dev-space-5);
+      border:         1px solid var(--border);
+      border-radius:  var(--r-sm);
+    }
+
+    // A card whose content is a table or a form rather than a sentence and a button: the two
+    // lists, a token card while its fields are open, the activity log while it is unrolled.
+    // Those want the window; the rest tile beside each other.
+    &__card--wide {
+      grid-column: 1 / -1;
+    }
+
+    // A control the card puts last - Save, or a button that opens something - sits apart from
+    // the rows above it rather than in the same rhythm as them.
+    &__card > .btn,
+    &__card > .dev-settings__actions {
+      align-self: flex-start;
+      margin-top: var(--dev-space-2);
     }
 
     &__card-head {
@@ -967,8 +1029,10 @@ export default {
       }
 
       p {
-        margin: var(--dev-space-1) 0 0 0;
-        color:  var(--muted);
+        // The card may be as wide as the window; a sentence may not.
+        max-width: $measure;
+        margin:    var(--dev-space-1) 0 0 0;
+        color:     var(--muted);
       }
     }
 
@@ -981,7 +1045,8 @@ export default {
     // The line inside an opened card, under the summary. Aligned with the fields below it
     // rather than indented to the title above, because what it describes is the fields.
     &__card-help {
-      margin:    var(--dev-space-4) 0 0 0;
+      max-width: $measure;
+      margin:    0;
       color:     var(--muted);
       font-size: 13px;
     }
@@ -994,7 +1059,7 @@ export default {
       gap:           var(--dev-space-3);
       width:         100%;
       min-height:    0;
-      margin:        var(--dev-space-4) 0 0 0;
+      margin:        0;
       padding:       var(--dev-space-3) var(--dev-space-4);
       border:        1px solid var(--border);
       border-radius: var(--r-sm);
@@ -1010,8 +1075,12 @@ export default {
     }
 
     // ── A group of fields inside a card ───────────────────────────────────────────────────────
+    // A group lays its own fields out the same way the card lays out its rows: one gap, so a
+    // field, a help line and a heading all sit the same distance apart wherever they appear.
     &__group {
-      margin-top: var(--dev-space-5);
+      display:        flex;
+      flex-direction: column;
+      gap:            var(--dev-space-4);
 
       // The rule sits above the heading rather than below it, so a group is visibly a division
       // of the card and not a label floating over the first field.
@@ -1031,7 +1100,8 @@ export default {
     }
 
     &__group-help {
-      margin:    var(--dev-space-2) 0 0 0;
+      max-width: $measure;
+      margin:    calc(-1 * var(--dev-space-3)) 0 0 0;
       color:     var(--muted);
       font-size: 12px;
     }
@@ -1045,7 +1115,7 @@ export default {
 
     // ── One field ─────────────────────────────────────────────────────────────────────────────
     &__field {
-      margin-top: var(--dev-space-4);
+      margin-top: 0;
     }
 
     // The key and its state on one line under the field, so the field itself is just a field
@@ -1061,8 +1131,8 @@ export default {
     }
 
     &__help {
-      max-width: 80ch;
-      margin:    var(--dev-space-2) 0 0 0;
+      max-width: $measure;
+      margin:    0;
       color:     var(--muted);
       font-size: 12px;
     }
@@ -1085,7 +1155,7 @@ export default {
     }
 
     &__none {
-      margin: var(--dev-space-4) 0 0 0;
+      margin: 0;
       color:  var(--muted);
     }
 
@@ -1124,12 +1194,37 @@ export default {
       grid-template-columns: max-content max-content 1fr max-content;
       align-items:           center;
       gap:                   var(--dev-space-2) var(--dev-space-4);
-      margin-top:            var(--dev-space-4);
+      margin-top:            0;
     }
 
     &__app {
       display: contents;
       cursor:  pointer;
+    }
+
+    /*
+     * The CLI choices, which are a list of the same shape with one column fewer.
+     *
+     * It was given `dev-settings__apps`, a class this stylesheet has never defined - so the
+     * rows had no grid to be cells of, and `display: contents` on each label dissolved it into
+     * nothing at all: the radio, the name and the sentence after it ran together as inline text
+     * with the second radio stranded at the right edge. Three columns because these rows have
+     * three cells; in a `display: contents` grid a row with the wrong number of cells does not
+     * wrap, it pushes the next row along by the difference.
+     */
+    &__choices {
+      display:               grid;
+      grid-template-columns: max-content max-content 1fr;
+      align-items:           baseline;
+      gap:                   var(--dev-space-3) var(--dev-space-4);
+      margin-top:            0;
+
+      // Two or three rows, not thirty: a description here has room to wrap rather than being
+      // cut off, which in a list this short reads as the sentence having been truncated.
+      .dev-settings__app-desc {
+        overflow:    visible;
+        white-space: normal;
+      }
     }
 
     &__app-name { font-weight: 600; }
@@ -1150,8 +1245,7 @@ export default {
       display:         flex;
       align-items:     center;
       gap:             var(--dev-space-4);
-      max-width:       $col;
-      margin:          var(--dev-space-5) 0;
+      margin:          0;
       padding:         var(--dev-space-4) var(--dev-space-5);
       border:          1px solid var(--border);
       border-radius:   var(--r-sm);
@@ -1169,13 +1263,13 @@ export default {
 
     &__actions {
       display:    flex;
-      margin-top: var(--dev-space-5);
+      margin-top: 0;
     }
   }
 
 .dev-settings__log {
   list-style: none;
-  margin:     var(--dev-space-3) 0 0;
+  margin:     0;
   padding:    0;
   max-height: 320px;
   overflow-y: auto;
