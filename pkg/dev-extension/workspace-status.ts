@@ -9,6 +9,7 @@
 import { prDetail, DEFAULT_REPO } from './reviews';
 import { jiraDetail, JIRA_BASE } from './jira';
 import { jiraStageOf } from './jira-steps.mjs';
+import { passRunning } from './review-pass.mjs';
 import { linkedPullRequest, branchPullRequest, issueBody } from './github';
 import { conversationStates, agentConversations, ConversationState } from './conversations';
 import { setWorkspaceRunning } from './api';
@@ -475,6 +476,30 @@ function reviewWork(d: Json, agent: AgentState): Work {
   }
   if (m.approved || iApproved) {
     return { label: '', tone: 'green', stage: 'approved' };
+  }
+  /*
+   * The agent is still making its pass.
+   *
+   * Above the findings, and that is the whole of the fix: a pass writes its findings one at a
+   * time over an hour, so the first one used to move the rail to Your pass and the step stayed
+   * there for the rest of the run - with the conversation directly beneath it saying eleven
+   * subagents, two still working. "There are findings" never meant "the agent has finished
+   * finding things".
+   *
+   * What says so is the agent's own report rather than a guess about it - see review-pass.mjs,
+   * which has the reasoning and the one thing the busy/idle bucket cannot carry alone.
+   *
+   * Hard, not soft: a stage already latched on the first finding is exactly what has to be
+   * corrected, and a soft signal by definition cannot undo a stored one.
+   */
+  if (passRunning(d.run, agent)) {
+    return {
+      label:    pending.length ? `${ pending.length } finding${ pending.length === 1 ? '' : 's' } so far` : '',
+      tone:     'working',
+      stage:    'agent',
+      reviewed: rounds > 0,
+      round:    rounds + 1,
+    };
   }
   if (submitted.length || reviews.length) {
     const submittedAt = Math.max(latest(submitted.map((c) => c.submitted_at)), latest(reviews.map((r: Json) => r.submittedAt)));

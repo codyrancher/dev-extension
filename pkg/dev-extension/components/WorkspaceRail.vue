@@ -759,8 +759,24 @@ export default {
           // This stage never had "Open the conversation" and no stage has it now, for the reason
           // that kept it off this one: the conversation is already on this page, in the strip
           // above this box, so a button to open what is open is one more thing to read past.
+          /*
+           * Whether the pass is still being made, which is not the same question as whether the
+           * main agent is writing this second.
+           *
+           * The stage is held here by the agent's own run record now (review-pass.mjs), so
+           * `idle` is the ordinary reading of a pass whose work is in subagents - and reading
+           * the agent state alone put "The agent stopped" over a review with seven passes
+           * running. `working` on the tone is what the run record set.
+           */
           return {
-            headline: s.agent === 'working' ? 'The agent is reviewing' : 'The agent stopped', detail: 'Its findings land on the left as it goes; go through them once it is done.', primary: { label: 'Full review', run: 'startReview' }, tools: [],
+            headline: s.agent === 'working' || s.tone === 'working' ? 'The agent is reviewing' : 'The agent stopped',
+            // What has landed so far, where the status counted it: a pass an hour in with six
+            // findings on the left said nothing here about either. Only the running pass's own
+            // label, which is that count - the other labels this stage carries ("not started")
+            // are not a number of anything.
+            detail:   s.tone === 'working' && s.label ? `${ s.label } on the left; go through them once it is done.` : 'Its findings land on the left as it goes; go through them once it is done.',
+            primary:  { label: 'Full review', run: 'startReview' },
+            tools:    [],
           };
         case 'findings':
           // A pass ends one of three ways, and all three are here: send the findings back as
