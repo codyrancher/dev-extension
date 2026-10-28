@@ -3096,7 +3096,7 @@ async function promptOverrides() {
     const out = {};
 
     for (const [key, value] of Object.entries(map.data || {})) {
-      const m = /^prompt__([a-z0-9-]+)$/.exec(key);
+      const m = /^prompt__([A-Za-z0-9-]+)$/.exec(key);
 
       if (m) {
         out[m[1]] = value;
@@ -5540,7 +5540,9 @@ const routes = [
   ['GET', /^\/agent-seed\/version$/, async() => ({ version: await seedVersion() })],
   ['GET', /^\/skills$/, async() => ({ skills: await listSkills(), version: await seedVersion() })],
   ['GET', /^\/prompts$/, async() => ({ prompts: await promptOverrides() })],
-  ['PUT', /^\/prompts\/([a-z0-9-]+)$/, async(m, url, body) => {
+  // A key is a skill's name or an action's method name, and the methods are camelCase
+  // (`reviewAgain`), so a lowercase-only pattern answered every action's save with a 404.
+  ['PUT', /^\/prompts\/([A-Za-z0-9-]+)$/, async(m, url, body) => {
     const template = String(body?.template || '');
 
     if (!template.trim()) {
@@ -5550,7 +5552,7 @@ const routes = [
 
     return { ok: true };
   }],
-  ['DELETE', /^\/prompts\/([a-z0-9-]+)$/, async(m) => {
+  ['DELETE', /^\/prompts\/([A-Za-z0-9-]+)$/, async(m) => {
     await writeConfigValue(`prompt__${ m[1] }`, null).catch(() => {});
 
     return { ok: true };
