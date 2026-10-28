@@ -45,15 +45,14 @@ export const FIX_STEPS: RailStep[] = ['assess', 'code', 'draft', 'review', 'feed
 export const REVIEW_STEPS: RailStep[] = ['agent', 'findings', 'submitted', 'response', 'approved'].map((k) => step(k as Stage));
 
 /*
- * A bug's, which is the one of these that is not a line.
+ * A bug's, which is one step.
  *
- * Waiting for Reporter is not a step between In Triage and Reproduced - it is where either of
- * them goes when the report is not enough to act on, and a bug can come back from it to either.
- * Drawn in the line anyway, after the two states it is reached from and before the one it is on
- * the way to, because the stepper is a line and the alternative is no stepper at all for a kind
- * of work that has five perfectly good positions.
+ * See BugStage: the five positions of the process are not a line, and they are not stages of
+ * work here either - they are where Jira has the ticket, which this step's own label carries
+ * (readWork puts the ticket's status in `stageLabel`). The job is the same at every one of them
+ * and so are the moves, so there is one stage with all of them available on it.
  */
-export const BUG_STEPS: RailStep[] = ['bug-new', 'bug-triage', 'bug-waiting', 'bug-prioritized', 'bug-done'].map((k) => step(k as Stage));
+export const BUG_STEPS: RailStep[] = [step('bug-review')];
 
 export function stepsFor(kind: WorkspaceStatus['kind']): RailStep[] {
   if (kind === 'review') {
@@ -1340,6 +1339,18 @@ export const ACTION_TEMPLATES: Record<string, string> = {
   answerFeedback: 'Use the my-pr-address-feedback skill to address the review feedback on {{ repo }} PR {{ pr }}: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.',
   reverify:       'Use the my-fix-demonstrate skill to re-verify the fix on this branch (PR {{ pr }}) and record a fresh video of the same walk.',
   reviewAgain:    'The developer pushed new commits and/or replied since the review of {{ repo }} PR {{ pr }} was submitted. Review what changed against the comments that were made: say which are addressed, which are not, and anything new the changes introduce. File through {{ context }}.',
+  /*
+   * The four steps of the bug-triage process, one template each.
+   *
+   * One per step rather than one with the skill substituted in, because these are the editable
+   * prompts: somebody who wants a reproduction to always try the customer's version first edits
+   * the reproduce one, and a shared template with a `{{ skill }}` hole in it would make that edit
+   * apply to reviewing a report as well.
+   */
+  jiraReview:    'Use the my-jira-bug-review skill on {{ bug }}. The ticket, its comments and its attachments: {{ bugContext }}/detail. File what you conclude for a person to approve with POST {{ bugContext }}/recommendation, and report where you are with POST {{ bugContext }}/run/review.',
+  jiraReproduce: 'Use the my-jira-bug-reproduce skill on {{ bug }}. The ticket, its comments and its attachments: {{ bugContext }}/detail. File what you conclude for a person to approve with POST {{ bugContext }}/recommendation, and report where you are with POST {{ bugContext }}/run/reproduce.',
+  jiraUnstick:   'Use the my-jira-bug-stuck skill on {{ bug }}. The ticket, its comments and its attachments: {{ bugContext }}/detail. File what you conclude for a person to approve with POST {{ bugContext }}/recommendation, and report where you are with POST {{ bugContext }}/run/unstick.',
+  jiraFix:       'Use the my-jira-bug-fix skill on {{ bug }}. The ticket, its comments and its attachments: {{ bugContext }}/detail. File what you conclude for a person to approve with POST {{ bugContext }}/recommendation, and report where you are with POST {{ bugContext }}/run/fix.',
 };
 
 /**
@@ -1493,6 +1504,8 @@ export function promptVars(status: WorkspaceStatus | null, issue: number, worksp
     { name: 'workspace', value: workspace, about: 'This workspace\'s name' },
     { name: 'stage', value: status?.stage || '', about: 'Where the work is on the rail' },
     { name: 'context', value: pr ? `$CLAUDE_HARNESS_API/my-work/pr/${ pr }` : '', about: 'Where the agent reads the PR from, inside the workspace' },
+    { name: 'bug', value: status?.bug || '', about: 'The Jira bug this workspace is for' },
+    { name: 'bugContext', value: status?.bug ? `$CLAUDE_HARNESS_API/my-work/jira/${ status.bug }` : '', about: 'Where the agent reads the ticket from, and files what it concludes' },
   ];
 }
 

@@ -21,87 +21,7 @@ import Row from '../design/Row.vue';
 import {
   jiraOptions, jiraProposal, jiraApply, dismissJiraRecommendation, JIRA_BASE
 } from '../jira';
-
-/**
- * The runbook's compound moves, each as the set of edits it is.
- *
- * Straight off the document: the wording of the comments is the wording it gives, because these
- * are what a customer reads and the team has already settled how they should sound. A preset
- * fills the form in; nothing is sent until Apply, so every part of it can still be changed or
- * taken out - which is the point of filling a form in rather than firing a button.
- */
-const PRESETS = [
-  {
-    id:      'to-triage',
-    label:   'Reviewed - move to In Triage',
-    when:    ['New'],
-    about:   'The report makes sense and an engineer should try to reproduce it. Sets the team, puts it on the triage owner and says so on the ticket.',
-    edits:   (o) => ({
-      toStatus: 'In Triage',
-      team:     o.defaults.team,
-      assignee: o.defaults.assignee,
-      comment:  'Thank you for the bug report, we\'ve moved this to "In Triage" and an engineer will be taking a look to try and reproduce the bug. We\'ll update you soon and let you know if further information is required',
-    }),
-  },
-  {
-    id:    'need-more',
-    label: 'Ask the reporter for more',
-    when:  ['New', 'In Triage'],
-    about: 'Not enough here to go on. Moves it to Waiting for Reporter - say what is needed in the comment.',
-    edits: () => ({
-      toStatus: 'Waiting for Reporter',
-      comment:  'Thanks for the report. Before we can look into this we need a little more from you:\n\n- ',
-    }),
-  },
-  {
-    id:    'reproduced',
-    label: 'Reproduced - move to To Prioritize',
-    when:  ['In Triage'],
-    about: 'It happens. Record anything extra you found in the comment; the GitHub issue is filed separately and carries nothing from this ticket.',
-    edits: () => ({
-      toStatus: 'To Prioritize',
-      comment:  'We have reproduced this and it is now with the team to prioritize.',
-    }),
-  },
-  {
-    id:    'cannot-reproduce',
-    label: 'Could not reproduce',
-    when:  ['In Triage'],
-    about: 'Moves it to Waiting for Reporter. Say what you tried and what would help - the version you used, the steps you followed.',
-    edits: () => ({
-      toStatus: 'Waiting for Reporter',
-      comment:  'We have tried to reproduce this and could not. So that we can try again, could you review the steps to reproduce and update them with any more detail that would help - in particular:\n\n- ',
-    }),
-  },
-  {
-    id:    'not-ours',
-    label: 'Not a UI bug',
-    when:  ['New', 'In Triage'],
-    about: 'Set Rancher Team to whoever it belongs to and take UI off it. The doc says to raise it with Gary or Neil if you are not sure which team that is.',
-    edits: () => ({ team: '' }),
-  },
-  {
-    id:    'duplicate',
-    label: 'Duplicate of another bug',
-    when:  ['New', 'In Triage'],
-    about: 'Links this to the bug it duplicates and rejects it, with the duplicate said plainly in the comment.',
-    edits: () => ({
-      resolution: 'Duplicate',
-      comment:    'This is a duplicate of ',
-      links:      [{ type: 'Duplicate', key: '' }],
-    }),
-  },
-  {
-    id:    'already-fixed',
-    label: 'Already fixed in a newer version',
-    when:  ['New', 'In Triage'],
-    about: 'Sets the fix version to the release it was fixed in and resolves it, saying which version that is.',
-    edits: () => ({
-      resolution: 'Fixed',
-      comment:    'This has already been fixed and the fix is in ',
-    }),
-  },
-];
+import { TRIAGE_MOVES } from '../jira-steps.mjs';
 
 /** A blank form: nothing ticked, nothing to send. */
 function blank() {
@@ -129,6 +49,18 @@ export default {
     bug: {
       type:     String,
       required: true,
+    },
+
+    /**
+     * A move to open with the form already filled in, by id.
+     *
+     * The rail offers the runbook's moves as buttons, and pressing one has to land on the form
+     * it fills in rather than on an empty one with the same move to find again. Applied once the
+     * ticket is read, because a preset's edits are built from what Jira will accept.
+     */
+    move: {
+      type:    String,
+      default: '',
     },
   },
 
@@ -159,7 +91,7 @@ export default {
     presets() {
       const legal = new Set((this.proposal?.transitions || []).map((t) => t.name));
 
-      return PRESETS
+      return TRIAGE_MOVES
         .filter((p) => p.when.includes(this.status))
         .filter((p) => {
           const to = p.edits(this.options || { defaults: {} }).toStatus;
@@ -188,6 +120,9 @@ export default {
 
   async mounted() {
     await this.load();
+    if (this.move) {
+      this.choose(this.move);
+    }
   },
 
   methods: {
@@ -242,7 +177,7 @@ export default {
 
         return;
       }
-      const preset = PRESETS.find((p) => p.id === id);
+      const preset = TRIAGE_MOVES.find((p) => p.id === id);
       const edits = preset ? preset.edits(this.options) : {};
 
       this.form = {

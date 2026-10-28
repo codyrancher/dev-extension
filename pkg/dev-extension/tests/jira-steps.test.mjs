@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  TRIAGE_ACTIONS, actionForStatus, actionForBug, jiraWorkspaceName, jiraStageOf, roleForStep
+  TRIAGE_ACTIONS, TRIAGE_MOVES, actionForStatus, actionForBug, jiraWorkspaceName, jiraStageOf, roleForStep
 } from '../jira-steps.mjs';
 
 test('each step names a skill, and no status belongs to two of them', () => {
@@ -93,4 +93,57 @@ test('every step maps to a role the nav has a group for', () => {
   for (const action of Object.keys(TRIAGE_ACTIONS)) {
     assert.ok(groups.includes(roleForStep(action)), `${ action } -> ${ roleForStep(action) }`);
   }
+});
+
+test('every move has an id, both labels, and edits that are a function', () => {
+  const ids = new Set();
+
+  for (const move of TRIAGE_MOVES) {
+    assert.ok(move.id, 'has an id');
+    assert.equal(ids.has(move.id), false, `${ move.id } is declared twice`);
+    ids.add(move.id);
+    assert.ok(move.label, `${ move.id } has a label`);
+    // The Actions row has one word of room; the panel has a sentence. Both, or the row shows
+    // "Reviewed - move to In Triage" as a button.
+    assert.ok(move.short, `${ move.id } has a short label`);
+    assert.ok(move.about, `${ move.id } says what it does`);
+    assert.equal(typeof move.edits, 'function', `${ move.id } builds its edits`);
+    assert.ok(move.when.length, `${ move.id } says which statuses it is offered at`);
+  }
+});
+
+test('a move is only offered at a status the process reaches it from', () => {
+  // Every `when` has to be a status this team's own queues hold, or the button never appears -
+  // which is the failure that cannot be seen by looking at the panel.
+  const known = new Set(Object.values(TRIAGE_ACTIONS).flatMap((a) => a.states));
+
+  for (const move of TRIAGE_MOVES) {
+    for (const status of move.when) {
+      assert.ok(known.has(status), `${ move.id } is offered at "${ status }", which no step covers`);
+    }
+  }
+});
+
+test("each move's edits are something to send", () => {
+  const options = { defaults: { team: 'UI', assignee: 'gak', assigneeLabel: 'gary korhonen' } };
+
+  for (const move of TRIAGE_MOVES) {
+    const edits = move.edits(options);
+    const something = edits.toStatus || edits.comment || edits.assignee || edits.resolution
+      || edits.links?.length || 'team' in edits;
+
+    assert.ok(something, `${ move.id } fills nothing in`);
+  }
+});
+
+test('reviewing a new bug is the four edits the document asks for together', () => {
+  // The one the document is explicit about, and the reason the panel composes an apply rather
+  // than offering four buttons: doing them separately is how three of four get done.
+  const edits = TRIAGE_MOVES.find((m) => m.id === 'to-triage')
+    .edits({ defaults: { team: 'UI', assignee: 'gak' } });
+
+  assert.equal(edits.toStatus, 'In Triage');
+  assert.equal(edits.team, 'UI');
+  assert.equal(edits.assignee, 'gak');
+  assert.match(edits.comment, /In Triage/);
 });

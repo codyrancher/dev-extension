@@ -35,8 +35,17 @@ export type Tone = 'green' | 'asking' | 'attention' | 'waiting' | 'working' | 'm
 /** Where the work is, on the rail: a fix's stages, or a review's. */
 export type FixStage = 'assess' | 'code' | 'draft' | 'review' | 'feedback' | 'merged';
 export type ReviewStage = 'agent' | 'findings' | 'submitted' | 'response' | 'approved';
-/** Where a Jira bug is in the team's triage process. See jiraStageOf. */
-export type BugStage = 'bug-new' | 'bug-triage' | 'bug-waiting' | 'bug-prioritized' | 'bug-done';
+/**
+ * A bug has one stage, and it is review.
+ *
+ * It had five - the positions `jiraStageOf` answers - and a stepper drawn through them, which
+ * was the wrong shape twice over. The positions are not a line: Waiting for Reporter is where
+ * either of the first two goes when the report is not enough, and a bug comes back from it to
+ * either. And they are not stages of work *here*: they are where Jira says the ticket is, which
+ * the stage's own name carries. What a person does at every one of them is the same job with
+ * the same moves available, so it is one stage with all of them on it.
+ */
+export type BugStage = 'bug-review';
 export type Stage = FixStage | ReviewStage | BugStage;
 
 /**
@@ -57,16 +66,11 @@ export const STAGE_LABELS: Record<Stage, string> = {
   response:  'Developer responded',
   approved:  'Approved',
   /*
-   * A bug's, in the words the process uses rather than Jira's.
-   *
-   * "To Prioritize" is what Jira calls the column; what happened to get it there is that
-   * somebody reproduced it, which is the thing a person reading the rail wants to know.
+   * A bug's one stage. The fallback only: `stageLabel` carries the ticket's own status, so the
+   * stepper and the nav both read "New" or "In Triage" rather than this word. It is what shows
+   * for a ticket that could not be read.
    */
-  'bug-new':         'New',
-  'bug-triage':      'In Triage',
-  'bug-waiting':     'Waiting for Reporter',
-  'bug-prioritized': 'Reproduced',
-  'bug-done':        'Done',
+  'bug-review': 'Review',
 };
 
 /**
@@ -602,8 +606,18 @@ function fixWork(d: Json | null, agent: AgentState, coded = false): Work {
 const STAGE_TONE: Record<Stage, Tone> = {
   assess: 'muted', code: 'muted', draft: 'attention', review: 'waiting', feedback: 'attention', merged: 'green',
   agent: 'muted', findings: 'attention', submitted: 'waiting', response: 'attention', approved: 'green',
-  // A new bug and one in triage are both yours, with a clock on each; one parked on the reporter
-  // is somebody else's turn, which is what `waiting` is for; past triage it has left this team.
+  // The fallback; the tone a bug is actually drawn with comes from its position (BUG_TONE).
+  'bug-review': 'attention',
+};
+
+/**
+ * The colour each position of the process is drawn in.
+ *
+ * Keyed on the position rather than the stage, because there is one stage and five positions. A
+ * new bug and one in triage are both yours, with a clock on each; one parked on the reporter is
+ * somebody else's turn, which is what `waiting` is for; past triage it has left this team.
+ */
+const BUG_TONE: Record<string, Tone> = {
   'bug-new': 'attention', 'bug-triage': 'attention', 'bug-waiting': 'waiting', 'bug-prioritized': 'green', 'bug-done': 'green',
 };
 
@@ -676,20 +690,24 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
         links, kind: 'jira', bug, title: bug,
       };
     }
-    const stage = jiraStageOf(ticket.status, ticket.resolution);
+    const position = jiraStageOf(ticket.status, ticket.resolution);
+    const overdue = ticket.checks.some((c) => c.field === 'age');
 
     return {
       links,
-      kind:       'jira',
+      kind:  'jira',
       bug,
-      pr:         0,
-      title:      ticket.summary || bug,
-      stage,
-      stageLabel: STAGE_LABELS[stage],
-      // What it needs, in the words the queue uses, so the row reads the same in the nav as it
-      // does in My Work. Overdue is the deadline the process puts on this status, not an opinion.
-      label:      ticket.checks.some((c) => c.field === 'age') ? `${ ticket.status.toLowerCase() }, past its deadline` : '',
-      tone:       ticket.checks.some((c) => c.field === 'age') ? 'attention' : (STAGE_TONE[stage] || 'muted'),
+      pr:    0,
+      title: ticket.summary || bug,
+      stage: 'bug-review',
+      // The ticket's own status, not the stage's word for it. There is one stage, so the stage's
+      // name is free to say where Jira has the bug - which is what the nav row and the stepper
+      // both want, and the one fact neither could carry when the stage was a position.
+      stageLabel: ticket.status,
+      // Overdue is the deadline the process puts on this status, not an opinion, so it is said
+      // rather than left to the colour.
+      label:      overdue ? 'past its deadline' : '',
+      tone:       overdue ? 'attention' : (BUG_TONE[position] || 'muted'),
     };
   }
   if (isFix(name)) {
