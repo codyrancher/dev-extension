@@ -17,7 +17,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, promptTextOf, duration, tokens, ago, promptKey, reconcilePending,
-  parseEntries, deriveState
+  parseEntries, deriveState, foldQueue, promptRecords, isCliText
 } from '../chat-state.mjs';
 
 // ── The login flow: the one state only the pane shows ──────────────────────────────────────
@@ -265,4 +265,69 @@ test('a real prompt after a compact still starts a turn', () => {
   assert.equal(deriveState({
     entries: parseEntries(lines), paneText: '', hook: null, alive: true, attached: true,
   }).phase, 'working');
+});
+
+
+// ── The CLI's input queue, and what the record of it does not say ───────────────────────────
+
+const op = (operation, content) => ({
+  type: 'queue-operation', operation, timestamp: '2026-10-28T19:00:00Z', ...(content === undefined ? {} : { content }),
+});
+
+const TASK = '<task-notification>\n<task-id>b00b4fa1u</task-id>\n</task-notification>';
+
+test('the queue is what was put in and not taken out again', () => {
+  assert.deepEqual(foldQueue([op('enqueue', 'one'), op('enqueue', 'two'), op('remove', 'one')]), ['two']);
+});
+
+test('a dequeue takes the front, which is what a turn starts on', () => {
+  assert.deepEqual(foldQueue([op('enqueue', 'one'), op('enqueue', 'two'), op('dequeue')]), ['two']);
+});
+
+test('popAll empties it', () => {
+  assert.deepEqual(foldQueue([op('enqueue', 'one'), op('enqueue', 'two'), op('popAll')]), []);
+});
+
+test('a remove naming something the queue does not hold takes nothing', () => {
+  /*
+   * Measured on pr-19720: the CLI wrote one `remove` for content it had never written an
+   * `enqueue` for. Taking the front instead put the head permanently off by one, and from then
+   * on every dequeue took a phantom and left the real item waiting for ever.
+   */
+  assert.deepEqual(foldQueue([op('enqueue', 'mine'), op('remove', 'never queued here')]), ['mine']);
+});
+
+test('an unplaceable remove does not go on to eat the next dequeue\'s answer', () => {
+  const queue = foldQueue([
+    op('enqueue', 'mine'), op('remove', 'never queued here'), op('enqueue', 'theirs'), op('dequeue'),
+  ]);
+
+  // 'mine' was started on. Before, the stray remove dropped it and the dequeue dropped 'theirs',
+  // leaving 'mine' - the one thing claude had already read - showing as queued.
+  assert.deepEqual(queue, ['theirs']);
+});
+
+// ── Whose line is it ────────────────────────────────────────────────────────────────────────
+
+test('a task notification and a system reminder are the CLI talking to itself', () => {
+  assert.equal(isCliText(TASK), true);
+  assert.equal(isCliText('<system-reminder>\nsomething\n</system-reminder>'), true);
+  assert.equal(isCliText('submit the review'), false);
+  assert.equal(isCliText(''), false);
+});
+
+test('a queued task notification is not a record of the person\'s prompt landing', () => {
+  // It would otherwise be claimed by order against a message that genuinely never arrived, and
+  // the view would stop saying the message had not arrived.
+  assert.deepEqual(promptRecords([], null, [TASK], 1000), []);
+  assert.deepEqual(promptRecords([], null, ['go on'], 1000), [{ key: promptKey('go on'), at: 1000 }]);
+});
+
+test('a message still in the queue is still unsent, whatever else the CLI queued beside it', () => {
+  const pending = [{ text: 'submit the review', sentAt: 900 }];
+  const left = reconcilePending(pending, {
+    entries: [], hook: null, queue: [TASK], now: 1000,
+  });
+
+  assert.equal(left.length, 1);
 });

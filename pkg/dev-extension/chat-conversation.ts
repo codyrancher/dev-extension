@@ -552,17 +552,29 @@ export function useConversation(source: () => ConversationSource) {
       return sub.value.messages;
     }
 
-    // Only on the main conversation: a message typed here goes to claude, never to one of the
-    // subagents whose transcript the tabs show.
-    // The CLI queues a background task's completion the same way; that row is a note.
+    /*
+     * Only on the main conversation: a message typed here goes to claude, never to one of the
+     * subagents whose transcript the tabs show.
+     *
+     * What is drawn is what the PERSON is waiting on claude to read. The CLI queues its own
+     * lines the same way - a background task finishing, a system reminder, a slash command -
+     * and those used to be drawn here too, as a note apiece. On a review with a dozen
+     * background agents reporting in that was the whole bottom of the log: a stack of
+     * "Background task completed: Monitor event…" cards pinned under the newest turn, which is
+     * the one thing a person opens this to read.
+     *
+     * They are not lost by being left out. Each one appears in the history where claude reads
+     * it, once, as the note it is - the path above this does that. And the fold these come from
+     * leaves phantoms behind (see foldQueue), so some of those cards were waiting on nothing at
+     * all and would never have gone away.
+     */
     const queued = (state.value.queue || []).map((raw: string, i: number) => {
       const text = unwrapPasted(raw);
-      const note = noteFrom(text);
 
-      return {
-        key: `queue-${ i }-${ text.slice(0, 24) }`, role: note !== null ? 'note' : 'user', text: note !== null ? note : text, tools: [], thinking: '', images: [], at: '', queued: true, inQueue: true,
+      return noteFrom(text) !== null ? null : {
+        key: `queue-${ i }-${ text.slice(0, 24) }`, role: 'user', text, tools: [], thinking: '', images: [], at: '', queued: true, inQueue: true,
       };
-    }).filter((m: any) => m.text);
+    }).filter((m: any) => m?.text);
 
     const extra = [...echoes.value, ...queued, ...pending.value];
 

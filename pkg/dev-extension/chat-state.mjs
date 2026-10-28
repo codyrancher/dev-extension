@@ -155,6 +155,20 @@ function isTurnStart(entry) {
  * turn on it; `remove` takes a named one out (absorbed into the running turn, or deleted);
  * `popAll` empties it. What is left is what is still waiting - and it is the CLI's list, not a
  * guess made from matching text, so a message shows as queued exactly as long as it is.
+ *
+ * It is not a complete ledger, though, and that is worth knowing before trusting the depth it
+ * reports. Replayed over a live review conversation (pr-19720, 105 operations), the CLI wrote
+ * one `remove` for content it had never written an `enqueue` for, and three `enqueue`s whose
+ * items left again with no operation of any kind. So the fold drifts, and the one thing it
+ * must not do is turn that drift into the deletion of something real: a `remove` the queue
+ * cannot place used to take the FRONT instead, which is how one unplaceable line at 18:48 put
+ * the head permanently off by one - from then on every `dequeue` took a phantom and left the
+ * item the CLI had actually started a turn on sitting in the list for ever.
+ *
+ * So an unplaceable `remove` does nothing now. The queue is whose-message-is-waiting, and the
+ * answer to "which one did this take out" being unknown is not a licence to take out another.
+ * What is left over by the drift is handled where it is read rather than here: the CLI's own
+ * lines are not messages, so neither `promptRecords` nor the chat's log counts them.
  */
 export function foldQueue(entries, sinceIndex = 0) {
   let queue = [];
@@ -173,10 +187,10 @@ export function foldQueue(entries, sinceIndex = 0) {
     case 'remove': {
       const at = queue.indexOf(content);
 
+      // Nothing when it names nothing here: see above. The CLI writes these, and the front is
+      // not a fair substitute for an item this fold never saw arrive.
       if (at >= 0) {
         queue.splice(at, 1);
-      } else {
-        queue.shift();
       }
       break;
     }
@@ -655,7 +669,23 @@ export function promptKey(text) {
  * the message being delivered.
  */
 function isCliPrompt(entry) {
-  return isCompactSummary(entry) || /^\s*<(task-notification|system-reminder)>/.test(textOf(entry));
+  return isCompactSummary(entry) || isCliText(textOf(entry));
+}
+
+/**
+ * The same question of a bare string: is this the CLI talking to itself?
+ *
+ * A background task finishing and a system reminder both reach claude as a user line, and the
+ * CLI queues them exactly as it queues something typed. They are not the person speaking, so
+ * they are not evidence that anything the person sent has landed, and the chat draws them as
+ * notes where claude reads them rather than as messages (chat.ts, noteFrom - which answers this
+ * same question more fully for the log, including slash commands and what they printed).
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isCliText(text) {
+  return /^\s*<(task-notification|system-reminder)>/.test(String(text || ''));
 }
 
 /**
@@ -696,9 +726,20 @@ export function promptRecords(entries, hook, queue = [], now = Date.now()) {
     records.push({ key: promptKey(hook.prompt), at: Date.parse(hook.at || '') || now });
   }
   records.sort((a, b) => a.at - b.at);
-  // Last, and timeless: what is in the queue is waiting right now, whenever it was typed.
+  /*
+   * Last, and timeless: what is in the queue is waiting right now, whenever it was typed.
+   *
+   * The CLI's own lines are skipped, for the reason the transcript's are (`isCliPrompt` above):
+   * a background task's completion is not a prompt of the person's that landed. It also matters
+   * that the fold leaves phantoms behind (see foldQueue) and these are what it leaves: a phantom
+   * here is a record with no message behind it, and the second matching pass below claims by
+   * ORDER rather than by text - so one would retire a message that genuinely never arrived and
+   * the view would stop saying so.
+   */
   for (const text of queue) {
-    records.push({ key: promptKey(text), at: now });
+    if (!isCliText(text)) {
+      records.push({ key: promptKey(text), at: now });
+    }
   }
 
   return records.filter((r) => r.key);
