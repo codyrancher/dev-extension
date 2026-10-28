@@ -353,15 +353,19 @@ export default {
     },
 
     /**
-     * Where the process has this bug, from the ticket's own status.
+     * Which position of the process this column is about.
      *
-     * Worked out here rather than carried on the status, because there is one stage and the
-     * status already carries what this is derived from: `stageLabel` is the ticket's status
-     * verbatim. A second field saying the same thing in other words is a second thing to keep
-     * in step.
+     * The step being SHOWN, not the one the ticket is at, so clicking a past node reads that
+     * step's sentence - the same thing `shown` does for a fix and a review. It falls back to
+     * deriving the position from the ticket's status for the moment before the first read
+     * lands, when there is no stage yet.
      */
     bugPosition() {
-      return this.bug ? jiraStageOf(this.status?.stageLabel || '', null) : '';
+      if (!this.bug) {
+        return '';
+      }
+
+      return /^bug-/.test(this.shown) ? this.shown : jiraStageOf(this.status?.stageLabel || '', null);
     },
 
     /** The step of the process this position is waiting on, or '' where none of them is. */

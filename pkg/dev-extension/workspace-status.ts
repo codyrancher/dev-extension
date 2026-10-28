@@ -37,16 +37,22 @@ export type Tone = 'green' | 'asking' | 'attention' | 'waiting' | 'working' | 'm
 export type FixStage = 'assess' | 'code' | 'draft' | 'review' | 'feedback' | 'merged';
 export type ReviewStage = 'agent' | 'findings' | 'submitted' | 'response' | 'approved';
 /**
- * A bug has one stage, and it is review.
+ * Where the process has a bug: the positions `jiraStageOf` answers, which are its stages.
  *
- * It had five - the positions `jiraStageOf` answers - and a stepper drawn through them, which
- * was the wrong shape twice over. The positions are not a line: Waiting for Reporter is where
- * either of the first two goes when the report is not enough, and a bug comes back from it to
- * either. And they are not stages of work *here*: they are where Jira says the ticket is, which
- * the stage's own name carries. What a person does at every one of them is the same job with
- * the same moves available, so it is one stage with all of them on it.
+ * They were collapsed to one, on the grounds that a bug's position is Jira's fact rather than
+ * a stage of work here - and that is true of a review's `submitted` as well, which is GitHub's.
+ * What matters is that there is one part to play (see `roleForStep`) and the work moves through
+ * these as it is carried out, which is what a stepper is for and what the nav now groups by.
+ *
+ * Waiting for Reporter is the one that is not a step forward: it is where either of the first
+ * two goes when the report is not enough, and a bug comes back from it to either. It sits in
+ * the line because that is where it sits in the document, and because leaving it out would
+ * mean a parked bug had no position at all.
+ *
+ * The moves are not a property of the position. Every one the document allows from here is on
+ * the Actions row at every stage - see TRIAGE_MOVES and the rail's `bugMoves`.
  */
-export type BugStage = 'bug-review';
+export type BugStage = 'bug-new' | 'bug-triage' | 'bug-waiting' | 'bug-prioritized' | 'bug-done';
 export type Stage = FixStage | ReviewStage | BugStage;
 
 /**
@@ -67,11 +73,18 @@ export const STAGE_LABELS: Record<Stage, string> = {
   response:  'Developer responded',
   approved:  'Approved',
   /*
-   * A bug's one stage. The fallback only: `stageLabel` carries the ticket's own status, so the
-   * stepper and the nav both read "New" or "In Triage" rather than this word. It is what shows
-   * for a ticket that could not be read.
+   * The document's own words for each position, which is what the stepper's nodes read.
+   *
+   * Not the ticket's status verbatim, because the stepper names a place in a process and a
+   * status names where one ticket is: "To Prioritize", "Prioritized", "In Development" and
+   * five more all arrive at Reproduced. The ticket's own word is on the nav row beside it -
+   * `stageLabel` - where it says which of those it actually is.
    */
-  'bug-review': 'Review',
+  'bug-new':         'New',
+  'bug-triage':      'In Triage',
+  'bug-waiting':     'Waiting for Reporter',
+  'bug-prioritized': 'Reproduced',
+  'bug-done':        'Done',
 };
 
 /**
@@ -631,18 +644,11 @@ function fixWork(d: Json | null, agent: AgentState, coded = false): Work {
 const STAGE_TONE: Record<Stage, Tone> = {
   assess: 'muted', code: 'muted', draft: 'attention', review: 'waiting', feedback: 'attention', merged: 'green',
   agent: 'muted', findings: 'attention', submitted: 'waiting', response: 'attention', approved: 'green',
-  // The fallback; the tone a bug is actually drawn with comes from its position (BUG_TONE).
-  'bug-review': 'attention',
-};
-
-/**
- * The colour each position of the process is drawn in.
- *
- * Keyed on the position rather than the stage, because there is one stage and five positions. A
- * new bug and one in triage are both yours, with a clock on each; one parked on the reporter is
- * somebody else's turn, which is what `waiting` is for; past triage it has left this team.
- */
-const BUG_TONE: Record<string, Tone> = {
+  /*
+   * A new bug and one in triage are both yours, with a clock on each; one parked on the
+   * reporter is somebody else's turn, which is what `waiting` is for; past triage it has left
+   * this team. These were a map of their own while a bug had one stage and five positions.
+   */
   'bug-new': 'attention', 'bug-triage': 'attention', 'bug-waiting': 'waiting', 'bug-prioritized': 'green', 'bug-done': 'green',
 };
 
@@ -724,15 +730,15 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
       bug,
       pr:    0,
       title: ticket.summary || bug,
-      stage: 'bug-review',
-      // The ticket's own status, not the stage's word for it. There is one stage, so the stage's
-      // name is free to say where Jira has the bug - which is what the nav row and the stepper
-      // both want, and the one fact neither could carry when the stage was a position.
+      stage: position,
+      // The ticket's own status, not the stage's word for it: the nav row says which of the
+      // eight statuses that reach Reproduced this one actually is, while the stepper's node
+      // says the place in the process. See STAGE_LABELS.
       stageLabel: ticket.status,
       // Overdue is the deadline the process puts on this status, not an opinion, so it is said
       // rather than left to the colour.
       label:      overdue ? 'past its deadline' : '',
-      tone:       overdue ? 'attention' : (BUG_TONE[position] || 'muted'),
+      tone:       overdue ? 'attention' : (STAGE_TONE[position] || 'muted'),
     };
   }
   if (isFix(name)) {

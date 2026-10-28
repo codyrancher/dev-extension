@@ -45,14 +45,16 @@ export const FIX_STEPS: RailStep[] = ['assess', 'code', 'draft', 'review', 'feed
 export const REVIEW_STEPS: RailStep[] = ['agent', 'findings', 'submitted', 'response', 'approved'].map((k) => step(k as Stage));
 
 /*
- * A bug's, which is one step.
+ * A bug's: the positions of the triage document, which is the line the work moves along.
  *
- * See BugStage: the five positions of the process are not a line, and they are not stages of
- * work here either - they are where Jira has the ticket, which this step's own label carries
- * (readWork puts the ticket's status in `stageLabel`). The job is the same at every one of them
- * and so are the moves, so there is one stage with all of them available on it.
+ * See BugStage. They were one step for a while, and the reason that was wrong is the nav: one
+ * Jira role carries every bug somebody is triaging, so the stepper is where "which part of it
+ * is this one on" gets answered, as it is for a fix and for a review.
+ *
+ * The moves do not belong to the positions. Every one the document allows is on the Actions
+ * row at every step, which is the half of the one-stage version worth keeping.
  */
-export const BUG_STEPS: RailStep[] = [step('bug-review')];
+export const BUG_STEPS: RailStep[] = ['bug-new', 'bug-triage', 'bug-waiting', 'bug-prioritized', 'bug-done'].map((k) => step(k as Stage));
 
 export function stepsFor(kind: WorkspaceStatus['kind']): RailStep[] {
   if (kind === 'review') {
