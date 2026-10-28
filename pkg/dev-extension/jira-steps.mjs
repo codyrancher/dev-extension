@@ -112,20 +112,20 @@ export function jiraStageOf(status, resolution = null) {
 /**
  * Which part a person is playing in this bug's workspace, for the nav's grouping.
  *
- * Two of them, because the process asks two different things. Reviewing a new report and
- * chasing a stuck one are both reading and writing on the ticket - no product in front of you.
- * Reproducing means running the thing: a Rancher, a browser, the version the customer named.
- * Fixing is ordinary development and groups with it.
+ * One part, Jira, whatever step the bug is on. It was two - reviewer and reproducer - which
+ * read the steps of one job as two jobs. They are not: the same person carries a ticket from
+ * the report through the reproduction, and splitting the nav by which step it is on put one
+ * person's own queue into two piles that each had to be read to know what was waiting. Where
+ * the bug is in that job is the row's stage, which is the ticket's own status (`jiraStageOf`,
+ * and `stageLabel` in workspace-status.ts) - said once, in the place the other roles say it.
+ *
+ * Fixing is not a step of this job at all: it is ordinary development and groups with it.
  *
  * @param {string} action
  * @returns {string}
  */
 export function roleForStep(action) {
-  if (action === 'fix') {
-    return 'developer';
-  }
-
-  return action === 'reproduce' ? 'jira-reproducer' : 'jira-reviewer';
+  return action === 'fix' ? 'developer' : 'jira';
 }
 
 /**

@@ -61,38 +61,51 @@ const REFRESH_MS = 5000;
  * workspace whose Installation carries a `dev.rancher.io/role` label plays that part whatever it
  * is called.
  *
- * Two of them are a Jira bug's, because the team's triage process asks two different things and
- * they are not the same afternoon. **Jira reviewer** is reading a report and writing on the
- * ticket - deciding whether it makes sense, whether it is ours, whether it is a duplicate,
- * whether the reporter has to be asked for more. Nothing is running in front of you. **Jira
- * reproducer** is the step after: standing the version up that the customer named and trying to
- * make the thing happen, which needs a Rancher and a browser. Grouping both under one "Jira"
- * would put the four tickets you can clear from a desk next to the one that needs an afternoon.
+ * **Jira** is one part and not two. It was split - reviewer and reproducer - on the grounds
+ * that reading a report and standing a Rancher up to reproduce it are not the same afternoon,
+ * which is true and is not what a role is for. The same person carries a ticket through both,
+ * so the split put one queue into two piles that each had to be read to know what was waiting,
+ * and a ticket crossed from one to the other as a side effect of a step being run. Which step
+ * a bug is on is its STAGE, and the row already says it in the ticket's own words - New, In
+ * Triage, Waiting for Reporter - in the same place Reviewer says Your pass.
  *
- * Fixing a bug is not a third: it is ordinary development, and groups with Developer, which is
- * also why `roleForStep` sends it there.
+ * Fixing a bug is not a Jira row at all: it is ordinary development, and groups with Developer,
+ * which is also why `roleForStep` sends it there.
  */
 const ROLES = [
   { id: 'developer', label: 'Developer', icon: 'icon-code' },
   { id: 'reviewer', label: 'Reviewer', icon: 'icon-checkmark' },
-  { id: 'jira-reviewer', label: 'Jira reviewer', icon: 'icon-notifier' },
-  { id: 'jira-reproducer', label: 'Jira reproducer', icon: 'icon-repository' },
+  { id: 'jira', label: 'Jira', icon: 'icon-notifier' },
   { id: 'other', label: 'Other', icon: 'icon-folder' },
 ];
+
+/**
+ * The labels the two Jira roles were stamped with before they became one.
+ *
+ * They are on the Installations of every bug workspace made while the split existed, and a
+ * label nothing answers to sends its workspace to Other - so the ones already out there would
+ * have left the Jira group the moment this shipped. Read here rather than rewritten in the
+ * cluster: the next step that runs stamps the new one anyway (`roleForStep`), and a migration
+ * that patches other people's workspaces to fix our own naming is not worth the blast radius.
+ */
+const WAS_JIRA = ['jira-reviewer', 'jira-reproducer'];
 
 function roleOf({ name, role }) {
   if (ROLES.some(({ id }) => id === role)) {
     return role;
+  }
+  if (WAS_JIRA.includes(role)) {
+    return 'jira';
   }
 
   if (/(^|-)pr-\d+(-|$)/.test(name)) {
     return 'reviewer';
   }
   // A bug's workspace with no role label on it - made before the label was stamped, or by hand.
-  // The first step of the process is the one it is most likely waiting on, and a label written
-  // by the next step that runs moves it.
+  // Its name says what it is for, which is all this group needs; where it is in the process is
+  // the row's stage and comes from the ticket.
   if (/(^|-)sure-\d+(-|$)/.test(name)) {
-    return 'jira-reviewer';
+    return 'jira';
   }
 
   return /(^|-)issue-\d+(-|$)/.test(name) ? 'developer' : 'other';

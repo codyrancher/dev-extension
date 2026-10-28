@@ -79,16 +79,18 @@ test('a resolution is what finishes a bug, whatever the column says', () => {
   assert.equal(jiraStageOf('New', null), 'bug-new');
 });
 
-test('the part you play is the step you are taking', () => {
-  assert.equal(roleForStep('review'), 'jira-reviewer');
-  assert.equal(roleForStep('unstick'), 'jira-reviewer');
-  assert.equal(roleForStep('reproduce'), 'jira-reproducer');
-  // Fixing a bug is ordinary development and groups with it, not with the two Jira roles.
+test('triaging a bug is one part to play, whichever step it is on', () => {
+  // It was two, reviewer and reproducer, and a ticket crossed between them as a side effect of
+  // a step being run - which split one person's queue into two piles. The step is the stage.
+  assert.equal(roleForStep('review'), 'jira');
+  assert.equal(roleForStep('unstick'), 'jira');
+  assert.equal(roleForStep('reproduce'), 'jira');
+  // Fixing a bug is ordinary development and groups with it, not with Jira.
   assert.equal(roleForStep('fix'), 'developer');
 });
 
 test('every step maps to a role the nav has a group for', () => {
-  const groups = ['developer', 'reviewer', 'jira-reviewer', 'jira-reproducer', 'other'];
+  const groups = ['developer', 'reviewer', 'jira', 'other'];
 
   for (const action of Object.keys(TRIAGE_ACTIONS)) {
     assert.ok(groups.includes(roleForStep(action)), `${ action } -> ${ roleForStep(action) }`);
