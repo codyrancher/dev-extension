@@ -1340,7 +1340,7 @@ export const ACTION_TEMPLATES: Record<string, string> = {
   startReview:    'Use the my-pr-full-review skill to review {{ repo }} PR {{ pr }} - harness portal context, file through {{ context }}.',
   answerFeedback: 'Use the my-pr-address-feedback skill to address the review feedback on {{ repo }} PR {{ pr }}: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.',
   reverify:       'Use the my-fix-demonstrate skill to re-verify the fix on this branch (PR {{ pr }}) and record a fresh video of the same walk.',
-  reviewAgain:    'The developer pushed new commits and/or replied since the review of {{ repo }} PR {{ pr }} was submitted. Review what changed against the comments that were made: say which are addressed, which are not, and anything new the changes introduce. File through {{ context }}.',
+  reviewAgain:    'Use the my-pr-rereview skill on {{ repo }} PR {{ pr }} - the developer pushed new commits or replied since your review was submitted. File through {{ context }}.',
   /*
    * The four steps of the bug-triage process, one template each.
    *
