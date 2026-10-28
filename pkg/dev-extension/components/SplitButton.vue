@@ -16,13 +16,15 @@
  * drawn, because a menu that explains each choice in a sentence is a page, and this opens under
  * a 22px button next to the thing being added.
  */
+import RcButton from '@components/RcButton/RcButton.vue';
+
 import { placeMenu } from '../menu-place.mjs';
 import CliMark from './CliMark.vue';
 
 export default {
   name: 'SplitButton',
 
-  components: { CliMark },
+  components: { CliMark, RcButton },
 
   props: {
     /**
@@ -77,9 +79,33 @@ export default {
       type:    String,
       default: '',
     },
+    /**
+     * One of RcButton's variants - `primary`, `secondary`, `tertiary` - to draw both halves as
+     * that button, or '' for this component's own bare look.
+     *
+     * A class could not carry this. RcButton's styles are SCOPED to RcButton, so copying
+     * `variant-secondary` onto a `<button>` of ours gets the class and none of the colour -
+     * which is how the rail's verdict came to wear `btn role-secondary`, Rancher's older button
+     * language, in a row where every other button is an RcButton: one grey press beside three
+     * blue ones, saying the row's own answer is the dull one.
+     *
+     * So the halves become RcButtons, and this component stops painting them: see
+     * `.split-btn__plain`, which is where its own border and colour went.
+     */
+    variant: {
+      type:    String,
+      default: '',
+    },
   },
 
   emits: ['pick'],
+
+  computed: {
+    /** What each half is: RcButton when a variant was asked for, else a plain button. */
+    half() {
+      return this.variant ? RcButton : 'button';
+    },
+  },
 
   data() {
     return {
@@ -198,22 +224,26 @@ export default {
 
 <template>
   <div class="split-btn">
-    <button
+    <component
+      :is="half"
       type="button"
       class="split-btn__main"
-      :class="mainClass"
+      :class="[mainClass, { 'split-btn__plain': !variant }]"
+      :variant="variant || undefined"
       :disabled="disabled"
       :aria-label="label || chosen.label"
       :title="chosen.what || chosen.label"
       @click="pick(chosen.id)"
     >
       <slot>+</slot>
-    </button>
-    <button
+    </component>
+    <component
+      :is="half"
       v-if="choices.length > 1"
       type="button"
       class="split-btn__more"
-      :class="moreClass"
+      :class="[moreClass, { 'split-btn__plain': !variant }]"
+      :variant="variant || undefined"
       :disabled="disabled"
       :aria-label="`${ label || 'More' }: other options`"
       :aria-expanded="open ? 'true' : 'false'"
@@ -221,7 +251,7 @@ export default {
       @click="toggle"
     >
       <i :class="open ? 'icon icon-chevron-up' : 'icon icon-chevron-down'" />
-    </button>
+    </component>
 
     <Teleport to="body">
       <ul
@@ -275,6 +305,7 @@ export default {
   align-items: stretch;
 }
 
+/* The shape of the halves, which is this component's whatever is drawing them. */
 .split-btn__main,
 .split-btn__more {
   display:         inline-flex;
@@ -282,23 +313,47 @@ export default {
   justify-content: center;
   min-height:      0;
   padding:         0 var(--dev-space-2);
-  border:          1px solid var(--border);
-  background:      transparent;
-  color:           var(--muted);
   font:            inherit;
   line-height:     1;
   cursor:          pointer;
 
-  &:hover:not(:disabled) { color: var(--link); border-color: var(--link); }
   &:disabled { opacity: .5; cursor: default; }
 }
 
-/* One control, so the halves meet: the radius is on the outside edges only. */
-.split-btn__main {
-  min-width:          22px;
+/*
+ * The bare look, when no `variant` was asked for.
+ *
+ * On a class of its own and not on the halves, because with a variant the halves are RcButtons
+ * and the colour is theirs; a border declared for every half would land on the same element and
+ * the two would decide it by which stylesheet the build injected last.
+ *
+ * One class plus the scope attribute, exactly as `.split-btn__main` was - so the hosts that
+ * strip this off from their wrapper (`__new-split`, `dev-nav-head__add`) still carry the one
+ * more class that makes them win by specificity rather than by luck. See the comment on
+ * `__new-split` in WorkspaceRail, which is the bug that rule exists to have fixed.
+ */
+.split-btn__plain {
+  border:     1px solid var(--border);
+  background: transparent;
+  color:      var(--muted);
+
+  &:hover:not(:disabled) { color: var(--link); border-color: var(--link); }
+}
+
+/* Sized for the one thing the bare look is: a glyph, 22px square, beside a caret. */
+.split-btn__main.split-btn__plain { min-width: 22px; font-size: 15px; }
+.split-btn__more.split-btn__plain { font-size: 10px; }
+
+/*
+ * One control, so the halves meet: the radius is on the outside edges only.
+ *
+ * Written from `.split-btn` down, so it outranks the `border` shorthand an RcButton variant
+ * sets on the same element - a shorthand puts `border-right-width` back and the two halves
+ * come apart into two boxes that happen to touch.
+ */
+.split-btn .split-btn__main {
   border-radius:      var(--dev-r-ctl) 0 0 var(--dev-r-ctl);
   border-right-width: 0;
-  font-size:          15px;
 
   /* With nothing to choose between there is no caret, so the press is the whole control. */
   &:only-child {
@@ -307,9 +362,8 @@ export default {
   }
 }
 
-.split-btn__more {
+.split-btn .split-btn__more {
   border-radius: 0 var(--dev-r-ctl) var(--dev-r-ctl) 0;
-  font-size:     10px;
 }
 
 /*

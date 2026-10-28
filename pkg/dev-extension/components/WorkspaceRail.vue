@@ -2985,8 +2985,7 @@ export default {
                   :value="a.chosen.run"
                   :label="a.chosen.label"
                   :disabled="!!busy"
-                  :main-class="a.isPrimary ? 'btn role-primary' : 'btn role-secondary'"
-                  :more-class="a.isPrimary ? 'btn role-primary' : 'btn role-secondary'"
+                  :variant="a.isPrimary ? 'primary' : 'secondary'"
                   class="workspace-rail__verdict"
                   @pick="(verdict) => run({ run: verdict })"
                 >
@@ -4304,8 +4303,11 @@ export default {
     }
 
     :deep(.split-btn__main) {
-      // Both halves carry `.btn role-primary|role-secondary`, so the colour is Rancher's own
-      // and what is left here is the shape: the two inner corners, and the gap.
+      // Both halves ARE an RcButton, on the same variant as the buttons beside them on this
+      // row, so the colour is the design system's and what is left here is the shape: the two
+      // inner corners, and the gap. They used to carry `.btn role-primary|role-secondary`,
+      // which is Rancher's older button language - one grey press next to three blue ones,
+      // saying the row's own answer was the dull one.
       border-top-right-radius:    0;
       border-bottom-right-radius: 0;
       // The spinner that replaces nothing while a verdict is being filed sat against the first
