@@ -31,6 +31,7 @@ import type { SessionMode, ConversationOrigin, AgentActivity } from './agent';
 // One answer to every "which workspace is this id's" and "is this an id at all", shared with
 // agent.ts, the pod's sessions.sh and the in-cluster API. See conversation-id.mjs.
 import { conversationProject, conversationLabel, isConversationId, conversationBase } from './conversation-id.mjs';
+import { paneSendScript } from './pane-send.mjs';
 
 /** Where the agents extension's API is. The agents extension made the agent pod, so this is its cluster. */
 export const STUDIO_CLUSTER = 'local';
@@ -530,29 +531,11 @@ export async function sendToPane(id: string, text: string): Promise<void> {
     `chmod 666 ${ file } ${ frag } 2>/dev/null || true`,
     // As the pane's user: the tmux server is theirs, and root's is a different one.
     `as_user() { if [ "$(id -u)" = 0 ]; then setpriv --reuid=1000 --regid=1000 --init-groups env HOME=${ AGENT_HOME } "$@"; else env HOME=${ AGENT_HOME } "$@"; fi; }`,
-    `done_() { rm -f ${ file } ${ frag }; echo "$1"; exit 0; }`,
-    // How long the transcript's event log is now, so a prompt claude accepted can be recognised
-    // below even if the composer check cannot tell.
-    `before=$(wc -c < ${ events } 2>/dev/null || echo 0)`,
-    `as_user tmux load-buffer -b mc-send ${ file } 2>/dev/null || done_ NOBUFFER`,
-    `as_user tmux paste-buffer -b mc-send -t mc-${ id } -d -p 2>/dev/null || done_ NOPANE`,
-    // Press, then look: the paste has to have been read before Enter means anything, and the
-    // screen has to have redrawn before the composer can be said to be empty. An extra press on
-    // an empty composer submits nothing, so pressing again costs nothing and is the only way
-    // past a TUI that swallowed the first one.
-    'n=0',
-    'while [ $n -lt 4 ]; do',
-    '  sleep 0.4',
-    `  as_user tmux send-keys -t mc-${ id } Enter 2>/dev/null || done_ NOPANE`,
-    '  sleep 0.5',
-    `  as_user tmux capture-pane -p -t mc-${ id } 2>/dev/null | tail -5 | grep -qF -f ${ frag } || done_ SENT`,
-    '  n=$((n+1))',
-    'done',
-    // Still on screen. The hook's log is the second opinion: a UserPromptSubmit appended since
-    // the paste means claude took it and what the composer is showing is something else.
-    `after=$(wc -c < ${ events } 2>/dev/null || echo 0)`,
-    `[ "$after" != "$before" ] && tail -1 ${ events } 2>/dev/null | grep -q UserPromptSubmit && done_ SENT`,
-    'done_ STUCK',
+    // The send itself, which the chat's composer runs too: see pane-send.mjs, which carries the
+    // reasoning and the thing this used to get wrong.
+    ...paneSendScript({
+      pane: `mc-${ id }`, file, frag, events, as: 'as_user ',
+    }),
   ].join('\n');
   const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE);
   const said = out.trim().split('\n').pop() || '';
@@ -568,6 +551,7 @@ const SEND_FAILURE: Record<string, string> = {
   NOBUFFER: 'The agent pod would not take the message: tmux refused the buffer it is pasted from.',
   NOPANE:   'That conversation has no pane running to type into - reopen it and it will start again.',
   STUCK:    'The message reached the conversation but it would not take it: the text is sitting in its prompt box unsent. Open the conversation and press Enter.',
+  NOTTYPED: 'The conversation never took the message: its prompt box is exactly as it was. It may have been compacting - try again, or open it and ask there.',
 };
 
 /** Where one conversation's transcript is, in the agent pod: from the id its pane recorded, or its state file. */

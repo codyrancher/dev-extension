@@ -42,6 +42,7 @@ import {
   AGY_COMMANDS, AGY_CUSTOMIZE, agyPhase, agyTailText,
 } from './agent-clis.mjs';
 import { frameNonce, readFrames, spliceEarlier } from './chat-frames.mjs';
+import { paneSendScript } from './pane-send.mjs';
 import {
   modelAliases, flagChoices, parseMcpList, currentModel, isSafeOptionValue, type McpServer,
 } from './chat-options';
@@ -126,6 +127,7 @@ const SAY_FAILURE: Record<string, string> = {
   NOBUFFER: 'the agent pod would not take the message: tmux refused the buffer it is pasted from',
   NOPANE:   'this conversation has no pane running to type into - reopen it and it will start again',
   STUCK:    'the message reached the conversation but it would not take it: the text is sitting in its prompt box unsent',
+  NOTTYPED: 'the pane never took the message: its prompt box is exactly as it was. It may have been compacting - try again',
 };
 
 export function escapeText(text: unknown): string {
@@ -723,12 +725,14 @@ export function useConversation(source: () => ConversationSource) {
   /**
    * Text into the pane as one paste, then Enter: what the person typed, whatever is in it.
    *
-   * And then checked, because one Enter is not reliably taken. The chain used to be one line -
-   * paste, sleep 0.3, Enter - with nothing reading what came back, and a TUI that is still
-   * reading a bracketed paste when the Enter arrives swallows it. Two live panes were found
-   * holding a message in the composer that had never been entered, hours after the page said
-   * it had been sent. So the Enter is pressed until the pane stops showing the message in its
-   * composer, and anything else is said out loud rather than swallowed.
+   * And then checked, because one Enter is not reliably taken: a TUI still reading a bracketed
+   * paste when the Enter arrives swallows it, and two live panes were found holding a message
+   * that had never been entered, hours after the page said it was sent.
+   *
+   * The check is pane-send.mjs's now, which is the same one the rail's actions run. It was a
+   * second copy of it, and it kept the half of the bug the rail's copy had already had fixed:
+   * "the message is not in the composer" was read as "it was submitted", and it also means
+   * "it never arrived".
    */
   async function say(text: string): Promise<void> {
     if (!text.trim()) {
@@ -743,21 +747,16 @@ export function useConversation(source: () => ConversationSource) {
       'P=$F.probe',
       `echo ${ b64(text) } | base64 -d > $F`,
       `echo ${ b64(probe) } | base64 -d > $P`,
-      'done_() { rm -f $F $P; echo "$1"; exit 0; }',
-      'tmux load-buffer -b chat $F 2>/dev/null || done_ NOBUFFER',
-      `tmux paste-buffer -b chat -t ${ pane } -d -p 2>/dev/null || done_ NOPANE`,
-      // Press, then look: the paste has to have been read before Enter means anything, and the
-      // screen has to have redrawn before the composer can be called empty. An extra press on
-      // an empty composer submits nothing, so pressing again costs nothing.
-      'n=0',
-      'while [ $n -lt 4 ]; do',
-      '  sleep 0.4',
-      `  tmux send-keys -t ${ pane } Enter 2>/dev/null || done_ NOPANE`,
-      '  sleep 0.5',
-      `  tmux capture-pane -p -t ${ pane } 2>/dev/null | tail -5 | grep -qF -f $P || done_ SENT`,
-      '  n=$((n+1))',
-      'done',
-      'done_ STUCK',
+      ...paneSendScript({
+        pane,
+        file:   '$F',
+        frag:   '$P',
+        // The hook's log for this pane, named the way everything else here names it: the
+        // sessions directory sits beside the pane's HOME. It is the one check that can speak
+        // for a paste the CLI folded into `[Pasted text #1]`, which never shows its own text.
+        events: `"$(dirname "$HOME")/sessions/${ paneId.value }.events.jsonl"`,
+        buffer: 'chat',
+      }),
     ].join('\n'), 30000);
     const said = out.trim().split('\n').pop() || '';
 
