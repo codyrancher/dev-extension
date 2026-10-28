@@ -51,13 +51,15 @@ import { watchPopouts } from '../md-popout.mjs';
 import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
-  startIssueFix, startPrReview, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers,
+  startIssueFix, startPrReview, startJiraTriage, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers,
   replyToComment, commentOnPr, quoted, commentsRevision, githubBrowserSession, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
 } from '../skills';
 import { markReadyForReview, describePr } from '../github';
+import { TRIAGE_ACTIONS, JIRA_BASE } from '../jira';
+import JiraTriage from './JiraTriage.vue';
 import {
   deleteWorkspace, devFetch, workspaceMediaListUrl
 } from '../api';
@@ -103,7 +105,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, SplitButton, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, DevDialog, PrButton, CommentDiscussion, CommentAttachments, Reviewers, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView, StageSteps,
+    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, SplitButton, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, DevDialog, PrButton, CommentDiscussion, CommentAttachments, Reviewers, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView, StageSteps, JiraTriage,
   },
 
   // Every question this rail asks goes through DevDialog (components/ask.ts). The browser's
@@ -203,6 +205,8 @@ export default {
       agentSettleTimer: null,
       /** Which section of what came back is open over the page, by title; '' is none. */
       opened:      '',
+      /** The triage panel for a bug's workspace, open over the page. */
+      triaging:    false,
       /** Stops the popout watcher over this page's comments; see md-popout.mjs. */
       stopPopouts: null,
       /** The conversation, in its own window over the page. */
@@ -319,6 +323,24 @@ export default {
 
     steps() {
       return stepsFor(this.status?.kind || 'other');
+    },
+
+    /** The Jira key this workspace is for, where it is for one. */
+    bug() {
+      return this.status?.bug || '';
+    },
+
+    /**
+     * The proposal a triage step left, if it is still waiting on somebody.
+     *
+     * Off the column rather than fetched again: `compose` already reads it for the Jira sections,
+     * and a second read here would be a second request per tick saying the same thing. By id,
+     * like shownSection, so this follows the column rather than holding a stale copy of it.
+     */
+    proposal() {
+      const section = this.evidence.find((e) => e.id === 'bug-proposal');
+
+      return section ? section.items : null;
     },
 
     current() {
@@ -552,6 +574,84 @@ export default {
        * with the running pane in it. A button whose whole effect is "look slightly lower" is a
        * button that makes the row longer and the real decision harder to find.
        */
+
+      /*
+       * A bug's workspace. The stages are Jira's, not ours, so the primary at each one is the
+       * step of the triage document that stage is waiting on - and "Triage it" is beside it at
+       * every stage, because the writes the document asks for are a person's to make whether or
+       * not an agent has looked at it yet.
+       */
+      if (s.kind === 'jira') {
+        const waiting = !!this.proposal;
+        const tools = [
+          { label: 'Triage it', run: 'openTriage' },
+          ...(waiting ? [] : [{ label: 'Open in Jira', run: 'openBugInJira' }]),
+        ];
+
+        if (s.agent === 'input') {
+          return {
+            headline: 'The agent is waiting for an answer',
+            detail:   'It asked something in its conversation and stopped until it hears back.',
+            primary:  { label: 'Answer it', run: 'openTab', arg: 'conversations' },
+            tools,
+          };
+        }
+        // A conclusion waiting on a yes outranks the stage: the next move is already written and
+        // what is left is to read it and apply it.
+        if (waiting) {
+          return {
+            headline: 'A triage step has something for you',
+            detail:   'What it concluded is on the left, with the comment it would leave and the evidence behind it. Nothing is written to the customer\'s ticket until you apply it.',
+            primary:  { label: 'Read it and apply', run: 'openTriage' },
+            tools:    [{ label: 'Open in Jira', run: 'openBugInJira' }],
+          };
+        }
+
+        switch (stage) {
+        case 'bug-new':
+          return {
+            headline: 'A new bug report',
+            detail:   'Read it over: is it a UI bug, is it a duplicate, is it already fixed, and is there enough here for an engineer to reproduce. The process allows three business days from when it was raised.',
+            primary:  { label: 'Review it', run: 'jiraReview' },
+            tools,
+          };
+        case 'bug-triage':
+          return {
+            headline: 'Reviewed - somebody has to reproduce it',
+            detail:   'On the latest Rancher first, then on the version the reporter named. The process allows seven business days from when it was raised to reach To Prioritize.',
+            primary:  { label: 'Reproduce it', run: 'jiraReproduce' },
+            tools,
+          };
+        case 'bug-waiting':
+          return {
+            headline: 'Parked on the reporter',
+            detail:   'Nothing moves until they answer. A bug that has been here too long, or that is bouncing between the customer and engineering, is a stuck bug - the process says to raise those with Gary or Neil.',
+            primary:  { label: 'Unstick it', run: 'jiraUnstick' },
+            tools,
+          };
+        case 'bug-prioritized':
+          return {
+            headline: 'Reproduced and handed on',
+            detail:   'It has left this team\'s triage. Fixing it is ordinary development from here, in this same workspace.',
+            primary:  { label: 'Fix it', run: 'jiraFix' },
+            tools,
+          };
+        case 'bug-done':
+          return {
+            headline: 'Done',
+            detail:   'Nothing is waiting on you. The ticket and the conversations outlive the workspace.',
+            primary:  null,
+            tools:    [{ label: 'Open in Jira', run: 'openBugInJira' }, { label: 'Delete the workspace', run: 'remove' }],
+          };
+        }
+
+        return {
+          headline: `${ this.bug } is in ${ s.stageLabel || 'an unknown state' }`,
+          detail:   'No step of this team\'s process is waiting on this state. The ticket is on the left.',
+          primary:  null,
+          tools,
+        };
+      }
 
       if (s.kind === 'fix') {
         switch (stage) {
@@ -2345,6 +2445,60 @@ export default {
       this.notice = 'Asked the agent to re-verify; the recording lands under Code and Draft PR.';
     },
 
+    /*
+     * One step of the triage process, as a conversation in this workspace.
+     *
+     * Four buttons and one method: which step is the stage's, and the stage is the ticket's own
+     * status. See startJiraTriage - it reattaches, so a second press lands in the conversation
+     * that is already doing it.
+     */
+    async jiraStep(action) {
+      if (!this.bug) {
+        throw new Error('This workspace is not named for a Jira bug.');
+      }
+      await startJiraTriage(this.$store, { key: this.bug, summary: this.workspace.title || '' }, action, this.repo);
+      this.notice = `${ TRIAGE_ACTIONS[action].label } is running on ${ this.bug }; what it concludes comes back here for you to apply.`;
+      await this.loadConversations();
+      await this.refreshStatus();
+    },
+
+    jiraReview() {
+      return this.jiraStep('review');
+    },
+
+    jiraReproduce() {
+      return this.jiraStep('reproduce');
+    },
+
+    jiraUnstick() {
+      return this.jiraStep('unstick');
+    },
+
+    jiraFix() {
+      return this.jiraStep('fix');
+    },
+
+    /** The triage panel: the writes the runbook asks for, over the page. */
+    openTriage() {
+      this.triaging = true;
+    },
+
+    openBugInJira() {
+      window.open(`${ JIRA_BASE }/browse/${ this.bug }`, '_blank', 'noopener');
+    },
+
+    /**
+     * Something was written to the ticket, so everything drawn from it is now wrong.
+     *
+     * Both halves: the status is what the stepper and the headline are built from, and the column
+     * holds the proposal that has just been taken. `true` forces the read rather than taking what
+     * was last known, which is the copy that still says the old status.
+     */
+    async bugChanged() {
+      await this.refreshStatus(true);
+      await this.refreshEvidence();
+    },
+
     async reviewAgain() {
       const pr = this.status?.pr;
 
@@ -3726,6 +3880,25 @@ export default {
           :workspace="workspace"
           :pr="pr"
           :issue="issue"
+        />
+      </DevModal>
+
+      <!--
+        The triage panel: the writes the team's runbook asks for on a customer's ticket. `medium`
+        rather than `large` - it is a form with a comment box, not a view - and `applied` re-reads
+        the status and the column, because everything either of them draws came off the ticket
+        that has just changed.
+      -->
+      <DevModal
+        v-if="triaging && bug"
+        size="medium"
+        :title="`Triage ${ bug }`"
+        @close="triaging = false"
+      >
+        <JiraTriage
+          :bug="bug"
+          @applied="bugChanged()"
+          @close="triaging = false"
         />
       </DevModal>
     </template>

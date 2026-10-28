@@ -72,3 +72,58 @@ export function actionForBug(bug, category) {
 export function jiraWorkspaceName(key) {
   return key.toLowerCase();
 }
+
+/**
+ * Where a bug is in the team's process, from the status its ticket carries.
+ *
+ * Jira has two dozen statuses and the process has five positions, so this is a narrowing, not a
+ * rename: everything from To Prioritize to QA Working is one position here - "it has left our
+ * triage" - because every step this team owns is behind it and nothing downstream is a step
+ * anybody opens this page to take.
+ *
+ * `bug-` on every id because these share a namespace with a fix's stages and a review's, and
+ * `review` was taken by a step of a different process entirely.
+ *
+ * @param {string} status
+ * @param {string | null} [resolution]
+ * @returns {'bug-new'|'bug-triage'|'bug-waiting'|'bug-prioritized'|'bug-done'}
+ */
+export function jiraStageOf(status, resolution = null) {
+  // A resolution is what makes a bug finished, whatever the status column calls it. A ticket
+  // Jira marks "Rejected" or "Duplicate" is done with, and its status alone does not say so.
+  if (resolution || ['Closed', 'Resolved', 'Done', 'Rejected'].includes(status)) {
+    return 'bug-done';
+  }
+  if (status === 'New') {
+    return 'bug-new';
+  }
+  if (status === 'In Triage') {
+    return 'bug-triage';
+  }
+  if (status === 'Waiting for Reporter') {
+    return 'bug-waiting';
+  }
+
+  // To Prioritize, Prioritized, Needs Sign Off, In Development, Eng PR Review, To Test, QA
+  // Working, Blocked - and anything this instance adds later. Reproduced and handed on.
+  return 'bug-prioritized';
+}
+
+/**
+ * Which part a person is playing in this bug's workspace, for the nav's grouping.
+ *
+ * Two of them, because the process asks two different things. Reviewing a new report and
+ * chasing a stuck one are both reading and writing on the ticket - no product in front of you.
+ * Reproducing means running the thing: a Rancher, a browser, the version the customer named.
+ * Fixing is ordinary development and groups with it.
+ *
+ * @param {string} action
+ * @returns {string}
+ */
+export function roleForStep(action) {
+  if (action === 'fix') {
+    return 'developer';
+  }
+
+  return action === 'reproduce' ? 'jira-reproducer' : 'jira-reviewer';
+}

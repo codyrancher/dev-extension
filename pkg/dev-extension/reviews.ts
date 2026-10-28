@@ -19,7 +19,7 @@
 // the local store is the in-cluster API's ConfigMaps rather than the harness's sqlite.
 
 import {
-  devFetch, clusterBase, githubToken, createWorkspace, listAllWorkspaces, workspacePod, workspaceFor, getWorkspace, setWorkspaceRunning
+  devFetch, clusterBase, githubToken, createWorkspace, listAllWorkspaces, workspacePod, workspaceFor, getWorkspace, setWorkspaceRunning, setWorkspaceRole
 } from './api';
 import {
   listConversations, startConversation, endConversation, queuePrompt, startPaneDetached, queuedNotStarted, conversationStates, sendToPane, Attachment, ProjectConversation
@@ -35,7 +35,7 @@ import {
   DEFAULT_APP, DEV_API_IN_CLUSTER, LTE_APP, isLte
 } from './config/constants';
 import { defaultRancherValues } from './ranchers';
-import { TRIAGE_ACTIONS, jiraWorkspaceName } from './jira-steps.mjs';
+import { TRIAGE_ACTIONS, jiraWorkspaceName, roleForStep } from './jira-steps.mjs';
 import { note } from './dev-log.mjs';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -252,6 +252,19 @@ export async function commitsDiff(num: number, shas: string[], repo = DEFAULT_RE
 /** Where one attached piece of evidence can be looked at: a file in the agent's workspace, through the API. */
 export function artifactUrl(num: number, path: string): string {
   return `${ DEV_API }/my-work/pr/${ num }/artifact?path=${ encodeURIComponent(path) }`;
+}
+
+/**
+ * A path on dev-api, as the browser can reach it.
+ *
+ * `DEV_API_IN_CLUSTER` is the address an agent uses and is no use in a page: dev-api is a
+ * Service in `dev-system` with no route out of the cluster, and the browser gets at it through
+ * the apiserver's service proxy, which is what `DEV_API` is. Every link the column makes to a
+ * Jira attachment or a reproduction's evidence goes through here, so the one place that knows
+ * the difference is this one.
+ */
+export function devApiUrl(path: string): string {
+  return `${ DEV_API }${ path.startsWith('/') ? path : `/${ path }` }`;
 }
 
 /** Comments as the API keeps them, with everything a reader needs about their evidence. */
@@ -970,6 +983,12 @@ export async function startJiraTriage(store: Store, bug: { key: string; summary?
   const key = bug.key.toUpperCase();
   const workspace = await workspaceFor(jiraWorkspaceName(key));
   const created = await ensureWorkspace(store, workspace, bug.summary || key, repo);
+
+  // Which group the nav puts it in, written on every run rather than at create: the same
+  // workspace is a review this morning and a reproduction this afternoon, and its name cannot
+  // say which. See roleForStep.
+  await setWorkspaceRole(workspace, roleForStep(action));
+
   const title = `${ step.label } ${ key }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
   const prompt = jiraPrompt(key, action);

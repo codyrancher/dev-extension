@@ -1337,6 +1337,39 @@ export async function ensureWorkspaceScripts(names: string[], cluster = ''): Pro
  * background auto-stop (see autoStopIdle) scales workspaces down while a page open on another
  * one holds BASE pointed at that one's cluster, and must not scale the wrong Deployment.
  */
+/**
+ * Which part this workspace is for, written onto its AppInstance so the nav groups it there.
+ *
+ * The label has been read in three places since the nav had groups (LABEL_ROLE) and written in
+ * none: the role was whatever the name implied, so the only way to move a workspace between
+ * groups was to call it something else. A bug's workspace is the case that needs it - the same
+ * `sure-<n>` is a review this morning and a reproduction this afternoon, and the name cannot say
+ * which.
+ *
+ * On `local` explicitly: every workspace's AppInstance lives there whatever cluster the workspace
+ * runs on, and BASE follows the workspace.
+ *
+ * Quiet on failure, and deliberately so. Nothing depends on the label - the nav falls back to
+ * what the name implies - and this is called on the way to starting work, where a failed PATCH
+ * must not be what stops a conversation from opening.
+ */
+export async function setWorkspaceRole(name: string, role: string): Promise<void> {
+  const url = `${ clusterBase(DEFAULT_CLUSTER) }/v1/${ APP_INSTANCE }s/${ name }`;
+
+  try {
+    const instance = await devFetch(url);
+
+    if (instance?.metadata?.labels?.[LABEL_ROLE] === role) {
+      return;
+    }
+    instance.metadata.labels = { ...(instance.metadata.labels || {}), [LABEL_ROLE]: role };
+    await devFetch(url, { method: 'PUT', body: JSON.stringify(instance) });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(`[dev] could not set the role of ${ name } to ${ role }`, e);
+  }
+}
+
 export async function setWorkspaceRunning(name: string, running: boolean, cluster?: string): Promise<void> {
   const namespace = workspaceNamespace(name);
   const base = cluster ? clusterBase(cluster) : BASE;

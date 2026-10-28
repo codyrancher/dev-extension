@@ -9,7 +9,7 @@
 // stage can be looked at again after it has passed: the evidence is composed per stage, from
 // what that stage left behind, so a past step on the rail is a way back to its artifacts.
 import {
-  prDetail, commitsDiff, ciFailures, ghAssetUrl, ghAssetKind, artifactUrl, DEFAULT_REPO
+  prDetail, commitsDiff, ciFailures, ghAssetUrl, ghAssetKind, artifactUrl, devApiUrl, DEFAULT_REPO
 } from './reviews';
 import type { LocalAttachment } from './reviews';
 import { issueBody } from './github';
@@ -23,7 +23,10 @@ import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from './api';
 import { noteCoded, noteBranch, isBot, repoOf, STAGE_LABELS } from './workspace-status';
 import type { WorkspaceStatus, Stage } from './workspace-status';
 import { artifactKind } from './artifact-kind';
+import { jiraDetail, jiraProposal, JIRA_BASE } from './jira';
+import type { JiraDetail, JiraProposal } from './jira';
 import { numberTaskBoxes } from './pr-body.mjs';
+import { ago as agoOf } from './chat-state.mjs';
 import type { ArtifactKind } from './artifact-kind';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -41,8 +44,26 @@ export const FIX_STEPS: RailStep[] = ['assess', 'code', 'draft', 'review', 'feed
 
 export const REVIEW_STEPS: RailStep[] = ['agent', 'findings', 'submitted', 'response', 'approved'].map((k) => step(k as Stage));
 
+/*
+ * A bug's, which is the one of these that is not a line.
+ *
+ * Waiting for Reporter is not a step between In Triage and Reproduced - it is where either of
+ * them goes when the report is not enough to act on, and a bug can come back from it to either.
+ * Drawn in the line anyway, after the two states it is reached from and before the one it is on
+ * the way to, because the stepper is a line and the alternative is no stepper at all for a kind
+ * of work that has five perfectly good positions.
+ */
+export const BUG_STEPS: RailStep[] = ['bug-new', 'bug-triage', 'bug-waiting', 'bug-prioritized', 'bug-done'].map((k) => step(k as Stage));
+
 export function stepsFor(kind: WorkspaceStatus['kind']): RailStep[] {
-  return kind === 'review' ? REVIEW_STEPS : kind === 'fix' ? FIX_STEPS : [];
+  if (kind === 'review') {
+    return REVIEW_STEPS;
+  }
+  if (kind === 'jira') {
+    return BUG_STEPS;
+  }
+
+  return kind === 'fix' ? FIX_STEPS : [];
 }
 
 // ── Evidence ────────────────────────────────────────────────────────────────────────────────
@@ -547,6 +568,18 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
       have.failed = { ...have.failed, pr: !!status.pr && !r.v };
     }),
     tried('issue', issue && status.kind === 'fix' ? issueBody(repoOf(workspace), issue) : Promise.resolve(null)).then((r) => { have.issue = r.v; }),
+    /*
+     * The ticket, and whatever a triage step concluded about it.
+     *
+     * Two reads rather than one because they answer different questions and one of them can fail
+     * on its own: `detail` is the report as the customer wrote it, and `recommendation` is what
+     * is waiting on a person - a bug nobody has run a step on has the first and not the second.
+     */
+    tried('bug', status.bug ? jiraDetail(status.bug) : Promise.resolve(null)).then((r) => {
+      have.bug = r.v;
+      have.failed = { ...have.failed, bug: !r.ok };
+    }),
+    tried('proposal', status.bug ? jiraProposal(status.bug).catch(() => null) : Promise.resolve(null)).then((r) => { have.proposal = r.v; }),
   ];
   let pending = reads.length;
   const emit = (done: boolean) => {
@@ -609,6 +642,7 @@ export interface Failed {
   report?: boolean;
   branch?: boolean;
   media?: boolean;
+  bug?: boolean;
 }
 
 interface Sources {
@@ -617,6 +651,9 @@ interface Sources {
   artifacts?: Awaited<ReturnType<typeof readArtifacts>> | null;
   d?: Json;
   issue?: { title: string; body: string; url: string } | null;
+  /** The Jira ticket and the proposal waiting on somebody, for a bug's workspace. */
+  bug?: JiraDetail | null;
+  proposal?: JiraProposal | null;
   ci?: Json;
   /** Which reads failed, so the column says so rather than quietly leaving a section out. */
   failed?: Failed;
@@ -684,6 +721,11 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
   // fifteen comment threads.
   if (have.failed?.pr) {
     sections.push({ id: 'pr-unread', title: 'The pull request could not be read', items: [{ kind: 'empty', text: 'GitHub or the in-cluster API did not answer. Trying again in a moment.' }] });
+  }
+  // The same for a bug, and more often: a missing JIRA_TOKEN reads exactly like a ticket with
+  // nothing on it, and those are opposite things.
+  if (have.failed?.bug) {
+    sections.push({ id: 'bug-unread', title: 'The ticket could not be read', items: [{ kind: 'empty', text: 'Jira did not answer, or there is no JIRA_TOKEN set - add one in Settings. Trying again in a moment.' }] });
   }
   /*
    * The agent's report is not drawn, at any stage.
@@ -783,6 +825,128 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     // it is reference, not news, and open it was a screenful of template above the findings.
     sections.unshift({ id: 'pull-request', title: 'Pull request', items, collapsed: true });
   };
+  /*
+   * The bug, as the customer wrote it, and what the process says is still missing from it.
+   *
+   * Two sections and not one. The report is reference - it is read once and then referred back
+   * to - and the gaps are a list of things to do, each of them a line of the triage document that
+   * this ticket's own fields say has not been done. A gaps list buried under a wall of
+   * description is a gaps list nobody reads.
+   */
+  const bugSections = () => {
+    const bug = have.bug;
+
+    if (!bug) {
+      return;
+    }
+    const checks = bug.checks || [];
+
+    if (checks.length) {
+      sections.push({
+        id:    'bug-checks',
+        title: `The ticket's own fields (${ checks.length } to put right)`,
+        items: [{
+          kind: 'text',
+          text: checks.map((c) => `${ c.field }: ${ c.problem }`).join('\n'),
+          html: renderMd(checks.map((c) => `- **${ c.field }** - ${ c.problem }`).join('\n')),
+        }],
+      });
+    }
+
+    // `tone` marks the fields the process says should be set and are not, so the strip itself
+    // says what the gaps section spells out.
+    const rows: { k: string; v: string; tone?: string }[] = [
+      { k: 'Status', v: bug.status },
+      { k: 'Priority', v: bug.priority || 'none' },
+      { k: 'Assignee', v: bug.assignee || 'nobody', ...(bug.assignee ? {} : { tone: 'warning' }) },
+      { k: 'Reporter', v: bug.reporter || 'unknown' },
+      { k: 'Rancher Team', v: bug.team || 'unset', ...(bug.team ? {} : { tone: 'warning' }) },
+      { k: 'Affects', v: bug.affectsVersions.join(', ') || 'unset', ...(bug.affectsVersions.length ? {} : { tone: 'warning' }) },
+      { k: 'Fix version', v: bug.fixVersions.join(', ') || 'none' },
+      { k: 'Raised', v: `${ bug.ageDays } business day${ bug.ageDays === 1 ? '' : 's' } ago` },
+    ];
+    const items: EvidenceItem[] = [
+      { kind: 'kv', rows },
+      {
+        kind: 'text', text: bug.description, html: renderMd(bug.description || '_(no description)_'),
+      },
+    ];
+
+    // Where the HAR files and the screenshots that decide a reproduction are. Through dev-api,
+    // because jira.suse.com wants a bearer token and a browser cannot attach one.
+    if (bug.attachments.length) {
+      items.push({
+        kind:  'links',
+        items: bug.attachments.map((a) => ({ label: `${ a.filename } (${ a.author || 'unknown' })`, url: `${ devApiUrl(a.url) }` })),
+      });
+    }
+    if (bug.links.length) {
+      items.push({
+        kind:  'links',
+        items: bug.links.map((l) => ({ label: `${ l.type } ${ l.key }: ${ l.summary }`, url: `${ JIRA_BASE }/browse/${ l.key }` })),
+      });
+    }
+    sections.push({
+      id: 'bug-report', title: `The bug: ${ bug.summary }`, items, collapsed: true,
+    });
+
+    // Everything said on the ticket, oldest first, which is how a conversation with a customer
+    // reads. Not as comment threads - a Jira comment has no thread and no line, and borrowing
+    // the pull request's shape for it would promise a reply box that is not here.
+    if (bug.comments.length) {
+      sections.push({
+        id:    'bug-comments',
+        title: `On the ticket (${ bug.comments.length })`,
+        items: [{
+          kind: 'text',
+          text: bug.comments.map((c) => `${ c.author }: ${ c.body }`).join('\n\n'),
+          html: renderMd(bug.comments.map((c) => `**${ c.author }** &middot; ${ agoOf(c.created) }\n\n${ c.body }`).join('\n\n---\n\n')),
+        }],
+      });
+    }
+  };
+
+  /** What a triage step concluded, where it is still waiting on somebody to say yes. */
+  const proposalSection = () => {
+    const rec = have.proposal?.recommendation;
+
+    if (!rec) {
+      return;
+    }
+    const lines = [
+      rec.toStatus ? `- Move to **${ rec.toStatus }**` : '',
+      rec.assignee ? `- Assign to **${ rec.assigneeLabel || rec.assignee }**` : '',
+      rec.fields?.team ? `- Rancher Team = **${ rec.fields.team }**` : '',
+      rec.fields?.fixVersions?.length ? `- Fix version = **${ rec.fields.fixVersions.join(', ') }**` : '',
+      rec.fields?.affectsVersions?.length ? `- Affects version = **${ rec.fields.affectsVersions.join(', ') }**` : '',
+      rec.fields?.resolution ? `- Resolution = **${ rec.fields.resolution }**` : '',
+      ...(rec.fields?.links || []).map((l) => `- Link ${ l.type } to **${ l.key }**`),
+      rec.comment ? `\n**The comment it would leave**\n\n> ${ rec.comment.split('\n').join('\n> ') }` : '',
+    ].filter(Boolean);
+    const items: EvidenceItem[] = [{
+      kind: 'text',
+      text: rec.reason || '',
+      html: renderMd([rec.reason || '', '', ...lines].join('\n')),
+    }];
+
+    // The evidence it produced, which is the half of a reproduction that is worth reading.
+    if (rec.attachments.length) {
+      items.push({
+        kind:  'links',
+        items: rec.attachments.filter((a) => a.url).map((a) => ({ label: a.caption || a.name, url: devApiUrl(a.url as string) })),
+      });
+    }
+    if (rec.github?.url || rec.github?.existingUrl) {
+      items.push({
+        kind:  'links',
+        items: [rec.github.url
+          ? { label: 'File the GitHub issue it drafted', url: rec.github.url }
+          : { label: 'The issue that already covers it', url: rec.github.existingUrl as string }],
+      });
+    }
+    sections.push({ id: 'bug-proposal', title: `What the ${ rec.action } step concluded`, items });
+  };
+
   const issueSection = () => have.issue && sections.push({ id: 'issue-body', title: `The issue: ${ have.issue.title }`, items: [{ kind: 'text', text: have.issue.body, html: renderMd(have.issue.body || '_(no description)_') }, { kind: 'links', items: [{ label: 'On GitHub', url: have.issue.url }] }] });
 
   if (status.kind === 'fix') {
@@ -849,6 +1013,19 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       artifactsSection('verify', 'reproduce');
       break;
     }
+  } else if (status.kind === 'jira') {
+    /*
+     * One column whatever the stage, because a bug's "stage" is not a stage of work here - it is
+     * where Jira says the ticket is, and the same three things are what a person reads at every
+     * one of them: what is waiting on them (the proposal), what the ticket's own fields still
+     * need, and the report itself.
+     *
+     * The order is the order they are acted on. A fix's column leads with the change and a
+     * review's with the findings; this one leads with whatever somebody has to say yes or no to.
+     */
+    proposalSection();
+    bugSections();
+    artifactsSection('jira', 'reproduce');
   } else if (status.kind === 'review') {
     const local: Json[] = d?.localComments || [];
     const pending = local.filter((c) => !c.submitted_at);

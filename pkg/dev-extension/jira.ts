@@ -12,7 +12,7 @@
 import { devApi } from './reviews';
 
 export {
-  TRIAGE_ACTIONS, actionForStatus, actionForBug, jiraWorkspaceName
+  TRIAGE_ACTIONS, actionForStatus, actionForBug, jiraWorkspaceName, jiraStageOf, roleForStep
 } from './jira-steps.mjs';
 
 export const JIRA_BASE = 'https://jira.suse.com';
@@ -379,4 +379,29 @@ export async function dismissJiraRecommendation(key: string): Promise<void> {
 /** Everything written to Jira from here, newest first: what a rotation has to report. */
 export async function jiraChanges(days = 30): Promise<{ days: number; changes: Record<string, never>[] }> {
   return devApi(`/my-work/jira/changes?days=${ days }`);
+}
+
+/** What this ticket's fields may be set to, and the moves its own workflow allows. */
+export interface JiraOptions {
+  key: string;
+  transitions: { id: string; name: string }[];
+  teams: string[];
+  fixVersions: string[];
+  affectsVersions: string[];
+  labels: string[];
+  resolutions: string[];
+  linkTypes: string[];
+  assignees: { name: string; label: string }[];
+  defaults: { assignee: string; assigneeLabel: string; team: string };
+}
+
+export async function jiraOptions(key: string): Promise<JiraOptions> {
+  return devApi(`/my-work/jira/${ encodeURIComponent(key) }/options`);
+}
+
+/** Put one file from the bug's workspace onto the ticket. One at a time, deliberately. */
+export async function attachToJira(key: string, path: string, workspace = ''): Promise<{ ok: boolean; filename: string }> {
+  return devApi(`/my-work/jira/${ encodeURIComponent(key) }/attach`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path, workspace }),
+  });
 }

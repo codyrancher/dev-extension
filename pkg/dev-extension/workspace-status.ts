@@ -7,6 +7,8 @@
 // calls per workspace, so each workspace is read every five minutes, one at a time, in the
 // background; the sidebar shows whatever was last read and never waits on it.
 import { prDetail, DEFAULT_REPO } from './reviews';
+import { jiraDetail, JIRA_BASE } from './jira';
+import { jiraStageOf } from './jira-steps.mjs';
 import { linkedPullRequest, branchPullRequest, issueBody } from './github';
 import { conversationStates, agentConversations, ConversationState } from './conversations';
 import { setWorkspaceRunning } from './api';
@@ -33,7 +35,9 @@ export type Tone = 'green' | 'asking' | 'attention' | 'waiting' | 'working' | 'm
 /** Where the work is, on the rail: a fix's stages, or a review's. */
 export type FixStage = 'assess' | 'code' | 'draft' | 'review' | 'feedback' | 'merged';
 export type ReviewStage = 'agent' | 'findings' | 'submitted' | 'response' | 'approved';
-export type Stage = FixStage | ReviewStage;
+/** Where a Jira bug is in the team's triage process. See jiraStageOf. */
+export type BugStage = 'bug-new' | 'bug-triage' | 'bug-waiting' | 'bug-prioritized' | 'bug-done';
+export type Stage = FixStage | ReviewStage | BugStage;
 
 /**
  * What each stage is called. One list, so the rail's stepper, the page's headline and the
@@ -52,6 +56,17 @@ export const STAGE_LABELS: Record<Stage, string> = {
   submitted: 'Submitted',
   response:  'Developer responded',
   approved:  'Approved',
+  /*
+   * A bug's, in the words the process uses rather than Jira's.
+   *
+   * "To Prioritize" is what Jira calls the column; what happened to get it there is that
+   * somebody reproduced it, which is the thing a person reading the rail wants to know.
+   */
+  'bug-new':         'New',
+  'bug-triage':      'In Triage',
+  'bug-waiting':     'Waiting for Reporter',
+  'bug-prioritized': 'Reproduced',
+  'bug-done':        'Done',
 };
 
 /**
@@ -94,7 +109,7 @@ export interface WorkspaceStatus {
   title: string;
   links: { label: string; url: string }[];
   /** Which kind of work this is, its stage, and the PR it is about (0 until there is one). */
-  kind: 'fix' | 'review' | 'other';
+  kind: 'fix' | 'review' | 'jira' | 'other';
   stage: Stage | '';
   /** The stage's name, as the rail's stepper writes it. */
   stageLabel: string;
@@ -110,6 +125,8 @@ export interface WorkspaceStatus {
    */
   round: number;
   pr: number;
+  /** The Jira key this workspace is for, where it is for one: `SURE-12345`, else ''. */
+  bug: string;
   /** When GitHub was last read for it; 0 when it never has been. */
   readAt: number;
 }
@@ -259,14 +276,23 @@ let reading = false;
 
 function empty(): WorkspaceStatus {
   return {
-    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0, kind: 'other', stage: '', stageLabel: '', reviewed: false, round: 1, pr: 0,
+    agent: 'none', label: '', tone: 'muted', title: '', links: [], readAt: 0, kind: 'other', stage: '', stageLabel: '', reviewed: false, round: 1, pr: 0, bug: '',
   };
 }
 
-function numbers(name: string): { pr: number; issue: number } {
+/**
+ * What a workspace's name says it is for.
+ *
+ * `bug` is the SURE project alone and not "any Jira key", on purpose: a workspace name is
+ * `<prefix>-<thing>-<number>` and `pr-19711` has exactly the shape of a Jira key. SURE is the
+ * only project this product touches (see jira.ts), so matching its name and nothing else is
+ * the difference between finding the bug workspaces and claiming every pull request is one.
+ */
+function numbers(name: string): { pr: number; issue: number; bug: string } {
   return {
     pr:    Number(/(?:^|-)pr-(\d+)(?:-|$)/.exec(name)?.[1]) || 0,
     issue: Number(/(?:^|-)issue-(\d+)(?:-|$)/.exec(name)?.[1]) || 0,
+    bug:   (/(?:^|-)(sure-\d+)(?:-|$)/.exec(name)?.[1] || '').toUpperCase(),
   };
 }
 
@@ -576,6 +602,9 @@ function fixWork(d: Json | null, agent: AgentState, coded = false): Work {
 const STAGE_TONE: Record<Stage, Tone> = {
   assess: 'muted', code: 'muted', draft: 'attention', review: 'waiting', feedback: 'attention', merged: 'green',
   agent: 'muted', findings: 'attention', submitted: 'waiting', response: 'attention', approved: 'green',
+  // A new bug and one in triage are both yours, with a clock on each; one parked on the reporter
+  // is somebody else's turn, which is what `waiting` is for; past triage it has left this team.
+  'bug-new': 'attention', 'bug-triage': 'attention', 'bug-waiting': 'waiting', 'bug-prioritized': 'green', 'bug-done': 'green',
 };
 
 /** A derived work state, packaged for the store to reconcile against what it already holds. */
@@ -605,7 +634,7 @@ function display(rec: StageRecord, w: Work): Pick<WorkspaceStatus, 'label' | 'to
 }
 
 async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
-  const { pr, issue } = numbers(name);
+  const { pr, issue, bug } = numbers(name);
   const agent = agents[name] || 'none';
   const links: WorkspaceStatus['links'] = [];
   // The workspace's own, not this product's. See `repos`.
@@ -613,6 +642,9 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
 
   if (issue) {
     links.push({ label: `Issue #${ issue }`, url: `https://github.com/${ repo }/issues/${ issue }` });
+  }
+  if (bug) {
+    links.push({ label: bug, url: `${ JIRA_BASE }/browse/${ bug }` });
   }
   if (pr) {
     const d = await prDetail(pr, repo);
@@ -623,6 +655,41 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
 
     return {
       ...display(rec, w), title: d.meta?.title || '', links, kind: 'review', pr,
+    };
+  }
+  /*
+   * A bug's workspace reads Jira, not GitHub.
+   *
+   * Before `isFix`, because a bug's workspace can carry the `developer` role - a fix step runs in
+   * the same workspace the reproduction ran in - and `isFix` would then claim it and draw a fix's
+   * stages over a ticket that has no pull request.
+   *
+   * Its stage is the ticket's own status and nothing else: this is not a stage somebody here
+   * moves through, it is where Jira says the bug is, so it is read rather than reconciled against
+   * a stored one. A ticket that cannot be read leaves the stage alone instead of resetting it.
+   */
+  if (bug) {
+    const ticket = await jiraDetail(bug).catch(() => null);
+
+    if (!ticket) {
+      return {
+        links, kind: 'jira', bug, title: bug,
+      };
+    }
+    const stage = jiraStageOf(ticket.status, ticket.resolution);
+
+    return {
+      links,
+      kind:       'jira',
+      bug,
+      pr:         0,
+      title:      ticket.summary || bug,
+      stage,
+      stageLabel: STAGE_LABELS[stage],
+      // What it needs, in the words the queue uses, so the row reads the same in the nav as it
+      // does in My Work. Overdue is the deadline the process puts on this status, not an opinion.
+      label:      ticket.checks.some((c) => c.field === 'age') ? `${ ticket.status.toLowerCase() }, past its deadline` : '',
+      tone:       ticket.checks.some((c) => c.field === 'age') ? 'attention' : (STAGE_TONE[stage] || 'muted'),
     };
   }
   if (isFix(name)) {
@@ -656,7 +723,7 @@ export function noteCoded(name: string, value: boolean): void {
 
 /** What the name alone says - the kind, the links - so a page can draw its rail before any read answers. */
 export function provisionalStatus(name: string): WorkspaceStatus {
-  const { pr, issue } = numbers(name);
+  const { pr, issue, bug } = numbers(name);
   const links: WorkspaceStatus['links'] = [];
   // Whatever has been noted for it, which before the first listing is this product's own. These
   // links are replaced by the real read a moment later; the point is that they are not wrong in
@@ -669,9 +736,12 @@ export function provisionalStatus(name: string): WorkspaceStatus {
   if (pr) {
     links.push({ label: `PR #${ pr }`, url: `https://github.com/${ repo }/pull/${ pr }` });
   }
+  if (bug) {
+    links.push({ label: bug, url: `${ JIRA_BASE }/browse/${ bug }` });
+  }
 
   return {
-    ...empty(), kind: pr ? 'review' : isFix(name) ? 'fix' : 'other', links, pr,
+    ...empty(), kind: pr ? 'review' : bug ? 'jira' : isFix(name) ? 'fix' : 'other', links, pr, bug,
   };
 }
 

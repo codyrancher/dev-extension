@@ -54,14 +54,29 @@ import {
 const REFRESH_MS = 5000;
 
 /**
- * The three parts there are to play. A workspace named for an issue is yours to fix and ship;
- * one named for a PR is somebody else's change to judge; anything else is a workspace someone
- * made for a reason of their own. A workspace whose Installation carries a `dev.rancher.io/role`
- * label plays that part whatever it is called.
+ * The parts there are to play, in the order a day runs through them.
+ *
+ * A workspace named for an issue is yours to fix and ship; one named for a PR is somebody else's
+ * change to judge; anything else is a workspace someone made for a reason of their own. A
+ * workspace whose Installation carries a `dev.rancher.io/role` label plays that part whatever it
+ * is called.
+ *
+ * Two of them are a Jira bug's, because the team's triage process asks two different things and
+ * they are not the same afternoon. **Jira reviewer** is reading a report and writing on the
+ * ticket - deciding whether it makes sense, whether it is ours, whether it is a duplicate,
+ * whether the reporter has to be asked for more. Nothing is running in front of you. **Jira
+ * reproducer** is the step after: standing the version up that the customer named and trying to
+ * make the thing happen, which needs a Rancher and a browser. Grouping both under one "Jira"
+ * would put the four tickets you can clear from a desk next to the one that needs an afternoon.
+ *
+ * Fixing a bug is not a third: it is ordinary development, and groups with Developer, which is
+ * also why `roleForStep` sends it there.
  */
 const ROLES = [
   { id: 'developer', label: 'Developer', icon: 'icon-code' },
   { id: 'reviewer', label: 'Reviewer', icon: 'icon-checkmark' },
+  { id: 'jira-reviewer', label: 'Jira reviewer', icon: 'icon-notifier' },
+  { id: 'jira-reproducer', label: 'Jira reproducer', icon: 'icon-repository' },
   { id: 'other', label: 'Other', icon: 'icon-folder' },
 ];
 
@@ -72,6 +87,12 @@ function roleOf({ name, role }) {
 
   if (/(^|-)pr-\d+(-|$)/.test(name)) {
     return 'reviewer';
+  }
+  // A bug's workspace with no role label on it - made before the label was stamped, or by hand.
+  // The first step of the process is the one it is most likely waiting on, and a label written
+  // by the next step that runs moves it.
+  if (/(^|-)sure-\d+(-|$)/.test(name)) {
+    return 'jira-reviewer';
   }
 
   return /(^|-)issue-\d+(-|$)/.test(name) ? 'developer' : 'other';
