@@ -139,6 +139,17 @@ export default {
     },
 
     /**
+     * `sure-12180`: the bug a workspace is named for.
+     *
+     * The same match workspace-status makes (see `numbers`), and the SURE project alone for the
+     * same reason: a workspace name is not a Jira search, and SURE is the only project this
+     * product reads.
+     */
+    bugKey() {
+      return (/(?:^|-)(sure-\d+)(?:-|$)/i.exec(this.name || '')?.[1] || '').toUpperCase();
+    },
+
+    /**
      * The tab the address names, or the default when it names none or names one that is not
      * there. Read here as well as by Tabbed, because it decides which tab's content is mounted
      * on the way up, before Tabbed has said anything.
@@ -208,14 +219,14 @@ export default {
       return this.workspace?.state === 'stopped';
     },
 
-    /** The rail is for a workspace named for an issue or a PR, or labelled a developer's; anything else opens on its tabs. */
+    /** The rail is for a workspace named for an issue, a PR or a bug, or labelled a developer's; anything else opens on its tabs. */
     /** Whether this is a leased workspace: it runs nothing, and its tools are attached to it. */
     leased() {
       return isLte(this.name || '');
     },
 
     railable() {
-      return !!this.workspace && !this.workspace.preview && (this.prNumber > 0 || this.issueNumber > 0 || this.role === 'developer');
+      return !!this.workspace && !this.workspace.preview && (this.prNumber > 0 || this.issueNumber > 0 || !!this.bugKey || this.role === 'developer');
     },
 
     /*
@@ -225,6 +236,10 @@ export default {
      * across visits. Nobody switched. What is left is the rule that was always underneath -
      * a workspace named for an issue or a PR is a piece of work with stages, and that is the
      * rail; anything else (a preview, which has no pod to work in) is the tabs.
+     *
+     * A bug's workspace is named for its ticket rather than for an issue or a PR, and it had
+     * neither number, so it fell through to the tabs - the stage and the triage moves were
+     * built and never drawn. Its key is the third way a workspace says what it is for.
      */
     showRail() {
       return this.railable;
