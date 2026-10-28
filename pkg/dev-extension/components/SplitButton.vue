@@ -16,15 +16,13 @@
  * drawn, because a menu that explains each choice in a sentence is a page, and this opens under
  * a 22px button next to the thing being added.
  */
-import RcButton from '@components/RcButton/RcButton.vue';
-
 import { placeMenu } from '../menu-place.mjs';
 import CliMark from './CliMark.vue';
 
 export default {
   name: 'SplitButton',
 
-  components: { CliMark, RcButton },
+  components: { CliMark },
 
   props: {
     /**
@@ -80,30 +78,36 @@ export default {
       default: '',
     },
     /**
-     * One of RcButton's variants - `primary`, `secondary`, `tertiary` - to draw both halves as
-     * that button, or '' for this component's own bare look.
+     * `primary` or `secondary` to draw both halves as the buttons beside them, or '' for this
+     * component's own bare look.
      *
-     * A class could not carry this. RcButton's styles are SCOPED to RcButton, so copying
-     * `variant-secondary` onto a `<button>` of ours gets the class and none of the colour -
-     * which is how the rail's verdict came to wear `btn role-secondary`, Rancher's older button
-     * language, in a row where every other button is an RcButton: one grey press beside three
-     * blue ones, saying the row's own answer is the dull one.
+     * Drawn from the design system's TOKENS rather than from RcButton. Three ways were tried
+     * and this is the one that works. Rancher's older `btn role-secondary` is a different
+     * button language - one grey press next to three blue ones, which is what the rail's
+     * verdict looked like and what this prop exists to fix. Copying RcButton's own class on to
+     * a button of ours gets the class and none of the colour, because its styles are scoped to
+     * it. And rendering the halves AS RcButtons through `<component :is>` drew nothing at all:
+     * an Actions row that had read "Ask for changes ▾ · Focus · …" came back reading
+     * "Focus · …", with the control taking no space whatever.
      *
-     * So the halves become RcButtons, and this component stops painting them: see
-     * `.split-btn__plain`, which is where its own border and colour went.
+     * The tokens are the part of the design system that is public, and `--primary` is the same
+     * `--primary` the variant classes read. Which leaves this component painting its halves,
+     * as it always did - `.split-btn__plain` is the same look under a name, for the hosts that
+     * want the bare one.
      */
     variant: {
-      type:    String,
-      default: '',
+      type:      String,
+      default:   '',
+      validator: (v) => ['', 'primary', 'secondary'].includes(v),
     },
   },
 
   emits: ['pick'],
 
   computed: {
-    /** What each half is: RcButton when a variant was asked for, else a plain button. */
-    half() {
-      return this.variant ? RcButton : 'button';
+    /** The look both halves carry: the variant asked for, else this component's own. */
+    look() {
+      return ['primary', 'secondary'].includes(this.variant) ? `split-btn__${ this.variant }` : 'split-btn__plain';
     },
   },
 
@@ -224,26 +228,22 @@ export default {
 
 <template>
   <div class="split-btn">
-    <component
-      :is="half"
+    <button
       type="button"
       class="split-btn__main"
-      :class="[mainClass, { 'split-btn__plain': !variant }]"
-      :variant="variant || undefined"
+      :class="[mainClass, look]"
       :disabled="disabled"
       :aria-label="label || chosen.label"
       :title="chosen.what || chosen.label"
       @click="pick(chosen.id)"
     >
       <slot>+</slot>
-    </component>
-    <component
-      :is="half"
+    </button>
+    <button
       v-if="choices.length > 1"
       type="button"
       class="split-btn__more"
-      :class="[moreClass, { 'split-btn__plain': !variant }]"
-      :variant="variant || undefined"
+      :class="[moreClass, look]"
       :disabled="disabled"
       :aria-label="`${ label || 'More' }: other options`"
       :aria-expanded="open ? 'true' : 'false'"
@@ -251,7 +251,7 @@ export default {
       @click="toggle"
     >
       <i :class="open ? 'icon icon-chevron-up' : 'icon icon-chevron-down'" />
-    </component>
+    </button>
 
     <Teleport to="body">
       <ul
@@ -321,17 +321,35 @@ export default {
 }
 
 /*
- * The bare look, when no `variant` was asked for.
+ * One of three looks on every half, and exactly one: the two that match the design system's
+ * buttons, and this component's own bare one.
  *
- * On a class of its own and not on the halves, because with a variant the halves are RcButtons
- * and the colour is theirs; a border declared for every half would land on the same element and
- * the two would decide it by which stylesheet the build injected last.
- *
- * One class plus the scope attribute, exactly as `.split-btn__main` was - so the hosts that
- * strip this off from their wrapper (`__new-split`, `dev-nav-head__add`) still carry the one
- * more class that makes them win by specificity rather than by luck. See the comment on
- * `__new-split` in WorkspaceRail, which is the bug that rule exists to have fixed.
+ * Each is a single class plus the scope attribute, which is the specificity `.split-btn__main`
+ * carried before any of this - so the hosts that strip the look off from their wrapper
+ * (`__new-split`, `dev-nav-head__add`) still win by carrying one more class rather than by
+ * which stylesheet the build injected last. See the comment on `__new-split` in WorkspaceRail,
+ * which is the bug that rule exists to have fixed.
  */
+.split-btn__primary {
+  border:     1px solid var(--primary);
+  background: var(--primary);
+  color:      var(--primary-text);
+
+  &:hover:not(:disabled) { background: var(--primary-hover-bg); }
+}
+
+.split-btn__secondary {
+  border:     1px solid var(--secondary-border, var(--primary));
+  background: var(--secondary, transparent);
+  color:      var(--on-secondary, var(--primary));
+
+  &:hover:not(:disabled) { background: var(--secondary-hover, transparent); color: var(--on-secondary, var(--lightest)); }
+}
+
+/* Both of them are a labelled button rather than a glyph, so they get a button's room. */
+.split-btn__primary,
+.split-btn__secondary { padding: 0 var(--dev-space-4); }
+
 .split-btn__plain {
   border:     1px solid var(--border);
   background: transparent;

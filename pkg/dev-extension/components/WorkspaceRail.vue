@@ -4307,11 +4307,11 @@ export default {
     }
 
     :deep(.split-btn__main) {
-      // Both halves ARE an RcButton, on the same variant as the buttons beside them on this
-      // row, so the colour is the design system's and what is left here is the shape: the two
-      // inner corners, and the gap. They used to carry `.btn role-primary|role-secondary`,
-      // which is Rancher's older button language - one grey press next to three blue ones,
-      // saying the row's own answer was the dull one.
+      // Both halves take the same variant as the buttons beside them on this row, drawn from
+      // the design system's own tokens (see SplitButton's `variant`), so what is left here is
+      // the shape: the two inner corners, and the gap. They used to carry
+      // `.btn role-primary|role-secondary`, which is Rancher's older button language - one
+      // grey press next to three blue ones, saying the row's own answer was the dull one.
       border-top-right-radius:    0;
       border-bottom-right-radius: 0;
       // The spinner that replaces nothing while a verdict is being filed sat against the first
