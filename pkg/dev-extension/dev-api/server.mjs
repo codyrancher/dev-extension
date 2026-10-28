@@ -497,6 +497,493 @@ function failure(status, message) {
   return error;
 }
 
+// ── Jira triage: the steps the team's process runs a bug through ─────────────────────────────
+//
+// The harness had these (claude-harness/api-service/src/jira.ts) and this did not, so the four
+// `my-jira-bug-*` skills - which every workspace already lays out, they come from the skills
+// repository like the rest - had nothing to call and nothing to file their conclusion into. The
+// routes are the harness's, by the same names, so the skills run here unchanged.
+//
+// What moved in the port is where the state lives. The harness kept recommendations and its
+// change log in sqlite; this keeps them beside the review documents, under
+// `.artifacts/jira-<KEY>/`, for the reason given at `reviewPaths`: one place, on the disk,
+// that outlives the workspace and that a person can read.
+
+/** "Rancher Team" - the field triage sets to UI so the bug lands on this team. */
+const TEAM_FIELD = process.env.DEV_JIRA_TEAM_FIELD || 'customfield_23900';
+const TEAM = 'UI';
+/** Who a new bug is put on when a UI engineer has to handle it. */
+const TRIAGE_OWNER = process.env.DEV_JIRA_TRIAGE_OWNER || 'gak';
+const TRIAGE_OWNER_LABEL = process.env.DEV_JIRA_TRIAGE_OWNER_LABEL || 'gary korhonen';
+const DASHBOARD_REPO = 'rancher/dashboard';
+/** The repository's own bug form with nothing filled in: where "file the issue" goes with no draft. */
+const BLANK_ISSUE_URL = `https://github.com/${ DASHBOARD_REPO }/issues/new?template=bug_report.md`;
+
+/**
+ * One agent step per step of the bug-triage document, and the skill that is that step.
+ *
+ * Which one a bug wants is a function of the state it is sitting in, so a row offers exactly
+ * one. `needsTools` is the harness's `needsProject` under the name that is true here: every
+ * step runs in the bug's own workspace (the agent pod has neither the API nor a checkout), and
+ * what differs is whether the step has to drive the product - reproducing and fixing want a
+ * Rancher and a browser, reading a report and chasing a reporter want only Jira.
+ */
+const TRIAGE_ACTIONS = {
+  review:    { skill: 'my-jira-bug-review', label: 'Review', states: ['New'], needsTools: false },
+  reproduce: { skill: 'my-jira-bug-reproduce', label: 'Reproduce', states: ['In Triage'], needsTools: true },
+  unstick:   { skill: 'my-jira-bug-stuck', label: 'Unstick', states: ['Waiting for Reporter'], needsTools: false },
+  fix:       {
+    skill: 'my-jira-bug-fix', label: 'Fix', needsTools: true,
+    states: ['To Prioritize', 'Prioritized', 'Needs Sign Off', 'In Development', 'Eng PR Review'],
+  },
+};
+
+/** Once a bug is past triage it is being worked, so it needs an owner. */
+const OWNED_STATES = ['In Triage', 'To Prioritize', 'Prioritized', 'Needs Sign Off', 'In Development', 'Eng PR Review', 'To Test', 'QA Working', 'Blocked'];
+/** A fix in flight should say which release it lands in. */
+const FIX_VERSION_STATES = ['In Development', 'Eng PR Review', 'To Test', 'QA Working'];
+/** Deadlines from the triage document, in business days from creation. */
+const REVIEW_SLA_DAYS = 3;
+const TRIAGE_SLA_DAYS = 7;
+
+/**
+ * The team field, read in one place.
+ *
+ * Jira answers this custom field as an array of options on this instance, as a single option
+ * elsewhere and as a bare string in some payloads. The harness learned that the hard way: read
+ * in more than one place, a correctly tagged bug renders as "[object Object]" and is then
+ * flagged as wrong.
+ */
+function jiraTeamOf(raw) {
+  if (!raw) {
+    return null;
+  }
+  const one = (v) => (typeof v === 'string' ? v : v?.value ?? v?.name ?? null);
+
+  if (Array.isArray(raw)) {
+    const names = raw.map(one).filter(Boolean);
+
+    return names.length ? names.join(', ') : null;
+  }
+
+  return one(raw);
+}
+
+function jiraHasTeam(raw, want) {
+  const value = jiraTeamOf(raw);
+
+  return !!value && value.split(',').map((x) => x.trim()).includes(want);
+}
+
+/**
+ * Set the team field, whichever shape this instance wants.
+ *
+ * Single-option or multi-option depending on configuration, and Jira rejects the wrong shape
+ * outright. Try one and fall back to the other, which is cheaper and steadier than reading
+ * editmeta before every write.
+ */
+async function setJiraTeam(key, team) {
+  const body = (value) => JSON.stringify({ fields: { [TEAM_FIELD]: value } });
+
+  try {
+    await jiraFetch(`/rest/api/2/issue/${ key }`, { method: 'PUT', body: body({ value: team }) });
+  } catch {
+    await jiraFetch(`/rest/api/2/issue/${ key }`, { method: 'PUT', body: body([{ value: team }]) });
+  }
+}
+
+/** Every key that reaches Jira or the filesystem goes through here first. */
+function jiraKey(raw) {
+  const key = String(raw || '').toUpperCase();
+
+  if (!/^[A-Z]+-\d+$/.test(key)) {
+    throw failure(400, `"${ raw }" is not a Jira issue key.`);
+  }
+
+  return key;
+}
+
+/** Where one bug's triage state is kept, beside the review documents. See reviewPaths. */
+function jiraFile(key, name) {
+  return `${ reviewStore() }/jira-${ jiraKey(key) }/${ name }`;
+}
+
+/** Business days between then and now: the deadlines in the process do not count weekends. */
+function businessDaysSince(iso) {
+  const start = new Date(iso);
+
+  if (Number.isNaN(start.getTime())) {
+    return 0;
+  }
+  const cursor = new Date(start);
+
+  cursor.setHours(0, 0, 0, 0);
+  const end = new Date();
+
+  end.setHours(0, 0, 0, 0);
+  let days = 0;
+
+  while (cursor < end) {
+    cursor.setDate(cursor.getDate() + 1);
+    const day = cursor.getDay();
+
+    if (day !== 0 && day !== 6) {
+      days++;
+    }
+  }
+
+  return days;
+}
+
+function jiraSla(status) {
+  if (status === 'New') {
+    return REVIEW_SLA_DAYS;
+  }
+
+  return status === 'In Triage' ? TRIAGE_SLA_DAYS : null;
+}
+
+/**
+ * What is wrong with this ticket's own fields, in the words of the triage document.
+ *
+ * Not the agent's judgement and not an opinion: each of these is a line of the process that the
+ * ticket's fields say has not been done, and each is a thing a person can put right in one
+ * press. Lifted from the harness, which is where the wording was argued out.
+ */
+function jiraStateChecks(f, ageDays) {
+  const status = f.status?.name || '';
+  const team = jiraTeamOf(f[TEAM_FIELD]);
+  const out = [];
+
+  if (!jiraHasTeam(f[TEAM_FIELD], TEAM)) {
+    out.push({
+      field:   'team',
+      problem: team
+        ? `Rancher Team is "${ team }", not ${ TEAM }. It will drop out of this team's filters - if it is genuinely another team's bug, reassign it to them; otherwise set it back to ${ TEAM }.`
+        : 'Rancher Team is unset. The team\'s saved filters select on this field, so nobody sees it here.',
+    });
+  }
+  if (OWNED_STATES.includes(status) && !(f.assignee?.name || null)) {
+    out.push({
+      field:   'assignee',
+      problem: `Nobody owns this and it is already in "${ status }". Whoever attempts the reproduction assigns it to themselves first, so two people don't reproduce the same bug.`,
+    });
+  }
+  // Deliberately not flagged at New: the document makes assigning conditional there, so an
+  // unassigned new bug is a normal state and assigning is offered as an action, not a fault.
+  if (FIX_VERSION_STATES.includes(status) && !(f.fixVersions || []).length) {
+    out.push({
+      field:   'fixVersions',
+      problem: `No fix version, but this is in "${ status }" - the release it lands in should be recorded before it moves on.`,
+    });
+  }
+  if (!(f.versions || []).length) {
+    out.push({
+      field:   'affectsVersions',
+      problem: 'No Affects Version, so the Rancher release the customer hit this on is unknown. The review step is meant to capture it - ask the reporter if it is still missing.',
+    });
+  }
+
+  // Both deadlines run from creation, not from entering the state, so an old bug that only just
+  // reached In Triage is already late. That is the point of them.
+  const sla = jiraSla(status);
+
+  if (sla !== null && ageDays > sla) {
+    out.push({
+      field:   'age',
+      problem: status === 'New'
+        ? `${ ageDays } business days old and still unreviewed - the document allows ${ sla } from creation.`
+        : `${ ageDays } business days old - the document allows ${ sla } from creation to reach To Prioritize.`,
+    });
+  }
+
+  return out;
+}
+
+/**
+ * The field edits a recommendation may carry, parsed the same way wherever they arrive - off an
+ * agent's proposal, or off the boxes in the panel that applies it.
+ */
+function parseJiraEdits(body) {
+  const edits = {};
+  const names = (v) => (Array.isArray(v) ? v.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 10) : null);
+
+  if (typeof body?.team === 'string' && body.team) {
+    edits.team = body.team;
+  }
+  for (const [field, from] of [['fixVersions', 'fixVersions'], ['affectsVersions', 'affectsVersions'], ['labels', 'labels']]) {
+    const list = names(body?.[from]);
+
+    if (list) {
+      edits[field] = list;
+    }
+  }
+  if (typeof body?.resolution === 'string' && body.resolution) {
+    edits.resolution = body.resolution;
+  }
+  if (Array.isArray(body?.links)) {
+    const links = body.links
+      .filter((l) => l && typeof l.key === 'string' && /^[A-Za-z]+-\d+$/.test(l.key))
+      .slice(0, 10)
+      .map((l) => ({ type: String(l.type || 'Duplicate'), key: String(l.key).toUpperCase() }));
+
+    if (links.length) {
+      edits.links = links;
+    }
+  }
+
+  return edits;
+}
+
+function hasJiraEdits(edits) {
+  return Object.values(edits).some((v) => (Array.isArray(v) ? v.length > 0 : v != null));
+}
+
+/**
+ * Everything that is a plain field write, done before the transition. Answers one line per edit
+ * for the change log: "what did I change" has to include these, not only the status.
+ */
+async function applyJiraEdits(key, edits) {
+  const done = [];
+
+  if (edits.team) {
+    await setJiraTeam(key, edits.team);
+    done.push(`Rancher Team = ${ edits.team }`);
+  }
+
+  const fields = {};
+
+  if (edits.fixVersions) {
+    fields.fixVersions = edits.fixVersions.map((name) => ({ name }));
+  }
+  if (edits.affectsVersions) {
+    fields.versions = edits.affectsVersions.map((name) => ({ name }));
+  }
+  if (edits.labels) {
+    fields.labels = edits.labels;
+  }
+  if (Object.keys(fields).length) {
+    await jiraFetch(`/rest/api/2/issue/${ key }`, { method: 'PUT', body: JSON.stringify({ fields }) });
+    if (edits.fixVersions) {
+      done.push(`Fix Version = ${ edits.fixVersions.join(', ') }`);
+    }
+    if (edits.affectsVersions) {
+      done.push(`Affects Version = ${ edits.affectsVersions.join(', ') }`);
+    }
+    if (edits.labels) {
+      done.push(`labels = ${ edits.labels.join(', ') }`);
+    }
+  }
+  if (edits.links?.length) {
+    // Link-type names are per-instance ("Duplicates" here, "Duplicate" elsewhere) and Jira
+    // rejects a near miss outright, so resolve what was asked for against the real list.
+    const known = (await jiraFetch('/rest/api/2/issueLinkType').catch(() => null))?.issueLinkTypes?.map((t) => t.name).filter(Boolean) || [];
+    const resolveType = (want) => {
+      const w = want.toLowerCase();
+
+      return known.find((n) => n.toLowerCase() === w) || known.find((n) => n.toLowerCase().startsWith(w) || w.startsWith(n.toLowerCase())) || want;
+    };
+
+    for (const link of edits.links) {
+      const type = resolveType(link.type);
+
+      // Read as "outward <description> inward": this bug duplicates the other one, so this
+      // issue is the outward side.
+      await jiraFetch('/rest/api/2/issueLink', {
+        method: 'POST',
+        body:   JSON.stringify({ type: { name: type }, outwardIssue: { key }, inwardIssue: { key: link.key } }),
+      });
+      done.push(`linked ${ type } -> ${ link.key }`);
+    }
+  }
+
+  return done;
+}
+
+/**
+ * Move the ticket, carrying the resolution where one was asked for.
+ *
+ * A resolution is normally only settable on the transition screen, so it goes in the transition
+ * payload; if this workflow's screen has no resolution field Jira rejects the whole POST, hence
+ * the retry without it followed by a direct field write.
+ */
+async function transitionJira(key, status, resolution) {
+  const { transitions } = await jiraFetch(`/rest/api/2/issue/${ key }/transitions`);
+  const match = (transitions || []).find((t) => (t.to?.name || t.name) === status);
+
+  if (!match) {
+    throw failure(400, `"${ status }" is not a legal move for ${ key } right now.`);
+  }
+  const body = { transition: { id: match.id }, ...(resolution ? { fields: { resolution: { name: resolution } } } : {}) };
+
+  try {
+    await jiraFetch(`/rest/api/2/issue/${ key }/transitions`, { method: 'POST', body: JSON.stringify(body) });
+  } catch (e) {
+    if (!resolution) {
+      throw e;
+    }
+    await jiraFetch(`/rest/api/2/issue/${ key }/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: match.id } }) });
+    await jiraFetch(`/rest/api/2/issue/${ key }`, { method: 'PUT', body: JSON.stringify({ fields: { resolution: { name: resolution } } }) });
+  }
+}
+
+/**
+ * Every write this makes to Jira, kept here too.
+ *
+ * Jira has its own history, but it is per-issue and buried; this is "what did I change during
+ * interrupt duty", which is the thing that has to be reported afterwards. One file for the lot,
+ * newest last, bounded so a long rotation cannot grow without limit.
+ */
+function recordJiraChange(entry) {
+  const file = `${ reviewStore() }/.jira/changes.json`;
+
+  try {
+    const log = readStoreDoc(file) || { changes: [] };
+
+    log.changes = [...(log.changes || []), { ...entry, at: new Date().toISOString() }].slice(-2000);
+    writeStoreDoc(file, log);
+  } catch (e) {
+    // Never fail a Jira write because the local log misbehaved.
+    console.error('[dev-api] could not record a Jira change:', e.message || e);
+  }
+}
+
+function jiraChanges(days) {
+  const log = readStoreDoc(`${ reviewStore() }/.jira/changes.json`) || { changes: [] };
+  const since = Date.now() - days * 24 * 60 * 60 * 1000;
+
+  return (log.changes || []).filter((c) => (Date.parse(c.at || '') || 0) >= since);
+}
+
+/** The proposal waiting on a person for this bug, if there is one. */
+function pendingJiraRecommendation(key) {
+  const rec = readStoreDoc(jiraFile(key, 'recommendation.json'));
+
+  return rec && !rec.appliedAt && !rec.dismissedAt ? rec : null;
+}
+
+/**
+ * GitHub prefills a new issue from query parameters, so a person lands on the form already
+ * filled in and presses Submit. No token is needed, and the review-before-publish step the
+ * process requires is the flow itself rather than something bolted onto it: the issue does not
+ * exist until they say so.
+ */
+function githubIssueUrl(gh) {
+  if (!gh?.title || !gh.body) {
+    return null;
+  }
+  const q = new URLSearchParams({ title: gh.title, body: gh.body });
+
+  if (gh.labels?.length) {
+    q.set('labels', gh.labels.join(','));
+  }
+  const url = `https://github.com/${ DASHBOARD_REPO }/issues/new?${ q }`;
+
+  // GitHub truncates very long URLs; the panel offers copy-to-clipboard instead.
+  return url.length > 7500 ? null : url;
+}
+
+/** "rancher/dashboard#16247", "#16247" or a whole URL, as a link somebody can open. */
+function existingIssueUrl(ref) {
+  if (!ref) {
+    return null;
+  }
+  const s = String(ref).trim();
+
+  if (/^https?:\/\//i.test(s)) {
+    return s;
+  }
+  const m = s.match(/^(?:([\w.-]+\/[\w.-]+))?#?(\d+)$/);
+
+  return m ? `https://github.com/${ m[1] || DASHBOARD_REPO }/issues/${ m[2] }` : null;
+}
+
+/**
+ * Agents name people the way the ticket displays them ("Caio Torres") and `PUT /assignee` wants
+ * the username, rejecting anything else. Resolve against the list Jira will actually accept.
+ *
+ * The unfiltered list is capped by Jira and is alphabetical, so a display name that sorts past
+ * the cut is simply absent from it - which is how "Caio Torres" came back unresolved in the
+ * harness. Ask Jira to search instead: the whole string first, then the first word, since the
+ * query matches a name prefix rather than any substring.
+ */
+async function resolveJiraAssignee(key, who) {
+  if (!who) {
+    return null;
+  }
+  const want = String(who).trim();
+  const lower = want.toLowerCase();
+  const search = async(q) => {
+    const users = await jiraFetch(`/rest/api/2/user/assignable/search?issueKey=${ key }${ q ? `&username=${ encodeURIComponent(q) }` : '' }&maxResults=50`).catch(() => []);
+
+    return (users || []).map((u) => ({ name: u.name, label: u.displayName || u.name }));
+  };
+  const pick = (list) => list.find((u) => u.name.toLowerCase() === lower)
+    || list.find((u) => u.label.toLowerCase() === lower)
+    || list.find((u) => u.label.toLowerCase().startsWith(lower))
+    || null;
+
+  return pick(await search(want)) || pick(await search(want.split(/\s+/)[0])) || pick(await search(''));
+}
+
+/** The workspace on this node for a bug, by name: `sure-<n>`, with or without a prefix. */
+function workspaceForJira(key) {
+  const wanted = new RegExp(`(^|-)${ jiraKey(key).toLowerCase() }$`);
+
+  try {
+    return fs.readdirSync(WORKSPACES_ROOT).find((name) => !name.startsWith('.') && wanted.test(name)) || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * A recommendation as a reader needs it: its stored paths turned into something that can be
+ * previewed, and its GitHub draft turned into the prefilled form's URL.
+ */
+function jiraRecommendationOut(rec, key) {
+  if (!rec) {
+    return null;
+  }
+  const workspace = workspaceForJira(key);
+  const video = /\.(webm|mp4)$/i;
+  const image = /\.(png|jpe?g|gif|webp)$/i;
+
+  return {
+    ...rec,
+    github: rec.github
+      ? { ...rec.github, url: githubIssueUrl(rec.github), existingUrl: existingIssueUrl(rec.github.existing) }
+      : null,
+    blankIssueUrl: BLANK_ISSUE_URL,
+    attachments:   (rec.attachments || []).map((a) => ({
+      path:    a.path,
+      caption: a.caption || '',
+      name:    a.path.split('/').pop() || a.path,
+      kind:    video.test(a.path) ? 'video' : image.test(a.path) ? 'image' : 'file',
+      workspace,
+      url:     workspace ? `/workspace/${ workspace }/media/file?path=${ encodeURIComponent(jiraArtifactRel(a.path)) }` : null,
+    })),
+  };
+}
+
+/**
+ * A path as the agent gave it, as the media route wants it.
+ *
+ * The media route resolves against `<workspace>/artifacts`, and an agent writes the same file
+ * three ways: as the absolute path it sees (`/workspaces/<name>/artifacts/jira/x.webm`), as the
+ * path from the checkout (`artifacts/jira/x.webm`), or as the path from the artifacts directory
+ * itself. All three mean one file, so all three arrive as the third.
+ *
+ * Containment is not checked here on purpose: `workspaceMediaPath` resolves and checks, and a
+ * second check somewhere else is the place the two disagree.
+ */
+function jiraArtifactRel(p) {
+  return String(p || '')
+    .replace(/^\/workspaces\/[^/]+\//, '')
+    .replace(/^artifacts\//, '')
+    .replace(/^\/+/, '');
+}
+
 let viewerLogin = { at: 0, login: '' };
 
 /** Whose token this is - so a page can tell the person's own threads from everyone else's. */
@@ -2257,6 +2744,138 @@ const OPENAPI = {
         summary:     "One piece of a comment's evidence, on GitHub's CDN and ready to embed.",
         description: 'Takes `{ path }` - a file in the agent workspace - and answers `{ href, cached, name, kind }`. The review panel asks for this as it submits, so a screenshot or a recording lands in the comment itself rather than as a sentence naming a path nobody reading the PR can reach.',
         responses:   { 200: { description: 'The uploaded file.' }, 500: { description: 'No such file in the agent workspace.' } },
+      },
+    },
+    '/my-work/jira/{key}/detail': {
+      parameters: [{
+        name: 'key', in: 'path', required: true, schema: { type: 'string' }, description: 'A Jira issue key, e.g. SURE-12345.',
+      }],
+      get: {
+        operationId: 'jiraDetail',
+        summary:     'The whole ticket: the report as the customer wrote it, every comment, and the attachments.',
+        description: 'The attachments are where the HAR files and screenshots that decide a reproduction live; each carries a `url` on this service, because jira.suse.com wants a token no browser can attach.',
+        responses:   { 200: { description: 'The ticket.' } },
+      },
+    },
+    '/my-work/jira/{key}/options': {
+      parameters: [{
+        name: 'key', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'jiraOptions',
+        summary:     "What this ticket's fields may be set to, and the moves its workflow allows.",
+        responses:   { 200: { description: 'The choices.' } },
+      },
+    },
+    '/my-work/jira/{key}/recommendation': {
+      parameters: [{
+        name: 'key', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'jiraRecommendation',
+        summary:     'The proposal waiting on a person, what the ticket says today, and the legal moves.',
+        responses:   { 200: { description: 'The recommendation and the ticket it is about.' } },
+      },
+      post: {
+        operationId: 'saveJiraRecommendation',
+        summary:     'What a triage step concluded, for a person to approve.',
+        description: 'Send at least one of `toStatus`, `assignee`, `comment`, `team`, `fixVersions`, `affectsVersions`, `labels`, `resolution` or `links`, plus `reason` for why and `attachments` (`[{path, caption}]`, paths in your workspace) for the evidence. `githubIssue` carries either a draft (`{title, body, labels}`) or `{existing}` where an issue already covers it. One pending recommendation per bug: filing again supersedes the last.',
+        responses:   { 200: { description: 'The recommendation as stored.' }, 400: { description: 'Nothing in it to apply.' } },
+      },
+    },
+    '/my-work/jira/{key}/recommendation/github': {
+      parameters: [{
+        name: 'key', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      post: {
+        operationId: 'attachJiraGithubIssue',
+        summary:     'Add the GitHub issue to the recommendation that is already pending.',
+        description: 'For a step that concluded first and drafted second: filing a recommendation again supersedes, which would throw away the comment and the attachments somebody is part-way through reading. Copy nothing from Jira into the draft.',
+        responses:   { 200: { description: 'The recommendation.' }, 404: { description: 'Nothing pending for that bug.' } },
+      },
+    },
+    '/my-work/jira/{key}/recommendation/dismiss': {
+      parameters: [{
+        name: 'key', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      post: {
+        operationId: 'dismissJiraRecommendation',
+        summary:     'Put the pending proposal aside without applying it.',
+        description: 'Nothing is written to Jira. The next step that runs files a fresh one.',
+        responses:   { 200: { description: 'Dismissed.' }, 404: { description: 'Nothing pending for that bug.' } },
+      },
+    },
+    '/my-work/jira/{key}/apply': {
+      parameters: [{
+        name: 'key', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      post: {
+        operationId: 'applyJira',
+        summary:     "Write to the ticket: the comment, the fields, then the move.",
+        description: 'The one route here that changes a customer-visible ticket. The transition goes last, so a failed move never leaves a comment promising something that did not happen.',
+        responses:   { 200: { description: 'What was changed.' }, 400: { description: 'That move is not legal from where it stands.' } },
+      },
+    },
+    '/my-work/jira/{key}/attach': {
+      parameters: [{
+        name: 'key', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      post: {
+        operationId: 'attachToJira',
+        summary:     'Put one file from the bug\'s workspace onto the ticket.',
+        description: 'Takes `{ path }` - a file under the workspace\'s artifacts. One at a time on purpose: a reproduction video shows a customer their own cluster.',
+        responses:   { 200: { description: 'The attachment.' }, 404: { description: 'No such file.' } },
+      },
+    },
+    '/my-work/jira/{key}/run/{action}': {
+      parameters: [
+        {
+          name: 'key', in: 'path', required: true, schema: { type: 'string' },
+        },
+        {
+          name: 'action', in: 'path', required: true, schema: { type: 'string', enum: ['review', 'reproduce', 'unstick', 'fix'] },
+        },
+      ],
+      get: {
+        operationId: 'jiraRun',
+        summary:     'Where this triage step has got to.',
+        responses:   { 200: { description: 'The run.' } },
+      },
+      post: {
+        operationId: 'saveJiraRun',
+        summary:     'Report where this triage step has got to.',
+        description: 'The same states as a review run, so a step that outlives a turn can be picked up where it stopped.',
+        responses:   { 200: { description: 'The run as stored.' } },
+      },
+    },
+    '/jira-attachment/{attachmentId}/{name}': {
+      parameters: [
+        {
+          name: 'attachmentId', in: 'path', required: true, schema: { type: 'integer' }, description: "The attachment's id, as `detail` gives it.",
+        },
+        {
+          name: 'name', in: 'path', required: false, schema: { type: 'string' }, description: 'The filename, for the sake of what downloads it.',
+        },
+      ],
+      get: {
+        operationId: 'jiraAttachment',
+        summary:     "One Jira attachment's bytes.",
+        description: 'The reporter\'s screenshots, HARs and logs. Fetched here with the token, because jira.suse.com wants a bearer token and a browser has no way to attach one to an <img>.',
+        responses:   { 200: { description: 'The file.' } },
+      },
+    },
+    '/my-work/jira/changes': {
+      get: {
+        operationId: 'jiraChanges',
+        summary:     'Every write made to Jira from here, newest first.',
+        description: "What was done during a rotation, which Jira's own per-issue history cannot answer. `?days=` bounds it.",
+        responses:   { 200: { description: 'The log.' } },
+      },
+      delete: {
+        operationId: 'clearJiraChanges',
+        summary:     'Start a fresh rotation.',
+        description: 'Clears only what was recorded here. Nothing in Jira is undone.',
+        responses:   { 200: { description: 'How many lines were cleared.' } },
       },
     },
     '/my-work/dependabot': {
@@ -5337,6 +5956,378 @@ const routes = [
 
     return { combined: false, files: [...byFile.values()].sort((a, b) => a.path.localeCompare(b.path)) };
   }],
+  // -- Jira triage -----------------------------------------------------------------------------
+  //
+  // The four `my-jira-bug-*` skills call these by the harness's own names. See the triage
+  // helpers above for what moved in the port.
+  ['GET', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/detail$/, async(m) => {
+    const key = jiraKey(m[1]);
+    const issue = await jiraFetch(`/rest/api/2/issue/${ key }?fields=summary,status,assignee,reporter,priority,created,updated,description,comment,attachment,versions,fixVersions,labels,components,resolution,issuelinks,${ TEAM_FIELD }`);
+    const f = issue.fields || {};
+    const ageDays = businessDaysSince(f.created || '');
+
+    return {
+      key:             issue.key,
+      url:             `${ JIRA_BASE }/browse/${ issue.key }`,
+      summary:         f.summary || '',
+      status:          f.status?.name || 'Unknown',
+      priority:        f.priority?.name || null,
+      assignee:        f.assignee?.displayName || f.assignee?.name || null,
+      reporter:        f.reporter?.displayName || f.reporter?.name || null,
+      created:         f.created || '',
+      updated:         f.updated || '',
+      description:     f.description || '',
+      labels:          f.labels || [],
+      components:      (f.components || []).map((c) => c.name),
+      affectsVersions: (f.versions || []).map((v) => v.name),
+      fixVersions:     (f.fixVersions || []).map((v) => v.name),
+      resolution:      f.resolution?.name || null,
+      links:           (f.issuelinks || []).map((l) => ({
+        type:    l.type?.outward || l.type?.name || 'relates to',
+        key:     l.outwardIssue?.key || l.inwardIssue?.key || '',
+        summary: l.outwardIssue?.fields?.summary || l.inwardIssue?.fields?.summary || '',
+      })).filter((l) => l.key),
+      team:        jiraTeamOf(f[TEAM_FIELD]),
+      ageDays,
+      checks:      jiraStateChecks(f, ageDays),
+      comments:    (f.comment?.comments || []).map((c) => ({
+        id: c.id, author: c.author?.displayName || c.author?.name || 'unknown', created: c.created || '', updated: c.updated || '', body: c.body || '',
+      })),
+      // Served through here: jira.suse.com needs the token, and a browser has no way to attach
+      // one to an <img>.
+      attachments: (f.attachment || []).map((a) => ({
+        id: a.id, filename: a.filename, mimeType: a.mimeType || '', size: a.size || 0, created: a.created || '', author: a.author?.displayName || a.author?.name || '', url: `/jira-attachment/${ a.id }/${ encodeURIComponent(a.filename) }`,
+      })),
+    };
+  }],
+  /*
+   * What this ticket's fields may be set to, so a choice offered is a choice Jira will take
+   * rather than a free-text box that fails on submit. Jira knows all of it: editmeta carries the
+   * allowed values, and the transitions endpoint carries the legal moves from where it stands.
+   */
+  ['GET', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/options$/, async(m) => {
+    const key = jiraKey(m[1]);
+    const [editmeta, transitions, users, resolutions, linkTypes] = await Promise.all([
+      jiraFetch(`/rest/api/2/issue/${ key }/editmeta`).catch(() => null),
+      jiraFetch(`/rest/api/2/issue/${ key }/transitions`).catch(() => null),
+      jiraFetch(`/rest/api/2/user/assignable/search?issueKey=${ key }&maxResults=50`).catch(() => []),
+      jiraFetch('/rest/api/2/resolution').catch(() => []),
+      jiraFetch('/rest/api/2/issueLinkType').catch(() => null),
+    ]);
+    const fields = editmeta?.fields || {};
+    const allowed = (id) => (fields[id]?.allowedValues || []).map((v) => v.value || v.name).filter(Boolean);
+
+    return {
+      key,
+      transitions:     (transitions?.transitions || []).map((t) => ({ id: t.id, name: t.to?.name || t.name })),
+      teams:           allowed(TEAM_FIELD),
+      fixVersions:     allowed('fixVersions'),
+      affectsVersions: allowed('versions'),
+      labels:          allowed('labels'),
+      resolutions:     (Array.isArray(resolutions) ? resolutions : []).map((r) => r.name).filter(Boolean),
+      linkTypes:       (linkTypes?.issueLinkTypes || []).map((t) => t.name).filter(Boolean),
+      assignees:       (users || []).map((u) => ({ name: u.name, label: u.displayName || u.name })),
+      defaults:        { assignee: TRIAGE_OWNER, assigneeLabel: TRIAGE_OWNER_LABEL, team: TEAM },
+    };
+  }],
+  /*
+   * Filed by the triage agent when it is done. One pending recommendation per bug: a re-run
+   * supersedes the previous proposal rather than stacking behind it.
+   */
+  ['POST', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/recommendation$/, async(m, url, body) => {
+    const key = jiraKey(m[1]);
+    const gh = body?.githubIssue;
+    const github = gh && (typeof gh.title === 'string' || typeof gh.existing === 'string')
+      ? {
+        title:       gh.title ? String(gh.title).slice(0, 250) : '',
+        body:        gh.body ? String(gh.body).slice(0, 20000) : '',
+        existing:    gh.existing ? String(gh.existing).slice(0, 200) : '',
+        labels:      Array.isArray(gh.labels) ? gh.labels.map(String).slice(0, 8) : ['kind/bug'],
+        attachments: Array.isArray(gh.attachments) ? gh.attachments.map(String).slice(0, 10) : [],
+      }
+      : null;
+    const attachments = Array.isArray(body?.attachments)
+      ? body.attachments.filter((a) => a && typeof a.path === 'string').slice(0, 20).map((a) => ({ path: String(a.path), caption: String(a.caption || '') }))
+      : [];
+    const edits = parseJiraEdits(body);
+
+    if (!body?.toStatus && !body?.comment && !body?.assignee && !hasJiraEdits(edits)) {
+      throw failure(400, 'A recommendation needs at least one of toStatus, assignee, comment, team, fixVersions, affectsVersions, labels, resolution or links.');
+    }
+    const issue = await jiraFetch(`/rest/api/2/issue/${ key }?fields=status`).catch(() => null);
+    const recommendation = {
+      key,
+      action:     typeof body.action === 'string' ? body.action : 'review',
+      fromStatus: issue?.fields?.status?.name || null,
+      toStatus:   typeof body.toStatus === 'string' ? body.toStatus : null,
+      assignee:   typeof body.assignee === 'string' ? body.assignee : null,
+      comment:    typeof body.comment === 'string' ? body.comment : null,
+      reason:     typeof body.reason === 'string' ? body.reason : null,
+      fields:     hasJiraEdits(edits) ? edits : {},
+      attachments,
+      github,
+      createdAt:  new Date().toISOString(),
+      appliedAt:  null,
+      dismissedAt: null,
+    };
+
+    writeStoreDoc(jiraFile(key, 'recommendation.json'), recommendation);
+
+    return { ok: true, recommendation: jiraRecommendationOut(recommendation, key) };
+  }],
+  /*
+   * The pending proposal, what the ticket says today, and the moves this bug's workflow allows -
+   * so a panel can show each proposed edit as a before and after, drop the ones already true,
+   * and never offer an illegal transition.
+   */
+  ['GET', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/recommendation$/, async(m) => {
+    const key = jiraKey(m[1]);
+    const [issue, transitions] = await Promise.all([
+      jiraFetch(`/rest/api/2/issue/${ key }?fields=status,assignee,versions,fixVersions,labels,resolution,issuelinks,${ TEAM_FIELD }`),
+      jiraFetch(`/rest/api/2/issue/${ key }/transitions`).catch(() => null),
+    ]);
+    const f = issue?.fields || {};
+    const assignee = f.assignee?.name || null;
+    const team = jiraTeamOf(f[TEAM_FIELD]);
+    const rec = jiraRecommendationOut(pendingJiraRecommendation(key), key);
+
+    if (rec?.assignee) {
+      const who = await resolveJiraAssignee(key, rec.assignee).catch(() => null);
+
+      if (who) {
+        rec.assignee = who.name;
+        rec.assigneeLabel = who.label;
+      }
+    }
+    // The three edits a new bug needs, offered together - each dropped once the ticket has it,
+    // so nothing is re-applied pointlessly.
+    const isNew = (f.status?.name || '') === 'New';
+
+    return {
+      key,
+      current: {
+        status:          f.status?.name || null,
+        assignee:        f.assignee?.displayName || assignee,
+        assigneeName:    assignee,
+        team,
+        fixVersions:     (f.fixVersions || []).map((v) => v.name),
+        affectsVersions: (f.versions || []).map((v) => v.name),
+        labels:          f.labels || [],
+        resolution:      f.resolution?.name || null,
+        links:           (f.issuelinks || []).map((l) => `${ l.type?.outward || l.type?.name } ${ l.outwardIssue?.key || l.inwardIssue?.key }`),
+      },
+      recommendation: rec,
+      transitions:    (transitions?.transitions || []).map((t) => ({ id: t.id, name: t.to?.name || t.name })),
+      extras:         {
+        assignee:      isNew && assignee !== TRIAGE_OWNER ? TRIAGE_OWNER : null,
+        assigneeLabel: TRIAGE_OWNER_LABEL,
+        team:          isNew && team !== TEAM ? TEAM : null,
+      },
+      // Who the bug belongs to between steps: a reproduce pass borrows it and hands it straight
+      // back, so a panel uses this to leave the assignee alone on the way to To Prioritize.
+      owner: { name: TRIAGE_OWNER, label: TRIAGE_OWNER_LABEL },
+    };
+  }],
+  /*
+   * Attach a GitHub issue to the recommendation that is already pending rather than filing a new
+   * one. Filing supersedes, which would throw away the comment and the attachments somebody is
+   * part-way through reading - so an agent that concluded first and drafted second needs this.
+   */
+  ['POST', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/recommendation\/github$/, async(m, url, body) => {
+    const key = jiraKey(m[1]);
+
+    if (typeof body?.title !== 'string' && typeof body?.existing !== 'string') {
+      throw failure(400, 'Send {title, body, labels} for a draft, or {existing} for an issue that already covers it.');
+    }
+    const rec = pendingJiraRecommendation(key);
+
+    if (!rec) {
+      throw failure(404, `There is no pending recommendation for ${ key }.`);
+    }
+    rec.github = {
+      title:       body.title ? String(body.title).slice(0, 250) : '',
+      body:        body.body ? String(body.body).slice(0, 20000) : '',
+      existing:    body.existing ? String(body.existing).slice(0, 200) : '',
+      labels:      Array.isArray(body.labels) ? body.labels.map(String).slice(0, 8) : ['kind/bug'],
+      attachments: Array.isArray(body.attachments) ? body.attachments.map(String).slice(0, 10) : [],
+    };
+    writeStoreDoc(jiraFile(key, 'recommendation.json'), rec);
+
+    return { ok: true, recommendation: jiraRecommendationOut(rec, key) };
+  }],
+  ['POST', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/recommendation\/dismiss$/, async(m) => {
+    const key = jiraKey(m[1]);
+    const rec = pendingJiraRecommendation(key);
+
+    if (!rec) {
+      throw failure(404, `There is no pending recommendation for ${ key }.`);
+    }
+    rec.dismissedAt = new Date().toISOString();
+    writeStoreDoc(jiraFile(key, 'recommendation.json'), rec);
+
+    return { ok: true };
+  }],
+  /*
+   * The one path that writes to the customer's ticket.
+   *
+   * The order matters and is the harness's: the legality of the move is checked first, the
+   * comment and the fields go next so the bug is already owned, versioned and linked when it
+   * lands in the new state, and the transition goes last so a failed move never leaves a comment
+   * promising something that did not happen.
+   */
+  ['POST', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/apply$/, async(m, url, body) => {
+    const key = jiraKey(m[1]);
+    const toStatus = typeof body?.toStatus === 'string' && body.toStatus ? body.toStatus : null;
+    const comment = typeof body?.comment === 'string' ? body.comment.trim() : '';
+    const assignee = typeof body?.assignee === 'string' && body.assignee ? body.assignee : null;
+    const unassign = body?.assignee === '';
+    const edits = parseJiraEdits(body);
+    const rec = pendingJiraRecommendation(key);
+    const before = await jiraFetch(`/rest/api/2/issue/${ key }?fields=status,summary`).catch(() => null);
+
+    if (toStatus) {
+      const { transitions } = await jiraFetch(`/rest/api/2/issue/${ key }/transitions`);
+
+      if (!(transitions || []).some((t) => (t.to?.name || t.name) === toStatus)) {
+        throw failure(400, `"${ toStatus }" is not a legal move for ${ key } right now.`);
+      }
+    }
+    if (comment) {
+      await jiraFetch(`/rest/api/2/issue/${ key }/comment`, { method: 'POST', body: JSON.stringify({ body: comment }) });
+    }
+    if (assignee || unassign) {
+      await jiraFetch(`/rest/api/2/issue/${ key }/assignee`, { method: 'PUT', body: JSON.stringify({ name: assignee }) });
+    }
+    // The resolution rides along with the transition rather than being set here.
+    const applied = await applyJiraEdits(key, { ...edits, resolution: null });
+
+    if (toStatus) {
+      await transitionJira(key, toStatus, edits.resolution);
+    }
+    if (edits.resolution) {
+      applied.push(`resolution = ${ edits.resolution }`);
+    }
+    if (rec && body?.recommendation !== false) {
+      rec.appliedAt = new Date().toISOString();
+      writeStoreDoc(jiraFile(key, 'recommendation.json'), rec);
+    }
+    recordJiraChange({
+      key,
+      summary:    before?.fields?.summary || null,
+      kind:       toStatus ? 'transition' : (assignee || unassign ? 'assign' : (applied.length ? 'fields' : 'comment')),
+      fromStatus: before?.fields?.status?.name || rec?.fromStatus || null,
+      toStatus,
+      comment:    comment || null,
+      assignee,
+      details:    applied,
+      step:       rec?.action || null,
+    });
+
+    return { ok: true, status: toStatus, details: applied };
+  }],
+  /*
+   * Attach one file from the bug's workspace to the ticket. One at a time on purpose: each is a
+   * deliberate decision about what a customer sees, and a reproduction video of their own
+   * cluster is exactly the thing to think twice about.
+   */
+  ['POST', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/attach$/, async(m, url, body) => {
+    const key = jiraKey(m[1]);
+    const workspace = String(body?.workspace || workspaceForJira(key));
+    const file = workspace ? workspaceMediaPath(workspace, jiraArtifactRel(body?.path)) : '';
+
+    if (!file) {
+      throw failure(404, `No such file in ${ workspace || 'the workspace' }: ${ body?.path || '(none)' }`);
+    }
+    const token = await jiraToken();
+
+    if (!token) {
+      throw failure(400, 'No Jira token. Add JIRA_TOKEN in Settings.');
+    }
+    const name = path.basename(file);
+    const form = new FormData();
+
+    form.append('file', new Blob([fs.readFileSync(file)]), name);
+    // Multipart, so content-type has to carry the boundary fetch generates - jiraFetch would
+    // force application/json, hence the direct call. Jira refuses attachment uploads without
+    // the no-check token, as XSRF protection.
+    const upstream = await fetch(`${ JIRA_BASE }/rest/api/2/issue/${ key }/attachments`, {
+      method:  'POST',
+      headers: { authorization: `Bearer ${ token }`, 'X-Atlassian-Token': 'no-check' },
+      body:    form,
+    });
+    const text = await upstream.text();
+
+    if (!upstream.ok) {
+      throw failure(upstream.status, `Jira answered ${ upstream.status }: ${ text.slice(0, 200) }`);
+    }
+    recordJiraChange({
+      key, kind: 'comment', comment: `attached ${ name }`, step: 'attachment',
+    });
+
+    return { ok: true, filename: name };
+  }],
+  /*
+   * The phase of a triage agent, for the conversation that is running it: the same states, the
+   * same reporting route and the same cancel as a PR review's run.
+   */
+  ['GET', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/run\/([a-z]+)$/, async(m) => {
+    const key = jiraKey(m[1]);
+
+    if (!TRIAGE_ACTIONS[m[2]]) {
+      throw failure(404, `"${ m[2] }" is not a triage step.`);
+    }
+
+    return { run: readStoreDoc(jiraFile(key, `run-${ m[2] }.json`)) };
+  }],
+  ['POST', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/run\/([a-z]+)$/, async(m, url, body) => {
+    const key = jiraKey(m[1]);
+    const action = m[2];
+
+    if (!TRIAGE_ACTIONS[action]) {
+      throw failure(404, `"${ action }" is not a triage step.`);
+    }
+    const state = String(body?.state || '');
+
+    if (!RUN_STATES.includes(state)) {
+      throw failure(400, `bad state; one of ${ RUN_STATES.join(', ') }`);
+    }
+    const previous = readStoreDoc(jiraFile(key, `run-${ action }.json`)) || {};
+    const run = {
+      key,
+      action,
+      workspace: typeof body.workspace === 'string' ? body.workspace : (previous.workspace || workspaceForJira(key) || null),
+      state,
+      note:      typeof body.note === 'string' ? body.note.slice(0, 400) : '',
+      startedAt: previous.startedAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    writeStoreDoc(jiraFile(key, `run-${ action }.json`), run);
+
+    return { run };
+  }],
+  /*
+   * What was actually done to Jira, newest first. "What did I change during interrupt duty" is
+   * the thing that has to be reported at the end of a rotation, and Jira's own history is
+   * per-issue and buried.
+   */
+  ['GET', /^\/my-work\/jira\/changes$/, (m, url) => {
+    const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 365);
+
+    return { days, changes: jiraChanges(days).slice().reverse() };
+  }],
+  /*
+   * Start a fresh rotation. This clears only what was recorded here - nothing in Jira is undone,
+   * and the report is worth taking first if it is wanted.
+   */
+  ['DELETE', /^\/my-work\/jira\/changes$/, () => {
+    const file = `${ reviewStore() }/.jira/changes.json`;
+    const cleared = (readStoreDoc(file)?.changes || []).length;
+
+    writeStoreDoc(file, { changes: [] });
+
+    return { ok: true, cleared };
+  }],
   ['GET', /^\/my-work\/pr\/(\d+)\/review-run$/, async(m) => {
     const run = await readReview(Number(m[1]), 'run.json');
 
@@ -6282,6 +7273,39 @@ http.createServer(async(req, res) => {
     } catch (e) {
       return send(res, e.status || 502, { error: e.message || String(e) });
     }
+  }
+
+  /*
+   * A Jira attachment's bytes, fetched with the token so an <img>, a player or a download in the
+   * page works. This is customer data - a HAR of their cluster, a screenshot of their console -
+   * and it is the same arrangement as the GitHub asset route above: jira.suse.com wants a bearer
+   * token, and a cross-site <img> carries none.
+   */
+  const jiraAsset = /^\/jira-attachment\/(\d+)(?:\/.*)?$/.exec(url.pathname);
+
+  if (jiraAsset && req.method === 'GET') {
+    try {
+      const meta = await jiraFetch(`/rest/api/2/attachment/${ jiraAsset[1] }`);
+      const token = await jiraToken();
+      const upstream = await fetch(String(meta.content || ''), { headers: { authorization: `Bearer ${ token }` } });
+
+      if (!upstream.ok) {
+        return send(res, upstream.status, { error: `Jira answered ${ upstream.status } for that attachment.` });
+      }
+      const body = Buffer.from(await upstream.arrayBuffer());
+
+      res.writeHead(200, {
+        'content-type':                meta.mimeType || 'application/octet-stream',
+        'content-length':              body.length,
+        'access-control-allow-origin': '*',
+        'cache-control':               'private, max-age=300',
+      });
+      res.end(body);
+    } catch (e) {
+      return send(res, e.status || 502, { error: `Jira attachment: ${ e.message || e }` });
+    }
+
+    return;
   }
 
   if (url.pathname === '/my-work/gh-asset' && req.method === 'GET') {

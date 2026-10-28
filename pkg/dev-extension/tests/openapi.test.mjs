@@ -56,6 +56,10 @@ function asConcrete(spec) {
     // A comment's id is a number too, and `{id}` elsewhere is a conversation's word-shaped one.
     .replace(/\{commentId\}/g, '7')
     .replace(/\{kind\}/g, 'dev-server')
+    // A Jira issue key is `LETTERS-digits` and the routes that take one check that shape, so
+    // `thing` made every Jira path look unserved. An attachment's id is a number, like a check's.
+    .replace(/\{key\}/g, 'SURE-1')
+    .replace(/\{attachmentId\}/g, '7')
     // Any other placeholder, camelCase included - `{checkId}` is one, and a lower-case-only
     // pattern silently left it in the path and then called the route missing.
     .replace(/\{[A-Za-z]+\}/g, 'thing');

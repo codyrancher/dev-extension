@@ -35,6 +35,7 @@ import {
   DEFAULT_APP, DEV_API_IN_CLUSTER, LTE_APP, isLte
 } from './config/constants';
 import { defaultRancherValues } from './ranchers';
+import { TRIAGE_ACTIONS, jiraWorkspaceName } from './jira-steps.mjs';
 import { note } from './dev-log.mjs';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -945,6 +946,63 @@ export async function startIssueFix(store: Store, issue: { number: number; title
   const conversation = await openWith(workspace, title, fixPrompt(issue.number, repo), { issue: issue.number }, undefined, store, `issue-${ issue.number }-fix`);
 
   return { workspace, conversation, created };
+}
+
+/**
+ * Run one step of Jira triage on a bug: the harness's "Review", "Reproduce", "Unstick", "Fix".
+ *
+ * A workspace named for the bug, and a conversation in it running that step's skill. The harness
+ * split this in two - a step that only read Jira ran in its own CLI container, which held the
+ * token and the API - and that half has nowhere to go here: the agent pod has neither
+ * `$CLAUDE_HARNESS_API` nor a checkout, so a conversation started outside a workspace could not
+ * reach the Jira routes at all. So every step runs in `…sure-<n>`, and what separates reproducing
+ * and fixing from the other two is the tools they attach once they are in it.
+ *
+ * Reattaches like the rest: a second press on the same step sends the prompt to the conversation
+ * that is already doing it rather than starting a second one over the same ticket.
+ */
+export async function startJiraTriage(store: Store, bug: { key: string; summary?: string; status?: string }, action: string, repo = DEFAULT_REPO): Promise<Started> {
+  const step = TRIAGE_ACTIONS[action];
+
+  if (!step) {
+    throw new Error(`"${ action }" is not a triage step.`);
+  }
+  const key = bug.key.toUpperCase();
+  const workspace = await workspaceFor(jiraWorkspaceName(key));
+  const created = await ensureWorkspace(store, workspace, bug.summary || key, repo);
+  const title = `${ step.label } ${ key }`;
+  const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
+  const prompt = jiraPrompt(key, action);
+
+  if (existing) {
+    await deliverTo(workspace, existing, prompt);
+
+    return { workspace, conversation: existing, created };
+  }
+
+  const conversation = await openWith(workspace, title, prompt, undefined, undefined, store, `${ key.toLowerCase() }-${ action }`);
+
+  // Started, so the queue's row can say so before the pane has drawn anything. The skill reports
+  // its own states over the same route from then on.
+  await api(`/my-work/jira/${ key }/run/${ action }`, {
+    method:  'POST',
+    headers: { 'content-type': 'application/json' },
+    body:    JSON.stringify({ state: 'starting', workspace, note: `${ step.label } started from My Work` }),
+  }).catch(() => {});
+
+  return { workspace, conversation, created };
+}
+
+/**
+ * What the step is told, in prose rather than as `/my-jira-bug-…` - see reviewPrompt: a leading
+ * slash is swallowed as an unknown CLI command when this is typed into a running pane.
+ */
+export function jiraPrompt(key: string, action: string): string {
+  const step = TRIAGE_ACTIONS[action];
+  const api = `$CLAUDE_HARNESS_API/my-work/jira/${ key }`;
+
+  return `Use the ${ step.skill } skill on ${ key }. The ticket, its comments and its attachments: ${ api }/detail. `
+    + `File what you conclude for a person to approve with POST ${ api }/recommendation, and report where you are with POST ${ api }/run/${ action }.`;
 }
 
 export function alertWorkspaceName(group: { packages: string[]; slug: string }): string {

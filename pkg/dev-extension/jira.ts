@@ -11,6 +11,10 @@
 // choice for the same reason, and put it better - "the token never leaves this container".
 import { devApi } from './reviews';
 
+export {
+  TRIAGE_ACTIONS, actionForStatus, actionForBug, jiraWorkspaceName
+} from './jira-steps.mjs';
+
 export const JIRA_BASE = 'https://jira.suse.com';
 export const JIRA_PROJECT = 'SURE';
 
@@ -228,4 +232,151 @@ export async function jiraQueue(): Promise<JiraQueue> {
   return {
     login: me?.name || null, dashboardUrl: DASHBOARD_URL, configured: true, categories,
   };
+}
+
+/** A comment on the ticket, an attachment, the fields, and what the process says is missing. */
+export interface JiraStateCheck {
+  field: 'status' | 'assignee' | 'team' | 'fixVersions' | 'affectsVersions' | 'age';
+  problem: string;
+}
+
+export interface JiraComment {
+  id: string;
+  author: string;
+  created: string;
+  updated: string;
+  body: string;
+}
+
+export interface JiraAttachment {
+  id: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  created: string;
+  author: string;
+  /** On dev-api, because jira.suse.com wants a bearer token no browser can attach to an <img>. */
+  url: string;
+}
+
+export interface JiraDetail {
+  key: string;
+  url: string;
+  summary: string;
+  status: string;
+  priority: string | null;
+  assignee: string | null;
+  reporter: string | null;
+  created: string;
+  updated: string;
+  description: string;
+  labels: string[];
+  components: string[];
+  affectsVersions: string[];
+  fixVersions: string[];
+  resolution: string | null;
+  links: { type: string; key: string; summary: string }[];
+  team: string | null;
+  ageDays: number;
+  checks: JiraStateCheck[];
+  comments: JiraComment[];
+  attachments: JiraAttachment[];
+}
+
+/** The field edits a recommendation may carry, each a separate yes or no. */
+export interface JiraFieldEdits {
+  team?: string | null;
+  fixVersions?: string[] | null;
+  affectsVersions?: string[] | null;
+  labels?: string[] | null;
+  resolution?: string | null;
+  links?: { type: string; key: string }[] | null;
+}
+
+export interface JiraRecommendation {
+  key: string;
+  action: string;
+  fromStatus: string | null;
+  toStatus: string | null;
+  assignee: string | null;
+  assigneeLabel?: string;
+  comment: string | null;
+  reason: string | null;
+  fields: JiraFieldEdits;
+  attachments: { path: string; caption: string; name: string; kind: 'image' | 'video' | 'file'; workspace: string; url: string | null }[];
+  github: { title: string; body: string; existing: string; labels: string[]; url: string | null; existingUrl: string | null } | null;
+  blankIssueUrl: string;
+  createdAt: string;
+  appliedAt: string | null;
+  dismissedAt: string | null;
+}
+
+export interface JiraProposal {
+  key: string;
+  current: {
+    status: string | null;
+    assignee: string | null;
+    assigneeName: string | null;
+    team: string | null;
+    fixVersions: string[];
+    affectsVersions: string[];
+    labels: string[];
+    resolution: string | null;
+    links: string[];
+  };
+  recommendation: JiraRecommendation | null;
+  transitions: { id: string; name: string }[];
+  extras: { assignee: string | null; assigneeLabel: string; team: string | null };
+  owner: { name: string; label: string };
+}
+
+/** How far a triage step has got, in the same states a review run uses. */
+export interface JiraRun {
+  key: string;
+  action: string;
+  workspace: string | null;
+  state: 'starting' | 'waiting-for-sidecars' | 'running' | 'idle' | 'complete' | 'failed' | 'cancelled';
+  note: string;
+  startedAt: string;
+  updatedAt: string;
+}
+
+export async function jiraDetail(key: string): Promise<JiraDetail> {
+  return devApi(`/my-work/jira/${ encodeURIComponent(key) }/detail`);
+}
+
+/** The proposal waiting on a person, what the ticket says today, and the moves it allows. */
+export async function jiraProposal(key: string): Promise<JiraProposal> {
+  return devApi(`/my-work/jira/${ encodeURIComponent(key) }/recommendation`);
+}
+
+export async function jiraRun(key: string, action: string): Promise<JiraRun | null> {
+  return (await devApi(`/my-work/jira/${ encodeURIComponent(key) }/run/${ encodeURIComponent(action) }`))?.run || null;
+}
+
+/**
+ * Write to the ticket: the comment, the fields, then the move.
+ *
+ * The one call here that changes something a customer sees, which is why it is a person pressing
+ * a button and never a poll. `recommendation: false` applies without marking the pending
+ * proposal as taken - for a correction made with no proposal behind it.
+ */
+export async function jiraApply(key: string, change: {
+  toStatus?: string | null;
+  comment?: string;
+  assignee?: string | null;
+  recommendation?: boolean;
+} & JiraFieldEdits): Promise<{ ok: boolean; status: string | null; details: string[] }> {
+  return devApi(`/my-work/jira/${ encodeURIComponent(key) }/apply`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(change),
+  });
+}
+
+export async function dismissJiraRecommendation(key: string): Promise<void> {
+  await devApi(`/my-work/jira/${ encodeURIComponent(key) }/recommendation/dismiss`, { method: 'POST' });
+}
+
+/** Everything written to Jira from here, newest first: what a rotation has to report. */
+export async function jiraChanges(days = 30): Promise<{ days: number; changes: Record<string, never>[] }> {
+  return devApi(`/my-work/jira/changes?days=${ days }`);
 }

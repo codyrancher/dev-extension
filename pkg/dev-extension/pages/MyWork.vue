@@ -23,7 +23,7 @@ import {
   statusHue as hueOfStatus, milestoneDue as dueOfMilestone
 } from '../issue-table';
 import {
-  startPrReview, startIssueFix, startAlertFix, startDependabotReview, startCiTriage, mergePr, approveAndMerge,
+  startPrReview, startIssueFix, startAlertFix, startDependabotReview, startCiTriage, startJiraTriage, mergePr, approveAndMerge,
   rerunFailedJobs, dependabotData, dependabotReviews, refreshDependabotReview, closeDependabotReview, listConversations,
   DEFAULT_REPO
 } from '../reviews';
@@ -32,7 +32,9 @@ import {
 } from '../api';
 import { ago as agoOf } from '../chat-state.mjs';
 import { listApps } from '../apps';
-import { jiraQueue } from '../jira';
+import {
+  jiraQueue, actionForBug, TRIAGE_ACTIONS
+} from '../jira';
 import StageSteps from '../components/StageSteps.vue';
 import { storedStages } from '../stages';
 import { issuesByNumber } from '../github';
@@ -1124,6 +1126,36 @@ export default {
     },
 
     /**
+     * Run one step of the team's triage process on a bug.
+     *
+     * Which step is the bug's own status's, not the queue's - see actionForBug: "All Team Bugs"
+     * holds every unresolved state at once, and the step a row offers has to be the step that
+     * row is waiting on.
+     *
+     * It ends in the bug's workspace, like Review and Start fix do, because that is where the
+     * conversation it just queued will appear - and where the reproduction's recordings land.
+     */
+    async startTriage(bug, cat, done) {
+      this.error = '';
+
+      try {
+        const action = actionForBug(bug, cat);
+        const started = await startJiraTriage(this.$store, bug, action);
+
+        this.started(started.workspace, `${ TRIAGE_ACTIONS[action].label } ${ bug.key }`);
+        done(true);
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
+    },
+
+    /** What the triage button on this row says, or nothing where no step covers the status. */
+    triageLabel(bug, cat) {
+      return TRIAGE_ACTIONS[actionForBug(bug, cat)]?.label || '';
+    },
+
+    /**
      * Start fix on a Dependabot advisory.
      *
      * Named for the advisory rather than the package, because one advisory is one piece of work
@@ -2150,6 +2182,7 @@ export default {
                   <th>Priority</th>
                   <th>Assignee</th>
                   <th>Age</th>
+                  <th>Triage</th>
                 </tr>
               </thead>
               <tbody>
@@ -2173,6 +2206,27 @@ export default {
                     :class="{ 'dev-my-work__jira-overdue': bug.overdue }"
                     :title="bug.overdue ? 'Past the deadline for this status' : 'Business days since it was raised'"
                   >{{ bug.ageDays }}d</td>
+                  <!--
+                    The step this bug is waiting on, as one button: a workspace named for the bug
+                    and a conversation in it running that step's skill. A status no step of this
+                    team's process covers - To Test, QA Working, anything downstream - gets
+                    nothing rather than a button that would start the wrong step.
+                  -->
+                  <td class="dev-my-work__jira-do">
+                    <AsyncButton
+                      v-if="triageLabel(bug, cat)"
+                      mode="apply"
+                      :action-label="triageLabel(bug, cat)"
+                      waiting-label="Opening"
+                      success-label="Opened"
+                      size="sm"
+                      @click="(done) => startTriage(bug, cat, done)"
+                    />
+                    <span
+                      v-else
+                      class="text-muted"
+                    >&mdash;</span>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -2771,6 +2825,9 @@ export default {
 .dev-my-work__jira-summary { max-width: 52ch; }
 
 .dev-my-work__jira-overdue { color: var(--error); font-weight: 600; }
+
+/* The step button sits on its own line of the row and never wraps: the labels are one word. */
+.dev-my-work__jira-do { white-space: nowrap; }
 
 /* ── The tracker tab, moved here from the page it used to be ── */
 .dev-my-work__tracker__error {
