@@ -149,3 +149,52 @@ test('reviewing a new bug is the four edits the document asks for together', () 
   assert.equal(edits.assignee, 'gak');
   assert.match(edits.comment, /In Triage/);
 });
+
+
+// ── What a move has to ask for ──────────────────────────────────────────────────────────────
+
+const FIELDS = ['toStatus', 'assignee', 'team', 'resolution', 'affectsVersions', 'fixVersions', 'duplicate', 'comment'];
+
+test('every move names the fields it cannot decide, and they are fields', () => {
+  for (const move of TRIAGE_MOVES) {
+    assert.ok(Array.isArray(move.needs), `${ move.id } has needs`);
+    for (const field of move.needs) {
+      assert.ok(FIELDS.includes(field), `${ move.id } needs "${ field }", which is not a field`);
+    }
+  }
+});
+
+test('an edit a move leaves empty is an edit it is asking for', () => {
+  /*
+   * The invariant behind the one-move dialog: `not-ours` sets `team: ''`, and a dialog that
+   * showed no team select would apply "take UI off it and put nothing on it". So anything
+   * `edits` leaves blank has to be in `needs`, or the field is silently cleared.
+   */
+  const options = {
+    defaults: {
+      team: 'UI', assignee: 'someone', assigneeLabel: 'me',
+    },
+  };
+
+  for (const move of TRIAGE_MOVES) {
+    for (const [field, value] of Object.entries(move.edits(options))) {
+      if (field === 'links') {
+        // The duplicate link carries the key the comment is asking for; same question, one field.
+        const blank = (value || []).some((l) => !l.key);
+
+        assert.equal(blank ? move.needs.includes('duplicate') : true, true, `${ move.id } asks for the duplicate it links`);
+        continue;
+      }
+      if (value === '') {
+        assert.ok(move.needs.includes(field), `${ move.id } leaves ${ field } empty, so it has to ask for it`);
+      }
+    }
+  }
+});
+
+test('the comment is always the person\'s to finish', () => {
+  // Each one is part-written on purpose - "This is a duplicate of " is not a comment yet.
+  for (const move of TRIAGE_MOVES) {
+    assert.ok(move.needs.includes('comment'), `${ move.id } asks for the comment`);
+  }
+});

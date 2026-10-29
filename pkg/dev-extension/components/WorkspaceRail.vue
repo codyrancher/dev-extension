@@ -376,6 +376,19 @@ export default {
       return actionForStatus(this.status?.stageLabel || '');
     },
 
+    /**
+     * What the triage dialog is called: the bug, and the move when it was opened on one.
+     *
+     * "Triage SURE-12180" over a dialog that only asks which team to move it to is a title about
+     * the wrong thing - the dialog is one move now, not the whole form (see JiraTriage's
+     * `focused`), so the title says which.
+     */
+    triageTitle() {
+      const move = this.triageMove ? TRIAGE_MOVES.find((m) => m.id === this.triageMove) : null;
+
+      return move ? `${ this.bug } · ${ move.label }` : `Triage ${ this.bug }`;
+    },
+
     /** The moves the document offers from here. A move this ticket cannot make is not offered. */
     bugMoves() {
       const status = this.status?.stageLabel || '';
@@ -3968,7 +3981,7 @@ export default {
       <DevModal
         v-if="triaging && bug"
         size="medium"
-        :title="`Triage ${ bug }`"
+        :title="triageTitle"
         @close="triaging = false"
       >
         <JiraTriage

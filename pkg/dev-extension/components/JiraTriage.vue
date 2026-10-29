@@ -114,6 +114,41 @@ export default {
       return this.proposal?.recommendation || null;
     },
 
+    /**
+     * The one move this dialog is for, when it was opened on one.
+     *
+     * Opened from a move's own button - "Another team", "Duplicate" - the dialog is about that
+     * move and nothing else: it shows the fields the move has to ask for (`needs`) and says the
+     * rest in a sentence. Opened from "Triage it" there is no move, and it is the whole form,
+     * which is the thing to reach for when none of the seven is quite what happened.
+     */
+    focused() {
+      return this.move ? (TRIAGE_MOVES.find((m) => m.id === this.move) || null) : null;
+    },
+
+    /**
+     * What the focused move does without asking, as rows to read.
+     *
+     * Everything its `edits` decides that is not in `needs` and is not the comment - the comment
+     * is shown in full, being the half a person actually writes. A move that decides nothing by
+     * itself ("Ask the reporter" only moves the status) still gets its status row, which is the
+     * one thing worth confirming before pressing Apply.
+     */
+    settled() {
+      if (!this.focused) {
+        return [];
+      }
+      const edits = this.focused.edits(this.options || { defaults: {} });
+      const names = {
+        toStatus: 'Moves it to', team: 'Rancher Team', assignee: 'Assign to', resolution: 'Resolution', fixVersions: 'Fix version', affectsVersions: 'Affects version', duplicate: 'Duplicate of',
+      };
+
+      return Object.keys(names)
+        .filter((k) => !this.focused.needs.includes(k))
+        .map((k) => ({ k: names[k], v: Array.isArray(edits[k]) ? edits[k].join(', ') : String(edits[k] ?? '') }))
+        .filter((row) => row.v);
+    },
+
     /** Whether there is anything at all to send. An Apply that writes nothing is not an Apply. */
     hasChange() {
       const f = this.form;
@@ -148,6 +183,11 @@ export default {
   },
 
   methods: {
+    /** Whether a field is this dialog's business: all of them, or the move's own. */
+    shows(field) {
+      return !this.focused || this.focused.needs.includes(field);
+    },
+
     /** What the dialog's footer needs: whether the ticket is readable, and whether to enable Apply. */
     tellHost() {
       this.$emit('state', { ready: !!this.proposal, hasChange: this.hasChange });
@@ -394,7 +434,7 @@ export default {
         the customer is read before it goes.
       -->
       <Stack
-        v-if="presets.length"
+        v-if="presets.length && !focused"
         gap="3"
       >
         <span class="jira-triage__head">What this bug needs</span>
@@ -419,14 +459,38 @@ export default {
 
       <!-- And the form itself, which is what any of them is. -->
       <Stack gap="4">
-        <span class="jira-triage__head">The change</span>
+        <span class="jira-triage__head">{{ focused ? focused.label : 'The change' }}</span>
+        <!--
+          Opened on one move, the dialog is about that move: what it does by itself is said here
+          rather than left as a row of selects whose answers are already decided, and only the
+          fields it has to ask for are below. See `settled` and `needs`.
+        -->
+        <template v-if="focused">
+          <p class="jira-triage__about">{{ focused.about }}</p>
+          <ul
+            v-if="settled.length"
+            class="jira-triage__settled"
+          >
+            <li
+              v-for="row in settled"
+              :key="row.k"
+            >
+              <span class="text-muted">{{ row.k }}</span>
+              <strong>{{ row.v }}</strong>
+            </li>
+          </ul>
+        </template>
 
         <Row
+          v-if="shows('toStatus') || shows('assignee')"
           gap="4"
           align="center"
         >
-          <label>Move to</label>
-          <select v-model="form.toStatus">
+          <label v-if="shows('toStatus')">Move to</label>
+          <select
+            v-if="shows('toStatus')"
+            v-model="form.toStatus"
+          >
             <option value="">leave where it is</option>
             <option
               v-for="t in proposal.transitions"
@@ -435,8 +499,11 @@ export default {
             >{{ t.name }}</option>
           </select>
 
-          <label>Assign to</label>
-          <select v-model="form.assignee">
+          <label v-if="shows('assignee')">Assign to</label>
+          <select
+            v-if="shows('assignee')"
+            v-model="form.assignee"
+          >
             <option :value="null">leave as it is</option>
             <option value="">nobody</option>
             <option
@@ -446,17 +513,22 @@ export default {
             >{{ u.label }}</option>
           </select>
           <RcButton
+            v-if="shows('assignee')"
             small
             @click="assignToMe"
           >{{ options.defaults.assigneeLabel }}</RcButton>
         </Row>
 
         <Row
+          v-if="shows('team') || shows('resolution')"
           gap="4"
           align="center"
         >
-          <label>Rancher Team</label>
-          <select v-model="form.team">
+          <label v-if="shows('team')">Rancher Team</label>
+          <select
+            v-if="shows('team')"
+            v-model="form.team"
+          >
             <option value="">leave as it is</option>
             <option
               v-for="team in options.teams"
@@ -465,8 +537,11 @@ export default {
             >{{ team }}</option>
           </select>
 
-          <label>Resolution</label>
-          <select v-model="form.resolution">
+          <label v-if="shows('resolution')">Resolution</label>
+          <select
+            v-if="shows('resolution')"
+            v-model="form.resolution"
+          >
             <option value="">none</option>
             <option
               v-for="r in options.resolutions"
@@ -477,11 +552,13 @@ export default {
         </Row>
 
         <Row
+          v-if="shows('affectsVersions') || shows('fixVersions')"
           gap="4"
           align="center"
         >
-          <label>Affects version</label>
+          <label v-if="shows('affectsVersions')">Affects version</label>
           <select
+            v-if="shows('affectsVersions')"
             v-model="form.affectsVersions"
             multiple
             size="3"
@@ -493,8 +570,9 @@ export default {
             >{{ v }}</option>
           </select>
 
-          <label>Fix version</label>
+          <label v-if="shows('fixVersions')">Fix version</label>
           <select
+            v-if="shows('fixVersions')"
             v-model="form.fixVersions"
             multiple
             size="3"
@@ -508,6 +586,7 @@ export default {
         </Row>
 
         <Row
+          v-if="shows('duplicate')"
           gap="4"
           align="center"
         >
@@ -593,6 +672,25 @@ export default {
   &__presets { flex-wrap: wrap; }
 
   &__about { margin: 0; color: var(--muted); max-width: 80ch; }
+
+  /*
+   * What a focused move does by itself, read rather than chosen: one line per field, the name
+   * quiet and the value not, so the row that matters - "Moves it to  In Triage" - carries.
+   */
+  &__settled {
+    display:        flex;
+    flex-direction: column;
+    gap:            var(--dev-space-2);
+    margin:         0;
+    padding:        0;
+    list-style:     none;
+
+    li {
+      display:     flex;
+      align-items: baseline;
+      gap:         var(--dev-space-3);
+    }
+  }
 
   &__note { font-size: 11px; }
 }

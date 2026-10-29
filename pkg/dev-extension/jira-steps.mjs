@@ -129,6 +129,23 @@ export function roleForStep(action) {
 }
 
 /**
+ * Which fields a move cannot decide for the person, by name.
+ *
+ * `edits` says what the move does on its own; this says what it has to ASK. The dialog opened
+ * on one move shows these and nothing else - "Another team" is a team to pick, not the whole
+ * change form with a team select somewhere in it - and says the rest as a sentence, because a
+ * select whose answer is already decided is a control that cannot be used for anything.
+ *
+ * `comment` is in every one of them. It is the half of a move that reaches the reporter, and
+ * each `edits` leaves it part-written on purpose: a sentence ending "This is a duplicate of "
+ * is not a comment until somebody finishes it.
+ *
+ * The invariant worth remembering, and the one the tests hold: an edit whose value is EMPTY is
+ * a field the move is asking for, so it has to be named here. `not-ours` sets `team: ''`; a
+ * dialog that did not ask for a team would apply "take UI off it and put nothing on it".
+ */
+
+/**
  * The runbook's compound moves, each as the set of edits it is.
  *
  * Here rather than in the panel because both ends of the product need them: the rail offers them
@@ -143,6 +160,7 @@ export function roleForStep(action) {
 export const TRIAGE_MOVES = [
   {
     id:      'to-triage',
+    needs:   ['comment'],
     label:   'Reviewed - move to In Triage',
     short:   'Move to In Triage',
     when:    ['New'],
@@ -156,6 +174,7 @@ export const TRIAGE_MOVES = [
   },
   {
     id:    'need-more',
+    needs: ['comment'],
     short: 'Ask the reporter',
     label: 'Ask the reporter for more',
     when:  ['New', 'In Triage'],
@@ -167,6 +186,7 @@ export const TRIAGE_MOVES = [
   },
   {
     id:    'reproduced',
+    needs: ['comment'],
     short: 'Reproduced',
     label: 'Reproduced - move to To Prioritize',
     when:  ['In Triage'],
@@ -178,6 +198,7 @@ export const TRIAGE_MOVES = [
   },
   {
     id:    'cannot-reproduce',
+    needs: ['comment'],
     short: 'Could not reproduce',
     label: 'Could not reproduce',
     when:  ['In Triage'],
@@ -189,6 +210,7 @@ export const TRIAGE_MOVES = [
   },
   {
     id:    'not-ours',
+    needs: ['team', 'comment'],
     short: 'Another team',
     label: 'Not a UI bug',
     when:  ['New', 'In Triage'],
@@ -197,6 +219,7 @@ export const TRIAGE_MOVES = [
   },
   {
     id:    'duplicate',
+    needs: ['duplicate', 'comment'],
     short: 'Duplicate',
     label: 'Duplicate of another bug',
     when:  ['New', 'In Triage'],
@@ -209,6 +232,7 @@ export const TRIAGE_MOVES = [
   },
   {
     id:    'already-fixed',
+    needs: ['fixVersions', 'comment'],
     short: 'Already fixed',
     label: 'Already fixed in a newer version',
     when:  ['New', 'In Triage'],
