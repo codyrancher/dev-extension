@@ -19,8 +19,11 @@ import Banner from '@components/Banner/Banner.vue';
 import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
 import {
-  jiraOptions, jiraProposal, jiraApply, dismissJiraRecommendation, amendJiraRecommendation, JIRA_BASE
+  jiraOptions, jiraProposal, jiraApply, dismissJiraRecommendation, amendJiraRecommendation, jiraEmbed, JIRA_BASE
 } from '../jira';
+import { devFetch, workspaceMediaListUrl } from '../api';
+import { putArtifact } from '../workspace-tools';
+import CommentAttachments from './pr/CommentAttachments.vue';
 import { TRIAGE_MOVES } from '../jira-steps.mjs';
 import { startConclusionDiscussion, sayInConversation } from '../reviews';
 import { listConversations, paneCommand } from '../conversations';
@@ -44,7 +47,7 @@ export default {
   name: 'JiraTriage',
 
   components: {
-    RcButton, AsyncButton, Banner, Stack, Row, StudioTerminal,
+    RcButton, AsyncButton, Banner, Stack, Row, StudioTerminal, CommentAttachments,
   },
 
   props: {
@@ -116,6 +119,18 @@ export default {
       talk:     '',
       /** The conversation the discussion is held in, once there is one. */
       conversation: null,
+      /*
+       * The evidence: what will go onto the ticket when Apply is pressed, and what there is to
+       * choose from.
+       *
+       * `staged` is the list, each `{ path, name, caption, kind, url, byAgent }`. Nothing is
+       * uploaded until Apply - see the note on `stage` - so this is a plan rather than a record.
+       * `media` is the workspace's own recordings and screenshots, read once when the ticket is,
+       * and `busy` is the path being put into the workspace from this machine.
+       */
+      staged:   [],
+      media:    [],
+      busy:     '',
       opening:  false,
     };
   },
@@ -180,12 +195,28 @@ export default {
         .filter((row) => row.v);
     },
 
-    /** Whether there is anything at all to send. An Apply that writes nothing is not an Apply. */
+    /**
+     * Whether there is anything at all to send. An Apply that writes nothing is not an Apply.
+     *
+     * Evidence counts only when a PERSON put it there. The agent's own attachments are staged
+     * the moment the panel opens - that is what they were gathered for - and if they counted,
+     * opening this dialog and pressing Apply would put a video of the customer's cluster on
+     * their ticket with not a word of explanation. So they ride along with a real change, and a
+     * file chosen here is the deliberate act that makes Apply live on its own.
+     */
     hasChange() {
       const f = this.form;
 
       return !!(f.toStatus || f.comment.trim() || f.assignee !== null || f.team || f.resolution
-        || f.fixVersions.length || f.affectsVersions.length || f.duplicate.trim());
+        || f.fixVersions.length || f.affectsVersions.length || f.duplicate.trim()
+        || this.staged.some((a) => !a.byAgent));
+    },
+
+    /** The workspace's recordings and screenshots that are not already staged. */
+    unstaged() {
+      const on = new Set(this.staged.map((a) => a.path));
+
+      return this.media.filter((f) => !on.has(this.artifactPath(f.path)));
     },
 
     jiraUrl() {
@@ -323,6 +354,121 @@ export default {
       }
     },
 
+    /**
+     * A path as the attach route wants it: relative to the workspace's artifacts.
+     *
+     * The media listing is already relative to that directory and the recommendation's paths
+     * may be absolute, from the checkout, or relative - the route normalises all three
+     * (jiraArtifactRel), so this only has to be consistent enough to compare two of them.
+     */
+    artifactPath(p) {
+      return String(p || '').replace(/^\/workspaces\/[^/]+\//, '').replace(/^artifacts\//, '');
+    },
+
+    /**
+     * Put a file on the list that Apply will upload, and name it in the comment.
+     *
+     * Nothing is uploaded here. Jira's attachment API writes to the customer's ticket the
+     * instant it is called, and this panel's whole promise is that nothing reaches the reporter
+     * until Apply - so an attach button that uploaded on the spot would be the one control here
+     * that broke it. Apply sends the list and the route uploads before it comments, which also
+     * fixes the ordering: a comment carrying `!shot.png|thumbnail!` that lands first shows the
+     * markup as text until the file arrives.
+     *
+     * The embed goes into the comment box, where it can be moved, captioned or deleted like any
+     * other line. A file nobody names is still attached - which is the right answer for a HAR
+     * nobody wants to read but somebody may need.
+     */
+    stage(file, byAgent = false) {
+      const path = this.artifactPath(file.path);
+
+      if (!path || this.staged.some((a) => a.path === path)) {
+        return;
+      }
+      const name = file.name || path.split('/').pop() || path;
+      const kind = file.kind || (/\.(webm|mp4)$/i.test(name) ? 'video' : (/\.(png|jpe?g|gif|webp)$/i.test(name) ? 'image' : 'file'));
+
+      this.staged = [...this.staged, {
+        path, name, caption: file.caption || '', kind, url: file.url || null, byAgent,
+      }];
+
+      // Named in the comment only where there is a comment to name it in: a form opened on a
+      // move that does not comment has nowhere to put the markup, and adding one would be this
+      // panel writing prose of its own to a customer.
+      if (this.shows('comment')) {
+        const body = this.form.comment;
+        const mark = jiraEmbed(name, kind);
+
+        if (!body.includes(mark)) {
+          this.form.comment = `${ body }${ !body || body.endsWith('\n') ? '' : '\n\n' }${ mark }\n`;
+        }
+      }
+    },
+
+    /** Off the list again, and out of the comment if that is where its markup still is. */
+    unstage(path) {
+      const gone = this.staged.find((a) => a.path === path);
+
+      this.staged = this.staged.filter((a) => a.path !== path);
+      if (gone) {
+        this.form.comment = this.form.comment
+          .split('\n')
+          .filter((line) => line.trim() !== jiraEmbed(gone.name, gone.kind))
+          .join('\n');
+      }
+    },
+
+    /** Something from this machine: into the workspace's artifacts, then onto the list. */
+    async stageUpload(event) {
+      const file = event.target?.files?.[0];
+
+      if (!file || !this.workspace) {
+        return;
+      }
+      event.target.value = '';
+      this.busy = file.name;
+      this.error = '';
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = '';
+
+        for (let i = 0; i < bytes.length; i += 8192) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        }
+        const rel = await putArtifact(this.workspace, file.name, btoa(binary));
+
+        this.stage({ path: rel, name: file.name });
+        await this.loadMedia();
+      } catch (e) {
+        this.error = e?.message || String(e);
+      } finally {
+        this.busy = '';
+      }
+    },
+
+    /**
+     * The workspace's own recordings and screenshots, newest first.
+     *
+     * The same filter the approve panel uses: not the thousands of single frames a recording
+     * leaves behind while it is being made, and videos before stills because a reproduction is
+     * usually the thing being looked for. A failed read leaves whatever is listed alone.
+     */
+    async loadMedia() {
+      if (!this.workspace) {
+        return;
+      }
+      const files = await devFetch(workspaceMediaListUrl(this.workspace))
+        .then((d) => (d?.files || [])
+          .filter((f) => !/(^|\/)(tmp-frames|frames|\.cache)[^/]*\//.test(f.path) && !/\/f\d+\.(png|jpe?g)$/.test(f.path))
+          .sort((a, b) => Number(/video/.test(b.type || '')) - Number(/video/.test(a.type || '')) || (b.mtimeMs || 0) - (a.mtimeMs || 0))
+          .slice(0, 20))
+        .catch(() => null);
+
+      if (files) {
+        this.media = files;
+      }
+    },
+
     /** Whether a field is this dialog's business: all of them, or the move's own. */
     shows(field) {
       return !this.focused || this.focused.needs.includes(field);
@@ -343,6 +489,22 @@ export default {
 
         this.proposal = proposal;
         this.options = options;
+        /*
+         * The agent's evidence, staged as the panel opens.
+         *
+         * It was gathered to go on the ticket - the conclusion above says so in as many words
+         * ("the 29s video, the search comparison, and a screenshot of the empty search") - and
+         * leaving it as prose naming three files meant the one step that put them where the
+         * reporter could see them was the one step nobody did. So it is on the list already,
+         * listed and removable, rather than something to remember.
+         *
+         * `byAgent` so it does not make Apply live by itself; see hasChange.
+         */
+        for (const file of proposal?.recommendation?.attachments || []) {
+          this.stage(file, true);
+        }
+        // Not awaited: it is a third request and the form below does not need it to be drawn.
+        this.loadMedia();
       } catch (e) {
         this.error = e.message || String(e);
       } finally {
@@ -411,6 +573,11 @@ export default {
           toStatus:        this.form.toStatus || null,
           comment:         this.form.comment.trim(),
           assignee:        this.form.assignee,
+          // Uploaded before anything else is written, which is the route's job rather than this
+          // panel's: see jiraApply. The workspace rides along because the files are under its
+          // artifacts and a bug's workspace is only derivable for the ones named after it.
+          attachments:     this.staged.map((a) => a.path),
+          workspace:       this.workspace || undefined,
           team:            this.form.team || undefined,
           fixVersions:     this.form.fixVersions.length ? this.form.fixVersions : undefined,
           affectsVersions: this.form.affectsVersions.length ? this.form.affectsVersions : undefined,
@@ -425,6 +592,9 @@ export default {
           .filter(Boolean).join(', ') || 'nothing to change';
         this.form = blank();
         this.preset = '';
+        // On the ticket now, so the list empties: `load` below re-stages whatever the next
+        // pending proposal carries, and an applied one carries nothing - it is no longer pending.
+        this.staged = [];
         await this.load();
         this.$emit('applied');
         done(true);
@@ -858,6 +1028,80 @@ export default {
             placeholder="Nothing is commented unless this has something in it."
           />
         </Stack>
+
+        <!--
+          The evidence, under the comment it is named in.
+
+          What the agent gathered is already on the list - that is what it gathered it for - and
+          the rest of the workspace's recordings are a press away. Nothing is uploaded until
+          Apply: see `stage`, which is also where the ordering is explained.
+        -->
+        <Stack
+          v-if="workspace && shows('comment')"
+          gap="3"
+          class="jira-triage__attach"
+        >
+          <Row
+            gap="3"
+            align="center"
+          >
+            <span class="jira-triage__head">Attach to the ticket</span>
+            <span
+              v-if="staged.length"
+              class="text-muted jira-triage__note"
+            >{{ staged.length }} going on with Apply</span>
+          </Row>
+
+          <CommentAttachments
+            v-if="staged.length"
+            :attachments="staged"
+            removable
+            hint="uploaded on Apply"
+            @remove="unstage"
+          />
+
+          <Row
+            gap="3"
+            align="center"
+          >
+            <RcButton
+              small
+              :disabled="!!busy"
+              @click="$refs.file.click()"
+            >
+              <i
+                v-if="busy"
+                class="icon icon-spinner icon-spin"
+              />
+              From this machine&hellip;
+            </RcButton>
+            <input
+              ref="file"
+              type="file"
+              accept="image/*,video/*,.txt,.log,.har,.json,.yaml,.yml"
+              class="jira-triage__file"
+              @change="stageUpload"
+            >
+            <span class="text-muted jira-triage__note">The reporter sees everything attached here. A recording of your own cluster is the thing to think twice about.</span>
+          </Row>
+
+          <ul
+            v-if="unstaged.length"
+            class="jira-triage__media"
+          >
+            <li
+              v-for="f in unstaged"
+              :key="f.path"
+            >
+              <button
+                type="button"
+                class="jira-triage__media-add"
+                @click="stage(f)"
+              >Attach</button>
+              <code>{{ f.path }}</code>
+            </li>
+          </ul>
+        </Stack>
       </Stack>
 
       <Banner
@@ -966,6 +1210,69 @@ export default {
   }
 
   &__note { font-size: 11px; }
+
+  /*
+   * The evidence, set off from the fields above it the way the discussion is from the panel.
+   *
+   * The `--pr-*` declarations are not decoration. CommentAttachments draws its rows from that
+   * palette, which panel.scss declares on `.pr-tokens` / `.pr-review` - and this panel is inside
+   * a DevModal, which teleports to `<body>`, so it has neither ancestor and every one of those
+   * vars would resolve to nothing: no frame on the thumbnail, no fill behind it. The same trap
+   * panel.scss's own note is about. Declared here, on this section, because a custom property
+   * inherits into a child component where a scoped rule does not reach it.
+   */
+  &__attach {
+    --pr-bg:     var(--body-bg);
+    --pr-bg-2:   var(--sortable-table-header-bg);
+    --pr-border: var(--border);
+    --pr-text:   var(--body-text);
+    --pr-muted:  var(--muted);
+    --pr-accent: var(--dev-accent);
+    --pr-error:  var(--status-error);
+
+    padding-top: var(--dev-space-4);
+    border-top:  1px solid var(--border);
+  }
+
+  // The real control is the button beside it; a file input draws a second one nobody styled.
+  &__file { display: none; }
+
+  &__media {
+    margin:     0;
+    padding:    0;
+    list-style: none;
+    max-height: 168px;
+    overflow-y: auto;
+
+    li {
+      display:     flex;
+      align-items: center;
+      gap:         var(--dev-space-3);
+      padding:     var(--dev-space-1) 0;
+      font-size:   12px;
+    }
+
+    code {
+      overflow:      hidden;
+      text-overflow: ellipsis;
+      white-space:   nowrap;
+    }
+  }
+
+  &__media-add {
+    flex:          0 0 auto;
+    min-height:    0;
+    padding:       0 var(--dev-space-3);
+    border:        1px solid var(--border);
+    border-radius: var(--dev-r-ctl);
+    background:    transparent;
+    color:         var(--muted);
+    font-size:     11px;
+    line-height:   20px;
+    cursor:        pointer;
+
+    &:hover { color: var(--link); border-color: var(--link); }
+  }
 
   /*
    * The discussion, inside a dialog that is 720px wide and scrolls. A fixed height rather than a

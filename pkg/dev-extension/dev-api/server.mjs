@@ -984,6 +984,52 @@ function jiraArtifactRel(p) {
     .replace(/^\/+/, '');
 }
 
+/**
+ * One file from a bug's workspace onto the ticket, as Jira's attachment API wants it.
+ *
+ * Shared by the attach route and by `apply`. `apply` uploads before it comments, and that order
+ * is the reason this is a function rather than inline in the route: a comment carrying
+ * `!shot.png|thumbnail!` for a file that is not on the ticket yet renders as that markup,
+ * verbatim, in front of the customer.
+ *
+ * Answers with the filename Jira stored it under, which is what the wiki markup references.
+ */
+async function attachJiraFile(key, workspace, p) {
+  const ws = String(workspace || workspaceForJira(key));
+  const file = ws ? workspaceMediaPath(ws, jiraArtifactRel(p)) : '';
+
+  if (!file) {
+    throw failure(404, `No such file in ${ ws || 'the workspace' }: ${ p || '(none)' }`);
+  }
+  const token = await jiraToken();
+
+  if (!token) {
+    throw failure(400, 'No Jira token. Add JIRA_TOKEN in Settings.');
+  }
+  const name = path.basename(file);
+  const form = new FormData();
+
+  form.append('file', new Blob([fs.readFileSync(file)]), name);
+  // Multipart, so content-type has to carry the boundary fetch generates - jiraFetch would
+  // force application/json, hence the direct call. Jira refuses attachment uploads without
+  // the no-check token, as XSRF protection.
+  const upstream = await fetch(`${ JIRA_BASE }/rest/api/2/issue/${ key }/attachments`, {
+    method:  'POST',
+    headers: { authorization: `Bearer ${ token }`, 'X-Atlassian-Token': 'no-check' },
+    body:    form,
+  });
+  const text = await upstream.text();
+
+  if (!upstream.ok) {
+    throw failure(upstream.status, `Jira answered ${ upstream.status }: ${ text.slice(0, 200) }`);
+  }
+  recordJiraChange({
+    key, kind: 'comment', comment: `attached ${ name }`, step: 'attachment',
+  });
+
+  return name;
+}
+
 let viewerLogin = { at: 0, login: '' };
 
 /** Whose token this is - so a page can tell the person's own threads from everyone else's. */
@@ -2817,8 +2863,8 @@ const OPENAPI = {
       }],
       post: {
         operationId: 'applyJira',
-        summary:     "Write to the ticket: the comment, the fields, then the move.",
-        description: 'The one route here that changes a customer-visible ticket. The transition goes last, so a failed move never leaves a comment promising something that did not happen.',
+        summary:     'Write to the ticket: the evidence, the comment, the fields, then the move.',
+        description: 'The one route here that changes a customer-visible ticket. `attachments` is a list of paths under the workspace\'s artifacts, uploaded FIRST so a comment embedding one (`!shot.png|thumbnail!`) never lands before the file it names; the transition goes LAST, so a failed move never leaves a comment promising something that did not happen.',
         responses:   { 200: { description: 'What was changed.' }, 400: { description: 'That move is not legal from where it stands.' } },
       },
     },
@@ -6233,6 +6279,26 @@ const routes = [
         throw failure(400, `"${ toStatus }" is not a legal move for ${ key } right now.`);
       }
     }
+    /*
+     * The evidence, before the comment that embeds it.
+     *
+     * Jira's wiki markup references an attachment by filename, so a comment that lands first
+     * shows `!shot.png|thumbnail!` as text until the file arrives - and if the upload then
+     * fails, for ever. Uploading first costs nothing when the comment is refused afterwards:
+     * an attachment on a ticket with no comment about it is untidy, where a comment pointing at
+     * a file that is not there is wrong in front of a customer.
+     *
+     * One at a time and in the order they were staged, because that is the order the comment
+     * names them in.
+     */
+    const staged = Array.isArray(body?.attachments)
+      ? body.attachments.filter((a) => typeof a === 'string' && a).slice(0, 20)
+      : [];
+    const attached = [];
+
+    for (const file of staged) {
+      attached.push(await attachJiraFile(key, body?.workspace, file));
+    }
     if (comment) {
       await jiraFetch(`/rest/api/2/issue/${ key }/comment`, { method: 'POST', body: JSON.stringify({ body: comment }) });
     }
@@ -6247,6 +6313,9 @@ const routes = [
     }
     if (edits.resolution) {
       applied.push(`resolution = ${ edits.resolution }`);
+    }
+    if (attached.length) {
+      applied.unshift(`attached ${ attached.join(', ') }`);
     }
     if (rec && body?.recommendation !== false) {
       rec.appliedAt = new Date().toISOString();
@@ -6264,7 +6333,9 @@ const routes = [
       step:       rec?.action || null,
     });
 
-    return { ok: true, status: toStatus, details: applied };
+    return {
+      ok: true, status: toStatus, details: applied, attached,
+    };
   }],
   /*
    * Attach one file from the bug's workspace to the ticket. One at a time on purpose: each is a
@@ -6273,39 +6344,8 @@ const routes = [
    */
   ['POST', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/attach$/, async(m, url, body) => {
     const key = jiraKey(m[1]);
-    const workspace = String(body?.workspace || workspaceForJira(key));
-    const file = workspace ? workspaceMediaPath(workspace, jiraArtifactRel(body?.path)) : '';
 
-    if (!file) {
-      throw failure(404, `No such file in ${ workspace || 'the workspace' }: ${ body?.path || '(none)' }`);
-    }
-    const token = await jiraToken();
-
-    if (!token) {
-      throw failure(400, 'No Jira token. Add JIRA_TOKEN in Settings.');
-    }
-    const name = path.basename(file);
-    const form = new FormData();
-
-    form.append('file', new Blob([fs.readFileSync(file)]), name);
-    // Multipart, so content-type has to carry the boundary fetch generates - jiraFetch would
-    // force application/json, hence the direct call. Jira refuses attachment uploads without
-    // the no-check token, as XSRF protection.
-    const upstream = await fetch(`${ JIRA_BASE }/rest/api/2/issue/${ key }/attachments`, {
-      method:  'POST',
-      headers: { authorization: `Bearer ${ token }`, 'X-Atlassian-Token': 'no-check' },
-      body:    form,
-    });
-    const text = await upstream.text();
-
-    if (!upstream.ok) {
-      throw failure(upstream.status, `Jira answered ${ upstream.status }: ${ text.slice(0, 200) }`);
-    }
-    recordJiraChange({
-      key, kind: 'comment', comment: `attached ${ name }`, step: 'attachment',
-    });
-
-    return { ok: true, filename: name };
+    return { ok: true, filename: await attachJiraFile(key, body?.workspace, body?.path) };
   }],
   /*
    * The phase of a triage agent, for the conversation that is running it: the same states, the

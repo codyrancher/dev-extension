@@ -357,18 +357,25 @@ export async function jiraRun(key: string, action: string): Promise<JiraRun | nu
 }
 
 /**
- * Write to the ticket: the comment, the fields, then the move.
+ * Write to the ticket: the evidence, the comment, the fields, then the move.
  *
  * The one call here that changes something a customer sees, which is why it is a person pressing
  * a button and never a poll. `recommendation: false` applies without marking the pending
  * proposal as taken - for a correction made with no proposal behind it.
+ *
+ * `attachments` are paths under the workspace's artifacts, uploaded before anything else is
+ * written. They go through the apply rather than one at a time, because a comment embedding one
+ * (`!shot.png|thumbnail!`) that lands before the file renders as that markup in front of the
+ * customer - see the route's own note.
  */
 export async function jiraApply(key: string, change: {
   toStatus?: string | null;
   comment?: string;
   assignee?: string | null;
   recommendation?: boolean;
-} & JiraFieldEdits): Promise<{ ok: boolean; status: string | null; details: string[] }> {
+  attachments?: string[];
+  workspace?: string;
+} & JiraFieldEdits): Promise<{ ok: boolean; status: string | null; details: string[]; attached?: string[] }> {
   return devApi(`/my-work/jira/${ encodeURIComponent(key) }/apply`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(change),
   });
@@ -411,6 +418,20 @@ export interface JiraOptions {
 
 export async function jiraOptions(key: string): Promise<JiraOptions> {
   return devApi(`/my-work/jira/${ encodeURIComponent(key) }/options`);
+}
+
+/**
+ * How a comment points at an attachment, in Jira's own wiki markup.
+ *
+ * An image is shown where it is named; anything else - a recording, a HAR, a log - is a link,
+ * because Jira will not play a video inline and a bare `!name!` for one renders as a broken
+ * image. The reference is by FILENAME, which is why the upload answers with the name Jira
+ * stored it under rather than with the path it came from.
+ */
+export function jiraEmbed(filename: string, kind = ''): string {
+  const image = kind === 'image' || /\.(png|jpe?g|gif|webp)$/i.test(filename);
+
+  return image ? `!${ filename }|thumbnail!` : `[^${ filename }]`;
 }
 
 /** Put one file from the bug's workspace onto the ticket. One at a time, deliberately. */

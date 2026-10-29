@@ -4050,7 +4050,7 @@ export default {
             variant="tertiary"
             @click="triaging = false"
           >Close</RcButton>
-          <span class="text-muted dev-modal__foot-aside">The comment goes on first and the move last, so a move Jira refuses never leaves a comment behind it.</span>
+          <span class="text-muted dev-modal__foot-aside">Anything attached goes up first, then the comment, and the move last - so a comment never names a file that is not there, and a move Jira refuses never leaves a comment behind it.</span>
         </template>
       </DevModal>
     </template>

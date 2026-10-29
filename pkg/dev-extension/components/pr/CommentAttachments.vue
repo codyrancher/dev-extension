@@ -1,12 +1,15 @@
 <script>
-// Evidence attached to a pending review comment: the screenshot or the recording the agent
+// Evidence attached to something waiting to be sent: the screenshot or the recording an agent
 // produced while checking its own claim.
 //
-// The files live in the Studio agent's workspace and are served through the in-cluster API
-// (see reviews.ts, artifactUrl) - they are NOT on GitHub, and deliberately so. A text file is
-// inlined into the comment when the review is submitted; an image or a recording is named
-// there, since uploading one needs a github.com session this dashboard does not have.
-import { artifactUrl } from '../../reviews';
+// The files live in the workspace and are served through the in-cluster API - they are not on
+// GitHub or Jira until the thing they belong to is sent, and deliberately so.
+//
+// Two callers, and the difference between them is one line. A pending review comment's evidence
+// is found from the PR number and the path (`artifactUrl`); a Jira proposal's arrives with the
+// URL already on it, because the recommendation route resolves it against that bug's workspace.
+// So an attachment may carry its own `url`, and `pr` is only needed by the half that does not.
+import { artifactUrl, devApiUrl } from '../../reviews';
 import ArtifactViewer from './ArtifactViewer.vue';
 
 export default {
@@ -17,9 +20,10 @@ export default {
   emits: ['remove'],
 
   props: {
+    /** The pull request, for evidence that is found from one. Not needed when `url` is carried. */
     pr: {
-      type:     Number,
-      required: true,
+      type:    Number,
+      default: 0,
     },
     attachments: {
       type:    Array,
@@ -29,6 +33,18 @@ export default {
     removable: {
       type:    Boolean,
       default: false,
+    },
+
+    /**
+     * What the trailing word on each row says will happen to it.
+     *
+     * A review comment's evidence is inlined or named when the review is submitted; a Jira
+     * proposal's is uploaded to the ticket when Apply is pressed. Same rows, different promise,
+     * and a row that made the wrong one would be the worst kind of wrong here.
+     */
+    hint: {
+      type:    String,
+      default: '',
     },
   },
 
@@ -43,8 +59,23 @@ export default {
   },
 
   methods: {
+    /** Where the bytes are: the one the caller resolved, else the PR's artifact route. */
     url(a) {
-      return a.found ? artifactUrl(this.pr, a.path) : '';
+      if (a.url) {
+        return devApiUrl(a.url);
+      }
+
+      return a.found && this.pr ? artifactUrl(this.pr, a.path) : '';
+    },
+
+    /** Whether there is anything to open. `found` is the PR side's word for it; a url is the other's. */
+    there(a) {
+      return !!this.url(a);
+    },
+
+    /** What this row says happens to it, from the caller, else the review's own wording. */
+    says(a) {
+      return this.hint || (a.kind === 'file' ? 'inlined on submit' : 'named on submit');
     },
 
     toggle(path) {
@@ -75,11 +106,11 @@ export default {
         type="button"
         class="cattach__thumb"
         :title="a.path"
-        :disabled="!a.found"
+        :disabled="!there(a)"
         @click="toggle(a.path)"
       >
         <img
-          v-if="a.kind === 'image' && a.found"
+          v-if="a.kind === 'image' && there(a)"
           :src="url(a)"
           :alt="a.name"
           loading="lazy"
@@ -92,7 +123,7 @@ export default {
       <button
         type="button"
         class="cattach__meta"
-        :disabled="!a.found"
+        :disabled="!there(a)"
         @click="toggle(a.path)"
       >
         <span class="cattach__name">{{ a.name }}</span>
@@ -101,16 +132,16 @@ export default {
           class="cattach__caption"
         >{{ a.caption }}</span>
         <span
-          v-if="!a.found"
+          v-if="!there(a)"
           class="cattach__missing"
-        >not found in the agent's workspace</span>
+        >not found in the workspace</span>
       </button>
-      <span class="cattach__hint">{{ a.kind === 'file' ? 'inlined on submit' : 'named on submit' }}</span>
+      <span class="cattach__hint">{{ says(a) }}</span>
       <button
         v-if="removable"
         type="button"
         class="cattach__remove"
-        title="Remove this attachment from the comment (the file stays in the workspace)"
+        :title="`Remove this attachment (the file stays in the workspace)`"
         aria-label="Remove attachment"
         @click.stop="remove(a.path)"
       >
