@@ -243,3 +243,55 @@ export const TRIAGE_MOVES = [
     }),
   },
 ];
+
+/**
+ * The agent's answer to each field a move asks about, where it gave one.
+ *
+ * A move's `edits` cannot answer the question the move is FOR. `not-ours` is "set Rancher Team to
+ * whoever it belongs to", so its edits set `team: ''` and the dialog asks - and that is right
+ * when nobody has decided yet. It is wrong when somebody has: the reproduce pass had already
+ * concluded "team Collie, owns #56362, no transition", and pressing Another team threw that away
+ * and offered "leave as it is". Apply then commented, moved nothing, and left the team alone,
+ * which looks exactly like the move not working.
+ *
+ * So a move opened with a proposal behind it starts from what the proposal says, for the fields
+ * that move is asking about and no others. `toStatus` is never taken, however it was asked for:
+ * the move IS the status, and the proposal's own target may be a different one it only suggested
+ * (the same conclusion offered To Prioritize as an alternative). Everything the move decides for
+ * itself - the comment's wording, a resolution - is still the move's.
+ *
+ * Only values that are actually there, so a proposal silent about the team leaves the preset's
+ * empty one and the dialog still asks.
+ *
+ * @param {{ needs?: string[] }} move The move the dialog is focused on.
+ * @param {object|null} rec The pending recommendation, or null.
+ * @returns {object} A partial form: only the keys the move asks about and the proposal answered.
+ */
+export function answeredBy(move, rec) {
+  const needs = Array.isArray(move?.needs) ? move.needs : [];
+
+  if (!rec || !needs.length) {
+    return {};
+  }
+  const fields = rec.fields || {};
+  const answers = {
+    team:            fields.team,
+    comment:         rec.comment,
+    resolution:      fields.resolution,
+    assignee:        rec.assignee,
+    fixVersions:     fields.fixVersions,
+    affectsVersions: fields.affectsVersions,
+    duplicate:       (fields.links || []).map((l) => l?.key).filter(Boolean).join(', '),
+  };
+  const out = {};
+
+  for (const field of needs) {
+    const value = answers[field];
+
+    if (Array.isArray(value) ? value.length : (value !== null && value !== undefined && value !== '')) {
+      out[field] = value;
+    }
+  }
+
+  return out;
+}

@@ -24,7 +24,7 @@ import {
 import { devFetch, workspaceMediaListUrl } from '../api';
 import { putArtifact } from '../workspace-tools';
 import CommentAttachments from './pr/CommentAttachments.vue';
-import { TRIAGE_MOVES } from '../jira-steps.mjs';
+import { TRIAGE_MOVES, answeredBy } from '../jira-steps.mjs';
 import { startConclusionDiscussion, sayInConversation } from '../reviews';
 import { listConversations, paneCommand } from '../conversations';
 import StudioTerminal from './StudioTerminal.vue';
@@ -217,6 +217,28 @@ export default {
       const on = new Set(this.staged.map((a) => a.path));
 
       return this.media.filter((f) => !on.has(this.artifactPath(f.path)));
+    },
+
+    /**
+     * The teams to offer: Jira's own, plus whatever is in the form that is not among them.
+     *
+     * A `<select>` whose model holds a value no `<option>` carries shows the FIRST option
+     * instead - here "leave as it is" - so a team the agent named that Jira's editmeta does not
+     * list looked exactly like no team at all, and pressing Apply would have changed nothing.
+     * Better to show it, marked, and let Jira refuse it on Apply with a reason: a value this
+     * panel cannot offer is a thing to see, not a thing to drop.
+     */
+    teams() {
+      const listed = this.options?.teams || [];
+
+      return this.form.team && !listed.includes(this.form.team)
+        ? [...listed, this.form.team]
+        : listed;
+    },
+
+    /** Whether the team in the form is one Jira said it would take. */
+    teamUnlisted() {
+      return !!this.form.team && !(this.options?.teams || []).includes(this.form.team);
     },
 
     jiraUrl() {
@@ -570,6 +592,16 @@ export default {
         ...edits,
         duplicate: (edits.links || []).map((l) => l.key).join(', '),
         links:     undefined,
+        /*
+         * ...and then what the agent already decided, for the fields this move is asking about.
+         *
+         * A move's edits cannot answer the question the move is FOR: `not-ours` sets `team: ''`
+         * so the dialog asks. That is right when nobody has decided and wrong when somebody
+         * has - the reproduce pass had concluded "team Collie" and pressing Another team offered
+         * "leave as it is", so an Apply straight afterwards commented and left the team alone.
+         * See answeredBy, which is also where the rule about `toStatus` is.
+         */
+        ...answeredBy(preset, this.recommendation),
       };
     },
 
@@ -969,11 +1001,15 @@ export default {
           >
             <option value="">leave as it is</option>
             <option
-              v-for="team in options.teams"
+              v-for="team in teams"
               :key="team"
               :value="team"
-            >{{ team }}</option>
+            >{{ team }}{{ team === form.team && teamUnlisted ? ' — not one Jira listed' : '' }}</option>
           </select>
+          <span
+            v-if="shows('team') && teamUnlisted"
+            class="text-muted jira-triage__note"
+          >Jira did not list that team for this ticket. Apply will send it and say what Jira answers.</span>
 
           <label v-if="shows('resolution')">Resolution</label>
           <select

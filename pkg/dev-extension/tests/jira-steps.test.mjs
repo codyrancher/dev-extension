@@ -198,3 +198,68 @@ test('the comment is always the person\'s to finish', () => {
     assert.ok(move.needs.includes('comment'), `${ move.id } asks for the comment`);
   }
 });
+
+// ── What a focused move inherits from the agent's proposal ──────────────────────────────────
+
+import { answeredBy } from '../jira-steps.mjs';
+
+const REC = {
+  comment:  'This belongs to the auth team.',
+  assignee: null,
+  toStatus: 'To Prioritize',
+  fields:   {
+    team: 'Collie', fixVersions: ['2.15.3'], affectsVersions: ['2.15.1'], resolution: 'Fixed', links: [{ type: 'Duplicate', key: 'SURE-1' }],
+  },
+};
+
+test('a move asking for a team takes the one the agent decided', () => {
+  const got = answeredBy({ needs: ['team', 'comment'] }, REC);
+
+  assert.equal(got.team, 'Collie');
+  assert.equal(got.comment, 'This belongs to the auth team.');
+});
+
+test('it answers only what the move asks about', () => {
+  const got = answeredBy({ needs: ['team'] }, REC);
+
+  assert.deepEqual(Object.keys(got), ['team']);
+});
+
+test('the status is never inherited, however it is asked for', () => {
+  // The move IS the status. A proposal's own target may be one it merely suggested.
+  assert.equal(answeredBy({ needs: ['toStatus', 'team'] }, REC).toStatus, undefined);
+});
+
+test('a proposal silent about a field leaves the dialog asking', () => {
+  const quiet = { comment: '', fields: { team: '' } };
+
+  assert.deepEqual(answeredBy({ needs: ['team', 'comment'] }, quiet), {});
+});
+
+test('no proposal, or a move that asks nothing, answers nothing', () => {
+  assert.deepEqual(answeredBy({ needs: ['team'] }, null), {});
+  assert.deepEqual(answeredBy({}, REC), {});
+  assert.deepEqual(answeredBy(null, REC), {});
+});
+
+test('a duplicate arrives as the keys a person would have typed', () => {
+  assert.equal(answeredBy({ needs: ['duplicate'] }, REC).duplicate, 'SURE-1');
+  assert.deepEqual(answeredBy({ needs: ['duplicate'] }, { fields: { links: [] } }), {});
+});
+
+test('empty lists are silence, not an answer', () => {
+  assert.deepEqual(answeredBy({ needs: ['fixVersions'] }, { fields: { fixVersions: [] } }), {});
+  assert.deepEqual(answeredBy({ needs: ['fixVersions'] }, REC), { fixVersions: ['2.15.3'] });
+});
+
+test('every move names fields answeredBy knows how to answer', () => {
+  // A `needs` entry this cannot map is a field the dialog asks about and the agent's answer to
+  // which is silently dropped - which is the bug this function exists to have fixed.
+  const known = ['team', 'comment', 'resolution', 'assignee', 'fixVersions', 'affectsVersions', 'duplicate', 'toStatus'];
+
+  for (const move of TRIAGE_MOVES) {
+    for (const field of move.needs) {
+      assert.ok(known.includes(field), `${ move.id } needs "${ field }", which answeredBy cannot map`);
+    }
+  }
+});
