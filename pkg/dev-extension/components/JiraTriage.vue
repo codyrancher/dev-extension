@@ -22,6 +22,9 @@ import {
   jiraOptions, jiraProposal, jiraApply, dismissJiraRecommendation, amendJiraRecommendation, JIRA_BASE
 } from '../jira';
 import { TRIAGE_MOVES } from '../jira-steps.mjs';
+import { startConclusionDiscussion, sayInConversation } from '../reviews';
+import { listConversations, paneCommand } from '../conversations';
+import StudioTerminal from './StudioTerminal.vue';
 
 /** A blank form: nothing ticked, nothing to send. */
 function blank() {
@@ -41,7 +44,7 @@ export default {
   name: 'JiraTriage',
 
   components: {
-    RcButton, AsyncButton, Banner, Stack, Row,
+    RcButton, AsyncButton, Banner, Stack, Row, StudioTerminal,
   },
 
   props: {
@@ -59,6 +62,18 @@ export default {
      * ticket is read, because a preset's edits are built from what Jira will accept.
      */
     move: {
+      type:    String,
+      default: '',
+    },
+
+    /**
+     * The workspace whose conversations a discussion about the conclusion joins.
+     *
+     * Empty means no discussion is offered, which is honest rather than defensive: the pane
+     * reaches the Jira routes through `$CLAUDE_HARNESS_API`, which only exists in a workspace's
+     * pod, so a host that cannot name one has nowhere to hold the conversation.
+     */
+    workspace: {
       type:    String,
       default: '',
     },
@@ -89,6 +104,19 @@ export default {
       /** Whether the conclusion is being corrected, and the draft of it while it is. */
       editing:  false,
       edit:     { reason: '', comment: '' },
+      /*
+       * The discussion about the conclusion: the conversation it is held in, the line waiting to
+       * go into it, and whether one is being opened.
+       *
+       * `talking` is the panel showing at all - a discussion that has been opened stays on the
+       * page while the form below it is filled in, because the point of it is to get the wording
+       * right before pressing Apply.
+       */
+      talking:  false,
+      talk:     '',
+      /** The conversation the discussion is held in, once there is one. */
+      conversation: null,
+      opening:  false,
     };
   },
 
@@ -186,6 +214,84 @@ export default {
   },
 
   methods: {
+    /**
+     * Talk it through instead of rewriting it.
+     *
+     * A conversation in the bug's own workspace, scoped to this conclusion, the way a PR
+     * comment's discussion is scoped to that comment (CommentDiscussion). The agent is told
+     * what it concluded and given the route that amends it - see conclusionPrompt - so the two
+     * halves of "this is nearly right" compose: argue about it here, and the corrected wording
+     * is what "Fill the form in with it" then picks up.
+     *
+     * The conversation is reattached rather than restarted when one is already open for this
+     * bug: a second press, or coming back to the dialog tomorrow, lands in the thread that was
+     * already about it. Titled `Discuss <KEY>`, which is also what keeps it out of the stage's
+     * tab strip - see railConversations.
+     */
+    async discuss() {
+      if (this.opening) {
+        return;
+      }
+      this.opening = true;
+      this.error = '';
+
+      try {
+        const title = `Discuss ${ this.bug }`;
+        const existing = (await listConversations(this.workspace).catch(() => [])).find((c) => c.title === title);
+
+        this.conversation = existing || await startConclusionDiscussion(this.workspace, this.bug, this.recommendation, this.talk.trim());
+        if (existing && this.talk.trim()) {
+          await sayInConversation(existing, this.talk.trim());
+        }
+        this.talk = '';
+        this.talking = true;
+      } catch (e) {
+        this.error = e?.message || String(e);
+      } finally {
+        this.opening = false;
+      }
+    },
+
+    /** A further line into a discussion that is already running. */
+    async say() {
+      const message = this.talk.trim();
+
+      if (!message || !this.conversation) {
+        return;
+      }
+      this.talk = '';
+      await sayInConversation(this.conversation, message).catch((e) => {
+        this.error = e?.message || String(e);
+      });
+    },
+
+    /**
+     * Pick up whatever the discussion has corrected.
+     *
+     * The agent amends the proposal over the API, which this panel is holding a copy of - so
+     * without this the conclusion on screen is the one from before the conversation. Re-read
+     * rather than watched: a poll against Jira every few seconds while somebody types is not
+     * worth what it would cost, and the person knows when they have settled it.
+     */
+    async reread(done) {
+      try {
+        await this.load();
+        if (this.preset === 'recommendation') {
+          this.preset = '';
+          this.choose('recommendation');
+        }
+        done(true);
+      } catch (e) {
+        this.error = e?.message || String(e);
+        done(false);
+      }
+    },
+
+    /** The argv of the discussion's pane: claude in the workspace, reached through the agent pod. */
+    paneFor(id) {
+      return paneCommand(this.workspace, id);
+    },
+
     /** Open the conclusion for correction, on a copy, so Cancel leaves what was filed alone. */
     startEdit() {
       this.edit = { reason: this.recommendation?.reason || '', comment: this.recommendation?.comment || '' };
@@ -442,6 +548,19 @@ export default {
             class="jira-triage__edit"
             @click="startEdit"
           >Edit it</RcButton>
+          <!--
+            And the other way of putting it right: ask the agent about it. What is wrong with a
+            conclusion is often a thing the agent knows and the person does not - which version
+            it reproduced on, what the reporter's log actually said - and that is a conversation
+            rather than a textarea. See `discuss`.
+          -->
+          <RcButton
+            v-if="workspace && !talking"
+            small
+            class="jira-triage__edit"
+            :disabled="opening"
+            @click="discuss"
+          >{{ opening ? 'Opening…' : 'Discuss it' }}</RcButton>
         </Row>
         <p
           v-if="recommendation.reason && !editing"
@@ -481,6 +600,55 @@ export default {
             <span class="text-muted jira-triage__note">Saved against the proposal, not the ticket. Nothing reaches the reporter until Apply.</span>
           </Row>
         </template>
+
+        <!--
+          The discussion, under the conclusion it is about - the shape a PR comment's discussion
+          has (CommentDiscussion), for the same reason: the thread belongs with the thing being
+          argued about, not as another tab across the top of the page.
+
+          It stays on the page while the form below is filled in, because the point of it is to
+          settle the wording before Apply. The agent amends the proposal over the API, so
+          "Re-read it" is how this panel picks that up - see `reread`.
+        -->
+        <Stack
+          v-if="talking && conversation"
+          gap="3"
+          class="jira-triage__talk"
+        >
+          <StudioTerminal
+            :key="conversation.id"
+            class="jira-triage__term"
+            :session="conversation.id"
+            :command="paneFor(conversation.id)"
+          />
+          <Row
+            gap="3"
+            align="center"
+          >
+            <input
+              v-model="talk"
+              class="jira-triage__line"
+              type="text"
+              aria-label="Say something into the discussion"
+              placeholder="Say something into the discussion — Enter to send"
+              @keydown.enter.prevent="say"
+            >
+            <AsyncButton
+              mode="apply"
+              action-label="Re-read it"
+              waiting-label="Reading"
+              success-label="Re-read"
+              size="sm"
+              @click="(done) => reread(done)"
+            />
+            <RcButton
+              small
+              @click="talking = false"
+            >Hide it</RcButton>
+          </Row>
+          <span class="text-muted jira-triage__note">The conversation keeps running when this is hidden. Nothing it says reaches the reporter — it corrects the proposal, and Apply is still yours to press.</span>
+        </Stack>
+
         <Row
           gap="3"
           align="center"
@@ -798,5 +966,31 @@ export default {
   }
 
   &__note { font-size: 11px; }
+
+  /*
+   * The discussion, inside a dialog that is 720px wide and scrolls. A fixed height rather than a
+   * flexed one: the dialog's body is the scroller, so a terminal told to fill its parent in here
+   * collapses to nothing - there is no height to fill.
+   */
+  &__talk {
+    padding-top:   var(--dev-space-4);
+    border-top:    1px solid var(--border);
+  }
+
+  &__term {
+    height:        300px;
+    min-height:    0;
+    border:        1px solid var(--border);
+    border-radius: var(--dev-r-ctl);
+    overflow:      hidden;
+  }
+
+  &__line {
+    flex:      1 1 auto;
+    min-width: 0;
+    height:    30px;
+    padding:   0 var(--dev-space-3);
+    font-size: 13px;
+  }
 }
 </style>

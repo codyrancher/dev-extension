@@ -4,21 +4,24 @@
 // (AgentPanel, in the agents extension) - the same dot, the same two controls in the same places -
 // so the stage's conversation tabs and the drawer's read as one thing.
 //
-// The larger view is not a button here: right-click a tab for it. A button for it made three
-// controls where the agents panel has two, which is what broke the match.
+// The larger view and the fork are in the tab's own menu, which is what the caret opens -
+// right-click opens the same list, so the gesture that used to pop the conversation out still
+// works and now says what else it can do. It was a bare right-click with nothing on screen to
+// advertise it, which is fine for one hidden action and no good at all for two.
 //
 // It goes in ConversationTabbed's `tab-header` slot. Purely presentational: it emits, and the page
 // that owns the conversation does the renaming, popping and ending, because those are API calls.
 import { agentLabel } from '../../workspace-status';
 import { cliMark } from '../../agent-clis.mjs';
 import CliMark from '../CliMark.vue';
+import TabMenu from './TabMenu.vue';
 
 export default {
   name: 'ConversationTab',
 
-  components: { CliMark },
+  components: { CliMark, TabMenu },
 
-  emits: ['rename', 'popout', 'close'],
+  emits: ['rename', 'popout', 'close', 'fork'],
 
   props: {
     /** The conversation this tab is for: `{ title }` is all it reads. */
@@ -51,6 +54,25 @@ export default {
       type:    String,
       default: '',
     },
+
+    /**
+     * Which of the menu's actions this host offers, in the order they are listed.
+     *
+     * A prop because the two strips are not the same: a workspace's stage can open a
+     * conversation over the page and the drawer cannot - it IS the thing over the page - so a
+     * "Open it larger" there would be a row that did nothing. Default is both, which is the
+     * stage; the drawer passes the one it has.
+     */
+    actions: {
+      type:    Array,
+      default: () => ['popout', 'fork'],
+    },
+
+    /** Something chosen from this tab's menu is still running; the caret says so. */
+    busy: {
+      type:    Boolean,
+      default: false,
+    },
   },
 
   data() {
@@ -72,6 +94,26 @@ export default {
     /** The CLI's mark, or '' for a conversation whose CLI nothing has decided. */
     mark() {
       return cliMark(this.cli || this.conversation.cli || '');
+    },
+
+    /**
+     * The menu's rows, in the order the host asked for.
+     *
+     * Named here rather than passed in, so both strips call the same thing the same thing: a
+     * drawer whose menu said "Branch it" and a stage whose menu said "Fork" would be two
+     * features as far as anybody reading the product is concerned.
+     */
+    menu() {
+      const rows = {
+        popout: {
+          id: 'popout', label: 'Open it larger', icon: 'icon-external-link', what: 'Show this conversation over the page',
+        },
+        fork: {
+          id: 'fork', label: 'Fork from here', icon: 'icon-copy', what: 'A second conversation that starts with this one\'s history behind it',
+        },
+      };
+
+      return (Array.isArray(this.actions) ? this.actions : []).map((id) => rows[id]).filter(Boolean);
     },
   },
 
@@ -97,17 +139,27 @@ export default {
     cancel() {
       this.renaming = false;
     },
+
+    /** Right-click: the same list the caret opens, at the caret rather than at the pointer. */
+    openMenu() {
+      this.$refs.menu?.show?.();
+    },
+
+    /** One row chosen. The ids are the events, so a new row is a row and nothing else. */
+    onMenu(id) {
+      this.$emit(id);
+    },
   },
 };
 </script>
 
 <template>
-  <!-- Right-click opens the conversation larger; the tab's own click (in ConversationTabbed) still
-       switches to it. -->
+  <!-- Right-click opens the tab's own menu, the caret below opens the same one, and the tab's
+       click (in ConversationTabbed) still switches to it. -->
   <span
     class="conversation-tab"
     :class="{ 'conversation-tab--active': active }"
-    @contextmenu.prevent.stop="$emit('popout')"
+    @contextmenu.prevent.stop="openMenu"
   >
     <!--
       The name, double click to rename in place. The input swallows the clicks and keys it sits
@@ -148,8 +200,8 @@ export default {
         @dblclick.stop.prevent="startRename"
       >{{ title }}</span>
 
-      <!-- Rename and close, on hover or focus, in reserved trailing space so the tab holds its
-           width. The rename pencil is left of the close, both at the tab's right edge. -->
+      <!-- Rename, the tab's menu and close, on hover or focus, in reserved trailing space so the
+           tab holds its width. All three sit at the tab's right edge, close outermost. -->
       <button
         v-clean-tooltip="'Rename'"
         type="button"
@@ -159,6 +211,15 @@ export default {
       >
         <i class="icon icon-edit" />
       </button>
+      <TabMenu
+        v-if="menu.length"
+        ref="menu"
+        class="conversation-tab__control conversation-tab__control--menu"
+        :items="menu"
+        :busy="busy"
+        :aria-label="`Actions for ${ title }`"
+        @select="onMenu"
+      />
       <button
         v-clean-tooltip="'Close conversation'"
         type="button"
@@ -179,9 +240,11 @@ export default {
     align-items: center;
     min-width:   0;
     max-width:   200px;
-    // Trailing room for the two controls (close at 4px, rename at 26px, each 20px wide), reserved
-    // so they can appear on hover without moving the label - the agents panel's measure exactly.
-    padding-right: 48px;
+    // Trailing room for the three controls (close at 4px, the menu's caret at 26px, rename at
+    // 48px, each 20px wide), reserved so they can appear on hover without moving the label. It
+    // was 48px for two; the third is the menu, which is what took the actions off a right-click
+    // nothing advertised.
+    padding-right: 70px;
 
     // The agent's state as a filled dot, coloured by how much it wants a person. The same 7px
     // circle and colours the agents panel's tabs use.
@@ -254,14 +317,21 @@ export default {
       &:hover { opacity: 1; background: var(--default-hover-bg, var(--body-bg)); }
 
       &--close { right: 4px; }
-      &--rename { right: 26px; }
+      &--menu { right: 26px; }
+      &--rename { right: 48px; }
 
       &--close:hover { color: var(--error); }
     }
 
+    // The menu is a component rather than a button, so the shared rules reach it through the
+    // same class; `display: none` on it hides its caret with the rest.
     &--active .conversation-tab__control,
     &:hover .conversation-tab__control,
     &:focus-within .conversation-tab__control { display: flex; }
+
+    // ...and while its list is open the caret stays put, or choosing a row would mean chasing a
+    // control that vanished when the pointer left the tab.
+    &__control--menu:has(.tab-menu__caret--open) { display: flex; }
   }
 
   @keyframes conversation-tab-dot-pulse {

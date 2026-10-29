@@ -55,7 +55,7 @@ import {
   // that returns quietly - "a missed poll is a dot a few seconds stale" - and the strip's
   // dots have only ever moved on a full refresh. The unfiltered list is right for a state
   // lookup by id: the panel's own sessions are a subset, and the rest are never looked up.
-  agentSessions, panelSessions, startAgentSession, renameAgentSession, endAgentSession,
+  agentSessions, panelSessions, startAgentSession, renameAgentSession, endAgentSession, forkAgentSession,
 } from '../agent';
 // The label an unnamed tab gets. An id may now carry where it came from, so "everything after
 // `agent-`" is no longer the ordinal and would have put the whole id on the tab.
@@ -160,6 +160,8 @@ export default {
       seen:     [],
       loading:  false,
       error:    '',
+      /** The conversation being forked, by id, while its copy is being made. */
+      forking:  '',
       /** The Rancher user the pod is currently acting as, or '' when it has no identity. */
       identity: '',
 
@@ -581,6 +583,39 @@ export default {
     },
 
     /**
+     * Fork one conversation from its tab's menu: a second tab with this one's turns behind it.
+     *
+     * The copy is selected the moment it exists, because that is the point of it - the original
+     * keeps its tab untouched, and the one in front of you is the one to take somewhere else.
+     * Nothing is sent into it: it comes up at a prompt with the history above it.
+     *
+     * Re-read from the pod rather than appended to the list by hand, the way `startNew` does:
+     * the fork's title is the pod's (`forkTitle`, applied there), and this is a tab whose name
+     * is the one thing about it worth reading.
+     */
+    async forkSession(id) {
+      const source = this.byId(id);
+
+      if (!source || this.forking) {
+        return;
+      }
+
+      this.forking = id;
+      this.error = '';
+
+      try {
+        const forked = await forkAgentSession(source);
+
+        await this.refresh();
+        this.select(forked);
+      } catch (e) {
+        this.error = e?.message || String(e);
+      } finally {
+        this.forking = '';
+      }
+    },
+
+    /**
      * End one conversation: the tab, the tmux session and the transcript.
      *
      * Every route in comes here - the close control on the tab, and a middle click on it -
@@ -746,7 +781,10 @@ export default {
           :agent="byId(tab.name).state || 'none'"
           :cli="byId(tab.name).cli || ''"
           :active="tab.active"
+          :busy="forking === tab.name"
+          :actions="['fork']"
           @rename="renameTo(tab.name, $event)"
+          @fork="forkSession(tab.name)"
           @close="closeSession(tab.name)"
         />
       </template>

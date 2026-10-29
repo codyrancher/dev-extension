@@ -43,7 +43,7 @@ import { prFile, openConversation } from '../reviews';
 import { toggleTask } from '../pr-body.mjs';
 import { isProjectConversationId } from '../conversation-id.mjs';
 import {
-  listConversations, startConversation, queuePrompt, startPaneDetached, workspaceAgentStates, sendToPane, renameConversation, endConversation
+  listConversations, startConversation, queuePrompt, startPaneDetached, workspaceAgentStates, sendToPane, renameConversation, endConversation, forkConversation
 } from '../conversations';
 import { ensureWorkspaceReady, putArtifact, saveArtifact, devServerState, stopDevServer } from '../workspace-tools';
 import WorkspaceTools from './WorkspaceTools.vue';
@@ -236,6 +236,8 @@ export default {
       stopPopouts: null,
       /** The conversation, in its own window over the page. */
       popped:      false,
+      /** The conversation being forked, by id, while its copy is being made. */
+      forking:     '',
       /** The workspace's own recordings and screenshots, for attaching to one. */
       media:       [],
       /** Attaching or approving, for the spinner. */
@@ -2259,6 +2261,38 @@ export default {
       this.popped = true;
     },
 
+    /**
+     * Fork a conversation from its tab's menu: a second tab that starts with this one's history.
+     *
+     * The copy is shown the moment it exists, because that is what the fork is for - the
+     * original keeps its tab, and the one now in front of you is the one to spend. Nothing is
+     * sent into it: it comes up at a prompt with the turns above it, waiting to be steered.
+     *
+     * `forking` is the id being copied rather than a flag, so the tab that was pressed is the
+     * one that says it is busy and a second press on it is refused while the first is running -
+     * two forks of one conversation is two copies of the same history and a tab nobody meant.
+     */
+    async forkLive(conversation) {
+      if (!conversation || this.forking) {
+        return;
+      }
+      this.forking = conversation.id;
+      this.error = '';
+      try {
+        const forked = await forkConversation(conversation.workspace || this.workspace.name, conversation);
+
+        await this.loadConversations();
+        this.liveShown = forked.id;
+        this.currentConversation = forked.id;
+        this.$refs.liveTabs?.select?.(forked.id);
+        await this.refreshLive();
+      } catch (e) {
+        this.noteError(e);
+      } finally {
+        this.forking = '';
+      }
+    },
+
     /** Rename a live conversation from its tab header, then re-read so the tab's label follows. */
     async renameLive(conversation, title) {
       await renameConversation(conversation.workspace || this.workspace.name, conversation.id, title).catch(() => {});
@@ -3152,8 +3186,10 @@ export default {
               :conversation="byTab(tab.name)"
               :agent="byTab(tab.name).agent"
               :active="tab.active"
+              :busy="forking === tab.name"
               @rename="renameLive(byTab(tab.name), $event)"
               @popout="popLive"
+              @fork="forkLive(byTab(tab.name))"
               @close="closeLive(byTab(tab.name))"
             />
           </template>
@@ -3988,6 +4024,7 @@ export default {
           ref="triage"
           :bug="bug"
           :move="triageMove"
+          :workspace="workspace.name"
           @state="triageState = $event"
           @applied="bugChanged()"
           @close="triaging = false"

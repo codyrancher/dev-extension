@@ -104,13 +104,6 @@ export default {
 
   emits: ['pick'],
 
-  computed: {
-    /** The look both halves carry: the variant asked for, else this component's own. */
-    look() {
-      return ['primary', 'secondary'].includes(this.variant) ? `split-btn__${ this.variant }` : 'split-btn__plain';
-    },
-  },
-
   data() {
     return {
       open: false,
@@ -136,6 +129,18 @@ export default {
   },
 
   computed: {
+    /**
+     * The look both halves carry: the variant asked for, else this component's own.
+     *
+     * In THIS block, and that is not a detail. It was declared in a second `computed` above
+     * `data`, and an object literal with the same key twice keeps the last one - so `look` was
+     * never a computed at all, the template read `undefined`, and `variant="secondary"` drew
+     * the bare look. Which is the bug the prop was added to fix, shipped twice.
+     */
+    look() {
+      return ['primary', 'secondary'].includes(this.variant) ? `split-btn__${ this.variant }` : 'split-btn__plain';
+    },
+
     choices() {
       return Array.isArray(this.options) ? this.options.filter((option) => option?.id) : [];
     },

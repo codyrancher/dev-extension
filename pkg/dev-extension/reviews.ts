@@ -1125,6 +1125,56 @@ export function linesPrompt(num: number, lines: { path: string; line: number; st
   return `The user is reviewing ${ repo } PR #${ num } and wants to discuss ${ lines.path } ${ range } (${ lines.side } side of the diff). Fetch the PR with: curl -s ${ apiHint }/${ num } and find that file in files[].patch for context.${ code ? ` The selected lines are:\n\n${ code }\n` : '' }${ message ? ` Their opening message: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" — address it directly.` : ' Anything after this sentence is their question — answer that; if there is nothing there, start with your read of that code.' } Keep it conversational. Do NOT file a review comment unless the user asks; if they do, run: curl -s -X POST ${ apiHint }/${ num }/comments -H 'Content-Type: application/json' -d '{"path":"${ lines.path }","line":${ lines.line }${ lines.startLine ? `,"startLine":${ lines.startLine }` : '' },"side":"${ lines.side }","body":"<comment>"}'`;
 }
 
+/**
+ * The opening prompt of a discussion about the conclusion a triage step reached.
+ *
+ * The conclusion was read-only, then editable by hand (`amendJiraRecommendation`), and neither
+ * covers the case that actually comes up: it is nearly right, and what is wrong about it is a
+ * thing the agent knows and the person does not - which version it reproduced on, what the
+ * reporter's log actually said. That is a conversation, not a textarea.
+ *
+ * So the agent is told what it concluded and given the route that corrects it. The two halves
+ * then compose: talk it through, let the agent put the proposal right, and "Fill the form in
+ * with it" picks up the corrected text. Nothing here may touch the ticket - the approval step is
+ * the one the process requires, and an agent that commented during a discussion about whether to
+ * comment is the crossover the runbook forbids.
+ */
+export function conclusionPrompt(key: string, rec: { action?: string; reason?: string; comment?: string } | null, message: string): string {
+  const api = `$CLAUDE_HARNESS_API/my-work/jira/${ key }`;
+  const flat = (text: string, cap: number) => String(text || '').replace(/\s+/g, ' ').slice(0, cap);
+  const opener = message
+    ? ` The user's opening message about it: "${ flat(message, 600) }" - address that directly first.`
+    : ' Anything after this sentence is their question - answer that; if there is nothing there, start with the part of your conclusion you are least sure of.';
+
+  return [
+    `The user wants to discuss the conclusion a triage step reached about ${ key }, which is pending their approval.`,
+    rec?.action ? ` It proposes: ${ flat(rec.action, 120) }.` : '',
+    rec?.reason ? ` Its reason: "${ flat(rec.reason, 1200) }".` : '',
+    rec?.comment ? ` The comment it would put on the ticket: "${ flat(rec.comment, 1200) }".` : '',
+    ` Read the ticket for context with: curl -s ${ api }/detail`,
+    `, and the proposal as stored with: curl -s ${ api }/recommendation.`,
+    opener,
+    ' Keep it conversational and concise - this is a live discussion, and nothing said here reaches the reporter.',
+    ` When the user settles on better wording, correct the proposal in place: curl -s -X PUT ${ api }/recommendation -H 'Content-Type: application/json' -d '{"reason":"<why>","comment":"<what should go on the ticket>"}'.`,
+    ' That amends the proposal and nothing else - the person still presses Apply, which is what writes to the ticket.',
+    ` Do NOT move ${ key }, comment on it, or POST a new recommendation yourself.`,
+  ].join('');
+}
+
+/**
+ * A discussion about one bug's pending conclusion, in that bug's own workspace.
+ *
+ * Titled `Discuss <KEY>` because that is the shape the rail's strip filters on: a discussion
+ * belongs under the thing it is about, not as another tab across the top. See railConversations.
+ */
+export async function startConclusionDiscussion(
+  workspace: string, key: string, rec: { action?: string; reason?: string; comment?: string } | null, message = '',
+): Promise<ProjectConversation> {
+  const bug = key.toUpperCase();
+
+  return startDiscussion(workspace, `Discuss ${ bug }`, conclusionPrompt(bug, rec, message), { label: `${ bug.toLowerCase() }-conclusion` });
+}
+
 /** A discussion: a conversation in the workspace, opened with its context, the pod made ready. */
 export async function startDiscussion(workspace: string, title: string, prompt: string, from: ConversationOrigin = ''): Promise<ProjectConversation> {
   return openWith(workspace, title, prompt, undefined, undefined, undefined, from);

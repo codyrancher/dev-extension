@@ -28,6 +28,9 @@ import {
 import type { InstallStep } from './ensure';
 import { VERSION_ANNOTATION, contentVersion, ensureCurrent } from './ensure';
 import { AGENT_FILES } from './seed.generated';
+// One copy of how a conversation's history is copied, shared with the workspace pages. See
+// pane-fork.mjs for the order the three steps have to happen in.
+import { forkScript, forkTitle, FORK_UUID_RE } from './pane-fork.mjs';
 import { MCP_GUIDANCE, mcpSeedFiles, withMcpBoot } from './agent-mcp';
 import { cardSeedFiles } from './agent-cards';
 import { devFetch } from './api';
@@ -1081,6 +1084,73 @@ export async function sessionPane(id: string, lines = 60): Promise<{ text: strin
 /** The pane for one of a project's conversations: the same shell.sh, the same directory. */
 export function projectShellUrl(pod: string, id: string, mode = 'claude'): string {
   return agentShellUrl(pod, id, mode);
+}
+
+/** What each thing the fork script can end with means, said the way the strip shows it. */
+const FORK_FAILURE: Record<string, string> = {
+  NOID:         'That conversation has not said anything yet, so there is no history to fork. Ask it something first.',
+  NOTRANSCRIPT: 'Its transcript is not in the pod any more, so there is nothing to copy.',
+  NOCOPY:       'The transcript could not be copied in the pod.',
+};
+
+/**
+ * Fork one of the drawer's conversations: a second one that opens with the first's turns behind it.
+ *
+ * The same three steps as a workspace's fork, against this pod's shared directory rather than a
+ * checkout - the id from `sessions.sh new`, the transcript copied under a new uuid and claimed,
+ * and only then the pane. See pane-fork.mjs, which holds the copy and the reason for the order,
+ * and forkConversation in conversations.ts, which is the other caller.
+ *
+ * Nothing is sent into the fork. It comes up at a prompt with the history above it, which is
+ * what makes it a place to take the conversation somewhere else from.
+ */
+export async function forkAgentSession(source: AgentSession): Promise<string> {
+  const pod = await agentPod();
+
+  if (!pod) {
+    throw new Error('The agent pod is not running, so there is nothing to fork.');
+  }
+
+  // Checked, not trusted: the id goes into a shell command below.
+  if (!isSessionId(source.id)) {
+    throw new Error(`"${ source.id }" is not a conversation id.`);
+  }
+
+  const uuid = globalThis.crypto?.randomUUID?.() || '';
+
+  if (!FORK_UUID_RE.test(uuid)) {
+    throw new Error('This browser would not make an id for the forked conversation.');
+  }
+
+  const agy = source.cli === 'agy';
+  const id = await startAgentSession('panel', { label: 'fork' });
+
+  await renameAgentSession(id, forkTitle(source.title)).catch(() => {});
+
+  const script = forkScript({
+    sessions:   AGENT_SESSIONS,
+    source:     source.id,
+    target:     id,
+    uuid,
+    projectDir: agy ? '' : `${ AGENT_WORKSPACE }/.home/.claude/projects/${ sharedWorkdir().replace(/\//g, '-') }`,
+    brain:      agy ? `${ AGENT_WORKSPACE }/.home/.gemini/antigravity-cli/brain` : '',
+  }).join('\n');
+
+  const out = await podExecResult(pod, ['/bin/sh', '-c', script], 30000, AGENT_CONTAINER);
+  const said = (out.stdout || '').trim().split('\n').pop() || '';
+
+  if (said !== 'FORKED') {
+    // A fork with no history is not a fork, so the empty conversation above is not left behind
+    // as a tab nobody asked for.
+    await endAgentSession(id).catch(() => {});
+    throw new Error(FORK_FAILURE[said] || `${ source.id } could not be forked: ${ (out.stderr || out.stdout || '').trim().slice(-200) || 'the pod did not answer' }`);
+  }
+
+  // The pane, detached, on the CLI the original was held with - the sixth argument, because a
+  // conversation that has never run has no pane record for shell.sh to read it off.
+  await podExecResult(pod, ['/bin/sh', '/seed/shell.sh', id, sharedWorkdir(), `${ AGENT_WORKSPACE }/.home`, 'start', '', agy ? 'agy' : 'claude'], 30000, AGENT_CONTAINER);
+
+  return id;
 }
 
 /**

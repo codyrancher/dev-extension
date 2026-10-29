@@ -32,6 +32,7 @@ import type { SessionMode, ConversationOrigin, AgentActivity } from './agent';
 // agent.ts, the pod's sessions.sh and the in-cluster API. See conversation-id.mjs.
 import { conversationProject, conversationLabel, isConversationId, conversationBase } from './conversation-id.mjs';
 import { paneSendScript } from './pane-send.mjs';
+import { forkScript, forkTitle, FORK_UUID_RE } from './pane-fork.mjs';
 
 /** Where the agents extension's API is. The agents extension made the agent pod, so this is its cluster. */
 export const STUDIO_CLUSTER = 'local';
@@ -690,6 +691,80 @@ export async function endWorkspaceConversations(workspace: string): Promise<numb
   return conversations.length;
 }
 
+/** What each thing the fork script can end with means, said the way a tab shows it. */
+const FORK_FAILURE: Record<string, string> = {
+  NOID:         'That conversation has not said anything yet, so there is no history to fork. Ask it something first.',
+  NOTRANSCRIPT: 'Its transcript is not in the agent pod any more, so there is nothing to copy.',
+  NOCOPY:       'The transcript could not be copied in the agent pod.',
+};
+
+/**
+ * Fork a conversation: a second one that opens with the first's history behind it.
+ *
+ * What it is for is steering. A conversation that has got somewhere useful and is about to be
+ * taken in a direction that may not work is one worth keeping; the fork is the copy to spend,
+ * and the original stays exactly as it was. Nothing is sent into either of them - the fork comes
+ * up at a prompt, with the turns above it, waiting.
+ *
+ * Three steps, in this order. The pod allocates the new id (`startConversation`, which is a
+ * mkdir and therefore collision-free between two browser tabs). The transcript is copied under a
+ * new uuid and claimed for the new pane - see pane-fork.mjs, which is also where the order is
+ * explained. Only then is the pane started, because a pane started first would open a
+ * conversation of its own and record that instead.
+ *
+ * A fork that cannot copy the history is not a fork, so the empty conversation the first step
+ * made is ended rather than left behind as a tab nobody asked for.
+ */
+export async function forkConversation(workspace: string, source: ProjectConversation, title = ''): Promise<ProjectConversation> {
+  const api = await requireAgents();
+  const pod = await api.agent.pod();
+
+  if (!pod) {
+    throw new Error('The agent pod is not running, so there is nothing to fork.');
+  }
+
+  // Checked, not trusted: the id goes into a shell command below.
+  if (!isConversationId(source.id)) {
+    throw new Error(`"${ source.id }" is not a conversation id.`);
+  }
+
+  // Which CLI holds it, from the pod's own record of the pane - the only thing that knows, and
+  // what `listConversations` carries through. A fork held with the wrong program resumes
+  // nothing: the two keep their histories in different places entirely.
+  const agy = source.cli === 'agy';
+  const uuid = globalThis.crypto?.randomUUID?.() || '';
+
+  if (!FORK_UUID_RE.test(uuid)) {
+    throw new Error('This browser would not make an id for the forked conversation.');
+  }
+
+  const forked = await startConversation(workspace, title || forkTitle(source.title), '', agy ? 'agy' : '', { label: 'fork' });
+  // The same transcript directory the chat view reads and transcriptPathOf answers with: claude
+  // keeps one file per conversation under a directory named for the working directory, agy a
+  // directory per conversation under its brain.
+  const script = forkScript({
+    sessions:   `${ AGENT_WORKSPACE }/sessions`,
+    source:     source.id,
+    target:     forked.id,
+    uuid,
+    projectDir: agy ? '' : `${ AGENT_HOME }/.claude/projects/${ workspaceWorkdir(workspace).replace(/\//g, '-') }`,
+    brain:      agy ? `${ AGENT_HOME }/.gemini/antigravity-cli/brain` : '',
+  }).join('\n');
+
+  const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE)
+    .catch((e: Error) => `EXEC ${ e?.message || e }`);
+  const said = out.trim().split('\n').pop() || '';
+
+  if (said !== 'FORKED') {
+    await endConversation(workspace, forked.id).catch(() => {});
+    throw new Error(FORK_FAILURE[said] || `${ source.id } could not be forked: ${ out.trim().slice(-200) || 'the agent pod did not answer' }`);
+  }
+
+  await startPaneDetached(workspace, forked.id, agy ? 'agy' : '');
+
+  return forked;
+}
+
 /**
  * Queue a prompt for a conversation to open with, or say something into one that is running.
  *
@@ -706,14 +781,18 @@ export async function queuePrompt(attach: Attachment, prompt: string): Promise<v
  * way a terminal would, so an agent's run begins the moment it is asked for rather than the
  * next time somebody opens the tab.
  */
-export async function startPaneDetached(workspace: string, id: string): Promise<void> {
+export async function startPaneDetached(workspace: string, id: string, cli = ''): Promise<void> {
   const api = await requireAgents();
   const pod = await api.agent.pod();
 
   if (!pod) {
     throw new Error('The agent pod is not running, so there is nothing to start the pane from.');
   }
-  const argv = ['/bin/sh', '/seed/shell.sh', id, workspaceWorkdir(workspace), AGENT_HOME, 'start', workspaceShellWrapper(workspace)];
+  // The seventh argument is which CLI holds it. shell.sh reads the pane's own record when
+  // nothing says, and a conversation that has never run has no record - so a detached start is
+  // the one place the CLI has to be passed, or a fork of an Antigravity conversation comes back
+  // as claude. '' leaves shell.sh's own answer, which is every caller that had one already.
+  const argv = ['/bin/sh', '/seed/shell.sh', id, workspaceWorkdir(workspace), AGENT_HOME, 'start', workspaceShellWrapper(workspace), ...(cli ? [cli] : [])];
 
   await podExecOnce(api.agent.namespace, pod, api.agent.container, argv, AGENT_BASE);
 }
