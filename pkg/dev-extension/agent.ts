@@ -1136,7 +1136,9 @@ export async function forkAgentSession(source: AgentSession): Promise<string> {
     brain:      agy ? `${ AGENT_WORKSPACE }/.home/.gemini/antigravity-cli/brain` : '',
   }).join('\n');
 
-  const out = await podExecResult(pod, ['/bin/sh', '-c', script], 30000, AGENT_CONTAINER);
+  // Two minutes, the pod's own default: a transcript can be tens of megabytes and the copy
+  // streams it a line at a time.
+  const out = await podExecResult(pod, ['/bin/sh', '-c', script], 120000, AGENT_CONTAINER);
   const said = (out.stdout || '').trim().split('\n').pop() || '';
 
   if (said !== 'FORKED') {
@@ -1148,7 +1150,7 @@ export async function forkAgentSession(source: AgentSession): Promise<string> {
 
   // The pane, detached, on the CLI the original was held with - the sixth argument, because a
   // conversation that has never run has no pane record for shell.sh to read it off.
-  await podExecResult(pod, ['/bin/sh', '/seed/shell.sh', id, sharedWorkdir(), `${ AGENT_WORKSPACE }/.home`, 'start', '', agy ? 'agy' : 'claude'], 30000, AGENT_CONTAINER);
+  await podExecResult(pod, ['/bin/sh', '/seed/shell.sh', id, sharedWorkdir(), `${ AGENT_WORKSPACE }/.home`, 'start', '', agy ? 'agy' : 'claude'], 120000, AGENT_CONTAINER);
 
   return id;
 }

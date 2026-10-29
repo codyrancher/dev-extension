@@ -952,7 +952,6 @@ export default {
         Typed, not pressed: there is no button, because the list is already narrowing.
       -->
       <div class="dev-sidebar__find">
-        <i class="icon icon-search dev-sidebar__find-icon" />
         <input
           v-model="search"
           type="search"
@@ -961,6 +960,11 @@ export default {
           aria-label="Find a workspace by title, issue or PR number"
           @keydown.esc.prevent="search = ''"
         >
+        <!--
+          One trailing slot, and what is in it says what the box will do next: the magnifier
+          while it is empty, the × once there is something to clear. Two glyphs at the right
+          would be one more thing to aim at, and they would not both be true at once.
+        -->
         <button
           v-if="search"
           type="button"
@@ -970,6 +974,10 @@ export default {
         >
           <i class="icon icon-close" />
         </button>
+        <i
+          v-else
+          class="icon icon-search dev-sidebar__find-icon"
+        />
       </div>
       <div
         v-if="noMatches"
@@ -1379,11 +1387,22 @@ export default {
      * say the box is not a workspace; the focus is said by the icon taking the accent and the
      * row lifting a shade, the way a row under the pointer does.
      */
+    /*
+     * The row is the field: edge to edge, with nothing beside it.
+     *
+     * The glyph used to hold a slot of its own on the LEFT, which cost the box the width of the
+     * inset and read as an icon next to an input rather than as one control. It is the suffix
+     * now - inside the box, at the far right - and the typing area is the whole column.
+     *
+     * Which leaves the inset to the input's own padding, so the placeholder and what is typed
+     * still start where the workspace names below start. That alignment is the reason the glyph
+     * was ever given a slot; moving it does not have to cost it.
+     */
     &__find {
       display:       flex;
       align-items:   center;
       height:        var(--dev-row);
-      padding:       0 var(--dev-space-3) 0 var(--dev-inset);
+      padding:       0;
       border-bottom: 1px solid var(--border);
 
       &:focus-within {
@@ -1393,24 +1412,13 @@ export default {
       }
     }
 
-    // The glyph's slot, the inset wide, so the placeholder starts where the names do.
-    &__find-icon {
-      flex:         0 0 var(--dev-inset);
-      width:        var(--dev-inset);
-      margin-right: var(--dev-space-3);
-      font-size:    12px;
-      color:        var(--muted);
-    }
-
     &__find-input {
-      flex:       1 1 auto;
-      min-width:  0;
-      height:     100%;
-      padding:    0;
-      border:     none;
-      background: transparent;
-      color:      var(--body-text);
-      font-size:  13px;
+      flex:        1 1 auto;
+      min-width:   0;
+      height:      100%;
+      padding:     0 0 0 var(--dev-inset);
+      color:       var(--body-text);
+      font-size:   13px;
       line-height: 16px;
 
       &::placeholder { color: var(--muted); }
@@ -1420,24 +1428,54 @@ export default {
       &::-webkit-search-cancel-button { appearance: none; }
     }
 
+    /*
+     * Flat, and written from the nav down so it stays that way.
+     *
+     * `border: none` on the class alone was losing to the dashboard's own `input` styling, which
+     * is why the box has been drawing a rounded border and a fill of its own inside a column
+     * that has neither. One more class is enough to win it without `!important`.
+     */
+    & &__find-input {
+      border:     none;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    /*
+     * The trailing slot, the inset wide so it balances the padding on the other side, and the
+     * same box whichever of the two is in it - so the × appearing does not move anything.
+     */
+    &__find-icon,
     &__find-clear {
-      flex:        0 0 auto;
-      min-height:  0;
-      padding:     0 var(--dev-space-2);
-      border:      none;
-      background:  none;
-      color:       var(--muted);
-      cursor:      pointer;
+      display:         inline-flex;
+      align-items:     center;
+      justify-content: center;
+      flex:            0 0 var(--dev-inset);
+      width:           var(--dev-inset);
+      height:          var(--dev-inset);
+      margin-right:    var(--dev-space-3);
+      min-height:      0;
+      padding:         0;
+      border:          none;
+      background:      none;
+      color:           var(--muted);
+    }
+
+    &__find-icon { font-size: 12px; }
+
+    &__find-clear {
+      border-radius: var(--dev-r-xs);
+      cursor:        pointer;
 
       .icon { font-size: 11px; }
-      &:hover { color: var(--body-text); }
+      &:hover { color: var(--body-text); background: var(--default-hover-bg, transparent); }
     }
 
     // Said on the same line the names are on, so it reads as the list's answer rather than as
     // a note about the box.
     &__find-none {
-      padding:   var(--dev-space-2) var(--dev-space-3) var(--dev-space-2)
-                 calc(var(--dev-inset) + var(--dev-inset) + var(--dev-space-3));
+      // The inset, which is where the field's own text now starts as well as where the names do.
+      padding:   var(--dev-space-2) var(--dev-space-3) var(--dev-space-2) var(--dev-inset);
       color:     var(--muted);
       font-size: 12px;
     }

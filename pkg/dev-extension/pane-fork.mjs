@@ -31,23 +31,40 @@
  * that is not JSON - a truncated last line, something a future version appends - is carried
  * across untouched rather than dropped: this is somebody's history, and the CLI is the thing
  * entitled to decide a line of it is unreadable.
+ *
+ * Streamed rather than read whole, which is not a micro-optimisation: see the note on the line
+ * handler for the sizes this actually runs over.
  */
 const REWRITE = [
   'node -e \'',
   'const fs = require("fs");',
   // `node -e` has no script path, so the first argument is argv[1] and not argv[2] - the same
-  // offset transcriptPathOf's one-liner relies on.
+  // offset transcriptPathOf's one-liner relies on. Getting it wrong reads the destination as the
+  // source, which fails as NOCOPY and looks for all the world like a permissions problem.
   'const [, from, to, id] = process.argv;',
-  'const lines = fs.readFileSync(from, "utf8").split("\\n").map((line) => {',
-  '  if (!line.trim()) { return line; }',
-  '  try {',
-  '    const row = JSON.parse(line);',
-  '    if (!row || typeof row !== "object") { return line; }',
-  '    if ("sessionId" in row) { row.sessionId = id; }',
-  '    return JSON.stringify(row);',
-  '  } catch (e) { return line; }',
+  'const out = fs.createWriteStream(to);',
+  'const rl = require("readline").createInterface({ input: fs.createReadStream(from), crlfDelay: Infinity });',
+  'const bad = (e) => { process.stderr.write(String((e && e.message) || e)); process.exit(1); };',
+  'out.on("error", bad);',
+  'rl.on("error", bad);',
+  // A line at a time, with the stream paused when the writer is behind, so memory stays flat:
+  // the transcripts this runs over reach tens of megabytes (82MB, measured in the pod), and
+  // reading one whole was several times that in JS strings.
+  'rl.on("line", (line) => {',
+  '  let text = line;',
+  '  if (line.trim()) {',
+  '    try {',
+  '      const row = JSON.parse(line);',
+  '      if (row && typeof row === "object") {',
+  '        if ("sessionId" in row) { row.sessionId = id; }',
+  '        text = JSON.stringify(row);',
+  '      }',
+  '    } catch (e) { /* carried across as it stands - see the note on this file */ }',
+  '  }',
+  '  if (!out.write(text + "\\n")) { rl.pause(); }',
   '});',
-  'fs.writeFileSync(to, lines.join("\\n"));',
+  'out.on("drain", () => rl.resume());',
+  'rl.on("close", () => out.end());',
   '\'',
 ].join(' ');
 
