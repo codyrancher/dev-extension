@@ -346,9 +346,25 @@ export default {
   &:hover:not(:disabled) { background: var(--secondary-hover, transparent); color: var(--on-secondary, var(--lightest)); }
 }
 
-/* Both of them are a labelled button rather than a glyph, so they get a button's room. */
+/*
+ * RcButton's own metrics, so a split button is the same control as the buttons beside it and
+ * not a near miss: see rancher-components/RcButton/RcButton.vue (`button` and `.btn-medium`).
+ *
+ * It was `--dev-r-ctl` and this file's glyph padding, which came out 30px tall with 4px corners
+ * against the row's 32px and 2px - near enough to look like a mistake rather than a choice.
+ * `--split-btn-r` is read by the shape rules below, which is where the corners that MEET are
+ * flattened; it is declared here because only a variant has anything to say about it.
+ */
 .split-btn__primary,
-.split-btn__secondary { padding: 0 var(--dev-space-4); }
+.split-btn__secondary {
+  --split-btn-r: 2px;
+
+  min-height:  32px;
+  padding:     0 12px;
+  font-size:   14px;
+  line-height: 140%;
+  gap:         8px;
+}
 
 .split-btn__plain {
   border:     1px solid var(--border);
@@ -370,18 +386,18 @@ export default {
  * come apart into two boxes that happen to touch.
  */
 .split-btn .split-btn__main {
-  border-radius:      var(--dev-r-ctl) 0 0 var(--dev-r-ctl);
+  border-radius:      var(--split-btn-r, var(--dev-r-ctl)) 0 0 var(--split-btn-r, var(--dev-r-ctl));
   border-right-width: 0;
 
   /* With nothing to choose between there is no caret, so the press is the whole control. */
   &:only-child {
-    border-radius:      var(--dev-r-ctl);
+    border-radius:      var(--split-btn-r, var(--dev-r-ctl));
     border-right-width: 1px;
   }
 }
 
 .split-btn .split-btn__more {
-  border-radius: 0 var(--dev-r-ctl) var(--dev-r-ctl) 0;
+  border-radius: 0 var(--split-btn-r, var(--dev-r-ctl)) var(--split-btn-r, var(--dev-r-ctl)) 0;
 }
 
 /*

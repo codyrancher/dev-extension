@@ -72,6 +72,23 @@ export default {
         <div class="dev-modal__body">
           <slot />
         </div>
+        <!--
+          What the dialog does, in one row at the bottom.
+
+          Right-aligned, and the thing it is for is the LAST of them - the furthest right, where
+          a dialog's answer is. It was wherever the form's markup happened to leave it, which on
+          the Approve panel was bottom-LEFT, under twenty rows of attachments, with Approve to
+          the left of Cancel. Pinned outside the scroller, so the answer is on screen whatever
+          the body is doing.
+
+          A `footer` nobody passes draws nothing: a dialog that only shows something has no row.
+        -->
+        <div
+          v-if="$slots.footer"
+          class="dev-modal__foot"
+        >
+          <slot name="footer" />
+        </div>
       </div>
     </div>
   </Teleport>
@@ -156,5 +173,32 @@ export default {
     padding: 20px;
     gap:     16px;
   }
+
+  /*
+   * The action row. Right-aligned, with the primary last - see the slot's own comment.
+   *
+   * `row-reverse` rather than `flex-end`, so the ORDER the buttons are written in is the order
+   * they are read in: a dialog's markup says the answer first - `<RcButton>Approve</RcButton>`
+   * then Cancel - the way the code that runs it reads, and the row puts the answer on the
+   * right where the eye ends up. Writing them backwards to get them drawn forwards is a thing
+   * every one of these footers would have had to remember.
+   */
+  &__foot {
+    display:         flex;
+    flex-direction:  row-reverse;
+    justify-content: flex-start;
+    align-items:     center;
+    gap:             var(--dev-space-4);
+    flex:            0 0 auto;
+    padding:         12px 20px;
+    border-top:      1px solid var(--border);
+  }
+
+  /*
+   * Anything the footer puts on the LEFT - a count, a warning, a destructive action that is not
+   * the dialog's answer - goes last in the markup with this class on it, and the gap between it
+   * and the buttons is the whole width of the row.
+   */
+  &__foot :deep(.dev-modal__foot-aside) { margin-right: auto; }
 }
 </style>

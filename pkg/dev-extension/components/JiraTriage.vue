@@ -64,7 +64,16 @@ export default {
     },
   },
 
-  emits: ['applied', 'close'],
+  /*
+   * `state` is how the dialog's footer knows what to draw.
+   *
+   * The Apply and Close buttons used to be the last Row of this component, which put them
+   * inside the scrolling body, left-aligned, under however many rows the form had - and on the
+   * Approve panel beside it that came out as the answer sitting bottom-left under twenty
+   * attachments. They belong in DevModal's footer, which is the host's to render, so what the
+   * host needs is whether there is anything to apply.
+   */
+  emits: ['applied', 'close', 'state'],
 
   data() {
     return {
@@ -118,6 +127,19 @@ export default {
     },
   },
 
+  /*
+   * Everything the footer draws, told rather than read.
+   *
+   * A `$refs` lookup is not reactive in Vue 3, so a host reading `hasChange` off the ref would
+   * draw an Apply that never stopped being disabled. `immediate` so the footer is right on the
+   * first frame, and `proposal` is in here because until the ticket has been read there is
+   * nothing to apply TO - which is the difference between a disabled Apply and no footer at all.
+   */
+  watch: {
+    hasChange: { handler: 'tellHost', immediate: true },
+    proposal:  { handler: 'tellHost', immediate: true },
+  },
+
   async mounted() {
     await this.load();
     if (this.move) {
@@ -126,6 +148,11 @@ export default {
   },
 
   methods: {
+    /** What the dialog's footer needs: whether the ticket is readable, and whether to enable Apply. */
+    tellHost() {
+      this.$emit('state', { ready: !!this.proposal, hasChange: this.hasChange });
+    },
+
     async load() {
       this.loading = true;
       this.error = '';
@@ -508,24 +535,6 @@ export default {
         :label="`${ bug }: ${ done }`"
       />
 
-      <Row
-        gap="3"
-        align="center"
-      >
-        <AsyncButton
-          mode="apply"
-          action-label="Apply to the ticket"
-          waiting-label="Writing"
-          success-label="Written"
-          :disabled="!hasChange"
-          @click="(done) => apply(done)"
-        />
-        <RcButton
-          small
-          @click="$emit('close')"
-        >Close</RcButton>
-        <span class="text-muted jira-triage__note">The comment goes on first and the move last, so a move Jira refuses never leaves a comment behind it.</span>
-      </Row>
     </template>
   </Stack>
 </template>

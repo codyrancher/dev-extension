@@ -61,6 +61,7 @@ import { markReadyForReview, describePr } from '../github';
 import { TRIAGE_ACTIONS, JIRA_BASE } from '../jira';
 import { TRIAGE_MOVES, jiraStageOf, actionForStatus } from '../jira-steps.mjs';
 import JiraTriage from './JiraTriage.vue';
+import AsyncButton from '@shell/components/AsyncButton';
 import {
   deleteWorkspace, devFetch, workspaceMediaListUrl
 } from '../api';
@@ -126,7 +127,7 @@ export default {
   name: 'WorkspaceRail',
 
   components: {
-    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, SplitButton, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, DevDialog, PrButton, CommentDiscussion, CommentAttachments, Reviewers, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView, StageSteps, JiraTriage,
+    Banner, RcButton, PromptEditor, ConversationTabbed, ConversationTab, SplitButton, Tab, StudioTerminal, WorkspaceReview, WorkspacePr, WorkspaceBrowser, WorkspaceShare, DevModal, DevDialog, PrButton, CommentDiscussion, CommentAttachments, Reviewers, ArtifactViewer, WorkspaceArtifacts, WorkspaceTools, CodeView, StageSteps, JiraTriage, AsyncButton,
   },
 
   // Every question this rail asks goes through DevDialog (components/ask.ts). The browser's
@@ -175,6 +176,8 @@ export default {
       devServer:     { running: false, paused: false },
       /** Whether this visit has already stopped the server for a stage that does not need it. */
       autoStopped:   false,
+      /** What the triage panel's footer draws: see JiraTriage's `state`. */
+      triageState: { ready: false, hasChange: false },
       /** Whether the person is holding this workspace's stage by hand, and whether the picker is open. */
       manual:      false,
       stagePicker: false,
@@ -2965,6 +2968,12 @@ export default {
             the buttons before choosing one. The mark on a button says which are the agent's,
             which is the only part of that distinction worth keeping and is already on them.
 
+            Every button here is `secondary`, filled none of them. The stage's own answer used
+            to be a solid blue press beside outlined ones and read as a different kind of
+            control rather than as the first of these; it still LEADS the row, which is where
+            the row says which one it is, and the headline above says it in words. `isPrimary`
+            is what puts it first and no longer what paints it.
+
             Starting and stopping the dev server used to be here too. They are tools, so they
             are on the tools strip above, at every stage, with the rest of what this workspace
             runs.
@@ -2989,7 +2998,7 @@ export default {
                   :value="a.chosen.run"
                   :label="a.chosen.label"
                   :disabled="!!busy"
-                  :variant="a.isPrimary ? 'primary' : 'secondary'"
+                  variant="secondary"
                   class="workspace-rail__verdict"
                   @pick="(verdict) => run({ run: verdict })"
                 >
@@ -3001,7 +3010,7 @@ export default {
                 </SplitButton>
                 <RcButton
                   v-else
-                  :variant="a.isPrimary ? 'primary' : 'secondary'"
+                  variant="secondary"
                   :disabled="!!busy"
                   :title="a.title"
                   @click="a.skill ? runSkill(a.button) : run(a)"
@@ -3858,27 +3867,33 @@ export default {
             >This workspace has no recordings yet.</p>
           </section>
 
-          <div class="workspace-rail__group-buttons">
-            <RcButton
-              variant="primary"
-              :disabled="!!approveBusy"
-              @click="approve"
-            >
-              <i
-                v-if="approveBusy === 'approve'"
-                class="icon icon-spinner icon-spin"
-              />
-              Approve
-            </RcButton>
-            <RcButton
-              variant="tertiary"
-              :disabled="!!approveBusy"
-              @click="approving = null"
-            >
-              Cancel
-            </RcButton>
-          </div>
         </div>
+        <!--
+          Written answer-first, drawn answer-rightmost: the footer is `row-reverse`, so Approve
+          is the furthest right and Cancel sits to its left. This row used to be the last thing
+          inside the body - bottom-LEFT, under twenty rows of attachments, with Approve to the
+          left of Cancel - which is as far from where a dialog is answered as it could be.
+        -->
+        <template #footer>
+          <RcButton
+            variant="primary"
+            :disabled="!!approveBusy"
+            @click="approve"
+          >
+            <i
+              v-if="approveBusy === 'approve'"
+              class="icon icon-spinner icon-spin"
+            />
+            Approve
+          </RcButton>
+          <RcButton
+            variant="tertiary"
+            :disabled="!!approveBusy"
+            @click="approving = null"
+          >
+            Cancel
+          </RcButton>
+        </template>
       </DevModal>
 
       <!-- What a button sends, and the skill it runs, editable for every workspace. -->
@@ -3957,11 +3972,36 @@ export default {
         @close="triaging = false"
       >
         <JiraTriage
+          ref="triage"
           :bug="bug"
           :move="triageMove"
+          @state="triageState = $event"
           @applied="bugChanged()"
           @close="triaging = false"
         />
+        <!--
+          The panel's own answer, which the panel used to draw at the end of its form. Its state
+          is told to us (`@state`) rather than read off the ref, because a `$refs` lookup is not
+          reactive and an Apply read that way never stops being disabled.
+        -->
+        <template
+          v-if="triageState.ready"
+          #footer
+        >
+          <AsyncButton
+            mode="apply"
+            action-label="Apply to the ticket"
+            waiting-label="Writing"
+            success-label="Written"
+            :disabled="!triageState.hasChange"
+            @click="(done) => $refs.triage.apply(done)"
+          />
+          <RcButton
+            variant="tertiary"
+            @click="triaging = false"
+          >Close</RcButton>
+          <span class="text-muted dev-modal__foot-aside">The comment goes on first and the move last, so a move Jira refuses never leaves a comment behind it.</span>
+        </template>
       </DevModal>
     </template>
     <div
@@ -4301,10 +4341,11 @@ export default {
     display:     inline-flex;
     align-items: stretch;
 
-    :deep(.split-btn__main),
-    :deep(.split-btn__more) {
-      min-height: 30px;
-    }
+    /*
+     * Nothing here about the height any more. It said 30px, for "Rancher's 30px buttons" - a
+     * measurement of the older button language, and six short of what this row actually draws.
+     * The halves carry RcButton's own metrics now (SplitButton, `.split-btn__secondary`).
+     */
 
     :deep(.split-btn__main) {
       // Both halves take the same variant as the buttons beside them on this row, drawn from

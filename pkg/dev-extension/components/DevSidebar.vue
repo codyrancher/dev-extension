@@ -1270,23 +1270,30 @@ export default {
           Settings → Tokens, or this will be refused rather than left pulling.
         </p>
 
-        <div class="dev-sidebar__form-actions">
-          <button
-            type="submit"
-            class="btn role-primary btn-sm"
-            :disabled="!proposedRancher.trim()"
-          >
-            Create
-          </button>
-          <button
-            type="button"
-            class="btn role-secondary btn-sm"
-            @click="askingRancher = false"
-          >
-            Cancel
-          </button>
-        </div>
       </form>
+      <!--
+        Answer first in the markup, rightmost on the screen - the footer is `row-reverse`.
+        Create is a `button` rather than the form's `submit` now that it sits outside the form,
+        and calls the same handler; Enter in a field still submits, which is what the form is
+        for.
+      -->
+      <template #footer>
+        <button
+          type="button"
+          class="btn role-primary btn-sm"
+          :disabled="!proposedRancher.trim()"
+          @click="makeRancher"
+        >
+          Create
+        </button>
+        <button
+          type="button"
+          class="btn role-secondary btn-sm"
+          @click="askingRancher = false"
+        >
+          Cancel
+        </button>
+      </template>
     </DevModal>
     <div
       v-if="error"
@@ -1893,8 +1900,4 @@ export default {
   font-size: 14px;
 }
 
-.dev-sidebar__form-actions {
-  display: flex;
-  gap:     8px;
-}
 </style>
