@@ -2782,6 +2782,12 @@ const OPENAPI = {
         description: 'Send at least one of `toStatus`, `assignee`, `comment`, `team`, `fixVersions`, `affectsVersions`, `labels`, `resolution` or `links`, plus `reason` for why and `attachments` (`[{path, caption}]`, paths in your workspace) for the evidence. `githubIssue` carries either a draft (`{title, body, labels}`) or `{existing}` where an issue already covers it. One pending recommendation per bug: filing again supersedes the last.',
         responses:   { 200: { description: 'The recommendation as stored.' }, 400: { description: 'Nothing in it to apply.' } },
       },
+      put: {
+        operationId: 'amendJiraRecommendation',
+        summary:     'Correct the prose of the proposal that is pending.',
+        description: 'Send `reason`, `comment`, or both. Only those two change; `post` supersedes the whole recommendation and would drop the attachments and the GitHub draft with it. For a person putting right what is about to be applied, which is why it keeps the same `createdAt`.',
+        responses:   { 200: { description: 'The recommendation as stored.' }, 400: { description: 'Neither reason nor comment was sent.' }, 404: { description: 'Nothing pending for that bug.' } },
+      },
     },
     '/my-work/jira/{key}/recommendation/github': {
       parameters: [{
@@ -6156,6 +6162,39 @@ const routes = [
     writeStoreDoc(jiraFile(key, 'recommendation.json'), rec);
 
     return { ok: true, recommendation: jiraRecommendationOut(rec, key) };
+  }],
+  /*
+   * Correct what the agent concluded, in place.
+   *
+   * `POST .../recommendation` supersedes: it stamps a new `createdAt` and takes the
+   * attachments, the GitHub draft and the field edits from the body, so using it to fix a
+   * sentence would throw away the evidence somebody is part-way through reading. This touches
+   * the two pieces of prose and nothing else - the reasoning, and the comment the reporter will
+   * get - because those are the parts a person reads and disagrees with.
+   *
+   * It is not an audit trail: the point is to put right what is about to be applied, not to
+   * keep a record of the agent having been wrong. `editedAt` says that it happened.
+   */
+  ['PUT', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/recommendation$/, async(m, url, body) => {
+    const key = jiraKey(m[1]);
+    const rec = pendingJiraRecommendation(key);
+
+    if (!rec) {
+      throw failure(404, `There is no pending recommendation for ${ key }.`);
+    }
+    if (typeof body?.reason !== 'string' && typeof body?.comment !== 'string') {
+      throw failure(400, 'Send `reason`, `comment`, or both.');
+    }
+    if (typeof body.reason === 'string') {
+      rec.reason = body.reason.slice(0, 20000);
+    }
+    if (typeof body.comment === 'string') {
+      rec.comment = body.comment.slice(0, 20000);
+    }
+    rec.editedAt = new Date().toISOString();
+    writeStoreDoc(jiraFile(key, 'recommendation.json'), rec);
+
+    return { recommendation: jiraRecommendationOut(rec, key) };
   }],
   ['POST', /^\/my-work\/jira\/([A-Za-z]+-\d+)\/recommendation\/dismiss$/, async(m) => {
     const key = jiraKey(m[1]);

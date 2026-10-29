@@ -19,7 +19,7 @@ import Banner from '@components/Banner/Banner.vue';
 import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
 import {
-  jiraOptions, jiraProposal, jiraApply, dismissJiraRecommendation, JIRA_BASE
+  jiraOptions, jiraProposal, jiraApply, dismissJiraRecommendation, amendJiraRecommendation, JIRA_BASE
 } from '../jira';
 import { TRIAGE_MOVES } from '../jira-steps.mjs';
 
@@ -86,6 +86,9 @@ export default {
       loading:  true,
       error:    '',
       done:     '',
+      /** Whether the conclusion is being corrected, and the draft of it while it is. */
+      editing:  false,
+      edit:     { reason: '', comment: '' },
     };
   },
 
@@ -183,6 +186,37 @@ export default {
   },
 
   methods: {
+    /** Open the conclusion for correction, on a copy, so Cancel leaves what was filed alone. */
+    startEdit() {
+      this.edit = { reason: this.recommendation?.reason || '', comment: this.recommendation?.comment || '' };
+      this.editing = true;
+    },
+
+    /**
+     * Save the correction against the proposal.
+     *
+     * The stored recommendation is replaced in memory with what came back, so the form's preset
+     * reads the corrected comment rather than the one that was wrong - "Fill the form in with
+     * it" after an edit has to mean the edited one or the edit was for nothing.
+     */
+    async saveEdit(done) {
+      try {
+        const saved = await amendJiraRecommendation(this.bug, this.edit);
+
+        if (this.proposal) {
+          this.proposal = { ...this.proposal, recommendation: saved };
+        }
+        if (this.preset === 'recommendation') {
+          this.choose('recommendation');
+        }
+        this.editing = false;
+        done(true);
+      } catch (e) {
+        this.error = e?.message || String(e);
+        done(false);
+      }
+    },
+
     /** Whether a field is this dialog's business: all of them, or the move's own. */
     shows(field) {
       return !this.focused || this.focused.needs.includes(field);
@@ -392,11 +426,61 @@ export default {
         >
           <strong>The agent's conclusion</strong>
           <span class="text-muted">{{ recommendation.action }}</span>
+          <span
+            v-if="recommendation.editedAt"
+            class="text-muted jira-triage__note"
+          >edited</span>
+          <!--
+            The conclusion is prose somebody disagrees with, so it is prose somebody can fix.
+            It was read-only, which left "the agent got this wrong" with nowhere to go but Put
+            it aside - and putting a conclusion aside throws away the evidence attached to it
+            along with the one sentence that was wrong.
+          -->
+          <RcButton
+            v-if="!editing"
+            small
+            class="jira-triage__edit"
+            @click="startEdit"
+          >Edit it</RcButton>
         </Row>
         <p
-          v-if="recommendation.reason"
+          v-if="recommendation.reason && !editing"
           class="jira-triage__why"
         >{{ recommendation.reason }}</p>
+        <template v-if="editing">
+          <textarea
+            v-model="edit.reason"
+            class="jira-triage__editor"
+            rows="8"
+            aria-label="The agent's conclusion"
+          />
+          <label class="jira-triage__head">The comment it proposed</label>
+          <textarea
+            v-model="edit.comment"
+            class="jira-triage__editor"
+            rows="4"
+            aria-label="The comment it proposed"
+            placeholder="Nothing is commented unless this has something in it."
+          />
+          <Row
+            gap="3"
+            align="center"
+          >
+            <AsyncButton
+              mode="apply"
+              action-label="Save the correction"
+              waiting-label="Saving"
+              success-label="Saved"
+              size="sm"
+              @click="(done) => saveEdit(done)"
+            />
+            <RcButton
+              small
+              @click="editing = false"
+            >Cancel</RcButton>
+            <span class="text-muted jira-triage__note">Saved against the proposal, not the ticket. Nothing reaches the reporter until Apply.</span>
+          </Row>
+        </template>
         <Row
           gap="3"
           align="center"
@@ -666,6 +750,27 @@ export default {
   }
 
   &__why { margin: 0; white-space: pre-wrap; }
+
+  /* Pushed to the end of the heading row, so "Edit it" is not a third word in the title. */
+  &__edit { margin-left: auto; }
+
+  /*
+   * The conclusion under correction. Monospace is wrong here - this is a sentence somebody
+   * reads, not a prompt - but it keeps the body font and the panel's own measure.
+   */
+  &__editor {
+    width:         100%;
+    box-sizing:    border-box;
+    min-height:    90px;
+    padding:       var(--dev-space-4);
+    border:        1px solid var(--border);
+    border-radius: var(--dev-r-ctl);
+    background:    var(--input-bg);
+    color:         var(--body-text);
+    font:          inherit;
+    line-height:   1.5;
+    resize:        vertical;
+  }
 
   &__head { color: var(--muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
 

@@ -307,6 +307,8 @@ export interface JiraRecommendation {
   github: { title: string; body: string; existing: string; labels: string[]; url: string | null; existingUrl: string | null } | null;
   blankIssueUrl: string;
   createdAt: string;
+  /** When a person last corrected its prose, if they have: see amendJiraRecommendation. */
+  editedAt?: string | null;
   appliedAt: string | null;
   dismissedAt: string | null;
 }
@@ -370,6 +372,18 @@ export async function jiraApply(key: string, change: {
   return devApi(`/my-work/jira/${ encodeURIComponent(key) }/apply`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(change),
   });
+}
+
+/**
+ * Put right what the agent concluded, without superseding it.
+ *
+ * The two pieces of prose only - the reasoning and the comment the reporter will get. Filing a
+ * recommendation again (`POST`) replaces the whole thing and takes the attachments and the
+ * GitHub draft from the body, so a person fixing a sentence would lose the evidence they were
+ * reading. See the route's own note.
+ */
+export async function amendJiraRecommendation(key: string, prose: { reason?: string; comment?: string }): Promise<JiraRecommendation> {
+  return (await devApi(`/my-work/jira/${ encodeURIComponent(key) }/recommendation`, { method: 'PUT', body: JSON.stringify(prose) })).recommendation;
 }
 
 export async function dismissJiraRecommendation(key: string): Promise<void> {
