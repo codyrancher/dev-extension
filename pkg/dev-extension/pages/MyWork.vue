@@ -171,11 +171,13 @@ const REFRESH_MS = 30000;
  * and 55KB and the assigned issues are 1.6KB. The issues table was waiting on a hundred and
  * sixty kilobytes of pull requests it does not show.
  *
- * `interrupt-duty` is the rota - advisories to fix and Dependabot bumps to wave through - which
- * somebody goes through when it is their turn. They are named here because the name is in the
- * address, so a link to one is a link somebody can send.
+ * `dependabot` is the rota - advisories to fix and Dependabot bumps to wave through - which
+ * somebody goes through when it is their turn. It was `interrupt-duty`, which named the rota
+ * rather than the work: what is on the tab is the bot's pull requests and GitHub's advisories,
+ * and whose turn it is to look is not something the tab can tell you. They are named here
+ * because the name is in the address, so a link to one is a link somebody can send.
  */
-const TABS = ['reviewing', 'mine', 'issues', 'tracker', 'jira', 'interrupt-duty', 'priority'];
+const TABS = ['reviewing', 'mine', 'issues', 'tracker', 'jira', 'dependabot', 'priority'];
 
 /** The tabs that are one `myWork` section each, by the section they read. See WorkSection. */
 const SECTION_TABS = ['reviewing', 'mine', 'issues'];
@@ -184,7 +186,13 @@ const SECTION_TABS = ['reviewing', 'mine', 'issues'];
 function tabFromHash(hash) {
   const asked = String(hash || '').replace(/^#/, '');
 
-  // `daily` is what the three section tabs used to be called; a link to it opens the first of them.
+  // What a tab used to be called still opens it: `daily` was the three section tabs, so a link
+  // to it opens the first of them, and `interrupt-duty` is what Dependabot was. A link somebody
+  // sent last week is not a reason to leave the name wrong, nor to break the link.
+  if (asked === 'interrupt-duty') {
+    return 'dependabot';
+  }
+
   return TABS.includes(asked) ? asked : 'reviewing';
 }
 
@@ -346,7 +354,7 @@ export default {
     /** Whether the tab on screen is reading: what Refresh says and whether it can be pressed. */
     busy() {
       return {
-        'interrupt-duty': this.loadingAlerts, priority: this.loadingQueue, jira: this.loadingJira, tracker: this.loadingTracker,
+        dependabot: this.loadingAlerts, priority: this.loadingQueue, jira: this.loadingJira, tracker: this.loadingTracker,
       }[this.tab] ?? this.loading;
     },
 
@@ -537,8 +545,8 @@ export default {
 
         return;
       }
-      if (this.tab === 'interrupt-duty') {
-        await this.refreshInterrupt();
+      if (this.tab === 'dependabot') {
+        await this.refreshDependabot();
 
         return;
       }
@@ -871,7 +879,7 @@ export default {
      * the workspace names, since its rows say whether a fix already has one and this tab can be
      * the first thing opened.
      */
-    async refreshInterrupt() {
+    async refreshDependabot() {
       this.alertError = '';
       this.loadingAlerts = true;
 
@@ -906,7 +914,7 @@ export default {
      * The tab changed: remember it, and read its half if this visit has not.
      *
      * Tabbed puts the name in the address itself, so nothing here touches the route - which is
-     * also why a link to `#interrupt-duty` lands on that tab with that tab's data and never
+     * also why a link to `#dependabot` lands on that tab with that tab's data and never
      * reads the other half at all.
      */
     async onTab(tab) {
@@ -915,7 +923,7 @@ export default {
       this.tab = tabFromHash(name);
 
       const loaded = {
-        'interrupt-duty': this.alertsLoaded, priority: this.queueLoaded, jira: this.jiraLoaded, tracker: this.trackerLoaded,
+        dependabot: this.alertsLoaded, priority: this.queueLoaded, jira: this.jiraLoaded, tracker: this.trackerLoaded,
       }[this.tab] ?? !!this.sections[this.tab];
 
       if (!loaded) {
@@ -1464,11 +1472,11 @@ export default {
 
     <!--
       Two tabs, because the page answers two different questions on two different rhythms.
-      Daily is your own work - what you wrote and what is waiting on you. Interrupt duty is
-      the rota: advisories to fix and bot bumps to wave through, which somebody looks at when
-      it is their turn and nobody looks at otherwise.
+      Daily is your own work - what you wrote and what is waiting on you. Dependabot is the
+      rota: advisories to fix and bot bumps to wave through, which somebody looks at when it
+      is their turn and nobody looks at otherwise.
 
-      Tabbed keeps the chosen tab in the address (`#interrupt-duty`), so a link goes straight
+      Tabbed keeps the chosen tab in the address (`#dependabot`), so a link goes straight
       to it and a reload comes back to it - and each tab reads only what it shows, so opening
       the page no longer waits on the half of GitHub you are not looking at.
     -->
@@ -2235,8 +2243,8 @@ export default {
       </Tab>
 
       <Tab
-        name="interrupt-duty"
-        label="Interrupt duty"
+        name="dependabot"
+        label="Dependabot"
         :weight="1"
       >
         <div
