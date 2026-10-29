@@ -177,7 +177,7 @@ export default {
       /** Whether this visit has already stopped the server for a stage that does not need it. */
       autoStopped:   false,
       /** What the triage panel's footer draws: see JiraTriage's `state`. */
-      triageState: { ready: false, hasChange: false },
+      triageState: { ready: false, hasChange: false, attachments: 0 },
       /** Whether the person is holding this workspace's stage by hand, and whether the picker is open. */
       manual:      false,
       stagePicker: false,
@@ -4050,7 +4050,16 @@ export default {
             variant="tertiary"
             @click="triaging = false"
           >Close</RcButton>
-          <span class="text-muted dev-modal__foot-aside">Anything attached goes up first, then the comment, and the move last - so a comment never names a file that is not there, and a move Jira refuses never leaves a comment behind it.</span>
+          <!--
+            What Apply is about to do, beside the button that does it. The attachment count is
+            named here as well as in its own section because that section is near the foot of a
+            body that scrolls, and a reporter seeing a recording of their own cluster is not
+            something to learn about afterwards.
+          -->
+          <span class="text-muted dev-modal__foot-aside">
+            <template v-if="triageState.attachments">{{ triageState.attachments }} file{{ triageState.attachments === 1 ? '' : 's' }} go onto the ticket first, then the comment, and the move last.</template>
+            <template v-else>The comment goes on first and the move last, so a move Jira refuses never leaves a comment behind it.</template>
+          </span>
         </template>
       </DevModal>
     </template>

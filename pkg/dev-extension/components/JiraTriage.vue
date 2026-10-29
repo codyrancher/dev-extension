@@ -235,6 +235,9 @@ export default {
   watch: {
     hasChange: { handler: 'tellHost', immediate: true },
     proposal:  { handler: 'tellHost', immediate: true },
+    // By length, not by identity: `staged` is replaced wholesale on every change, and what the
+    // footer says about it is a number.
+    'staged.length': { handler: 'tellHost' },
   },
 
   async mounted() {
@@ -474,9 +477,17 @@ export default {
       return !this.focused || this.focused.needs.includes(field);
     },
 
-    /** What the dialog's footer needs: whether the ticket is readable, and whether to enable Apply. */
+    /**
+     * What the dialog's footer needs: whether the ticket is readable, whether to enable Apply,
+     * and how many files Apply would put on the ticket.
+     *
+     * The count is here rather than only in the section itself because the section is near the
+     * bottom of a body that scrolls: with a long conclusion above it you can reach Apply without
+     * ever having seen it. The footer is the one place that cannot be missed, being where the
+     * button is.
+     */
     tellHost() {
-      this.$emit('state', { ready: !!this.proposal, hasChange: this.hasChange });
+      this.$emit('state', { ready: !!this.proposal, hasChange: this.hasChange, attachments: this.staged.length });
     },
 
     async load() {
@@ -500,8 +511,13 @@ export default {
          *
          * `byAgent` so it does not make Apply live by itself; see hasChange.
          */
-        for (const file of proposal?.recommendation?.attachments || []) {
-          this.stage(file, true);
+        // Only where the section that lists them is drawn. Staging into a hidden section would
+        // put files on a customer's ticket with nothing on screen saying so, which is the one
+        // thing this panel must never do - and `workspace` is what the section is gated on.
+        if (this.workspace) {
+          for (const file of proposal?.recommendation?.attachments || []) {
+            this.stage(file, true);
+          }
         }
         // Not awaited: it is a third request and the form below does not need it to be drawn.
         this.loadMedia();
