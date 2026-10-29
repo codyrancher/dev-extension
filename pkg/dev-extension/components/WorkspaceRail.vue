@@ -42,6 +42,10 @@ import {
 import { prFile, openConversation } from '../reviews';
 import { toggleTask } from '../pr-body.mjs';
 import { isProjectConversationId } from '../conversation-id.mjs';
+// Which conversation an action's prompt goes to, and what counts as a discussion rather than one
+// of the workspace's own. Pure and tested, because this has been wrong three times and each time
+// it looked like the button doing nothing. See conversation-pick.mjs.
+import { pickConversation, isDiscussion } from '../conversation-pick.mjs';
 import {
   listConversations, startConversation, queuePrompt, startPaneDetached, workspaceAgentStates, sendToPane, renameConversation, endConversation, forkConversation
 } from '../conversations';
@@ -572,14 +576,7 @@ export default {
        * component's memory of the discussions IT opened, and a second tab, or this one after a
        * refresh, knows nothing about them.
        */
-      return this.conversations
-        // Belt and braces after the bug above: a conversation whose id does not name THIS
-        // workspace cannot be drawn here, whatever happens to be in the array. The id is the
-        // only thing that says whose a conversation is, and `isProjectConversationId` is what
-        // tells `p-foo-bar-2` (workspace foo-bar) from `p-foo_bar-2` (workspace foo) - a prefix
-        // test would claim one for the other. See conversation-id.mjs.
-        .filter((c) => isProjectConversationId(this.workspace.name, c.id))
-        .filter((c) => !/^Discuss\b/.test(String(c.title || '')))
+      return this.mine(this.conversations)
         .map((c) => ({
           ...c, alive: !!this.live[c.id], agent: this.live[c.id] || 'idle',
         }));
@@ -1630,8 +1627,9 @@ export default {
       }
       this.promptSaving = 'send';
       try {
-        await this.say(action.fresh ? `${ action.label } #${ this.status?.pr || this.issue }` : '', this.promptPreview(), !action.fresh);
-        this.notice = `${ action.label }: sent as edited; the agent is on it below.`;
+        const title = action.fresh ? `${ action.label } #${ this.status?.pr || this.issue }` : '';
+
+        await this.say(title, this.promptPreview(), !action.fresh, title, `${ action.label }: as edited`);
         this.inspecting = null;
       } catch (e) {
         this.inspecting = { ...this.inspecting, error: e?.message || String(e) };
@@ -1756,8 +1754,9 @@ export default {
       try {
         const text = skillPrompt(button, this.status, this.issue, this.workspace.name, this.templateOf(button));
 
-        await this.say(button.fresh ? `${ button.label } #${ this.status.pr || this.issue }` : '', text, !button.fresh);
-        this.notice = `${ button.label }: the agent is on it in the conversation below.`;
+        const title = button.fresh ? `${ button.label } #${ this.status.pr || this.issue }` : '';
+
+        await this.say(title, text, !button.fresh, title, button.label);
       } catch (e) {
         this.error = e?.message || String(e);
       } finally {
@@ -2063,9 +2062,20 @@ export default {
       this.openComments = { ...this.openComments, [c.id]: !(this.openComments[c.id] ?? !c.answered) };
     },
 
-    /** Tabbed says which conversation is on show; the terminal follows it. */
+    /**
+     * Tabbed says which conversation is on show; the terminal follows it - and so does everything
+     * else that asks which conversation this page is about.
+     *
+     * `currentConversation` used to be left behind here, so picking a tab moved the pane and
+     * nothing else: the popout opened a different conversation, and an action sent its prompt to
+     * whatever the last poll had defaulted to. Changing tabs is the clearest statement a person
+     * can make about which conversation they mean.
+     */
     onLiveTab({ tab }) {
       this.liveShown = tab.name;
+      if (tab.name && this.conversations.some((c) => c.id === tab.name)) {
+        this.currentConversation = tab.name;
+      }
     },
 
     /**
@@ -2224,6 +2234,28 @@ export default {
     /** The live conversation a tab is for; its `name` is the conversation id (see the Tab loop). */
     liveByTab(name) {
       return this.liveConversations.find((c) => c.id === name) || null;
+    },
+
+    /**
+     * The conversations that are this workspace's own, which is what the strip shows and what a
+     * prompt may be sent to.
+     *
+     * Two filters and both have cost something. The id is the only thing that says whose a
+     * conversation is, and `isProjectConversationId` is what tells `p-foo-bar-2` (workspace
+     * foo-bar) from `p-foo_bar-2` (workspace foo) - a prefix test claims one for the other.
+     *
+     * And a discussion is not one of these. Pressing Discuss on a finding opens a conversation
+     * under that finding, where it is read; it is still a conversation in the agent pod, so it
+     * was in the list, and `say` would hand it the next thing an action sent. Measured on PR
+     * 19729: the review-new-commits prompt had gone into SIX `Discuss` threads about single
+     * lines of one file, none of which is on the strip - so the button said it had worked, and
+     * the conversation nobody could see was the one doing it. Matched on the title because that
+     * is what survives a reload.
+     */
+    mine(list) {
+      return (list || [])
+        .filter((c) => isProjectConversationId(this.workspace.name, c.id))
+        .filter((c) => !isDiscussion(c.title));
     },
 
     /** A tab's conversation across running and not - what the strip's headers and bodies read. */
@@ -2398,8 +2430,19 @@ export default {
       }
 
       this.conversations = found;
+      /*
+       * A conversation that has gone is not one to keep pointing at - but what replaces it is
+       * this workspace's own newest, not the raw list's.
+       *
+       * The raw list holds every discussion opened under a finding, and those are newer than
+       * the review nearly by definition: so on a PR with six of them this defaulted, on every
+       * poll, to a thread about one line of one file - which is where `say` then sent the next
+       * thing any button asked for. See `mine`.
+       */
       if (!this.conversations.some((c) => c.id === this.currentConversation)) {
-        this.currentConversation = this.conversations[this.conversations.length - 1]?.id || '';
+        const own = this.mine(this.conversations);
+
+        this.currentConversation = own[own.length - 1]?.id || '';
       }
     },
 
@@ -2424,12 +2467,27 @@ export default {
      * the reuse case and makes no conversation; the + button above passes nothing at all and
      * keeps the short id. See conversation-id.mjs.
      */
-    async say(title, text, reuse = !title, from = title) {
+    async say(title, text, reuse = !title, from = title, what = '') {
       await ensureWorkspaceReady(this.workspace.name);
-      const conversations = await listConversations(this.workspace.name).catch(() => []);
-      const shown = conversations.find((c) => c.id === this.currentConversation);
-      const about = conversations.filter((c) => /^(Fix|Review|Feedback|Improve|CI) /.test(c.title || '') || (this.status?.pr && (c.title || '').includes(`#${ this.status.pr }`)));
-      const newest = shown || about[about.length - 1] || conversations[conversations.length - 1];
+      // The workspace's own, never a discussion: see `mine`, and the measurement in its note.
+      const conversations = this.mine(await listConversations(this.workspace.name).catch(() => []));
+      /*
+       * Which one it goes to, in the order a person would expect.
+       *
+       * The tab on show first. That is what "inject it into the conversation" means when there
+       * is a conversation in front of you, and it is the only one of these the person can see
+       * and change. It reads `liveShown` - the strip's own answer - rather than
+       * `currentConversation`, which was set from the end of the raw list on every poll and so
+       * named whichever conversation happened to be newest, discussions included.
+       *
+       * Then the one the action is about: a review, a fix, the conversation named for this PR.
+       * That is the "original conversation" an action belongs in when nothing is open.
+       *
+       * Then the newest of this workspace's own, which is the fallback that was always here.
+       */
+      const newest = pickConversation(conversations, {
+        focused: this.liveShown, current: this.currentConversation, pr: this.status?.pr || 0,
+      });
 
       if (newest && reuse) {
         // Is there a claude in that pane to type into. Asked of the same pair the strip's dots
@@ -2448,14 +2506,12 @@ export default {
           await startPaneDetached(this.workspace.name, newest.id).catch(() => {});
         }
         await this.loadConversations();
-        this.currentConversation = newest.id;
+        this.showConversation(newest.id);
         // `running`, which is the name of the thing twenty lines up. This read `alive`, which is
         // not defined anywhere in this component - so every press that reused a conversation
         // threw `alive is not defined` AFTER the prompt had already been sent, and the rail
         // showed a red error over work that had in fact started.
-        this.notice = running
-          ? `Sent to ${ newest.title || 'the conversation' }.`
-          : `Sent to ${ newest.title || 'the conversation' }; it had stopped, so it is starting again to read it.`;
+        this.notice = this.sentNotice(what, newest, running);
 
         return newest;
       }
@@ -2463,10 +2519,46 @@ export default {
       const started = await startConversation(this.workspace.name, title, text, '', from);
 
       await this.loadConversations();
-      this.currentConversation = started.id;
-      this.notice = `${ title || 'A conversation' } has started; open the conversation to watch it.`;
+      this.showConversation(started.id);
+      this.notice = [what, `${ title || 'A conversation' } has started; it is the tab now on show.`].filter(Boolean).join(' - ');
 
       return started;
+    },
+
+    /**
+     * Bring the strip to a conversation, and keep every other reader of "which one" in step.
+     *
+     * `liveShown` is the strip's, `currentConversation` is the popout's, and the strip itself
+     * has to be told or the tab does not move. All three were set in different places by
+     * different actions, which is how the page came to disagree with itself about where a
+     * prompt had just gone.
+     */
+    showConversation(id) {
+      if (!id) {
+        return;
+      }
+      this.liveShown = id;
+      this.currentConversation = id;
+      // On the next tick: a conversation that has only just been made is not a Tab yet, and
+      // `select` on a name the strip has never heard of does nothing at all.
+      this.$nextTick(() => this.$refs.liveTabs?.select?.(id));
+    },
+
+    /**
+     * What a send says afterwards, naming the conversation it went to.
+     *
+     * Every caller used to overwrite this with a sentence of its own - "The agent is reviewing
+     * the new commits in the review conversation" - which was a claim about WHERE rather than a
+     * report of it, and it was wrong in exactly the case worth knowing about. The caller says
+     * what it sent; this says where it went.
+     */
+    sentNotice(what, conversation, running) {
+      const where = conversation.title || 'the conversation';
+
+      return [
+        what,
+        running ? `sent to ${ where }.` : `sent to ${ where }; it had stopped, so it is starting again to read it.`,
+      ].filter(Boolean).join(' - ');
     },
 
     async startFix() {
@@ -2521,16 +2613,14 @@ export default {
       }
       // Into the fix's own conversation when there is one - it has the context of every round -
       // and a new one named for the PR otherwise.
-      await this.say(`Feedback on #${ pr }`, this.promptOf('answerFeedback'), true);
-      this.notice = 'The agent is answering the feedback.';
+      await this.say(`Feedback on #${ pr }`, this.promptOf('answerFeedback'), true, `Feedback on #${ pr }`, 'Answering the feedback');
     },
 
     async reverify() {
       const pr = this.status?.pr;
 
       void pr;
-      await this.say('', this.promptOf('reverify'));
-      this.notice = 'Asked the agent to re-verify; the recording lands under Code and Draft PR.';
+      await this.say('', this.promptOf('reverify'), true, '', 'Re-verifying; the recording lands under Code and Draft PR');
     },
 
     /*
@@ -2612,11 +2702,10 @@ export default {
     },
 
     async reviewAgain() {
-      const pr = this.status?.pr;
-
-      void pr;
-      await this.say('', this.promptOf('reviewAgain'));
-      this.notice = 'The agent is reviewing the new commits in the review conversation.';
+      // The notice is `say`'s now, because it is the only one that knows where the prompt went.
+      // This said "in the review conversation" whatever happened, which is how six discussions
+      // came to be reviewing new commits with the page reporting otherwise. See sentNotice.
+      await this.say('', this.promptOf('reviewAgain'), true, '', 'Reviewing the new commits');
     },
 
     /** The approval, written rather than fired: a message, and the evidence for it. */
