@@ -65,6 +65,7 @@ import { markReadyForReview, describePr } from '../github';
 import { TRIAGE_ACTIONS, JIRA_BASE } from '../jira';
 import { TRIAGE_MOVES, jiraStageOf, actionForStatus } from '../jira-steps.mjs';
 import { movedNote } from '../review-anchors.mjs';
+import { watch } from '../events';
 import JiraTriage from './JiraTriage.vue';
 import AsyncButton from '@shell/components/AsyncButton';
 import {
@@ -239,6 +240,8 @@ export default {
       triageMove:  '',
       /** Stops the popout watcher over this page's comments; see md-popout.mjs. */
       stopPopouts: null,
+      // The event socket's unwatch for this column's comment marker; see watchPrComments.
+      stopComments: null,
       /** The conversation, in its own window over the page. */
       popped:      false,
       /** The conversation being forked, by id, while its copy is being made. */
@@ -923,8 +926,13 @@ export default {
       setInterval(() => this.refreshLive(), STATUS_MS),
       setInterval(() => this.refreshStatus(true), GITHUB_MS),
       setInterval(() => this.refreshEvidence(), EVIDENCE_MS),
-      setInterval(() => this.watchComments(), COMMENTS_MS),
     ];
+    /*
+     * The comment marker arrives rather than being asked for. It used to be a stat every two
+     * and a half seconds, forever, in every tab - the cheapest request in the product and far
+     * and away the most of them.
+     */
+    this.$watch(() => this.status?.pr, (pr) => this.watchPrComments(pr), { immediate: true });
     // A way out of a comment, for the parts of one that do not fit: a table or a fenced block
     // wider than the column gets a button that opens it over the page. One watcher over the
     // page, so the evidence modal's comments are covered as they are drawn. See md-popout.mjs.
@@ -933,6 +941,7 @@ export default {
 
   beforeUnmount() {
     this.stopPopouts?.();
+    this.stopComments?.();
     this.timers.forEach((t) => clearInterval(t));
     clearTimeout(this.statusRetryTimer);
     clearTimeout(this.evidenceRetryTimer);
@@ -2148,13 +2157,20 @@ export default {
      * only thing that is right for all of them. Only ever on a change, so the expensive read
      * happens exactly as often as something happened.
      */
-    async watchComments() {
-      const pr = this.status?.pr;
-
-      if (!pr || this.reading) {
+    /** Follow the marker for whichever pull request this column is now about. */
+    watchPrComments(pr) {
+      this.stopComments?.();
+      this.stopComments = null;
+      if (!pr) {
         return;
       }
-      const { at, size } = await commentsRevision(pr).catch(() => ({ at: 0, size: 0 }));
+      this.stopComments = watch(`/my-work/pr/${ pr }/comments/revision`, (rev) => this.commentsChanged(rev), { every: COMMENTS_MS, read: () => commentsRevision(pr).catch(() => ({ at: 0, size: 0 })) });
+    },
+
+    async commentsChanged({ at = 0, size = 0 } = {}) {
+      if (this.reading) {
+        return;
+      }
       const mark = `${ at }:${ size }`;
 
       // Nothing filed yet, or the same answer as last time.

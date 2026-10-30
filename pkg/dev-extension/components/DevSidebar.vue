@@ -46,12 +46,24 @@ import ClaudeLogo from './ClaudeLogo.vue';
 import Stack from '../design/Stack.vue';
 import Row from '../design/Row.vue';
 import { note } from '../dev-log.mjs';
+import { watch } from '../events';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
   MY_WORK_ROUTE, ARTIFACTS_ROUTE, TOOLS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
+
+/*
+ * How often the column reads everything regardless.
+ *
+ * The workspace list arrives on the event socket, so the five-second timer that used to drive
+ * this whole refresh is gone. What is left on a clock is the rest of what the column draws -
+ * the clusters, the Apps, the Ranchers, the preferences - which are read through the user's own
+ * session from the Rancher store and are not the socket's to push. A minute is the right
+ * cadence for a list of Apps; five seconds never was.
+ */
+const SWEEP_MS = 60_000;
 
 /**
  * The parts there are to play, in the order a day runs through them.
@@ -286,6 +298,8 @@ export default {
       /** What is typed in the nav's search box; '' is every workspace. */
       search:       '',
       refreshTimer: null,
+      // The event socket's unwatch for the workspace registrar.
+      stopRegistrar: null,
       /**
        * The entries that are not workspaces, as an icon row at the foot.
        *
@@ -414,7 +428,17 @@ export default {
   },
 
   mounted() {
-    this.refreshTimer = setInterval(() => this.refresh(), REFRESH_MS);
+    /*
+     * The column redraws when the workspace registrar moves, not on a timer.
+     *
+     * dev-api writes that projection and now serves it, so this subscribes to the document the
+     * sidebar has always read and refreshes on a change. With no socket the watch falls back to
+     * fetching the same path on the same five seconds the timer used, and only wakes the column
+     * when the answer is different - so the worst case is what this did before, and the usual
+     * case is a quiet page making no requests at all.
+     */
+    this.stopRegistrar = watch('/registrar', () => this.refresh(), { every: REFRESH_MS });
+    this.refreshTimer = setInterval(() => this.refresh(), SWEEP_MS);
     // Where the column was scrolled to, back where it was.
     if (cache.scroll && this.$refs.scroll) {
       this.$refs.scroll.scrollTop = cache.scroll;
@@ -422,6 +446,7 @@ export default {
   },
 
   beforeUnmount() {
+    this.stopRegistrar?.();
     clearInterval(this.refreshTimer);
     cache.scroll = this.$refs.scroll?.scrollTop || 0;
   },

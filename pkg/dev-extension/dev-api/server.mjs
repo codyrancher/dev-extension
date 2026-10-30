@@ -16,8 +16,10 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { encodeFrame, closeFrame, decodeFrames, joinFrames, handshakeResponse, OP_TEXT, OP_PING, OP_PONG, OP_CLOSE } from './ws-frame.mjs';
 
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = 'https://kubernetes.default.svc';
@@ -2200,6 +2202,18 @@ const OPENAPI = {
      * which is the note at the top of this spec - so the pair is described rather than half of
      * it.
      */
+    '/registrar': {
+      get: {
+        operationId: 'readRegistrar',
+        summary:     'The workspace projection this service keeps, as the sidebar draws it.',
+        description: [
+          'The same document the nav has always read out of the `dev-workspaces` ConfigMap -',
+          'every workspace with its role, its state and what it is for - served as a path so it',
+          'can be watched on the event socket rather than polled for.',
+        ].join(' '),
+        responses: { 200: { description: 'The projection, and when it was written.' } },
+      },
+    },
     '/workspaces': {
       get: {
         operationId: 'listWorkspaces',
@@ -5733,6 +5747,15 @@ const routes = [
     return { queued: true, run };
   }],
   ['GET', /^\/agents\/([a-z0-9-]+)\/runs$/, async(m) => ({ runs: (await readDoc(`dev-agent-runs-${ m[1] }`, 'runs.json')) || [] })],
+  /*
+   * The workspace projection this process writes, served rather than read from its ConfigMap.
+   *
+   * The sidebar has always read it - straight from `/v1/configmaps/dev-system/dev-workspaces`
+   * through Steve, every five seconds, in every tab. Here it is as a path, so it can be watched
+   * on the event socket instead of fetched on a timer. Same document, same shape, no projection
+   * of its own to drift.
+   */
+  ['GET', /^\/registrar$/, async() => (await readDoc(REGISTRAR, 'workspaces.json')) || { at: '', workspaces: [] }],
   ['GET', /^\/workspaces$/, async() => {
     const list = await k8s(`${ INSTANCES }?labelSelector=${ LABEL_WORKSPACE }`);
 
@@ -7207,7 +7230,345 @@ function workspaceMediaPath(ws, rel) {
   }
 }
 
-http.createServer(async(req, res) => {
+
+// ── The event socket ────────────────────────────────────────────────────────────────────────
+//
+// One WebSocket per page, carrying everything the page used to poll for.
+//
+// The browser was asking for the same dozen things on a dozen timers - the sidebar every five
+// seconds, a workspace's status every fifteen, a pull request's comments every two and a half -
+// and every tab asked separately, each request paying for a Rancher session lookup, an
+// apiserver proxy hop and a full answer that was almost always the answer it already had. The
+// network panel was a wall of 200s saying "still the same".
+//
+// So the asking moved here. A page subscribes to the paths it cares about; this process reads
+// each one ONCE however many pages are watching, and sends a path's answer only when it has
+// actually changed. Nothing is read at all while nobody is watching it, which is the part a
+// timer in a component can never manage.
+//
+// Deliberately not a new API: a topic IS a GET path this server already serves, and what is
+// pushed is byte-for-byte what that path returns. So there is one implementation of every
+// answer, the fallback when a socket cannot be opened is just fetching the path, and nothing
+// has to be kept in step.
+
+/**
+ * What a page may watch, and how often this process looks.
+ *
+ * An allowlist rather than "any GET route": a watch turns one request into a loop that runs
+ * until the page closes, and that is not something to hand out to a path nobody has thought
+ * about. The cadence beside each is the one the browser used to use, so nothing gets fresher
+ * or staler than it was - the win here is the asking, not the interval.
+ */
+const WATCHABLE = [
+  [/^\/registrar$/, 5_000],
+  [/^\/workspaces$/, 5_000],
+  [/^\/conversations$/, 5_000],
+  [/^\/tools\/[a-z0-9-]+$/, 10_000],
+  [/^\/focus$/, 10_000],
+  [/^\/my-work\/pr\/\d+$/, 30_000],
+  [/^\/my-work\/pr\/\d+\/comments$/, 2_500],
+  [/^\/my-work\/pr\/\d+\/comments\/revision$/, 2_500],
+  [/^\/my-work\/pr\/\d+\/review-run$/, 5_000],
+  [/^\/my-work\/jira\/changes$/, 30_000],
+];
+
+/** How often a page may ask for the same path, at most, whatever it says it wants. */
+const WATCH_FLOOR_MS = 2_000;
+
+/** Silence this long and a page should assume the socket is dead; the server pings at half. */
+const PING_MS = 25_000;
+
+/** What one page is allowed to watch at once - a bound on what a bug in the browser can do. */
+const MAX_TOPICS = 64;
+
+/** path -> the one loop reading it, shared by every page watching it. */
+const watches = new Map();
+
+function watchableEvery(pathname) {
+  for (const [pattern, every] of WATCHABLE) {
+    if (pattern.test(pathname)) {
+      return every;
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Run a GET route exactly as the HTTP handler would, for a watch rather than a request.
+ *
+ * The subscribing request stands in for the caller - it is the same person, and it is what
+ * `callerRequest` is read for - so a handler that resolves a credential of the caller's
+ * resolves the same one it would have through HTTP.
+ */
+async function runGet(target, req) {
+  const url = new URL(target, 'http://dev-api');
+
+  for (const [method, pattern, handler] of routes) {
+    const m = pattern.exec(url.pathname);
+
+    if (m && method === 'GET') {
+      return callerRequest.run(req, () => handler(m, url, {}, req));
+    }
+  }
+
+  throw Object.assign(new Error('No such path.'), { status: 404 });
+}
+
+/**
+ * Read one watched path and tell whoever is listening, if the answer moved.
+ *
+ * Comparing the serialized answer is the whole change-detection scheme. It is not clever and it
+ * does not need to be: these answers are kilobytes, the comparison is a string compare, and it
+ * is the only test that cannot disagree with what the page would have received from a fetch.
+ *
+ * A read that overruns its own interval does not stack up behind itself - `reading` holds the
+ * next tick off - because a slow answer getting slower is the one way a loop like this takes a
+ * process down.
+ */
+async function pump(watch) {
+  if (watch.reading) {
+    return;
+  }
+  watch.reading = true;
+  try {
+    const value = await runGet(watch.path, watch.req);
+    const text = JSON.stringify(value ?? null);
+
+    if (text !== watch.text) {
+      watch.text = text;
+      watch.error = '';
+      watch.rev++;
+      for (const client of watch.subs) {
+        client.send(`{"t":${ JSON.stringify(watch.path) },"r":${ watch.rev },"d":${ text }}`);
+      }
+    }
+  } catch (e) {
+    const error = String(e?.message || e);
+
+    // Said once per spell of failing, not once per tick: a path that has been broken for ten
+    // minutes should not be ten minutes of identical frames.
+    if (error !== watch.error) {
+      watch.error = error;
+      for (const client of watch.subs) {
+        client.send(JSON.stringify({ t: watch.path, e: error }));
+      }
+    }
+  } finally {
+    watch.reading = false;
+  }
+}
+
+/** Start watching `path` for `client`, joining the loop if one is already running. */
+function join(client, path) {
+  const every = watchableEvery(new URL(path, 'http://dev-api').pathname);
+
+  if (!every) {
+    client.send(JSON.stringify({ t: path, e: 'That path is not watchable.' }));
+
+    return;
+  }
+
+  const key = `${ client.owner }\u0000${ path }`;
+  let watch = watches.get(key);
+
+  if (!watch) {
+    watch = {
+      path, key, every: Math.max(every, WATCH_FLOOR_MS), subs: new Set(), rev: 0, text: '', error: '', reading: false, req: client.req,
+    };
+    watches.set(key, watch);
+    watch.timer = setInterval(() => pump(watch), watch.every);
+    pump(watch);
+  } else if (watch.text) {
+    // Whatever the loop last read, now, so a page that has just subscribed is not blank until
+    // the next tick. It is the same frame the loop would have sent.
+    client.send(`{"t":${ JSON.stringify(watch.path) },"r":${ watch.rev },"d":${ watch.text }}`);
+  }
+
+  watch.subs.add(client);
+  client.topics.add(key);
+}
+
+/** Stop watching, and stop the loop entirely once the last page watching it has gone. */
+function leave(client, key) {
+  const watch = watches.get(key);
+
+  if (!watch) {
+    return;
+  }
+  watch.subs.delete(client);
+  client.topics.delete(key);
+
+  if (!watch.subs.size) {
+    clearInterval(watch.timer);
+    watches.delete(key);
+  }
+}
+
+/**
+ * The handshake, by hand, because this server has no node_modules to find a library in.
+ *
+ * It is the whole of RFC 6455 section 4.2.2 that matters: the key the client sent, concatenated
+ * with the protocol's magic string, SHA-1'd, base64'd, sent back. A client that does not get
+ * that header back refuses the connection, which is the point of it.
+ */
+function acceptWebSocket(req, socket) {
+  const key = String(req.headers['sec-websocket-key'] || '');
+
+  if (!key || String(req.headers.upgrade || '').toLowerCase() !== 'websocket') {
+    socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+
+    return false;
+  }
+
+  socket.write(handshakeResponse(key, (input) => crypto.createHash('sha1').update(input).digest('base64')));
+
+  return true;
+}
+
+/**
+ * One page's socket: what it is watching, and the plumbing that keeps it honest.
+ *
+ * `/events` and nothing else - a socket is not a second way into this API, it is a cheaper way
+ * to ask the same questions - and the only message it takes is the full list of paths the page
+ * wants. Full, not incremental, so a page that reconnects says what it wants in one frame and
+ * does not have to remember what it had already said.
+ */
+function serveEvents(req, socket, head) {
+  if (!acceptWebSocket(req, socket)) {
+    return;
+  }
+
+  socket.setNoDelay(true);
+
+  const client = {
+    req,
+    owner: '',
+    topics: new Set(),
+    alive: true,
+    send(text) {
+      if (client.alive) {
+        try {
+          socket.write(encodeFrame(OP_TEXT, text));
+        } catch {
+          // A socket that has gone while we were writing to it is a socket that has gone; the
+          // close handler is about to run and clean this client up.
+        }
+      }
+    },
+    // A pong carries the ping's payload straight back, so it cannot go through `send`.
+    pong(payload) {
+      if (client.alive) {
+        try {
+          socket.write(encodeFrame(OP_PONG, payload));
+        } catch {
+          shut();
+        }
+      }
+    },
+  };
+
+  let buffer = head?.length ? Buffer.from(head) : Buffer.alloc(0);
+  const joining = { opcode: 0, parts: [] };
+
+  const shut = () => {
+    if (!client.alive) {
+      return;
+    }
+    client.alive = false;
+    clearInterval(ping);
+    for (const key of [...client.topics]) {
+      leave(client, key);
+    }
+    try {
+      socket.destroy();
+    } catch {
+      // Already gone.
+    }
+  };
+
+  /*
+   * A beat, as a message rather than a protocol ping.
+   *
+   * A browser answers a ping frame in its plumbing and never tells the page, so a page cannot
+   * use one to tell a quiet socket from a dead one - and a socket through two proxies dies
+   * quietly more often than it closes. A text frame it can see does both jobs: it keeps the
+   * hop open and it is what the page's watchdog counts the silence from.
+   */
+  const ping = setInterval(() => {
+    client.send('{"beat":1}');
+  }, PING_MS / 2);
+
+  socket.on('data', (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+
+    let frames;
+
+    try {
+      ({ frames, rest: buffer } = decodeFrames(buffer));
+    } catch (e) {
+      try {
+        socket.write(closeFrame(1009, String(e.message || e)));
+      } catch {
+        // Nothing to say it to.
+      }
+
+      return shut();
+    }
+
+    const { messages, control } = joinFrames(frames, joining);
+
+    for (const frame of control) {
+      if (frame.opcode === OP_PING) {
+        client.pong(frame.payload);
+      } else if (frame.opcode === OP_CLOSE) {
+        return shut();
+      }
+    }
+
+    for (const message of messages) {
+      let asked;
+
+      try {
+        asked = JSON.parse(message.payload.toString('utf8'));
+      } catch {
+        continue;
+      }
+
+      if (!Array.isArray(asked?.sub)) {
+        continue;
+      }
+
+      const wanted = new Set(asked.sub.filter((p) => typeof p === 'string' && p.startsWith('/')).slice(0, MAX_TOPICS)
+        .map((p) => `${ client.owner }\u0000${ p }`));
+
+      for (const key of [...client.topics]) {
+        if (!wanted.has(key)) {
+          leave(client, key);
+        }
+      }
+      for (const key of wanted) {
+        if (!client.topics.has(key)) {
+          join(client, key.split('\u0000')[1]);
+        }
+      }
+    }
+  });
+
+  socket.on('error', shut);
+  socket.on('close', shut);
+
+  // Who is asking, so two people never share one loop's answer. A browser coming through the
+  // apiserver's proxy has no pod behind it and resolves to the empty owner - every page is the
+  // same caller, which is exactly what makes sharing the read safe - while anything in the
+  // cluster resolves to itself and gets its own loop.
+  ownerOfCaller(req).then((owner) => {
+    client.owner = owner || '';
+    client.send(JSON.stringify({ hello: 1, every: PING_MS }));
+  }).catch(() => client.send(JSON.stringify({ hello: 1, every: PING_MS })));
+}
+
+const server = http.createServer(async(req, res) => {
   const url = new URL(req.url, 'http://dev-api');
 
   if (req.method === 'OPTIONS') {
@@ -7479,7 +7840,26 @@ http.createServer(async(req, res) => {
   } catch (e) {
     return send(res, e.status || 500, { error: e.message });
   }
-}).listen(PORT, () => {
+});
+
+/*
+ * The event socket, on the same port and the same server.
+ *
+ * Not a second listener: it has to come through the same address the page already reaches this
+ * service on - the apiserver's proxy for that Service - because that is the only route the
+ * browser has, and the proxy carries an upgrade through to whatever is behind it.
+ */
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url, 'http://dev-api');
+
+  if (url.pathname.replace(/\/$/, '').endsWith('/events')) {
+    serveEvents(req, socket, head);
+  } else {
+    socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+  }
+});
+
+server.listen(PORT, () => {
   console.log(`[dev-api] listening on :${ PORT }`);
 
   // Finish workspace teardowns the browser did not, and keep finishing them. A minute apart, and
