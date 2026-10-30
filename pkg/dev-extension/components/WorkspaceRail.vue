@@ -3236,7 +3236,21 @@ export default {
             class="workspace-rail__came-back-item"
             @click="openCameBack(section)"
           >
-            <span class="workspace-rail__came-back-name">{{ section.title }}</span>
+            <span class="workspace-rail__came-back-name">
+              <!--
+                A title whose counts are worth reading at a glance comes in pieces, so the
+                numbers can carry a colour while the words around them stay the label. Anything
+                without pieces is drawn as the string it has always been.
+              -->
+              <template v-if="section.parts">
+                <span
+                  v-for="(part, p) in section.parts"
+                  :key="p"
+                  :class="part.tone ? `workspace-rail__count--${ part.tone }` : null"
+                >{{ part.text }}</span>
+              </template>
+              <template v-else>{{ section.title }}</template>
+            </span>
             <i class="icon icon-chevron-right" />
           </button>
         </div>
@@ -5125,6 +5139,16 @@ export default {
   &__came-back-now {
     margin-left: auto;
   }
+
+  /*
+   * The counts inside a section's title.
+   *
+   * Only the number: the words beside it are the label and stay the colour the row is. Green
+   * for what is done, amber for what is waiting on somebody - the same two the rest of the
+   * product uses for the same two meanings.
+   */
+  &__count--good { color: var(--success); }
+  &__count--warn { color: var(--warning); }
 
   &__came-back-item {
     display:       inline-flex;

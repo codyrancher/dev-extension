@@ -28,6 +28,7 @@ import type { JiraDetail, JiraProposal } from './jira';
 import { numberTaskBoxes } from './pr-body.mjs';
 import { ago as agoOf } from './chat-state.mjs';
 import type { ArtifactKind } from './artifact-kind';
+import { threadsTitle } from './rail-titles.mjs';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -109,6 +110,12 @@ export interface ArtifactGroup {
   files: Artifact[];
 }
 
+/** One run of a section's title, with the tone it is drawn in. See rail-titles.mjs. */
+export interface TitlePart {
+  text: string;
+  tone?: 'good' | 'warn';
+}
+
 export interface EvidenceSection {
   /**
    * What this section IS, which its title is not.
@@ -120,6 +127,12 @@ export interface EvidenceSection {
    */
   id: string;
   title: string;
+  /**
+   * The title in pieces, where part of it is worth colouring - the counts in `Your threads
+   * (5 answered, 0 waiting…)`. The strip draws these when they are there and the plain title
+   * when they are not; `rail-titles.mjs` holds both to each other.
+   */
+  parts?: TitlePart[];
   items: EvidenceItem[];
   /** Drawn shut, for a section that is reference rather than news. The page remembers the rest. */
   collapsed?: boolean;
@@ -1094,7 +1107,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
 
         sections.push({ id: 'since-review', title: 'Since your review', items: since.length ? [{ kind: 'commits' as const, pr: status.pr, items: since, since: 'your review' }] : [{ kind: 'empty' as const, text: 'No new commits since your review.' }] });
         if (mine.length) {
-          sections.push({ id: 'your-threads', title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: [{ kind: 'comments', items: mine, paged: true }] });
+          sections.push({ id: 'your-threads', ...threadsTitle(mine.filter((c) => c.answered).length, mine.filter((c) => !c.answered).length), items: [{ kind: 'comments', items: mine, paged: true }] });
         }
       }
       artifactsSection('review');
@@ -1124,7 +1137,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         const mine = reviewThreads().map((c) => ({ ...c, answered: c.lastByAuthor }));
 
         sections.push({ id: 'since-review', title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits, since: 'your review' }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
-        sections.push({ id: 'your-threads', title: `Your threads (${ mine.filter((c) => c.answered).length } answered, ${ mine.filter((c) => !c.answered).length } waiting on the developer)`, items: mine.length ? [{ kind: 'comments', items: mine, paged: true }] : [{ kind: 'empty', text: 'You have no threads on this PR.' }] });
+        sections.push({ id: 'your-threads', ...threadsTitle(mine.filter((c) => c.answered).length, mine.filter((c) => !c.answered).length), items: mine.length ? [{ kind: 'comments', items: mine, paged: true }] : [{ kind: 'empty', text: 'You have no threads on this PR.' }] });
       }
       if (report) {
         reportSection((Date.parse(report.at) || 0) > submittedAt ? 'What the agent found in the new commits' : 'Agent\'s review report (before the developer responded)');

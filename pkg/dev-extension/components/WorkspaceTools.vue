@@ -20,6 +20,7 @@ import {
 } from '../previews';
 import { listRanchers } from '../ranchers';
 import { devServerState, stopDevServer, startDevServer } from '../workspace-tools';
+import { watch } from '../events';
 
 export default {
   name: 'WorkspaceTools',
@@ -75,7 +76,7 @@ export default {
       own:      { running: false, paused: false },
       /** Whether this visit has already released the dev server for a stage that cannot use it. */
       released: false,
-      timer:    null,
+      stopTools: null,
       /*
        * The two shares, beside the tools rather than on a tab of their own.
        *
@@ -225,17 +226,25 @@ export default {
   },
 
   mounted() {
-    // A tool that was just attached is still starting, and its lease is counting down while
-    // nobody is pressing anything, so the list refreshes itself.
-    this.timer = setInterval(() => {
-      this.read().catch(() => {});
+    /*
+     * A tool that was just attached is still starting, and its lease is counting down while
+     * nobody is pressing anything, so the list refreshes itself.
+     *
+     * The tools come off dev-api's event socket, so the strip redraws when one actually
+     * changes state rather than every twenty seconds for ever; with no socket the watch falls
+     * back to the same twenty-second fetch. The shares and the lease are read on the same
+     * beat, because the thing that changes them is the thing that changed the tools.
+     */
+    this.stopTools = watch(`/tools/${ this.workspace }`, (answer) => {
+      this.tools = answer?.tools || [];
+      this.releaseForStage().catch(() => {});
       this.readShares().catch(() => {});
       this.readOwn().catch(() => {});
-    }, 20000);
+    }, { every: 20000 });
   },
 
   beforeUnmount() {
-    clearInterval(this.timer);
+    this.stopTools?.();
   },
 
   methods: {

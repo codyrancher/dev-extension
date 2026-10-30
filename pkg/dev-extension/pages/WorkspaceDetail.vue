@@ -47,6 +47,7 @@ import {
   WORKSPACE_TABS, DEFAULT_WORKSPACE_TAB, LABEL_CLUSTER, LABEL_ROLE, isLte
 } from '../config/constants';
 import { setViewing, noteRole, knownStatus } from '../workspace-status';
+import { watch } from '../events';
 
 const REFRESH_MS = 5000;
 
@@ -85,7 +86,7 @@ export default {
       logTail:      '',
       error:        '',
       busy:         false,
-      refreshTimer: null,
+      stopRegistrar: null,
       // Whether this open has already spun a stopped workspace back up. Once: the poll re-reads
       // it as `starting`, and a second start would only race the first. See refresh.
       autoStarted:  false,
@@ -287,11 +288,13 @@ export default {
      * third, and it is the one that outlives its own call.
      */
     this.cameFromCluster = activeCluster();
-    this.refreshTimer = setInterval(() => this.refresh(), REFRESH_MS);
+    // The workspace projection arrives on dev-api's event socket; with none, the watch
+    // falls back to fetching it on the same five seconds this used to run on.
+    this.stopRegistrar = watch('/registrar', () => this.refresh(), { every: REFRESH_MS });
   },
 
   beforeUnmount() {
-    clearInterval(this.refreshTimer);
+    this.stopRegistrar?.();
     setViewing('');
     /*
      * Put it back, but only if this page is still the one that moved it.

@@ -11,14 +11,17 @@ import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import ConfirmDeleteWorkspace from '../components/ConfirmDeleteWorkspace.vue';
 import { listAllWorkspaces, setWorkspaceRunning } from '../api';
+import { watch } from '../events';
 import { lastWorkspace, lastTab } from '../recent';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_WORKSPACE_TAB
 } from '../config/constants';
 
-// How often the list re-reads the cluster. Workspaces change state without anything on this
-// page doing it (a pull finishes, a pod crashes), and Steve's websocket only carries
-// resources the store is watching, which these are not.
+// How often the list would re-read the cluster if it had to. Workspaces change state without
+// anything on this page doing it - a pull finishes, a pod crashes - and Steve's websocket only
+// carries resources the store is watching, which these are not. So it is dev-api's event socket
+// that says when the projection moved, and this is the cadence the fallback polls at when there
+// is no socket to be had.
 const REFRESH_MS = 5000;
 
 export default {
@@ -66,7 +69,7 @@ export default {
       // Names with a start or stop in flight, so their buttons cannot be pressed twice
       // before the list has caught up with the first press.
       busy:         [],
-      refreshTimer: null,
+      stopRegistrar: null,
       createTo:     { name: CREATE_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } },
       headers:      [
         {
@@ -105,11 +108,11 @@ export default {
   },
 
   mounted() {
-    this.refreshTimer = setInterval(() => this.refresh(), REFRESH_MS);
+    this.stopRegistrar = watch('/registrar', () => this.refresh(), { every: REFRESH_MS });
   },
 
   beforeUnmount() {
-    clearInterval(this.refreshTimer);
+    this.stopRegistrar?.();
   },
 
   methods: {

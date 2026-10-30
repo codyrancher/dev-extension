@@ -7434,7 +7434,21 @@ function acceptWebSocket(req, socket) {
  * wants. Full, not incremental, so a page that reconnects says what it wants in one frame and
  * does not have to remember what it had already said.
  */
-function serveEvents(req, socket, head) {
+async function serveEvents(req, socket, head) {
+  /*
+   * Who is asking, before a single frame is read.
+   *
+   * Two callers must never share one loop's answer, and the key a subscription is filed under
+   * includes the owner - so a `sub` that arrived before this resolved would be filed under the
+   * wrong one. A browser coming through the apiserver's proxy has no pod behind it and
+   * resolves to the empty owner, which is every page and is exactly what makes sharing the
+   * read safe; anything inside the cluster resolves to itself and gets its own loop.
+   *
+   * The socket is still paused here - nothing reads it until the `data` handler below goes on -
+   * so nothing is missed while this is in flight.
+   */
+  const owner = await ownerOfCaller(req).catch(() => '');
+
   if (!acceptWebSocket(req, socket)) {
     return;
   }
@@ -7443,7 +7457,7 @@ function serveEvents(req, socket, head) {
 
   const client = {
     req,
-    owner: '',
+    owner,
     topics: new Set(),
     alive: true,
     send(text) {
@@ -7557,15 +7571,7 @@ function serveEvents(req, socket, head) {
 
   socket.on('error', shut);
   socket.on('close', shut);
-
-  // Who is asking, so two people never share one loop's answer. A browser coming through the
-  // apiserver's proxy has no pod behind it and resolves to the empty owner - every page is the
-  // same caller, which is exactly what makes sharing the read safe - while anything in the
-  // cluster resolves to itself and gets its own loop.
-  ownerOfCaller(req).then((owner) => {
-    client.owner = owner || '';
-    client.send(JSON.stringify({ hello: 1, every: PING_MS }));
-  }).catch(() => client.send(JSON.stringify({ hello: 1, every: PING_MS })));
+  client.send(JSON.stringify({ hello: 1, every: PING_MS }));
 }
 
 const server = http.createServer(async(req, res) => {
@@ -7853,7 +7859,7 @@ server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://dev-api');
 
   if (url.pathname.replace(/\/$/, '').endsWith('/events')) {
-    serveEvents(req, socket, head);
+    serveEvents(req, socket, head).catch(() => socket.destroy());
   } else {
     socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
   }
