@@ -2202,6 +2202,33 @@ const OPENAPI = {
      * which is the note at the top of this spec - so the pair is described rather than half of
      * it.
      */
+    '/events': {
+      get: {
+        operationId: 'eventSocket',
+        summary:     'Watch paths on a websocket: the same hub as /events/stream, where an upgrade survives the path in.',
+        description: [
+          'Send `{"sub": ["/a", "/b"]}` - the whole set, so a reconnect is one frame - and each',
+          'path whose answer has changed arrives as `{"t": path, "r": revision, "d": answer}`,',
+          'carrying exactly what a GET of that path returns. A beat every twelve seconds tells a',
+          'quiet socket from a dead one. Use `/events/stream` where an upgrade does not get',
+          'through, which through an apiserver service proxy it may not.',
+        ].join(' '),
+        responses: { 101: { description: 'The socket.' } },
+      },
+    },
+    '/events/stream': {
+      get: {
+        operationId: 'eventStream',
+        summary:     'Watch paths as server-sent events: the transport for a chain that will not carry a websocket.',
+        description: [
+          'Pass each path to watch as a repeated `sub` query parameter. The answer is a stream',
+          'of `data:` frames, one per path whose answer has changed, each carrying exactly what',
+          'a GET of that path returns - plus a beat every twelve seconds so a reader can tell a',
+          'quiet stream from a dead one. `/events` is the same thing over a websocket.',
+        ].join(' '),
+        responses: { 200: { description: 'The stream, until the reader goes away.' } },
+      },
+    },
     '/registrar': {
       get: {
         operationId: 'readRegistrar',
@@ -7406,6 +7433,88 @@ function leave(client, key) {
 }
 
 /**
+ * The same hub over a plain HTTP response, for the chain that will not carry an upgrade.
+ *
+ * The browser reaches this service through nginx and then the apiserver's proxy for the
+ * Service, and an upgrade does not make it through: a websocket handshake sent down that path
+ * arrives here as an ordinary GET, which is to say the `Upgrade` header is gone by the time
+ * this process sees it. A chunked response, on the other hand, goes through both without
+ * complaint - it is how a followed log gets out - so server-sent events are the transport that
+ * works where the socket does not.
+ *
+ * Everything below the transport is the one hub: the same watches, shared the same way, pushing
+ * the same frames. The only thing that differs is that a page cannot talk back on an event
+ * stream, so the subscription comes in the query string and changing it means reopening - which
+ * is fine, because a page's set of paths changes when you navigate and not otherwise.
+ */
+function serveEventStream(req, res, url) {
+  res.writeHead(200, {
+    'content-type':                'text/event-stream',
+    'cache-control':               'no-cache, no-transform',
+    connection:                    'keep-alive',
+    // nginx buffers a proxied response by default, which for a stream means the page hears
+    // nothing until the buffer fills - minutes of apparent silence on a live feed.
+    'x-accel-buffering':           'no',
+    'access-control-allow-origin': '*',
+  });
+
+  const client = {
+    req,
+    owner: '',
+    topics: new Set(),
+    alive: true,
+    send(text) {
+      if (client.alive) {
+        try {
+          res.write(`data: ${ text }\n\n`);
+        } catch {
+          // The close handler below is about to tidy this client up.
+        }
+      }
+    },
+  };
+
+  const shut = () => {
+    if (!client.alive) {
+      return;
+    }
+    client.alive = false;
+    clearInterval(beat);
+    for (const key of [...client.topics]) {
+      leave(client, key);
+    }
+    try {
+      res.end();
+    } catch {
+      // Already finished.
+    }
+  };
+
+  const beat = setInterval(() => client.send('{"beat":1}'), PING_MS / 2);
+
+  req.on('close', shut);
+  req.on('error', shut);
+  res.on('error', shut);
+
+  // A first byte now, so every proxy on the way commits to the response rather than holding the
+  // headers back waiting to see whether this is really a stream.
+  res.write(': open\n\n');
+
+  ownerOfCaller(req).then((owner) => {
+    if (!client.alive) {
+      return;
+    }
+    client.owner = owner || '';
+    client.send(JSON.stringify({ hello: 1, every: PING_MS }));
+    for (const path of url.searchParams.getAll('sub').slice(0, MAX_TOPICS)) {
+      if (path.startsWith('/')) {
+        join(client, path);
+      }
+    }
+  }).catch(shut);
+}
+
+/**
  * The handshake, by hand, because this server has no node_modules to find a library in.
  *
  * It is the whole of RFC 6455 section 4.2.2 that matters: the key the client sent, concatenated
@@ -7582,6 +7691,13 @@ const server = http.createServer(async(req, res) => {
     res.end();
 
     return;
+  }
+
+  // The event stream: a response that never ends, so it cannot go through `send`.
+  const eventStream = /^\/events\/stream\/?$/.exec(url.pathname);
+
+  if (eventStream && req.method === 'GET') {
+    return serveEventStream(req, res, url);
   }
 
   // One piece of evidence, as bytes rather than JSON: the file an agent attached to a comment,
@@ -7858,7 +7974,9 @@ const server = http.createServer(async(req, res) => {
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://dev-api');
 
-  if (url.pathname.replace(/\/$/, '').endsWith('/events')) {
+  const wantsEvents = /^\/events\/?$/.exec(url.pathname);
+
+  if (wantsEvents) {
     serveEvents(req, socket, head).catch(() => socket.destroy());
   } else {
     socket.end('HTTP/1.1 404 Not Found\r\n\r\n');

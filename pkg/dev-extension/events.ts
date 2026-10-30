@@ -13,6 +13,15 @@
  * fallback when a socket cannot be had is simply to fetch the path on a timer, which is what
  * the page did before.
  *
+ * Two transports, because one of them may not be available at all. The browser reaches dev-api
+ * through nginx and then the apiserver's proxy for the Service, and an upgrade does not survive
+ * that chain - a websocket handshake sent down it arrives at dev-api as an ordinary GET, with
+ * the `Upgrade` header gone. A chunked response does survive, so server-sent events are the
+ * transport that works where the socket does not. The socket is tried first because it is the
+ * better one where it works and a page may well be served straight from dev-api one day; the
+ * first attempt that fails without ever opening drops to the stream for the rest of the page's
+ * life. Below the transport it is one hub either way, pushing identical frames.
+ *
  * That fallback is not a nicety. A shared preview is served with a certificate the browser does
  * not trust, and Chrome refuses a websocket handshake on such an origin with no interstitial and
  * no reason (see sockets.ts) - so a page that only knew how to subscribe would sit there empty.
@@ -57,6 +66,9 @@ export function readPath(path: string): Promise<Json> {
 }
 
 let socket: WebSocket | null = null;
+let stream: EventSource | null = null;
+/** Which transport is being tried. The socket first; the stream once the socket has failed. */
+let transport: 'ws' | 'sse' = 'ws';
 let up = false;
 let attempts = 0;
 let openedAt = 0;
@@ -140,25 +152,50 @@ function pollNone() {
  * last one wins.
  */
 function sendSubscription() {
-  if (pendingSub || !up || !socket) {
+  if (pendingSub || !up) {
     return;
   }
   pendingSub = true;
   Promise.resolve().then(() => {
     pendingSub = false;
-    if (!up || !socket) {
+    if (!up) {
       return;
     }
 
     const next = subscription(watches.keys(), sent);
 
-    if (next.changed) {
-      sent = next.sent;
+    if (!next.changed) {
+      return;
+    }
+    sent = next.sent;
+
+    if (socket) {
       try {
         socket.send(next.frame);
       } catch {
         // The close handler will pick this up and reconnect.
       }
+
+      return;
+    }
+
+    // An event stream carries its subscription in its URL, so changing it means another one.
+    // Reconnecting is the whole cost, and a page changes which paths it wants when you
+    // navigate rather than continuously.
+    if (stream) {
+      try {
+        stream.close();
+      } catch {
+        // Already closed.
+      }
+      stream = null;
+      up = false;
+      if (watchdog) {
+        clearInterval(watchdog);
+        watchdog = null;
+      }
+      openedAt = 0;
+      connect();
     }
   });
 }
@@ -211,61 +248,155 @@ function scheduleReconnect() {
 }
 
 function dropped() {
-  const was = up;
+  const everOpened = openedAt > 0;
 
   up = false;
   socket = null;
+  stream = null;
   sent = '';
   if (watchdog) {
     clearInterval(watchdog);
     watchdog = null;
   }
-  if (was && !wasStable(openedAt, Date.now())) {
-    // It opened and died young, which is a proxy taking the upgrade and then dropping it. Not
-    // a success, so the backoff must not be reset by it.
-    note('events: the socket opened and closed again straight away');
+
+  /*
+   * A transport that never opened at all is a transport this chain does not carry, so try the
+   * other one rather than the same one again every thirty seconds for ever. One that opened and
+   * died young is a different fault - something dropping a connection it accepted - and the
+   * answer to that is to wait longer, not to change transport.
+   */
+  if (!everOpened && transport === 'ws') {
+    transport = 'sse';
+    note('events: no websocket through this path, using the event stream');
+    attempts = 0;
+  } else if (everOpened && !wasStable(openedAt, Date.now())) {
+    note(`events: the ${ transport === 'ws' ? 'socket' : 'stream' } opened and closed again straight away`);
   }
   openedAt = 0;
-  // Back to timers while there is no socket, so a page is never frozen waiting for one.
+  // Back to timers while there is nothing pushing, so a page is never frozen waiting for one.
   pollAll();
   scheduleReconnect();
 }
 
-function connect() {
-  if (socket || !watches.size || typeof WebSocket === 'undefined' || typeof window === 'undefined') {
-    return;
+/** Where dev-api is listening for each transport. */
+function endpoint(): string {
+  if (transport === 'sse') {
+    const paths = [...watches.keys()].map((path) => `sub=${ encodeURIComponent(path) }`).join('&');
+
+    return `${ DEV_API }/events/stream${ paths ? `?${ paths }` : '' }`;
   }
 
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
 
+  return `${ scheme }://${ window.location.host }${ DEV_API }/events`;
+}
+
+/**
+ * The silence watchdog, armed once something is open.
+ *
+ * Both transports send a beat, so silence means the same thing on either: whatever is in the
+ * middle has stopped passing bytes without telling anybody. Closing is what starts the
+ * reconnect.
+ */
+function armWatchdog() {
+  watchdog = setInterval(() => {
+    if (up && Date.now() - heardAt > SILENCE_MS) {
+      note('events: nothing heard for a minute, reconnecting');
+      try {
+        socket?.close();
+        stream?.close();
+      } finally {
+        if (!socket) {
+          dropped();
+        }
+      }
+    }
+  }, WATCHDOG_MS);
+}
+
+function opened() {
+  up = true;
+  openedAt = Date.now();
+  heardAt = Date.now();
+  sent = '';
+  // The timers stop only once a path has actually arrived (see onFrame): until then the page
+  // keeps fetching, so switching over costs nothing if this turns out to be useless.
+  armWatchdog();
+}
+
+function closed() {
+  if (wasStable(openedAt, Date.now())) {
+    attempts = 0;
+  }
+  dropped();
+}
+
+/**
+ * Open the event stream.
+ *
+ * The subscription is in the URL, because a page cannot talk back on one - so a change of paths
+ * means closing this and opening another, which `sendSubscription` does.
+ */
+function connectStream() {
   try {
-    socket = new WebSocket(`${ scheme }://${ window.location.host }${ DEV_API }/events`);
+    stream = new EventSource(endpoint());
+  } catch {
+    stream = null;
+    scheduleReconnect();
+
+    return;
+  }
+  sent = subscription(watches.keys(), '').sent;
+  stream.onopen = opened;
+  stream.onmessage = (event: MessageEvent) => {
+    heardAt = Date.now();
+    if (typeof event.data === 'string') {
+      onFrame(event.data);
+    }
+  };
+  stream.onerror = () => {
+    /*
+     * EventSource reconnects by itself, which is the one thing it must not do here: its own
+     * retry has no jitter and no cap, and it would race the backoff below. So it is closed and
+     * reopened on our terms.
+     */
+    try {
+      stream?.close();
+    } catch {
+      // Already closed.
+    }
+    closed();
+  };
+}
+
+function connect() {
+  if (socket || stream || !watches.size || typeof window === 'undefined') {
+    return;
+  }
+  if (transport === 'ws' && typeof WebSocket === 'undefined') {
+    transport = 'sse';
+  }
+  if (transport === 'sse') {
+    if (typeof EventSource === 'undefined') {
+      return;
+    }
+
+    return connectStream();
+  }
+
+  try {
+    socket = new WebSocket(endpoint());
   } catch {
     socket = null;
+    transport = 'sse';
     scheduleReconnect();
 
     return;
   }
 
   socket.onopen = () => {
-    up = true;
-    openedAt = Date.now();
-    heardAt = Date.now();
-    sent = '';
+    opened();
     sendSubscription();
-    // The timers stop only once a path has arrived on the socket (see onFrame): until then the
-    // page keeps fetching, so switching over costs nothing if the socket turns out to be
-    // useless.
-    watchdog = setInterval(() => {
-      if (up && Date.now() - heardAt > SILENCE_MS) {
-        note('events: nothing heard for a minute, reconnecting');
-        try {
-          socket?.close();
-        } catch {
-          dropped();
-        }
-      }
-    }, WATCHDOG_MS);
   };
 
   socket.onmessage = (event: MessageEvent) => {
@@ -278,12 +409,7 @@ function connect() {
     // `onclose` always follows, and doing the work twice would double the backoff.
   };
 
-  socket.onclose = () => {
-    if (wasStable(openedAt, Date.now())) {
-      attempts = 0;
-    }
-    dropped();
-  };
+  socket.onclose = closed;
 }
 
 /** Shut everything down once the last watch has gone, so a page with none holds no socket. */
@@ -304,10 +430,12 @@ function idle() {
   sent = '';
   try {
     socket?.close();
+    stream?.close();
   } catch {
     // Already gone.
   }
   socket = null;
+  stream = null;
 }
 
 if (typeof document !== 'undefined') {
@@ -384,9 +512,13 @@ export function watch(path: string, onValue: Listener, opts: { every?: number; r
   };
 }
 
-/** Whether the page is currently being pushed to, for anything that wants to say so. */
+/** Whether the page is currently being pushed to, and how, for anything that wants to say so. */
 export function eventsUp(): boolean {
   return up;
+}
+
+export function eventsTransport(): string {
+  return up ? transport : '';
 }
 
 /** For a page that has just changed something and does not want to wait for the next read. */
