@@ -79,6 +79,7 @@ import type { CardArtifacts, CardComment, PoolIssue } from '../focus-artifacts';
 import {
   startPrReview, startIssueFix, submitReview, approveWithNothing, approveAndMerge, mergePr, prDetail, prFile, linesPrompt
 } from '../reviews';
+import { movedNote } from '../review-anchors.mjs';
 import { previewState } from '../previews';
 import { updateComment, deleteComment, discussPrompt } from '../reviews';
 import '../design/focus.css';
@@ -1736,9 +1737,9 @@ async function postTheReview(task: FocusTask) {
   if (!pr) {
     return;
   }
-  const { posted, url } = await submitReview(pr, cardRepo());
+  const { posted, url, moved } = await submitReview(pr, cardRepo());
 
-  say(posted ? `Posted ${ posted } comment${ posted === 1 ? '' : 's' } on ${ task.what }.` : 'Nothing was left to post.');
+  say(posted ? `Posted ${ posted } comment${ posted === 1 ? '' : 's' } on ${ task.what }.${ movedNote(moved) }` : 'Nothing was left to post.');
   if (url) {
     window.open(url, '_blank', 'noopener');
   }
@@ -1780,10 +1781,10 @@ async function finishReview(task: FocusTask, action: CardAction) {
     return;
   }
 
-  const { posted, url } = await submitReview(pr, cardRepo(), event);
+  const { posted, url, moved } = await submitReview(pr, cardRepo(), event);
   const verdict = { APPROVE: 'Approved', REQUEST_CHANGES: 'Asked for changes on', COMMENT: 'Commented on' }[event];
 
-  say(`${ verdict } ${ task.what } with ${ posted } comment${ posted === 1 ? '' : 's' }.`);
+  say(`${ verdict } ${ task.what } with ${ posted } comment${ posted === 1 ? '' : 's' }.${ movedNote(moved) }`);
   if (url) {
     window.open(url, '_blank', 'noopener');
   }

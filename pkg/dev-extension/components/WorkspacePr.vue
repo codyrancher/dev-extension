@@ -14,6 +14,7 @@ import {
 } from 'vue';
 import { useStore } from 'vuex';
 import { watchPopouts } from '../md-popout.mjs';
+import { movedNote } from '../review-anchors.mjs';
 import {
   parseHunks, highlightRows, hl, escapeHtml, renderMd
 } from './pr/diff';
@@ -1598,7 +1599,7 @@ async function doSubmit() {
   try {
     const r = await submitReview(number.value, repo.value, 'COMMENT', note);
 
-    toast(`Posted ${ r.posted } comment${ r.posted === 1 ? '' : 's' } to GitHub as one review.${ r.url ? ` ${ r.url }` : '' }`);
+    toast(`Posted ${ r.posted } comment${ r.posted === 1 ? '' : 's' } to GitHub as one review.${ movedNote(r.moved) }${ r.url ? ` ${ r.url }` : '' }`);
     await load();
   } catch (e: Json) {
     toast(`Submit failed: ${ e?.message || e }`, 'error');

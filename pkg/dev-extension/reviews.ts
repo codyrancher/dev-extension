@@ -36,6 +36,7 @@ import {
 } from './config/constants';
 import { defaultRancherValues } from './ranchers';
 import { TRIAGE_ACTIONS, jiraWorkspaceName, roleForStep } from './jira-steps.mjs';
+import { diffAnchors, resolveAnchors, lostMessage } from './review-anchors.mjs';
 import { note } from './dev-log.mjs';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -346,8 +347,11 @@ export async function approvePr(num: number, body = '', repo = DEFAULT_REPO): Pr
  * All of them have to be approved first - that is what marking a comment good is for - and the
  * PR-level ones become the review's body while the line ones ride as inline comments. Then they
  * are stamped submitted here, so the next review starts from nothing.
+ *
+ * Their anchors are settled against the diff on the way - see `review-anchors.mjs` - because
+ * GitHub rejects a whole review over one line it cannot place and will not say which.
  */
-export async function submitReview(num: number, repo = DEFAULT_REPO, event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES' = 'COMMENT', note = ''): Promise<{ url: string | null; posted: number }> {
+export async function submitReview(num: number, repo = DEFAULT_REPO, event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES' = 'COMMENT', note = ''): Promise<{ url: string | null; posted: number; moved: string[] }> {
   const comments = (await listComments(num)).filter((c) => !c.submitted_at);
 
   if (!comments.length) {
@@ -360,6 +364,21 @@ export async function submitReview(num: number, repo = DEFAULT_REPO, event: 'COM
     throw new Error(`${ pending.length } comment${ pending.length === 1 ? ' is' : 's are' } still pending. Mark them good, or delete them, before submitting.`);
   }
 
+  /*
+   * Where each comment may land, settled before anything is uploaded.
+   *
+   * GitHub takes an inline comment only on a line its diff contains, and refuses the entire
+   * review over a single miss - `422 Line could not be resolved`, naming nothing. That used to
+   * surface here as the raw 422, after the evidence had already been uploaded, with no way to
+   * tell which of five findings was the one that was one line off.
+   */
+  const files = await gh('GET', `/repos/${ repo }/pulls/${ num }/files?per_page=100`);
+  const { resolved, moved, lost } = resolveAnchors(comments, diffAnchors(files || []));
+
+  if (lost.length) {
+    throw new Error(lostMessage(lost));
+  }
+
   // Evidence goes with the comment it belongs to. A text file - a test, a log - is read from the
   // agent's workspace and inlined as a code block, which is how a reviewer wants to read it
   // anyway. An image or a recording is uploaded to GitHub's user-attachments CDN through the
@@ -370,7 +389,7 @@ export async function submitReview(num: number, repo = DEFAULT_REPO, event: 'COM
   // Everything is resolved before the review is posted, so an upload that fails takes the whole
   // submit with it. That is deliberate: a review that lands with its evidence missing cannot be
   // repaired - the comments are public by then, and re-submitting would double them.
-  const withEvidence = await Promise.all(comments.map(async(c) => ({ ...c, body: await bodyWithEvidence(num, c, repo) })));
+  const withEvidence = await Promise.all(resolved.map(async({ comment: c, anchor }) => ({ ...c, anchor, body: await bodyWithEvidence(num, c, repo) })));
   const inline = withEvidence.filter((c) => c.path);
   /*
    * The review's own body: what was typed when it was submitted, then the findings that are
@@ -389,9 +408,9 @@ export async function submitReview(num: number, repo = DEFAULT_REPO, event: 'COM
     ...(body ? { body } : {}),
     comments: inline.map((c) => ({
       path: c.path,
-      line: c.line ?? undefined,
-      side: c.side || 'RIGHT',
-      ...(c.start_line ? { start_line: c.start_line, start_side: c.side || 'RIGHT' } : {}),
+      line: c.anchor.line ?? undefined,
+      side: c.anchor.side,
+      ...(c.anchor.start_line ? { start_line: c.anchor.start_line, start_side: c.anchor.side } : {}),
       body: c.body,
     })),
   });
@@ -401,7 +420,9 @@ export async function submitReview(num: number, repo = DEFAULT_REPO, event: 'COM
     await api(`/my-work/pr/${ num }/comments/${ c.id }`, { method: 'PUT', body: JSON.stringify({ submitted_at: stamp }) });
   }
 
-  return { url: review?.html_url || null, posted: comments.length };
+  return {
+    url: review?.html_url || null, posted: comments.length, moved,
+  };
 }
 
 /**

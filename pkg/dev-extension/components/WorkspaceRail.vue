@@ -64,6 +64,7 @@ import {
 import { markReadyForReview, describePr } from '../github';
 import { TRIAGE_ACTIONS, JIRA_BASE } from '../jira';
 import { TRIAGE_MOVES, jiraStageOf, actionForStatus } from '../jira-steps.mjs';
+import { movedNote } from '../review-anchors.mjs';
 import JiraTriage from './JiraTriage.vue';
 import AsyncButton from '@shell/components/AsyncButton';
 import {
@@ -2795,9 +2796,9 @@ export default {
       if (note === null) {
         return;
       }
-      const { url, posted } = await submitReview(this.status.pr, this.repo, event, note);
+      const { url, posted, moved } = await submitReview(this.status.pr, this.repo, event, note);
 
-      this.notice = `${ posted } comment${ posted === 1 ? '' : 's' } posted to PR #${ this.status.pr } ${ what }.${ url ? ` ${ url }` : '' }`;
+      this.notice = `${ posted } comment${ posted === 1 ? '' : 's' } posted to PR #${ this.status.pr } ${ what }.${ movedNote(moved) }${ url ? ` ${ url }` : '' }`;
       await this.settle();
     },
 
