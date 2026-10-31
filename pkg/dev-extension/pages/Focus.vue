@@ -71,6 +71,7 @@ import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow, agentOf } from '../workspace-status';
 import { conversationFor, panelConversation, queueForLater } from '../focus-agent';
 import { sendToPane, paneCommand, conversationSnapshot, refreshConversations } from '../conversations';
+import { watch as watchPath, nudge } from '../events';
 import type { ConversationSnapshot } from '../conversations';
 import { reviewNotes } from '../focus-review';
 import type { ReviewNote } from '../focus-review';
@@ -919,22 +920,28 @@ const top = computed(() => deck.value.slice(0, 5).map((task) => ({
 const SNAPSHOT_POLL_MS = 10_000;
 
 onMounted(() => {
-  const tick = async() => {
-    if (document.hidden) {
-      return;
-    }
-    const seen = await conversationSnapshot().catch(() => null);
-
+  /*
+   * `watch` rather than the interval this used to be: the snapshot arrives on the page's one
+   * socket, pushed when it actually changes, and `SNAPSHOT_POLL_MS` is now only the floor the hub
+   * reads at and the cadence this falls back to while the socket is down. The visibility listener
+   * stays: a tab coming back wants the snapshot *now* rather than at the next push, and the hub
+   * holds the last value, so `nudge` answers from cache without a round trip to the pod.
+   */
+  const stop = watchPath('/conversations', (seen) => {
     if (seen) {
-      agents.value = seen;
+      agents.value = seen as ConversationSnapshot;
+    }
+  }, { every: SNAPSHOT_POLL_MS, read: () => conversationSnapshot().catch(() => null) });
+  const wake = () => {
+    if (!document.hidden) {
+      nudge('/conversations');
     }
   };
-  const timer = setInterval(tick, SNAPSHOT_POLL_MS);
 
-  document.addEventListener('visibilitychange', tick);
+  document.addEventListener('visibilitychange', wake);
   onBeforeUnmount(() => {
-    clearInterval(timer);
-    document.removeEventListener('visibilitychange', tick);
+    stop();
+    document.removeEventListener('visibilitychange', wake);
   });
 });
 

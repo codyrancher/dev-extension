@@ -257,26 +257,38 @@ export async function conversationSnapshot(): Promise<ConversationSnapshot | nul
   };
 }
 
+/**
+ * The states a snapshot already contains, without asking for it again.
+ *
+ * Split out of `conversationStates` so a view that is handed the snapshot - one watching
+ * `/conversations` on the page's socket rather than fetching it - derives from the value it was
+ * pushed instead of making the round trip the push was meant to replace. `conversationStates`
+ * below is this plus the read, and is still what a one-off caller wants.
+ */
+export function statesFromSnapshot(snapshot: ConversationSnapshot): ConversationState[] {
+  return Object.values(snapshot.conversations)
+    .filter((c) => c.kind === 'workspace' && c.state !== 'gone')
+    .map((c) => ({
+      id:           c.id,
+      workspace:    c.workspace,
+      alive:        !!c.alive,
+      event:        c.event || '',
+      notification: c.note || '',
+      at:           c.changedAt || '',
+      wroteAgo:     Number(c.wroteAgo ?? -1),
+      // -1 until dev-api's watcher reports it, which waits on `sessions.sh states-all` in
+      // the Agents repo giving the subagents a column of their own. -1 reads as "cannot
+      // tell them apart" and behaves exactly as this did before; the exec fallback below
+      // does report it today.
+      subAgo:       Number(c.subAgo ?? -1),
+    }));
+}
+
 export async function conversationStates(): Promise<ConversationState[]> {
   const snapshot = await conversationSnapshot();
 
   if (snapshot) {
-    return Object.values(snapshot.conversations)
-      .filter((c) => c.kind === 'workspace' && c.state !== 'gone')
-      .map((c) => ({
-        id:           c.id,
-        workspace:    c.workspace,
-        alive:        !!c.alive,
-        event:        c.event || '',
-        notification: c.note || '',
-        at:           c.changedAt || '',
-        wroteAgo:     Number(c.wroteAgo ?? -1),
-        // -1 until dev-api's watcher reports it, which waits on `sessions.sh states-all` in
-        // the Agents repo giving the subagents a column of their own. -1 reads as "cannot
-        // tell them apart" and behaves exactly as this did before; the exec fallback below
-        // does report it today.
-        subAgo:       Number(c.subAgo ?? -1),
-      }));
+    return statesFromSnapshot(snapshot);
   }
 
   return conversationStatesByExec();

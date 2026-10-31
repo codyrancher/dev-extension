@@ -20,8 +20,9 @@ import {
   LABEL_WORKSPACE, WORKSPACE_CONTAINER, workspaceTerminalCommand
 } from '../api';
 import {
-  listConversations, startConversation, endConversation, renameConversation, startedConversations, conversationStates, STUDIO_CLUSTER, KUBECTL
+  listConversations, startConversation, endConversation, renameConversation, startedConversations, conversationSnapshot, conversationStates, statesFromSnapshot, STUDIO_CLUSTER, KUBECTL
 } from '../conversations';
+import { watch } from '../events';
 import { CLI_CHOICES, cliMark } from '../agent-clis.mjs';
 import { readPrefs } from '../prefs';
 import { agentStateOf } from '../workspace-status';
@@ -70,7 +71,7 @@ export default {
       // sidebar use (conversationStates): what the header shows over the pane. `states` above
       // is the pane's own socket state (the row's dot); this is what claude is doing.
       agents:        {},
-      agentsTimer:   null,
+      stopAgents:    null,
       /** The current conversation blown up to fill the window (DevModal), when asked for. */
       popped:        false,
       error:         '',
@@ -201,17 +202,38 @@ export default {
       this.defaultCli = prefs.cli || '';
     }).catch(() => undefined);
 
-    // The agents' states, on the same fifteen-second beat the rail and the sidebar use, so the
-    // header over the pane says what claude is doing without the person opening the rail.
-    this.refreshAgents();
-    this.agentsTimer = setInterval(() => this.refreshAgents(), 15000);
+    /*
+     * The agents' states, on the page's one socket rather than a beat of their own.
+     *
+     * The snapshot is the same document the rail and the sidebar read, so all three are now one
+     * subscription that dev-api pushes when it changes. Fifteen seconds survives as the hub's
+     * read floor and as this view's cadence while the socket is down, which is the beat this
+     * used to keep unconditionally.
+     */
+    this.stopAgents = watch('/conversations', (seen) => this.showAgents(seen), { every: 15000, read: () => conversationSnapshot().catch(() => null) });
   },
 
   beforeUnmount() {
-    clearInterval(this.agentsTimer);
+    this.stopAgents?.();
   },
 
   methods: {
+    /**
+     * What the snapshot the socket just pushed says this workspace's agents are doing.
+     *
+     * A null value is a bundle or a pod that cannot answer with a snapshot at all, and that is
+     * the one case still worth an exec: `refreshAgents` keeps the old path for it, so a workspace
+     * on an older agents half reports states exactly as it did before.
+     */
+    showAgents(seen) {
+      if (!seen) {
+        this.refreshAgents();
+
+        return;
+      }
+      this.agents = this.byConversation(statesFromSnapshot(seen));
+    },
+
     /** Which of this workspace's conversations are running, and what each agent is doing. */
     async refreshAgents() {
       const states = await conversationStates().catch(() => null);
@@ -219,6 +241,11 @@ export default {
       if (!states) {
         return;
       }
+      this.agents = this.byConversation(states);
+    },
+
+    /** The states for this workspace alone, keyed by conversation id. */
+    byConversation(states) {
       const next = {};
 
       for (const c of states) {
@@ -226,7 +253,8 @@ export default {
           next[c.id] = agentStateOf(c);
         }
       }
-      this.agents = next;
+
+      return next;
     },
 
     /**

@@ -12,6 +12,7 @@
 import {
   computed, onBeforeUnmount, onMounted, reactive, ref, watch, nextTick
 } from 'vue';
+import { watch as watchPath, nudge } from '../events';
 import { useStore } from 'vuex';
 import { watchPopouts } from '../md-popout.mjs';
 import { movedNote } from '../review-anchors.mjs';
@@ -30,7 +31,7 @@ import DevDialog from './DevDialog.vue';
 import { useAsk } from './ask';
 import {
   prDetail, listComments, addComment, updateComment, deleteComment, approvePr, submitReview, mergePr,
-  replyToComment, prFile, commitsDiff, ciFailures, ciFailureDetail, reviewRun, cancelReview,
+  replyToComment, prFile, commitsDiff, ciFailures, ciFailureDetail, reviewRun, commentsRevision, cancelReview,
   startPrReview, startCiTriage, DEFAULT_REPO
 } from '../reviews';
 import type { LocalComment, ReviewRun } from '../reviews';
@@ -108,7 +109,7 @@ const lastPicked = ref<string | null>(null);
 const combinedDiff = ref(true);
 const rangeFiles = ref<Json[] | null>(null);
 const rangeLoading = ref(false);
-let pollTimer: ReturnType<typeof setInterval> | null = null;
+let stopComments: (() => void) | null = null;
 
 async function load() {
   if (!number.value) {
@@ -129,8 +130,18 @@ async function load() {
   }
 }
 
-// ── Polling ──
-// Fast while an agent is filing comments, slow when nobody is, not at all in a background tab.
+// ── Watching ──
+/*
+ * Both of this page's reads are subscriptions on the page's one socket, pushed when dev-api sees
+ * them change rather than asked for on a beat of their own.
+ *
+ * The two cadences below survive, because `every` is still doing work: it is the floor dev-api
+ * reads the path at, and it is what this falls back to while the socket is down. So "fast while
+ * an agent is filing comments, slow when nobody is" still holds - the difference is that the fast
+ * case now costs one read in dev-api shared by every tab, instead of one request per tab per
+ * three seconds, and a comment filed between two ticks arrives at once rather than up to twenty
+ * seconds later.
+ */
 const COMMENT_POLL_ACTIVE_MS = 3000;
 const COMMENT_POLL_IDLE_MS = 20000;
 let commentPollMs = COMMENT_POLL_IDLE_MS;
@@ -174,18 +185,34 @@ function retimeCommentPoll() {
     return;
   }
   commentPollMs = wanted;
-  if (pollTimer) {
-    clearInterval(pollTimer);
+  // Resubscribing is how a watch changes cadence: the floor is fixed when the first watcher
+  // joins a path, so the old subscription goes and a new one takes its place.
+  watchCommentRevision();
+}
+
+/** Subscribe to this pull request's comment revision at whatever cadence is wanted now. */
+function watchCommentRevision() {
+  const num = number.value;
+
+  stopComments?.();
+  stopComments = null;
+  if (!num) {
+    return;
   }
-  pollTimer = setInterval(pollComments, wanted);
+  stopComments = watchPath(`/my-work/pr/${ num }/comments/revision`, () => pollComments(), {
+    every: commentPollMs,
+    read:  () => commentsRevision(num).catch(() => ({ at: 0, size: 0 })),
+  });
 }
 
 function onVisibility() {
-  if (document.hidden) {
+  if (document.hidden || !number.value) {
     return;
   }
-  pollComments();
-  pollRun();
+  // A tab coming back wants both now rather than at the next push, and `nudge` is that read -
+  // once, on return, instead of every few seconds for as long as the tab is open.
+  nudge(`/my-work/pr/${ number.value }/comments/revision`);
+  nudge(`/my-work/pr/${ number.value }/review-run`);
 }
 
 onMounted(async() => {
@@ -196,9 +223,8 @@ onMounted(async() => {
   restoreUiState();
   await load();
   pruneDiscussions();
-  pollRun();
-  runPoll = setInterval(pollRun, 5000);
-  pollTimer = setInterval(pollComments, commentPollMs);
+  stopRun = watchPath(`/my-work/pr/${ number.value }/review-run`, (seen) => showRun(seen), { every: 5000 });
+  watchCommentRevision();
   sizeReviewPanel();
   rootObserver = new ResizeObserver(sizeReviewPanel);
   if (rootEl.value) {
@@ -238,12 +264,8 @@ onMounted(async() => {
 });
 
 onBeforeUnmount(() => {
-  if (runPoll) {
-    clearInterval(runPoll);
-  }
-  if (pollTimer) {
-    clearInterval(pollTimer);
-  }
+  stopRun?.();
+  stopComments?.();
   document.removeEventListener('visibilitychange', onVisibility);
   narrowMq?.removeEventListener('change', onNarrow);
   nearObserver?.disconnect();
@@ -885,7 +907,7 @@ function sizeReviewPanel() {
 // The run is minutes of work in phases; the skill reports its phase to the API and the chip
 // says which, including "starting" before anything has attached to the conversation.
 const run = ref<ReviewRun | null>(null);
-let runPoll: ReturnType<typeof setInterval> | undefined;
+let stopRun: (() => void) | null = null;
 
 const runActive = computed(() => !!run.value && ['starting', 'waiting-for-sidecars', 'running'].includes(run.value.state));
 const runIdle = computed(() => run.value?.state === 'idle');
@@ -914,14 +936,33 @@ const runLabel = computed(() => {
   return run.value.note || 'Working…';
 });
 
-async function pollRun() {
-  if (document.hidden || !number.value) {
-    return;
-  }
+/**
+ * The review run, as the socket last reported it.
+ *
+ * `{ run }` is the route's own answer, so the pushed value and the polling fallback are the same
+ * shape and the hub can tell one from the next without this page knowing which path it arrived
+ * by. A null `seen` is a read that failed; the last known run stays on screen rather than the
+ * page blanking the progress bar over a transient.
+ */
+/**
+ * The run, read now, for the moment straight after this page started one.
+ *
+ * Not polling: a subscription says when something changed, and this is the one case where the
+ * page already knows it did and has to wait for the answer before it opens the panel over it.
+ */
+async function readRun() {
   try {
     run.value = await reviewRun(number.value);
     retimeCommentPoll();
-  } catch { /* transient */ }
+  } catch { /* transient; the subscription says so next */ }
+}
+
+function showRun(seen: Json) {
+  if (!seen) {
+    return;
+  }
+  run.value = seen.run || null;
+  retimeCommentPoll();
 }
 
 async function cancelRun() {
@@ -964,7 +1005,7 @@ async function startReview() {
     const started = await startPrReview(store, { number: number.value, issue: props.issue ? { number: props.issue } : null }, repo.value, props.workspace.name);
 
     reviewSession.value = started.conversation.id;
-    await pollRun();
+    await readRun();
     showReviewPanel.value = true;
     persistUiState();
   } catch (e: Json) {
