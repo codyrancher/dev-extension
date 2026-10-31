@@ -2384,6 +2384,24 @@ const OPENAPI = {
         responses:   { 200: { description: 'The prompts.' } },
       },
     },
+    '/system/stats': {
+      get: {
+        operationId: 'readSystemStats',
+        summary:     'Memory and disk on the node this runs on.',
+        description: [
+          'The two numbers behind the resource bars, from the same sources the harness at',
+          'code.ourhome.dev used: `/proc/meminfo` for memory (MemTotal less MemAvailable, so the',
+          'page cache is not counted as used) and `df -B1` for the disk.',
+          '',
+          'The disk is the workspaces mount, which is the node hostPath every checkout lives on -',
+          'the one that actually fills up. Memory is the node\'s, since a pod shares its /proc.',
+          '',
+          'A source that cannot be read reports zero rather than failing: `ok` is false when',
+          'neither could be read at all.',
+        ].join('\n'),
+        responses: { 200: { description: 'Totals and used bytes.' } },
+      },
+    },
     '/conversations': {
       get: {
         operationId: 'readConversations',
@@ -5574,6 +5592,44 @@ async function conversationsAnswer(url) {
   return { conversations, ...freshness() };
 }
 
+/**
+ * `df` on one path, bounded.
+ *
+ * Its own small helper rather than a general command runner, because this is the only command
+ * this file needs to shell out for on a read and a general one would invite more. Killed if it
+ * does not answer: `df` blocks indefinitely on a mount whose backing store has gone away, and a
+ * resource bar is not worth holding a request open for.
+ */
+function df(path) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('df', ['-B1', path], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    let done = false;
+    const finish = (fn, v) => {
+      if (!done) {
+        done = true;
+        clearTimeout(timer);
+        fn(v);
+      }
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch { /* already gone */ }
+      finish(reject, new Error('df did not answer'));
+    }, 5_000);
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (c) => {
+      if (out.length < 8192) {
+        out += c;
+      }
+    });
+    child.on('error', (e) => finish(reject, e));
+    child.on('close', () => finish(resolve, out));
+  });
+}
+
 const routes = [
   /*
    * The health check, and nothing else.
@@ -5602,6 +5658,51 @@ const routes = [
   // paid where it is cheapest - the card comes back either way, and what it is about is read off
   // the conversation when the card is drawn. The sequence, when somebody wants it, is the hook's
   // own events.jsonl: see /conversations/{id}/events.
+  /*
+   * What the machine has left, in the two numbers worth a bar.
+   *
+   * The same two sources the harness at code.ourhome.dev read, deliberately: `/proc/meminfo` for
+   * memory and `df -B1` for the disk, reported as totals and used bytes so the browser does the
+   * same arithmetic it did there. A pod shares the node's `/proc`, so the memory here is the
+   * node's - which is the machine a person is actually watching when they wonder whether to
+   * prune something.
+   *
+   * The disk is the workspaces mount rather than this container's root: `/dev-workspaces` is the
+   * node hostPath every workspace's checkout lives on, so it is the one that fills up, and it is
+   * what `/data` was for the harness.
+   *
+   * Zeroes rather than an error when a source cannot be read. A bar that cannot be drawn is a
+   * missing bar; it is not worth failing a page over, and `ok` says which happened.
+   */
+  ['GET', /^\/system\/stats$/, async() => {
+    let memTotal = 0;
+    let memUsed = 0;
+
+    try {
+      const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
+      const kb = (name) => Number(new RegExp(`${ name }:\\s+(\\d+)`).exec(meminfo)?.[1] || 0) * 1024;
+
+      memTotal = kb('MemTotal');
+      // MemAvailable, not MemFree: free excludes the page cache, which the kernel hands back the
+      // moment anything wants it, so a healthy machine reads as nearly full.
+      memUsed = Math.max(0, memTotal - kb('MemAvailable'));
+    } catch { /* no /proc, or a kernel that does not report it */ }
+
+    let diskTotal = 0;
+    let diskUsed = 0;
+
+    try {
+      const row = (await df(WORKSPACES_ROOT)).trim().split('\n')[1] || '';
+      const parts = row.split(/\s+/);
+
+      diskTotal = Number(parts[1]) || 0;
+      diskUsed = Number(parts[2]) || 0;
+    } catch { /* df is missing, or the mount is not there */ }
+
+    return {
+      memTotal, memUsed, diskTotal, diskUsed, ok: !!(memTotal || diskTotal),
+    };
+  }],
   ['GET', /^\/conversations$/, async(m, url) => conversationsAnswer(url)],
   ['GET', /^\/conversations\/(agent(?:_[a-z0-9-]+)?-\d+|p-[a-z0-9-]+(?:_[a-z0-9-]+)?-\d+)$/, async(m) => {
     const held = (await conversationDoc()).items?.[m[1]];
@@ -7289,6 +7390,10 @@ function workspaceMediaPath(ws, rel) {
  */
 const WATCHABLE = [
   [/^\/registrar$/, 5_000],
+  // Slow on purpose: memory and a disk move, but not in a way anybody watches second by second,
+  // and `df` is a syscall per mount. Ten seconds is well under the rate either number changes
+  // meaningfully, and the hub only pushes when it actually has.
+  [/^\/system\/stats$/, 10_000],
   [/^\/workspaces$/, 5_000],
   [/^\/conversations$/, 5_000],
   [/^\/tools\/[a-z0-9-]+$/, 10_000],

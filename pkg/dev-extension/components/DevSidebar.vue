@@ -300,6 +300,9 @@ export default {
       refreshTimer: null,
       // The event socket's unwatch for the workspace registrar.
       stopRegistrar: null,
+      stopStats:     null,
+      /** `{ memTotal, memUsed, diskTotal, diskUsed, ok }`, or null until the first answer. */
+      stats:         null,
       /**
        * The entries that are not workspaces, as an icon row at the foot.
        *
@@ -338,6 +341,25 @@ export default {
   },
 
   computed: {
+    /**
+     * The two bars, as the harness drew them.
+     *
+     * Percentages are rounded the same way and the warn threshold is the same eighty, so a
+     * machine that read as amber there reads as amber here. A total of zero means that source
+     * could not be read - no `/proc`, or a mount that is not there - and the bar is dropped
+     * rather than drawn at 0%, which would say "empty" about something unknown.
+     */
+    bars() {
+      const of = (label, used, total) => (total > 0
+        ? [{ label, used, total, percent: Math.round((used / total) * 100) }]
+        : []);
+
+      return [
+        ...of('MEM', this.stats?.memUsed || 0, this.stats?.memTotal || 0),
+        ...of('DISK', this.stats?.diskUsed || 0, this.stats?.diskTotal || 0),
+      ];
+    },
+
     /**
      * Every workspace, grouped by the part you play in it: `issue-*` is work you own and ship,
      * so you are the developer; `pr-*` is somebody else's change you are judging, so you are
@@ -438,6 +460,12 @@ export default {
      * case is a quiet page making no requests at all.
      */
     this.stopRegistrar = watch('/registrar', () => this.refresh(), { every: REFRESH_MS });
+    // On the hub like everything else here, so it costs one read in dev-api shared by every
+    // tab rather than a timer per tab. Ten seconds is the floor dev-api reads it at; it is
+    // pushed only when one of the numbers has actually moved.
+    this.stopStats = watch('/system/stats', (seen) => {
+      this.stats = seen || null;
+    }, { every: 10000 });
     this.refreshTimer = setInterval(() => this.refresh(), SWEEP_MS);
     // Where the column was scrolled to, back where it was.
     if (cache.scroll && this.$refs.scroll) {
@@ -447,11 +475,24 @@ export default {
 
   beforeUnmount() {
     this.stopRegistrar?.();
+    this.stopStats?.();
     clearInterval(this.refreshTimer);
     cache.scroll = this.$refs.scroll?.scrollTop || 0;
   },
 
   methods: {
+    /** Bytes the way the harness wrote them, so the numbers read the same. */
+    bytes(n) {
+      if (n >= 1e9) {
+        return `${ (n / 1e9).toFixed(1) } GB`;
+      }
+      if (n >= 1e6) {
+        return `${ (n / 1e6).toFixed(0) } MB`;
+      }
+
+      return `${ (n / 1e3).toFixed(0) } KB`;
+    },
+
     async refresh() {
       try {
         const [workspaces, clusters, apps, prefs, ranchers] = await Promise.all([
@@ -1368,10 +1409,105 @@ export default {
         </router-link>
       </template>
     </div>
+    <!--
+      What the machine has left.
+      The same two bars the harness at code.ourhome.dev carried, in the same place: the foot of
+      the column, where they are readable at a glance and in nobody's way. Hidden until the
+      first answer arrives rather than drawn empty, because an empty bar reads as "nothing left".
+    -->
+    <div
+      v-if="stats && stats.ok"
+      class="dev-sidebar__stats"
+    >
+      <div
+        v-for="bar in bars"
+        :key="bar.label"
+        class="dev-sidebar__stat"
+        :title="`${ bar.label }: ${ bytes(bar.used) } of ${ bytes(bar.total) } used (${ bar.percent }%)`"
+      >
+        <span class="dev-sidebar__stat-label">{{ bar.label }}</span>
+        <span
+          class="dev-sidebar__stat-bar"
+          role="progressbar"
+          :aria-label="`${ bar.label } used`"
+          :aria-valuenow="bar.percent"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-valuetext="`${ bytes(bar.used) } of ${ bytes(bar.total) }, ${ bar.percent }%`"
+        >
+          <span
+            class="dev-sidebar__stat-fill"
+            :class="{ 'dev-sidebar__stat-fill--warn': bar.percent > 80 }"
+            :style="{ width: `${ bar.percent }%` }"
+          />
+        </span>
+        <span class="dev-sidebar__stat-value">{{ bytes(bar.used) }}</span>
+      </div>
+    </div>
   </nav>
 </template>
 
 <style lang="scss" scoped>
+/*
+ * The resource bars at the foot of the column.
+ *
+ * `margin-top: auto` is what pins them to the bottom however short the workspace list is. The
+ * numbers are tabular so the two rows line up with each other instead of shuffling by a pixel
+ * every time a digit changes - these update on a beat, and jitter at the edge of vision is the
+ * whole reason a reading like this becomes annoying.
+ */
+.dev-sidebar__stats {
+  margin-top:     auto;
+  display:        flex;
+  flex-direction: column;
+  gap:            6px;
+  padding:        10px 12px;
+  border-top:     1px solid var(--border);
+}
+
+.dev-sidebar__stat {
+  display:     flex;
+  align-items: center;
+  gap:         8px;
+}
+
+.dev-sidebar__stat-label {
+  font-size:      10px;
+  letter-spacing: 0.06em;
+  color:          var(--muted-text);
+  width:          30px;
+  flex-shrink:    0;
+}
+
+.dev-sidebar__stat-bar {
+  flex:          1;
+  height:        4px;
+  min-width:     0;
+  background:    var(--disabled-bg);
+  border-radius: 2px;
+  overflow:      hidden;
+}
+
+.dev-sidebar__stat-fill {
+  display:       block;
+  height:        100%;
+  background:    var(--muted-text);
+  border-radius: 2px;
+  // A second, not instant: a bar that jumps reads as a glitch, and nothing here is urgent.
+  transition:    width 1s ease;
+}
+
+.dev-sidebar__stat-fill--warn { background: var(--error); }
+
+.dev-sidebar__stat-value {
+  font-size:            10px;
+  color:                var(--muted-text);
+  width:                52px;
+  text-align:           right;
+  flex-shrink:          0;
+  font-variant-numeric: tabular-nums;
+}
+
   // Rancher's own step, the same one DevList's metrics come from.
   // The product's left column, shared with the pages and the top bar. See DevList for why this
   // is not a number of its own.
