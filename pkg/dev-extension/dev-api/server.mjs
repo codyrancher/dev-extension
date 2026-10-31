@@ -20,6 +20,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { encodeFrame, closeFrame, decodeFrames, joinFrames, handshakeResponse, OP_TEXT, OP_PING, OP_PONG, OP_CLOSE } from './ws-frame.mjs';
+import { newsOf } from './news.mjs';
 
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = 'https://kubernetes.default.svc';
@@ -7361,8 +7362,10 @@ async function pump(watch) {
   try {
     const value = await runGet(watch.path, watch.req);
     const text = JSON.stringify(value ?? null);
+    const news = newsOf(value);
 
-    if (text !== watch.text) {
+    if (news !== watch.news) {
+      watch.news = news;
       watch.text = text;
       watch.error = '';
       watch.rev++;
@@ -7401,7 +7404,7 @@ function join(client, path) {
 
   if (!watch) {
     watch = {
-      path, key, every: Math.max(every, WATCH_FLOOR_MS), subs: new Set(), rev: 0, text: '', error: '', reading: false, req: client.req,
+      path, key, every: Math.max(every, WATCH_FLOOR_MS), subs: new Set(), rev: 0, text: '', news: '', error: '', reading: false, req: client.req,
     };
     watches.set(key, watch);
     watch.timer = setInterval(() => pump(watch), watch.every);

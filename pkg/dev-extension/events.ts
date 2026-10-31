@@ -31,6 +31,7 @@
  */
 import { clusterBase, devFetch } from './api';
 import { backoffMs, wasStable, subscription } from './events-retry.mjs';
+import { newsOf } from './dev-api/news.mjs';
 import { note } from './dev-log.mjs';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -91,7 +92,10 @@ function visible(): boolean {
  * test the server makes, for the same reason.
  */
 function deliver(watch: Watch, value: Json) {
-  const text = JSON.stringify(value ?? null);
+  // `newsOf`, not a plain stringify: `/conversations` carries an age that moves on every read, so
+  // comparing the whole answer notified every listener on every tick of a quiet cluster. dev-api
+  // drops the same fields deciding what to push, and the two halves disagreeing is its own bug.
+  const text = newsOf(value);
 
   watch.last = value;
   if (watch.seen && text === watch.text) {
@@ -522,12 +526,26 @@ export function eventsTransport(): string {
 }
 
 /** For a page that has just changed something and does not want to wait for the next read. */
-export function nudge(path: string): void {
+export function nudge(path: string, opts: { force?: boolean } = {}): void {
   const held = watches.get(path);
 
-  if (held) {
-    held.read().then((value) => deliver(held, value)).catch(() => {});
+  if (!held) {
+    return;
   }
+  /*
+   * `force` is for a listener that declined a value it was handed.
+   *
+   * A hidden tab's listener returns without acting, but the hub has already recorded that text
+   * as delivered - so an unforced re-read on return brings back the same bytes, compares equal,
+   * and notifies nobody: the change is consumed by a listener that did nothing with it, and the
+   * panel sits on what it knew before the tab went away. Forgetting the text makes the next
+   * value news again, so it lands exactly once, on return.
+   */
+  if (opts.force) {
+    held.seen = false;
+    held.text = '';
+  }
+  held.read().then((value) => deliver(held, value)).catch(() => {});
 }
 
 /** Tests and teardown: forget everything and close. */

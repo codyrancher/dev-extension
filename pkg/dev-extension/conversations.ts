@@ -225,9 +225,22 @@ export interface ConversationSnapshot {
  * seconds after every publish dev-api is being replaced. Every caller falls back to the exec, and
  * the fallback is why the rail does not go blank on a release.
  */
-export async function conversationSnapshot(): Promise<ConversationSnapshot | null> {
-  const answer = await devFetch(`${ DEV_API }/conversations`).catch(() => null);
-
+/**
+ * A snapshot out of dev-api's own answer: the guard and the shape, in one place.
+ *
+ * This exists because `/conversations` is now watched on the page's socket, and a watched path
+ * delivers dev-api's answer *verbatim* - the route's `conversations` is an array, sorted by when
+ * each last changed, while a `ConversationSnapshot` keys them by id because every consumer looks
+ * one up by id. Normalising inside `conversationSnapshot` alone was fine while a fetch was the
+ * only way in; it is not fine now, and a subscriber that assigned the frame straight through got
+ * an array under the Record's type and silently missed on every lookup. So both ways in - the
+ * fetch below and a push - come through here, and the guard travels with the shape rather than
+ * being the thing a second caller forgets.
+ *
+ * `null` for an answer that is not saying anything. See the fetch below for why empty is not the
+ * same as nothing there.
+ */
+export function snapshotFromAnswer(answer: Json): ConversationSnapshot | null {
   /*
    * Nothing to say is not the same as nothing there, and this is where standard mode breaks.
    *
@@ -256,6 +269,13 @@ export async function conversationSnapshot(): Promise<ConversationSnapshot | nul
     conversations: Object.fromEntries((answer.conversations as Json[]).map((c) => [String(c.id), c as ConversationNow])),
   };
 }
+
+export async function conversationSnapshot(): Promise<ConversationSnapshot | null> {
+  const answer = await devFetch(`${ DEV_API }/conversations`).catch(() => null);
+
+  return snapshotFromAnswer(answer);
+}
+
 
 /**
  * The states a snapshot already contains, without asking for it again.

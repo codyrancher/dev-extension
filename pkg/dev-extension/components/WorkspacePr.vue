@@ -110,6 +110,8 @@ const combinedDiff = ref(true);
 const rangeFiles = ref<Json[] | null>(null);
 const rangeLoading = ref(false);
 let stopComments: (() => void) | null = null;
+/** Set before the hub is touched, so the awaited half of `onMounted` cannot subscribe after this is gone. */
+let unmounted = false;
 
 async function load() {
   if (!number.value) {
@@ -196,7 +198,7 @@ function watchCommentRevision() {
 
   stopComments?.();
   stopComments = null;
-  if (!num) {
+  if (!num || unmounted) {
     return;
   }
   stopComments = watchPath(`/my-work/pr/${ num }/comments/revision`, () => pollComments(), {
@@ -209,10 +211,16 @@ function onVisibility() {
   if (document.hidden || !number.value) {
     return;
   }
-  // A tab coming back wants both now rather than at the next push, and `nudge` is that read -
-  // once, on return, instead of every few seconds for as long as the tab is open.
-  nudge(`/my-work/pr/${ number.value }/comments/revision`);
-  nudge(`/my-work/pr/${ number.value }/review-run`);
+  /*
+   * A tab coming back reads both once, rather than every few seconds for as long as it is open.
+   *
+   * Forced, because `pollComments` declines to run while the tab is hidden: the revision that
+   * would have told it to re-read was delivered and dropped, so the hub holds it as already
+   * seen. Without `force` this re-read compares equal to that dropped change and every comment
+   * filed while the tab was away stays off the panel until something else happens to move.
+   */
+  nudge(`/my-work/pr/${ number.value }/comments/revision`, { force: true });
+  nudge(`/my-work/pr/${ number.value }/review-run`, { force: true });
 }
 
 onMounted(async() => {
@@ -223,6 +231,18 @@ onMounted(async() => {
   restoreUiState();
   await load();
   pruneDiscussions();
+  /*
+   * Nothing is subscribed if this instance is already gone.
+   *
+   * `onMounted` is async and everything above it is awaited - apps, the pull request, its detail -
+   * which is long enough for the modal holding this to be closed first. `onBeforeUnmount` has
+   * then already run, with both handles still null, and a subscription made here would be one
+   * nothing can ever release: the hub's watches are module-level, so it would outlive the page's
+   * every live component and keep reading on a dead instance.
+   */
+  if (unmounted) {
+    return;
+  }
   stopRun = watchPath(`/my-work/pr/${ number.value }/review-run`, (seen) => showRun(seen), { every: 5000 });
   watchCommentRevision();
   sizeReviewPanel();
@@ -264,6 +284,7 @@ onMounted(async() => {
 });
 
 onBeforeUnmount(() => {
+  unmounted = true;
   stopRun?.();
   stopComments?.();
   document.removeEventListener('visibilitychange', onVisibility);

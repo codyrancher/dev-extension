@@ -20,7 +20,7 @@ import {
   LABEL_WORKSPACE, WORKSPACE_CONTAINER, workspaceTerminalCommand
 } from '../api';
 import {
-  listConversations, startConversation, endConversation, renameConversation, startedConversations, conversationSnapshot, conversationStates, statesFromSnapshot, STUDIO_CLUSTER, KUBECTL
+  listConversations, startConversation, endConversation, renameConversation, startedConversations, conversationStates, snapshotFromAnswer, statesFromSnapshot, STUDIO_CLUSTER, KUBECTL
 } from '../conversations';
 import { watch } from '../events';
 import { CLI_CHOICES, cliMark } from '../agent-clis.mjs';
@@ -210,7 +210,7 @@ export default {
      * read floor and as this view's cadence while the socket is down, which is the beat this
      * used to keep unconditionally.
      */
-    this.stopAgents = watch('/conversations', (seen) => this.showAgents(seen), { every: 15000, read: () => conversationSnapshot().catch(() => null) });
+    this.stopAgents = watch('/conversations', (answer) => this.showAgents(answer), { every: 15000 });
   },
 
   beforeUnmount() {
@@ -225,7 +225,12 @@ export default {
      * the one case still worth an exec: `refreshAgents` keeps the old path for it, so a workspace
      * on an older agents half reports states exactly as it did before.
      */
-    showAgents(seen) {
+    showAgents(answer) {
+      // The push is dev-api's answer verbatim, so the guard and the keying it needs are the same
+      // ones a fetch gets: `snapshotFromAnswer` is both, and returns null for the empty, stale or
+      // failed listing that has to fall through to the exec rather than draw an empty list.
+      const seen = snapshotFromAnswer(answer);
+
       if (!seen) {
         this.refreshAgents();
 

@@ -70,7 +70,7 @@ import { workspaceBranch, startDevServer, stopDevServer } from '../workspace-too
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow, agentOf } from '../workspace-status';
 import { conversationFor, panelConversation, queueForLater } from '../focus-agent';
-import { sendToPane, paneCommand, conversationSnapshot, refreshConversations } from '../conversations';
+import { sendToPane, paneCommand, conversationSnapshot, snapshotFromAnswer, refreshConversations } from '../conversations';
 import { watch as watchPath, nudge } from '../events';
 import type { ConversationSnapshot } from '../conversations';
 import { reviewNotes } from '../focus-review';
@@ -927,14 +927,31 @@ onMounted(() => {
    * stays: a tab coming back wants the snapshot *now* rather than at the next push, and the hub
    * holds the last value, so `nudge` answers from cache without a round trip to the pod.
    */
-  const stop = watchPath('/conversations', (seen) => {
-    if (seen) {
-      agents.value = seen as ConversationSnapshot;
+  const stop = watchPath('/conversations', (answer) => {
+    /*
+     * `document.hidden` still gates this, and the reason is the one in the comment above: a
+     * background tab moving cards is a background tab moving them under somebody who will come
+     * back to it. What changed is only that a hidden tab now declines a value it was *given*
+     * rather than declining to go and ask for one.
+     *
+     * Which is why coming back forces the read. Declining a push consumes it - the hub has
+     * already recorded that text as delivered - so an unforced re-read on return compares equal
+     * to a change nothing acted on and notifies nobody. `force` forgets that text, so the value
+     * that arrived while nobody was looking lands exactly once, on return.
+     */
+    if (document.hidden) {
+      return;
     }
-  }, { every: SNAPSHOT_POLL_MS, read: () => conversationSnapshot().catch(() => null) });
+
+    const seen = snapshotFromAnswer(answer);
+
+    if (seen) {
+      agents.value = seen;
+    }
+  }, { every: SNAPSHOT_POLL_MS });
   const wake = () => {
     if (!document.hidden) {
-      nudge('/conversations');
+      nudge('/conversations', { force: true });
     }
   };
 
