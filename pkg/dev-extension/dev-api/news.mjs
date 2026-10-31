@@ -22,8 +22,28 @@
  * Pure: a value in, a string out.
  */
 
-/** Fields present in an answer that are never the reason it changed. */
+/** Fields present in an answer that are never the reason it changed, at any depth. */
 export const NOT_NEWS = ['ageMs', 'watchedAt'];
+
+/**
+ * Clocks that matter up to a threshold and are all the same above it.
+ *
+ * `wroteAgo` is how many seconds ago a conversation's transcript last moved, and it is read in
+ * exactly two ways: below zero means nobody has ever opened it, and at or under
+ * `WORKING_WINDOW_SECONDS` (90, in chat-state.mjs) means an agent is working. Above ninety, two
+ * values are indistinguishable to everything that reads them - so a pod with fifty-five idle
+ * conversations was pushing a full snapshot every tick to report fifty-five numbers going up by
+ * one, none of which anything could tell apart.
+ *
+ * Clamped rather than dropped, which is the difference between this and NOT_NEWS. Inside the
+ * window the number really is news - that is a live agent - and a push is wanted. The clamp
+ * keeps the one boundary the UI can see and flattens everything beyond it, so the comparison
+ * ends up being over what a person could actually notice.
+ */
+export const SETTLED_CLOCKS = { wroteAgo: 90, subAgo: 90 };
+
+/** How far down to look. Deep enough for an answer's own collections, shallow enough to be cheap. */
+const MAX_DEPTH = 4;
 
 /**
  * The comparable text of an answer: everything about it except what always moves.
@@ -35,15 +55,42 @@ export const NOT_NEWS = ['ageMs', 'watchedAt'];
  * @returns {string} Text equal to the text of any answer that is not news against this one.
  */
 export function newsOf(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return JSON.stringify(value ?? null);
+  return JSON.stringify(settle(value, 0) ?? null);
+}
+
+/**
+ * The value with its clocks taken out, all the way down.
+ *
+ * Top level only was not enough, and the way that was found is worth keeping: `/conversations`
+ * carries `ageMs` at the top, which the first version of this stripped - and `wroteAgo` on every
+ * one of the conversations inside it, which it could not reach. Half the pushes went away and
+ * the other half carried on, which looked like a partial success and was actually the same bug
+ * one level down.
+ *
+ * Returns a copy. The answer itself is what gets sent and must not be touched.
+ */
+function settle(value, depth) {
+  if (!value || typeof value !== 'object' || depth > MAX_DEPTH) {
+    return value ?? null;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => settle(item, depth + 1));
   }
 
-  const keep = { ...value };
+  const keep = {};
 
-  for (const key of NOT_NEWS) {
-    delete keep[key];
+  for (const [key, held] of Object.entries(value)) {
+    if (NOT_NEWS.includes(key)) {
+      continue;
+    }
+    if (key in SETTLED_CLOCKS && typeof held === 'number') {
+      const ceiling = SETTLED_CLOCKS[key];
+
+      keep[key] = held > ceiling ? ceiling + 1 : held;
+      continue;
+    }
+    keep[key] = settle(held, depth + 1);
   }
 
-  return JSON.stringify(keep);
+  return keep;
 }

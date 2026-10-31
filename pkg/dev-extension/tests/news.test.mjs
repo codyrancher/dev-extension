@@ -32,9 +32,12 @@ test('every field it drops is one it is allowed to drop', () => {
   assert.deepEqual(NOT_NEWS, ['ageMs', 'watchedAt']);
 });
 
-test('an array answer is compared whole, because freshness has nowhere to hide in one', () => {
-  assert.equal(newsOf([{ ageMs: 1 }]), JSON.stringify([{ ageMs: 1 }]));
-  assert.notEqual(newsOf([{ ageMs: 1 }]), newsOf([{ ageMs: 2 }]));
+test('freshness inside an array is found too — it had somewhere to hide, and that was the bug', () => {
+  // This test used to assert the opposite, on the theory that an array answer could be compared
+  // whole. `/conversations` disproved it: the clocks that mattered were on the objects *inside*
+  // the array, so half the pushes went away with the top-level strip and half carried on.
+  assert.equal(newsOf([{ ageMs: 1 }]), newsOf([{ ageMs: 2 }]));
+  assert.notEqual(newsOf([{ ageMs: 1, id: 'a' }]), newsOf([{ ageMs: 1, id: 'b' }]));
 });
 
 test('a scalar or missing answer compares as itself rather than throwing', () => {
@@ -50,4 +53,70 @@ test('the answer itself is not modified, since it is what gets sent', () => {
 
   newsOf(answer);
   assert.equal(answer.ageMs, 42);
+});
+
+/* ── Nested clocks: the half of the bug the first fix could not reach ───────────────────── */
+
+test('an idle conversation whose wroteAgo climbs is not news', () => {
+  const at = (n) => ({ conversations: [{ id: 'a', state: 'idle', wroteAgo: n }], ageMs: 10 });
+
+  assert.equal(newsOf(at(300)), newsOf(at(9000)), 'both are "long ago" to everything that reads it');
+});
+
+test('fifty-five idle conversations ticking together are still not news', () => {
+  const at = (base) => ({
+    ageMs:         1,
+    conversations: Array.from({ length: 55 }, (_, i) => ({ id: `c${ i }`, wroteAgo: base + i })),
+  });
+
+  assert.equal(newsOf(at(600)), newsOf(at(900)));
+});
+
+test('but crossing the working window IS news, because the dot changes', () => {
+  const at = (n) => ({ conversations: [{ id: 'a', wroteAgo: n }] });
+
+  assert.notEqual(newsOf(at(80)), newsOf(at(200)), '80 is working, 200 is not');
+  assert.notEqual(newsOf(at(89)), newsOf(at(91)), 'the boundary itself');
+});
+
+test('inside the window every second is news, because that is a live agent', () => {
+  const at = (n) => ({ conversations: [{ id: 'a', wroteAgo: n }] });
+
+  assert.notEqual(newsOf(at(10)), newsOf(at(11)));
+});
+
+test('never opened stays distinct from long ago', () => {
+  const at = (n) => ({ conversations: [{ id: 'a', wroteAgo: n }] });
+
+  assert.notEqual(newsOf(at(-1)), newsOf(at(5000)), '-1 means no transcript at all');
+});
+
+test('subAgo settles the same way, since it is read against the same window', () => {
+  const at = (n) => ({ conversations: [{ id: 'a', subAgo: n }] });
+
+  assert.equal(newsOf(at(400)), newsOf(at(4000)));
+  assert.notEqual(newsOf(at(30)), newsOf(at(400)));
+});
+
+test('a real change under a settled clock is still news', () => {
+  const a = { conversations: [{ id: 'a', state: 'running', wroteAgo: 500 }] };
+  const b = { conversations: [{ id: 'a', state: 'waiting', wroteAgo: 900 }] };
+
+  assert.notEqual(newsOf(a), newsOf(b));
+});
+
+test('a dropped field nested in an array is dropped there too', () => {
+  const a = { items: [{ id: 1, ageMs: 5 }] };
+  const b = { items: [{ id: 1, ageMs: 70000 }] };
+
+  assert.equal(newsOf(a), newsOf(b));
+});
+
+test('the answer is not modified, however deep the walk goes', () => {
+  const answer = { ageMs: 42, conversations: [{ id: 'a', wroteAgo: 9000, ageMs: 7 }] };
+
+  newsOf(answer);
+  assert.equal(answer.ageMs, 42);
+  assert.equal(answer.conversations[0].wroteAgo, 9000);
+  assert.equal(answer.conversations[0].ageMs, 7);
 });
