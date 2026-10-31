@@ -3589,8 +3589,9 @@ export default {
                       'workspace-rail__page-num--on': n === pageOf(shownSection, item),
                       'workspace-rail__page-num--approved': !c.answered && c.local && c.status === 'approved',
                       'workspace-rail__page-num--open': !c.answered && !(c.local && c.status === 'approved'),
+                      'workspace-rail__page-num--draft': c.pending,
                     }"
-                    :title="`${ c.where }${ c.answered ? '' : c.status === 'approved' ? ' · approved' : ' · waiting' }`"
+                    :title="`${ c.where }${ c.pending ? ' · has an unsent reply' : '' }${ c.answered ? '' : c.status === 'approved' ? ' · approved' : ' · waiting' }`"
                     @click="goTo(shownSection, n)"
                   >{{ n + 1 }}</button>
                 </span>
@@ -3700,9 +3701,13 @@ export default {
                        * a glance, and it replaces the label that used to say it in words.
                        */
                       c.local ? ['local-comment', c.status === 'approved' ? 'approved' : 'pending'] : (t.author ? 'workspace-rail__msg--author' : 'gh-comment'),
+                      // A reply of yours that is drafted and not submitted. It sits in the
+                      // thread where you wrote it, dimmed and dashed, so it is plainly not the
+                      // same thing as a message the other person can see.
+                      { 'workspace-rail__msg--draft': t.pending },
                       // Not on a local finding: the edge above already says where it stands,
                       // and two borders arguing about one comment is how neither gets read.
-                      { 'workspace-rail__msg--flag': !c.local && (t.isNew || (!c.answered && k === c.thread.length - 1)) },
+                      { 'workspace-rail__msg--flag': !c.local && !t.pending && (t.isNew || (!c.answered && k === c.thread.length - 1)) },
                     ]"
                   >
                     <div class="comment-head">
@@ -3714,9 +3719,14 @@ export default {
                       >author</span>
                       <span class="comment-age">{{ ago(t.at) }}</span>
                       <span
-                        v-if="t.isNew"
+                        v-if="t.isNew && !t.pending"
                         class="workspace-rail__tag workspace-rail__tag--new"
                       >new</span>
+                      <span
+                        v-if="t.pending"
+                        class="workspace-rail__tag workspace-rail__tag--draft"
+                        title="Drafted in a review you have not submitted. Only you can see it."
+                      >pending</span>
                       <!--
                         Quote this message into the reply box, GitHub's own Quote reply. On
                         the message rather than on the thread, because which message is being
@@ -3724,7 +3734,7 @@ export default {
                         that is a draft of yours and has no thread on GitHub to answer in.
                       -->
                       <button
-                        v-if="!c.local && status.pr"
+                        v-if="!c.local && !t.pending && status.pr"
                         type="button"
                         class="workspace-rail__quote"
                         :title="`Quote ${ t.who } in a reply`"
@@ -4975,6 +4985,23 @@ export default {
 
   &__msg--author { border-left: 3px solid var(--pr-accent); }
 
+  /*
+   * A reply of yours that is drafted and not submitted.
+   *
+   * Dashed rather than solid, and set back from the posted messages around it, because the one
+   * thing this has to say is that the other person cannot see it yet. It reads as part of the
+   * thread - it is an answer to the message above it - without reading as an answer that has
+   * been given.
+   */
+  // A thread holding an unsent reply of yours, so it can be found in the pager without walking.
+  &__page-num--draft { box-shadow: inset 0 -2px 0 var(--pr-warning); }
+
+  &__msg--draft {
+    border-left:   3px dashed var(--pr-warning);
+    background:    transparent;
+    opacity:       0.88;
+  }
+
   // What the person still has to deal with: new since the last round, or unanswered.
   &__msg--flag {
     border-color: var(--pr-warning);
@@ -5329,6 +5356,10 @@ export default {
     // in the pager, neither of which is in the middle of the file it is about. The pager's own
     // `--open`/`--approved` are different rules on a different element and stay.
     &--new { background: var(--pr-accent-fill); color: var(--pr-accent); }
+
+    // Drafted, not submitted: the one state where the thing beside the tag is visible to
+    // nobody but the person reading it.
+    &--draft { background: var(--pr-warning-fill); color: var(--pr-warning); }
   }
 
   /*

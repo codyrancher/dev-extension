@@ -823,13 +823,16 @@ function hunkFor(detail: Json, path: string, line: number | null): DiffLine[] {
 function commentsOf(pr: number, detail: Json, me: string): CardComment[] {
   const local: LocalComment[] = detail?.localComments || [];
   const mine = me.toLowerCase();
+  // Pending comments are yours, drafted in a review you have not submitted, and GitHub shows
+  // them to nobody else. They were filtered out here, which made a reply you had just written
+  // vanish from the card you wrote it on; `pending` is on CardComment already, so they travel
+  // with the flag rather than being dropped.
   const fromGithub: CardComment[] = (detail?.reviewComments || [])
-    .filter((c: Json) => !c.pending)
     .map((c: Json) => ({
       id:      Number(c.id) || 0,
       author:  c.author || 'somebody',
       mine:    String(c.author || '').toLowerCase() === mine,
-      pending: false,
+      pending: !!c.pending,
       body:    String(c.body || ''),
       path:    c.path || '',
       line:    c.line ?? c.originalLine ?? null,
