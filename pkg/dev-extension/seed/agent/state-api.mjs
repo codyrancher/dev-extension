@@ -54,7 +54,7 @@ import { spawn } from 'node:child_process';
  * one failure this cannot detect from the outside - the reply looks fine and is wrong - so the
  * version rides in every response and the client restarts a server it has outgrown.
  */
-const VERSION = 2;
+const VERSION = 3;
 
 const PORT = Number(process.env.STATE_API_PORT || 8111);
 const SEED = process.env.STATE_API_SEED || '/seed';
@@ -529,6 +529,18 @@ const ROUTES = [
  * `asked` guards the idle case - a pod nobody is looking at should not restart all night.
  */
 let asked = 0;
+
+/*
+ * How many of each route has been served, for one question nothing could answer from outside.
+ *
+ * The whole point of this service is that reads stop being execs, and until now the only way to
+ * check whether that had actually happened was to count WebSockets in somebody's browser and
+ * squint at truncated URLs. These are counts and nothing else - no ids, no paths, no content -
+ * and they are served without a token, because a number that says "this pod has answered 4,000
+ * chat reads" tells an unauthorised caller nothing it could not infer from the service existing,
+ * and withholding it costs the one diagnosis anybody actually wants.
+ */
+const served = Object.create(null);
 let answered = Date.now();
 
 function watchdog() {
@@ -581,6 +593,17 @@ const server = http.createServer(async(req, res) => {
 
       return;
     }
+    // Before the token, and the only route that is: see `served`.
+    if (path === '/served') {
+      send(200, {
+        version: VERSION,
+        ok:      true,
+        uptime:  Date.now() - startedAt,
+        served:  { ...served },
+      });
+
+      return;
+    }
     if (!allowed(req)) {
       // Nothing about why. A caller without the token learns that it needs one, and no more.
       send(401, { version: VERSION, error: 'No.' });
@@ -596,6 +619,7 @@ const server = http.createServer(async(req, res) => {
       return;
     }
     asked++;
+    served[path] = (served[path] || 0) + 1;
     send(200, await route[1](url));
     answered = Date.now();
   } catch (e) {

@@ -50,7 +50,7 @@ const PORT = 8111;
  * started it, and then the read it wanted. Without that, every route added after a pod came up
  * would 404 for the life of that pod.
  */
-const WANT_VERSION = 2;
+const WANT_VERSION = 3;
 
 /** How long a pod that could not serve is left alone before it is tried again. */
 const COOLDOWN_MS = 60_000;
