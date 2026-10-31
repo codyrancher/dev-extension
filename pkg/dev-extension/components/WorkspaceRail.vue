@@ -56,7 +56,7 @@ import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
   startIssueFix, startPrReview, startJiraTriage, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers,
-  replyToComment, commentOnPr, quoted, commentsRevision, githubBrowserSession, DEFAULT_REPO
+  replyToComment, commentOnPr, quoted, commentsRevision, githubBrowserSession, editReviewComment, deleteReviewComment, amendPrReviewComment, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
@@ -195,6 +195,10 @@ export default {
       reviewerError: '',
       /** The thread a reply is being written in, by its root comment's id; '' when none is. */
       replyTo:   '',
+      /** The pending reply being edited, by its GitHub comment id; 0 for none. */
+      editingMsg:   0,
+      editMsgDraft: '',
+      msgBusy:      0,
       replyDraft: '',
       replySending: false,
       readying:      false,
@@ -1833,6 +1837,100 @@ export default {
       await this.changeComment(c, () => deleteComment(this.status.pr, c.id));
     },
 
+    /*
+     * ── A pending reply of yours ──────────────────────────────────────────────────────────
+     *
+     * The same three actions a finding gets, against GitHub instead of dev-api, and keyed by
+     * the message rather than the card: a draft reply lives inside somebody else's thread, so
+     * there is no card of its own to hang them on.
+     */
+
+    /** A discussion key that cannot collide with a finding's: GitHub's ids are not dev-api's. */
+    msgKey(t) {
+      return `gh${ t.id }`;
+    },
+
+    startMsgEdit(t) {
+      this.editingMsg = t.id;
+      this.editMsgDraft = t.body || '';
+    },
+
+    cancelMsgEdit() {
+      this.editingMsg = 0;
+      this.editMsgDraft = '';
+    },
+
+    async saveMsgEdit(c, t) {
+      const body = this.editMsgDraft.trim();
+
+      if (!body || this.msgBusy) {
+        return;
+      }
+      this.msgBusy = t.id;
+      this.error = '';
+      try {
+        await editReviewComment(t.id, body, this.repo);
+        amendPrReviewComment(this.status.pr, t.id, body, this.repo);
+        this.editingMsg = 0;
+        this.editMsgDraft = '';
+        await this.refreshEvidence();
+      } catch (e) {
+        // The typing stays in the box on a failure: it is the thing that would be lost.
+        this.error = e?.message || String(e);
+      } finally {
+        this.msgBusy = 0;
+      }
+    },
+
+    async dropMsg(c, t) {
+      if (!await this.askQuestion({
+        title:        'Delete this reply?',
+        message:      'It is in a review you have not submitted, so it has not been seen by anyone. Deleting it removes it from GitHub.',
+        confirmLabel: 'Delete',
+        danger:       true,
+      })) {
+        return;
+      }
+      if (this.msgBusy) {
+        return;
+      }
+      this.msgBusy = t.id;
+      this.error = '';
+      try {
+        await deleteReviewComment(t.id, this.repo);
+        amendPrReviewComment(this.status.pr, t.id, null, this.repo);
+        if (this.discussing[this.msgKey(t)]) {
+          this.toggleDiscussMsg(c, t);
+        }
+        await this.refreshEvidence();
+      } catch (e) {
+        this.error = e?.message || String(e);
+      } finally {
+        this.msgBusy = 0;
+      }
+    },
+
+    toggleDiscussMsg(c, t) {
+      const key = this.msgKey(t);
+      const open = !this.discussing[key];
+
+      this.discussing = { ...this.discussing, [key]: open };
+      if (open) {
+        rememberOpenDiscussion(this.status?.pr || 0, key, this.discussSession[key] || '');
+      } else {
+        forgetDiscussion(this.status?.pr || 0, key);
+      }
+    },
+
+    rememberMsgDiscussion(t, session) {
+      const key = this.msgKey(t);
+
+      this.discussSession = { ...this.discussSession, [key]: session };
+      if (this.discussing[key]) {
+        rememberOpenDiscussion(this.status?.pr || 0, key, session);
+      }
+    },
+
     /**
      * Talk one finding over with the agent, in a conversation of its own under the card.
      *
@@ -1876,7 +1974,17 @@ export default {
       if (!pr || !open.length || !this.shownComments.length) {
         return;
       }
-      const here = new Set(this.shownComments.map((c) => String(c.id)));
+      /*
+       * Cards AND the pending replies inside them.
+       *
+       * A discussion on a draft reply is keyed by the message, which is in no card's `id`, so a
+       * set built from cards alone called every one of them deleted and shut it a second after
+       * it opened.
+       */
+      const here = new Set(this.shownComments.flatMap((c) => [
+        String(c.id),
+        ...(c.thread || []).filter((t) => t.pending).map((t) => this.msgKey(t)),
+      ]));
       const gone = open.filter((id) => !here.has(String(id)));
 
       if (!gone.length) {
@@ -3745,9 +3853,81 @@ export default {
                       </button>
                     </div>
                     <div
+                      v-if="editingMsg === t.id"
+                      class="workspace-rail__edit"
+                    >
+                      <textarea
+                        v-model="editMsgDraft"
+                        class="workspace-rail__edit-text"
+                        rows="6"
+                        @keydown.esc.prevent="cancelMsgEdit"
+                      />
+                      <div class="workspace-rail__comment-actions">
+                        <PrButton
+                          size="sm"
+                          variant="primary"
+                          :disabled="!editMsgDraft.trim() || msgBusy === t.id"
+                          @click="saveMsgEdit(c, t)"
+                        >
+                          Save
+                        </PrButton>
+                        <PrButton
+                          size="sm"
+                          :disabled="msgBusy === t.id"
+                          @click="cancelMsgEdit"
+                        >
+                          Cancel
+                        </PrButton>
+                      </div>
+                    </div>
+                    <div
+                      v-else
                       class="comment-body md-body"
                       @click="openShot"
                       v-html="t.html"
+                    />
+                    <!--
+                      The same three a finding of yours gets, on the one other thing in this
+                      column that is also yours and also unsent. A draft reply is something you
+                      are still writing: it can be fixed, thrown away, or talked over with the
+                      agent before it goes out with the review.
+                    -->
+                    <div
+                      v-if="t.pending && editingMsg !== t.id"
+                      class="workspace-rail__comment-actions"
+                    >
+                      <PrButton
+                        size="sm"
+                        :disabled="msgBusy === t.id"
+                        @click="startMsgEdit(t)"
+                      >
+                        Edit
+                      </PrButton>
+                      <PrButton
+                        size="sm"
+                        :variant="discussing[msgKey(t)] ? 'accent' : 'default'"
+                        @click="toggleDiscussMsg(c, t)"
+                      >
+                        {{ discussing[msgKey(t)] ? 'Discussing' : 'Discuss' }}
+                      </PrButton>
+                      <PrButton
+                        size="sm"
+                        variant="danger"
+                        :disabled="msgBusy === t.id"
+                        @click="dropMsg(c, t)"
+                      >
+                        Delete
+                      </PrButton>
+                    </div>
+                    <CommentDiscussion
+                      v-if="t.pending && discussing[msgKey(t)]"
+                      :pr="status.pr"
+                      :repo="repo"
+                      :workspace="workspace.name"
+                      :comment="{ id: t.id, body: t.body, path: c.path, line: c.line }"
+                      :session="discussSession[msgKey(t)] || ''"
+                      @session="rememberMsgDiscussion(t, $event)"
+                      @close="toggleDiscussMsg(c, t)"
                     />
                   </div>
                 </div>

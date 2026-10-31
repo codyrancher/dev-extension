@@ -204,6 +204,29 @@ export function amendPrComment(num: number, id: number, comment: LocalComment | 
 }
 
 /**
+ * The same amend for a comment that lives on GitHub rather than here.
+ *
+ * `amendPrComment` above reaches `localComments`; a pending reply is in `reviewComments`, which
+ * is GitHub's own list, and editing one had no way to show up short of forgetting the whole
+ * detail and refetching the commits, the diff and every thread on the pull request to redraw one
+ * paragraph. `null` removes it, the way it does above.
+ */
+export function amendPrReviewComment(num: number, id: number, body: string | null, repo = DEFAULT_REPO): boolean {
+  return prDetail.amend((detail: Json) => {
+    const held = detail?.reviewComments;
+
+    if (!Array.isArray(held)) {
+      return undefined;
+    }
+    const reviewComments = body === null
+      ? held.filter((c: Json) => c.id !== id)
+      : held.map((c: Json) => (c.id === id ? { ...c, body } : c));
+
+    return { ...detail, reviewComments };
+  }, num, repo);
+}
+
+/**
  * Who is being asked to review, in the cached detail.
  *
  * Here for the reason amendPrComment is: adding or removing a reviewer is a one-field change,
@@ -445,6 +468,25 @@ export async function approveWithNothing(num: number, repo = DEFAULT_REPO): Prom
 }
 
 /** Reply to a comment on GitHub. There is no draft for a reply: it lands in the thread now. */
+/**
+ * Change or drop a review comment on GitHub, yours, wherever it is in its thread.
+ *
+ * These are the two halves a pending reply needs that a filed one does not have here: a draft
+ * is something you are still writing, and until the review goes out it is yours to fix or throw
+ * away. GitHub takes both on a comment in a pending review exactly as it does on a posted one -
+ * same endpoints, no separate pending API - so this is the whole of it.
+ *
+ * `id` is the comment's, not the pull request's: `/pulls/comments/:id` is addressed by comment
+ * across the repository, which is why the number here is nothing like the one in the paths above.
+ */
+export async function editReviewComment(id: number, body: string, repo = DEFAULT_REPO): Promise<void> {
+  await gh('PATCH', `/repos/${ repo }/pulls/comments/${ id }`, { body });
+}
+
+export async function deleteReviewComment(id: number, repo = DEFAULT_REPO): Promise<void> {
+  await gh('DELETE', `/repos/${ repo }/pulls/comments/${ id }`);
+}
+
 export async function replyToComment(num: number, commentId: number, body: string, repo = DEFAULT_REPO): Promise<{ id: number; url: string }> {
   const reply = await gh('POST', `/repos/${ repo }/pulls/${ num }/comments/${ commentId }/replies`, { body });
 

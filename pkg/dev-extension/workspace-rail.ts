@@ -164,7 +164,7 @@ export interface Comment {
   /** Who spoke last, and whether that was the PR's author. */
   lastBy: string;
   lastByAuthor: boolean;
-  thread: { who: string; author: boolean; body: string; html: string; at: string; isNew: boolean; pending: boolean }[];
+  thread: { id: number; who: string; author: boolean; body: string; html: string; at: string; isNew: boolean; pending: boolean }[];
   /**
    * Whether the PR's author has spoken in this thread at all. Not the same as answered: a
    * thread where they replied twice and the reviewer then raised something new is still
@@ -496,7 +496,7 @@ function threads(d: Json, since = 0, kinds: Record<string, string> = {}): Commen
   };
   const roots = review.filter((c) => rootOf(c).id === c.id);
   const msg = (c: Json) => ({
-    who: c.author || '?', author: c.author === author, body: String(c.body || ''), html: renderBody(String(c.body || ''), kinds), at: c.createdAt || '', isNew: since > 0 && (Date.parse(c.createdAt) || 0) > since, pending: !!c.pending,
+    id: Number(c.id) || 0, who: c.author || '?', author: c.author === author, body: String(c.body || ''), html: renderBody(String(c.body || ''), kinds), at: c.createdAt || '', isNew: since > 0 && (Date.parse(c.createdAt) || 0) > since, pending: !!c.pending,
   });
   const card = (root: Json, members: Json[], where: string, path: string, line: number, rows: CodeRow[], order: number, url: string): Comment => {
     const thread = members.sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0)).map(msg);
@@ -1094,7 +1094,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         const evidence = { pr: status.pr, attachments };
 
         return {
-          local: !c.submitted_at, status: c.status || 'pending', attachments: attachments.filter((a) => !(placed.has(a.name) || placed.has(a.path)) || !a.found), id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ who: c.author || 'agent', author: false, body, html: renderBody(body, kinds, evidence), at: c.created_at || '', isNew: false, pending: false }], replied: false, mine: true,
+          local: !c.submitted_at, status: c.status || 'pending', attachments: attachments.filter((a) => !(placed.has(a.name) || placed.has(a.path)) || !a.found), id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ id: c.id, who: c.author || 'agent', author: false, body, html: renderBody(body, kinds, evidence), at: c.created_at || '', isNew: false, pending: false }], replied: false, mine: true,
           // `pending` is for a GitHub draft of yours inside somebody else's thread. A local
           // finding is also unsent, but it is marked as one already - `local` and `status` draw
           // its edge - and two markers arguing about one comment is how neither gets read.
