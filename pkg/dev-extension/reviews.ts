@@ -1168,15 +1168,39 @@ export async function startCiTriage(store: Store, pr: { number: number; title?: 
  * A `Pick` rather than the whole interface is what lets the cast go, which is the part that
  * matters: the other two callers were always correct, so it was never the order that was fragile.
  */
-export function discussPrompt(num: number, comment: Pick<LocalComment, 'id' | 'body' | 'path' | 'line'>, message: string, repo = DEFAULT_REPO): string {
+export function discussPrompt(
+  num: number,
+  comment: Pick<LocalComment, 'id' | 'body' | 'path' | 'line'>,
+  message: string,
+  repo = DEFAULT_REPO,
+  /**
+   * Where this comment actually lives, because the agent is told how to change it.
+   *
+   * `'local'` is a finding in dev-api's own store, which the agent can edit and drop over the
+   * harness API - the routes below. `'github'` is a reply of yours drafted in an unsubmitted
+   * GitHub review, and the harness API does not hold it: the same `PUT` would 404 on an id that
+   * store has never seen, and - far worse - the `DELETE` would match nothing, delete nothing and
+   * answer `{"ok":true}`, so the agent would tell you it had dropped a draft that is still on
+   * GitHub for you to submit. An agent that reports work it did not do is the one failure here
+   * that costs more than doing nothing, so a GitHub comment is given no write routes at all and
+   * told plainly to hand the wording back.
+   */
+  lives: 'local' | 'github' = 'local',
+): string {
   const oneline = String(comment.body).replace(/\s+/g, ' ').slice(0, 400);
   const where = comment.path ? `file ${ comment.path }${ comment.line ? `, line ${ comment.line }` : '' }` : 'a PR-level comment';
   const opener = message
     ? ` The user's opening message about it: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" — address that directly first.`
     : ' Anything after this sentence is their question — answer that; if there is nothing there, start with your read of the code in question and whether the comment holds up.';
   const apiHint = API_HINT;
+  const subject = lives === 'github'
+    ? `the user's own unsubmitted reply (GitHub review comment #${ comment.id })`
+    : `pending review comment #${ comment.id }`;
+  const ending = lives === 'github'
+    ? ` This comment is a draft in the user's unsubmitted review on GitHub, not in the harness API, so you cannot change or delete it yourself and must not try — there is no route that would work, and the delete route for harness findings answers "ok" without deleting anything of GitHub's. When the user settles on improved wording, give them the final text in a fenced block and tell them to paste it into Edit on that reply.`
+    : ` When the user settles on improved wording, update the comment: curl -s -X PUT ${ apiHint }/${ num }/comments/${ comment.id } -H 'Content-Type: application/json' -d '{"body":"<new text>"}'. If they decide to drop it: curl -s -X DELETE ${ apiHint }/${ num }/comments/${ comment.id }.`;
 
-  return `The user wants to discuss pending review comment #${ comment.id } on ${ repo } PR #${ num } — ${ where }: "${ oneline }". Fetch the PR for context with: curl -s ${ apiHint }/${ num } (find the relevant hunk in files[].patch${ comment.path ? ` for ${ comment.path }` : '' }).${ opener } Keep responses conversational and concise — this is a live discussion. When the user settles on improved wording, update the comment: curl -s -X PUT ${ apiHint }/${ num }/comments/${ comment.id } -H 'Content-Type: application/json' -d '{"body":"<new text>"}'. If they decide to drop it: curl -s -X DELETE ${ apiHint }/${ num }/comments/${ comment.id }.`;
+  return `The user wants to discuss ${ subject } on ${ repo } PR #${ num } — ${ where }: "${ oneline }". Fetch the PR for context with: curl -s ${ apiHint }/${ num } (find the relevant hunk in files[].patch${ comment.path ? ` for ${ comment.path }` : '' }).${ opener } Keep responses conversational and concise — this is a live discussion.${ ending }`;
 }
 
 /** The opening prompt of a discussion about some lines, with no comment filed. */

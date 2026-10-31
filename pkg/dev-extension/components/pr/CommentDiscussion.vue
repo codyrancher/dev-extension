@@ -47,6 +47,17 @@ export default {
       type:    Object,
       default: null,
     },
+    /**
+     * Where `comment` lives, which decides what the agent is told it may do with it.
+     *
+     * `local` is a finding in dev-api's store and is the default, because that is what every
+     * caller but one has. `github` is a draft reply in the person's unsubmitted review, which
+     * the agent cannot write to - see discussPrompt.
+     */
+    lives: {
+      type:    String,
+      default: 'local',
+    },
     initialMessage: {
       type:    String,
       default: '',
@@ -86,7 +97,17 @@ export default {
         return `Discuss ${ this.lines.path.split('/').pop() }:${ this.lines.line }`;
       }
 
-      return `Discuss comment #${ this.comment?.id }`;
+      /*
+       * "reply" rather than "comment" when it is a GitHub draft, and the word is load-bearing.
+       *
+       * The title is the only part of a discussion that survives a reload, so the rail recovers
+       * which comment a conversation belongs to by parsing it back out (see `asks`). A finding's
+       * id and a GitHub comment's id are different stores, and the rail keys the GitHub ones
+       * `gh<id>` to keep them apart - so the title has to carry the same distinction, or a
+       * question asked inside a draft-reply discussion comes back pointing at a finding that
+       * does not exist.
+       */
+      return `Discuss ${ this.lives === 'github' ? 'reply' : 'comment' } #${ this.comment?.id }`;
     },
   },
 
@@ -109,7 +130,7 @@ export default {
         const message = this.draft.trim();
         const prompt = this.lines
           ? linesPrompt(this.pr, this.lines, message, this.repo)
-          : discussPrompt(this.pr, this.comment, message, this.repo);
+          : discussPrompt(this.pr, this.comment, message, this.repo, this.lives);
         // The file and the line go into the conversation's id as well as into the prompt, so
         // that coming back to this comment tomorrow - or finding the pane in `tmux ls` - says
         // which line it was about. See conversation-id.mjs.

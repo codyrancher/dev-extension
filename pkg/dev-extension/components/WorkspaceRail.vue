@@ -615,9 +615,13 @@ export default {
       return this.conversations
         .filter((c) => this.live[c.id] === 'input')
         .map((c) => {
-          const discussed = /^Discuss comment #(\d+)/.exec(String(c.title || ''));
+          // `comment` for a finding, `reply` for a draft of yours on GitHub - which the rail
+          // keys `gh<id>`, so the key is rebuilt here rather than the bare id being handed on
+          // to maps that do not hold it.
+          const discussed = /^Discuss (comment|reply) #(\d+)/.exec(String(c.title || ''));
+          const comment = discussed ? `${ discussed[1] === 'reply' ? 'gh' : '' }${ discussed[2] }` : '';
 
-          return { id: c.id, title: c.title || 'Conversation', comment: discussed ? discussed[1] : '' };
+          return { id: c.id, title: c.title || 'Conversation', comment };
         });
     },
 
@@ -1265,7 +1269,16 @@ export default {
       }
     },
 
-    async refreshEvidence() {
+    /**
+     * @param {boolean} shrinkable Allow the rebuild to be smaller than what is drawn.
+     *
+     * The guards below never let a refresh replace the column with fewer sections, because a
+     * read whose source was briefly away composes fewer of them and would empty the column
+     * under whoever is reading it. A deletion is the one case where fewer is the truth: removing
+     * your only message from a thread removes the thread, and without this the draft stayed on
+     * screen after GitHub had already accepted the delete.
+     */
+    async refreshEvidence(shrinkable = false) {
       if (!this.status || !this.shown) {
         return;
       }
@@ -1277,7 +1290,7 @@ export default {
 
       this.reading = true;
       try {
-        const fresh = this.evidenceStage !== stage;
+        const fresh = shrinkable || this.evidenceStage !== stage;
         // Which of the reads threw, filled in by the read itself.
         const out = { failed: {} };
 
@@ -1871,18 +1884,38 @@ export default {
       try {
         await editReviewComment(t.id, body, this.repo);
         amendPrReviewComment(this.status.pr, t.id, body, this.repo);
-        this.editingMsg = 0;
-        this.editMsgDraft = '';
-        await this.refreshEvidence();
+        /*
+         * Only if the box is still this message's.
+         *
+         * Every other message's Edit stays live while this one saves - the buttons disable per
+         * message, deliberately - so the person can open another editor during the round trip.
+         * Clearing unconditionally closed that one and threw away what they had typed in it.
+         */
+        if (this.editingMsg === t.id) {
+          this.editingMsg = 0;
+          this.editMsgDraft = '';
+        }
       } catch (e) {
         // The typing stays in the box on a failure: it is the thing that would be lost.
         this.error = e?.message || String(e);
-      } finally {
         this.msgBusy = 0;
+
+        return;
       }
+      // Freed before the rebuild rather than after it, and the rebuild is not awaited: this is
+      // what `changeComment` learned - awaiting the evidence rebuild is what made saving a
+      // comment feel slow, and the write is already done.
+      this.msgBusy = 0;
+      this.refreshEvidence();
     },
 
     async dropMsg(c, t) {
+      // Before the question, not after it. Asking and then returning silently on a busy flag is
+      // a confirmed delete that does nothing and says nothing - the one outcome a confirmation
+      // dialog is supposed to make impossible.
+      if (this.msgBusy) {
+        return;
+      }
       if (!await this.askQuestion({
         title:        'Delete this reply?',
         message:      'It is in a review you have not submitted, so it has not been seen by anyone. Deleting it removes it from GitHub.',
@@ -1891,6 +1924,8 @@ export default {
       })) {
         return;
       }
+      // Asked again: the dialog was open for as long as it took to read, and something else may
+      // have started writing in the meantime.
       if (this.msgBusy) {
         return;
       }
@@ -1902,12 +1937,26 @@ export default {
         if (this.discussing[this.msgKey(t)]) {
           this.toggleDiscussMsg(c, t);
         }
-        await this.refreshEvidence();
+        if (this.editingMsg === t.id) {
+          this.editingMsg = 0;
+          this.editMsgDraft = '';
+        }
       } catch (e) {
         this.error = e?.message || String(e);
-      } finally {
         this.msgBusy = 0;
+
+        return;
       }
+      this.msgBusy = 0;
+      /*
+       * `true`, because a delete can make this section smaller.
+       *
+       * `refreshEvidence` keeps what it has unless the rebuild is at least as big, which is how
+       * a half-read reload is stopped from blanking the column. Removing the only message of
+       * yours from a thread can legitimately shrink it, and without saying so the draft stayed
+       * drawn on the page after GitHub had already accepted the delete.
+       */
+      this.refreshEvidence(true);
     },
 
     toggleDiscussMsg(c, t) {
@@ -2290,7 +2339,7 @@ export default {
 
       this.commentsAt = mark;
       if (!first) {
-        forgetPrDetail(pr, this.repo);
+        forgetPrDetail(this.status?.pr || 0, this.repo);
         await this.refreshEvidence();
       }
     },
@@ -2309,12 +2358,20 @@ export default {
 
     /** Where a finding is drawn: its section, and its page in that section's pager. */
     placeOfFinding(id) {
+      const want = String(id);
+      // A `gh<id>` key is a draft reply, which is a message inside a card rather than a card:
+      // the place to go is the card holding it, so the pager turns to the thread the person's
+      // question is actually about instead of finding nothing and staying where it is.
+      const reply = /^gh(\d+)$/.exec(want);
+
       for (const section of this.evidence) {
         for (const item of section.items) {
           if (item.kind !== 'comments') {
             continue;
           }
-          const index = item.items.findIndex((c) => String(c.id) === String(id));
+          const index = reply
+            ? item.items.findIndex((c) => (c.thread || []).some((t) => t.pending && String(t.id) === reply[1]))
+            : item.items.findIndex((c) => String(c.id) === want);
 
           if (index >= 0) {
             return { section, item, index };
@@ -3798,7 +3855,7 @@ export default {
                   -->
                   <div
                     v-for="(t, k) in c.thread"
-                    :key="k"
+                    :key="t.id || `at${ k }`"
                     class="comment"
                     :class="[
                       /*
@@ -3925,6 +3982,7 @@ export default {
                       :repo="repo"
                       :workspace="workspace.name"
                       :comment="{ id: t.id, body: t.body, path: c.path, line: c.line }"
+                      lives="github"
                       :session="discussSession[msgKey(t)] || ''"
                       @session="rememberMsgDiscussion(t, $event)"
                       @close="toggleDiscussMsg(c, t)"

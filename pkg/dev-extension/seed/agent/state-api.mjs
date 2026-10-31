@@ -1,0 +1,492 @@
+/**
+ * A small HTTP service in the agent pod, so the browser can ask it things instead of shelling in.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────────────────────
+ *
+ * Nothing in the Kubernetes API can say what is happening inside this pod - which panes exist,
+ * what each agent is doing - so the browser found out the only way it could: `pods/exec`, one
+ * WebSocket per command, a process forked in this container for each one. A Focus page with two
+ * live chats opened about eighty of those a minute, for ever, and every one of them paid for a
+ * socket handshake and a fork to learn something that had not changed.
+ *
+ * This serves the same answers over HTTP. The browser reaches it through the apiserver's
+ * `pods/<name>:<port>/proxy` subresource, which carries the person's own Rancher session exactly
+ * as the exec subresource does - and exec is the more privileged of the two, since it spawns
+ * processes. So this changes how the browser asks, and nothing about who is asking.
+ *
+ * ── The one design decision worth arguing with ──────────────────────────────────────────────
+ *
+ * This does NOT reimplement what the seed scripts do. It runs them.
+ *
+ * Every answer below is the output of the same `/seed/sessions.sh` the exec path called, cached
+ * and shared. Reimplementing the logic in JavaScript would have been faster to read and would
+ * have drifted the first time somebody edited the shell - and `sessions.sh` says in its own
+ * comments that three browser parsers depend on its exact output. One source of truth, and the
+ * win is kept anyway: a dozen tabs asking at once now cost ONE run of the script, not a dozen
+ * forks, because the cache coalesces them.
+ *
+ * ── What it must never do ───────────────────────────────────────────────────────────────────
+ *
+ * Break a pane. This process shares a pod with every conversation a person is holding, so it is
+ * written to fail small: it never exits on a bad request, it bounds every script it starts and
+ * every byte it keeps, it serves a stale answer rather than an error when a run fails, and when
+ * it cannot be sure it is healthy it exits so the supervisor can replace it. A pod with no
+ * service here is not broken - the browser falls back to exec, which is what it does today.
+ *
+ * Node builtins only. This runs from a ConfigMap mount with no node_modules, like dev-api.
+ */
+
+import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
+
+/**
+ * Bumped whenever an answer's shape changes.
+ *
+ * The browser sends the version it expects. An older server answering a newer browser is the
+ * one failure this cannot detect from the outside - the reply looks fine and is wrong - so the
+ * version rides in every response and the client restarts a server it has outgrown.
+ */
+const VERSION = 1;
+
+const PORT = Number(process.env.STATE_API_PORT || 8111);
+const SEED = process.env.STATE_API_SEED || '/seed';
+/*
+ * The token is minted in the pod, not shipped in the seed.
+ *
+ * A token in the ConfigMap would travel in the extension bundle, which makes it a secret every
+ * holder of the bundle knows - and it would change the seed's fingerprint, so `ensureAgent`
+ * would rewrite the ConfigMap on every page load. The supervisor generates one into the run
+ * directory instead, and the browser is told it by the same exec that starts the service. It
+ * lives and dies with the pod, which is the right lifetime for it.
+ */
+const TOKEN_FILE = process.env.STATE_API_TOKEN_FILE || '/tmp/.state-api/token';
+
+/** How long an answer is served before it is read again. */
+const FRESH_MS = 2_500;
+/** How long a stale answer may still be served when the reader behind it is failing. */
+const STALE_FLOOR_MS = 120_000;
+/** A script that has not finished by here is killed; the caller gets the last good answer. */
+const RUN_TIMEOUT_MS = 20_000;
+/** A single script's output is bounded: this pod has conversations in it worth more than a read. */
+const MAX_OUTPUT = 4 * 1024 * 1024;
+/** A request that cannot be answered by here gives up rather than holding a connection open. */
+const REQUEST_TIMEOUT_MS = 25_000;
+/** No answer at all for this long means something is wrong with this process, not with a script. */
+const WATCHDOG_MS = 5 * 60_000;
+
+const startedAt = Date.now();
+
+/* ── Saying so ──────────────────────────────────────────────────────────────────────────────
+ *
+ * To stderr, which the supervisor appends to a capped file. Never to a growing buffer in here:
+ * a log nobody reads is still memory in a pod somebody is working in.
+ */
+function say(message) {
+  try {
+    process.stderr.write(`[state-api] ${ new Date().toISOString() } ${ message }\n`);
+  } catch { /* a closed stderr is not a reason to stop serving */ }
+}
+
+/* ── Who may ask ─────────────────────────────────────────────────────────────────────────────
+ *
+ * A pod IP is reachable from anywhere in the cluster, and what this serves - titles, what each
+ * agent is doing - belongs to the person whose pod it is. Reaching this *through the apiserver*
+ * needs `pods/proxy`, the same gate as the exec it replaces; reaching the pod IP directly needs
+ * only to be in the cluster, and that is what the token is for.
+ *
+ * Compared in constant time, and a missing token file means nothing is served rather than
+ * everything: a service that fails open is worse than one that fails.
+ */
+let token = '';
+
+function readToken() {
+  try {
+    token = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+  } catch {
+    token = '';
+  }
+
+  return token;
+}
+
+function allowed(req) {
+  const want = token || readToken();
+
+  if (!want) {
+    return false;
+  }
+
+  const got = String(req.headers['x-state-token'] || '');
+  const a = Buffer.from(got);
+  const b = Buffer.from(want);
+
+  // timingSafeEqual throws on a length mismatch, which is itself the answer.
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/* ── Running a seed script, once, however many are asking ────────────────────────────────────
+ *
+ * The whole point of this service. `reading` holds the promise of a run already in flight, so
+ * ten tabs that all want the states at the same moment wait on one child process rather than
+ * forking ten.
+ */
+const cache = new Map();
+
+function entry(key) {
+  let held = cache.get(key);
+
+  if (!held) {
+    held = { key, text: '', at: 0, failedSince: 0, error: '', reading: null };
+    cache.set(key, held);
+  }
+
+  return held;
+}
+
+/**
+ * One script, bounded in time and in bytes.
+ *
+ * Resolves rather than rejects for a non-zero exit, the way the browser's own exec helper does:
+ * an exit code is a fact about the script, not a failure of this service. Rejects only when the
+ * child could not be run or had to be killed.
+ */
+function runScript(argv, timeoutMs = RUN_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    let child;
+
+    try {
+      child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      reject(new Error(`could not start ${ argv.join(' ') }: ${ e?.message || e }`));
+
+      return;
+    }
+
+    let out = '';
+    let err = '';
+    let capped = false;
+    let done = false;
+
+    const finish = (fn, value) => {
+      if (done) {
+        return;
+      }
+      done = true;
+      clearTimeout(timer);
+      fn(value);
+    };
+
+    /*
+     * Killed, not abandoned. A child left running after its caller gave up is a fork this
+     * service is still paying for, and under a wedged tmux they would pile up one per tick.
+     * SIGKILL after a grace period, because the thing most likely to hang here is a shell
+     * waiting on a tmux server that is not answering, and that ignores a polite signal.
+     */
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGTERM');
+      } catch { /* already gone */ }
+      setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch { /* already gone */ }
+      }, 2_000).unref?.();
+      finish(reject, new Error(`${ argv.join(' ') } did not finish in ${ timeoutMs }ms`));
+    }, timeoutMs);
+
+    const take = (chunk, into) => {
+      if (into === 'out') {
+        if (out.length + chunk.length > MAX_OUTPUT) {
+          capped = true;
+          out = out.slice(0, MAX_OUTPUT);
+          try {
+            child.kill('SIGKILL');
+          } catch { /* already gone */ }
+
+          return;
+        }
+        out += chunk;
+      } else if (err.length < 64 * 1024) {
+        err += chunk;
+      }
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (c) => take(c, 'out'));
+    child.stderr.on('data', (c) => take(c, 'err'));
+    child.on('error', (e) => finish(reject, new Error(`${ argv[0] }: ${ e?.message || e }`)));
+    child.on('close', (code) => {
+      if (capped) {
+        finish(reject, new Error(`${ argv.join(' ') } produced more than ${ MAX_OUTPUT } bytes`));
+
+        return;
+      }
+      finish(resolve, { out, err, code: code ?? -1 });
+    });
+  });
+}
+
+/**
+ * The cached text of one script, read again only when it is old.
+ *
+ * A failed read does not clear what is there. The browser asking "what is each agent doing"
+ * would rather have an answer from eight seconds ago than an error, and the age travels with it
+ * so a caller that cares can tell. Only after `STALE_FLOOR_MS` of unbroken failure does this
+ * give up and report the error, because by then the answer is not worth having.
+ */
+async function cached(key, argv) {
+  const held = entry(key);
+  const now = Date.now();
+
+  if (held.text && now - held.at < FRESH_MS) {
+    return held;
+  }
+
+  /*
+   * An answer in hand is returned now; the refresh happens behind it.
+   *
+   * Waiting for the read was costing the caller the whole of `RUN_TIMEOUT_MS` whenever the
+   * script was wedged - and the script being wedged is precisely when a tmux server is not
+   * answering, which is precisely when every tab is asking. Twenty seconds of held connections
+   * to learn something that was already on the shelf, twenty seconds late.
+   *
+   * So: a caller waits only when there is nothing at all to give it. Otherwise it gets the last
+   * good answer with its age attached - the browser can see for itself how old it is - and the
+   * read it triggered lands for whoever asks next.
+   */
+  const refresh = () => {
+    if (!held.reading) {
+      held.reading = read();
+    }
+
+    return held.reading;
+  };
+
+  if (held.text) {
+    refresh().catch(() => {});
+
+    return held;
+  }
+  if (held.reading) {
+    await held.reading.catch(() => {});
+
+    return held;
+  }
+  async function read() {
+    try {
+      const { out, err, code } = await runScript(argv);
+
+      /*
+       * A non-zero exit is a failure, not an answer.
+       *
+       * `runScript` resolves on a non-zero exit deliberately - an exit code is a fact about the
+       * script - but that made this overwrite good cached text with the empty stdout of a
+       * script that had just failed. A caller then saw `ok:false` with nothing in it, having
+       * been one tick away from a perfectly good answer that was thrown out to store the
+       * failure. Zero exit with no output is different and is kept: a pod with no conversations
+       * really does have nothing to say.
+       */
+      if (code !== 0) {
+        throw new Error(`exit ${ code }${ err ? `: ${ err.trim().split('\n')[0].slice(0, 200) }` : '' }`);
+      }
+      held.text = out;
+      held.at = Date.now();
+      held.error = '';
+      held.failedSince = 0;
+    } catch (e) {
+      const message = String(e?.message || e);
+
+      held.failedSince = held.failedSince || Date.now();
+      // Said once per spell rather than once per tick: a tmux that has been wedged for ten
+      // minutes should not be ten minutes of identical lines in the log.
+      if (message !== held.error) {
+        held.error = message;
+        say(`${ key }: ${ message }`);
+      }
+    } finally {
+      held.reading = null;
+    }
+  }
+
+  await refresh().catch(() => {});
+
+  return held;
+}
+
+/** What a cached answer looks like on the wire, age and all. */
+function body(held, extra = {}) {
+  const now = Date.now();
+  const age = held.at ? now - held.at : -1;
+  const broken = held.failedSince && now - held.failedSince > STALE_FLOOR_MS;
+
+  return {
+    version: VERSION,
+    ok:      !!held.text && !broken,
+    text:    broken ? '' : held.text,
+    age,
+    stale:   !!held.error,
+    error:   broken ? held.error : '',
+    ...extra,
+  };
+}
+
+/* ── The routes ─────────────────────────────────────────────────────────────────────────────
+ *
+ * Deliberately few, and all reads. Nothing here changes anything in the pod: a write still goes
+ * through exec, where it has an exit code and an audit trail, and where a bug in this file
+ * cannot cost anybody a conversation.
+ */
+const ROUTES = [
+  ['/healthz', async() => ({
+    version: VERSION,
+    ok:      true,
+    pid:     process.pid,
+    uptime:  Date.now() - startedAt,
+    host:    os.hostname(),
+    reads:   [...cache.keys()],
+  })],
+  ['/sessions', async() => body(await cached('list', ['/bin/sh', `${ SEED }/sessions.sh`, 'list']))],
+  ['/states', async() => body(await cached('states-all', ['/bin/sh', `${ SEED }/sessions.sh`, 'states-all']))],
+];
+
+/* ── The watchdog ───────────────────────────────────────────────────────────────────────────
+ *
+ * The failure this cannot catch from inside is itself: a process that is up, holding the port,
+ * and no longer answering. The browser would keep choosing it over the exec path that works.
+ *
+ * So: if anything has been asked of this service and nothing has been answered successfully for
+ * WATCHDOG_MS, exit. The supervisor starts a fresh one within seconds, and a service that
+ * replaces itself is strictly better than one that sits there holding a port it cannot serve.
+ * `asked` guards the idle case - a pod nobody is looking at should not restart all night.
+ */
+let asked = 0;
+let answered = Date.now();
+
+function watchdog() {
+  const timer = setInterval(() => {
+    if (!asked) {
+      answered = Date.now();
+
+      return;
+    }
+    if (Date.now() - answered > WATCHDOG_MS) {
+      say(`answered nothing for ${ Math.round((Date.now() - answered) / 1000) }s after ${ asked } requests; exiting for the supervisor`);
+      process.exit(3);
+    }
+  }, 30_000);
+
+  timer.unref?.();
+}
+
+/* ── Serving ────────────────────────────────────────────────────────────────────────────────── */
+
+const server = http.createServer(async(req, res) => {
+  const send = (code, value) => {
+    const text = JSON.stringify(value);
+
+    try {
+      res.writeHead(code, {
+        'content-type':  'application/json',
+        'cache-control': 'no-store',
+        'x-state-api':   String(VERSION),
+      });
+      res.end(text);
+    } catch { /* the browser went away mid-answer */ }
+  };
+
+  // A request that cannot be answered gives the connection back rather than holding it. The
+  // apiserver proxy in front of this has its own timeout, and a reply it has stopped waiting
+  // for is a socket neither end is using.
+  res.setTimeout?.(REQUEST_TIMEOUT_MS, () => {
+    try {
+      res.destroy();
+    } catch { /* already gone */ }
+  });
+
+  try {
+    const url = new URL(req.url || '/', 'http://pod');
+    const path = url.pathname.replace(/\/+$/, '') || '/healthz';
+
+    if (req.method !== 'GET') {
+      send(405, { version: VERSION, error: 'Only GET.' });
+
+      return;
+    }
+    if (!allowed(req)) {
+      // Nothing about why. A caller without the token learns that it needs one, and no more.
+      send(401, { version: VERSION, error: 'No.' });
+
+      return;
+    }
+
+    const route = ROUTES.find(([at]) => at === path);
+
+    if (!route) {
+      send(404, { version: VERSION, error: 'No such path.' });
+
+      return;
+    }
+    asked++;
+    send(200, await route[1]());
+    answered = Date.now();
+  } catch (e) {
+    /*
+     * A bug in a route is a 500, not a dead pod.
+     *
+     * This is the line that matters most in the file. Everything in here shares a pod with
+     * somebody's conversations, and an unhandled throw in a request handler would take the
+     * whole process down and, worse, do it silently from the browser's point of view.
+     */
+    say(`unhandled: ${ e?.stack || e }`);
+    send(500, { version: VERSION, error: String(e?.message || e) });
+  }
+});
+
+/*
+ * One of these, and the loser says nothing.
+ *
+ * Two tabs noticing a dead service at the same moment both start one. The second binds nothing
+ * and leaves quietly: the first is already serving, which is what both of them wanted. Any
+ * other listen error is worth a word before going, because that one is not expected.
+ */
+server.on('error', (e) => {
+  if (e?.code === 'EADDRINUSE') {
+    process.exit(0);
+  }
+  say(`listen: ${ e?.message || e }`);
+  process.exit(1);
+});
+
+/*
+ * A throw with nothing to catch it must not end the pod's service.
+ *
+ * Logged and survived rather than fatal. The watchdog above is what catches a process that has
+ * been damaged enough to stop answering; these two handlers are for the ordinary case of a bug
+ * on a path nobody is waiting on, where exiting would be the larger harm.
+ */
+process.on('uncaughtException', (e) => say(`uncaught: ${ e?.stack || e }`));
+process.on('unhandledRejection', (e) => say(`unhandled rejection: ${ e?.stack || e }`));
+
+// SIGTERM is the supervisor or the kubelet asking; stop taking work and let what is in flight
+// finish. SIGINT likewise, for anyone running this by hand.
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    say(`${ signal }: closing`);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5_000).unref?.();
+  });
+}
+
+readToken();
+// Re-read on a timer: the extension can rotate the token by rewriting the ConfigMap, and the
+// kubelet updates the mount in place without this process knowing.
+setInterval(readToken, 30_000).unref?.();
+watchdog();
+
+server.listen(PORT, '0.0.0.0', () => {
+  say(`version ${ VERSION } listening on ${ PORT }${ token ? '' : ' (no token yet; serving nothing until one appears)' }`);
+});
