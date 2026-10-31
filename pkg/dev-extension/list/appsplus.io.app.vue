@@ -356,7 +356,7 @@ export default {
         margin-left: 10px;
         padding: 1px 8px;
         border-radius: var(--border-radius);
-        background: var(--warning-badge, var(--warning-banner));
+        background: var(--warning-badge, var(--warning));
         color: var(--on-warning-banner);
         font-size: 11px;
         white-space: nowrap;

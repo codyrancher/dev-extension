@@ -463,7 +463,7 @@ export default {
   color: var(--link);
   cursor: pointer;
   padding: 4px 0;
-  font-family: var(--font-family-mono);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
 }
 
 // The stage clips; the image inside it is what moves and scales, so panning never grows the
@@ -535,7 +535,7 @@ export default {
 .pfv__text {
   margin: 0;
   white-space: pre;
-  font-family: var(--font-family-mono);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
   font-size: 12px;
 }
 </style>

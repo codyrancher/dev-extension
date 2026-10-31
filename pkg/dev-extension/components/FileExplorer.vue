@@ -536,7 +536,6 @@ export default {
   border-radius: var(--r-sm);
   padding: 0 5px;
   font-size: 11px;
-  font-family: var(--font-family);
   color: var(--muted);
 
   &--bad {

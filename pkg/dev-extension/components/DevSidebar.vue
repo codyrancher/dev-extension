@@ -1474,7 +1474,7 @@ export default {
 .dev-sidebar__stat-label {
   font-size:      10px;
   letter-spacing: 0.06em;
-  color:          var(--muted-text);
+  color:          var(--muted);
   width:          30px;
   flex-shrink:    0;
 }
@@ -1491,7 +1491,19 @@ export default {
 .dev-sidebar__stat-fill {
   display:       block;
   height:        100%;
-  background:    var(--muted-text);
+  /*
+   * The accent, which is what the meter in the hover card above already fills with.
+   *
+   * Not `--muted`: that is Rancher's `$disabled`, and the track behind it is `--disabled-bg`,
+   * the same colour ten percent darker. A fill has to be visible against its own track, and
+   * those two are the one pair in the palette that is not.
+   *
+   * It was `--muted-text`, which exists in neither Rancher's themes nor this extension's
+   * tokens. An undefined custom property makes the whole declaration invalid, so the fill had
+   * no background at all and the bar drew empty at every value - with the right number sitting
+   * beside it, which is what made it look like a data problem rather than a colour one.
+   */
+  background:    var(--dev-accent);
   border-radius: 2px;
   // A second, not instant: a bar that jumps reads as a glitch, and nothing here is urgent.
   transition:    width 1s ease;
@@ -1501,7 +1513,7 @@ export default {
 
 .dev-sidebar__stat-value {
   font-size:            10px;
-  color:                var(--muted-text);
+  color:                var(--muted);
   width:                52px;
   text-align:           right;
   flex-shrink:          0;

@@ -348,7 +348,7 @@ export default {
   background: var(--secondary, transparent);
   color:      var(--on-secondary, var(--primary));
 
-  &:hover:not(:disabled) { background: var(--secondary-hover, transparent); color: var(--on-secondary, var(--lightest)); }
+  &:hover:not(:disabled) { background: var(--secondary-hover, transparent); color: var(--on-secondary, var(--body-text)); }
 }
 
 /*
