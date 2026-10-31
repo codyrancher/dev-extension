@@ -17,6 +17,7 @@ import {
   AGENT_NS, AGENT_ACCOUNT, AGENT_IMAGE, AGENT_BASE, AGENT_OBJECT, AGENT_CONTAINER, STUDIO_NS, STUDIO_AGENT_OBJECT, execUrl, podExecResult,
   namespaceBody, serviceAccountBody, clusterRoleBindingBody, AGENT_ROLE_BINDING,
 } from './pod';
+import { podStateText, PodStateUnavailable } from './pod-state';
 // The coarse bucket, shared and tested. See activityBucket there.
 import { activityBucket } from './chat-state.mjs';
 // What an id is made of, and how to take one apart. Every shape question about an id is asked
@@ -672,11 +673,54 @@ function sessionLine(line: string): { id: string; title: string; cli: string } {
   return { id, title: title || id, cli };
 }
 
+/**
+ * The read verbs the pod will answer over HTTP, and the path each is served at.
+ *
+ * Reads only, and only the ones asked for on a timer - which is the whole of the traffic worth
+ * moving. A write still goes through exec, where it has an exit code and where a bug in the
+ * service cannot cost anybody a conversation.
+ *
+ * `states <project>` is deliberately absent: it takes an argument the service does not serve
+ * yet, and guessing would be worse than the exec that already works.
+ */
+const OVER_HTTP: Record<string, string> = {
+  list:         '/sessions',
+  'states-all': '/states',
+};
+
+/** The last reason the HTTP path was skipped, so the log says it once rather than every tick. */
+let lastFallback = '';
+
 async function sessionScript(args: string[], what: string): Promise<string> {
   const pod = await agentPod();
 
   if (!pod) {
     throw new Error('The agent pod is not running yet, so there is nowhere to hold a conversation.');
+  }
+
+  /*
+   * Over HTTP where the pod can, and exec where it cannot.
+   *
+   * One place decides, so every caller of `sessions.sh` gets it without knowing: the panel, the
+   * rail, the drawer. `PodStateUnavailable` is the only thing `podStateText` throws and it
+   * means exactly "ask the old way" - a pod whose seed predates the service, a cluster that
+   * does not allow `pods/proxy`, a service that is wedged or whose answer has gone stale.
+   * Anything else is a real failure and belongs to the caller.
+   */
+  const over = args.length === 1 ? OVER_HTTP[args[0]] : '';
+
+  if (over) {
+    try {
+      return await podStateText(pod, over);
+    } catch (e) {
+      if (!(e instanceof PodStateUnavailable)) {
+        throw e;
+      }
+      if (lastFallback !== e.message) {
+        lastFallback = e.message;
+        console.debug(`[agent] reading ${ args[0] } by exec: ${ e.message }`); // eslint-disable-line no-console
+      }
+    }
   }
 
   // Short, because a person is waiting for each of these with a panel open. None of them is
