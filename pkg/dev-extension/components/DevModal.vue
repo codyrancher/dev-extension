@@ -36,12 +36,91 @@ export default {
   emits: ['close'],
 
   mounted() {
-    this.onKey = (e) => e.key === 'Escape' && this.$emit('close');
+    /*
+     * Escape closes, and Tab stays inside.
+     *
+     * A dialog that does not hold focus is a dialog only for people who can see it. Opening
+     * one with a keyboard used to leave the caret wherever it was on the page behind, so the
+     * next Tab went into a form you could no longer see, under a panel you could not reach by
+     * tabbing - and the close button was somewhere after every link on the page.
+     *
+     * Three things fix that, and they are the ones `aria-modal` promises on this element's
+     * behalf: focus moves in, Tab cycles within, and focus goes back where it came from.
+     */
+    this.returnTo = document.activeElement;
+    this.onKey = (e) => {
+      if (e.key === 'Escape') {
+        this.$emit('close');
+
+        return;
+      }
+      if (e.key === 'Tab') {
+        this.keepTab(e);
+      }
+    };
     window.addEventListener('keydown', this.onKey);
+    // After paint, because the panel and everything in it has to exist to be focused. The
+    // panel itself takes focus when it holds nothing focusable, which is why it has tabindex.
+    this.$nextTick(() => {
+      const first = this.focusable()[0] || this.$refs.panel;
+
+      first?.focus?.();
+    });
   },
 
   beforeUnmount() {
     window.removeEventListener('keydown', this.onKey);
+    /*
+     * Back where it came from, if that is still somewhere.
+     *
+     * A button that opened a modal is often removed by what the modal did - approving a pull
+     * request takes its own button away - so the element may no longer be in the document.
+     * Focusing a detached node silently moves focus to the body, which is the same place it
+     * would have gone anyway, but `isConnected` says so rather than relying on that.
+     */
+    if (this.returnTo?.isConnected) {
+      this.returnTo.focus?.();
+    }
+  },
+
+  methods: {
+    /** Everything inside the panel a person can Tab to, in document order. */
+    focusable() {
+      const panel = this.$refs.panel;
+
+      if (!panel) {
+        return [];
+      }
+
+      return [...panel.querySelectorAll(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )].filter((el) => el.offsetParent !== null || el === document.activeElement);
+    },
+
+    /** Tab at either end of the dialog wraps to the other, rather than leaving it. */
+    keepTab(e) {
+      const stops = this.focusable();
+
+      if (!stops.length) {
+        // Nothing to move between: hold the panel rather than letting Tab escape the dialog.
+        e.preventDefault();
+        this.$refs.panel?.focus?.();
+
+        return;
+      }
+
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      const on = document.activeElement;
+
+      if (e.shiftKey && (on === first || !this.$refs.panel?.contains(on))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && on === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    },
   },
 };
 </script>
@@ -50,13 +129,23 @@ export default {
   <Teleport to="body">
     <div
       class="dev-modal"
-      role="dialog"
-      :aria-label="title"
       @click.self="$emit('close')"
     >
+      <!--
+        `role` and `aria-modal` on the PANEL, not the backdrop. The backdrop is the thing you
+        click to dismiss; the dialog is the box. `aria-modal` is what tells a screen reader the
+        rest of the page is not available, and it is only honest because of the focus handling
+        above - claiming it without that is how a dialog announces itself as modal and then
+        lets Tab wander off behind it.
+      -->
       <div
+        ref="panel"
         class="dev-modal__panel"
         :class="`dev-modal__panel--${ size }`"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="title || 'Dialog'"
+        tabindex="-1"
       >
         <div class="dev-modal__head">
           <span class="dev-modal__title">{{ title }}</span>

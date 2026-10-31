@@ -26,6 +26,7 @@ withDefaults(defineProps<{
     class="btn"
     :class="[`btn--${ variant }`, `btn--${ size }`, { 'btn--block': block, 'btn--busy': busy }]"
     :disabled="busy"
+    :aria-busy="busy ? 'true' : undefined"
   >
     <AppIcon v-if="busy" name="spinner" :size="size === 'lg' ? 18 : 16" />
     <AppIcon v-else-if="icon" :name="icon" :size="size === 'lg' ? 18 : 16" />

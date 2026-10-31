@@ -273,9 +273,14 @@ export default {
         </span>
         <button
           class="btn role-tertiary btn-sm pfv__close"
+          aria-label="Close the file"
+          title="Close the file"
           @click="$emit('close')"
         >
-          <i class="icon icon-close" />
+          <i
+            class="icon icon-close"
+            aria-hidden="true"
+          />
         </button>
       </div>
 
