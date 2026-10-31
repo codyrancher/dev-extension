@@ -41,8 +41,9 @@ import {
 import {
   AGY_COMMANDS, AGY_CUSTOMIZE, agyPhase, agyTailText,
 } from './agent-clis.mjs';
-import { frameNonce, readFrames, spliceEarlier } from './chat-frames.mjs';
+import { frameNonce, isFramed, readFrames, spliceEarlier } from './chat-frames.mjs';
 import { chatReadScript } from './chat-read.mjs';
+import { podStateText, PodStateUnavailable } from './pod-state';
 import { paneSendScript } from './pane-send.mjs';
 import {
   modelAliases, flagChoices, parseMcpList, currentModel, isSafeOptionValue, type McpServer,
@@ -353,6 +354,16 @@ export type Conversation = ReturnType<typeof useConversation>;
  * below throws away the transcript that belonged to the old one.
  */
 export function useConversation(source: () => ConversationSource) {
+  /**
+   * Whether this conversation's reads go over HTTP.
+   *
+   * Per conversation rather than per page: one pane may be in another pod while the one beside
+   * it is in the agent pod. `off` is final for the life of the composable - a conversation that
+   * has once answered without frames is not asked again, because the alternative is paying a
+   * failed request in front of every exec for as long as the chat is open.
+   */
+  let httpRead: 'unknown' | 'on' | 'off' = 'unknown';
+
   const from = computed(() => source());
   const enabled = computed(() => from.value.enabled !== false && !!(from.value.session || from.value.command?.length));
 
@@ -716,6 +727,65 @@ export function useConversation(source: () => ConversationSource) {
     return podExecOnce(pod, [...prefix.value, '/bin/sh', '-c', inner], timeoutMs, from.value.container, from.value.namespace);
   }
 
+  /**
+   * One read, over HTTP where the pod can serve it and by exec where it cannot.
+   *
+   * This is the read that was costing: a live conversation polls every 1.5 seconds, so two of
+   * them opened about eighty exec sockets a minute - a WebSocket handshake and a forked process
+   * each - to learn something that usually had not changed. The pod serves the same script now,
+   * over a plain GET.
+   *
+   * Two conditions, and both are about whether the pod that answers is the pod that has it.
+   * `prefix` is non-empty when the pane is reached by a `kubectl exec` into somewhere else, and
+   * `findPod` means this chat was pointed at a pod of its own - a workspace terminal. Neither
+   * is the agent pod, which is the only one running a state service, so both keep exec.
+   *
+   * ── Why there is no read-both-and-compare ──
+   *
+   * It was the obvious safety net and it does not work. Two reads taken a moment apart differ
+   * whenever the transcript grew between them, which is precisely what happens on the busy
+   * conversations most worth moving - so a byte comparison would have failed exactly where it
+   * was needed and passed where it did not matter.
+   *
+   * What makes this safe instead is that there is nothing to disagree about: both paths run the
+   * same script from the same module, as the same user, in the same pod. So the check that is
+   * worth making is whether the answer came back framed - `readFrames` finds this read's nonce
+   * or it does not - and an answer that did not is treated as no answer, once, after which this
+   * conversation goes back to exec and stays there.
+   */
+  async function readChat(at: Parameters<typeof chatReadScript>[0] & { home: string }, nonce: string): Promise<string> {
+    const local = !prefix.value.length && !from.value.findPod;
+
+    if (local && httpRead !== 'off') {
+      const pod = await locatePod();
+
+      if (pod) {
+        try {
+          const out = await podStateText(pod, `/chat?${ new URLSearchParams({
+            id: at.id, off: String(at.off), sub: at.sub, soff: String(at.soff), n: nonce, proj: at.projKey, home: at.home, cli: at.cli,
+          }) }`);
+
+          // Framed, so the pod and this page agree about what a read looks like.
+          if (isFramed(out, nonce)) {
+            httpRead = 'on';
+
+            return out;
+          }
+          console.debug(`[chat] the pod answered without this read's frames; using exec for ${ at.id }`); // eslint-disable-line no-console
+        } catch (e) {
+          if (!(e instanceof PodStateUnavailable)) {
+            throw e;
+          }
+          // A pod with no service, a cluster that does not allow pods/proxy, a service that is
+          // starting: all of them mean "ask the old way", and none of them is worth saying twice.
+        }
+        httpRead = 'off';
+      }
+    }
+
+    return run(chatReadScript(at));
+  }
+
   /** Keys into the pane: a name tmux knows (Enter, Escape) or a literal string. */
   async function keys(...args: string[]): Promise<void> {
     const quoted = args.map((a) => `'${ String(a).replace(/'/g, `'\\''`) }'`).join(' ');
@@ -844,7 +914,7 @@ export function useConversation(source: () => ConversationSource) {
        * seconds, and two copies of this much shell would have been identical on the day
        * they were written and never again.
        */
-      const out = await run(chatReadScript({
+      const at = {
         id:      paneId.value,
         off:     offset.value,
         sub:     subId,
@@ -852,7 +922,9 @@ export function useConversation(source: () => ConversationSource) {
         nonce,
         projKey: projectKey(workdir.value),
         cli:     cli.value,
-      }));
+        home:    paneHome.value,
+      };
+      const out = await readChat(at, nonce);
 
       const before = messages.value.length;
 

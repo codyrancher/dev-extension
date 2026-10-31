@@ -21,6 +21,9 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SEED = path.join(here, '..', 'pkg', 'dev-extension', 'seed');
+const PKG = path.join(here, '..', 'pkg', 'dev-extension');
+/** Modules the browser and the pod both run, copied into /seed by this script. */
+const SHARED = ['chat-read.mjs'];
 const OUT = path.join(here, '..', 'pkg', 'dev-extension', 'seed.generated.ts');
 
 // shell.sh un-flattens skill directories with the separator this product's pods use. The token
@@ -70,6 +73,24 @@ function files() {
   };
 
   take(SEED);
+
+  /*
+   * And the modules the pod shares with the browser, which do not live under seed/.
+   *
+   * `chat-read.mjs` builds the one read a chat makes. The browser imports it directly and the
+   * pod's state service runs it, and the whole reason it is a module rather than two copies of
+   * a hundred lines of shell is that two copies drift. Copying it in here rather than keeping a
+   * second file under seed/ is the same decision for the same reason: there is one of it, and
+   * this is a build step, so it cannot be edited in one place and forgotten in the other.
+   */
+  for (const shared of SHARED) {
+    const name = path.basename(shared);
+
+    if (found[name]) {
+      throw new Error(`${ name } is both a seed file and a shared module; /seed is flat, so one would win silently.`);
+    }
+    found[name] = podFile(path.join(PKG, shared));
+  }
 
   return Object.fromEntries(Object.entries(found).sort(([a], [b]) => a.localeCompare(b)));
 }

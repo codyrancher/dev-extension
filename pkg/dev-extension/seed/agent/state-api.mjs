@@ -41,6 +41,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+// The same module the browser imports. gen-seed.mjs copies it in beside this file, so there is
+// one definition of the read and not two that drift. See scripts/gen-seed.mjs.
+import { chatReadScript } from './chat-read.mjs';
 
 /**
  * Bumped whenever an answer's shape changes.
@@ -350,6 +353,67 @@ function body(held, extra = {}) {
  */
 const SAFE_NAME = /^[A-Za-z0-9_-]{1,120}$/;
 
+/**
+ * A chat's read, run here instead of by a WebSocket from the browser.
+ *
+ * This is the one that mattered: a live conversation polls every 1.5 seconds, so two of them
+ * opened about eighty exec sockets a minute, each one a process forked in this container to
+ * learn something that usually had not changed.
+ *
+ * Not cached and not coalesced, unlike everything else here. The other reads answer the same
+ * question for every tab; this one is "what is in MY conversation since MY offset", so two
+ * callers almost never want the same bytes and holding an answer would only serve a stale one.
+ * What is saved is the socket and the fork-per-tick, which is what was costing.
+ *
+ * Every argument is checked before it reaches a shell. They are all scalars by design - an id,
+ * two offsets, a nonce, a directory name, a CLI name - so checking them is a matter of saying
+ * what each may contain, which is a thing that can be read and verified. Nothing a caller sends
+ * becomes a command.
+ */
+const PANE_ID = /^[A-Za-z0-9_-]{1,120}$/;
+const NONCE = /^[a-z0-9]{4,64}$/;
+const PROJ_KEY = /^[A-Za-z0-9_.-]{1,200}$/;
+const HOME_DIR = /^\/[A-Za-z0-9_./-]{1,200}$/;
+const CLIS = ['claude', 'agy'];
+
+function chatArgs(url) {
+  const id = url.searchParams.get('id') || '';
+  const sub = url.searchParams.get('sub') || '';
+  const nonce = url.searchParams.get('n') || '';
+  const projKey = url.searchParams.get('proj') || '';
+  const home = url.searchParams.get('home') || '';
+  const cli = url.searchParams.get('cli') || 'claude';
+  const off = Number(url.searchParams.get('off') || 0);
+  const soff = Number(url.searchParams.get('soff') || 0);
+
+  if (!PANE_ID.test(id)) {
+    return { bad: 'id' };
+  }
+  if (sub && !PANE_ID.test(sub)) {
+    return { bad: 'sub' };
+  }
+  if (!NONCE.test(nonce)) {
+    return { bad: 'n' };
+  }
+  if (!PROJ_KEY.test(projKey)) {
+    return { bad: 'proj' };
+  }
+  // `..` separately from the pattern: a path of only safe characters can still walk upwards.
+  if (!HOME_DIR.test(home) || home.includes('..')) {
+    return { bad: 'home' };
+  }
+  if (!CLIS.includes(cli)) {
+    return { bad: 'cli' };
+  }
+  if (!Number.isInteger(off) || off < 0 || !Number.isInteger(soff) || soff < 0) {
+    return { bad: 'off' };
+  }
+
+  return {
+    id, off, sub, soff, nonce, projKey, cli, home,
+  };
+}
+
 const ROUTES = [
   ['/healthz', async() => ({
     version: VERSION,
@@ -360,6 +424,40 @@ const ROUTES = [
     reads:   [...cache.keys()],
   })],
   ['/sessions', async() => body(await cached('list', ['/bin/sh', `${ SEED }/sessions.sh`, 'list']))],
+  ['/chat', async(url) => {
+    const at = chatArgs(url);
+
+    if (at.bad) {
+      return {
+        version: VERSION, ok: false, text: '', age: -1, stale: false, error: `Bad ${ at.bad }.`,
+      };
+    }
+
+    /*
+     * As the pane's own user, with the pane's home - the same wrapper the browser's exec used.
+     *
+     * Everything a pane touches belongs to uid 1000, and claude refuses to run as root, so a
+     * read done as root here would be a read of files written by somebody else. The script goes
+     * in base64 so nothing in it is ever quoted for a shell twice.
+     */
+    const script = `export HOME=${ at.home }; export PATH=$HOME/.local/bin:$PATH; ${ chatReadScript(at) }`;
+    const b64 = Buffer.from(script, 'utf8').toString('base64');
+    const path = `/tmp/.chat-api-${ process.pid }-${ Date.now().toString(36) }.sh`;
+    const inner = `echo ${ b64 } | base64 -d > ${ path } && chmod 755 ${ path } && if [ "$(id -u)" = 0 ]; then su node -s /bin/bash -c "/bin/bash ${ path }" 2>&1; else /bin/bash ${ path } 2>&1; fi; rm -f ${ path }`;
+
+    try {
+      const { out } = await runScript(['/bin/sh', '-c', inner], 25_000);
+
+      return {
+        version: VERSION, ok: true, text: out, age: 0, stale: false, error: '',
+      };
+    } catch (e) {
+      // The browser falls back to its own exec on this, which is the path it used before.
+      return {
+        version: VERSION, ok: false, text: '', age: -1, stale: false, error: String(e?.message || e),
+      };
+    }
+  }],
   ['/states', async(url) => {
     /*
      * `states <project>` is a different verb from `states-all`, not a filter over it.

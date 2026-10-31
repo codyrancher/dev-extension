@@ -100,6 +100,26 @@ function value(out, marker) {
  * `hook` is undefined when there was no state file or it was caught half-written - the caller
  * keeps what it had - against null for a file that is there and empty.
  */
+/**
+ * Whether a read came back framed at all.
+ *
+ * The pane marker, because it is the one the script always writes: there may be no transcript
+ * yet, no subagents and no hook file, but the script always says whether the pane is there. So
+ * its absence means the script did not run to the end rather than that the conversation is
+ * empty - which is the difference between "nothing has happened" and "this answer is not an
+ * answer", and the two look identical once parsed.
+ *
+ * Used by the chat to decide whether the pod's HTTP read can be trusted: same script, same
+ * markers, so an answer without them is an environment that cannot run it.
+ *
+ * @param {string} out The read's stdout.
+ * @param {string} nonce The token that read was made with.
+ * @returns {boolean}
+ */
+export function isFramed(out, nonce) {
+  return typeof out === 'string' && out.includes(`${ markers(nonce).pane }`);
+}
+
 export function readFrames(out, nonce) {
   const m = markers(nonce);
   const paneAt = out.indexOf(`${ m.pane }\n`);
