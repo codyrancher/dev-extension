@@ -40,12 +40,17 @@ const PORT = 8111;
  * The answer shape this browser understands.
  *
  * Sent back in every reply. An older pod answering a newer browser is the one failure that
- * cannot be seen from the outside - the reply parses and is wrong - so a mismatch is treated as
- * no service at all and the exec path is used instead. The pod is replaced by the ConfigMap
- * mount within a minute of a publish, so the window is short and the cost of being wrong in it
- * is nil.
+ * cannot be seen from the outside - the reply parses and is wrong - so a mismatch means this
+ * service is not the one this page knows how to talk to.
+ *
+ * And a mismatch is not rare, which is the part that had to be handled rather than tolerated.
+ * The service is started once and nothing restarts it, while the seed it runs from updates in
+ * place underneath - so a pod that started version 1 goes on serving version 1 for as long as
+ * it is up, however many releases land. The browser replaces it: one exec, the same way it
+ * started it, and then the read it wanted. Without that, every route added after a pod came up
+ * would 404 for the life of that pod.
  */
-const WANT_VERSION = 1;
+const WANT_VERSION = 2;
 
 /** How long a pod that could not serve is left alone before it is tried again. */
 const COOLDOWN_MS = 60_000;
@@ -63,6 +68,14 @@ const READ_TIMEOUT_MS = 10_000;
  */
 const MAX_AGE_MS = 60_000;
 
+/**
+ * A service of the wrong vintage, which is a thing to fix rather than to report.
+ *
+ * Separate from `PodStateUnavailable` because the two want opposite responses: unavailable
+ * means stop asking for a while, and this means replace it and ask again.
+ */
+class WrongVersion extends Error {}
+
 /** The one error this throws, and the signal to every caller to use exec. */
 export class PodStateUnavailable extends Error {
   constructor(why: string) {
@@ -78,6 +91,8 @@ interface Known {
   why: string;
   /** A start already under way, so ten callers at once do not exec ten times. */
   starting: Promise<string> | null;
+  /** Whether this page has already replaced this pod's service once. See the version check. */
+  replaced: boolean;
   /**
    * Paths this pod has answered 404 for.
    *
@@ -96,7 +111,7 @@ function held(pod: string): Known {
   let it = known.get(pod);
 
   if (!it) {
-    it = { token: '', downSince: 0, why: '', starting: null, missing: new Set() };
+    it = { token: '', downSince: 0, why: '', starting: null, replaced: false, missing: new Set() };
     known.set(pod, it);
   }
 
@@ -181,6 +196,34 @@ export async function podStateText(pod: string, path: string): Promise<string> {
   }
 
   const token = await tokenFor(pod);
+
+  return fetchOnce(it, pod, path, token).catch(async(e) => {
+    if (!(e instanceof WrongVersion) || it.replaced) {
+      throw e instanceof WrongVersion ? down(it, e.message) : e;
+    }
+    /*
+     * Once per pod, and only once.
+     *
+     * A restart loop would be the worst failure this file could have - every tab replacing the
+     * service the others had just started - so a pod is replaced at most once per page. If the
+     * one after it is still the wrong version, something is wrong that a restart does not fix
+     * and exec is the right answer.
+     */
+    it.replaced = true;
+    it.token = '';
+    try {
+      await podExecResult(pod, ['/bin/sh', '/seed/state-api.sh', 'restart'], START_TIMEOUT_MS, AGENT_CONTAINER);
+    } catch {
+      throw down(it, 'the state service is the wrong version and could not be replaced');
+    }
+
+    return fetchOnce(it, pod, path, await tokenFor(pod)).catch((again) => {
+      throw again instanceof WrongVersion ? down(it, again.message) : again;
+    });
+  });
+}
+
+async function fetchOnce(it: Known, pod: string, path: string, token: string): Promise<string> {
   const stop = new AbortController();
   const timer = setTimeout(() => stop.abort(), READ_TIMEOUT_MS);
   let resp;
@@ -241,7 +284,7 @@ function readAnswer(it: Known, answer: Json): string {
     throw down(it, 'the state service answered something that is not an answer');
   }
   if (Number(answer.version) !== WANT_VERSION) {
-    throw down(it, `the state service speaks version ${ answer.version }, this page wants ${ WANT_VERSION }`);
+    throw new WrongVersion(`the state service speaks version ${ answer.version }, this page wants ${ WANT_VERSION }`);
   }
   if (!answer.ok) {
     // The service is up and saying it has nothing good - a script that has been failing for

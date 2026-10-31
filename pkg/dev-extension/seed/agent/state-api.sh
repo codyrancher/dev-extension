@@ -75,6 +75,29 @@ case "${1:-start}" in
     echo "token $(cat "$TOKENFILE" 2>/dev/null)"
     exit 0
     ;;
+  restart)
+    # Stop, wait for the port, then start - and the wait is the whole of it.
+    #
+    # Without it this did not replace anything: `stop` returns as soon as the processes it
+    # signalled are gone from the table, the listening socket is released a moment later, and
+    # the new server came up into an EADDRINUSE and stood down exactly as it is designed to -
+    # leaving the OLD one serving. Measured, not guessed: the version never moved.
+    # `sh "$0"`, not `"$0"`: this arrives from a ConfigMap mount without an executable bit and
+    # is run as `sh /seed/state-api.sh`, so executing it directly fails - and with `set -e` and
+    # stderr redirected, it failed by doing nothing at all and saying nothing. Found by tracing
+    # a restart that reported success and replaced no process.
+    sh "$0" stop >/dev/null 2>&1 || true
+    i=0
+    while [ "$i" -lt 50 ]; do
+      # A connection refused is the thing being waited for, so failure here is success.
+      if ! curl -s -o /dev/null -m 1 "localhost:$PORT/healthz" 2>/dev/null; then
+        break
+      fi
+      i=$((i + 1))
+      sleep 0.1 2>/dev/null || sleep 1
+    done
+    exec sh "$0" start
+    ;;
   stop)
     # The GROUP, not the pid.
     #

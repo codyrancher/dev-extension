@@ -41,18 +41,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-// The same module the browser imports. gen-seed.mjs copies it in beside this file, so there is
-// one definition of the read and not two that drift. See scripts/gen-seed.mjs.
-import { chatReadScript } from './chat-read.mjs';
 
 /**
- * Bumped whenever an answer's shape changes.
+ * Bumped whenever an answer's shape changes OR a route is added.
+ *
+ * A route was the case this missed. The service is started once, lazily, and nothing restarts
+ * it - so a pod already serving version 1 keeps serving it after a new `state-api.mjs` lands in
+ * /seed, and the route the browser is looking for 404s for ever. The browser can only notice
+ * that if the number moves, which is why adding a route moves it.
  *
  * The browser sends the version it expects. An older server answering a newer browser is the
  * one failure this cannot detect from the outside - the reply looks fine and is wrong - so the
  * version rides in every response and the client restarts a server it has outgrown.
  */
-const VERSION = 1;
+const VERSION = 2;
 
 const PORT = Number(process.env.STATE_API_PORT || 8111);
 const SEED = process.env.STATE_API_SEED || '/seed';
@@ -376,6 +378,33 @@ const PROJ_KEY = /^[A-Za-z0-9_.-]{1,200}$/;
 const HOME_DIR = /^\/[A-Za-z0-9_./-]{1,200}$/;
 const CLIS = ['claude', 'agy'];
 
+/*
+ * `chat-read.mjs` is loaded when it is first wanted, not at the top of this file.
+ *
+ * It is the same module the browser imports - gen-seed.mjs copies it in beside this one, so
+ * there is one definition of the read and not two that drift. But a top-level import makes the
+ * whole service hostage to it: a seed without that file, for any reason, and this process
+ * cannot start at all, so `list` and `states` go down with a route that has nothing to do with
+ * them. Measured, not guessed: the service crash-looped and every read fell back to exec.
+ *
+ * Loaded once and remembered, including the failure, so a seed that cannot serve chat says so
+ * immediately on every later request rather than retrying an import that will not work.
+ */
+let chatRead;
+
+async function chatReader() {
+  if (chatRead === undefined) {
+    try {
+      chatRead = (await import('./chat-read.mjs')).chatReadScript;
+    } catch (e) {
+      say(`chat-read.mjs could not be loaded, so /chat is not served: ${ e?.message || e }`);
+      chatRead = null;
+    }
+  }
+
+  return chatRead;
+}
+
 function chatArgs(url) {
   const id = url.searchParams.get('id') || '';
   const sub = url.searchParams.get('sub') || '';
@@ -425,6 +454,14 @@ const ROUTES = [
   })],
   ['/sessions', async() => body(await cached('list', ['/bin/sh', `${ SEED }/sessions.sh`, 'list']))],
   ['/chat', async(url) => {
+    const chatReadScript = await chatReader();
+
+    if (!chatReadScript) {
+      return {
+        version: VERSION, ok: false, text: '', age: -1, stale: false, error: 'This pod cannot serve chat reads.',
+      };
+    }
+
     const at = chatArgs(url);
 
     if (at.bad) {
