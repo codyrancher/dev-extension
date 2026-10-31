@@ -76,6 +76,23 @@ const MAX_AGE_MS = 60_000;
  */
 class WrongVersion extends Error {}
 
+/**
+ * A route this page knows about and this service does not, which may only mean it is older.
+ *
+ * Worth the same first response as a wrong version - replace it and ask again - and a very
+ * different second one. A service that is simply behind serves everything else perfectly well,
+ * so when the replacement still does not have the route, the route goes and the pod stays.
+ *
+ * This is what lets a route be added without a VERSION bump, which matters more than it sounds:
+ * a bump says "do not trust this service at all", and every read on the pod falls back to exec
+ * until the kubelet has put the new seed on disk - up to a minute of exactly the thing all of
+ * this exists to avoid, every time anything is added. An added route is not a reason to distrust
+ * the answers to the other ones. So VERSION moves when an ANSWER changes shape, a new route
+ * arrives at a new path where an older service can only 404, and the cost of adding one is that
+ * one route waits for the mount instead of all of them.
+ */
+class RouteMissing extends Error {}
+
 /** The one error this throws, and the signal to every caller to use exec. */
 export class PodStateUnavailable extends Error {
   constructor(why: string) {
@@ -211,29 +228,55 @@ export async function podStateText(pod: string, path: string): Promise<string> {
   const token = await tokenFor(pod);
 
   return fetchOnce(it, pod, path, token).catch(async(e) => {
-    if (!(e instanceof WrongVersion) || it.replaced) {
-      throw e instanceof WrongVersion ? down(it, e.message) : e;
+    if (!replaceable(e) || it.replaced) {
+      throw settle(it, e);
     }
     /*
      * Once per pod, and only once.
      *
      * A restart loop would be the worst failure this file could have - every tab replacing the
      * service the others had just started - so a pod is replaced at most once per page. If the
-     * one after it is still the wrong version, something is wrong that a restart does not fix
-     * and exec is the right answer.
+     * one after it is still wrong, something is wrong that a restart does not fix and exec is
+     * the right answer.
      */
     it.replaced = true;
     it.token = '';
     try {
       await podExecResult(pod, ['/bin/sh', '/seed/state-api.sh', 'restart'], START_TIMEOUT_MS, AGENT_CONTAINER);
     } catch {
-      throw down(it, 'the state service is the wrong version and could not be replaced');
+      throw settle(it, e);
     }
 
     return fetchOnce(it, pod, path, await tokenFor(pod)).catch((again) => {
-      throw again instanceof WrongVersion ? down(it, again.message) : again;
+      throw settle(it, again);
     });
   });
+}
+
+/** Whether replacing the service is worth trying before believing what it said. */
+function replaceable(e: unknown): boolean {
+  return e instanceof WrongVersion || e instanceof RouteMissing;
+}
+
+/**
+ * What a failure means once there is nothing left to try.
+ *
+ * The two that survive a replacement land in different places, and the difference is the whole
+ * point of telling them apart: a wrong version is the pod's problem and takes every read on it
+ * back to exec for the cooldown, while a route this service does not have is the route's
+ * problem and takes only that route.
+ */
+function settle(it: Known, e: unknown): Error {
+  if (e instanceof WrongVersion) {
+    return down(it, e.message);
+  }
+  if (e instanceof RouteMissing) {
+    it.missing.add(e.message);
+
+    return new PodStateUnavailable(`this pod's state service does not serve ${ e.message }`);
+  }
+
+  return e as Error;
 }
 
 /**
@@ -297,11 +340,7 @@ async function fetchOnce(it: Known, pod: string, path: string, token: string): P
   }
 
   if (status === 404) {
-    // The route, not this read's query string: `/chat?id=...&off=...` is different on every
-    // poll, so remembering the whole thing remembered nothing and grew for ever.
-    it.missing.add(route(path));
-
-    throw new PodStateUnavailable(`this pod's state service does not serve ${ route(path) }`);
+    throw new RouteMissing(route(path));
   }
   if (status < 200 || status >= 300) {
     throw down(it, `the state service answered ${ status }`);

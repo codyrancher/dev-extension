@@ -516,6 +516,30 @@ const ROUTES = [
 
     return body(await cached(`states:${ project }`, ['/bin/sh', `${ SEED }/sessions.sh`, 'states', project]));
   }],
+  /*
+   * One workspace's conversations: `sessions.sh list <project>`.
+   *
+   * Its own path rather than `/sessions?project=`, and that is deliberate. A service that
+   * predates a path answers 404, which says what it is; a service that predates a *parameter*
+   * answers 200 with the unscoped list, which is a wrong answer wearing a right one's clothes -
+   * every conversation in the pod handed back as though it belonged to one workspace. The
+   * version check is what stands between `/states?project=` and that, and nothing should need
+   * to stand between anything again: a new path cannot be misread by an older service, so
+   * adding one costs no VERSION bump and no minute of exec on every other route.
+   *
+   * This is the last frequent read still going by exec - eight components call it, several on
+   * timers - and it is the same verb the drawer's unscoped `/sessions` runs, cached apart
+   * because a page watching one workspace and the panel watching the pod want different answers.
+   */
+  ['/project-sessions', async(url) => {
+    const project = url.searchParams.get('project') || '';
+
+    if (!project || !SAFE_NAME.test(project)) {
+      return { version: VERSION, ok: false, text: '', age: -1, stale: false, error: 'That is not a project name.' };
+    }
+
+    return body(await cached(`list:${ project }`, ['/bin/sh', `${ SEED }/sessions.sh`, 'list', project]));
+  }],
 ];
 
 /* ── The watchdog ───────────────────────────────────────────────────────────────────────────

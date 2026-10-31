@@ -688,6 +688,21 @@ const OVER_HTTP: Record<string, string> = {
   'states-all': '/states',
 };
 
+/**
+ * The two-word read verbs, each at the path that takes the project as a query parameter.
+ *
+ * `list <project>` was the last frequent read still going by exec: eight components ask for one
+ * workspace's conversations and several of them are on timers. It is served at
+ * `/project-sessions` rather than `/sessions?project=`, because a service too old to know about
+ * the parameter would answer the unscoped list with a 200 - one workspace asking and the whole
+ * pod answering. An older service cannot do anything with an unknown PATH except 404, which is
+ * a thing the browser can act on. See the route's own comment in seed/agent/state-api.mjs.
+ */
+const SCOPED: Record<string, string> = {
+  states: '/states',
+  list:   '/project-sessions',
+};
+
 /** The last reason the HTTP path was skipped, so the log says it once rather than every tick. */
 let lastFallback = '';
 
@@ -712,7 +727,7 @@ async function sessionScript(args: string[], what: string): Promise<string> {
   // route answers 404, which `podStateText` records against the path alone and not the pod.
   const over = args.length === 1
     ? OVER_HTTP[args[0]] || ''
-    : args.length === 2 && args[0] === 'states' ? `/states?project=${ encodeURIComponent(args[1]) }` : '';
+    : args.length === 2 && SCOPED[args[0]] ? `${ SCOPED[args[0]] }?project=${ encodeURIComponent(args[1]) }` : '';
 
   if (over) {
     try {
