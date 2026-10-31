@@ -851,7 +851,14 @@ export default {
           // "Review the branch" were two more ways to look at what is already on the page
           // below - offered at the one stage with nothing to decide but that.
           return {
-            headline: 'Your review is with the developer', detail: 'This moves on when they push or reply. Your comments are on the left; the PR and its diff are a click away.', primary: { label: 'Approve', run: 'openApprove' }, tools: [],
+            headline: 'Your review is with the developer',
+            // Says what actually moves it on, which is not a push: a commit can be a rebase or a
+            // merge of main, and the stage used to take any of them for an answer.
+            detail:   s.pushedSince
+              ? 'They have pushed since your review but have not answered your comments or asked for another look, so this is still with them. You can review the new commits anyway.'
+              : 'This moves on when they reply to your comments or ask you to look again. Your comments are on the left; the PR and its diff are a click away.',
+            primary: { label: 'Approve', run: 'openApprove' },
+            tools:   s.pushedSince ? [{ label: 'Review the new commits', run: 'reviewAgain' }] : [],
           };
         case 'response':
           // Nothing is filed yet: what the agent finds puts the rail back on Your pass, which

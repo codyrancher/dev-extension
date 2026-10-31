@@ -7,6 +7,7 @@
 // calls per workspace, so each workspace is read every five minutes, one at a time, in the
 // background; the sidebar shows whatever was last read and never waits on it.
 import { prDetail, DEFAULT_REPO } from './reviews';
+import { afterSubmission } from './review-stage.mjs';
 import { jiraDetail, JIRA_BASE } from './jira';
 import { jiraStageOf } from './jira-steps.mjs';
 import { passRunning } from './review-pass.mjs';
@@ -92,7 +93,20 @@ export const STAGE_LABELS: Record<Stage, string> = {
  * busy/idle state alone rather than a hard GitHub fact - a guess the stored stage must not be undone
  * by (see stages.ts). Everything not soft is backed by the PR, the reviews, or the comments.
  */
-type Work = Pick<WorkspaceStatus, 'label' | 'tone' | 'stage'> & { stageLabel?: string; reviewed?: boolean; round?: number; soft?: boolean };
+type Work = Pick<WorkspaceStatus, 'label' | 'tone' | 'stage'> & {
+  stageLabel?: string;
+  reviewed?: boolean;
+  round?: number;
+  soft?: boolean;
+  /**
+   * Commits landed since your review, while you are still waiting on an answer.
+   *
+   * Carried separately from the stage on purpose. A push does not move the review on - only a
+   * reply or a re-request does - but it is still something you may want to look at while you
+   * wait, so the rail can offer it without the stage pretending the developer has responded.
+   */
+  pushedSince?: boolean;
+};
 
 /** What to call the stage a workspace is at: the rail's own word for it. */
 export function stageName(status: Pick<WorkspaceStatus, 'stageLabel' | 'stage'>): string {
@@ -533,34 +547,38 @@ function reviewWork(d: Json, agent: AgentState): Work {
     // so it is marked soft and the store keeps whatever it already had rather than dropping, say, a
     // stored Approved to Submitted for one bad read.
     /*
-     * A reply is always a response; a bare push is one only while you are owed an answer.
+     * Only two things end your wait: they answered you, or they asked you to look again.
      *
-     * `pushed` is the head commit's committer date against your review's, and a timestamp cannot
-     * tell an answer from a rebase or a merge of main - the same comparison that put "Pushed since"
-     * on a pull request with nothing being asked, and was narrowed there (`asksAgain`,
-     * priority.ts). That narrowing does not run for a pull request being reviewed in a workspace:
-     * `priorityQueue` claims those by number and `fromReviewing` skips them, so this path ranks
-     * them instead - at 80, which is higher than the 58 that was fixed.
+     * A push is neither, and used to be treated as one whenever a change request of yours was
+     * still standing. That is how a pull request with thirteen threads waiting on the developer
+     * and none of them answered came to read "Developer responded, round 3": the developer had
+     * pushed, and nothing else. A commit is work, not a reply - it can be a rebase, a merge of
+     * main, or a change to something nobody asked about - and a timestamp cannot tell those
+     * apart from an answer. Treating it as one moves the stage off the person who is actually
+     * being waited on, and the review's own count sitting beside it said so.
      *
-     * The approval gate above already catches the approve-then-push case. What was left was a
-     * review you left as comments: any push afterwards returned "Review the new commits" at the
-     * second-highest score in the deck, for a pull request that was not waiting on you.
-     * `myLatestOpinion` is computed above and says the thing GitHub's pull-request-wide decision
-     * cannot: whether the change request is *yours* and still standing.
+     * `reRequested` is the second thing, and it is a real signal rather than an inferred one:
+     * GitHub drops you from `requested_reviewers` the moment you submit a review, and the only
+     * way back onto that list is the author asking for you again. So your name being there,
+     * after you have already reviewed, is the author saying "another look, please" in the one
+     * place that cannot be confused with a push.
      *
-     * A push with nothing outstanding falls through to `submitted` below, and `REVIEW_NEEDS` has
-     * no `submitted` key - so it produces no card at all, which is the point.
+     * `pushed` survives as a label: when they have answered AND pushed, "replied and pushed" is
+     * more use than either half. A push on its own falls through to `submitted` below, which is
+     * where it belongs - and `REVIEW_NEEDS` has no `submitted` key, so it makes no card, which
+     * is the point.
      */
-    const owedToMe = myLatestOpinion?.state === 'CHANGES_REQUESTED';
-
-    if (replied || (pushed && owedToMe)) {
-      return {
-        label: pushed ? 'new commits to review' : 'replied to your comments', tone: 'attention', stage: 'response', reviewed: true, round: rounds, soft: !viewer,
-      };
-    }
+    const reRequested = !!viewer && (m.reviewers || []).some((login: string) => login === viewer);
+    const since = afterSubmission({ replied, reRequested, pushed });
 
     return {
-      label: 'waiting for the developer', tone: 'waiting', stage: 'submitted', reviewed: true, round: rounds, soft: !viewer,
+      label:       since.label,
+      tone:        since.stage === 'response' ? 'attention' : 'waiting',
+      stage:       since.stage,
+      reviewed:    true,
+      round:       rounds,
+      soft:        !viewer,
+      pushedSince: since.pushedSince,
     };
   }
   if (agent === 'working') {
