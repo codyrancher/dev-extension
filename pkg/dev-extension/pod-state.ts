@@ -186,9 +186,19 @@ export async function podStateText(pod: string, path: string): Promise<string> {
     throw new PodStateUnavailable(it.why);
   }
   if (it.downSince) {
-    // The cooldown is over: one more try, from nothing. What the pod does not serve is
-    // forgotten too - the pod may have been replaced by one that does.
+    /*
+     * The cooldown is over: one more try, from nothing.
+     *
+     * Everything learned about this pod is forgotten, including that its service was already
+     * replaced once. That matters for a race worth naming: a page can load, find an old
+     * service and replace it *before* the kubelet has synced the new seed - so the replacement
+     * is the same old version, and a once-per-page rule would leave that tab on exec for as
+     * long as it stayed open, even after the new seed arrived seconds later. A minute later it
+     * may try again, which is long enough to be nowhere near a restart loop and short enough
+     * that nobody notices.
+     */
     it.downSince = 0;
+    it.replaced = false;
     it.missing.clear();
   }
   if (it.missing.has(path)) {
