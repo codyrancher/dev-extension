@@ -123,6 +123,23 @@ interface Known {
    * bound while guarding nothing.
    */
   missing: Set<string>;
+  /** The one connection, and what it is watching. See the stream below. */
+  feed: Feed | null;
+}
+
+interface Feed {
+  /** What this page has asked the pod to watch, built from what it has actually read. */
+  names: Set<string>;
+  /** The last answer pushed for each name, and when it landed here. */
+  pushed: Map<string, { answer: Json; at: number }>;
+  /** Aborts the current connection, to reopen with a changed watch list or to give up. */
+  stop: AbortController | null;
+  /** A reopen already scheduled, so six components mounting at once open one connection. */
+  soon: ReturnType<typeof setTimeout> | null;
+  /** Consecutive failures, for the backoff. Reset by a connection that delivers anything. */
+  failures: number;
+  /** Whether the pod is currently pushing. Only then may a pushed answer be used. */
+  live: boolean;
 }
 
 const known = new Map<string, Known>();
@@ -131,7 +148,9 @@ function held(pod: string): Known {
   let it = known.get(pod);
 
   if (!it) {
-    it = { token: '', downSince: 0, why: '', starting: null, replaced: false, missing: new Set() };
+    it = {
+      token: '', downSince: 0, why: '', starting: null, replaced: false, missing: new Set(), feed: null,
+    };
     known.set(pod, it);
   }
 
@@ -143,6 +162,12 @@ function down(it: Known, why: string): PodStateUnavailable {
   it.downSince = Date.now();
   it.why = why;
   it.token = '';
+  // The token it was opened with is gone, and a pod being left alone means left alone.
+  it.feed?.stop?.abort();
+  if (it.feed) {
+    it.feed.live = false;
+    it.feed.pushed.clear();
+  }
 
   return new PodStateUnavailable(why);
 }
@@ -223,6 +248,25 @@ export async function podStateText(pod: string, path: string): Promise<string> {
   }
   if (it.missing.has(route(path))) {
     throw new PodStateUnavailable(`this pod's state service does not serve ${ route(path) }`);
+  }
+
+  /*
+   * The stream first, where it has this answer: no request at all, for the common case of a
+   * page asking the same question every few seconds and getting the same answer.
+   *
+   * Asking is also how the pod learns to watch it. The watch list is not declared anywhere -
+   * it is whatever this page has actually read - so the first read of something goes by
+   * request, and from then on it arrives on its own.
+   */
+  const name = feedName(path);
+
+  if (name) {
+    const pushed = fromFeed(it, path);
+
+    if (pushed !== null) {
+      return pushed;
+    }
+    watch(it, pod, name);
   }
 
   const token = await tokenFor(pod);
@@ -368,6 +412,235 @@ function readAnswer(it: Known, answer: Json): string {
   return String(answer.text ?? '');
 }
 
+/* ── One connection instead of a request each ───────────────────────────────────────────────
+ *
+ * Every read above is a question whose answer usually has not changed. A page with a chat and a
+ * workspace rail open asks the same four of them for ever, and pays a request each time to be
+ * told what it already knew. The pod can do that polling itself - once, however many tabs are
+ * watching - and say something only when an answer moves.
+ *
+ * So this opens one stream per pod and lets it fill a cache that `podStateText` reads first.
+ *
+ * It is a layer, deliberately, and not a rewrite. No caller changes, no component subscribes to
+ * anything: a read that the stream has an answer for returns without touching the network, and
+ * a read it does not falls through to exactly the request it made before. A pod too old to have
+ * `/stream`, a cluster that will not hold the connection open, a stream that dies at three in
+ * the morning - all of them land back on the request path that already works, which is the same
+ * rule the rest of this file keeps about exec.
+ *
+ * The watch list builds itself from what the page actually reads. Nothing has to be declared,
+ * and a page that stops reading something keeps watching it until the tab goes - which costs
+ * one script run per tick in the pod and saves working out when a component is really finished.
+ */
+
+/** How long a reopen waits for other names to join it. */
+const FEED_SETTLE_MS = 300;
+/** A connection that has delivered nothing for this long is replaced. */
+const FEED_SILENCE_MS = 90_000;
+const FEED_RETRY_MS = 5_000;
+const FEED_RETRY_MAX_MS = 60_000;
+
+/**
+ * The watch name for a path, or '' for a read that cannot be streamed.
+ *
+ * `/chat` is the deliberate absence. It is a cursor read - the browser tells the pod where it
+ * got to and the answer depends on that - so it is not one answer that changes, it is a
+ * different question every time. Pushing it would mean the pod tracking each watcher's offsets,
+ * which is a different and much larger thing than this.
+ */
+function feedName(path: string): string {
+  const [at, query] = path.split('?');
+  const params = new URLSearchParams(query || '');
+  const project = params.get('project') || '';
+
+  if (at === '/sessions') {
+    return 'sessions';
+  }
+  if (at === '/states') {
+    return project ? `states:${ project }` : 'states';
+  }
+  if (at === '/project-sessions') {
+    return project ? `sessions:${ project }` : '';
+  }
+  if (at === '/queued') {
+    return 'queued';
+  }
+  if (at === '/report') {
+    return params.get('workdir') ? `report:${ params.get('workdir') }` : '';
+  }
+
+  return '';
+}
+
+function feedOf(it: Known): Feed {
+  if (!it.feed) {
+    it.feed = {
+      names: new Set(), pushed: new Map(), stop: null, soon: null, failures: 0, live: false,
+    };
+  }
+
+  return it.feed;
+}
+
+/** Ask for this name from now on, reopening the connection once the rush has settled. */
+function watch(it: Known, pod: string, name: string): void {
+  const feed = feedOf(it);
+
+  if (feed.names.has(name)) {
+    return;
+  }
+  feed.names.add(name);
+  if (feed.soon) {
+    clearTimeout(feed.soon);
+  }
+  feed.soon = setTimeout(() => {
+    feed.soon = null;
+    open(it, pod).catch(() => {});
+  }, FEED_SETTLE_MS);
+}
+
+async function open(it: Known, pod: string): Promise<void> {
+  const feed = feedOf(it);
+
+  // The circuit says this pod is not answering; the stream is not the thing to prove otherwise.
+  if (it.downSince && Date.now() - it.downSince < COOLDOWN_MS) {
+    return;
+  }
+  feed.stop?.abort();
+
+  const names = [...feed.names];
+
+  if (!names.length) {
+    return;
+  }
+
+  const stop = new AbortController();
+
+  feed.stop = stop;
+
+  let resp;
+
+  try {
+    resp = await fetch(url(pod, `/stream?watch=${ encodeURIComponent(names.join(',')) }`), {
+      headers: { accept: 'text/event-stream', 'x-state-token': await tokenFor(pod) },
+      signal:  stop.signal,
+    });
+  } catch {
+    return retry(it, pod, stop);
+  }
+
+  // A pod whose service predates the stream, or one that refused: the request path still works,
+  // so this is not news and not a reason to doubt the pod.
+  if (!resp.ok || !resp.body) {
+    return retry(it, pod, stop);
+  }
+
+  feed.live = true;
+  feed.failures = 0;
+
+  const reader = resp.body.getReader();
+  const decode = new TextDecoder();
+  let buffer = '';
+  let heard = Date.now();
+  const quiet = setInterval(() => {
+    // The pod beats every 25s, so silence for well past that is a connection that is not there
+    // any more even though nothing said so.
+    if (Date.now() - heard > FEED_SILENCE_MS) {
+      stop.abort();
+    }
+  }, 15_000);
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        break;
+      }
+      heard = Date.now();
+      buffer += decode.decode(value, { stream: true });
+
+      const chunks = buffer.split('\n\n');
+
+      buffer = chunks.pop() || '';
+      for (const chunk of chunks) {
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data:')) {
+            continue; // `: open` and `: beat` are comments, and keeping the socket warm is their job.
+          }
+          let answer;
+
+          try {
+            answer = JSON.parse(line.slice(5).trim());
+          } catch {
+            continue;
+          }
+          if (answer?.name && !answer.unknown) {
+            feed.pushed.set(answer.name, { answer, at: Date.now() });
+          }
+          if (answer?.name && answer.unknown) {
+            // This pod does not know that name; stop pretending the stream covers it.
+            feed.pushed.delete(answer.name);
+          }
+        }
+      }
+    }
+  } catch { /* aborted, or the connection broke; both are the same from here */ } finally {
+    clearInterval(quiet);
+  }
+
+  return retry(it, pod, stop);
+}
+
+/** A connection that ended, for whatever reason, tried again later and never urgently. */
+function retry(it: Known, pod: string, stop: AbortController): void {
+  const feed = feedOf(it);
+
+  if (feed.stop !== stop) {
+    return; // Something already opened a newer one; this is the old connection finishing.
+  }
+  feed.live = false;
+  feed.stop = null;
+  feed.pushed.clear();
+  feed.failures += 1;
+
+  const wait = Math.min(FEED_RETRY_MS * (2 ** (feed.failures - 1)), FEED_RETRY_MAX_MS);
+
+  if (feed.soon) {
+    clearTimeout(feed.soon);
+  }
+  feed.soon = setTimeout(() => {
+    feed.soon = null;
+    open(it, pod).catch(() => {});
+  }, wait);
+}
+
+/**
+ * The pushed answer for this read, if the stream is carrying it.
+ *
+ * `age` is not checked the way a requested answer's is, and that is the one real difference.
+ * A request's age says how long the pod has been unable to produce anything new, which past a
+ * minute is worth going round by exec for. A pushed answer is old precisely because nothing has
+ * changed - the pod re-runs the script every couple of seconds and stays silent - so age here
+ * means the opposite thing. What still has to hold is `ok`, which the pod turns off once a
+ * script has been failing for longer than it is willing to paper over.
+ */
+function fromFeed(it: Known, path: string): string | null {
+  const feed = it.feed;
+  const name = feedName(path);
+
+  if (!feed || !feed.live || !name) {
+    return null;
+  }
+  const held = feed.pushed.get(name);
+
+  if (!held || !held.answer?.ok) {
+    return null;
+  }
+
+  return String(held.answer.text ?? '');
+}
+
 /** Whether this pod is currently being read over HTTP rather than exec, for the record. */
 export function podStateUp(pod: string): boolean {
   const it = known.get(pod);
@@ -377,5 +650,18 @@ export function podStateUp(pod: string): boolean {
 
 /** Tests, and a page that wants to start again from nothing. */
 export function resetPodState(): void {
+  for (const it of known.values()) {
+    it.feed?.stop?.abort();
+    if (it.feed?.soon) {
+      clearTimeout(it.feed.soon);
+    }
+  }
   known.clear();
+}
+
+/** What the stream is carrying, for the record and for anything that wants to say so. */
+export function podFeedState(pod: string): { live: boolean; watching: number; holding: number } {
+  const feed = known.get(pod)?.feed;
+
+  return { live: !!feed?.live, watching: feed?.names.size || 0, holding: feed?.pushed.size || 0 };
 }

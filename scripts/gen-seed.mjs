@@ -23,7 +23,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const SEED = path.join(here, '..', 'pkg', 'dev-extension', 'seed');
 const PKG = path.join(here, '..', 'pkg', 'dev-extension');
 /** Modules the browser and the pod both run, copied into /seed by this script. */
-const SHARED = ['chat-read.mjs'];
+const SHARED = ['chat-read.mjs', 'agent-reads.mjs'];
 const OUT = path.join(here, '..', 'pkg', 'dev-extension', 'seed.generated.ts');
 
 // shell.sh un-flattens skill directories with the separator this product's pods use. The token

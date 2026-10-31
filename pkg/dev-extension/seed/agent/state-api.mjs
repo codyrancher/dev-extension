@@ -372,6 +372,9 @@ const SAFE_NAME = /^[A-Za-z0-9_-]{1,120}$/;
  * what each may contain, which is a thing that can be read and verified. Nothing a caller sends
  * becomes a command.
  */
+/** A workspace checkout: `/workspaces/<name>/dashboard` and nothing with a way out of it. */
+const WORKDIR = /^\/workspaces\/[A-Za-z0-9_.-]{1,120}\/[A-Za-z0-9_.-]{1,60}$/;
+
 const PANE_ID = /^[A-Za-z0-9_-]{1,120}$/;
 const NONCE = /^[a-z0-9]{4,64}$/;
 const PROJ_KEY = /^[A-Za-z0-9_.-]{1,200}$/;
@@ -403,6 +406,21 @@ async function chatReader() {
   }
 
   return chatRead;
+}
+
+/** The same lazy, remembered import for the two reads that moved off exec. See chatReader. */
+let reads;
+async function agentReads() {
+  if (reads === undefined) {
+    try {
+      reads = await import('./agent-reads.mjs');
+    } catch (e) {
+      say(`agent-reads.mjs could not be loaded, so /queued and /report are not served: ${ e?.message || e }`);
+      reads = null;
+    }
+  }
+
+  return reads;
 }
 
 function chatArgs(url) {
@@ -531,6 +549,30 @@ const ROUTES = [
    * timers - and it is the same verb the drawer's unscoped `/sessions` runs, cached apart
    * because a page watching one workspace and the panel watching the pod want different answers.
    */
+  ['/queued', async() => {
+    const script = (await agentReads())?.queuedScript;
+
+    if (!script) {
+      return { version: VERSION, ok: false, text: '', age: -1, stale: false, error: 'This pod cannot serve queue reads.' };
+    }
+
+    return body(await cached('queued', ['/bin/sh', '-c', script()]));
+  }],
+  ['/report', async(url) => {
+    const reads = await agentReads();
+    const workdir = url.searchParams.get('workdir') || '';
+
+    if (!reads) {
+      return { version: VERSION, ok: false, text: '', age: -1, stale: false, error: 'This pod cannot serve report reads.' };
+    }
+    // An absolute path under the workspaces root and nothing else: it is interpolated into a
+    // shell word, and the only caller ever passes a workspace's own checkout.
+    if (!WORKDIR.test(workdir)) {
+      return { version: VERSION, ok: false, text: '', age: -1, stale: false, error: 'That is not a workspace directory.' };
+    }
+
+    return body(await cached(`report:${ workdir }`, ['/bin/sh', '-c', reads.reportScript(workdir)]));
+  }],
   ['/project-sessions', async(url) => {
     const project = url.searchParams.get('project') || '';
 
@@ -541,6 +583,180 @@ const ROUTES = [
     return body(await cached(`list:${ project }`, ['/bin/sh', `${ SEED }/sessions.sh`, 'list', project]));
   }],
 ];
+
+/* ── One socket ─────────────────────────────────────────────────────────────────────────────
+ *
+ * Every read above, on a connection the browser opens once.
+ *
+ * The request-per-read shape this started as was already an enormous improvement on a WebSocket
+ * and a forked process per read, and it hid what was still wrong: a page with a chat and a rail
+ * open asks the same four questions for ever, and almost every answer is the one it already
+ * had. The polling belongs in the pod, which can run the script once however many tabs are
+ * watching, notice that the answer has not moved, and say nothing.
+ *
+ * Server-sent events over a plain long-lived response, which the apiserver's proxy streams
+ * without buffering - the same thing dev-api's hub has done through it all along. Not a
+ * WebSocket: there is nothing to send upstream, and `pods/proxy` upgrading is one more thing
+ * that would have to be true.
+ *
+ * Read with `fetch` and a ReadableStream rather than EventSource, because EventSource cannot
+ * set a header and the token would have had to go in the query string, where the apiserver's
+ * audit log keeps it.
+ */
+
+/** How often each watcher's sources are re-read. The cache coalesces, so tabs do not multiply runs. */
+const STREAM_TICK_MS = 2_000;
+/** A line on the wire this often even when nothing changes, so a dead socket is visible as one. */
+const STREAM_BEAT_MS = 25_000;
+/** Enough for a page watching the pod, a workspace and a drawer, with room to spare. */
+const MAX_WATCH = 24;
+
+/**
+ * What a watch name means, as the argv that answers it.
+ *
+ * The cache keys are deliberately the same strings the one-shot routes use, so a watcher and a
+ * caller asking the same question share one run of the script rather than racing to do it
+ * twice.
+ */
+async function sourceFor(name) {
+  const [kind, rest] = [name.slice(0, name.indexOf(':') + 1 || name.length), name.slice(name.indexOf(':') + 1)];
+  const arg = kind.endsWith(':') ? rest : '';
+
+  if (name === 'sessions') {
+    return { key: 'list', argv: ['/bin/sh', `${ SEED }/sessions.sh`, 'list'] };
+  }
+  if (name === 'states') {
+    return { key: 'states-all', argv: ['/bin/sh', `${ SEED }/sessions.sh`, 'states-all'] };
+  }
+  if (name === 'queued') {
+    const r = await agentReads();
+
+    return r ? { key: 'queued', argv: ['/bin/sh', '-c', r.queuedScript()] } : null;
+  }
+  if (kind === 'states:' && SAFE_NAME.test(arg)) {
+    return { key: `states:${ arg }`, argv: ['/bin/sh', `${ SEED }/sessions.sh`, 'states', arg] };
+  }
+  if (kind === 'sessions:' && SAFE_NAME.test(arg)) {
+    return { key: `list:${ arg }`, argv: ['/bin/sh', `${ SEED }/sessions.sh`, 'list', arg] };
+  }
+  if (kind === 'report:' && WORKDIR.test(arg)) {
+    const r = await agentReads();
+
+    return r ? { key: `report:${ arg }`, argv: ['/bin/sh', '-c', r.reportScript(arg)] } : null;
+  }
+
+  return null;
+}
+
+/**
+ * What counts as news, which for one of these is not the text itself.
+ *
+ * `states` carries, per conversation, the seconds since its transcript last moved. That number
+ * changes every second on every conversation that has ever run, so comparing the raw text would
+ * push the whole listing once a tick to say nothing - which is the exact failure the hub in
+ * dev-api had, fixed there the same way (see SETTLED_CLOCKS in dev-api/news.mjs).
+ *
+ * Rounded down to five seconds, and anything past two minutes is just "a while ago". Five
+ * rather than something coarser because the browser decides which dot to draw from this number
+ * and its own thresholds are not mine to guess: being finer than the reader can only cost an
+ * occasional push that changes nothing on screen, while being coarser would hold a dot back.
+ */
+function newsOfRead(name, text) {
+  if (name !== 'states' && !name.startsWith('states:')) {
+    return text;
+  }
+
+  return text.split('\n').map((line) => {
+    const cols = line.split('\t');
+
+    if (cols.length < 3) {
+      return line;
+    }
+    const wrote = Number(cols[2]);
+
+    cols[2] = !Number.isFinite(wrote) || wrote < 0 ? cols[2] : String(wrote > 120 ? 121 : wrote - (wrote % 5));
+
+    return cols.join('\t');
+  }).join('\n');
+}
+
+async function stream(req, res, url) {
+  const names = [...new Set((url.searchParams.get('watch') || '').split(',').map((n) => n.trim()).filter(Boolean))].slice(0, MAX_WATCH);
+
+  res.writeHead(200, {
+    'content-type':      'text/event-stream',
+    'cache-control':     'no-store',
+    connection:          'keep-alive',
+    // The apiserver's proxy does not buffer, but anything else in the path might.
+    'x-accel-buffering': 'no',
+    'x-state-api':       String(VERSION),
+  });
+  res.write(`: open\n\ndata: ${ JSON.stringify({ version: VERSION, watching: names }) }\n\n`);
+
+  const sent = new Map();
+  let closed = false;
+  let beat = Date.now();
+
+  const tick = async() => {
+    if (closed) {
+      return;
+    }
+    for (const name of names) {
+      if (closed) {
+        return;
+      }
+      const source = await sourceFor(name).catch(() => null);
+
+      if (!source) {
+        // Said once, so a browser asking for something this pod does not know can stop asking.
+        if (!sent.has(name)) {
+          sent.set(name, null);
+          res.write(`data: ${ JSON.stringify({ name, unknown: true }) }\n\n`);
+        }
+        continue;
+      }
+
+      const held = await cached(source.key, source.argv).catch(() => null);
+
+      if (!held) {
+        continue;
+      }
+      const answer = body(held);
+      const news = `${ answer.ok ? 1 : 0 }|${ answer.error }|${ newsOfRead(name, answer.text) }`;
+
+      if (sent.get(name) === news) {
+        continue;
+      }
+      sent.set(name, news);
+      // `age` goes out as it is: the browser wants to know how old this is, and it is not what
+      // the comparison above was made on.
+      res.write(`data: ${ JSON.stringify({ name, ...answer }) }\n\n`);
+      answered = Date.now();
+      beat = Date.now();
+    }
+
+    if (!closed && Date.now() - beat > STREAM_BEAT_MS) {
+      beat = Date.now();
+      res.write(': beat\n\n');
+    }
+  };
+
+  const timer = setInterval(() => {
+    tick().catch((e) => say(`stream tick: ${ e?.message || e }`));
+  }, STREAM_TICK_MS);
+
+  const stop = () => {
+    closed = true;
+    clearInterval(timer);
+  };
+
+  req.on('close', stop);
+  req.on('error', stop);
+  res.on('close', stop);
+  res.on('error', stop);
+
+  await tick().catch(() => {});
+}
 
 /* ── The watchdog ───────────────────────────────────────────────────────────────────────────
  *
@@ -619,7 +835,8 @@ const server = http.createServer(async(req, res) => {
 
   // A request that cannot be answered gives the connection back rather than holding it. The
   // apiserver proxy in front of this has its own timeout, and a reply it has stopped waiting
-  // for is a socket neither end is using.
+  // for is a socket neither end is using. The stream opts out below: holding the connection is
+  // the whole of what it does.
   res.setTimeout?.(REQUEST_TIMEOUT_MS, () => {
     try {
       res.destroy();
@@ -649,6 +866,19 @@ const server = http.createServer(async(req, res) => {
     if (!allowed(req)) {
       // Nothing about why. A caller without the token learns that it needs one, and no more.
       send(401, { version: VERSION, error: 'No.' });
+
+      return;
+    }
+
+    /*
+     * The stream, before the routes, because it is not one: it answers once and goes on
+     * answering, so it owns its connection and the request timeout above must not reach it.
+     */
+    if (path === '/stream') {
+      asked++;
+      served[path] = (served[path] || 0) + 1;
+      res.setTimeout?.(0);
+      await stream(req, res, url);
 
       return;
     }

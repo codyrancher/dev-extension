@@ -32,6 +32,9 @@ import type { SessionMode, ConversationOrigin, AgentActivity } from './agent';
 // agent.ts, the pod's sessions.sh and the in-cluster API. See conversation-id.mjs.
 import { conversationProject, conversationLabel, isConversationId, conversationBase } from './conversation-id.mjs';
 import { paneSendScript } from './pane-send.mjs';
+// The two timer-driven reads, as scripts the pod's state service runs from the same module.
+import { queuedScript, reportScript } from './agent-reads.mjs';
+import { podStateText, PodStateUnavailable } from './pod-state';
 import { forkScript, forkTitle, FORK_UUID_RE } from './pane-fork.mjs';
 
 /** Where the agents extension's API is. The agents extension made the agent pod, so this is its cluster. */
@@ -270,6 +273,30 @@ export function snapshotFromAnswer(answer: Json): ConversationSnapshot | null {
   };
 }
 
+/**
+ * A read of the agent pod: the state service where it can, the exec where it cannot.
+ *
+ * The same shape `sessionScript` keeps in agent.ts, for the two readers here that ran on a
+ * timer. `PodStateUnavailable` is the only thing `podStateText` throws and it means exactly
+ * "ask the old way" - a pod whose seed predates the route, a cluster that does not allow
+ * `pods/proxy`, a service inside its cooldown. Anything else belongs to the caller.
+ *
+ * The script is a thunk because building it is not free and the HTTP path never needs it.
+ */
+async function readAgent(pod: string, path: string, script: () => string): Promise<string> {
+  try {
+    return await podStateText(pod, path);
+  } catch (e) {
+    if (!(e instanceof PodStateUnavailable)) {
+      throw e;
+    }
+  }
+
+  const api = await requireAgents();
+
+  return podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script()], AGENT_BASE);
+}
+
 export async function conversationSnapshot(): Promise<ConversationSnapshot | null> {
   const answer = await devFetch(`${ DEV_API }/conversations`).catch(() => null);
 
@@ -468,23 +495,8 @@ export async function latestAgentReport(workspace: string): Promise<AgentReport 
   if (!pod) {
     throw new Error('The agent pod is not there to read the report from.');
   }
-  const dir = `${ AGENT_HOME }/.claude/projects/${ workspaceWorkdir(workspace).replace(/\//g, '-') }`;
-  const js = [
-    'const fs=require("fs");const f=process.argv[1];const lines=fs.readFileSync(f,"utf8").split("\\n");',
-    'let out=null;for(let i=lines.length-1;i>=0&&!out;i--){let e;try{e=JSON.parse(lines[i])}catch{continue}',
-    'if(e.type!=="assistant"||e.isSidechain||e.isMeta)continue;const c=e.message&&e.message.content;if(!Array.isArray(c))continue;',
-    'const t=c.filter(b=>b.type==="text"&&b.text&&b.text.trim()&&!/^</.test(b.text.trim())).map(b=>b.text).join("\\n").trim();',
-    'if(t)out={at:e.timestamp||"",text:t.slice(0,2000)}}',
-    'process.stdout.write(JSON.stringify(out));',
-  ].join('');
-  const script = [
-    'export PATH=/workspace/.home/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH',
-    `f=$(ls -t ${ dir }/*.jsonl 2>/dev/null | head -1)`,
-    '[ -n "$f" ] || { echo null; exit 0; }',
-    `echo "@@FILE $f"`,
-    `node -e '${ js.replace(/'/g, "'\\''") }' "$f"`,
-  ].join('\n');
-  const out = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE);
+  const workdir = workspaceWorkdir(workspace);
+  const out = await readAgent(pod, `/report?workdir=${ encodeURIComponent(workdir) }`, () => reportScript(workdir));
 
   // The script always says something - `null` when there is no transcript, `@@FILE` when there
   // is. Nothing at all means the exec itself did not land.
@@ -622,15 +634,7 @@ export async function queuedNotStarted(): Promise<{ id: string; workspace: strin
   if (!pod) {
     return [];
   }
-  const script = [
-    'export PATH=/workspace/.home/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH',
-    `for f in ${ AGENT_WORKSPACE }/.queue/*; do`,
-    '  [ -f "$f" ] || continue',
-    '  id=$(basename "$f")',
-    '  if [ "$(id -u)" = 0 ]; then setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/workspace/.home tmux has-session -t "mc-$id" 2>/dev/null || echo "$id"; else tmux has-session -t "mc-$id" 2>/dev/null || echo "$id"; fi',
-    'done',
-  ].join('\n');
-  const listing = await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', script], AGENT_BASE).catch(() => '');
+  const listing = await readAgent(pod, '/queued', () => queuedScript()).catch(() => '');
 
   return listing.split('\n')
     .map((line) => line.trim())
