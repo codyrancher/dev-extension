@@ -335,6 +335,53 @@
 }
 
 /*
+ * ── Nothing makes the page itself wide ──────────────────────────────────────────────────────
+ *
+ * The rules above name the two table classes the shell renders. Seven components draw a
+ * `<table>` of their own, and several more draw `<pre>`, and either will happily be wider than
+ * a phone - at which point the whole document scrolls sideways. That is the single most
+ * annoying thing a page can do on a phone: every vertical scroll drifts, and the thing you were
+ * reading slides out from under your thumb.
+ *
+ * So anything that is legitimately wider than the screen scrolls inside its own box instead.
+ * `display: block` on a table is what lets it have its own scrollbar; the rows and cells inside
+ * still lay out as a table, so columns keep their alignment.
+ *
+ * `overflow-wrap` on the prose is the other half: a URL or a branch name with no spaces in it
+ * is one unbreakable word, and one of those is enough to widen a page on its own.
+ */
+@media (max-width: 760px) {
+  .dev-root table {
+    display:    block;
+    max-width:  100%;
+    overflow-x: auto;
+  }
+
+  .dev-root pre,
+  .dev-root .md-body pre,
+  .dev-root code {
+    max-width:  100%;
+    overflow-x: auto;
+  }
+
+  .dev-root .md-body,
+  .dev-root .comment-body {
+    overflow-wrap: anywhere;
+    word-break:    break-word;
+  }
+
+  /*
+   * The backstop, and deliberately the last word.
+   *
+   * Everything above is a specific fix for a specific box. This catches whatever is left -
+   * something new, something nobody measured on a phone - and costs nothing when there is
+   * nothing to catch. It is on the product's own root rather than on `body`, so it cannot
+   * clip something the rest of Rancher meant to overflow.
+   */
+  .dev-root { overflow-x: hidden; }
+}
+
+/*
  * ── Focus, for anyone not using a mouse ─────────────────────────────────────────────────────
  *
  * `:focus-visible` rather than `:focus`, so a ring appears for the keyboard and never on a
