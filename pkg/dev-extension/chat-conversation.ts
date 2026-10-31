@@ -358,9 +358,17 @@ export function useConversation(source: () => ConversationSource) {
    * Whether this conversation's reads go over HTTP.
    *
    * Per conversation rather than per page: one pane may be in another pod while the one beside
-   * it is in the agent pod. `off` is final for the life of the composable - a conversation that
-   * has once answered without frames is not asked again, because the alternative is paying a
-   * failed request in front of every exec for as long as the chat is open.
+   * it is in the agent pod.
+   *
+   * `off` is final, and it is set for one reason only: an answer that came back without this
+   * read's frames. That is a real disagreement about what a read looks like, and asking again
+   * would not change it.
+   *
+   * A pod that is simply unavailable is not that, and used to be treated as if it were - so a
+   * service that was starting, or a minute into a cooldown, took that conversation off HTTP for
+   * as long as the tab stayed open. pod-state.ts already holds the circuit breaker that stops
+   * a failing pod from being asked, and while it is open it refuses without making a request,
+   * so leaving the decision there costs nothing and lets a conversation come back.
    */
   let httpRead: 'unknown' | 'on' | 'off' = 'unknown';
 
@@ -772,14 +780,21 @@ export function useConversation(source: () => ConversationSource) {
             return out;
           }
           console.debug(`[chat] the pod answered without this read's frames; using exec for ${ at.id }`); // eslint-disable-line no-console
+          // Not framed: this pod and this page disagree about what a read looks like, which
+          // asking again will not settle.
+          httpRead = 'off';
         } catch (e) {
           if (!(e instanceof PodStateUnavailable)) {
             throw e;
           }
-          // A pod with no service, a cluster that does not allow pods/proxy, a service that is
-          // starting: all of them mean "ask the old way", and none of them is worth saying twice.
+          /*
+           * A pod with no service, a cluster that does not allow pods/proxy, a service that is
+           * starting or inside its cooldown: all of them mean "ask the old way" this time, and
+           * none of them is worth saying twice or holding against the next read. The breaker in
+           * pod-state.ts is what keeps a failing pod from being asked - it throws without a
+           * request while it is open - so this is left `unknown` and tried again when it closes.
+           */
         }
-        httpRead = 'off';
       }
     }
 

@@ -125,6 +125,17 @@ function panelInstance(): any {
   const host = document.createElement('div');
 
   host.id = HOST_ID;
+  /*
+   * `dev-root` is how this product's CSS says "ours", and the panel needs it as much as the
+   * pages do - more, since the drawer is most of what anybody touches on a phone.
+   *
+   * It is easy to miss from here: the pages wear the class in a template, this mounts on a bare
+   * div appended to `document.body`, and design/mobile.css scopes every one of its rules under
+   * `.dev-root` so as not to restyle the rest of Rancher. The drawer sat outside all of them -
+   * so the phone pass landed on the pages and not on the chat, which is the one surface it was
+   * written for. `dev-overlay` alongside it marks the rules that are the panel's own.
+   */
+  host.className = 'dev-root dev-overlay';
   document.body.appendChild(host);
 
   // Its own Vue app rather than a component slotted into the dashboard's, because there is no

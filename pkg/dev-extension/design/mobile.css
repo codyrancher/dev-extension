@@ -377,8 +377,12 @@
    * something new, something nobody measured on a phone - and costs nothing when there is
    * nothing to catch. It is on the product's own root rather than on `body`, so it cannot
    * clip something the rest of Rancher meant to overflow.
+   *
+   * Not the overlay host, which wears the same class and is a bare div holding a fixed drawer:
+   * it has no width of its own to contain, so there is nothing here for it to do and no reason
+   * to have an opinion about what a fixed child may paint over.
    */
-  .dev-root { overflow-x: hidden; }
+  .dev-root:not(.dev-overlay) { overflow-x: hidden; }
 }
 
 /*

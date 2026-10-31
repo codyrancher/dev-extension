@@ -1,4 +1,16 @@
 import { importTypes } from '@rancher/auto-import';
+/*
+ * The product's stylesheets, from the entry point, because they are the product's and not any
+ * one component's.
+ *
+ * They used to arrive as a side effect of importing design/tokens.ts, which three layout
+ * components import - so whether a surface was styled depended on whether something on it
+ * happened to use a Stack or a Row. The pages all do; the chat drawer mounts its own Vue app
+ * on `document.body` and does not, which is how the phone pass came to miss the one surface
+ * that most needed it. Here it is unconditional.
+ */
+import './design/tokens.css';
+import './design/mobile.css';
 import { IPlugin, ActionLocation } from '@shell/core/types';
 import routes from './routing';
 import { stageResource } from './builder/state';

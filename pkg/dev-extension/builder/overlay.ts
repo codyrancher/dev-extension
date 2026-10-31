@@ -79,6 +79,9 @@ function panelInstance(): any {
   const host = document.createElement('div');
 
   host.id = HOST_ID;
+  // Ours, so the product's CSS reaches it - see the same line in overlay.ts for why a panel
+  // mounted on `document.body` otherwise gets none of it.
+  host.className = 'dev-root dev-overlay';
   document.body.appendChild(host);
 
   const app = createApp(BuilderPanel);

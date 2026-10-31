@@ -94,13 +94,16 @@ interface Known {
   /** Whether this page has already replaced this pod's service once. See the version check. */
   replaced: boolean;
   /**
-   * Paths this pod has answered 404 for.
+   * Routes this pod has answered 404 for, without their query strings.
    *
-   * A 404 says something about the path, not about the pod: an older service that does not
-   * serve a route this browser knows about is still perfectly good for the routes it does
-   * serve. Opening the circuit over one of them took every other read off HTTP for a minute,
-   * which would have made adding any route a regression for every pod that had not caught up
-   * yet. Remembered per pod, so the path is asked once and then left alone.
+   * Reached only once the version has agreed, which is what makes a 404 here mean what it says:
+   * a service of the right vintage that still does not serve this route. Opening the circuit
+   * over one of them would take every other read off HTTP for a minute, so it is remembered
+   * against the route alone and the pod goes on serving everything else.
+   *
+   * The query string is cut off first. `/chat?id=...&off=...` differs on every poll, so keeping
+   * the whole string remembered a path that would never be asked for again and grew without
+   * bound while guarding nothing.
    */
   missing: Set<string>;
 }
@@ -201,8 +204,8 @@ export async function podStateText(pod: string, path: string): Promise<string> {
     it.replaced = false;
     it.missing.clear();
   }
-  if (it.missing.has(path)) {
-    throw new PodStateUnavailable(`this pod's state service does not serve ${ path }`);
+  if (it.missing.has(route(path))) {
+    throw new PodStateUnavailable(`this pod's state service does not serve ${ route(path) }`);
   }
 
   const token = await tokenFor(pod);
@@ -233,7 +236,19 @@ export async function podStateText(pod: string, path: string): Promise<string> {
   });
 }
 
-async function fetchOnce(it: Known, pod: string, path: string, token: string): Promise<string> {
+/**
+ * One request, and what the answer's version says about it before anything else does.
+ *
+ * Every reply this service sends carries its version - the 404s and the 401s too - and reading
+ * that first is the whole of this function's order. A 404 from a service older than the route
+ * being asked for is not "no such route", it is "not this service", and the two want opposite
+ * responses: one is permanent and the other is fixed by a restart. Getting that backwards is
+ * what kept a version-1 service alive under a version-2 page for a whole day: the chat read
+ * asked for `/chat`, a route version 1 never had, took the 404 at face value, and went back to
+ * exec for the life of the tab - while the one answer that proved the service was out of date
+ * was the one answer nothing checked the version of.
+ */
+async function ask(it: Known, pod: string, path: string, token: string): Promise<{ status: number; answer: Json }> {
   const stop = new AbortController();
   const timer = setTimeout(() => stop.abort(), READ_TIMEOUT_MS);
   let resp;
@@ -249,6 +264,25 @@ async function fetchOnce(it: Known, pod: string, path: string, token: string): P
     clearTimeout(timer);
   }
 
+  const answer = await resp.json().catch(() => null);
+  const version = Number(answer?.version);
+
+  // Before the status, because the status is only meaningful from a service this page knows.
+  if (Number.isFinite(version) && version !== WANT_VERSION) {
+    throw new WrongVersion(`the state service speaks version ${ version }, this page wants ${ WANT_VERSION }`);
+  }
+
+  return { status: resp.status, answer };
+}
+
+/** What a 404 is remembered as: the route, without the arguments this particular read passed. */
+function route(path: string): string {
+  return path.split('?')[0];
+}
+
+async function fetchOnce(it: Known, pod: string, path: string, token: string): Promise<string> {
+  let { status, answer } = await ask(it, pod, path, token);
+
   /*
    * A 401 is the one failure worth a second attempt rather than a cooldown.
    *
@@ -257,44 +291,28 @@ async function fetchOnce(it: Known, pod: string, path: string, token: string): P
    * dropped and the service asked to start again - it is already running, so that call just
    * hands back the current token.
    */
-  if (resp.status === 401 && it.token) {
+  if (status === 401 && it.token) {
     it.token = '';
-
-    const fresh = await tokenFor(pod);
-    const again = await fetch(url(pod, path), { headers: { accept: 'application/json', 'x-state-token': fresh } })
-      .catch((e) => {
-        throw down(it, `the state service could not be reached: ${ e?.message || e }`);
-      });
-
-    if (again.status === 404) {
-      it.missing.add(path);
-
-      throw new PodStateUnavailable(`this pod's state service does not serve ${ path }`);
-    }
-    if (!again.ok) {
-      throw down(it, `the state service answered ${ again.status }`);
-    }
-
-    return readAnswer(it, await again.json().catch(() => null));
-  }
-  if (resp.status === 404) {
-    it.missing.add(path);
-
-    throw new PodStateUnavailable(`this pod's state service does not serve ${ path }`);
-  }
-  if (!resp.ok) {
-    throw down(it, `the state service answered ${ resp.status }`);
+    ({ status, answer } = await ask(it, pod, path, await tokenFor(pod)));
   }
 
-  return readAnswer(it, await resp.json().catch(() => null));
+  if (status === 404) {
+    // The route, not this read's query string: `/chat?id=...&off=...` is different on every
+    // poll, so remembering the whole thing remembered nothing and grew for ever.
+    it.missing.add(route(path));
+
+    throw new PodStateUnavailable(`this pod's state service does not serve ${ route(path) }`);
+  }
+  if (status < 200 || status >= 300) {
+    throw down(it, `the state service answered ${ status }`);
+  }
+
+  return readAnswer(it, answer);
 }
 
 function readAnswer(it: Known, answer: Json): string {
   if (!answer || typeof answer !== 'object') {
     throw down(it, 'the state service answered something that is not an answer');
-  }
-  if (Number(answer.version) !== WANT_VERSION) {
-    throw new WrongVersion(`the state service speaks version ${ answer.version }, this page wants ${ WANT_VERSION }`);
   }
   if (!answer.ok) {
     // The service is up and saying it has nothing good - a script that has been failing for
