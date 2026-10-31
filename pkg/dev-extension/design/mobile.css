@@ -237,3 +237,129 @@
    */
   .dev-root .box__row { align-items: flex-end; }
 }
+
+/*
+ * ── Touch targets ───────────────────────────────────────────────────────────────────────────
+ *
+ * `pointer: coarse`, not a width, and that is the whole point of this block.
+ *
+ * Everything above is laid out by width, because layout is about how much room there is. How
+ * big a control has to be is a different question with a different answer: it depends on what
+ * is pointing at it. A desktop window dragged narrow is still being driven by a mouse and wants
+ * the 22px toolbar buttons it was designed with - raising those by width would have changed the
+ * desktop experience, which is exactly what this pass is not for.
+ *
+ * 44px is the number because it is roughly a fingertip, and it is what WCAG 2.5.5 asks for.
+ * Several of the controls here were deliberately made small for a toolbar - PrButton overrides
+ * Rancher's own 40px minimum and says why - so none of these numbers is a mistake being
+ * corrected. They are a second answer for a second kind of pointer.
+ *
+ * Height alone, not padding: these are flex rows with centred labels, so a taller box keeps the
+ * text where it was and only grows the area you can hit.
+ */
+@media (pointer: coarse) {
+  .dev-root .prb,
+  .dev-root .btn,
+  .dev-root button:not(.dev-root .tabs li.tab a),
+  .dev-root [role='button'] {
+    min-height: 44px;
+  }
+
+  /*
+   * An icon-only control needs the width too, or it is a 44px-tall sliver. `min-width` rather
+   * than `width` so a labelled button is not stretched into a square.
+   */
+  .dev-root .prb--icon,
+  .dev-root .icon-btn,
+  .dev-root .workspace-rail__quote,
+  .dev-root button.role-link:empty { min-width: 44px; }
+
+  /* The chat's own two, which have their own variables so they cannot drift apart. */
+  .dev-root .mc-chat {
+    --mc-chat-btn: 44px;
+    --mc-chat-nav: 44px;
+  }
+
+  /*
+   * Checkboxes and radios are the smallest thing anybody is asked to hit, and the label beside
+   * them is usually the easier target - so the label gets the height as well.
+   */
+  .dev-root input[type='checkbox'],
+  .dev-root input[type='radio'] {
+    min-width:  22px;
+    min-height: 22px;
+  }
+
+  .dev-root label:has(> input[type='checkbox']),
+  .dev-root label:has(> input[type='radio']) {
+    display:     inline-flex;
+    align-items: center;
+    min-height:  44px;
+  }
+}
+
+/*
+ * ── A conversation is the page, on a phone ──────────────────────────────────────────────────
+ *
+ * The drawer that holds a chat is sized in pixels and the size is remembered: `defaultGeometry`
+ * is 420 tall, and whatever it was last dragged to on a desktop is what it reopens at. On a
+ * 390x844 phone that is half the screen for a conversation and half for the page behind it,
+ * which is the thing that makes holding a conversation here feel like fighting the layout.
+ *
+ * `!important` because that height is an inline style computed from the stored geometry, and
+ * this has to beat it. It is the right tool exactly once: a remembered desktop measurement is
+ * not a decision anybody made about their phone.
+ *
+ * dvh rather than vh so the address bar sliding away does not leave a strip of page under it,
+ * and the drawer is pinned to the bottom edge so the composer sits above the thumb rather than
+ * under the chrome. Nothing here touches the chat itself: `.mc-chat` is already a flex column
+ * at `height: 100%` with a log that grows, so giving the box the room is the whole fix.
+ */
+@media (max-width: 760px) {
+  .dev-root .mc-agent,
+  .dev-root .mc-agent--bottom {
+    height:     85dvh !important;
+    max-height: 85dvh !important;
+    width:      100% !important;
+    max-width:  100% !important;
+    left:       0 !important;
+    right:      0 !important;
+    bottom:     0 !important;
+  }
+
+  /*
+   * And the edge you drag to resize goes: there is no room to spend on it, dragging a 6px strip
+   * with a thumb does not work, and the height above is not a preference it would be editing.
+   */
+  .dev-root .mc-agent__grip { display: none; }
+}
+
+/*
+ * ── Focus, for anyone not using a mouse ─────────────────────────────────────────────────────
+ *
+ * `:focus-visible` rather than `:focus`, so a ring appears for the keyboard and never on a
+ * click. Scoped under `.dev-root` so it does not argue with the rest of Rancher, and set
+ * everywhere rather than per component, because the controls that lose a focus ring are always
+ * the hand-rolled ones somebody forgot.
+ */
+.dev-root :focus-visible {
+  outline:        2px solid var(--primary, #3d98d3);
+  outline-offset: 2px;
+  border-radius:  2px;
+}
+
+/*
+ * Anyone who has asked their system to stop animating things means it here too. The bars, the
+ * card flights and the width transitions are all decoration; none of them carries meaning that
+ * is lost by arriving instantly.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .dev-root *,
+  .dev-root *::before,
+  .dev-root *::after {
+    animation-duration:        0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration:       0.01ms !important;
+    scroll-behavior:           auto !important;
+  }
+}
