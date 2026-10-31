@@ -78,6 +78,16 @@ interface Known {
   why: string;
   /** A start already under way, so ten callers at once do not exec ten times. */
   starting: Promise<string> | null;
+  /**
+   * Paths this pod has answered 404 for.
+   *
+   * A 404 says something about the path, not about the pod: an older service that does not
+   * serve a route this browser knows about is still perfectly good for the routes it does
+   * serve. Opening the circuit over one of them took every other read off HTTP for a minute,
+   * which would have made adding any route a regression for every pod that had not caught up
+   * yet. Remembered per pod, so the path is asked once and then left alone.
+   */
+  missing: Set<string>;
 }
 
 const known = new Map<string, Known>();
@@ -86,7 +96,7 @@ function held(pod: string): Known {
   let it = known.get(pod);
 
   if (!it) {
-    it = { token: '', downSince: 0, why: '', starting: null };
+    it = { token: '', downSince: 0, why: '', starting: null, missing: new Set() };
     known.set(pod, it);
   }
 
@@ -161,8 +171,13 @@ export async function podStateText(pod: string, path: string): Promise<string> {
     throw new PodStateUnavailable(it.why);
   }
   if (it.downSince) {
-    // The cooldown is over: one more try, from nothing.
+    // The cooldown is over: one more try, from nothing. What the pod does not serve is
+    // forgotten too - the pod may have been replaced by one that does.
     it.downSince = 0;
+    it.missing.clear();
+  }
+  if (it.missing.has(path)) {
+    throw new PodStateUnavailable(`this pod's state service does not serve ${ path }`);
   }
 
   const token = await tokenFor(pod);
@@ -198,11 +213,21 @@ export async function podStateText(pod: string, path: string): Promise<string> {
         throw down(it, `the state service could not be reached: ${ e?.message || e }`);
       });
 
+    if (again.status === 404) {
+      it.missing.add(path);
+
+      throw new PodStateUnavailable(`this pod's state service does not serve ${ path }`);
+    }
     if (!again.ok) {
       throw down(it, `the state service answered ${ again.status }`);
     }
 
     return readAnswer(it, await again.json().catch(() => null));
+  }
+  if (resp.status === 404) {
+    it.missing.add(path);
+
+    throw new PodStateUnavailable(`this pod's state service does not serve ${ path }`);
   }
   if (!resp.ok) {
     throw down(it, `the state service answered ${ resp.status }`);

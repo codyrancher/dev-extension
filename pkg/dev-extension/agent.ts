@@ -707,7 +707,12 @@ async function sessionScript(args: string[], what: string): Promise<string> {
    * does not allow `pods/proxy`, a service that is wedged or whose answer has gone stale.
    * Anything else is a real failure and belongs to the caller.
    */
-  const over = args.length === 1 ? OVER_HTTP[args[0]] : '';
+  // `states <project>` is the one two-word verb that moves: the service takes the project as a
+  // query parameter and runs the same scoped verb behind it. A pod whose service predates that
+  // route answers 404, which `podStateText` records against the path alone and not the pod.
+  const over = args.length === 1
+    ? OVER_HTTP[args[0]] || ''
+    : args.length === 2 && args[0] === 'states' ? `/states?project=${ encodeURIComponent(args[1]) }` : '';
 
   if (over) {
     try {
@@ -718,7 +723,7 @@ async function sessionScript(args: string[], what: string): Promise<string> {
       }
       if (lastFallback !== e.message) {
         lastFallback = e.message;
-        console.debug(`[agent] reading ${ args[0] } by exec: ${ e.message }`); // eslint-disable-line no-console
+        console.debug(`[agent] reading ${ args.join(' ') } by exec: ${ e.message }`); // eslint-disable-line no-console
       }
     }
   }

@@ -340,6 +340,16 @@ function body(held, extra = {}) {
  * through exec, where it has an exit code and an audit trail, and where a bug in this file
  * cannot cost anybody a conversation.
  */
+/**
+ * A project name safe to hand a shell script.
+ *
+ * The one place a caller's input reaches an argv here, so it is the one place that has to say
+ * what it accepts. The ids this serves are `p-<workspace>-<n>` and `agent-<n>`, so letters,
+ * digits, dash and underscore is the whole alphabet - and anything else is refused rather than
+ * quoted, because refusing is checkable and quoting is a thing to get wrong once.
+ */
+const SAFE_NAME = /^[A-Za-z0-9_-]{1,120}$/;
+
 const ROUTES = [
   ['/healthz', async() => ({
     version: VERSION,
@@ -350,7 +360,27 @@ const ROUTES = [
     reads:   [...cache.keys()],
   })],
   ['/sessions', async() => body(await cached('list', ['/bin/sh', `${ SEED }/sessions.sh`, 'list']))],
-  ['/states', async() => body(await cached('states-all', ['/bin/sh', `${ SEED }/sessions.sh`, 'states-all']))],
+  ['/states', async(url) => {
+    /*
+     * `states <project>` is a different verb from `states-all`, not a filter over it.
+     *
+     * sessions.sh says why in its own comments: `states` is scoped to a base and answers for
+     * that project's conversations, `states-all` is not scoped and answers for the pod. Asking
+     * the narrow one for a pod-wide answer is how a caller came to report that nothing was
+     * running anywhere, so the two are kept apart here too - and cached apart, since a tab
+     * watching one workspace and a panel watching the pod want different answers.
+     */
+    const project = url.searchParams.get('project') || '';
+
+    if (!project) {
+      return body(await cached('states-all', ['/bin/sh', `${ SEED }/sessions.sh`, 'states-all']));
+    }
+    if (!SAFE_NAME.test(project)) {
+      return { version: VERSION, ok: false, text: '', age: -1, stale: false, error: 'That is not a project name.' };
+    }
+
+    return body(await cached(`states:${ project }`, ['/bin/sh', `${ SEED }/sessions.sh`, 'states', project]));
+  }],
 ];
 
 /* ── The watchdog ───────────────────────────────────────────────────────────────────────────
@@ -431,7 +461,7 @@ const server = http.createServer(async(req, res) => {
       return;
     }
     asked++;
-    send(200, await route[1]());
+    send(200, await route[1](url));
     answered = Date.now();
   } catch (e) {
     /*
