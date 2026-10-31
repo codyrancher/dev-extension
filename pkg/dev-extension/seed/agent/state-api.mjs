@@ -547,12 +547,26 @@ const ROUTES = [
  * The failure this cannot catch from inside is itself: a process that is up, holding the port,
  * and no longer answering. The browser would keep choosing it over the exec path that works.
  *
- * So: if anything has been asked of this service and nothing has been answered successfully for
- * WATCHDOG_MS, exit. The supervisor starts a fresh one within seconds, and a service that
- * replaces itself is strictly better than one that sits there holding a port it cannot serve.
- * `asked` guards the idle case - a pod nobody is looking at should not restart all night.
+ * So: if something has been asked and NOT answered for WATCHDOG_MS, exit. The supervisor starts
+ * a fresh one within seconds, and a service that replaces itself is strictly better than one
+ * that sits there holding a port it cannot serve.
+ *
+ * "Asked and not answered", not "asked at all". The first version counted requests and never
+ * forgot them, so once a pod had served anything, five minutes with nobody looking read exactly
+ * like five minutes wedged - and the service exited. Then the supervisor started another, which
+ * exited five minutes after ITS last reader. Every pod that had ever been read restarted its
+ * service all night, which is the thing this comment claimed to prevent. Caught because the
+ * `/served` counters kept coming back empty on a pod that had plainly served.
+ *
+ * Comparing the two clocks is what tells idle from wedged: everything asked has been answered
+ * (idle, say nothing), or something was asked after the last answer and the gap is too wide
+ * (wedged, go). Any reply counts as answering, a 401 and a 404 included - what is being watched
+ * for is a process that has stopped replying at all, and a caller holding a stale token is not
+ * that, and would not be helped by a restart that keeps the token.
  */
 let asked = 0;
+/** When a request last arrived, and when one was last replied to. The pair is the liveness test. */
+let lastAsked = 0;
 
 /*
  * How many of each route has been served, for one question nothing could answer from outside.
@@ -569,13 +583,12 @@ let answered = Date.now();
 
 function watchdog() {
   const timer = setInterval(() => {
-    if (!asked) {
-      answered = Date.now();
-
+    // Nothing is outstanding: every request that arrived has been replied to. Idle, not wedged.
+    if (lastAsked <= answered) {
       return;
     }
     if (Date.now() - answered > WATCHDOG_MS) {
-      say(`answered nothing for ${ Math.round((Date.now() - answered) / 1000) }s after ${ asked } requests; exiting for the supervisor`);
+      say(`asked ${ Math.round((Date.now() - lastAsked) / 1000) }s ago and answered nothing for ${ Math.round((Date.now() - answered) / 1000) }s; exiting for the supervisor`);
       process.exit(3);
     }
   }, 30_000);
@@ -586,9 +599,14 @@ function watchdog() {
 /* ── Serving ────────────────────────────────────────────────────────────────────────────────── */
 
 const server = http.createServer(async(req, res) => {
+  lastAsked = Date.now();
+
   const send = (code, value) => {
     const text = JSON.stringify(value);
 
+    // Whatever the status: this process is replying, which is the only thing the watchdog is
+    // watching for.
+    answered = Date.now();
     try {
       res.writeHead(code, {
         'content-type':  'application/json',
@@ -645,7 +663,6 @@ const server = http.createServer(async(req, res) => {
     asked++;
     served[path] = (served[path] || 0) + 1;
     send(200, await route[1](url));
-    answered = Date.now();
   } catch (e) {
     /*
      * A bug in a route is a 500, not a dead pod.
