@@ -302,8 +302,6 @@
   .dev-root summary,
   .dev-root a.dev-list__link,
   .dev-root a.has-clean-tooltip,
-  .dev-root a.dev-nav-head__add,
-  .dev-root button.dev-nav-head__add,
   .dev-root .dev-sidebar__globals a {
     min-height: 44px !important;
   }
@@ -1295,7 +1293,14 @@
  * paint inside 44px of target.
  */
 @media (max-width: 760px) {
-  .dev-root .dev-nav-head__add {
+  /*
+   * `a.` and `button.`, because the blanket minimum above reached this element as
+   * `.dev-root a.dev-nav-head__add` - a class plus an element, which outranks a class alone.
+   * Written without them, `min-height: 0 !important` lost to `min-height: 44px !important`
+   * and the square came out 28 wide by 44 tall, still straddling the heading row.
+   */
+  .dev-root a.dev-nav-head__add,
+  .dev-root button.dev-nav-head__add {
     position:   relative;
     width:      28px !important;
     height:     28px !important;
@@ -1318,10 +1323,23 @@
    * bottom of the drawer they are where they were designed to be: readable at a glance, in
    * nobody's way, and still there while the list scrolls behind them.
    */
+  /*
+   * The drawer ends where the screen ends.
+   *
+   * `.dev-nav` asks for `top: var(--header-height); bottom: 0`, and `.dev-sidebar` on the same
+   * element says `height: 100%`, which wins: 844px tall starting at 55, so its last 55px were
+   * off the glass and unreachable. Sticky below was correct all along, at the foot of a box
+   * that hung off the screen. `position: fixed` cannot help here, because the drawer's
+   * transform makes the drawer its containing block.
+   */
+  .dev-root .dev-sidebar.dev-nav { height: auto !important; }
+
   .dev-root .dev-sidebar__stats {
     position:   sticky;
     bottom:     0;
     z-index:    2;
+    margin-top: 0 !important;
     background: var(--nav-bg, var(--body-bg));
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
   }
 }

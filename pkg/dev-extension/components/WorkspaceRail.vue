@@ -1087,7 +1087,8 @@ export default {
     openPhoneChat(conversation) {
       this.phoneChat = conversation.id;
       try {
-        history.pushState({ devSheet: conversation.id }, '');
+        // Spread, because vue-router keeps its position in this object and reads it back.
+        history.pushState({ ...history.state, devSheet: conversation.id }, '');
         this.sheetInHistory = true;
       } catch {
         // A browser that will not take the entry still gets a working sheet; it just closes
@@ -6159,15 +6160,6 @@ export default {
 .workspace-rail__phone-chat :deep(.split-btn__more) {
   flex:       0 0 48px;
   min-height: 44px;
-}
-
-.workspace-rail__phone-chat-unused {
-  display:         flex !important;
-  align-items:     center;
-  gap:             10px;
-  width:           100%;
-  justify-content: flex-start !important;
-  text-align:      left;
 }
 
 .workspace-rail__phone-name {
