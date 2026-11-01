@@ -1047,3 +1047,21 @@
     padding-bottom: calc(var(--bar-h, 64px) + var(--bar-bottom, 16px) + 16px) !important;
   }
 }
+
+/*
+ * ── The hole the inline chat left ───────────────────────────────────────────────────────────
+ *
+ * `.workspace-rail__live` reserves 320px and grows into whatever the cards above it leave,
+ * which is exactly right while it holds a terminal. On a phone it holds a card of buttons
+ * about 180px tall, and the rest was 350px of empty box between the conversations and the
+ * actions - the page looking broken in a way that is only a leftover.
+ */
+@media (max-width: 760px) {
+  .dev-root .workspace-rail__live {
+    flex:       0 0 auto !important;
+    min-height: 0 !important;
+  }
+
+  /* The new-conversation split button reads as one control, not a button and a stray chevron. */
+  .dev-root .workspace-rail__phone-new { width: 100% !important; }
+}

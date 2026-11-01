@@ -3519,6 +3519,7 @@ export default {
             <RcButton
               v-for="c in railConversations"
               :key="c.id"
+              variant="secondary"
               class="workspace-rail__phone-chat"
               :class="{ 'workspace-rail__phone-chat--live': c.alive }"
               @click="openPhoneChat(c)"
