@@ -664,13 +664,73 @@
  * rather than cramped.
  */
 @media (max-width: 760px) {
+  /*
+   * `.card__head-line`, which is the element - the first attempt named `.card__head` and did
+   * nothing, which is why a designer reading the screenshot still found text drawn over text.
+   *
+   * It is `flex-wrap: nowrap` with `overflow: hidden`, deliberately: on a wide card the header
+   * is one line that truncates, so the title underneath keeps its two lines. At 390px there is
+   * no room for that line, so its chips shrink below their own content - flex items shrink by
+   * default - and clip inside a box that hides overflow. Three chips each cut off mid-word,
+   * abutting, reads exactly like three chips drawn on top of one another.
+   *
+   * So on a phone the header wraps, and the chips are told not to shrink. The title taking a
+   * row lower is a trade worth making when the alternative is a header nobody can read.
+   */
+  .dev-root .card__head-line,
   .dev-root .card__head,
-  .dev-root .card__meta,
-  .dev-root .card__idents {
+  .dev-root .card__meta {
     flex-wrap:   wrap !important;
+    overflow:    visible !important;
     gap:         6px 8px !important;
     min-width:   0 !important;
     white-space: normal !important;
+  }
+
+  .dev-root .card__head-line > *,
+  .dev-root .card__head-line .chip,
+  .dev-root .card__foot > * { flex: 0 0 auto !important; }
+
+  /*
+   * The footer has the same shape and the same fault: it is the row with the card's primary
+   * button and two secondaries, laid out to not wrap, so at 390px the second secondary was
+   * sliced in half by the card's edge and the first lost its icon. Measured: 467px of content
+   * in a 332px box.
+   */
+  .dev-root .card__foot {
+    flex-wrap: wrap !important;
+    overflow:  visible !important;
+    gap:       8px !important;
+  }
+
+  /* The primary action takes the row; the secondaries sit under it. */
+  .dev-root .card__foot .btn--kind { flex: 1 1 100% !important; }
+
+  /*
+   * The summary is a sentence, and a sentence that does not fit should wrap rather than end in
+   * the middle of a word. Two lines, because the card's job is the title and the summary is
+   * what tells you whether the title is about what you think it is.
+   */
+  .dev-root .card__summary {
+    white-space:        normal !important;
+    overflow:           hidden;
+    display:            -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .dev-root .card__ident { flex: 0 0 auto !important; min-width: 0 !important; }
+
+  /*
+   * The CI chip, which is the one the designer saw sliced by its neighbour's border: 204px of
+   * "x 3 failing" in a 136px box. It sizes to its own words now, like every other chip in the
+   * row it sits in.
+   */
+  .dev-root .card__pr {
+    flex:      0 0 auto !important;
+    width:     auto !important;
+    max-width: 100% !important;
+    overflow:  visible !important;
   }
 
   /* A title is the one thing on a Focus card worth two lines of a phone screen. */
@@ -739,4 +799,79 @@
    * that box feels right, and I would rather say so than report a measurement that does not
    * answer the question.
    */
+}
+
+/*
+ * ── Focus's strips: the rest of the same fault ──────────────────────────────────────────────
+ *
+ * Three rows on a Focus card are laid out to never wrap and to hide what does not fit, which
+ * is right on a card three times this wide and is how text came to be drawn over text at
+ * 390px. The evidence strip is the worst of them: its children carry `flex: 1 99 auto`, a
+ * shrink factor of ninety-nine, so they collapse onto one another and their labels interleave
+ * into something that reads as one corrupted word.
+ *
+ * Measured rather than eyeballed: inside a 324px card, the evidence strip wanted 345px and the
+ * changed-files tree wanted 7009.
+ */
+@media (max-width: 760px) {
+  .dev-root .ev {
+    flex-wrap: wrap !important;
+    overflow:  visible !important;
+  }
+
+  .dev-root .ev > * {
+    flex:      0 0 auto !important;
+    min-width: 0;
+  }
+
+  /*
+   * The changed-files tree is a horizontal strip below 1100px, and at phone width that strip
+   * is twenty times the card. It scrolls inside itself now rather than painting over the card
+   * edge - a file list is the one thing here that genuinely cannot be made to fit.
+   */
+  .dev-root .tree {
+    max-width:                  100% !important;
+    overflow-x:                 auto !important;
+    scroll-snap-type:           x proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .dev-root .tree__file { scroll-snap-align: start; }
+
+  /*
+   * The media strip inside the evidence row - thumbnails plus an "all" button - which was the
+   * thing actually painting over the pills beside it. Unshrinking its parent moved it from
+   * collapsed-and-overlapping to simply too wide, so it wraps as well. Each fix here exposed
+   * the next one in, which is what a row of nested nowrap strips does.
+   */
+  .dev-root .ms,
+  .dev-root .ms__thumbs {
+    flex-wrap: wrap !important;
+    max-width: 100% !important;
+    overflow:  visible !important;
+  }
+
+  /*
+   * And a height that follows the wrapping.
+   *
+   * These strips are one row tall by design, so wrapping them put the fourth thumbnail on a
+   * second row inside a box still sized for one - straight over the file tree underneath. A
+   * row that is allowed to wrap has to be allowed to grow; otherwise the overlap just moves
+   * down the card.
+   */
+  .dev-root .ev,
+  .dev-root .ev--shots,
+  .dev-root .ms,
+  .dev-root .ms__thumbs,
+  .dev-root .card__facts {
+    height:     auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+  }
+
+  .dev-root .card__facts {
+    flex-wrap: wrap !important;
+    overflow:  visible !important;
+    max-width: 100% !important;
+  }
 }
