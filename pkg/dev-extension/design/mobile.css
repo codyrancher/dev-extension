@@ -773,19 +773,6 @@
   /* The primary action takes the row; the secondaries sit under it. */
   .dev-root .card__foot .btn--kind { flex: 1 1 100% !important; }
 
-  /*
-   * The summary is a sentence, and a sentence that does not fit should wrap rather than end in
-   * the middle of a word. Two lines, because the card's job is the title and the summary is
-   * what tells you whether the title is about what you think it is.
-   */
-  .dev-root .card__summary {
-    white-space:        normal !important;
-    overflow:           hidden;
-    display:            -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-
   .dev-root .card__ident { flex: 0 0 auto !important; min-width: 0 !important; }
 
   /*
@@ -798,15 +785,6 @@
     width:     auto !important;
     max-width: 100% !important;
     overflow:  visible !important;
-  }
-
-  /* A title is the one thing on a Focus card worth two lines of a phone screen. */
-  .dev-root .card__title {
-    white-space:        normal !important;
-    overflow:           hidden;
-    display:            -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
   }
 }
 
@@ -1033,91 +1011,317 @@
 /*
  * ── The Focus card's height model ───────────────────────────────────────────────────────────
  *
- * This is the fix for four bugs, and it is worth saying why.
+ * The page is exactly the viewport and does not scroll. The card on top is the one vertical
+ * scroller: head, actions and evidence move together inside it, and a vertical drag is its
+ * scroll. Turning the deck is a sideways swipe (deck-gesture.mjs) or the rail.
  *
- * `.card` is a grid of `auto minmax(0, 1fr) auto` at `height: 100%`, inside a page that is
- * explicitly `height: 100%` and does not scroll - a deck that fills the window, which is a
- * good desktop idea. The middle row takes whatever the header and footer leave, and at 390px
- * they leave almost nothing: the header needs two rows where the design assumed one, so the
- * body silently gives up the difference. Every Focus defect across three rounds of review was
- * that one mechanism. The chips collided. Then the footer buttons fell off the edge. Then the
- * changed-files tree collapsed to nothing and the title lost its second line - a title
- * truncated at word three on the one screen whose job is to say what the work IS.
- *
- * Each round fixed the casualty and the budget found another. So on a phone the card is as
- * tall as its content and the page scrolls, which is what a phone does anyway. The deck's
- * animation still runs; what it no longer does is decide how much of the card you get to read.
+ * It was `height: auto` here for a while, so that the page could scroll instead, and that was
+ * wrong: `main` and `.dev-focus` clip and a card's `touch-action` was `pan-x`, so no finger could
+ * scroll any of it. The deck's row grew to its tallest mounted card (30,761px measured), most of
+ * the content was out of reach, and a vertical drag turned the deck. Keep the deck's
+ * `minmax(0, 1fr)` row pinned; the budget problem it caused is answered by the card scrolling,
+ * not by the card growing.
  */
 @media (max-width: 760px) {
+  /* `clip`, not `hidden`: a hidden box can still be scrolled by script or by focus. */
+  .dev-root.dev-root--bare .main-layout { overflow: clip !important; }
+
+  /*
+   * `--bar-h` is the shut bar's real height on a phone: the 44px field below and the 1px border
+   * either side of `.bar__middle`. 40px was the desktop's number; here the bar measured taller.
+   */
   .dev-root .dev-focus {
-    height:     auto !important;
-    min-height: 100% !important;
-    overflow:   visible !important;
+    --bar-h:        46px !important;
+    overflow:       clip !important;
+    padding-bottom: calc(var(--bar-h) + var(--bar-bottom) + var(--s2)) !important;
   }
 
-  .dev-root .focus__deck {
-    height:     auto !important;
-    min-height: 0 !important;
-    overflow:   visible !important;
+  /* The rail has its own row under the card: 44px of chevrons and a gap. */
+  .dev-root .dev-focus .deck { padding: 30px var(--s3) calc(44px + var(--s2)) !important; }
+
+  /* Drawn flat and at rest at scale 1; only a swipe or a turn gives this a transform. */
+  .dev-root .dev-focus .deck__top {
+    touch-action:    pan-y !important;
+    transform-style: flat !important;
+    will-change:     auto !important;
   }
 
-  .dev-root .card {
-    height:             auto !important;
-    min-height:         0 !important;
-    grid-template-rows: auto auto auto !important;
+  .dev-root .dev-focus .card {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows:    auto auto auto !important;
+    align-content:         start !important;
   }
+
+  .dev-root .dev-focus .deck__top .card {
+    overflow:                   hidden auto !important;
+    overscroll-behavior:        contain;
+    -webkit-overflow-scrolling: touch;
+    /* Its own, because a scroller resets what it inherits. Strips below add `pan-x` back. */
+    touch-action:               pan-y;
+  }
+
+  /* A card on its way out takes no presses: it goes at the end of the turn, mid-gesture if so. */
+  .dev-root .dev-focus .deck__top.turn-fwd-leave-active,
+  .dev-root .dev-focus .deck__top.turn-back-leave-active { pointer-events: none; }
+
+  /* Pinned to the bottom of a box that now scrolls, it would smear across the middle of it. */
+  .dev-root .dev-focus .card__glow--foot { display: none; }
 
   /*
-   * The action comes before the evidence.
-   *
-   * A Focus card is "here is the one thing to do, and why". On a wide card both halves are on
-   * screen together so the order is free; at 390px the why - four thumbnails, the share chips,
-   * a diff - is about 600px of it, and the primary action ended up below the fold with the
-   * deck's pager, so moving to the next card meant scrolling a whole card to reach the
-   * chevrons. A first screen with no action on it is not a Focus card.
-   *
-   * This needs no template change after all: the card is a grid at this width, and grid items
-   * honour `order` when they are auto-placed. Reviewing it as component work was wrong, and
-   * cheaply so - three declarations instead of a render branch.
+   * The action comes before the evidence: a first screen with no action on it is not a Focus
+   * card. The card is a grid here and grid items honour `order`, so no template change.
    */
-  .dev-root .card > .card__head { order: 0; }
-  .dev-root .card > .card__foot { order: 1; }
-  .dev-root .card > .card__body { order: 2; }
-
-  /* Nothing inside it has to give any more, so nothing has to hide what it could not fit. */
-  .dev-root .card__body {
-    min-height: 0 !important;
-    overflow:   visible !important;
-  }
+  .dev-root .dev-focus .card > .card__head { order: 0; }
+  .dev-root .dev-focus .card > .card__foot { order: 1; }
+  .dev-root .dev-focus .card > .card__body { order: 2; }
 
   /*
-   * And the title is not clamped at all.
-   *
-   * It was two lines, which is one more than it had and still not the title. The clamp was a
-   * holdover from a card with a height budget to defend; this one has none, and hiding the
-   * name of the thing the card is about buys nothing - least of all when the full string is
-   * printed again in the ask bar a hundred pixels below.
+   * Neither is clamped: this is the one screen whose job is to say what the work is and why, and
+   * there is no height budget for a clamp to defend. Dragging could not bring back a clipped line.
    */
-  .dev-root .card__title {
+  .dev-root .dev-focus .card__title,
+  .dev-root .dev-focus .card__summary {
+    white-space:        normal !important;
     display:            block !important;
     -webkit-line-clamp: none !important;
     overflow:           visible !important;
   }
 
+  /* `auto`: at 0 its row was capped at what the head and foot left, and the content overran it. */
+  .dev-root .dev-focus .card__body {
+    min-height:    auto !important;
+    overflow:      visible !important;
+    padding-right: 0 !important;
+  }
+
+  /* A flex basis of 0% is what shared out a height this column no longer has. Keeps its floor. */
+  .dev-root .dev-focus .card__surface { flex: 0 0 auto !important; }
 
   /*
-   * Nothing here reserves room for the bar, and that is deliberate now.
-   *
-   * The first version of this added a reservation on `.focus__deck` with a comment promising
-   * that `--bar-h` and `--bar-bottom` kept it honest - and `.dev-focus` has reserved exactly
-   * that, in exactly those variables plus `--s4`, since long before any of this. A duplicate
-   * with its own fallback numbers could only ever drift from the real one, and a comment
-   * claiming a coupling the code does not have is worse than no comment: it reads as handled.
-   *
-   * What the page needs on a phone is for that existing padding to still apply once the page
-   * is allowed to grow, which it does - it is on `.dev-focus`, which is the element that now
-   * scrolls.
+   * Every box in a card that scrolled by itself, or held a scroller's height. Exactly one vertical
+   * scroller under a finger, and the fades go with them: there is no edge left for one to mark.
    */
+  .dev-root .dev-focus .card .u-fade-y,
+  .dev-root .dev-focus .card__ask,
+  .dev-root .dev-focus .card__bundle,
+  .dev-root .dev-focus .card__broke,
+  .dev-root .dev-focus .card__read,
+  .dev-root .dev-focus .card .file,
+  .dev-root .dev-focus .card .pass__detail,
+  .dev-root .dev-focus .card .detail__scroll,
+  .dev-root .dev-focus .card .detail__edit,
+  .dev-root .dev-focus .card .cm__list,
+  .dev-root .dev-focus .card .talk__list,
+  .dev-root .dev-focus .card .fx__read,
+  .dev-root .dev-focus .card .ag__said,
+  .dev-root .dev-focus .card .ag__tail,
+  .dev-root .dev-focus .card .pool__list,
+  .dev-root .dev-focus .card .bumps__list,
+  .dev-root .dev-focus .card .rv__list,
+  .dev-root .dev-focus .card .cl__out,
+  .dev-root .dev-focus .card .cl__list,
+  .dev-root .dev-focus .card .gh__body,
+  .dev-root .dev-focus .card .tabs__pane,
+  .dev-root .dev-focus .card .turns,
+  .dev-root .dev-focus .card .turns__log,
+  .dev-root .dev-focus .card .ic__stuck-tail {
+    flex:               0 0 auto !important;
+    height:             auto !important;
+    min-height:         0 !important;
+    max-height:         none !important;
+    overflow:           visible !important;
+    scroll-snap-type:   none !important;
+    mask-image:         none !important;
+    -webkit-mask-image: none !important;
+  }
+
+  /*
+   * Text that does not wrap keeps its sideways scroll and loses the height cap. `hidden` and not
+   * `visible` on the other axis, which beside `auto` would compute to `auto` anyway.
+   */
+  .dev-root .dev-focus .card .turn__pre,
+  .dev-root .dev-focus .card .turn__body pre,
+  .dev-root .dev-focus .card .tool__pre,
+  .dev-root .dev-focus .card .ask__prompt {
+    max-height: none !important;
+    overflow:   auto hidden !important;
+  }
+
+  /*
+   * The dock under the action that opened it, ahead of the evidence: at the end of the column it
+   * opened a whole diff away from the button, and pressing it looked like nothing had happened.
+   */
+  .dev-root .dev-focus .card__ask {
+    order:      -1;
+    margin-top: 0 !important;
+  }
+
+  /* With the log laid flat, the jumps stay on screen rather than at the far end of a long thread. */
+  .dev-root .dev-focus .card .turns__nav {
+    position:   sticky;
+    right:      auto;
+    bottom:     var(--s2);
+    align-self: flex-end;
+  }
+
+  /* Two surfaces share their height out in grid rows, which have to stop doing so. */
+  .dev-root .dev-focus .card .changes { grid-template-rows: auto auto !important; }
+  .dev-root .dev-focus .card .pass { grid-template-rows: auto auto !important; }
+  .dev-root .dev-focus .card .pass__detail {
+    display:        flex !important;
+    flex-direction: column !important;
+  }
+
+  /*
+   * `CardTabs` is called `.tabs`, so the shell's tab-strip rules at the top of this sheet reached
+   * the whole pane: a sideways scroller, its padding, and the fade over its last 28px. The strip
+   * inside it is what scrolls sideways.
+   */
+  .dev-root .dev-focus .card .tabs {
+    gap:                0 !important;
+    min-height:         0 !important;
+    padding:            0 !important;
+    overflow:           visible !important;
+    scroll-snap-type:   none !important;
+    mask-image:         none !important;
+    -webkit-mask-image: none !important;
+  }
+
+  .dev-root .dev-focus .card .tabs__strip {
+    overflow:        auto hidden;
+    scrollbar-width: none;
+  }
+
+  .dev-root .dev-focus .card .tabs__tab {
+    flex:          0 0 auto;
+    margin-bottom: 0 !important;
+  }
+
+  /*
+   * The strips that stay. A vertical drag that starts on one still scrolls the card, and the
+   * tree's base rule was `pan-y`, so until now a finger could not move it sideways at all. Its
+   * height follows the 44px its buttons are at this width; 32px cut them off.
+   */
+  .dev-root .dev-focus .card .tree,
+  .dev-root .dev-focus .card .pass__list,
+  .dev-root .dev-focus .card .cl__pick { touch-action: pan-x pan-y !important; }
+
+  .dev-root .dev-focus .card .tree { height: 44px !important; }
+
+  /* An open file's list of comments, as more of that strip rather than a column it clips. */
+  .dev-root .dev-focus .card .tree__lines {
+    display: flex;
+    flex:    0 0 auto;
+    gap:     var(--s1);
+    margin:  0;
+    padding: 0;
+  }
+
+  .dev-root .dev-focus .card .tree__lines > li { flex: 0 0 auto; }
+
+  .dev-root .dev-focus .card .tree__line {
+    width:       auto;
+    align-items: center;
+    white-space: nowrap;
+  }
+
+  /* Nine fixed columns are 450px, which put each row's Merge past the edge of the card. */
+  .dev-root .dev-focus .card .bump {
+    display:   flex !important;
+    flex-wrap: wrap;
+    gap:       2px var(--s2);
+  }
+
+  .dev-root .dev-focus .card .bump > * { flex: 0 0 auto; }
+  .dev-root .dev-focus .card .bump__pkg { flex: 1 1 calc(100% - 16px); }
+  .dev-root .dev-focus .card .bump > :last-child { margin-left: auto; }
+
+  /*
+   * 44px of target and not of paint, the same way as `.dev-nav-head__add`. `overflow: visible`
+   * because the first two clip otherwise, and a clipped pseudo-element takes no presses.
+   */
+  .dev-root .dev-focus a.card__ident,
+  .dev-root .dev-focus button.card__ws,
+  .dev-root .dev-focus .ev__go {
+    position:   relative;
+    min-height: 0 !important;
+    overflow:   visible !important;
+  }
+
+  .dev-root .dev-focus a.card__ident::after,
+  .dev-root .dev-focus button.card__ws::after,
+  .dev-root .dev-focus .ev__go::after {
+    content:   '';
+    position:  absolute;
+    top:       50%;
+    right:     0;
+    left:      0;
+    height:    44px;
+    transform: translateY(-50%);
+  }
+
+  /*
+   * The rail, across the foot of the deck: a chevron at each thumb and the dots between them.
+   * `left: 50%` limited a shrink-to-fit box to half the deck, which left room for two dots.
+   */
+  .dev-root .dev-focus .deck__rail {
+    right:     var(--s3) !important;
+    left:      var(--s3) !important;
+    gap:       var(--s1) !important;
+    max-width: none !important;
+    transform: none !important;
+  }
+
+  .dev-root .dev-focus .deck__step {
+    width:     44px !important;
+    min-width: 44px !important;
+  }
+
+  .dev-root .dev-focus .deck__dots {
+    margin:     0 auto !important;
+    overflow-y: hidden !important;
+  }
+
+  /*
+   * The bar, shut: one line of field and a 44px send, which is what `--bar-h` above adds up to.
+   * A two-line placeholder in a one-line box was cut through the letters. 16px on the field in
+   * both states, because it is the size at the moment of focus that Mobile Safari zooms on.
+   */
+  .dev-root .dev-focus .bar .box__field { font-size: 16px !important; }
+
+  .dev-root .dev-focus .bar:not(.bar--open) .bar__line {
+    min-height: 0 !important;
+    padding:    0 var(--s2) !important;
+  }
+
+  .dev-root .dev-focus .bar .box--single .box__row {
+    align-items: center !important;
+    padding:     0 !important;
+    border:      0 !important;
+  }
+
+  .dev-root .dev-focus .bar .box--single .box__field {
+    box-sizing:  border-box;
+    height:      44px !important;
+    min-height:  44px !important;
+    max-height:  44px !important;
+    padding:     10px var(--s2) !important;
+    line-height: 24px !important;
+    overflow:    hidden !important;
+    white-space: nowrap !important;
+  }
+
+  .dev-root .dev-focus .bar .box--single .box__field::placeholder {
+    font-size:     var(--t-sm);
+    overflow:      hidden;
+    text-overflow: ellipsis;
+    white-space:   nowrap;
+  }
+
+  .dev-root .dev-focus .bar .box--single .box__send {
+    width:  44px !important;
+    height: 44px !important;
+  }
 }
 
 /*

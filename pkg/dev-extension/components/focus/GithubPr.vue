@@ -14,6 +14,7 @@ import type { PrSummary } from '../../focus-artifacts';
 import CommentBody from './CommentBody.vue';
 import AppIcon from './AppIcon.vue';
 import MediaViewer from './MediaViewer.vue';
+import { isNarrow } from '../../design/narrow';
 import { ghAssetUrl } from '../../reviews';
 import type { NoteMedia } from '../../focus-review';
 
@@ -95,8 +96,14 @@ const blocked = computed(() => {
     </div>
     <p v-else class="gh__none">No description.</p>
 
+    <!-- Out to the body on a phone only. See GithubIssue. -->
+    <Teleport v-if="viewer && isNarrow()" to="body">
+      <div class="dev-focus">
+        <MediaViewer :items="viewer.items" :start="viewer.at" @close="viewer = null" />
+      </div>
+    </Teleport>
     <MediaViewer
-      v-if="viewer"
+      v-else-if="viewer"
       :items="viewer.items"
       :at="viewer.at"
       @close="viewer = null"

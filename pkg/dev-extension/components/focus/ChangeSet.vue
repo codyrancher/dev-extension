@@ -16,7 +16,7 @@
  * card would be an answer you could not find again once the card was dealt. What stays under the
  * lines is the question and the fact that it was asked.
  */
-import { computed, nextTick, ref, watch, onMounted } from 'vue';
+import { computed, nextTick, ref, watch, onBeforeUnmount, onMounted } from 'vue';
 import type { CardFile, CardComment } from '../../focus-artifacts';
 import type { DiffLine } from '../../focus-review';
 import AppButton from './AppButton.vue';
@@ -26,6 +26,7 @@ import CodeView from '../code/CodeView.vue';
 import { fromDiffLines, highlighted } from '../code/rows';
 import InlineChat from './InlineChat.vue';
 import Markdown from './Markdown.vue';
+import { isNarrow, onNarrowChange } from '../../design/narrow';
 import { listConversations, startConversation, paneCommand } from '../../conversations';
 import { startAgentSession, queueSessionPrompt } from '../../agent';
 import type { ConversationOrigin } from '../../agent';
@@ -120,6 +121,7 @@ const openPath = ref(biggest(props.files));
 watch(() => props.files, (files) => {
   if (!files.some((entry) => entry.path === openPath.value)) {
     openPath.value = biggest(files);
+    phoneLines.value = PHONE_LINES;
     pick.value = null;
     threads.value = [];
   }
@@ -347,8 +349,10 @@ function showInPane(el: HTMLElement | null | undefined, place: 'middle' | 'top' 
     return;
   }
   let box: HTMLElement | null = el.parentElement;
+  // On a phone the diff does not scroll by itself; the card around it does. See design/mobile.css.
+  const end = isNarrow() ? null : root.value;
 
-  while (box && box !== root.value) {
+  while (box && box !== end) {
     const scrolls = box.scrollHeight > box.clientHeight + 4 && /auto|scroll/.test(getComputedStyle(box).overflowY);
 
     if (scrolls) {
@@ -377,6 +381,7 @@ function showComment(comment: CardComment): void {
   if (comment.path !== openPath.value) {
     open(comment.path);
   }
+  phoneLines.value = Infinity;
   nextTick(() => {
     showInPane(root.value?.querySelector(`[data-comment="${ comment.id }"]`) as HTMLElement | null);
   });
@@ -395,6 +400,53 @@ const SHORTCUTS = [
 const root = ref<HTMLElement>();
 
 const file = computed(() => props.files.find((f) => f.path === openPath.value) ?? props.files[0]);
+
+/**
+ * The diff in steps, on a phone.
+ *
+ * It is part of the card's one scroll there, and the file this opens on is the biggest by
+ * definition, so one generated file was a card 30,000px tall. Prefixes of the real hunks, so a
+ * hunk's and a row's index still mean what they mean to the threads and the picked lines.
+ */
+const PHONE_LINES = 120;
+const phoneLines = ref(PHONE_LINES);
+
+// A ref because `shownHunks` caches: a plain `isNarrow()` in there would not see a phone turned.
+const narrow = ref(isNarrow());
+let stopNarrow = () => {};
+
+onMounted(() => {
+  stopNarrow = onNarrowChange((now) => {
+    narrow.value = now;
+  });
+});
+onBeforeUnmount(() => stopNarrow());
+
+const shownHunks = computed(() => {
+  const hunks = file.value?.hunks || [];
+
+  if (!narrow.value) {
+    return hunks;
+  }
+  let left = phoneLines.value;
+  const shown: typeof hunks = [];
+
+  for (const hunk of hunks) {
+    if (left <= 0) {
+      break;
+    }
+    shown.push(hunk.lines.length > left ? { ...hunk, lines: hunk.lines.slice(0, left) } : hunk);
+    left -= hunk.lines.length;
+  }
+
+  return shown;
+});
+
+const linesNotShown = computed(() => {
+  const count = (hunks: { lines: unknown[] }[]) => hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);
+
+  return count(file.value?.hunks || []) - count(shownHunks.value);
+});
 
 /** The tree: one entry per directory, biggest change first, for the reason `biggest` gives. */
 const tree = computed(() => {
@@ -427,6 +479,7 @@ function lineSpan(lines: DiffLine[]): [number, number] {
 
 function open(path: string) {
   openPath.value = path;
+  phoneLines.value = PHONE_LINES;
   pick.value = null;
 }
 
@@ -718,7 +771,7 @@ const statusWord: Record<string, string> = {
         />
       </div>
 
-      <div v-for="(hunk, h) in file.hunks" :key="h" class="file__hunk">
+      <div v-for="(hunk, h) in shownHunks" :key="h" class="file__hunk">
         <CodeView
           :rows="highlighted(fromDiffLines(hunk.lines), file.path)"
           :label="hunk.header"
@@ -833,6 +886,13 @@ const statusWord: Record<string, string> = {
           </template>
         </CodeView>
       </div>
+
+      <AppButton
+        v-if="linesNotShown"
+        variant="quiet"
+        size="md"
+        @click="phoneLines += PHONE_LINES"
+      >Show {{ Math.min(PHONE_LINES, linesNotShown) }} more of {{ linesNotShown }} lines</AppButton>
 
       <!--
         What was said about parts of this file the diff does not show.

@@ -13,6 +13,15 @@ export function isNarrow(): boolean {
   return !!media?.matches;
 }
 
+/** Told whenever the answer changes, for `<script setup>`. Returns how to stop being told. */
+export function onNarrowChange(listen: (narrow: boolean) => void): () => void {
+  const changed = (event: MediaQueryListEvent) => listen(event.matches);
+
+  media?.addEventListener('change', changed);
+
+  return () => media?.removeEventListener('change', changed);
+}
+
 /** `this.narrow`, kept current while the component is mounted. */
 export const NarrowMixin = {
   data() {

@@ -18,6 +18,7 @@
  */
 import { computed, nextTick, ref, watch } from 'vue';
 import ChatTurn from './ChatTurn.vue';
+import { isNarrow } from '../../design/narrow';
 import type { ConversationTurn } from '../../chat-conversation';
 
 const props = defineProps<{
@@ -44,12 +45,50 @@ const emit = defineEmits<{
 const log = ref<HTMLElement | null>(null);
 const atBottom = ref(true);
 
+/**
+ * What scrolls this log when it does not scroll itself, which is inside a card on a phone: the log
+ * is laid flat there and the card is the one scroller (design/mobile.css). Null everywhere else.
+ */
+function outerScroller(el: HTMLElement): HTMLElement | null {
+  if (!isNarrow() || getComputedStyle(el).overflowY !== 'visible') {
+    return null;
+  }
+  for (let box = el.parentElement; box; box = box.parentElement) {
+    if (/auto|scroll/.test(getComputedStyle(box).overflowY)) {
+      return box;
+    }
+  }
+
+  return null;
+}
+
 function scrollToEnd(force = false): void {
   const el = log.value;
+  const outer = el && outerScroller(el);
 
+  if (outer) {
+    // Never moved by a poll or by opening: a card starts at its own top, and the card is not this
+    // log's to move. `toNewest` is how. Nothing here can tell where the reader is, so the jump is
+    // offered for as long as the thread is taller than the card's window.
+    atBottom.value = el.offsetHeight <= outer.clientHeight;
+
+    return;
+  }
   if (el && (force || atBottom.value)) {
     el.scrollTop = el.scrollHeight;
     atBottom.value = true;
+  }
+}
+
+/** Somebody asked for the end of the thread, by pressing for it or by sending to it. */
+function toNewest(): void {
+  const el = log.value;
+  const outer = el && outerScroller(el);
+
+  if (outer) {
+    outer.scrollTop += el.getBoundingClientRect().bottom - outer.getBoundingClientRect().bottom;
+  } else {
+    scrollToEnd(true);
   }
 }
 
@@ -87,9 +126,18 @@ function stepMine(direction: number): void {
    * `scrollIntoView` walks every scrollable ancestor, and this component is inside a card
    * inside a deck: it moved the whole page and left it somewhere it would not come back from,
    * which is the fault `showInPane` was written for in ChangeSet. Here the scroller is known,
-   * so the sum is simple and nothing outside it moves.
+   * so the sum is simple and nothing outside it moves. On a phone's card that scroller is the card.
    */
-  el.scrollTop = Math.max(0, mine[next].offsetTop - el.clientHeight / 2 + mine[next].offsetHeight / 2);
+  const outer = outerScroller(el);
+
+  if (outer) {
+    const port = outer.getBoundingClientRect();
+    const at = mine[next].getBoundingClientRect();
+
+    outer.scrollTop += at.top + at.height / 2 - (port.top + port.height / 2);
+  } else {
+    el.scrollTop = Math.max(0, mine[next].offsetTop - el.clientHeight / 2 + mine[next].offsetHeight / 2);
+  }
   atBottom.value = false;
 }
 
@@ -124,7 +172,7 @@ watch(() => props.restarted, () => nextTick(() => scrollToEnd(true)));
 watch(() => props.turns.length, (now, before) => {
   const sent = now > before && !!props.turns[now - 1]?.queued;
 
-  nextTick(() => scrollToEnd(sent));
+  nextTick(() => (sent ? toNewest() : scrollToEnd()));
 });
 // The working row is one more row at the bottom, and it arrives between polls too.
 watch(() => props.working, (now) => now && nextTick(() => scrollToEnd()));
@@ -182,7 +230,7 @@ defineExpose({ scrollToEnd, atBottom });
           type="button"
           class="turns__jump"
           title="Jump to the newest"
-          @click="scrollToEnd(true)"
+          @click="toNewest"
         >
           ↓ newest
         </button>

@@ -11,6 +11,10 @@
  * The drag is pointer events rather than a library: a card follows the finger with a little
  * rotation, and lets go past a threshold that scales with the viewport so the gesture feels the
  * same on a phone as on a desktop.
+ *
+ * Except at phone width, where a vertical drag is the card's own scroll and the turn is a
+ * sideways swipe instead. Every branch for that is behind the shared narrow check; what the
+ * finger meant is decided in deck-gesture.mjs.
  */
 import {
   computed, onBeforeUnmount, onErrorCaptured, onMounted, ref, watch,
@@ -19,6 +23,10 @@ import type { FocusTask, CardAction } from '../../focus';
 import FocusCard from './FocusCard.vue';
 import AppIcon from './AppIcon.vue';
 import { overlayOpen } from './overlay';
+import { isNarrow, onNarrowChange } from '../../design/narrow';
+import {
+  NOT_A_SWIPE, nearestDelta, ownedByStrip, swipeEvent,
+} from '../../deck-gesture.mjs';
 
 const props = defineProps<{
   cards: FocusTask[];
@@ -269,6 +277,11 @@ const SLOP = 6;
 const threshold = () => Math.min(170, Math.max(80, window.innerHeight * 0.12));
 
 function onDown(event: PointerEvent) {
+  if (isNarrow()) {
+    swipeDown(event);
+
+    return;
+  }
   // Only a drag that starts on the card's own surface, not on a button inside it.
   if ((event.target as HTMLElement).closest('button, a, input, textarea')) {
     return;
@@ -288,6 +301,11 @@ function onDown(event: PointerEvent) {
  * by then it really is a drag.
  */
 function onMove(event: PointerEvent) {
+  if (press) {
+    swipeMove(event);
+
+    return;
+  }
   if (!pressed) {
     return;
   }
@@ -303,7 +321,12 @@ function onMove(event: PointerEvent) {
   dragY.value = moved;
 }
 
-function onUp() {
+function onUp(event: PointerEvent) {
+  if (press) {
+    swipeEnd(event);
+
+    return;
+  }
   pressed = false;
   if (!dragging.value) {
     return;
@@ -334,6 +357,100 @@ function onUp() {
     emit('go', moved > 0 ? 1 : -1);
   }
 }
+
+/* ── The swipe, at phone width ────────────────────────────────────────────── */
+/*
+ * Nothing is captured until the direction is clearly sideways. Until then the browser is free to
+ * take the press as the card's vertical scroll, in which case this hears a pointercancel and
+ * stops; and a tap goes nowhere, so its click lands where it always did.
+ *
+ * `press` is only ever set behind the narrow check in `onDown`, and the handlers follow it from
+ * there rather than asking again, so one gesture cannot start on one path and end on the other.
+ */
+const swipeX = ref(0);
+const swiping = ref(false);
+let press: { id: number; x: number; y: number; at: number; swiping: boolean; dx: number } | null = null;
+let pressedOn: HTMLElement | null = null;
+
+function applySwipe(out: ReturnType<typeof swipeEvent>, top?: HTMLElement) {
+  press = out.press;
+  swiping.value = !!press?.swiping;
+  swipeX.value = press?.swiping ? press.dx : 0;
+  if (out.capture && press) {
+    top?.setPointerCapture(press.id);
+  }
+  if (out.turn) {
+    // The same turn a key starts, picked up from where the finger left the card.
+    carry(`translate3d(${ Math.round(out.dx) }px, 0, 0)`, null, null);
+    emit('go', out.turn as 1 | -1);
+  }
+}
+
+function endSwipe() {
+  press = null;
+  swiping.value = false;
+  swipeX.value = 0;
+}
+
+function swipeDown(event: PointerEvent) {
+  const target = event.target as HTMLElement;
+
+  if (event.isPrimary) {
+    pressedOn = target;
+  }
+  applySwipe(swipeEvent(press, {
+    type:    'down',
+    id:      event.pointerId,
+    primary: event.isPrimary,
+    button:  event.button,
+    x:       event.clientX,
+    y:       event.clientY,
+    t:       event.timeStamp,
+    blocked: overlayOpen.value || !!target.closest(NOT_A_SWIPE),
+  }));
+}
+
+/** The horizontal scrollers between the finger and the card, for `ownedByStrip`. */
+function stripsAt(target: HTMLElement | null, top: HTMLElement) {
+  const chain = [];
+
+  for (let el = target; el && el !== top; el = el.parentElement) {
+    chain.push({
+      overflowX: getComputedStyle(el).overflowX, scrollLeft: el.scrollLeft, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+    });
+  }
+
+  return chain;
+}
+
+function swipeMove(event: PointerEvent) {
+  const top = event.currentTarget as HTMLElement;
+
+  applySwipe(swipeEvent(press, {
+    type: 'move', id: event.pointerId, x: event.clientX, y: event.clientY, buttons: event.buttons,
+  }, (dx: number) => ownedByStrip(stripsAt(pressedOn, top), dx)), top);
+}
+
+function swipeEnd(event: PointerEvent) {
+  applySwipe(swipeEvent(press, {
+    type:    event.type === 'pointerup' ? 'up' : 'cancel',
+    id:      event.pointerId,
+    t:       event.timeStamp,
+    width:   window.innerWidth,
+    // One card has nowhere to turn to, and no transition would come along to clear a carry.
+    canTurn: props.cards.length > 1,
+  }));
+}
+
+/** A capture lost before the release. After one, `press` is already gone and this does nothing. */
+function onLostCapture(event: PointerEvent) {
+  if (press) {
+    swipeEnd(event);
+  }
+}
+
+/** The card under a live swipe was replaced, so nothing will ever release on this one. */
+watch(() => current.value?.id, endSwipe);
 
 /**
  * The card below, brought up with an upward drag.
@@ -374,6 +491,9 @@ function progressValue() {
  * a wheel or a key starts, picked up part-way through.
  */
 const topStyle = computed(() => {
+  if (swiping.value) {
+    return { transform: `translate3d(${ swipeX.value }px, 0, 0)`, transition: 'none' };
+  }
   const y = dragY.value;
 
   if (!dragging.value && !y) {
@@ -483,6 +603,23 @@ function onKey(event: KeyboardEvent) {
 onMounted(() => window.addEventListener('keydown', onKey));
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 
+/** The cards behind the top one are `inert` on a phone: focus landing in one would scroll it. */
+const narrow = ref(isNarrow());
+let stopNarrow = () => {};
+
+onMounted(() => {
+  stopNarrow = onNarrowChange((now) => {
+    narrow.value = now;
+    // A turned phone crosses the breakpoint. Whatever was held belongs to a layout that has gone.
+    endSwipe();
+    pressed = false;
+    dragging.value = false;
+    dragY.value = 0;
+    clearCarry();
+  });
+});
+onBeforeUnmount(() => stopNarrow());
+
 /* ── When a card cannot be drawn ──────────────────────────────────────────── */
 /**
  * The deck's own empty state, for the case the cards could not report themselves.
@@ -517,13 +654,28 @@ const topFailed = computed(() => (current.value ? failed.value[current.value.id]
 /**
  * The rail scrolls now (36 real cards do not fit a window), so the current dot has to be
  * brought to where it can be seen - otherwise turning the deck moves a mark nobody can find.
+ *
+ * The strip's own scroll offsets rather than `scrollIntoView`, which also moves every scrollable
+ * ancestor, `overflow: hidden` included. A rail below the fold took the whole page with it.
  */
 const dots = ref<HTMLElement>();
 
+function showDot() {
+  const box = dots.value;
+  const dot = box?.querySelector('.deck__dot--on');
+
+  if (!box || !dot) {
+    return;
+  }
+  const port = box.getBoundingClientRect();
+  const at = dot.getBoundingClientRect();
+
+  box.scrollTop += nearestDelta(port.top, port.bottom, at.top, at.bottom);
+  box.scrollLeft += nearestDelta(port.left, port.right, at.left, at.right);
+}
+
 watch(() => props.index, () => {
-  requestAnimationFrame(() => {
-    dots.value?.querySelector('.deck__dot--on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  });
+  requestAnimationFrame(showDot);
 }, { immediate: true });
 </script>
 
@@ -536,6 +688,7 @@ watch(() => props.index, () => {
       class="deck__behind"
       :class="{ 'deck__behind--dragging': dragging }"
       :style="bandStyle(depth + 1)"
+      :inert="narrow"
       aria-hidden="true"
     >
       <FocusCard :task="task" />
@@ -551,7 +704,7 @@ watch(() => props.index, () => {
       Keyed: when the deck turns, this becomes a different card, and a fresh element starts on
       the floor rather than sliding down to it from wherever the last drag had lifted it.
     -->
-    <div v-if="previous" :key="previous.id" class="deck__prev" :style="prevStyle" aria-hidden="true">
+    <div v-if="previous" :key="previous.id" class="deck__prev" :style="prevStyle" :inert="narrow" aria-hidden="true">
       <FocusCard :task="previous" />
     </div>
 
@@ -571,6 +724,7 @@ watch(() => props.index, () => {
         @pointermove="onMove"
         @pointerup="onUp"
         @pointercancel="onUp"
+        @lostpointercapture="onLostCapture"
       >
         <FocusCard
           :task="current"
