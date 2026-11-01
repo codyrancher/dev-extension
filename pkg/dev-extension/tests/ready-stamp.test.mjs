@@ -727,7 +727,7 @@ function preparedTree(name, curlBody) {
   furnish(name);
   fs.mkdirSync(path.join(root, 'node_modules/playwright-core'), { recursive: true });
   fs.writeFileSync(path.join(root, '.env'), 'RANCHER_TOKEN=token-abc:thesecret\nRANCHER_URL=https://rancher.example.com\n');
-  for (const tool of ['dev-shell', 'ffmpeg', 'lsof']) {
+  for (const tool of ['dev-shell']) {
     fs.writeFileSync(path.join(root, 'bin', tool), '#!/bin/sh\n');
     fs.chmodSync(path.join(root, 'bin', tool), 0o755);
   }
@@ -805,7 +805,6 @@ test('the real script writes nothing for a token that is bad, or anything still 
     'real-revoked':  { curl: "*users*) echo 401 ;;\n*tokens*) echo '{}' ;;" },
     'real-expired':  { curl: `${ ANSWERS_200 }\n*tokens*) echo '{"expired":true}' ;;` },
     'real-disabled': { curl: `${ ANSWERS_200 }\n*tokens*) echo '{"enabled":false}' ;;` },
-    'real-no-apt':   { curl: fine, remove: 'bin/ffmpeg' },
     'real-no-shell': { curl: fine, remove: 'bin/dev-shell' },
     'real-no-pw':    { curl: fine, remove: 'node_modules/playwright-core' },
   };
@@ -822,6 +821,23 @@ test('the real script writes nothing for a token that is bad, or anything still 
     assert.doesNotMatch(it.printed, /thesecret/, name);
     assert.equal(fs.existsSync(path.join(treeOf(name), '.dev-ready')), false, name);
   }
+});
+
+test('tools apt has not installed do not hold the stamp back', async() => {
+  const name = 'real-no-apt';
+
+  preparedTree(name, `${ ANSWERS_200 }\n*tokens*) echo '{"expired":false}' ;;`);
+  await stampForReal(name);
+  assert.equal(fs.existsSync(path.join(treeOf(name), '.dev-ready')), true);
+});
+
+test('an install that died cannot stop the next one, and the next one outlives its exec', () => {
+  const source = fs.readFileSync(new URL('../workspace-tools.ts', import.meta.url), 'utf8');
+  const base = source.slice(source.indexOf('async function ensureBase'), source.indexOf("'echo BASE-OK'"));
+
+  assert.ok(base.indexOf('find /tmp/.dev-apt -mmin +15 -delete') > -1, 'a dead install\'s marker expires');
+  assert.ok(base.indexOf('find /tmp/.dev-apt') < base.indexOf('[ ! -f /tmp/.dev-apt ]'), 'and it expires before it is read');
+  assert.match(base, /touch \/tmp\/\.dev-apt; setsid sh -c/);
 });
 
 /* ── The real checkout script, in a real shell, against a real repository ────────────────────── */

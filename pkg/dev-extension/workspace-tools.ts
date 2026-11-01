@@ -269,8 +269,12 @@ async function ensureBase(target: WorkspaceTarget): Promise<void> {
     `mkdir -p ${ BIN } $WS/.claude $WS/artifacts/a11y $WS/.kube $WS/.queue $WS/.home/.local/bin $WS/.home/.config/gh`,
     // The apt path is root's and the rootfs is the pod's, so this repeats after a restart; it is
     // in the background because a review should not wait a minute for ffmpeg it may never use.
+    // setsid because the install must outlive this exec's socket, and an install that dies anyway
+    // leaves its marker behind: older than any real run, the marker is not stopping anything, and
+    // honouring it would leave the pod without these tools until it restarts.
     'if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v lsof >/dev/null 2>&1; then',
-    '  if [ ! -f /tmp/.dev-apt ]; then touch /tmp/.dev-apt; (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg jq lsof iproute2 >/dev/null 2>&1; rm -f /tmp/.dev-apt) >$WS/.apt.log 2>&1 & fi',
+    '  find /tmp/.dev-apt -mmin +15 -delete 2>/dev/null || true',
+    `  if [ ! -f /tmp/.dev-apt ]; then touch /tmp/.dev-apt; setsid sh -c 'apt-get -o DPkg::Lock::Timeout=300 update -qq && DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq ffmpeg jq lsof iproute2 >/dev/null 2>&1; rm -f /tmp/.dev-apt' >$WS/.apt.log 2>&1 </dev/null & fi`,
     'fi',
     `git config --global --add safe.directory $WS/dashboard 2>/dev/null || true`,
     `chown -R node:node ${ BIN } $WS/.claude $WS/artifacts $WS/.kube $WS/.queue $WS/.home/.local $WS/.home/.config 2>/dev/null || true`,
@@ -749,9 +753,13 @@ export async function defaultShareMarked(workspace: string): Promise<boolean> {
  *
  * Its own exec with no secret in it: the token comes out of the workspace's .env, which asNode has
  * already sourced. It vouches for what can be checked here and writes nothing otherwise, so the
- * next load provisions again. That covers the three things provisioning can finish without having
- * done: apt runs in the background and may not have landed, npm's failure is only printed, and
- * ensureEnvironment writes an empty or dead Rancher token and still says ENV-OK.
+ * next load provisions again. That covers what provisioning can finish without having done: npm's
+ * failure is only printed, and a token that was written may not answer.
+ *
+ * apt is deliberately not one of those. It is optional, it runs in the background and it can fail
+ * for reasons no reload fixes, and waiting on it would send the token through an exec URL on every
+ * load for as long as a mirror is down. ensureBase has already started it, and the next action, or
+ * the stamp running out, starts it again if it did not land.
  *
  * Reads the token's own record for its expiry. A record that will not say is 0, unknown, and then
  * only the TTL bounds it.
@@ -769,7 +777,6 @@ async function writeReadyStamp(target: WorkspaceTarget, wanted: WantedStamp): Pr
   const out = await asNode(target, [
     '[ -n "$RANCHER_TOKEN" ] && [ -n "$RANCHER_URL" ] || { echo READY-NOT no Rancher token; exit 0; }',
     '[ -x $WS/bin/dev-shell ] || { echo READY-NOT no dev-shell; exit 0; }',
-    '{ command -v ffmpeg && command -v lsof; } >/dev/null 2>&1 || { echo READY-NOT packages still installing; exit 0; }',
     '[ -d $WS/node_modules/playwright-core ] || { echo READY-NOT no playwright-core; exit 0; }',
     '[ "$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $RANCHER_TOKEN" "$RANCHER_URL/v3/users?me=true")" = 200 ] || { echo READY-NOT the Rancher token does not answer; exit 0; }',
     `EXPIRES=$(curl -sk --max-time 10 -H "Authorization: Bearer $RANCHER_TOKEN" "$RANCHER_URL/v3/tokens/\${RANCHER_TOKEN%%:*}" | node -e '${ expiry }' 2>/dev/null)`,
