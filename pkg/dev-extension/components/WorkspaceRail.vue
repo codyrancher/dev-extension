@@ -176,6 +176,9 @@ export default {
       phoneChat: '',
       /** Whether this page pushed a history entry for the sheet, so back closes it. */
       sheetInHistory: false,
+      /** The conversation being renamed in the phone card, and the text so far. */
+      phoneRenaming:  '',
+      phoneRenameDraft: '',
       status:      null,
       evidence:    [],
       /** The stage being looked at: the current one unless a past step was clicked. */
@@ -330,6 +333,19 @@ export default {
 
     /** The CLIs a conversation can be held with. A constant is not on the component. */
     CLI_CHOICES: () => CLI_CHOICES,
+
+    /**
+     * What a conversation row offers on a phone: the same set the desktop tab carries.
+     *
+     * `open` first, so it is what the main press does - SplitButton takes the option named by
+     * `value` as the main action and puts the rest behind the caret.
+     */
+    CONVERSATION_ACTIONS: () => [
+      { id: 'open', label: 'Open', icon: 'icon-chevron-right', what: 'Open this conversation full screen' },
+      { id: 'rename', label: 'Rename', icon: 'icon-edit', what: 'Give this conversation a name' },
+      { id: 'fork', label: 'Fork', icon: 'icon-copy', what: 'Carry on from here in a new conversation' },
+      { id: 'close', label: 'End', icon: 'icon-close', what: 'End this conversation' },
+    ],
 
     /**
      * Whether this stage has nothing to serve: a fix whose PR is up and waiting on a person, or
@@ -1033,6 +1049,41 @@ export default {
      * that released the scroll lock. A page that renders perfectly and will not move, with no
      * scrollbar to hint why, is the same class of fault as the one this sheet was built to fix.
      */
+    /** One place the phone card's menu lands, so the row and the desktop tab do the same things. */
+    conversationAction(conversation, what) {
+      if (what === 'rename') {
+        this.phoneRenaming = conversation.id;
+        this.phoneRenameDraft = conversation.title || '';
+        this.$nextTick(() => {
+          const box = this.$refs.phoneRenameInput;
+
+          (Array.isArray(box) ? box[0] : box)?.focus();
+        });
+
+        return;
+      }
+      if (what === 'fork') {
+        this.forkLive(conversation);
+
+        return;
+      }
+      if (what === 'close') {
+        this.closeLive(conversation);
+
+        return;
+      }
+      this.openPhoneChat(conversation);
+    },
+
+    async savePhoneRename(conversation) {
+      const title = this.phoneRenameDraft.trim();
+
+      this.phoneRenaming = '';
+      if (title && title !== conversation.title) {
+        await this.renameLive(conversation, title);
+      }
+    },
+
     openPhoneChat(conversation) {
       this.phoneChat = conversation.id;
       try {
@@ -3579,24 +3630,56 @@ export default {
         >
           <span class="workspace-rail__group-label">Conversations</span>
           <div class="workspace-rail__group-buttons">
-            <RcButton
+            <!--
+              Renaming happens in the row, because there is nowhere else for it to go: a phone
+              has no hover, no double-click and no room for a dialog over a list of four things.
+            -->
+            <div
               v-for="c in railConversations"
               :key="c.id"
-              variant="secondary"
-              class="workspace-rail__phone-chat"
-              :class="{ 'workspace-rail__phone-chat--live': c.alive }"
-              @click="openPhoneChat(c)"
+              class="workspace-rail__phone-row"
             >
-              <span class="workspace-rail__phone-dot" :class="`workspace-rail__phone-dot--${ c.state || 'none' }`" />
-              <span class="workspace-rail__phone-name">{{ c.title || 'Conversation' }}</span>
+              <template v-if="phoneRenaming === c.id">
+                <input
+                  ref="phoneRenameInput"
+                  v-model="phoneRenameDraft"
+                  class="workspace-rail__phone-input"
+                  type="text"
+                  :aria-label="`Rename ${ c.title || 'conversation' }`"
+                  @keyup.enter="savePhoneRename(c)"
+                  @keyup.esc="phoneRenaming = ''"
+                >
+                <RcButton
+                  variant="secondary"
+                  class="workspace-rail__phone-ok"
+                  @click="savePhoneRename(c)"
+                >
+                  Save
+                </RcButton>
+              </template>
               <!--
-                The chevron this page already uses for "goes somewhere else" - Pull request ›,
-                Reviewers ›, two cards below. Without it a conversation wears exactly the chrome
-                of `Ask the agent` and `Focus`, which act on this page, when pressing it is a
-                full-screen context switch.
+                A split button, so the things the desktop tab carries - rename, fork, close -
+                exist here too. They did not cross when the phone stopped using the tab strip:
+                you could create a conversation and never rename or end one, with nothing
+                anywhere to say so.
+
+                The main press opens it, and keeps the `›` this page uses for "goes somewhere
+                else" (Pull request ›, Reviewers ›, two cards below). The caret is the rest.
               -->
-              <i class="icon icon-chevron-right workspace-rail__phone-go" />
-            </RcButton>
+              <SplitButton
+                v-else
+                class="workspace-rail__phone-chat"
+                main-class="workspace-rail__phone-main"
+                :label="c.title || 'Conversation'"
+                :options="CONVERSATION_ACTIONS"
+                value="open"
+                @pick="(what) => conversationAction(c, what)"
+              >
+                <span class="workspace-rail__phone-dot" :class="`workspace-rail__phone-dot--${ c.state || 'none' }`" />
+                <span class="workspace-rail__phone-name">{{ c.title || 'Conversation' }}</span>
+                <i class="icon icon-chevron-right workspace-rail__phone-go" />
+              </SplitButton>
+            </div>
             <SplitButton
               class="workspace-rail__phone-new"
               label="New conversation"
@@ -6040,7 +6123,45 @@ export default {
 }
 /* ── The phone's conversations, and the sheet one opens into ─────────────────────────────── */
 
-.workspace-rail__phone-chat {
+.workspace-rail__phone-row {
+  display: flex;
+  gap:     6px;
+  width:   100%;
+}
+
+.workspace-rail__phone-input {
+  flex:          1 1 auto;
+  min-width:     0;
+  min-height:    44px;
+  padding:       0 10px;
+  border:        1px solid var(--primary);
+  border-radius: var(--border-radius, 4px);
+  background:    var(--input-bg);
+  color:         var(--body-text);
+  font:          inherit;
+}
+
+.workspace-rail__phone-ok { flex: 0 0 auto; }
+
+.workspace-rail__phone-chat { width: 100%; }
+
+// The main half carries the row; the caret is an affordance beside it, not half the control.
+.workspace-rail__phone-chat :deep(.split-btn__main) {
+  flex:            1 1 auto;
+  display:         flex;
+  align-items:     center;
+  gap:             10px;
+  justify-content: flex-start;
+  text-align:      left;
+  min-height:      44px;
+}
+
+.workspace-rail__phone-chat :deep(.split-btn__more) {
+  flex:       0 0 48px;
+  min-height: 44px;
+}
+
+.workspace-rail__phone-chat-unused {
   display:         flex !important;
   align-items:     center;
   gap:             10px;

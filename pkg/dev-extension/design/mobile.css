@@ -1236,3 +1236,47 @@
 
   .dev-root .stage-steps__label { white-space: nowrap !important; }
 }
+
+/*
+ * ── The section `+`, and the resource bars ──────────────────────────────────────────────────
+ *
+ * The `+` beside WORKSPACES and RANCHERS is a 20px bordered square. The blanket 44px minimum
+ * further up inflated the square itself, so a bordered box twice the height of the heading row
+ * sat across the line above and the line below it - a touch target bought by drawing a bigger
+ * thing, which is the same mistake as putting a grey slab behind a text link.
+ *
+ * The visible square stays small and the TAP AREA grows past it. A pseudo-element with
+ * negative inset is invisible, costs no layout, and is what a thumb actually hits: 28px of
+ * paint inside 44px of target.
+ */
+@media (max-width: 760px) {
+  .dev-root .dev-nav-head__add {
+    position:   relative;
+    width:      28px !important;
+    height:     28px !important;
+    min-width:  0 !important;
+    min-height: 0 !important;
+  }
+
+  .dev-root .dev-nav-head__add::after {
+    content:  '';
+    position: absolute;
+    inset:    -8px;
+  }
+
+  /*
+   * And what the machine has left, where it can be seen.
+   *
+   * `.dev-sidebar__stats` sits at the foot of the column on `margin-top: auto`, which puts it
+   * under everything - fine in a rail that always fits, and on a phone the drawer is one
+   * scrolling column of every workspace, so the bars were a thousand pixels down. Stuck to the
+   * bottom of the drawer they are where they were designed to be: readable at a glance, in
+   * nobody's way, and still there while the list scrolls behind them.
+   */
+  .dev-root .dev-sidebar__stats {
+    position:   sticky;
+    bottom:     0;
+    z-index:    2;
+    background: var(--nav-bg, var(--body-bg));
+  }
+}
