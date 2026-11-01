@@ -943,6 +943,17 @@
   /*
    * A workspace name gets two lines in the drawer.
    *
+   * Not with `-webkit-line-clamp`, which is what two earlier attempts used and why both
+   * silently did nothing. The rule matched - `display: -webkit-box !important` and all - and
+   * the computed value came back `flow-root`, because the name is a flex item and a flex item's
+   * display is blockified: `-webkit-box` is rewritten before it can mean anything, so the clamp
+   * it depends on has nothing to attach to. Readable only by asking the browser for the
+   * computed style, since the matched-rules list shows the rule winning.
+   *
+   * So: two lines of height and hide the rest. No ellipsis, which `-webkit-line-clamp` would
+   * have given - the alternative is making the row's parent non-flex, and a two-line name is
+   * worth more here than the three dots that say it was cut.
+   *
    * One line of ellipsis is fine in a 320px rail beside the page it describes. As the whole
    * screen it is the primary navigation, and three of nine rows read "lte-Block Secret forms
    * from saving invalid...", "lte-Validate repository URLs when creating...", "lte-Migrate
@@ -950,11 +961,10 @@
    * choice between three prefixes.
    */
   .dev-root .dev-list__name {
-    white-space:        normal !important;
-    overflow:           hidden;
-    display:            -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+    white-space: normal !important;
+    overflow:    hidden;
+    max-height:  2.7em;
+    line-height: 1.3;
   }
 
   /* Room to breathe inside a card: prose was running to within a few pixels of the border. */
@@ -1025,27 +1035,34 @@
     overflow:   visible !important;
   }
 
-  /* And the title gets the two lines the card is now tall enough to hold. */
+  /*
+   * And the title is not clamped at all.
+   *
+   * It was two lines, which is one more than it had and still not the title. The clamp was a
+   * holdover from a card with a height budget to defend; this one has none, and hiding the
+   * name of the thing the card is about buys nothing - least of all when the full string is
+   * printed again in the ask bar a hundred pixels below.
+   */
   .dev-root .card__title {
-    display:            -webkit-box !important;
-    -webkit-line-clamp: 2 !important;
+    display:            block !important;
+    -webkit-line-clamp: none !important;
+    overflow:           visible !important;
   }
 
-  /* The drawer's row titles, for the same reason - the clamp needs the box to take effect. */
-  .dev-root .dev-list__name { display: -webkit-box !important; }
 
   /*
-   * And room under the card for the bar that floats over it.
+   * Nothing here reserves room for the bar, and that is deliberate now.
    *
-   * The ask bar and the dock are `position: fixed` at the bottom, which costs nothing while
-   * the page does not scroll - the deck was sized to stop above them. A card that is now as
-   * tall as its content scrolls its last lines underneath instead, so the deck ends above the
-   * bar rather than behind it. `--bar-h` and `--bar-bottom` are the bar's own variables, so
-   * this stays right if it ever changes height.
+   * The first version of this added a reservation on `.focus__deck` with a comment promising
+   * that `--bar-h` and `--bar-bottom` kept it honest - and `.dev-focus` has reserved exactly
+   * that, in exactly those variables plus `--s4`, since long before any of this. A duplicate
+   * with its own fallback numbers could only ever drift from the real one, and a comment
+   * claiming a coupling the code does not have is worse than no comment: it reads as handled.
+   *
+   * What the page needs on a phone is for that existing padding to still apply once the page
+   * is allowed to grow, which it does - it is on `.dev-focus`, which is the element that now
+   * scrolls.
    */
-  .dev-root .focus__deck {
-    padding-bottom: calc(var(--bar-h, 64px) + var(--bar-bottom, 16px) + 16px) !important;
-  }
 }
 
 /*
