@@ -1046,10 +1046,23 @@
     will-change:     auto !important;
   }
 
+  /*
+   * A column, not the card's grid. Its items set `min-height: 0`, so in a box of definite height
+   * an `auto` track shrinks to nothing and the head, action and evidence draw over one another.
+   */
   .dev-root .dev-focus .card {
-    grid-template-columns: minmax(0, 1fr) !important;
-    grid-template-rows:    auto auto auto !important;
-    align-content:         start !important;
+    display:        flex !important;
+    flex-direction: column !important;
+    align-items:    stretch !important;
+  }
+
+  .dev-root .dev-focus .card > .card__head,
+  .dev-root .dev-focus .card > .card__foot,
+  .dev-root .dev-focus .card > .card__body {
+    flex:       0 0 auto !important;
+    height:     auto !important;
+    min-height: auto !important;
+    min-width:  0;
   }
 
   .dev-root .dev-focus .deck__top .card {

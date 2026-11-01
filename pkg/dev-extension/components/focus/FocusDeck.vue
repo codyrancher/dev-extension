@@ -444,7 +444,9 @@ function swipeEnd(event: PointerEvent) {
 
 /** A capture lost before the release. After one, `press` is already gone and this does nothing. */
 function onLostCapture(event: PointerEvent) {
-  if (press) {
+  // Ours only. A touch starts with an implicit capture on whatever was under the finger, and it
+  // is released the moment ours is taken: that bubbles here, and it is not the swipe ending.
+  if (press && event.target === event.currentTarget) {
     swipeEnd(event);
   }
 }

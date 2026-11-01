@@ -319,3 +319,9 @@ test('the phone sheet has no height:auto on the deck, and no nested scroller lef
   }
   assert.doesNotMatch(sheet, /-webkit-line-clamp: 2/);
 });
+
+test('a touch losing its implicit capture does not end the swipe', () => {
+  const deck = readFileSync(new URL('../components/focus/FocusDeck.vue', import.meta.url), 'utf8');
+
+  assert.match(deck, /function onLostCapture[\s\S]{0,300}event\.target === event\.currentTarget/);
+});
