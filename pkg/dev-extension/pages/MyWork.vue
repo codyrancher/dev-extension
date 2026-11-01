@@ -63,7 +63,18 @@ import ask from '../components/ask';
  * title. The rule is the same everywhere - three columns, and one of them is Actions, because
  * the only question a phone holds these tables to answer is which row to press.
  */
-const NARROW_COLUMNS = ['state', 'pr', 'title', 'actions'];
+/*
+ * What survives at phone width.
+ *
+ * `ci` and `updated` because they are what a reviewer triages on - which of nineteen pull
+ * requests to open is answered by "this one is failing" and "this one moved an hour ago", and
+ * neither was on the phone at all.
+ *
+ * `workspace` because dropping it dropped a BUTTON, not a fact: "Start workspace" is rendered
+ * in that column's own cell, so a phone could not provision a workspace from this page. A
+ * column that carries an action is not a column you can shed for space.
+ */
+const NARROW_COLUMNS = ['state', 'pr', 'title', 'ci', 'updated', 'workspace', 'actions'];
 const NARROW_ALERT_COLUMNS = ['severity', 'advisory', 'actions'];
 const NARROW_BOT_COLUMNS = ['pr', 'package', 'actions'];
 

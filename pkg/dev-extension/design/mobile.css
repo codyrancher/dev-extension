@@ -361,14 +361,34 @@
   }
 
   /*
-   * The first three cells say what they are by looking like what they are: a coloured state, an
-   * id, a sentence. From the fourth on, a label is worth its 64px - that is where a table keeps
-   * the columns a reader cannot name on sight, and this sheet styles every table in the product,
-   * not just the one I happened to be looking at.
+   * Which cells need naming, and how.
+   *
+   * A coloured "Open" and a sentence say what they are by looking like what they are, so cells
+   * one and three go bare. The id does NOT: this product has two id columns that look
+   * identical - a PR number and an issue number, both `#16169` in blue - so dropping that
+   * label made the card ambiguous about which one you were looking at. It comes back as an
+   * inline prefix rather than a 64px gutter, which was the thing worth removing.
+   *
+   * From the fourth cell on the label is worth having, inline, so two short facts share a line
+   * instead of owning one each. Unless the cell is a button: a blue box reading "Review" has
+   * never needed to be told it is an ACTION, and the gutter it was given pushed it into the
+   * middle of an otherwise empty row.
    */
-  .dev-root table.sortable-table tbody td:nth-child(-n+3)::before { content: none !important; }
+  .dev-root table.sortable-table tbody td:nth-child(1)::before,
+  .dev-root table.sortable-table tbody td:nth-child(3)::before { content: none !important; }
 
-  .dev-root table.sortable-table tbody td:nth-child(n+3) { flex: 1 1 100%; }
+  .dev-root table.sortable-table tbody td:has(button)::before,
+  .dev-root table.sortable-table tbody td:has(.btn)::before { content: none !important; }
+
+  .dev-root table.sortable-table tbody td:nth-child(2)::before,
+  .dev-root table.sortable-table tbody td:nth-child(n+4)::before {
+    flex:    0 0 auto !important;
+    margin-right: 2px;
+  }
+
+  /* The title takes its own line; everything after it flows and wraps. */
+  .dev-root table.sortable-table tbody td:nth-child(3) { flex: 1 1 100%; }
+  .dev-root table.sortable-table tbody td:nth-child(n+4) { flex: 0 1 auto; }
 
   .dev-root table.sortable-table tbody td[data-title]::before {
     content:        attr(data-title);
@@ -703,9 +723,20 @@
   .dev-root .workspace-rail > .workspace-rail__live { order: 2; }
 
   /*
-   * And enough of the screen to be worth having. Without a floor the conversation takes its
-   * content's height, which for a quiet pane is a couple of lines - so the screen it was just
-   * given back goes to whatever follows it.
+   * And no floor under it, which is a correction to the first version of this.
+   *
+   * A 62vh floor made the conversation 520px of an 844px screen - and it has its own scroller
+   * inside it, so that was a wall of nested scrolling sitting between the reader and the rest
+   * of the page. A drag that starts anywhere in it moves the transcript, not the page, and the
+   * PR links underneath went two screens down.
+   *
+   * The pane sizes itself to about 320px, which is enough for the last exchange and the
+   * composer - the two things the reorder was for - while leaving the page visibly continuing
+   * underneath. The transcript keeps its own scroller because it has to: it pins itself to the
+   * newest message, and the drawer uses the same element where the page cannot scroll at all.
+   *
+   * This one wants a real thumb to confirm. CDP cannot tell me whether scroll chaining out of
+   * that box feels right, and I would rather say so than report a measurement that does not
+   * answer the question.
    */
-  .dev-root .workspace-rail > .workspace-rail__live { min-height: 62vh; }
 }
