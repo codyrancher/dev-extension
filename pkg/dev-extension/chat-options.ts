@@ -8,6 +8,7 @@
 //
 // So everything here is a parser. The reading and the applying live in ChatPane, which has the
 // pod; these are pure functions over what came back, which is what makes them checkable.
+import { modelEffortsFrom } from './chat-model.mjs';
 
 /** One flag's help text: its own line, plus the wrapped continuation lines under it. */
 export function helpSection(help: string, flag: string): string {
@@ -106,7 +107,8 @@ export function parseMcpList(out: string): McpServer[] {
 }
 
 /**
- * Which model is in force, and what is deciding it.
+ * Which model a new session here would start on, and what is deciding it. Not what a running
+ * conversation is on: that is in its transcript, see chat-model.mjs.
  *
  * The order is claude's own precedence: the flag the pane was started with beats the
  * environment, which beats settings.json, which beats ~/.claude.json. Reported with its source
@@ -125,4 +127,60 @@ export function currentModel(found: { argv: string; env: string; settings: strin
 /** A value safe to put in a slash command typed into a pane. */
 export function isSafeOptionValue(value: string): boolean {
   return /^[\w.-]+$/.test(String(value || '').trim());
+}
+
+export interface ChatOptions {
+  read: boolean;
+  /** The last attempt to read them failed, as against not having answered yet. */
+  failed: boolean;
+  models: string[];
+  efforts: string[];
+  model: string;
+  modelSource: string;
+  effort: string;
+  modelEfforts: Record<string, string>;
+}
+
+/** Not read yet. */
+export function noOptions(): ChatOptions {
+  return {
+    read: false, failed: false, models: [], efforts: [], model: '', modelSource: '', effort: '', modelEfforts: {},
+  };
+}
+
+/**
+ * What the one exec behind readOptions printed, as options; null when it did not get to the end.
+ *
+ * Sections between @@ markers: the help, the pane's argv, the environment, then four lines from the
+ * settings files, always all four, so that a blank one still means that file says nothing.
+ */
+export function parseOptions(out: string): ChatOptions | null {
+  if (!out.includes('@@HELP') || !out.includes('@@END')) {
+    return null;
+  }
+
+  const between = (a: string, b: string) => (out.split(a)[1] || '').split(b)[0] || '';
+  const help = between('@@HELP', '@@ARGV');
+  const line = between('@@ARGV', '@@ENV').split('\n').map((l) => l.trim()).find((l) => l.startsWith('claude')) || '';
+  const files = between('@@FILES', '@@END').split('\n');
+  const found = currentModel({
+    argv:     /--model[\s=]+(\S+)/.exec(line)?.[1] || '',
+    env:      between('@@ENV', '@@FILES').trim(),
+    settings: files[1] || '',
+    config:   files[2] || '',
+  });
+
+  return {
+    read:        true,
+    failed:      false,
+    models:      modelAliases(help),
+    efforts:     flagChoices(help, '--effort'),
+    model:       found.model,
+    modelSource: found.source,
+    // What settings would give a session. The running effort is on each reply in the transcript
+    // (chat-state.mjs, foldModel); these are only the fallback before one exists, and unset
+    // here and there is shown as unset rather than guessed at.
+    effort:       (files[3] || '').trim(),
+    modelEfforts: modelEffortsFrom(files[4] || ''),
+  };
 }

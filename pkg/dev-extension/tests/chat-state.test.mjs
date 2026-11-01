@@ -17,7 +17,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, promptTextOf, duration, tokens, ago, promptKey, reconcilePending,
-  parseEntries, deriveState, foldQueue, promptRecords, isCliText
+  parseEntries, deriveState, foldQueue, foldModel, promptRecords, isCliText
 } from '../chat-state.mjs';
 
 // ── The login flow: the one state only the pane shows ──────────────────────────────────────
@@ -330,4 +330,278 @@ test('a message still in the queue is still unsent, whatever else the CLI queued
   });
 
   assert.equal(left.length, 1);
+});
+
+// ── Which model and effort ran: read off real transcripts, field for field ─────────────────
+
+let uuid = 0;
+const stamped = (entry) => ({ uuid: `u${ ++uuid }`, timestamp: `2026-10-01T00:00:${ String(uuid % 60).padStart(2, '0') }Z`, ...entry });
+const prompt = (text = 'hello') => stamped({ type: 'user', message: { role: 'user', content: text } });
+const reply = (model, more = {}) => stamped({
+  type: 'assistant', message: { role: 'assistant', model, content: [{ type: 'text', text: 'ok' }] }, ...more,
+});
+const synthetic = () => stamped({
+  type: 'assistant', isApiErrorMessage: true, error: 'server_error', message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'API Error' }] },
+});
+const stdout = (text) => stamped({ type: 'user', message: { role: 'user', content: `<local-command-stdout>${ text }</local-command-stdout>` } });
+const identity = (modelId, marketingName) => stamped({
+  type: 'attachment', attachment: { type: 'model', identity: { modelId, marketingName, knowledgeCutoff: 'x' } },
+});
+const fallback = (originalModel, fallbackModel, direction = 'retry') => stamped({
+  type: 'system', subtype: 'model_refusal_fallback', originalModel, fallbackModel, direction, trigger: 'refusal', retractedMessageUuids: [],
+});
+
+test('a reply says the model and effort, and a `perTurnEffort` of null does not hide its effort', () => {
+  const state = foldModel([prompt(), reply('claude-opus-5-5', { effort: 'xhigh', perTurnEffort: null })]);
+
+  assert.equal(state.model, 'claude-opus-5-5');
+  assert.equal(state.effort, 'xhigh');
+  assert.equal(state.modelFrom, 'reply');
+});
+
+test('deriveState carries the fold, whatever the phase', () => {
+  const state = deriveState({ entries: [prompt(), reply('claude-fable-5-1', { effort: 'high' })] });
+
+  assert.equal(state.phase, 'absent');
+  assert.equal(state.model, 'claude-fable-5-1');
+  assert.equal(state.effort, 'high');
+});
+
+test('a <synthetic> reply is not a model, even as the last line of the file', () => {
+  const state = foldModel([prompt(), reply('claude-opus-5-5', { effort: 'high' }), synthetic()]);
+
+  assert.equal(state.model, 'claude-opus-5-5');
+  assert.equal(state.effort, 'high');
+  assert.equal(foldModel([prompt(), synthetic()]).model, '');
+});
+
+test('an API error line is not a model, whatever it is stamped with', () => {
+  const state = foldModel([reply('claude-opus-5', { effort: 'high' }), reply('claude-opus-4-8', { isApiErrorMessage: true })]);
+
+  assert.equal(state.model, 'claude-opus-5');
+});
+
+test('a sidechain never speaks for the conversation', () => {
+  const state = foldModel([
+    prompt(),
+    reply('claude-opus-5-5', { effort: 'high' }),
+    reply('claude-sonnet-5', { effort: 'low', isSidechain: true }),
+    identity('claude-sonnet-5', 'Sonnet 5'),
+  ].map((entry, i) => (i === 3 ? { ...entry, isSidechain: true } : entry)));
+
+  assert.equal(state.model, 'claude-opus-5-5');
+  assert.equal(state.effort, 'high');
+  assert.equal(state.modelName, '');
+});
+
+test('advisorModel is a different model and is not read', () => {
+  assert.equal(foldModel([reply('claude-opus-5', { advisorModel: 'claude-opus-5-5' })]).model, 'claude-opus-5');
+});
+
+test('a real reply with no effort clears the last one, rather than keeping another model\'s', () => {
+  const state = foldModel([reply('claude-opus-5', { effort: 'xhigh' }), reply('claude-fable-5')]);
+
+  assert.equal(state.model, 'claude-fable-5');
+  assert.equal(state.effort, '');
+});
+
+test('the fold says which model, and the same whatever the [1m] on any line says', () => {
+  const on = foldModel([reply('claude-opus-5-5', { requestedModel: 'claude-opus-5-5[1m]' })]);
+  const off = foldModel([reply('claude-opus-5-5', { requestedModel: 'claude-opus-5-5' })]);
+
+  assert.equal(on.model, 'claude-opus-5-5');
+  assert.equal(on.fallbackFrom, '', 'a suffix is not a different model');
+  assert.equal(off.model, 'claude-opus-5-5');
+  // So whether the 1 MiB first read reached the identity line cannot change the answer.
+  const whole = foldModel([identity('claude-opus-5[1m]', 'Opus 5 (1M context)'), reply('claude-opus-5')]);
+
+  assert.equal(whole.model, foldModel([reply('claude-opus-5')]).model);
+});
+
+test('the identity attachment covers the wait for the first reply', () => {
+  const state = foldModel([prompt(), identity('claude-opus-5-5[1m]', 'Opus 5.5 (1M context)')]);
+
+  assert.equal(state.model, 'claude-opus-5-5');
+  assert.equal(state.modelName, 'Opus 5.5');
+  assert.equal(state.modelFrom, 'identity');
+  assert.equal(state.effort, '');
+});
+
+test('an identity naming the model already replying changes nothing', () => {
+  const state = foldModel([
+    reply('claude-opus-5', { requestedModel: 'claude-opus-5', effort: 'high' }),
+    identity('claude-opus-5[1m]', 'Opus 5 (1M context)'),
+  ]);
+
+  assert.equal(state.model, 'claude-opus-5');
+  assert.equal(state.modelFrom, 'reply');
+  assert.equal(state.effort, 'high');
+});
+
+test('a marketing name for another model is dropped when a different one replies', () => {
+  assert.equal(foldModel([identity('claude-opus-5', 'Opus 5'), reply('claude-fable-5-1')]).modelName, '');
+});
+
+test('/model is pending at once, in both printed forms, without touching what ran', () => {
+  for (const text of ['Set model to `claude-opus-5[1m]`', 'Set model to claude-opus-5[1m]', 'Set model to \u001b[1mclaude-opus-5[1m]\u001b[22m', 'Set model to `claude-opus-5[1m]` and saved as your default for new sessions']) {
+    const state = foldModel([prompt(), reply('claude-fable-5-1', { effort: 'high' }), stdout(text)]);
+
+    assert.equal(state.pendingModel, 'claude-opus-5', text);
+    assert.equal(state.model, 'claude-fable-5-1');
+    assert.ok(state.modelMark);
+    assert.equal(state.effortMark, '');
+  }
+});
+
+test('the next real reply supersedes /model, and an unmatched one after a new prompt does too', () => {
+  const said = [prompt(), reply('claude-fable-5-1'), stdout('Set model to `claude-opus-5-5`')];
+  const matched = foldModel([...said, prompt('next'), reply('claude-opus-5-5', { effort: 'high' })]);
+  const other = foldModel([...said, prompt('next'), reply('claude-opus-4-8', { effort: 'high' })]);
+
+  assert.equal(matched.pendingModel, '');
+  assert.equal(matched.model, 'claude-opus-5-5');
+  assert.equal(other.pendingModel, '');
+  assert.equal(other.model, 'claude-opus-4-8');
+});
+
+test('/model mid-turn stays pending through the old model\'s remaining replies', () => {
+  const state = foldModel([
+    prompt(), reply('claude-fable-5-1'), stdout('Set model to `claude-opus-5-5`'), reply('claude-fable-5-1'),
+  ]);
+
+  assert.equal(state.pendingModel, 'claude-opus-5-5');
+  assert.equal(state.model, 'claude-fable-5-1');
+});
+
+test('prose, a quote of the command and other commands are not a /model answer', () => {
+  assert.equal(foldModel([stdout('Set model to Sonnet')]).pendingModel, '');
+  assert.equal(foldModel([stdout('Current model: `claude-opus-5`')]).pendingModel, '');
+  assert.equal(foldModel([prompt('why did it say <local-command-stdout>Set model to `claude-opus-5`</local-command-stdout>?')]).pendingModel, '');
+});
+
+test('choosing the model already running leaves nothing pending', () => {
+  const state = foldModel([reply('claude-opus-5-5'), stdout('Kept model as `claude-opus-5-5`')]);
+
+  assert.equal(state.pendingModel, '');
+});
+
+test('/effort is pending at once, and the next reply settles it', () => {
+  const said = [prompt(), reply('claude-opus-5', { effort: 'high' }), stdout('Set effort level to medium (this session only): moderate reasoning')];
+
+  assert.equal(foldModel(said).pendingEffort, 'medium');
+  assert.equal(foldModel(said).effort, 'high');
+  const settled = foldModel([...said, prompt('next'), reply('claude-opus-5', { effort: 'medium' })]);
+
+  assert.equal(settled.pendingEffort, '');
+  assert.equal(settled.effort, 'medium');
+  // Refused by a cap or an env var, claude's own next reply is the truth either way.
+  assert.equal(foldModel([...said, prompt('next'), reply('claude-opus-5', { effort: 'high' })]).pendingEffort, '');
+});
+
+test('/effort auto takes over from whatever was showing or pending', () => {
+  const opening = [prompt(), reply('claude-opus-5', { effort: 'high' })];
+
+  assert.equal(foldModel([...opening, stdout('Set effort level to auto')]).pendingEffort, 'auto');
+  const after = foldModel([...opening, stdout('Set effort level to xhigh'), stdout('Set effort level to auto')]);
+
+  assert.equal(after.pendingEffort, 'auto');
+  assert.equal(foldModel([...opening, stdout('Set effort level to auto'), prompt('next'), reply('claude-opus-5', { effort: 'medium' })]).pendingEffort, '');
+});
+
+test('an older /model naming an effort sets that as well', () => {
+  const state = foldModel([prompt(), reply('claude-opus-5', { effort: 'high' }), stdout('Set model to `claude-opus-5-5` with `max` effort')]);
+
+  assert.equal(state.pendingModel, 'claude-opus-5-5');
+  assert.equal(state.pendingEffort, 'max');
+  assert.equal(foldModel([prompt(), reply('claude-opus-5', { effort: 'high' }), stdout('Set model to claude-opus-5-5 with max effort')]).pendingEffort, 'max');
+});
+
+test('/effort answers that name no level in force set nothing', () => {
+  assert.equal(foldModel([stdout('Not applied: CLAUDE_CODE_EFFORT_LEVEL=high overrides this session')]).pendingEffort, '');
+  assert.equal(foldModel([stdout('Effort \'max\' exceeds the cap for this model; set to \'xhigh\' instead')]).pendingEffort, 'xhigh');
+});
+
+test('a fallback model is what ran, and says what it fell back from', () => {
+  const state = foldModel([
+    prompt(), reply('claude-opus-5', { requestedModel: 'claude-opus-5[1m]' }),
+    fallback('claude-opus-5[1m]', 'claude-opus-4-8'),
+  ]);
+
+  assert.equal(state.model, 'claude-opus-4-8');
+  assert.equal(state.fallbackFrom, 'claude-opus-5');
+  const after = foldModel([fallback('claude-opus-5[1m]', 'claude-opus-4-8'), reply('claude-opus-4-8', { effort: 'high' })]);
+
+  assert.equal(after.model, 'claude-opus-4-8');
+  assert.equal(after.fallbackFrom, 'claude-opus-5');
+});
+
+test('a reply served by something other than requested shows what served it', () => {
+  const state = foldModel([reply('claude-opus-4-8', { requestedModel: 'claude-opus-5[1m]' })]);
+
+  assert.equal(state.model, 'claude-opus-4-8');
+  assert.equal(state.fallbackFrom, 'claude-opus-5');
+});
+
+test('going back to the original model, or choosing another, ends the fallback note', () => {
+  const fell = [fallback('claude-opus-5', 'claude-opus-4-8'), reply('claude-opus-4-8')];
+
+  assert.equal(foldModel([...fell, reply('claude-opus-5')]).fallbackFrom, '');
+  assert.equal(foldModel([...fell, stdout('Set model to `claude-fable-5-1`')]).fallbackFrom, '');
+});
+
+test('a fallback note ends as soon as the model moves on, however it moved', () => {
+  const fell = [reply('claude-fable-5'), fallback('claude-fable-5', 'claude-opus-5')];
+
+  // A resume on a new default: an identity, then a reply, with no /model answer anywhere.
+  assert.equal(foldModel([...fell, identity('claude-opus-5-5', 'Opus 5.5')]).fallbackFrom, '');
+  assert.equal(foldModel([...fell, prompt(), reply('claude-opus-5-5', { requestedModel: 'claude-opus-5-5' })]).fallbackFrom, '');
+  // An older CLI's prose, which names no id, then a reply from what it chose.
+  assert.equal(foldModel([...fell, stdout('Set model to Sonnet'), prompt(), reply('claude-sonnet-5')]).fallbackFrom, '');
+  // Still on the model it fell back to: still true.
+  assert.equal(foldModel([...fell, reply('claude-opus-5')]).fallbackFrom, 'claude-fable-5');
+  assert.equal(foldModel([...fell, identity('claude-opus-5', 'Opus 5')]).fallbackFrom, 'claude-fable-5');
+  // And the CLI saying that is now what is requested ends it too.
+  assert.equal(foldModel([...fell, reply('claude-opus-5', { requestedModel: 'claude-opus-5' })]).fallbackFrom, '');
+});
+
+test('the prompt running is exported, ahead of the one last answered', () => {
+  const first = prompt();
+  const second = prompt('next');
+  const state = foldModel([first, reply('claude-opus-5'), second]);
+
+  assert.equal(state.promptMark, second.uuid);
+  assert.equal(state.answeredMark, first.uuid);
+});
+
+test('stdout is credited to the command named above it', () => {
+  const name = (command) => stamped({ type: 'user', message: { role: 'user', content: `<command-name>/${ command }</command-name>` } });
+  const opening = [prompt(), reply('claude-opus-5', { effort: 'high' })];
+
+  const failed = foldModel([...opening, name('effort'), stdout('Not applied: env overrides this session')]);
+
+  assert.ok(failed.effortMark);
+  assert.equal(failed.modelMark, '');
+  const cost = foldModel([...opening, name('cost'), stdout('Total cost: $1')]);
+
+  assert.equal(cost.modelMark, '');
+  assert.equal(cost.effortMark, '');
+  // A command's name is one line before its answer, not an answer of its own.
+  assert.equal(foldModel([...opening, name('model')]).modelMark, '');
+});
+
+test('a tail with no reply in it has no running model, rather than a wrong one', () => {
+  const state = foldModel([prompt()]);
+
+  assert.equal(state.model, '');
+  assert.equal(state.effort, '');
+});
+
+test('the marks a held choice is judged against only move for a command or an answered prompt', () => {
+  const first = prompt();
+  const before = foldModel([first, reply('claude-opus-5')]);
+  const during = foldModel([first, reply('claude-opus-5'), reply('claude-opus-5')]);
+  const answered = foldModel([first, reply('claude-opus-5'), prompt('next'), reply('claude-opus-5')]);
+
+  assert.equal(during.answeredMark, before.answeredMark);
+  assert.notEqual(answered.answeredMark, before.answeredMark);
 });

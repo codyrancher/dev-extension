@@ -444,6 +444,10 @@ export default {
 
     toggleMenu(kind) {
       this.menu = this.menu === kind ? '' : kind;
+      // A read that failed is only retried by somebody who wants the answer.
+      if (this.menu === 'model' && this.options.failed && !this.options.read) {
+        this.readOptions();
+      }
     },
 
     moveSlash(direction) {
@@ -1255,7 +1259,7 @@ export default {
         @click="menu = 'model'"
       >
         <span class="mc-chat__menu-name">Switch model…</span>
-        <span class="mc-chat__menu-note">{{ options.model || state.model }}<template v-if="options.effort"> · {{ options.effort }}</template></span>
+        <span class="mc-chat__menu-note">{{ modelInfo.label }}</span>
       </button>
       <button
         type="button"
@@ -1376,26 +1380,38 @@ export default {
       class="mc-chat__menu"
     >
       <p class="mc-chat__menu-head">
-        Model<span
-          v-if="options.modelSource"
-          class="mc-chat__menu-note"
-        >set by {{ options.modelSource }}</span>
+        Model
+      </p>
+      <p
+        v-if="modelInfo.status"
+        class="mc-chat__menu-status"
+      >
+        {{ [modelInfo.status, ...modelInfo.notes].join(' ') }}
+      </p>
+      <p
+        v-if="!options.read"
+        class="mc-chat__menu-status"
+      >
+        {{ options.failed ? 'Could not read the choices from claude. Open this again to retry.' : 'Reading the choices from claude…' }}
       </p>
       <button
         v-for="value in options.models"
         :key="value"
         type="button"
         class="mc-chat__menu-item"
-        :class="{ 'mc-chat__menu-item--on': value === options.model }"
+        :class="{ 'mc-chat__menu-item--on': value === modelInfo.family }"
         @click="setOption('model', value)"
       >
-        <span class="mc-chat__menu-tick">{{ value === options.model ? '✓' : '' }}</span>
+        <span class="mc-chat__menu-tick">{{ value === modelInfo.family ? '✓' : '' }}</span>
         <span class="mc-chat__menu-name">{{ value }}</span>
       </button>
 
       <template v-if="options.efforts.length">
         <p class="mc-chat__menu-head">
-          Effort
+          Effort<span
+            v-if="modelInfo.effort && modelInfo.effortSource !== 'running'"
+            class="mc-chat__menu-note"
+          >{{ modelInfo.effortNote }}</span>
         </p>
         <div class="mc-chat__efforts">
           <button
@@ -1403,7 +1419,7 @@ export default {
             :key="value"
             type="button"
             class="mc-chat__effort"
-            :class="{ 'mc-chat__effort--on': value === options.effort }"
+            :class="{ 'mc-chat__effort--on': value === modelInfo.effort }"
             @click="setOption('effort', value)"
           >
             {{ value }}
@@ -1600,15 +1616,21 @@ export default {
           `opus[1m]` for a program that was not running.
         -->
         <button
-          v-if="options.read && isClaude"
+          v-if="isClaude && (options.read || modelInfo.known)"
           type="button"
-          class="mc-chat__pill"
+          class="mc-chat__pill mc-chat__pill--model"
           :class="{ 'mc-chat__pill--on': menu === 'model' }"
-          :title="options.modelSource ? `Model — set by ${ options.modelSource }` : 'Model'"
+          :title="modelInfo.title || 'Model'"
+          :aria-label="optionBusy === 'model' || optionBusy === 'effort' ? 'Model: changing' : (modelInfo.spoken || 'Model')"
           :disabled="optionBusy === 'model' || optionBusy === 'effort'"
           @click="toggleMenu('model')"
         >
-          {{ optionBusy === 'model' || optionBusy === 'effort' ? '…' : (options.model || 'model') }}<template v-if="options.effort"> · {{ options.effort }}</template>
+          <!-- Separate spans so the name is what gives way: the effort is the part that varies. -->
+          <span class="mc-chat__pill-name">{{ optionBusy === 'model' || optionBusy === 'effort' ? '…' : (modelInfo.modelText || 'model') }}</span>
+          <span
+            v-if="modelInfo.effortText"
+            class="mc-chat__pill-part"
+          >· {{ modelInfo.effortText }}</span>
           <svg
             class="mc-chat__chev"
             width="8"
@@ -2476,6 +2498,18 @@ export default {
     }
   }
 
+  &__pill-name {
+    min-width:     0;
+    overflow:      hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__pill-part { flex: 0 0 auto; }
+
+  // The name and version are what it is for, and a docked panel can be 220px wide. The gap in the
+  // bar gives way before this does.
+  &__pill--model { max-width: 70%; }
+
   &__chev { flex: 0 0 auto; opacity: 0.8; }
 
   // The pair at the right of the bar. One variable, one radius, one border width.
@@ -2654,6 +2688,16 @@ export default {
   }
 
   &__menu-note { text-transform: none; letter-spacing: 0; font-size: 10px; }
+
+  // A full id is long and the menu is narrow on a phone: it wraps rather than being cut, since
+  // the version at the end of it is the point.
+  &__menu-status {
+    margin:        0 0 3px;
+    padding:       0 8px;
+    color:         var(--muted);
+    font-size:     11px;
+    overflow-wrap: anywhere;
+  }
 
   &__menu-item {
     display:       flex;
@@ -2964,6 +3008,7 @@ export default {
        is the one that can be long, so it is the one that gets the room and the ellipsis. */
     &__bar { padding: 2px 4px 4px; }
     &__pill { max-width: 34%; }
+    &__pill--model { max-width: 46%; }
 
     /* Thumb-sized. 26px is right beside a 13px control on a desktop and too small to hit on
        glass, and these two are the controls somebody uses on every message. */

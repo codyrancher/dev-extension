@@ -25,7 +25,7 @@
  *   subAgo?: number }} ActivitySignals
  */
 
-/** @typedef {{ phase: 'absent'|'gone'|'idle'|'working'|'question'|'waiting'|'login', since: string, status: string, verb: string, queue: string[], question: object|null, login: object|null, model: string, effort: string, mode: string, permissionMode: string, title: string, cost: object|null, outputTokens: number, lastEnd: string, interrupted: boolean }} ChatState */
+/** @typedef {{ phase: 'absent'|'gone'|'idle'|'working'|'question'|'waiting'|'login', since: string, status: string, verb: string, queue: string[], question: object|null, login: object|null, model: string, modelName: string, modelFrom: string, effort: string, effortSeen: boolean, pendingModel: string, pendingEffort: string, fallbackFrom: string, modelMark: string, effortMark: string, promptMark: string, answeredMark: string, mode: string, permissionMode: string, title: string, cost: object|null, outputTokens: number, lastEnd: string, interrupted: boolean }} ChatState */
 import { agyUserText } from './agent-clis.mjs';
 
 const QUESTION_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
@@ -146,6 +146,222 @@ function isCompactSummary(entry) {
 function isTurnStart(entry) {
   return (isPromptEntry(entry) && !isCompactSummary(entry)) ||
     (entry.type === 'queue-operation' && entry.operation === 'dequeue');
+}
+
+/** The model fields of a state with no evidence yet. */
+export function noModelEvidence() {
+  return {
+    model:         '',
+    modelName:     '',
+    modelFrom:     '',
+    effort:        '',
+    effortSeen:    false,
+    pendingModel:  '',
+    pendingEffort: '',
+    fallbackFrom:  '',
+    modelMark:     '',
+    effortMark:    '',
+    promptMark:    '',
+    answeredMark:  '',
+  };
+}
+
+/**
+ * An id without its `[1m]`.
+ *
+ * The fold records which model, not which context window. The suffix is no evidence of the window
+ * in either direction: from CLI 2.1.311 requestedModel stops carrying it with no /model in sight,
+ * and transcripts hold replies with no suffix anywhere at over 800k context tokens. It also
+ * depends on how much of the file was read, so keeping it made a reload change the answer.
+ */
+const baseModel = (id) => String(id || '').trim().replace(/\[1m\]$/i, '');
+const markOf = (entry) => String(entry.uuid || entry.timestamp || '');
+
+/**
+ * A reply a model actually wrote.
+ *
+ * `<synthetic>` is what the CLI stamps on an API error it writes down itself. No model ran, and
+ * a conversation that ends on one would otherwise read `<synthetic>` for ever.
+ */
+function isRealReply(entry) {
+  const model = entry.message?.model;
+
+  return entry.type === 'assistant' && typeof model === 'string' && !!model &&
+    model !== '<synthetic>' && !entry.isApiErrorMessage;
+}
+
+/** What a slash command printed, ANSI stripped; null for any other line. */
+function commandOutput(entry) {
+  if (entry.type !== 'user') {
+    return null;
+  }
+  const match = /^<local-command-std(?:out|err)>([\s\S]*?)(?:<\/local-command-std(?:out|err)>|$)/.exec(textOf(entry));
+
+  // eslint-disable-next-line no-control-regex
+  return match ? match[1].replace(/\x1b\[[0-9;]*m/g, '').trim() : null;
+}
+
+/** The slash command a user line is the record of, without its slash; '' for any other line. */
+function commandName(entry) {
+  if (entry.type !== 'user') {
+    return '';
+  }
+  const text = textOf(entry);
+
+  return (/^<(?:command-|local-command-caveat)/.test(text) && /<command-name>\/?([\w:-]+)<\/command-name>/.exec(text)?.[1]) || '';
+}
+
+/**
+ * The id `/model` says it set, which is resolved: `/model opus[1m]` prints claude-opus-5[1m].
+ *
+ * Backticks on newer CLIs, bare on older ones. An older CLI also printed prose ("Set model to
+ * Sonnet"), which names no id and is not one to display as a version, so it is ignored.
+ */
+function setModelFrom(output) {
+  const match = /^(?:Set model to|Kept model as)\s+(`?)([^\s`<]+)\1/i.exec(output);
+
+  return match && (match[1] || /^claude-/i.test(match[2]) || /\[1m\]$/i.test(match[2])) ? baseModel(match[2]) : '';
+}
+
+/**
+ * The level `/effort` says it set; an older CLI's `/model` could set one too ("Set model to X with
+ * max effort"). `auto` counts: it is a level chosen, and what was showing is no longer true.
+ * Wording from the CLI's binary, since no sampled transcript has one. `Not applied: …` answers
+ * nothing.
+ */
+function setEffortFrom(output) {
+  const match = /^Set effort level to\s+`?([a-z]+)`?/i.exec(output) ||
+    /^Effort\b.*\bset to '?([a-z]+)'? instead/i.exec(output) ||
+    /^Set model to\s+\S+\s+with\s+`?([a-z]+)`?\s+effort\b/i.exec(output);
+
+  return match ? match[1].toLowerCase() : '';
+}
+
+/**
+ * The model and effort this conversation is on, from its own record, latest evidence winning.
+ *
+ * Each reply is stamped with both, and that stamp matches the API request every time it can be
+ * checked. The rest covers the moments before a reply: `/model` and `/effort` print their answer
+ * at once but nothing structured is written until the next turn, so they are held as pending
+ * rather than overwriting the running value. A command used mid-turn is followed by more replies
+ * from the old model, and those must not flicker the label back; pending ends at a reply that
+ * matches it, or at any reply to a prompt newer than the command.
+ *
+ * Deliberately not read: `advisorModel` (a different model, on most lines), `attachment.model`
+ * (on unrelated attachments), `cost-state.modelUsage` (cumulative, includes background haiku).
+ */
+export function foldModel(entries) {
+  const out = noModelEvidence();
+  let namedId = ''; // Whose name out.modelName is.
+  let replied = false;
+  let fallbackTo = ''; // The model the fallback landed on: it is only news while that is running.
+  let lastCommand = ''; // Whose answer the next stdout is: the CLI writes the name just above it.
+  let pendingModelAt = '';
+  let pendingEffortAt = '';
+
+  for (const entry of entries) {
+    // A subagent's own model and effort, not this conversation's.
+    if (entry.isSidechain) {
+      continue;
+    }
+    if (isTurnStart(entry)) {
+      out.promptMark = markOf(entry);
+    }
+
+    if (isRealReply(entry)) {
+      const served = baseModel(entry.message.model);
+      const requested = typeof entry.requestedModel === 'string' ? baseModel(entry.requestedModel) : '';
+
+      if (requested && requested !== served && /^claude-/.test(requested)) {
+        out.fallbackFrom = requested;
+        fallbackTo = served;
+      } else if (requested === served || served !== fallbackTo) {
+        out.fallbackFrom = '';
+      }
+      out.model = served;
+      out.modelFrom = 'reply';
+      replied = true;
+      // Cleared when absent: a model with no effort must not keep the last model's level.
+      out.effort = String(entry.perTurnEffort || entry.effort || '');
+      out.effortSeen = out.effortSeen || !!out.effort;
+      out.answeredMark = out.promptMark;
+      if (out.pendingModel && (out.pendingModel === served || out.promptMark !== pendingModelAt)) {
+        out.pendingModel = '';
+      }
+      if (out.pendingEffort && (out.pendingEffort === out.effort || out.promptMark !== pendingEffortAt)) {
+        out.pendingEffort = '';
+      }
+      continue;
+    }
+
+    if (entry.type === 'attachment' && entry.attachment?.type === 'model' && entry.attachment.identity?.modelId) {
+      const id = baseModel(entry.attachment.identity.modelId);
+
+      namedId = id;
+      out.modelName = String(entry.attachment.identity.marketingName || '').replace(/\s*\(1M context\)$/i, '');
+      // Written before the reply, so it is what covers the first prompt. For a model already
+      // replying it adds nothing unless it names a different one.
+      if (!replied || out.model !== id) {
+        out.model = id;
+        out.modelFrom = 'identity';
+      }
+      if (id !== fallbackTo) {
+        out.fallbackFrom = '';
+      }
+      if (out.pendingModel && (out.pendingModel === id || out.promptMark !== pendingModelAt)) {
+        out.pendingModel = '';
+      }
+      continue;
+    }
+
+    if (entry.type === 'system' && entry.subtype === 'model_refusal_fallback') {
+      out.pendingModel = '';
+      if (entry.direction === 'revert') {
+        out.fallbackFrom = '';
+      } else if (entry.fallbackModel) {
+        out.fallbackFrom = baseModel(entry.originalModel);
+        out.model = baseModel(entry.fallbackModel);
+        out.modelFrom = 'identity';
+        fallbackTo = out.model;
+      }
+      continue;
+    }
+
+    lastCommand = commandName(entry) || lastCommand;
+    const output = commandOutput(entry);
+
+    if (output === null) {
+      continue;
+    }
+    const model = setModelFrom(output);
+    const effort = setEffortFrom(output);
+
+    // By the command that printed it, so one command's answer does not retire a choice of the
+    // other's; by the wording too, for a line whose name was before the part of the file read.
+    if (model || lastCommand === 'model') {
+      out.modelMark = markOf(entry);
+    }
+    if (effort || lastCommand === 'effort') {
+      out.effortMark = markOf(entry);
+    }
+    lastCommand = '';
+
+    if (model) {
+      out.pendingModel = model === out.model ? '' : model;
+      pendingModelAt = out.promptMark;
+      out.fallbackFrom = '';
+    }
+    if (effort) {
+      out.pendingEffort = effort === out.effort ? '' : effort;
+      pendingEffortAt = out.promptMark;
+    }
+  }
+
+  if (namedId !== out.model) {
+    out.modelName = '';
+  }
+
+  return out;
 }
 
 /**
@@ -325,8 +541,7 @@ export function deriveState(input) {
     queue:          [],
     question:       null,
     login:          null,
-    model:          '',
-    effort:         '',
+    ...foldModel(entries),
     mode:           '',
     permissionMode: '',
     title:          '',
@@ -346,14 +561,6 @@ export function deriveState(input) {
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
 
-    if (entry.type === 'assistant' && entry.message?.model) {
-      state.model = entry.message.model;
-    }
-    if (entry.perTurnEffort) {
-      state.effort = String(entry.perTurnEffort);
-    } else if (entry.effort) {
-      state.effort = String(entry.effort);
-    }
     if (entry.type === 'mode' && entry.mode) {
       state.mode = entry.mode;
     }

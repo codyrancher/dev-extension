@@ -95,7 +95,7 @@ const chat = useConversation(() => ({
 // unwrapped in a template, only a top-level one is.
 const {
   turns, working, pane, draft, canSend, sending, slashMatches, slashSpot, caret,
-  grew, restarted, attached, file, error, pasting, pending,
+  grew, restarted, attached, file, error, pasting, pending, modelInfo,
 } = chat;
 
 /** The log's own preferences, shared with every other chat in the dashboard. See look.ts. */
@@ -410,6 +410,9 @@ defineExpose({ ask, focus: focusBox });
           <p v-if="noted || doing" class="bar__status" :class="doing ? `bar__status--${ doing.kind }` : ''">
             {{ noted || doing?.text }}
           </p>
+          <p v-if="modelInfo.spelled" class="bar__model" role="note" :title="modelInfo.title">
+            {{ modelInfo.spelled }}
+          </p>
         </div>
       </Transition>
 
@@ -671,6 +674,19 @@ defineExpose({ ask, focus: focusBox });
   padding: 0 var(--s4) var(--s1);
   color: var(--text-muted);
   font-size: var(--t-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar__model {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  padding: 0 var(--s4) var(--s1);
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

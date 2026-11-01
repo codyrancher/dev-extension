@@ -36,8 +36,11 @@ import {
   type ChatAgent, type ChatMessage, type ChatToolCall,
 } from './chat';
 import {
-  ago, deriveState, parseEntries, reconcilePending, unwrapPasted,
+  ago, deriveState, foldModel, noModelEvidence, parseEntries, reconcilePending, unwrapPasted,
 } from './chat-state.mjs';
+import {
+  modelInfo as describeModel, pickedChoice, settlePicked,
+} from './chat-model.mjs';
 import {
   AGY_COMMANDS, AGY_CUSTOMIZE, agyPhase, agyTailText,
 } from './agent-clis.mjs';
@@ -46,7 +49,7 @@ import { chatReadScript } from './chat-read.mjs';
 import { podStateText, PodStateUnavailable } from './pod-state';
 import { paneSendScript } from './pane-send.mjs';
 import {
-  modelAliases, flagChoices, parseMcpList, currentModel, isSafeOptionValue, type McpServer,
+  parseMcpList, isSafeOptionValue, noOptions, parseOptions, type ChatOptions, type McpServer,
 } from './chat-options';
 import {
   podExecOnce, statPodPath, readPodFileBase64, type PodTarget,
@@ -185,6 +188,9 @@ export function terminalOnly(text: string): boolean {
  * guarded and an unavailable one simply means the old behaviour.
  */
 const PENDING_KEY = 'mc-chat.pending';
+
+/** How many pages back seekModel will read for a reply: a megabyte, on top of the first read's. */
+const MODEL_SEEK_PAGES = 4;
 
 function readPending(paneId: string): any[] {
   try {
@@ -427,6 +433,8 @@ export function useConversation(source: () => ConversationSource) {
    */
   const historyStart = ref(0);
   const loadingEarlier = ref(false);
+  /** The file seekModel last went looking in, so it goes once per transcript. */
+  let seekingModelIn = '';
   /** Goes up when a page was joined onto the front, for a host that keeps its place while it is. */
   const prepended = ref(0);
   /** Nothing earlier to ask for: the view holds the transcript from its first byte. */
@@ -516,9 +524,13 @@ export function useConversation(source: () => ConversationSource) {
   /* ── What it can be set to ────────────────────────────────────────────────────────────────── */
 
   /** Read from claude rather than listed in a file: claude updates itself inside that pod. */
-  const options = ref<{ read: boolean; models: string[]; efforts: string[]; model: string; modelSource: string; effort: string }>({
-    read: false, models: [], efforts: [], model: '', modelSource: '', effort: '',
-  });
+  const options = ref<ChatOptions>(noOptions());
+  /** What the menu just sent, held apart from `options` and `state` until the transcript answers. */
+  const picked = ref<any>({ model: null, effort: null });
+  /** The model and effort to draw, the one answer for every surface. agy records neither. */
+  const modelInfo = computed(() => describeModel(cli.value === 'agy' ? {} : {
+    state: state.value, options: options.value, picked: picked.value,
+  }));
   const mcp = ref<{ read: boolean; loading: boolean; servers: McpServer[]; error: string }>({
     read: false, loading: false, servers: [], error: '',
   });
@@ -977,6 +989,10 @@ export function useConversation(source: () => ConversationSource) {
       lines.value = [];
       remainder.value = '';
       messages.value = [];
+      entries.value = [];
+      state.value = { ...state.value, ...noModelEvidence() };
+      picked.value = { model: null, effort: null };
+      seekingModelIn = '';
       restarted.value++;
       if (size && frame.data !== null) {
         // The data in this answer is from OFF, which was for the old file; ask again from 0.
@@ -1088,6 +1104,39 @@ export function useConversation(source: () => ConversationSource) {
       }
     }
     pane.value = paneFromState(state.value, frame.pane);
+    picked.value = settlePicked(picked.value, state.value);
+    seekModel();
+  }
+
+  /**
+   * Read further back when the part of the transcript held has no reply in it.
+   *
+   * The first read takes the last megabyte, and that can be all tool output or a long paste, which
+   * would leave a conversation with many replies reading as one nothing has confirmed. Once per
+   * file, and bounded: this is for a label, not worth walking a huge transcript for.
+   */
+  async function seekModel(): Promise<void> {
+    const at = file.value;
+
+    if (cli.value === 'agy' || !at || seekingModelIn === at || state.value.modelFrom === 'reply' || !entries.value.length || atStart.value) {
+      return;
+    }
+    seekingModelIn = at;
+
+    for (let page = 0; page < MODEL_SEEK_PAGES && file.value === at && !atStart.value; page++) {
+      const from = historyStart.value;
+
+      await loadEarlier();
+      if (file.value !== at || historyStart.value === from) {
+        return;
+      }
+      const fold = foldModel(entries.value);
+
+      state.value = { ...state.value, ...fold };
+      if (fold.modelFrom === 'reply') {
+        return;
+      }
+    }
   }
 
   /**
@@ -1389,8 +1438,9 @@ export function useConversation(source: () => ConversationSource) {
    * What claude in this pod can be set to, asked of claude itself.
    *
    * One exec for all of it: the help, which carries every value the menus offer; the pane's own
-   * argv, the environment and the two settings files, which between them decide which model is
-   * actually in force and why (claude's own precedence, see currentModel).
+   * argv, the environment and the two settings files, which between them decide what a new session
+   * starts on and why (claude's own precedence, see currentModel). What a running conversation is
+   * on comes from its transcript; this is the fallback until that says, see chat-model.mjs.
    *
    * Read once at mount and again after a change is applied. Not polled: `claude --help` shells
    * out to the binary, and the poll that keeps the transcript current runs every 1.5 seconds.
@@ -1404,39 +1454,22 @@ export function useConversation(source: () => ConversationSource) {
       'echo @@ENV',
       'printenv ANTHROPIC_MODEL 2>/dev/null || true',
       'echo @@FILES',
-      // Three lines, always all three, so a blank first line still means "settings.json sets no
+      // Four lines, always all four, so a blank first line still means "settings.json sets no
       // model" rather than shifting ~/.claude.json's answer into its place.
-      `node -e 'const fs=require("fs");const g=(f,k)=>{try{return String(JSON.parse(fs.readFileSync(f,"utf8"))[k]||"")}catch(e){return ""}};const s=process.env.HOME+"/.claude/settings.json";const c=process.env.HOME+"/.claude.json";console.log(g(s,"model"));console.log(g(c,"model"));console.log(g(s,"effort")||g(s,"effortLevel"))' 2>/dev/null`,
+      `node -e 'const fs=require("fs");const g=(f,k)=>{try{return String(JSON.parse(fs.readFileSync(f,"utf8"))[k]||"")}catch(e){return ""}};const s=process.env.HOME+"/.claude/settings.json";const c=process.env.HOME+"/.claude.json";console.log(g(s,"model"));console.log(g(c,"model"));console.log(g(s,"effort")||g(s,"effortLevel"));let m={};try{m=JSON.parse(fs.readFileSync(s,"utf8")).modelSettings||{}}catch(e){}console.log(JSON.stringify(m))' 2>/dev/null`,
       'echo @@END',
     ].join('\n');
+    const conversation = paneId.value;
+
+    // A read that failed before is a read in progress again: the menu says which.
+    options.value = { ...options.value, failed: false };
     const out = await run(script, 30000).catch(() => '');
 
-    if (!out.includes('@@HELP') || !out.includes('@@END')) {
+    // The answer is about the pane it was asked of, and the view may have moved on since.
+    if (paneId.value !== conversation) {
       return;
     }
-
-    const between = (a: string, b: string) => (out.split(a)[1] || '').split(b)[0] || '';
-    const help = between('@@HELP', '@@ARGV');
-    const line = between('@@ARGV', '@@ENV').split('\n').map((l) => l.trim()).find((l) => l.startsWith('claude')) || '';
-    const files = between('@@FILES', '@@END').split('\n');
-    const found = currentModel({
-      argv:     /--model[\s=]+(\S+)/.exec(line)?.[1] || '',
-      env:      between('@@ENV', '@@FILES').trim(),
-      settings: files[1] || '',
-      config:   files[2] || '',
-    });
-
-    options.value = {
-      read:        true,
-      models:      modelAliases(help),
-      efforts:     flagChoices(help, '--effort'),
-      model:       found.model,
-      modelSource: found.source,
-      // Only if something recorded it. There is no flag to read the running session's effort back
-      // out of, so an unset one is shown as unset rather than guessed at, and the button reads
-      // "model" rather than claiming a value.
-      effort:      (files[3] || '').trim(),
-    };
+    options.value = parseOptions(out) || { ...options.value, failed: true };
   }
 
   /** The MCP servers and whether each answered, read only when the menu is opened. */
@@ -1473,19 +1506,30 @@ export function useConversation(source: () => ConversationSource) {
     }
 
     optionBusy.value = kind;
+    const conversation = paneId.value;
+
+    // Before it is sent, so the marks are from before anything it causes. Not written to `options`:
+    // the re-read below is settings, which would put the old value back.
+    picked.value = { ...picked.value, [kind]: pickedChoice(kind, value, state.value) };
 
     try {
       if (!attached.value) {
         await start();
+        // Starting takes seconds, and the view can have moved to another conversation meanwhile:
+        // this command was not for that one. say() reads the pane before its first await.
+        if (paneId.value !== conversation) {
+          return;
+        }
       }
       await say(`/${ kind } ${ value }`);
       error.value = '';
-      // Optimistic, then corrected by the re-read below: claude writes the model into its
-      // settings, so the answer that comes back is the real one a moment later.
-      options.value = { ...options.value, [kind]: value };
       setTimeout(() => readOptions().catch(() => {}), 2500);
     } catch (e: any) {
-      error.value = e.message || String(e);
+      // Only this choice, and only if this is still its conversation: `picked` was reset otherwise.
+      if (paneId.value === conversation) {
+        picked.value = { ...picked.value, [kind]: null };
+        error.value = e.message || String(e);
+      }
     } finally {
       optionBusy.value = '';
       poll();
@@ -1832,9 +1876,11 @@ export function useConversation(source: () => ConversationSource) {
       offset: 0, lines: [], remainder: '', messages: [],
     };
     pending.value = readPending(now);
-    options.value = {
-      read: false, models: [], efforts: [], model: '', modelSource: '', effort: '',
-    };
+    options.value = noOptions();
+    seekingModelIn = '';
+    // Or the last conversation's model is what this one says until the first poll lands.
+    state.value = { ...state.value, ...noModelEvidence() };
+    picked.value = { model: null, effort: null };
     media.value = null;
     error.value = '';
     restarted.value++;
@@ -1922,6 +1968,7 @@ export function useConversation(source: () => ConversationSource) {
     uploads,
     // What it can be set to
     options,
+    modelInfo,
     mcp,
     thinking,
     optionBusy,

@@ -64,7 +64,7 @@ const chat = useConversation(() => ({
 // unwrapped in a template, only a top-level one is.
 const {
   turns, working, pane, draft, canSend, sending, slashMatches, slashSpot, caret,
-  grew, restarted, attached, error, pending, paneTail,
+  grew, restarted, attached, error, pending, paneTail, modelInfo,
 } = chat;
 
 /*
@@ -203,6 +203,10 @@ function onCode(text: string): void {
       <button type="button" class="ic__stuck-out" @click="chat.escapePane()">Send Escape</button>
     </div>
 
+    <p v-if="modelInfo.spelled" class="ic__model" role="note" :title="modelInfo.title">
+      {{ modelInfo.spelled }}
+    </p>
+
     <ChatComposer
       ref="composer"
       :model-value="draft"
@@ -314,4 +318,15 @@ function onCode(text: string): void {
 
 .ic__error { margin: 0; color: var(--bad, #f56c6c); font-size: var(--t-xs); }
 .ic__pending { margin: 0; color: var(--text-muted); font-size: var(--t-xs); }
+
+.ic__model {
+  flex: 0 0 auto;
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 </style>
