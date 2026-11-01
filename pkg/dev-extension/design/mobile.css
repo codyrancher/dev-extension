@@ -1029,6 +1029,23 @@
     grid-template-rows: auto auto auto !important;
   }
 
+  /*
+   * The action comes before the evidence.
+   *
+   * A Focus card is "here is the one thing to do, and why". On a wide card both halves are on
+   * screen together so the order is free; at 390px the why - four thumbnails, the share chips,
+   * a diff - is about 600px of it, and the primary action ended up below the fold with the
+   * deck's pager, so moving to the next card meant scrolling a whole card to reach the
+   * chevrons. A first screen with no action on it is not a Focus card.
+   *
+   * This needs no template change after all: the card is a grid at this width, and grid items
+   * honour `order` when they are auto-placed. Reviewing it as component work was wrong, and
+   * cheaply so - three declarations instead of a render branch.
+   */
+  .dev-root .card > .card__head { order: 0; }
+  .dev-root .card > .card__foot { order: 1; }
+  .dev-root .card > .card__body { order: 2; }
+
   /* Nothing inside it has to give any more, so nothing has to hide what it could not fit. */
   .dev-root .card__body {
     min-height: 0 !important;
