@@ -46,6 +46,9 @@ import {
 } from './agent-clis.mjs';
 import { frameNonce, isFramed, readFrames, spliceEarlier } from './chat-frames.mjs';
 import { chatReadScript } from './chat-read.mjs';
+import {
+  commandsScript, earlierScript, optionsScript, thinkingScript
+} from './agent-reads.mjs';
 import { podStateText, PodStateUnavailable } from './pod-state';
 import { paneSendScript } from './pane-send.mjs';
 import {
@@ -813,6 +816,35 @@ export function useConversation(source: () => ConversationSource) {
     return run(chatReadScript(at));
   }
 
+  /**
+   * A read the pod's state service can answer, by exec when it cannot.
+   *
+   * The same two conditions as readChat: only the agent pod runs a service, so a pane reached any
+   * other way keeps exec. `isAnswer` is what proves the read actually ran, and anything else from
+   * the service goes to exec too rather than being shown as an empty answer.
+   */
+  async function runRead(path: string, script: string, isAnswer: (out: string) => boolean, timeoutMs?: number): Promise<string> {
+    if (!prefix.value.length && !from.value.findPod) {
+      const pod = await locatePod();
+
+      if (pod) {
+        try {
+          const out = await podStateText(pod, path);
+
+          if (isAnswer(out)) {
+            return out;
+          }
+        } catch (e) {
+          if (!(e instanceof PodStateUnavailable)) {
+            throw e;
+          }
+        }
+      }
+    }
+
+    return run(script, timeoutMs);
+  }
+
   /** Keys into the pane: a name tmux knows (Enter, Escape) or a literal string. */
   async function keys(...args: string[]): Promise<void> {
     const quoted = args.map((a) => `'${ String(a).replace(/'/g, `'\\''`) }'`).join(' ');
@@ -896,12 +928,13 @@ export function useConversation(source: () => ConversationSource) {
     loadingEarlier.value = true;
     try {
       const nonce = frameNonce();
-      const out = await run([
-        `FILE=${ JSON.stringify(file.value) }; START=${ historyStart.value }; CAP=262144; N=${ JSON.stringify(nonce) }`,
-        'FROM=$((START - CAP)); [ "$FROM" -lt 0 ] && FROM=0',
-        'echo "@@FROM-$N $FROM"',
-        'if [ -f "$FILE" ] && [ "$START" -gt "$FROM" ]; then echo "@@BACK-$N"; tail -c +$((FROM+1)) "$FILE" | head -c $((START - FROM)); echo; echo "@@ENDBACK-$N"; fi',
-      ].join('\n'));
+      const out = await runRead(
+        `/earlier?${ new URLSearchParams({
+          file: file.value, start: String(historyStart.value), n: nonce, home: paneHome.value,
+        }) }`,
+        earlierScript({ file: file.value, start: historyStart.value, nonce }),
+        (text) => text.includes(`@@FROM-${ nonce }`),
+      );
       const frame = readFrames(out, nonce);
 
       if (frame.back === null || frame.from === null) {
@@ -1446,24 +1479,16 @@ export function useConversation(source: () => ConversationSource) {
    * out to the binary, and the poll that keeps the transcript current runs every 1.5 seconds.
    */
   async function readOptions(): Promise<void> {
-    const script = [
-      'echo @@HELP',
-      'claude --help 2>/dev/null',
-      'echo @@ARGV',
-      "ps -eo args= 2>/dev/null | grep -m1 '^claude' || true",
-      'echo @@ENV',
-      'printenv ANTHROPIC_MODEL 2>/dev/null || true',
-      'echo @@FILES',
-      // Four lines, always all four, so a blank first line still means "settings.json sets no
-      // model" rather than shifting ~/.claude.json's answer into its place.
-      `node -e 'const fs=require("fs");const g=(f,k)=>{try{return String(JSON.parse(fs.readFileSync(f,"utf8"))[k]||"")}catch(e){return ""}};const s=process.env.HOME+"/.claude/settings.json";const c=process.env.HOME+"/.claude.json";console.log(g(s,"model"));console.log(g(c,"model"));console.log(g(s,"effort")||g(s,"effortLevel"));let m={};try{m=JSON.parse(fs.readFileSync(s,"utf8")).modelSettings||{}}catch(e){}console.log(JSON.stringify(m))' 2>/dev/null`,
-      'echo @@END',
-    ].join('\n');
     const conversation = paneId.value;
 
     // A read that failed before is a read in progress again: the menu says which.
     options.value = { ...options.value, failed: false };
-    const out = await run(script, 30000).catch(() => '');
+    const out = await runRead(
+      `/options?${ new URLSearchParams({ home: paneHome.value }) }`,
+      optionsScript(),
+      (text) => text.includes('@@HELP') && text.includes('@@END'),
+      30000,
+    ).catch(() => '');
 
     // The answer is about the pane it was asked of, and the view may have moved on since.
     if (paneId.value !== conversation) {
@@ -1568,7 +1593,11 @@ export function useConversation(source: () => ConversationSource) {
    */
   async function readThinking(): Promise<void> {
     try {
-      const out = await run(`node -e "const s=require(process.env.HOME+'/.claude/settings.json');console.log(s.alwaysThinkingEnabled===false?'off':'on')" 2>/dev/null || echo on`);
+      const out = await runRead(
+        `/thinking?${ new URLSearchParams({ home: paneHome.value }) }`,
+        thinkingScript(),
+        (text) => /^(on|off)$/m.test(text),
+      );
 
       thinking.value = !/off/.test(out);
     } catch {
@@ -1614,14 +1643,12 @@ export function useConversation(source: () => ConversationSource) {
       return;
     }
 
-    const script = [
-      'cd "$(dirname "$HOME")" 2>/dev/null || cd /',
-      'for root in "$HOME/.claude" ".claude" "$PWD/.claude"; do',
-      '  [ -d "$root/commands" ] && find "$root/commands" -name "*.md" -maxdepth 2 2>/dev/null | sed "s|^|CMD |"',
-      '  [ -d "$root/skills" ] && find "$root/skills" -maxdepth 2 -name SKILL.md 2>/dev/null | sed "s|^|SKILL |"',
-      'done',
-    ].join('\n');
-    const out = await run(script, 15000).catch(() => '');
+    const out = await runRead(
+      `/commands?${ new URLSearchParams({ home: paneHome.value }) }`,
+      commandsScript(),
+      (text) => text.includes('@@END'),
+      15000,
+    ).catch(() => '');
     const seen = new Set<string>();
     const found: ChatCommand[] = [];
 

@@ -19,6 +19,8 @@ import { WORKSPACE_VUE_CONFIG, WORKSPACE_CONFIG_MOUNT } from './workspace-config
 import { WORKSPACE_API_SERVER } from './workspace-api';
 import { AGENT_SEED } from './agent-seed.generated';
 import { numbersIn } from './artifact-subjects.mjs';
+import { browserFallbackDue } from './dev-api/housekeeping.mjs';
+import { note } from './dev-log.mjs';
 import { source } from './source-cache.mjs';
 import {
   createWorkspaceInstance, deleteWorkspaceInstance, appById
@@ -1588,8 +1590,8 @@ export const nodeAddress = source(async(): Promise<string> => {
  * Run something in the agent pod, which is the one pod that has every workspace's tree.
  *
  * The trees live on the node, under one directory the agent pod mounts (/workspaces) so that a
- * conversation there can work in one. That mount is also the only writable view of the whole
- * set, which makes it the place to tidy up from: dev-api mounts the same root read-only.
+ * conversation there can work in one. dev-api mounts the same root and does the routine tidying
+ * from there (see dev-api/housekeeping.mjs); this is for what a person asked for.
  */
 async function inAgentPod(script: string): Promise<string> {
   const w = window as unknown as Record<string, Json>;
@@ -1780,10 +1782,10 @@ export async function listArtifactSources(): Promise<ArtifactSource[]> {
  *
  * Written once per workspace and never rewritten: the tag is the first thing that knew, and
  * anything that edits it afterwards - a person pointing a differently-named workspace at an issue
- * - has a better claim to it than this sweep does. Called from the same place the seed scripts are
- * refreshed, because it is the same kind of thing: making a workspace say what it is.
+ * - has a better claim to it than this sweep does. dev-api does this itself now; this is only for
+ * a dev-api that does not, by way of runHousekeepingFallback.
  */
-export async function tagWorkspaceArtifacts(workspaces: { name: string }[]): Promise<void> {
+async function tagWorkspaceArtifacts(workspaces: { name: string }[]): Promise<void> {
   const named = (workspaces || []).map(({ name }) => safeName(name)).filter(Boolean);
 
   if (!named.length) {
@@ -1820,50 +1822,6 @@ export async function removeArtifactSet(workspace: string): Promise<void> {
 }
 
 /**
- * Trees whose workspace no longer exists, removed.
- *
- * A delete that failed halfway, a workspace deleted from an older version, a tab closed before
- * the tree was removed: all of them leave a directory nothing will ever look at again. Driven
- * from the sidebar's poll, beside the render and the release, because it is the same kind of
- * unfinished business.
- *
- * Only trees older than an hour, and only ones with no Installation of that name: a workspace
- * being created has a tree before it has anything else, and deleting that would delete the
- * checkout out from under its own first boot.
- */
-export async function pruneWorkspaceTrees(keep: string[]): Promise<string[]> {
-  const wanted = new Set(keep.map(safeName).filter(Boolean));
-
-  // An empty list is the one answer this must not act on. It means "the workspaces did not
-  // load" at least as often as it means "there are none", and the two are indistinguishable
-  // from here - while the consequence of guessing wrong is every tree on the node.
-  if (!wanted.size) {
-    return [];
-  }
-  const listing = await inAgentPod('find /workspaces -maxdepth 1 -mindepth 1 -type d -mmin +60 -printf "%f\\n" 2>/dev/null').catch(() => '');
-  const candidates = listing.split('\n').map((line) => line.trim()).filter((name) => (
-    // `.shared` and anything else hidden is the node's, not a workspace's.
-    !!safeName(name) && !wanted.has(name)
-  ));
-  const removed: string[] = [];
-
-  for (const name of candidates) {
-    // Asked of the cluster rather than inferred from a list that may be partial: a namespace
-    // still standing means the workspace is still there, whatever this page happens to know.
-    const namespace = await devFetch(`${ BASE }/v1/namespaces/${ workspaceNamespace(name) }`).catch(() => null);
-
-    if (namespace?.metadata?.name) {
-      continue;
-    }
-    await removeWorkspaceTree(name);
-    removed.push(name);
-  }
-  await pruneModuleTemplates();
-
-  return removed;
-}
-
-/**
  * Keep a few node_modules templates, not one per lockfile ever seen.
  *
  * A template costs nothing while a workspace is linked to it - the files are the same inodes -
@@ -1879,6 +1837,58 @@ async function pruneModuleTemplates(keep = 3): Promise<void> {
   await inAgentPod(
     `cd /workspaces/.shared/template 2>/dev/null && ls -1dt */ 2>/dev/null | tail -n +${ keep + 1 } | xargs -r rm -rf; echo TEMPLATES-PRUNED`,
   ).catch(() => '');
+}
+
+/** When this tab last asked, across a reload. sessionStorage is per tab, which is the unit wanted. */
+const HOUSEKEEPING_ASKED_KEY = 'dev-housekeeping-asked';
+let housekeepingAsked = 0;
+
+function lastHousekeepingAsk(): number {
+  try {
+    return Math.max(housekeepingAsked, Number(sessionStorage.getItem(HOUSEKEEPING_ASKED_KEY)) || 0);
+  } catch {
+    return housekeepingAsked;
+  }
+}
+
+/**
+ * The node's tidying, from this tab, only if dev-api is not doing it. Safe to call on every refresh.
+ *
+ * dev-api sweeps on its own (see dev-api/housekeeping.mjs), so this normally asks once per half hour
+ * and is told there is nothing to do. A dev-api that does not say so - not rolled yet, down, on a
+ * read-only mount - leaves the work here, and the half hour is what stops that being a socket per
+ * refresh: it is spent before the question, so no answer can bring the rate back up.
+ *
+ * Templates and tags, not trees. Removing a tree from here could only ever happen when the registrar
+ * was stale and the list had fallen back to the clusters, which leave out every workspace that is
+ * only a directory: those are the trees a person is meant to be able to open, and that list is the
+ * one reason they would look unowned.
+ *
+ * A workspace on another cluster keeps its tag from here whatever dev-api says. Its tree is an sshfs
+ * mount in the agent pod, which dev-api cannot see, so nothing else can reach it: one exec per half
+ * hour, and none on a Rancher with no such workspace.
+ */
+export async function runHousekeepingFallback(workspaces: { name: string; cluster?: string }[]): Promise<void> {
+  const now = Date.now();
+
+  if (!workspaces?.length || !browserFallbackDue(lastHousekeepingAsk(), now)) {
+    return;
+  }
+  housekeepingAsked = now;
+  try {
+    sessionStorage.setItem(HOUSEKEEPING_ASKED_KEY, String(now));
+  } catch { /* the module's copy still holds it for this page */ }
+
+  const answer = await devFetch(`${ clusterBase(DEFAULT_CLUSTER) }/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy/housekeeping`).catch(() => null);
+
+  if (answer?.housekeeping === true) {
+    await tagWorkspaceArtifacts(workspaces.filter((w) => (w.cluster || DEFAULT_CLUSTER) !== DEFAULT_CLUSTER));
+
+    return;
+  }
+  note('housekeeping', 'dev-api is not tidying the node, so this tab did, at most once per half hour');
+  await tagWorkspaceArtifacts(workspaces);
+  await pruneModuleTemplates();
 }
 
 /**

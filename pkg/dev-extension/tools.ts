@@ -228,7 +228,7 @@ export const WORKSPACE_TOOL: WorkspaceAsTool = {
     '      summary: Make one. Defaults to the leased App; the answer says the name it ended up with.',
     '  /workspaces/{name}:',
     '    delete:',
-    '      summary: Remove one. Releases its tools; the sweep keeps its artifacts and then takes the tree.',
+    '      summary: Remove one. Releases its tools; the tree and its artifacts stay on the disk until a person deletes the workspace from the page.',
   ].join('\n'),
 };
 
@@ -239,7 +239,7 @@ export async function createWorkspaceTool(name: string, app?: string, cluster = 
   });
 }
 
-/** Give it back. Releases the tools; the artifacts are kept by the sweep that takes the tree. */
+/** Give it back. Releases the tools; the tree and its artifacts stay until a person deletes the workspace from the page. */
 export async function removeWorkspaceTool(name: string): Promise<void> {
   await devApi(`/workspaces/${ encodeURIComponent(name) }`, { method: 'DELETE' });
 }

@@ -43,16 +43,15 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
 /**
- * Bumped whenever an answer's shape changes OR a route is added.
+ * Bumped only when an answer's shape changes. A new route gets a new path and no bump.
  *
- * A route was the case this missed. The service is started once, lazily, and nothing restarts
- * it - so a pod already serving version 1 keeps serving it after a new `state-api.mjs` lands in
- * /seed, and the route the browser is looking for 404s for ever. The browser can only notice
- * that if the number moves, which is why adding a route moves it.
+ * A bump tells the browser to distrust this service, and every read on the pod falls back to exec
+ * until the kubelet has synced the new seed. An added route does not earn that: an older service
+ * can only 404 an unknown path, and the browser replaces it once on that 404 (see RouteMissing in
+ * pod-state.ts). That replacement is also how a fix in this file reaches a running service.
  *
- * The browser sends the version it expects. An older server answering a newer browser is the
- * one failure this cannot detect from the outside - the reply looks fine and is wrong - so the
- * version rides in every response and the client restarts a server it has outgrown.
+ * The version rides in every response, because an older server answering a newer browser with a
+ * changed shape is the one failure that looks fine from the outside.
  */
 const VERSION = 3;
 
@@ -81,6 +80,22 @@ const MAX_OUTPUT = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 25_000;
 /** No answer at all for this long means something is wrong with this process, not with a script. */
 const WATCHDOG_MS = 5 * 60_000;
+/**
+ * The longest a route waits before answering with what it has.
+ *
+ * Under the browser's READ_TIMEOUT_MS on purpose. A read that runs out that clock opens the circuit
+ * and sends every read on the pod to exec for a minute, where an answer of "nothing yet" costs
+ * one exec for that one read.
+ */
+const WAIT_MS = Number(process.env.STATE_API_WAIT_MS) || 8_000;
+/**
+ * How old an answer can be before a request waits for a newer one.
+ *
+ * Under the browser's MAX_AGE_MS, which refuses older answers and execs instead. See `settled`.
+ */
+const AGED_MS = Number(process.env.STATE_API_AGED_MS) || 55_000;
+/** `claude --help` changes when claude is upgraded, and takes seconds to ask. */
+const HELP_FRESH_MS = 10 * 60_000;
 
 const startedAt = Date.now();
 
@@ -243,11 +258,12 @@ function runScript(argv, timeoutMs = RUN_TIMEOUT_MS) {
  * so a caller that cares can tell. Only after `STALE_FLOOR_MS` of unbroken failure does this
  * give up and report the error, because by then the answer is not worth having.
  */
-async function cached(key, argv) {
+async function cached(key, argv, freshMs = FRESH_MS) {
   const held = entry(key);
   const now = Date.now();
 
-  if (held.text && now - held.at < FRESH_MS) {
+  // `at`, not `text`: a script that succeeded with nothing to say has answered.
+  if (held.at && now - held.at < freshMs) {
     return held;
   }
 
@@ -271,7 +287,7 @@ async function cached(key, argv) {
     return held.reading;
   };
 
-  if (held.text) {
+  if (held.at) {
     refresh().catch(() => {});
 
     return held;
@@ -322,6 +338,46 @@ async function cached(key, argv) {
   return held;
 }
 
+/** Wait for a promise, but not past `ms`. A slow script keeps running for whoever asks next. */
+function within(promise, ms) {
+  let timer;
+
+  return Promise.race([
+    Promise.resolve(promise).catch(() => {}),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * A cached answer for somebody asking once, rather than a stream that will hear about it later.
+ *
+ * `cached` hands back what it holds and refreshes behind it, which is right for a page asking
+ * every few seconds. It was wrong for a key nobody had asked about for a minute: the answer came
+ * back over a minute old, the browser refused it for its age, and so every first read of a page
+ * load was an exec. Measured with this file running: a read after 62s idle answered `age:62004`,
+ * and a read half a second later answered `age:502`.
+ *
+ * So a request finding an old answer waits for the refresh it just started. A script already known
+ * to be failing is not waited for, and neither is anything past `waitMs`: that is the wedged case
+ * `cached` was written for, and the old answer goes out with its age so the browser can use exec.
+ *
+ * The stream does not use this. It says nothing about age and its ticks must not stack up.
+ */
+async function settled(key, argv, { oldMs = AGED_MS, freshMs = FRESH_MS, waitMs = WAIT_MS } = {}) {
+  const held = entry(key);
+  const deadline = Date.now() + waitMs;
+
+  await within(cached(key, argv, freshMs), waitMs);
+
+  if (held.at && Date.now() - held.at > oldMs && !held.failedSince && held.reading) {
+    await within(held.reading, Math.max(0, deadline - Date.now()));
+  }
+
+  return held;
+}
+
 /** What a cached answer looks like on the wire, age and all. */
 function body(held, extra = {}) {
   const now = Date.now();
@@ -330,7 +386,8 @@ function body(held, extra = {}) {
 
   return {
     version: VERSION,
-    ok:      !!held.text && !broken,
+    // `at`, not `text`: an empty answer is an answer, and refusing it sent it to exec on every ask.
+    ok:      held.at > 0 && !broken,
     text:    broken ? '' : held.text,
     age,
     stale:   !!held.error,
@@ -380,6 +437,56 @@ const NONCE = /^[a-z0-9]{4,64}$/;
 const PROJ_KEY = /^[A-Za-z0-9_.-]{1,200}$/;
 const HOME_DIR = /^\/[A-Za-z0-9_./-]{1,200}$/;
 const CLIS = ['claude', 'agy'];
+/** A transcript. Only .jsonl, since this is a path a caller names and the answer is its contents. */
+const TRANSCRIPT = /^\/[A-Za-z0-9_./-]{1,400}\.jsonl$/;
+
+/** An answer of "nothing": the browser takes it as a reason to use exec. */
+function refused(error) {
+  return {
+    version: VERSION, ok: false, text: '', age: -1, stale: false, error,
+  };
+}
+
+/** A pane's home from a request, or '' when it is not one. */
+function homeOf(url) {
+  const home = url.searchParams.get('home') || '';
+
+  // `..` separately from the pattern: a path of only safe characters can still walk upwards.
+  return HOME_DIR.test(home) && !home.includes('..') ? home : '';
+}
+
+/**
+ * How to run a script as the pane's own user, with the pane's home.
+ *
+ * Everything a pane touches belongs to uid 1000, and claude refuses to run as root, so a read done
+ * as root here would be a read of files written by somebody else. The script goes in base64 so
+ * nothing in it is ever quoted for a shell twice, and from a file named so that two requests in
+ * one millisecond cannot share it. The script's exit code is kept.
+ */
+function asPane(home, script) {
+  const wrapped = `export HOME=${ home }; export PATH=$HOME/.local/bin:$PATH; ${ script }`;
+  const b64 = Buffer.from(wrapped, 'utf8').toString('base64');
+  const path = `/tmp/.chat-api-${ process.pid }-${ crypto.randomBytes(6).toString('hex') }.sh`;
+
+  return ['/bin/sh', '-c', `echo ${ b64 } | base64 -d > ${ path } && chmod 755 ${ path } && if [ "$(id -u)" = 0 ]; then su node -s /bin/bash -c "/bin/bash ${ path }" 2>&1; else /bin/bash ${ path } 2>&1; fi; rc=$?; rm -f ${ path }; exit $rc`];
+}
+
+/** One run with no caching, for a read that has to see what just changed. Never throws. */
+async function runOnce(argv, timeoutMs = WAIT_MS) {
+  try {
+    const { out, code } = await runScript(argv, timeoutMs);
+
+    if (code !== 0) {
+      return refused(`exit ${ code }`);
+    }
+
+    return {
+      version: VERSION, ok: true, text: out, age: 0, stale: false, error: '',
+    };
+  } catch (e) {
+    return refused(String(e?.message || e));
+  }
+}
 
 /*
  * `chat-read.mjs` is loaded when it is first wanted, not at the top of this file.
@@ -470,7 +577,7 @@ const ROUTES = [
     host:    os.hostname(),
     reads:   [...cache.keys()],
   })],
-  ['/sessions', async() => body(await cached('list', ['/bin/sh', `${ SEED }/sessions.sh`, 'list']))],
+  ['/sessions', async() => body(await settled('list', ['/bin/sh', `${ SEED }/sessions.sh`, 'list']))],
   ['/chat', async(url) => {
     const chatReadScript = await chatReader();
 
@@ -488,20 +595,9 @@ const ROUTES = [
       };
     }
 
-    /*
-     * As the pane's own user, with the pane's home - the same wrapper the browser's exec used.
-     *
-     * Everything a pane touches belongs to uid 1000, and claude refuses to run as root, so a
-     * read done as root here would be a read of files written by somebody else. The script goes
-     * in base64 so nothing in it is ever quoted for a shell twice.
-     */
-    const script = `export HOME=${ at.home }; export PATH=$HOME/.local/bin:$PATH; ${ chatReadScript(at) }`;
-    const b64 = Buffer.from(script, 'utf8').toString('base64');
-    const path = `/tmp/.chat-api-${ process.pid }-${ Date.now().toString(36) }.sh`;
-    const inner = `echo ${ b64 } | base64 -d > ${ path } && chmod 755 ${ path } && if [ "$(id -u)" = 0 ]; then su node -s /bin/bash -c "/bin/bash ${ path }" 2>&1; else /bin/bash ${ path } 2>&1; fi; rm -f ${ path }`;
-
+    // As the pane's own user - the same wrapper the browser's exec used.
     try {
-      const { out } = await runScript(['/bin/sh', '-c', inner], 25_000);
+      const { out } = await runScript(asPane(at.home, chatReadScript(at)), 25_000);
 
       return {
         version: VERSION, ok: true, text: out, age: 0, stale: false, error: '',
@@ -526,13 +622,13 @@ const ROUTES = [
     const project = url.searchParams.get('project') || '';
 
     if (!project) {
-      return body(await cached('states-all', ['/bin/sh', `${ SEED }/sessions.sh`, 'states-all']));
+      return body(await settled('states-all', ['/bin/sh', `${ SEED }/sessions.sh`, 'states-all']));
     }
     if (!SAFE_NAME.test(project)) {
       return { version: VERSION, ok: false, text: '', age: -1, stale: false, error: 'That is not a project name.' };
     }
 
-    return body(await cached(`states:${ project }`, ['/bin/sh', `${ SEED }/sessions.sh`, 'states', project]));
+    return body(await settled(`states:${ project }`, ['/bin/sh', `${ SEED }/sessions.sh`, 'states', project]));
   }],
   /*
    * One workspace's conversations: `sessions.sh list <project>`.
@@ -556,7 +652,7 @@ const ROUTES = [
       return { version: VERSION, ok: false, text: '', age: -1, stale: false, error: 'This pod cannot serve queue reads.' };
     }
 
-    return body(await cached('queued', ['/bin/sh', '-c', script()]));
+    return body(await settled('queued', ['/bin/sh', '-c', script()]));
   }],
   ['/report', async(url) => {
     const reads = await agentReads();
@@ -571,7 +667,7 @@ const ROUTES = [
       return { version: VERSION, ok: false, text: '', age: -1, stale: false, error: 'That is not a workspace directory.' };
     }
 
-    return body(await cached(`report:${ workdir }`, ['/bin/sh', '-c', reads.reportScript(workdir)]));
+    return body(await settled(`report:${ workdir }`, ['/bin/sh', '-c', reads.reportScript(workdir)]));
   }],
   ['/project-sessions', async(url) => {
     const project = url.searchParams.get('project') || '';
@@ -580,7 +676,87 @@ const ROUTES = [
       return { version: VERSION, ok: false, text: '', age: -1, stale: false, error: 'That is not a project name.' };
     }
 
-    return body(await cached(`list:${ project }`, ['/bin/sh', `${ SEED }/sessions.sh`, 'list', project]));
+    return body(await settled(`list:${ project }`, ['/bin/sh', `${ SEED }/sessions.sh`, 'list', project]));
+  }],
+  /*
+   * What a chat reads as it opens, and the page of transcript it reads when it goes further back.
+   * None is cached except `claude --help`, because a person may be looking at each of them right
+   * after changing what it reports.
+   */
+  ['/options', async(url) => {
+    const reads = await agentReads();
+    const home = homeOf(url);
+
+    if (!reads) {
+      return refused('This pod cannot serve option reads.');
+    }
+    if (!home) {
+      return refused('That is not a home directory.');
+    }
+
+    const deadline = Date.now() + WAIT_MS;
+    // Kept apart from the rest and kept a long time. Past the wait the browser uses exec this once
+    // and the run carries on, so the next chat to open finds the answer here.
+    const help = await settled(`help:${ home }`, asPane(home, reads.optionsHelpRead()), {
+      oldMs: Infinity, freshMs: HELP_FRESH_MS, waitMs: Math.round(WAIT_MS * 0.6),
+    });
+
+    if (!help.at) {
+      return refused('claude has not answered yet.');
+    }
+
+    const state = await runOnce(asPane(home, reads.optionsStateScript()), Math.max(1_000, deadline - Date.now()));
+
+    return state.ok ? { ...state, text: `@@HELP\n${ help.text }${ state.text }` } : state;
+  }],
+  ['/thinking', async(url) => {
+    const reads = await agentReads();
+    const home = homeOf(url);
+
+    if (!reads || !home) {
+      return refused(reads ? 'That is not a home directory.' : 'This pod cannot serve this read.');
+    }
+
+    return runOnce(asPane(home, reads.thinkingScript()));
+  }],
+  ['/commands', async(url) => {
+    const reads = await agentReads();
+    const home = homeOf(url);
+
+    if (!reads || !home) {
+      return refused(reads ? 'That is not a home directory.' : 'This pod cannot serve this read.');
+    }
+
+    return runOnce(asPane(home, reads.commandsScript()));
+  }],
+  ['/earlier', async(url) => {
+    const reads = await agentReads();
+    const home = homeOf(url);
+    const file = url.searchParams.get('file') || '';
+    const nonce = url.searchParams.get('n') || '';
+    const start = Number(url.searchParams.get('start') ?? NaN);
+
+    if (!reads || !home) {
+      return refused(reads ? 'That is not a home directory.' : 'This pod cannot serve this read.');
+    }
+    if (!TRANSCRIPT.test(file) || file.includes('..')) {
+      return refused('That is not a transcript.');
+    }
+    if (!NONCE.test(nonce)) {
+      return refused('Bad n.');
+    }
+    if (!Number.isSafeInteger(start) || start < 0) {
+      return refused('Bad start.');
+    }
+
+    return runOnce(asPane(home, reads.earlierScript({ file, start, nonce })));
+  }],
+  // Who started each conversation. As root, as the exec was. Uncached because a conversation is
+  // marked just before it is listed, and one with no marker is drawn as the panel's.
+  ['/origins', async() => {
+    const reads = await agentReads();
+
+    return reads ? runOnce(['/bin/sh', '-c', reads.originsScript()]) : refused('This pod cannot serve this read.');
   }],
 ];
 

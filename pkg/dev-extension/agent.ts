@@ -18,6 +18,7 @@ import {
   namespaceBody, serviceAccountBody, clusterRoleBindingBody, AGENT_ROLE_BINDING,
 } from './pod';
 import { podStateText, PodStateUnavailable } from './pod-state';
+import { originsScript } from './agent-reads.mjs';
 // The coarse bucket, shared and tested. See activityBucket there.
 import { activityBucket } from './chat-state.mjs';
 // What an id is made of, and how to take one apart. Every shape question about an id is asked
@@ -680,8 +681,7 @@ function sessionLine(line: string): { id: string; title: string; cli: string } {
  * moving. A write still goes through exec, where it has an exit code and where a bug in the
  * service cannot cost anybody a conversation.
  *
- * `states <project>` is deliberately absent: it takes an argument the service does not serve
- * yet, and guessing would be worse than the exec that already works.
+ * The verbs that take a project are in SCOPED below.
  */
 const OVER_HTTP: Record<string, string> = {
   list:         '/sessions',
@@ -919,10 +919,13 @@ async function sessionOrigins(): Promise<Map<string, SessionOrigin>> {
   if (!pod) {
     return out;
   }
-  const script = `cd ${ AGENT_SESSIONS } 2>/dev/null || exit 0; for f in *.by; do [ -f "$f" ] && printf "%s\t%s\n" "\${f%.by}" "$(cat "$f")"; done`;
-  const result = await podExecResult(pod, ['/bin/sh', '-c', script], 15000, AGENT_CONTAINER).catch(() => null);
+  const listing = await podStateText(pod, '/origins').catch(async() => {
+    const result = await podExecResult(pod, ['/bin/sh', '-c', originsScript()], 15000, AGENT_CONTAINER).catch(() => null);
 
-  for (const line of (result?.stdout || '').split('\n')) {
+    return result?.stdout || '';
+  });
+
+  for (const line of listing.split('\n')) {
     const [id, by] = line.replace(/\r$/, '').split('\t');
 
     if (id && by) {

@@ -10,8 +10,8 @@
 // is left here is what is particular to the nav: which sections there are, what a row links to,
 // and the strip of everything that is not a workspace along the foot.
 import {
-  listAllWorkspaces, deleteWorkspace, listClusters, readableBytes, pruneWorkspaceTrees, refreshWorkspaceScripts, refreshWorkspaceApis,
-  tagWorkspaceArtifacts
+  listAllWorkspaces, deleteWorkspace, listClusters, readableBytes, refreshWorkspaceScripts, refreshWorkspaceApis,
+  runHousekeepingFallback
 } from '../api';
 import {
   listApps, reconcileUnrendered, releaseTerminating, ensureDefaultApp, workspaceInstance, RANCHER_SHARE_APP
@@ -545,18 +545,12 @@ export default {
         // an Installation whose teardown outlasted the delete's own loop stayed Terminating for
         // ever, and its row stayed in this list with pressing delete again doing nothing.
         releaseTerminating(this.$store).catch(() => {});
-        // And the trees on the node whose workspace is gone. A workspace is two to three
-        // gigabytes of checkout and node_modules, and until this nothing removed them: the
-        // Installation, the Bundle and the namespace went, and the directory stayed. Only ones
-        // over an hour old and with no workspace of that name - see pruneWorkspaceTrees.
-        pruneWorkspaceTrees(workspaces.map((w) => w.name)).catch(() => {});
+        // The node's tidying is dev-api's, on its own clock. This only notices a dev-api that is
+        // not doing it, and does not open a socket on a refresh otherwise: see the function.
+        runHousekeepingFallback(workspaces).catch(() => {});
         // And the scripts a workspace's pod mounts at /seed, which its namespace holds and a
         // re-render therefore takes with it. See ensureWorkspaceScripts.
         refreshWorkspaceScripts(workspaces.map((w) => ({ name: w.name, cluster: w.cluster || 'local' }))).catch(() => {});
-        // And what each workspace's artifacts are about, written beside the files themselves so
-        // that a recording made this morning is filed under its issue whether or not the
-        // workspace that made it still exists. See tagWorkspaceArtifacts.
-        tagWorkspaceArtifacts(workspaces.map((w) => ({ name: w.name }))).catch(() => {});
         // And the API on any cluster other than this one that has a workspace on it: it is only
         // written when a workspace is created there, so without this a downstream cluster runs
         // whatever server it was first given. See refreshWorkspaceApis.

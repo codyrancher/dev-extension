@@ -327,7 +327,16 @@ interface Branch {
  */
 export { ago } from './chat-state.mjs';
 
-/** The branch as the checkout has it: its commits over upstream, the diff's size, the files. */
+/**
+ * The branch as the checkout has it: its commits over upstream, the diff's size, the files.
+ *
+ * An exec into the workspace's own pod, about one a minute while a rail is open, and it stays one.
+ * The agent pod has this tree too and could answer over HTTP, but git run on a tree runs what that
+ * tree says: `.home/.local/bin` is on the pane's PATH, and a clean filter or `gpg.program` in its
+ * config names a command. Whatever a PR's install script wrote there is confined to a pod with
+ * `edit` on one namespace here, and would be cluster-admin's neighbour in the agent pod, on nothing
+ * more than somebody opening this page. git has no switch that ignores a repository's config.
+ */
 async function readBranch(workspace: string): Promise<Branch | null> {
   const script = [
     'cd $WS/dashboard 2>/dev/null || { echo "@@NOREPO"; exit 0; }',

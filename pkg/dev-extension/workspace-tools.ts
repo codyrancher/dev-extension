@@ -168,6 +168,16 @@ async function asNode(target: WorkspaceTarget, script: string): Promise<string> 
 
 /** Read something out of the checkout, as its owner. What the Review tab is drawn from. */
 /**
+ * The last answer about each workspace's dev server, in flight or just landed.
+ *
+ * Three components ask as a workspace page opens, and each was its own exec. `pgrep` sees only the
+ * workspace pod, so this cannot move to the service, but they can share one. Stopping or starting
+ * the server forgets the answer, so a person's own change is never hidden by this.
+ */
+const DEV_SERVER_FRESH_MS = 3_000;
+const devServerAsked = new Map<string, { at: number; answer: Promise<{ running: boolean; paused: boolean }> }>();
+
+/**
  * Whether this workspace is running a dev server, and whether one has been stopped on purpose.
  *
  * One exec, from the page: `pgrep` for the server and a look for the pause file the supervisor
@@ -175,23 +185,42 @@ async function asNode(target: WorkspaceTarget, script: string): Promise<string> 
  * gigabytes for a workspace nobody is looking at is the most expensive idle thing on the node,
  * and it cannot be turned off from a page that does not know it is there.
  */
-export async function devServerState(workspace: string): Promise<{ running: boolean; paused: boolean }> {
-  const out = await readInWorkspace(workspace, [
+export function devServerState(workspace: string): Promise<{ running: boolean; paused: boolean }> {
+  const held = devServerAsked.get(workspace);
+
+  if (held && Date.now() - held.at < DEV_SERVER_FRESH_MS) {
+    return held.answer;
+  }
+
+  const answer = readInWorkspace(workspace, [
     'cd $WS 2>/dev/null || exit 0',
     'pgrep -f "^[^ ]*node .*vue-cli-service serve" >/dev/null 2>&1 && echo RUNNING',
     '[ -f $WS/.dev-server.off ] && echo PAUSED',
-  ].join('\n')).catch(() => '');
+  ].join('\n')).catch(() => null).then((out) => {
+    // A failed read is not worth remembering: the next caller may as well try again.
+    if (out === null && devServerAsked.get(workspace)?.answer === answer) {
+      devServerAsked.delete(workspace);
+    }
 
-  return { running: out.includes('RUNNING'), paused: out.includes('PAUSED') };
+    return { running: !!out?.includes('RUNNING'), paused: !!out?.includes('PAUSED') };
+  });
+
+  devServerAsked.set(workspace, { at: Date.now(), answer });
+
+  return answer;
 }
 
 /** Stop this workspace's dev server and keep it stopped, through the workspace's own command. */
 export async function stopDevServer(workspace: string): Promise<string> {
+  devServerAsked.delete(workspace);
+
   return readInWorkspace(workspace, 'cd $WS/dashboard 2>/dev/null || cd $WS; $WS/bin/dev-server stop 2>&1 | tail -2');
 }
 
 /** Let it run again. */
 export async function startDevServer(workspace: string): Promise<string> {
+  devServerAsked.delete(workspace);
+
   return readInWorkspace(workspace, 'cd $WS/dashboard 2>/dev/null || cd $WS; $WS/bin/dev-server start 2>&1 | tail -2');
 }
 

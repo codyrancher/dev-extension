@@ -48,12 +48,25 @@ const PORT = 8111;
  * place underneath - so a pod that started version 1 goes on serving version 1 for as long as
  * it is up, however many releases land. The browser replaces it: one exec, the same way it
  * started it, and then the read it wanted. Without that, every route added after a pod came up
- * would 404 for the life of that pod.
+ * would 404 for the life of that pod. How often it may do that is REPLACE_GAP_MS.
  */
 const WANT_VERSION = 3;
 
 /** How long a pod that could not serve is left alone before it is tried again. */
 const COOLDOWN_MS = 60_000;
+/**
+ * How long after a replacement this page may replace the service again, doubling each time up to
+ * the most below and starting over once one has worked.
+ *
+ * More than one is sometimes needed. A page can load, find an old service and replace it before the
+ * kubelet has synced the new seed, so the replacement is just as old, and it was going to be right a
+ * minute later. But a seed that never arrives must not mean a restart a minute for as long as a tab
+ * stays open, each one breaking every other tab's stream.
+ */
+const REPLACE_GAP_MS = 60_000;
+const REPLACE_GAP_MAX_MS = 30 * 60_000;
+/** The service has a pid before it has a port, so a restart is not over when its script is. */
+const RESTART_SETTLE_MS = 5_000;
 /** A pod that has never been tried gets one start attempt; this bounds it. */
 const START_TIMEOUT_MS = 15_000;
 /** A read that takes longer than this is not worth waiting for when exec is sitting right there. */
@@ -108,15 +121,22 @@ interface Known {
   why: string;
   /** A start already under way, so ten callers at once do not exec ten times. */
   starting: Promise<string> | null;
-  /** Whether this page has already replaced this pod's service once. See the version check. */
-  replaced: boolean;
+  /** When this page may next replace this pod's service. See REPLACE_GAP_MS. */
+  replaceAfter: number;
+  /** How long the next replacement will have to wait after it. */
+  replaceGap: number;
+  /** A replacement while it runs, so reads that 404 together wait for it and ask again. */
+  replacing: Promise<unknown> | null;
+  /** When the last replacement can be expected to be listening by. */
+  settledAt: number;
   /**
    * Routes this pod has answered 404 for, without their query strings.
    *
    * Reached only once the version has agreed, which is what makes a 404 here mean what it says:
    * a service of the right vintage that still does not serve this route. Opening the circuit
    * over one of them would take every other read off HTTP for a minute, so it is remembered
-   * against the route alone and the pod goes on serving everything else.
+   * against the route alone and the pod goes on serving everything else. Until the next
+   * replacement is allowed, when the seed may have caught up and the route is asked for again.
    *
    * The query string is cut off first. `/chat?id=...&off=...` differs on every poll, so keeping
    * the whole string remembered a path that would never be asked for again and grew without
@@ -149,12 +169,22 @@ function held(pod: string): Known {
 
   if (!it) {
     it = {
-      token: '', downSince: 0, why: '', starting: null, replaced: false, missing: new Set(), feed: null,
+      token: '', downSince: 0, why: '', starting: null, replaceAfter: 0, replaceGap: REPLACE_GAP_MS, replacing: null, settledAt: 0, missing: new Set(), feed: null,
     };
     known.set(pod, it);
   }
 
   return it;
+}
+
+/**
+ * Whether a failure may be this page's own replacement, with the port closed for a moment.
+ *
+ * That costs the one read its exec and proves nothing about the pod. Opening the circuit over it
+ * sent every read on the pod to exec for a minute, and then earned the next replacement too.
+ */
+function restarting(it: Known): boolean {
+  return !!it.replacing || Date.now() < it.settledAt;
 }
 
 /** Stop asking this pod for a while, and say why when somebody does. */
@@ -227,23 +257,18 @@ async function tokenFor(pod: string): Promise<string> {
 export async function podStateText(pod: string, path: string): Promise<string> {
   const it = held(pod);
 
+  // Over in a moment, and bounded by START_TIMEOUT_MS: better than an exec for a port just closed.
+  if (it.replacing) {
+    await it.replacing.catch(() => {});
+  }
   if (it.downSince && Date.now() - it.downSince < COOLDOWN_MS) {
     throw new PodStateUnavailable(it.why);
   }
   if (it.downSince) {
-    /*
-     * The cooldown is over: one more try, from nothing.
-     *
-     * Everything learned about this pod is forgotten, including that its service was already
-     * replaced once. That matters for a race worth naming: a page can load, find an old
-     * service and replace it *before* the kubelet has synced the new seed - so the replacement
-     * is the same old version, and a once-per-page rule would leave that tab on exec for as
-     * long as it stayed open, even after the new seed arrived seconds later. A minute later it
-     * may try again, which is long enough to be nowhere near a restart loop and short enough
-     * that nobody notices.
-     */
+    // The cooldown is over: one more try. Whether that may replace the service is a separate clock.
     it.downSince = 0;
-    it.replaced = false;
+  }
+  if (it.missing.size && Date.now() >= it.replaceAfter) {
     it.missing.clear();
   }
   if (it.missing.has(route(path))) {
@@ -272,28 +297,41 @@ export async function podStateText(pod: string, path: string): Promise<string> {
   const token = await tokenFor(pod);
 
   return fetchOnce(it, pod, path, token).catch(async(e) => {
-    if (!replaceable(e) || it.replaced) {
+    if (!replaceable(e) || (!it.replacing && Date.now() < it.replaceAfter)) {
       throw settle(it, e);
     }
     /*
-     * Once per pod, and only once.
+     * Rarely, and never twice at once.
      *
      * A restart loop would be the worst failure this file could have - every tab replacing the
-     * service the others had just started - so a pod is replaced at most once per page. If the
-     * one after it is still wrong, something is wrong that a restart does not fix and exec is
-     * the right answer.
+     * service the others had just started - so REPLACE_GAP_MS spaces them out. If the one after
+     * this is still wrong, something is wrong that a restart does not fix yet, and exec is the
+     * right answer until then. The token survives a restart, so it is kept, and a 401 would say so
+     * if it did not.
      */
-    it.replaced = true;
-    it.token = '';
+    if (!it.replacing) {
+      it.replaceAfter = Date.now() + it.replaceGap;
+      it.replaceGap = Math.min(it.replaceGap * 2, REPLACE_GAP_MAX_MS);
+      it.replacing = podExecResult(pod, ['/bin/sh', '/seed/state-api.sh', 'restart'], START_TIMEOUT_MS, AGENT_CONTAINER).finally(() => {
+        it.replacing = null;
+        it.settledAt = Date.now() + RESTART_SETTLE_MS;
+      });
+    }
     try {
-      await podExecResult(pod, ['/bin/sh', '/seed/state-api.sh', 'restart'], START_TIMEOUT_MS, AGENT_CONTAINER);
+      await it.replacing;
     } catch {
       throw settle(it, e);
     }
 
-    return fetchOnce(it, pod, path, await tokenFor(pod)).catch((again) => {
+    const answer = await fetchOnce(it, pod, path, await tokenFor(pod)).catch((again) => {
       throw settle(it, again);
     });
+
+    // It worked, so the next route to arrive does not inherit the wait of the failures before this.
+    it.replaceGap = REPLACE_GAP_MS;
+    it.replaceAfter = Math.min(it.replaceAfter, Date.now() + REPLACE_GAP_MS);
+
+    return answer;
   });
 }
 
@@ -308,7 +346,7 @@ function replaceable(e: unknown): boolean {
  * The two that survive a replacement land in different places, and the difference is the whole
  * point of telling them apart: a wrong version is the pod's problem and takes every read on it
  * back to exec for the cooldown, while a route this service does not have is the route's
- * problem and takes only that route.
+ * problem and takes only that route, until the next replacement is allowed.
  */
 function settle(it: Known, e: unknown): Error {
   if (e instanceof WrongVersion) {
@@ -346,7 +384,9 @@ async function ask(it: Known, pod: string, path: string, token: string): Promise
       signal:  stop.signal,
     });
   } catch (e) {
-    throw down(it, `the state service could not be reached: ${ (e as Error)?.message || e }`);
+    const why = `the state service could not be reached: ${ (e as Error)?.message || e }`;
+
+    throw restarting(it) ? new PodStateUnavailable(why) : down(it, why);
   } finally {
     clearTimeout(timer);
   }
@@ -387,7 +427,9 @@ async function fetchOnce(it: Known, pod: string, path: string, token: string): P
     throw new RouteMissing(route(path));
   }
   if (status < 200 || status >= 300) {
-    throw down(it, `the state service answered ${ status }`);
+    const why = `the state service answered ${ status }`;
+
+    throw restarting(it) ? new PodStateUnavailable(why) : down(it, why);
   }
 
   return readAnswer(it, answer);
@@ -502,8 +544,24 @@ function watch(it: Known, pod: string, name: string): void {
 async function open(it: Known, pod: string): Promise<void> {
   const feed = feedOf(it);
 
-  // The circuit says this pod is not answering; the stream is not the thing to prove otherwise.
-  if (it.downSince && Date.now() - it.downSince < COOLDOWN_MS) {
+  /*
+   * The circuit says this pod is not answering; the stream is not the thing to prove otherwise.
+   *
+   * Looked again later rather than returning for good. A plain return left the stream dead for the
+   * life of the tab after any one blip, because nothing else reopens a name already on the list,
+   * and every read went back to a request. And this never starts the service itself: on a cluster
+   * that forbids pods/proxy that would be an exec a minute on top of the one a read already pays.
+   * A read closes the circuit and earns the token, and the stream follows it.
+   */
+  if (it.downSince || (!it.token && !it.starting)) {
+    if (feed.soon) {
+      clearTimeout(feed.soon);
+    }
+    feed.soon = setTimeout(() => {
+      feed.soon = null;
+      open(it, pod).catch(() => {});
+    }, FEED_RETRY_MS);
+
     return;
   }
   feed.stop?.abort();
@@ -651,7 +709,13 @@ export function podStateUp(pod: string): boolean {
 /** Tests, and a page that wants to start again from nothing. */
 export function resetPodState(): void {
   for (const it of known.values()) {
-    it.feed?.stop?.abort();
+    const stop = it.feed?.stop;
+
+    // Cleared first: `retry` only reopens a connection that is still the current one.
+    if (it.feed) {
+      it.feed.stop = null;
+    }
+    stop?.abort();
     if (it.feed?.soon) {
       clearTimeout(it.feed.soon);
     }

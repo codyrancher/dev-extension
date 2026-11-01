@@ -6,9 +6,17 @@
  * it in-process. One definition, so the two paths cannot drift into answering differently - the
  * thing that matters most about a read with two routes to it.
  *
- * Why these two and not the rest: everything left on exec is either a write, where an exit code
- * is worth the socket, or something somebody clicked. These two ran on a timer, for ever, on
- * every open page - the last reads doing that.
+ * It started with the two reads that ran on a timer, for ever, on every open page, and now also
+ * holds the ones every page load made once. What stays on exec is a write, where an exit code is
+ * worth the socket, or a read of something only the workspace's own pod can see.
+ *
+ * Nothing here may run a tool over a workspace's checkout. The agent pod is cluster-admin and a
+ * tree's contents are whatever last ran in that workspace, so git on a tree belongs in the
+ * workspace's pod: see readBranch in workspace-rail.ts. A chat's reads differ only in that the
+ * pane they read already runs in this pod, as this user, and the exec they replace did too.
+ *
+ * Every script here takes values that have already been checked. The service checks them with
+ * its regexes before they get this far, and the browser's come from the pod's own answers.
  */
 
 /** The agent pod's durable directory and the home inside it. Spelled here so the pod needs nothing. */
@@ -70,5 +78,89 @@ export function reportScript(workdir) {
     '[ -n "$f" ] || { echo null; exit 0; }',
     'echo "@@FILE $f"',
     `node -e '${ js.replace(/'/g, "'\\''") }' "$f"`,
+  ].join('\n');
+}
+
+/** What claude says it can be set to, on its own: the slow half of `optionsScript`. */
+export function optionsHelpScript() {
+  return [
+    'echo @@HELP',
+    'claude --help 2>/dev/null',
+  ].join('\n');
+}
+
+/**
+ * The help without its marker, for the service to keep, and nothing kept when there is none.
+ *
+ * A pod still installing claude prints nothing, and that must not be remembered for ten minutes.
+ */
+export function optionsHelpRead() {
+  return 'out=$(claude --help 2>/dev/null); [ -n "$out" ] || exit 3; printf \'%s\\n\' "$out"';
+}
+
+/**
+ * What decides a new session's model and effort: the pane's argv, the environment and the two
+ * settings files. The fast half of `optionsScript`, which must never be cached: a read after
+ * `/model` has to see the change.
+ */
+export function optionsStateScript() {
+  return [
+    'echo @@ARGV',
+    "ps -eo args= 2>/dev/null | grep -m1 '^claude' || true",
+    'echo @@ENV',
+    'printenv ANTHROPIC_MODEL 2>/dev/null || true',
+    'echo @@FILES',
+    // Four lines, always all four, so a blank first line still means "settings.json sets no
+    // model" rather than shifting ~/.claude.json's answer into its place.
+    `node -e 'const fs=require("fs");const g=(f,k)=>{try{return String(JSON.parse(fs.readFileSync(f,"utf8"))[k]||"")}catch(e){return ""}};const s=process.env.HOME+"/.claude/settings.json";const c=process.env.HOME+"/.claude.json";console.log(g(s,"model"));console.log(g(c,"model"));console.log(g(s,"effort")||g(s,"effortLevel"));let m={};try{m=JSON.parse(fs.readFileSync(s,"utf8")).modelSettings||{}}catch(e){}console.log(JSON.stringify(m))' 2>/dev/null`,
+    'echo @@END',
+  ].join('\n');
+}
+
+/** What claude in this pod can be set to. `parseOptions` in chat-options.ts reads this. */
+export function optionsScript() {
+  return `${ optionsHelpScript() }\n${ optionsStateScript() }`;
+}
+
+/** Whether claude thinks before answering, from the same key /config's "Thinking mode" flips. */
+export function thinkingScript() {
+  return `node -e "const s=require(process.env.HOME+'/.claude/settings.json');console.log(s.alwaysThinkingEnabled===false?'off':'on')" 2>/dev/null || echo on`;
+}
+
+/**
+ * The commands that are files in this pod: the project's, the user's, and the skills.
+ *
+ * `@@END` is there because no commands at all is a real answer: it is what tells that apart from
+ * a read that never ran. The parser matches only `CMD` and `SKILL` lines, so it ignores it.
+ */
+export function commandsScript() {
+  return [
+    'cd "$(dirname "$HOME")" 2>/dev/null || cd /',
+    'for root in "$HOME/.claude" ".claude" "$PWD/.claude"; do',
+    '  [ -d "$root/commands" ] && find "$root/commands" -name "*.md" -maxdepth 2 2>/dev/null | sed "s|^|CMD |"',
+    '  [ -d "$root/skills" ] && find "$root/skills" -maxdepth 2 -name SKILL.md 2>/dev/null | sed "s|^|SKILL |"',
+    'done',
+    'echo @@END',
+  ].join('\n');
+}
+
+/** Every marker saying who started a conversation, as `id<TAB>who` per line. */
+export function originsScript() {
+  return `cd ${ AGENT_WORKSPACE }/sessions 2>/dev/null || exit 0; for f in *.by; do [ -f "$f" ] && printf "%s\t%s\n" "\${f%.by}" "$(cat "$f")"; done; true`;
+}
+
+/**
+ * The page of transcript before `start`, for the chat to join onto the front of what it holds.
+ *
+ * @param at.file The transcript's path.
+ * @param at.start The offset of the first byte already held.
+ * @param at.nonce What every marker carries; see chat-frames.mjs.
+ */
+export function earlierScript({ file, start, nonce }) {
+  return [
+    `FILE=${ JSON.stringify(file) }; START=${ start }; CAP=262144; N=${ JSON.stringify(nonce) }`,
+    'FROM=$((START - CAP)); [ "$FROM" -lt 0 ] && FROM=0',
+    'echo "@@FROM-$N $FROM"',
+    'if [ -f "$FILE" ] && [ "$START" -gt "$FROM" ]; then echo "@@BACK-$N"; tail -c +$((FROM+1)) "$FILE" | head -c $((START - FROM)); echo; echo "@@ENDBACK-$N"; fi',
   ].join('\n');
 }

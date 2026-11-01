@@ -21,6 +21,8 @@ import { spawn } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { encodeFrame, closeFrame, decodeFrames, joinFrames, handshakeResponse, OP_TEXT, OP_PING, OP_PONG, OP_CLOSE } from './ws-frame.mjs';
 import { newsOf } from './news.mjs';
+import { sweepHousekeeping, singleFlight, sweepsAreWorking, firstSweepDelay, nextSweepDelay, SWEEP_EVERY_MS } from './housekeeping.mjs';
+import { numbersIn } from '../artifact-subjects.mjs';
 
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = 'https://kubernetes.default.svc';
@@ -2230,6 +2232,23 @@ const OPENAPI = {
         responses: { 200: { description: 'The stream, until the reader goes away.' } },
       },
     },
+    '/housekeeping': {
+      get: {
+        operationId: 'readHousekeeping',
+        summary:     'Whether this service tidies the node, and what its last sweep did.',
+        description: [
+          'About every ten minutes this removes trees whose workspace is gone, keeps the newest',
+          'three node_modules templates and tags untagged artifacts. `housekeeping` is what a page',
+          'reads to decide it need not do any of that itself: false on a cluster with no Apps',
+          'Plus, when the workspaces mount cannot be written, or when the last sweep could not run.',
+          '',
+          '`last` is the last sweep: `skipped` names what stopped it, `installations` or `disk`',
+          'stopping everything and `registrar` stopping only the removal of trees. `kept` is the',
+          'trees it asked about and left, `errors` what failed.',
+        ].join('\n'),
+        responses: { 200: { description: 'The flag, the cadence and the last sweep, null before the first.' } },
+      },
+    },
     '/registrar': {
       get: {
         operationId: 'readRegistrar',
@@ -2297,10 +2316,9 @@ const OPENAPI = {
           'back rather than something to accumulate.',
           '',
           'Tools are released first - a dev server should stop compiling now rather than through',
-          'the teardown. The tree is NOT removed here: the extension keeps the artifacts before',
-          'removing a tree, and a second path to the same `rm -rf` would be the one that forgets',
-          'the evidence. The sweep takes the tree, with the artifacts kept first, and it only',
-          'acts on trees whose workspace is already gone.',
+          'the teardown. The tree is NOT removed here: it stays on the disk, listed as a workspace',
+          'with nothing running, until a person deletes it from the page, which keeps its',
+          'artifacts first.',
         ].join('\n'),
         responses: { 200: { description: 'Deleted.' }, 404: { description: 'No workspace of that name.' } },
       },
@@ -5885,6 +5903,12 @@ const routes = [
    * of its own to drift.
    */
   ['GET', /^\/registrar$/, async() => (await readDoc(REGISTRAR, 'workspaces.json')) || { at: '', workspaces: [] }],
+  // What a page reads before it considers doing this work itself. See housekeeping.mjs.
+  ['GET', /^\/housekeeping$/, async() => ({
+    housekeeping: !noInstallations.has(HOUSEKEEPER) && sweepsAreWorking(lastHousekeeping) && await canWriteWorkspaces(),
+    everyMs:      SWEEP_EVERY_MS,
+    last:         lastHousekeeping,
+  })],
   ['GET', /^\/workspaces$/, async() => {
     const list = await k8s(`${ INSTANCES }?labelSelector=${ LABEL_WORKSPACE }`);
 
@@ -5941,11 +5965,10 @@ const routes = [
    * through the teardown, and a delete that stalls on something else has still freed the
    * expensive part.
    *
-   * It does NOT remove the tree. The extension's pruner does that, and does it in the one place
-   * that also keeps the artifacts first (`removeWorkspaceTree` -> `captureWorkspaceArtifacts`).
-   * Deleting the tree here would be a second path to the same `rm -rf`, and the one that
-   * forgets the evidence - exactly the drift the capture was added to prevent. The pruner only
-   * acts on trees whose Installation is gone, which is the state this leaves behind.
+   * It does NOT remove the tree, so that the one path that removes a tree on request stays the
+   * page's (`removeWorkspaceTree`), and the artifacts are kept first. What it leaves is a tree on
+   * the disk, which the registrar lists as a workspace with nothing running; housekeeping keeps
+   * whatever the registrar lists, so that tree stays until a person deletes it from the page.
    */
   ['DELETE', /^\/workspaces\/([a-z0-9-]+)$/, async(m) => {
     const name = m[1];
@@ -5959,7 +5982,7 @@ const routes = [
     await Promise.all(TOOL_KINDS.map((kind) => stopTool(name, kind).catch(() => null)));
     await k8s(`${ INSTANCES }/${ name }`, { method: 'DELETE' });
 
-    return { name, deleted: true, note: 'Tools released. The tree and its artifacts are kept until the sweep, which captures the artifacts before removing it.' };
+    return { name, deleted: true, note: 'Tools released. The tree and its artifacts stay on the disk until a person deletes the workspace from the page.' };
   }],
 
   // -- Tools ---------------------------------------------------------------------------------
@@ -8091,8 +8114,71 @@ server.on('upgrade', (req, socket, head) => {
   }
 });
 
+// -- Housekeeping ----------------------------------------------------------------------------
+//
+// What each open page used to do over an exec on every refresh. The decisions are in
+// housekeeping.mjs, with their tests; this is only what they run against.
+
+const HOUSEKEEPER = 'housekeeping';
+let lastHousekeeping = null;
+
+/** The mount can be read-only on a Deployment nobody has reconciled, and then a page should do it. */
+async function canWriteWorkspaces() {
+  return fs.promises.access(WORKSPACES_ROOT, fs.constants.W_OK).then(() => true, () => false);
+}
+
+/** A command's exit code, without a shell and without holding up this process's event loop. */
+function runForHousekeeping(cmd, args) {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { stdio: 'ignore' });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 30 * 60_000);
+
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve(1);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve(code ?? 1);
+    });
+  });
+}
+
+const sweepOnce = singleFlight(async() => {
+  const report = await sweepHousekeeping({
+    fs,
+    path,
+    root:          WORKSPACES_ROOT,
+    numbersIn,
+    run:           runForHousekeeping,
+    now:           Date.now,
+    listInstances: () => installations(HOUSEKEEPER),
+    readRegistrar: () => readDoc(REGISTRAR, 'workspaces.json'),
+    readNamespace: (name) => k8s(`/api/v1/namespaces/dev-${ name }`),
+    readInstance:  (name) => k8s(`${ INSTANCES }/${ name }`),
+  });
+
+  lastHousekeeping = report;
+  if (report.tagged || report.trees.length || report.templates.length || report.errors.length) {
+    console.log('[dev-api] housekeeping:', JSON.stringify(report));
+  }
+
+  return report;
+});
+
+/** A chain of timeouts rather than an interval, so the gap is new each time and starts at the end. */
+function scheduleHousekeeping(delay) {
+  setTimeout(() => {
+    sweepOnce()
+      .catch((e) => console.error('[dev-api] housekeeping failed:', e.message || e))
+      .finally(() => scheduleHousekeeping(nextSweepDelay()));
+  }, delay);
+}
+
 server.listen(PORT, () => {
   console.log(`[dev-api] listening on :${ PORT }`);
+
+  scheduleHousekeeping(firstSweepDelay());
 
   // Finish workspace teardowns the browser did not, and keep finishing them. A minute apart, and
   // first a few seconds after boot rather than at the same instant everything else starts.
