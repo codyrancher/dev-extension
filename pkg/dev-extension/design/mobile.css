@@ -1198,27 +1198,41 @@
  * step, which only means anything while every step is the same width and on the same row. A
  * line that keeps pointing at where the next dot would have been is worse than none.
  */
+/*
+ * `!important` on every one of these, and the prototype is why I nearly shipped without it.
+ *
+ * `.dev-root .stage-steps__step` and the component's own `.stage-steps__step[data-v-x]` are
+ * both (0,2,0) - an exact specificity tie - so source order decides. A stylesheet injected
+ * into the head at the end of a test wins that tie; the same rules bundled do not, because the
+ * component's CSS lands after them. It worked perfectly in the prototype and shipped doing
+ * nothing: computed flex came back `1 1 0`, every step 43px wide holding a 50px label.
+ *
+ * Which is trap three in my own notes about this file, written earlier the same day.
+ *
+ * And `0 0 auto`, not `0 1 auto`: a shrinkable item does not wrap, it squashes. With a shrink
+ * factor the row would have stayed one row and gone straight back to overlapping labels.
+ */
 @media (max-width: 760px) {
   .dev-root .stage-steps {
-    flex-wrap:  wrap;
+    flex-wrap:  wrap !important;
     column-gap: 14px;
     row-gap:    8px;
     padding:    0;
   }
 
   .dev-root .stage-steps__step {
-    flex:      0 1 auto;
+    flex:      0 0 auto !important;
     min-width: 0;
   }
 
   .dev-root .stage-steps__step::after { display: none !important; }
 
   .dev-root .stage-steps__btn {
-    flex-direction: row;
+    flex-direction: row !important;
     align-items:    center;
     gap:            6px;
-    width:          auto;
+    width:          auto !important;
   }
 
-  .dev-root .stage-steps__label { white-space: nowrap; }
+  .dev-root .stage-steps__label { white-space: nowrap !important; }
 }
