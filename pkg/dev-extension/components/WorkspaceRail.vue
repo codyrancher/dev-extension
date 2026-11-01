@@ -6052,6 +6052,9 @@ export default {
 .workspace-rail__phone-name {
   flex:          1 1 auto;
   min-width:     0;
+  // Left, like every other row on this page. RcButton centres its label, which is right for
+  // "Ask the agent" and wrong for a name in a list between a dot and a chevron.
+  text-align:    left;
   overflow:      hidden;
   text-overflow: ellipsis;
   white-space:   nowrap;

@@ -182,15 +182,37 @@
     max-height: 88vh;
   }
 
-  /* Rancher's growls sit over the terminal drawer's keys otherwise - and the container keeps
-     its own width, so it has to be told to fit rather than just where to sit. */
+  /*
+   * Rancher's growls sit over the terminal drawer's keys otherwise - and the container keeps
+   * its own width, so it has to be told to fit rather than just where to sit.
+   *
+   * `top: auto` and `pointer-events: none` are the important half, and their absence made this
+   * rule the worst bug in the whole mobile pass. Setting `left`, `right` and `bottom` without
+   * `top` left Rancher's own `top` in place, so the container stretched the full height of the
+   * page: measured at 374x781 on a 390x844 screen, `z-index: 1000`, `pointer-events: auto`,
+   * with one empty child. An invisible sheet of glass over the entire content area. Every
+   * button on the workspace page did nothing, and nothing about it was visible in a screenshot
+   * - the page looked completely correct and simply ignored you.
+   *
+   * Found with `elementFromPoint` on the middle of a button that would not respond. That is
+   * the tool for "this is right there and does nothing", and it should have been the first
+   * thing I reached for rather than the last.
+   *
+   * A container that only positions things must never take the pointer; the things it
+   * positions take it back.
+   */
   .dev-root .growl-container {
+    top: auto;
     left: auto;
     right: 8px;
     bottom: 8px;
     width: auto;
+    height: auto;
     max-width: calc(100vw - 16px);
+    pointer-events: none;
   }
+
+  .dev-root .growl-container > * { pointer-events: auto; }
 
   .dev-root .growl-list,
   .dev-root .growl { max-width: 100%; }
@@ -1158,4 +1180,45 @@
    */
   .dev-root .workspace-rail__phone-new .split-btn__main { flex: 1 1 auto !important; }
   .dev-root .workspace-rail__phone-new .split-btn__more { flex: 0 0 48px !important; }
+}
+
+/*
+ * ── The stages, when six of them will not fit across a phone ────────────────────────────────
+ *
+ * `.stage-steps__step` is `flex: 1 1 0`, so every stage gets an equal slice whatever its label
+ * says. At 390px that slice is 54px and the labels are not: "Developer responded" and "Agent
+ * review" simply ran into the words either side of them, so the row read as one long string of
+ * joined-up stage names.
+ *
+ * Each stage sizes to its own label here and the row wraps. The dot moves beside the label
+ * rather than above it, which turns a six-across stepper into two or three lines of
+ * dot-and-name - still in order, still carrying done/now on the dot, and readable.
+ *
+ * The connecting line goes, and it has to: it is drawn from `left: 50%` to `right: -50%` of a
+ * step, which only means anything while every step is the same width and on the same row. A
+ * line that keeps pointing at where the next dot would have been is worse than none.
+ */
+@media (max-width: 760px) {
+  .dev-root .stage-steps {
+    flex-wrap:  wrap;
+    column-gap: 14px;
+    row-gap:    8px;
+    padding:    0;
+  }
+
+  .dev-root .stage-steps__step {
+    flex:      0 1 auto;
+    min-width: 0;
+  }
+
+  .dev-root .stage-steps__step::after { display: none !important; }
+
+  .dev-root .stage-steps__btn {
+    flex-direction: row;
+    align-items:    center;
+    gap:            6px;
+    width:          auto;
+  }
+
+  .dev-root .stage-steps__label { white-space: nowrap; }
 }
