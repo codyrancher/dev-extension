@@ -380,6 +380,53 @@
   .dev-root table.sortable-table tbody td:has(button)::before,
   .dev-root table.sortable-table tbody td:has(.btn)::before { content: none !important; }
 
+  /*
+   * A cell of buttons takes its own row.
+   *
+   * Left to flow with the facts, "Start workspace" ended up right-aligned on the end of the
+   * CI/UPDATED line and "Review" dropped underneath it with nothing to its left - two controls
+   * that read as accidentally placed rather than as the row's actions. Each on its own line is
+   * what the rest of the phone layout already does with buttons, and it is the shape a thumb
+   * expects.
+   *
+   * What this deliberately does NOT do is decide which of them is primary. They are the same
+   * blue at the same weight and a designer is right that they should not be - but which verb
+   * outranks which is the product's call, not a stylesheet's, and a mobile sheet quietly
+   * recolouring buttons is how a design system stops meaning anything.
+   */
+  .dev-root table.sortable-table tbody td:has(button),
+  .dev-root table.sortable-table tbody td:has(.btn) {
+    flex:            1 1 100% !important;
+    margin-top:      2px;
+    /*
+     * Left, whatever the column said. An actions column is declared `align: 'right'` because
+     * on a wide table its buttons belong at the far end of the row; as a full-width block on a
+     * phone that just strands them against the right edge, under nothing.
+     */
+    justify-content: flex-start !important;
+    text-align:      left !important;
+  }
+
+  /*
+   * Down through the wrapper, not just onto it.
+   *
+   * The buttons in an actions cell sit inside a flex box of their own that right-aligns them,
+   * so setting the cell's width and justification reached the wrapper and stopped there -
+   * "Start workspace" went full width while "Review", one level deeper, stayed a small block
+   * against the right edge. Both the row and what is in it have to be told.
+   */
+  .dev-root table.sortable-table tbody td:has(button) > *,
+  .dev-root table.sortable-table tbody td:has(.btn) > * {
+    width:           100%;
+    display:         flex;
+    flex-wrap:       wrap;
+    gap:             6px;
+    justify-content: flex-start !important;
+  }
+
+  .dev-root table.sortable-table tbody td:has(button) button,
+  .dev-root table.sortable-table tbody td:has(.btn) .btn { flex: 1 1 100%; }
+
   .dev-root table.sortable-table tbody td:nth-child(2)::before,
   .dev-root table.sortable-table tbody td:nth-child(n+4)::before {
     flex:    0 0 auto !important;
@@ -783,7 +830,20 @@
   .dev-root .workspace-rail > .workspace-rail__live { order: 2; }
 
   /*
-   * And no floor under it, which is a correction to the first version of this.
+   * No floor under it, and by now no chat under it either.
+   *
+   * This started as a 62vh floor, became no floor, and is now moot for the reason both were
+   * wrong: on a phone the conversation is not on this page at all. It is a card of buttons
+   * that opens the chat full screen (see WorkspaceRail's own comment), because an inline
+   * transcript is a scroll region inside a page that also scrolls, and a drag starting in it
+   * moves the transcript rather than the page - so the page below could not be reached by
+   * thumb. Reported by the person using it, after I had said twice that this was the one
+   * thing I could not check without a real one.
+   *
+   * What the order below still does is put that card of conversations above the rest, which
+   * is the half of the reorder that was right.
+   *
+   * Kept, in its original words:
    *
    * A 62vh floor made the conversation 520px of an 844px screen - and it has its own scroller
    * inside it, so that was a wall of nested scrolling sitting between the reader and the rest

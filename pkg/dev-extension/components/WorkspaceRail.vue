@@ -72,6 +72,9 @@ import {
   deleteWorkspace, devFetch, workspaceMediaListUrl
 } from '../api';
 import { DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, FOCUS_ROUTE } from '../config/constants';
+// `this.narrow`: on a phone the conversations are a card of buttons and the chat is a sheet,
+// which is not something a media query can express.
+import { NarrowMixin } from '../design/narrow';
 
 const STATUS_MS = 15000;
 const EVIDENCE_MS = 60000;
@@ -141,7 +144,7 @@ export default {
   // embedded or sandboxed iframe - where it returns false with nothing drawn, so Ask for
   // changes or Delete the workspace would quietly do nothing while the person watched.
   // `askQuestion`, not `ask`: this component already has an `ask` for asking a reviewer.
-  mixins: [ask],
+  mixins: [ask, NarrowMixin],
 
   props: {
     workspace: {
@@ -164,6 +167,13 @@ export default {
 
   data() {
     return {
+      /**
+       * Which conversation the phone is showing full screen, or '' for none.
+       *
+       * Only ever set while `narrow`. The id rather than the object, so a refresh that
+       * replaces the list does not leave the sheet holding a conversation that is gone.
+       */
+      phoneChat: '',
       status:      null,
       evidence:    [],
       /** The stage being looked at: the current one unless a past step was clicked. */
@@ -307,6 +317,15 @@ export default {
   },
 
   computed: {
+    /** The conversation the sheet is showing, looked up fresh so a refresh cannot strand it. */
+    phoneChatConversation() {
+      return this.railConversations.find((c) => c.id === this.phoneChat) || null;
+    },
+
+    phoneChatName() {
+      return this.phoneChatConversation?.title || 'Conversation';
+    },
+
     /** The CLIs a conversation can be held with. A constant is not on the component. */
     CLI_CHOICES: () => CLI_CHOICES,
 
@@ -955,6 +974,7 @@ export default {
   },
 
   beforeUnmount() {
+    document.body.style.overflow = '';
     this.stopPopouts?.();
     this.stopComments?.();
     this.timers.forEach((t) => clearInterval(t));
@@ -966,6 +986,18 @@ export default {
   },
 
   methods: {
+    openPhoneChat(conversation) {
+      this.phoneChat = conversation.id;
+      // The page behind must not scroll under the sheet: a sheet you can scroll the page
+      // through is the nested-scrolling problem again, wearing a different hat.
+      document.body.style.overflow = 'hidden';
+    },
+
+    closePhoneChat() {
+      this.phoneChat = '';
+      document.body.style.overflow = '';
+    },
+
     /** The rail's own row shape, as the shared code view takes it. See components/code/rows.ts. */
     fromRailRows,
 
@@ -3465,7 +3497,51 @@ export default {
         :class="{ 'workspace-rail__live--asked': flash === 'live' }"
         data-ask="live"
       >
+        <!--
+          On a phone, conversations are a card of buttons and the chat is full screen.
+
+          Inline, the transcript is a scroll region inside a page that also scrolls, and a drag
+          that starts anywhere in it moves the transcript rather than the page - so the page
+          below it could not be reached by thumb. A tab strip has the same problem in miniature:
+          it is a horizontal scroller inside a vertical one.
+
+          So the section keeps the shape every other card on this page has - a caption and
+          full-width buttons - and each conversation is one of those buttons. Pressing it gives
+          the chat the whole screen, which is what a chat wants anyway and what makes the page
+          behind it scroll like a page.
+        -->
+        <div
+          v-if="narrow"
+          class="workspace-rail__group workspace-rail__phone-chats"
+        >
+          <span class="workspace-rail__group-label">Conversations</span>
+          <div class="workspace-rail__group-buttons">
+            <RcButton
+              v-for="c in railConversations"
+              :key="c.id"
+              class="workspace-rail__phone-chat"
+              :class="{ 'workspace-rail__phone-chat--live': c.alive }"
+              @click="openPhoneChat(c)"
+            >
+              <span class="workspace-rail__phone-dot" :class="`workspace-rail__phone-dot--${ c.state || 'none' }`" />
+              <span class="workspace-rail__phone-name">{{ c.title || 'Conversation' }}</span>
+            </RcButton>
+            <SplitButton
+              class="workspace-rail__phone-new"
+              label="New conversation"
+              :value="defaultCli"
+              :options="CLI_CHOICES"
+              :disabled="starting"
+              @pick="newConversation"
+            >
+              <i :class="starting ? 'icon icon-spinner icon-spin' : 'icon icon-plus'" />
+              New conversation
+            </SplitButton>
+          </div>
+        </div>
+
         <ConversationTabbed
+          v-else
           ref="liveTabs"
           class="workspace-rail__live-tabs"
           flat
@@ -4487,6 +4563,54 @@ export default {
       @cancel="asking.answer(false)"
     />
   </div>
+    <!--
+      The chat, with the whole screen.
+
+      A plain fixed layer rather than DevModal: this holds a live terminal, and it must not be
+      torn down and rebuilt as a dialog's content would be - a conversation that remounts loses
+      its scroll position and its draft. It is a sheet over the page, with one way out.
+    -->
+    <div
+      v-if="narrow && phoneChat"
+      class="workspace-rail__sheet"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="`Conversation: ${ phoneChatName }`"
+    >
+      <header class="workspace-rail__sheet-head">
+        <button
+          type="button"
+          class="workspace-rail__sheet-close"
+          aria-label="Close the conversation"
+          @click="closePhoneChat"
+        >
+          <i class="icon icon-chevron-left" />
+        </button>
+        <span class="workspace-rail__sheet-name">{{ phoneChatName }}</span>
+      </header>
+      <StudioTerminal
+        v-if="phoneChatConversation && phoneChatConversation.alive"
+        :key="phoneChat"
+        class="workspace-rail__sheet-terminal"
+        :session="phoneChat"
+        :command="phoneChatConversation.attach.command"
+      />
+      <div
+        v-else-if="phoneChatConversation"
+        class="workspace-rail__resume"
+      >
+        <div class="workspace-rail__resume-text">
+          This conversation is not running right now. Its history is kept — open it to read it and carry on.
+        </div>
+        <RcButton
+          primary
+          :disabled="resuming === phoneChat"
+          @click="resumeConversation(phoneChatConversation)"
+        >
+          {{ resuming === phoneChat ? 'Opening…' : 'Open conversation' }}
+        </RcButton>
+      </div>
+    </div>
 </template>
 
 <!-- The PR panel's stylesheet, so this page and that one are one vocabulary. -->
@@ -5842,5 +5966,91 @@ export default {
 @keyframes workspace-rail-asked {
   from { outline-color: var(--status-input); }
   to   { outline-color: transparent; }
+}
+/* ── The phone's conversations, and the sheet one opens into ─────────────────────────────── */
+
+.workspace-rail__phone-chat {
+  display:         flex !important;
+  align-items:     center;
+  gap:             10px;
+  width:           100%;
+  justify-content: flex-start !important;
+  text-align:      left;
+}
+
+.workspace-rail__phone-name {
+  overflow:      hidden;
+  text-overflow: ellipsis;
+  white-space:   nowrap;
+}
+
+/* The same dot the drawer's rows use, so "this one is working" means one thing everywhere. */
+.workspace-rail__phone-dot {
+  flex:          0 0 8px;
+  width:         8px;
+  height:        8px;
+  border-radius: 50%;
+  background:    var(--muted);
+}
+
+.workspace-rail__phone-dot--working { background: var(--status-running, var(--primary)); }
+.workspace-rail__phone-dot--input   { background: var(--status-input, var(--warning)); }
+.workspace-rail__phone-dot--finished { background: var(--status-done, var(--success)); }
+
+.workspace-rail__phone-new { width: 100%; }
+
+/*
+ * A sheet, not a dialog.
+ *
+ * `position: fixed` over everything, its own column, and the terminal takes what is left. The
+ * point of it is that there is exactly one scroller on screen while it is open - the
+ * transcript - which is the whole reason the inline chat had to go on a phone.
+ *
+ * `100dvh` rather than `100vh`: with a browser chrome that grows and shrinks as you scroll,
+ * `vh` is the tallest the viewport ever gets, and the composer spends its life under the
+ * address bar.
+ */
+.workspace-rail__sheet {
+  position:       fixed;
+  inset:          0;
+  z-index:        200;
+  display:        flex;
+  flex-direction: column;
+  height:         100dvh;
+  background:     var(--body-bg);
+}
+
+.workspace-rail__sheet-head {
+  display:       flex;
+  align-items:   center;
+  gap:           4px;
+  flex:          0 0 auto;
+  padding:       env(safe-area-inset-top, 0px) 12px 0 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-rail__sheet-close {
+  display:         inline-flex;
+  align-items:     center;
+  justify-content: center;
+  min-width:       44px;
+  min-height:      44px;
+  border:          0;
+  background:      none;
+  color:           var(--body-text);
+  cursor:          pointer;
+}
+
+.workspace-rail__sheet-name {
+  overflow:      hidden;
+  text-overflow: ellipsis;
+  white-space:   nowrap;
+  font-weight:   600;
+}
+
+/* Everything the header does not take, and no more - so the transcript scrolls inside it. */
+.workspace-rail__sheet-terminal {
+  flex:       1 1 auto;
+  min-height: 0;
 }
 </style>
