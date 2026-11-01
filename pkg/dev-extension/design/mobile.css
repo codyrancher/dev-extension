@@ -875,3 +875,115 @@
     max-width: 100% !important;
   }
 }
+
+/*
+ * ── Polish, at phone width ──────────────────────────────────────────────────────────────────
+ */
+@media (max-width: 760px) {
+  /*
+   * A workspace name gets two lines in the drawer.
+   *
+   * One line of ellipsis is fine in a 320px rail beside the page it describes. As the whole
+   * screen it is the primary navigation, and three of nine rows read "lte-Block Secret forms
+   * from saving invalid...", "lte-Validate repository URLs when creating...", "lte-Migrate
+   * project from Webpack to Vite (..." - which is not a choice between three things, it is a
+   * choice between three prefixes.
+   */
+  .dev-root .dev-list__name {
+    white-space:        normal !important;
+    overflow:           hidden;
+    display:            -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  /* Room to breathe inside a card: prose was running to within a few pixels of the border. */
+  .dev-root .dev-tools__tool { padding: 14px !important; }
+
+  /*
+   * The app links under a tool. These are inline links in a sentence, where WCAG does not ask
+   * for 44px - but these are not prose, they are the row's only way in, so they get the height
+   * through padding rather than a box.
+   */
+  .dev-root .dev-tools__app {
+    display:     inline-flex !important;
+    align-items: center;
+    min-height:  44px !important;
+  }
+
+  /*
+   * And nothing here paints a surface it did not have.
+   *
+   * The rules above give height to things that were text, and a few of them carry a background
+   * for a state - a disabled "Refreshing", say - which at 44px tall becomes a grey slab around
+   * a link. Height, never a box.
+   */
+  .dev-root a.role-link,
+  .dev-root button.role-link { background: none !important; }
+}
+
+/*
+ * ── The Focus card's height model ───────────────────────────────────────────────────────────
+ *
+ * This is the fix for four bugs, and it is worth saying why.
+ *
+ * `.card` is a grid of `auto minmax(0, 1fr) auto` at `height: 100%`, inside a page that is
+ * explicitly `height: 100%` and does not scroll - a deck that fills the window, which is a
+ * good desktop idea. The middle row takes whatever the header and footer leave, and at 390px
+ * they leave almost nothing: the header needs two rows where the design assumed one, so the
+ * body silently gives up the difference. Every Focus defect across three rounds of review was
+ * that one mechanism. The chips collided. Then the footer buttons fell off the edge. Then the
+ * changed-files tree collapsed to nothing and the title lost its second line - a title
+ * truncated at word three on the one screen whose job is to say what the work IS.
+ *
+ * Each round fixed the casualty and the budget found another. So on a phone the card is as
+ * tall as its content and the page scrolls, which is what a phone does anyway. The deck's
+ * animation still runs; what it no longer does is decide how much of the card you get to read.
+ */
+@media (max-width: 760px) {
+  .dev-root .dev-focus {
+    height:     auto !important;
+    min-height: 100% !important;
+    overflow:   visible !important;
+  }
+
+  .dev-root .focus__deck {
+    height:     auto !important;
+    min-height: 0 !important;
+    overflow:   visible !important;
+  }
+
+  .dev-root .card {
+    height:             auto !important;
+    min-height:         0 !important;
+    grid-template-rows: auto auto auto !important;
+  }
+
+  /* Nothing inside it has to give any more, so nothing has to hide what it could not fit. */
+  .dev-root .card__body {
+    min-height: 0 !important;
+    overflow:   visible !important;
+  }
+
+  /* And the title gets the two lines the card is now tall enough to hold. */
+  .dev-root .card__title {
+    display:            -webkit-box !important;
+    -webkit-line-clamp: 2 !important;
+  }
+
+  /* The drawer's row titles, for the same reason - the clamp needs the box to take effect. */
+  .dev-root .dev-list__name { display: -webkit-box !important; }
+
+  /*
+   * And room under the card for the bar that floats over it.
+   *
+   * The ask bar and the dock are `position: fixed` at the bottom, which costs nothing while
+   * the page does not scroll - the deck was sized to stop above them. A card that is now as
+   * tall as its content scrolls its last lines underneath instead, so the deck ends above the
+   * bar rather than behind it. `--bar-h` and `--bar-bottom` are the bar's own variables, so
+   * this stays right if it ever changes height.
+   */
+  .dev-root .focus__deck {
+    padding-bottom: calc(var(--bar-h, 64px) + var(--bar-bottom, 16px) + 16px) !important;
+  }
+}
