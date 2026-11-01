@@ -1117,3 +1117,45 @@
   /* The new-conversation split button reads as one control, not a button and a stray chevron. */
   .dev-root .workspace-rail__phone-new { width: 100% !important; }
 }
+
+/*
+ * ── The workspace page scrolls as a page ────────────────────────────────────────────────────
+ *
+ * `.workspace-rail` is `height: 100%` with `overflow: auto`, and its own comment says why: on a
+ * desktop the conversation absorbs the slack, so there is nothing to scroll and the column
+ * holds still, with `auto` as a safety valve for a viewport too short for all of it at once.
+ *
+ * On a phone the conversation is no longer in that column - it is a card of buttons - so the
+ * safety valve is the normal case, and the rail became a scroller with about 45px of travel
+ * inside a `main` that thought its content fitted exactly. The page moved a thumb's width and
+ * stopped. Measured: main content 789 in a box of 789; the rail 834 in 789.
+ *
+ * So at phone width the rail is as tall as its content and `main` - which this sheet already
+ * made the page's one scroller - does the scrolling. Third time a nested scroller has been the
+ * answer on this page, which is the lesson: a box with `height: 100%` and `overflow: auto` is
+ * a scroller waiting for the day its content no longer fits, and on a phone that day is today.
+ */
+@media (max-width: 760px) {
+  .dev-root .workspace-rail {
+    height:     auto !important;
+    min-height: 0 !important;
+    overflow:   visible !important;
+    /*
+     * And `flex: 0 0 auto`, because `height: auto` alone did nothing measurable: the rail is a
+     * flex item, so its size comes from the flex basis, not from `height`. It stayed at exactly
+     * its parent's 789px with its content overflowing invisibly - the page gained 21px of
+     * travel and still read as stuck.
+     */
+    flex:       0 0 auto !important;
+  }
+
+  /*
+   * The split button's chevron is an affordance, not half the control.
+   *
+   * `split-btn__main` and `split-btn__more` each took 155px of a 310px row - a label and a bare
+   * `⌄` given equal weight, which is why it read as two buttons of which one says nothing. The
+   * chevron gets a thumb's width and the label takes what is left.
+   */
+  .dev-root .workspace-rail__phone-new .split-btn__main { flex: 1 1 auto !important; }
+  .dev-root .workspace-rail__phone-new .split-btn__more { flex: 0 0 48px !important; }
+}

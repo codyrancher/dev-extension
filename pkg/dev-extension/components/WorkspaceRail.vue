@@ -910,6 +910,20 @@ export default {
      * Here there is one way for the lock to be on, and it is "the sheet is open".
      */
     phoneChat(open) {
+      /*
+       * Lock the element that actually scrolls, which is not `body`.
+       *
+       * design/mobile.css pins the shell at phone width and makes `.dashboard-content > main`
+       * the page's one scroller, so `document.body.style.overflow` was setting a property on a
+       * box that was never going to scroll anyway - a lock that locked nothing. Both are set:
+       * `main` because it is the scroller today, `body` because it is the one every other
+       * codebase means and costs nothing if the shell changes under us.
+       */
+      const main = document.querySelector('.dev-root .dashboard-content > main');
+
+      if (main) {
+        main.style.overflow = open ? 'hidden' : '';
+      }
       document.body.style.overflow = open ? 'hidden' : '';
     },
 
@@ -992,6 +1006,11 @@ export default {
   },
 
   beforeUnmount() {
+    const main = document.querySelector('.dev-root .dashboard-content > main');
+
+    if (main) {
+      main.style.overflow = '';
+    }
     document.body.style.overflow = '';
     window.removeEventListener('popstate', this.onSheetPop);
     this.stopPopouts?.();
