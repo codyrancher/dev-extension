@@ -510,7 +510,14 @@ export default {
     bottom:     0;
     left:       0;
     z-index:    99;
-    width:      min(86vw, 320px);
+    /*
+     * The whole screen, not most of it.
+     *
+     * 86vw left a 55px strip of the page showing beside the drawer, which is not context - it
+     * is a mis-tap waiting to happen, and it cost the nav the width its own rows needed. A
+     * drawer that covers the page is also the one that can be closed by covering it again.
+     */
+    width:      100%;
     transform:  translateX(-102%);
     transition: transform 0.18s ease;
     box-shadow: 0 0 28px rgba(0, 0, 0, 0.45);

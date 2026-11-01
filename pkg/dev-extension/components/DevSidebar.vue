@@ -1967,19 +1967,35 @@ export default {
         display:         flex;
         align-items:     center;
         justify-content: flex-start;
-        gap:             $gap;
+        gap:             14px;
         width:           auto;
-        height:          40px;
-        padding:         0 $rail;
+        // Not a fixed height: a thumb needs 44, and a label that wraps needs more than that.
+        min-height:      48px;
+        padding:         0 16px;
         border-radius: 0;
       }
 
-      // The glyph occupies the same slot a list row's dot does, so the labels agree too.
+      /*
+       * A fixed square for the glyph, centred, whatever the glyph.
+       *
+       * These are icon-font characters and every one of them is a different width: the list
+       * glyph drew 10px wide, the folder 10x14, the gear wider than its own box. The slot was
+       * the rail - about 10px on a phone - so the wide ones spilled past it and sat against
+       * their labels while the narrow ones left a gap, and the five nav rows had five
+       * different left edges for their text.
+       *
+       * Sized to the glyph rather than to the rail, because the rail is a list row's dot slot
+       * and a dot is not an icon. What the two share is the row's left inset, which is what
+       * actually lines a nav row up with a workspace row.
+       */
       .icon, svg {
-        flex:      0 0 $rail;
-        width:     $rail;
-        font-size: 14px;
-        text-align: left;
+        flex:            0 0 24px;
+        width:           24px;
+        height:          24px;
+        font-size:       18px;
+        display:         inline-flex;
+        align-items:     center;
+        justify-content: center;
       }
     }
 

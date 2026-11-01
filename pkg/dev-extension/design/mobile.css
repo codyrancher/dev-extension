@@ -257,22 +257,176 @@
  * Height alone, not padding: these are flex rows with centred labels, so a taller box keeps the
  * text where it was and only grows the area you can hit.
  */
-@media (pointer: coarse) {
-  .dev-root .prb,
+/*
+ * ── Targets a thumb can hit ─────────────────────────────────────────────────────────────────
+ *
+ * Keyed to WIDTH, and that is a correction. These rules were under `pointer: coarse`, which is
+ * the technically right question - is the pointer a finger - and the wrong one in practice. It
+ * is false in every desktop browser narrowed to a phone, which is how anybody checks this, so
+ * the whole pass looked like it had never shipped. A window under 760px is a phone-shaped
+ * window; at the width anyone really works at, none of this applies.
+ *
+ * `!important`, which is not decoration. A component's scoped styles carry a `[data-v-...]`
+ * attribute, so `.dev-top__burger[data-v-x]` outranks any plain class selector this sheet can
+ * write, and the polite version of these rules lost every single time: measured on one page,
+ * 29 of 29 interactive elements were still under 44px. With these, 0 of 81.
+ */
+@media (max-width: 760px) {
+  .dev-root button,
   .dev-root .btn,
-  .dev-root button:not(.dev-root .tabs li.tab a),
-  .dev-root [role='button'] {
-    min-height: 44px;
+  .dev-root [role='button'],
+  .dev-root input:not([type='checkbox']):not([type='radio']),
+  .dev-root select,
+  .dev-root summary,
+  .dev-root a.dev-list__link,
+  .dev-root a.has-clean-tooltip,
+  .dev-root a.dev-nav-head__add,
+  .dev-root button.dev-nav-head__add,
+  .dev-root .dev-sidebar__globals a {
+    min-height: 44px !important;
   }
+
+  /* Icon-only controls need the width as well; a text button sizes to its text. */
+  .dev-root button:empty,
+  .dev-root .icon-btn,
+  .dev-root .dev-top__burger,
+  .dev-root .dev-nav-head__add {
+    min-width: 44px !important;
+  }
+}
+
+/*
+ * ── A table is not a phone layout ───────────────────────────────────────────────────────────
+ *
+ * Every row becomes a card, labelled from its own header.
+ *
+ * The rules further up let a 640px table scroll sideways inside its own box, which keeps the
+ * page from scrolling and leaves the reader dragging a table around a 390px window to read one
+ * pull request - "Open" wrapped to "Ope/n", "#1098" to "#109/8". Rancher's SortableTable
+ * already writes the column name onto every cell as `data-title`, so the header row can go and
+ * each cell can carry its own label. Which is what a table IS on a phone: labelled records,
+ * one card each.
+ */
+@media (max-width: 760px) {
+  .dev-root table.sortable-table {
+    display:   block !important;
+    min-width: 0 !important;
+    width:     100% !important;
+  }
+
+  .dev-root table.sortable-table thead { display: none !important; }
+  .dev-root table.sortable-table tbody { display: block !important; }
+
+  .dev-root table.sortable-table tbody tr {
+    display:       block !important;
+    height:        auto !important;
+    border:        1px solid var(--border) !important;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    padding:       8px 12px;
+  }
+
+  .dev-root table.sortable-table tbody td {
+    display:     flex !important;
+    gap:         12px;
+    align-items: baseline;
+    width:       auto !important;
+    max-width:   none !important;
+    padding:     5px 0 !important;
+    border:      0 !important;
+    white-space: normal !important;
+  }
+
+  /*
+   * The first two cells are the row's identity - a state and a number - and they say what they
+   * are by looking like what they are. A green "Open" does not need to be told it is a STATE,
+   * and a card that spends two of its four lines on the words STATE and PR is a card carrying
+   * less than the table it replaced. So those two go on one line, unlabelled, and the lines
+   * underneath carry what actually needs naming.
+   *
+   * Positional rather than by column name, because the names are the product's and they are
+   * not all English: whatever a table's first two columns are, they are the short ones.
+   */
+  .dev-root table.sortable-table tbody tr {
+    display:     flex !important;
+    flex-wrap:   wrap;
+    align-items: baseline;
+    gap:         2px 10px;
+  }
+
+  .dev-root table.sortable-table tbody td:nth-child(1),
+  .dev-root table.sortable-table tbody td:nth-child(2) {
+    width: auto !important;
+    flex:  0 0 auto;
+  }
+
+  /*
+   * The first three cells say what they are by looking like what they are: a coloured state, an
+   * id, a sentence. From the fourth on, a label is worth its 64px - that is where a table keeps
+   * the columns a reader cannot name on sight, and this sheet styles every table in the product,
+   * not just the one I happened to be looking at.
+   */
+  .dev-root table.sortable-table tbody td:nth-child(-n+3)::before { content: none !important; }
+
+  .dev-root table.sortable-table tbody td:nth-child(n+3) { flex: 1 1 100%; }
+
+  .dev-root table.sortable-table tbody td[data-title]::before {
+    content:        attr(data-title);
+    flex:           0 0 64px;
+    color:          var(--muted);
+    font-size:      11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  /* A link in a card is that row's target, not a word in a sentence. */
+  .dev-root table.sortable-table tbody td a {
+    display:     inline-flex !important;
+    align-items: center;
+    min-height:  44px !important;
+  }
+
+  /* The spacer rows the table puts between groups say nothing in a list of cards. */
+  .dev-root table.sortable-table tbody tr.group-row,
+  .dev-root table.sortable-table tbody tr:empty { display: none !important; }
+
+  .dev-root .paging {
+    display:         flex !important;
+    flex-wrap:       wrap !important;
+    gap:             8px;
+    justify-content: center !important;
+  }
+
+  /*
+   * What was making the page wider than the phone.
+   *
+   * `min-width: fit-content` on the tab container keeps the tab STRIP from squashing, and drags
+   * the content under it to the same width - which is how a 390px screen came to hold a 501px
+   * page. Found by walking a table cell's ancestors and reading each one's width: everything
+   * from the cell up measured 459px, and this was the first box wider than the screen.
+   *
+   * The strip keeps its own scroll from the rules above, so the tabs still do not squash. They
+   * just stop deciding how wide the article is.
+   */
+  .dev-root .tabbed-container,
+  .dev-root .tab-container { min-width: 0 !important; }
+}
+
+/*
+ * The rest of the touch sizing, on the same width trigger as the block above and for the same
+ * reason. What is here is what that block does not already say: the product's own control
+ * classes, and the two things a finger is worst at - a checkbox, and anything icon-only.
+ */
+@media (max-width: 760px) {
+  .dev-root .prb { min-height: 44px !important; }
 
   /*
    * An icon-only control needs the width too, or it is a 44px-tall sliver. `min-width` rather
    * than `width` so a labelled button is not stretched into a square.
    */
   .dev-root .prb--icon,
-  .dev-root .icon-btn,
   .dev-root .workspace-rail__quote,
-  .dev-root button.role-link:empty { min-width: 44px; }
+  .dev-root button.role-link:empty { min-width: 44px !important; }
 
   /* The chat's own two, which have their own variables so they cannot drift apart. */
   .dev-root .mc-chat {
@@ -286,8 +440,8 @@
    */
   .dev-root input[type='checkbox'],
   .dev-root input[type='radio'] {
-    min-width:  22px;
-    min-height: 22px;
+    min-width:  22px !important;
+    min-height: 22px !important;
   }
 
   .dev-root label:has(> input[type='checkbox']),
@@ -413,4 +567,145 @@
     transition-duration:       0.01ms !important;
     scroll-behavior:           auto !important;
   }
+}
+
+/*
+ * ── The label gutter, on a screen that has no gutter to spare ───────────────────────────────
+ *
+ * Actions, Tools and For review share one measurement on purpose - 8/14 padding, a 20px gap, a
+ * 96px label - so the workspace page reads as one table rather than three boxes near each
+ * other. WorkspaceRail says it in its own comment: change one, change all of them.
+ *
+ * On a phone that shared row is the problem. 14 + 96 + 20 is 130px of a 390px screen gone
+ * before the content starts, and the content is buttons with a 150px minimum - so the page's
+ * primary action, "Ask the agent", floated into the right half with 155px of empty gutter
+ * beside it. Measured by a designer looking at the screenshot, not by me looking at the CSS.
+ *
+ * So the shared row gets one shared change: at phone width the label stops being a column and
+ * becomes a caption over its content, and the content takes the width back. For review already
+ * did something close to this, which is why it was the one card on that page that read
+ * correctly - the others now do what it does.
+ */
+@media (max-width: 760px) {
+  .dev-root .workspace-rail__group,
+  .dev-root .workspace-rail__came-back,
+  .dev-root .workspace-tools,
+  .dev-root .workspace-tools--inline {
+    flex-direction: column !important;
+    align-items:    stretch !important;
+    gap:            8px !important;
+  }
+
+  .dev-root .workspace-rail__group-label,
+  .dev-root .workspace-rail__came-back-label,
+  .dev-root .workspace-tools__label {
+    flex:  none !important;
+    width: auto !important;
+  }
+
+  /*
+   * The tools chips, left-aligned on one shared edge.
+   *
+   * They were centre-ragged - three status lines starting at three different x - because each
+   * chip sized itself and the row centred what was left. A column of chips that all start at
+   * the same place is readable at a glance; three that nearly line up is not.
+   */
+  .dev-root .workspace-tools__rows {
+    flex-direction:  row !important;
+    flex-wrap:       wrap !important;
+    justify-content: flex-start !important;
+    align-items:     stretch !important;
+    width:           100% !important;
+    gap:             6px !important;
+  }
+
+  .dev-root .workspace-tools__chip { justify-content: flex-start !important; }
+
+  /* Buttons take the row rather than a 150px slot in the middle of it. */
+  .dev-root .workspace-rail__group-buttons {
+    flex-direction: column !important;
+    align-items:    stretch !important;
+    width:          100% !important;
+  }
+
+  .dev-root .workspace-rail__group button,
+  .dev-root .workspace-rail__group-buttons > * {
+    width:     100% !important;
+    min-width: 0 !important;
+  }
+}
+
+/*
+ * ── Chips wrap rather than pile up ──────────────────────────────────────────────────────────
+ *
+ * Focus draws rows of pills - a PR number, a CI result, what is shared - sized for a card two
+ * or three times this wide. At 390px they were drawn on top of one another with their text
+ * colliding, which is the one defect on these screens that makes the product look broken
+ * rather than cramped.
+ */
+@media (max-width: 760px) {
+  .dev-root .card__head,
+  .dev-root .card__meta,
+  .dev-root .card__idents {
+    flex-wrap:   wrap !important;
+    gap:         6px 8px !important;
+    min-width:   0 !important;
+    white-space: normal !important;
+  }
+
+  /* A title is the one thing on a Focus card worth two lines of a phone screen. */
+  .dev-root .card__title {
+    white-space:        normal !important;
+    overflow:           hidden;
+    display:            -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}
+
+/*
+ * ── A scrolling tab strip has to look like one ──────────────────────────────────────────────
+ *
+ * Seven tabs in 390px: the strip scrolls, and nothing said so - no fade, no peek, no chevron -
+ * so two of them read as simply absent. The fade is the cheapest honest signal there is.
+ */
+@media (max-width: 760px) {
+  .dev-root .tabs {
+    scroll-snap-type:            x proximity;
+    -webkit-overflow-scrolling:  touch;
+    mask-image:                  linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
+
+  .dev-root .tabs li.tab { scroll-snap-align: start; }
+}
+
+/*
+ * ── The agent gets the screen ───────────────────────────────────────────────────────────────
+ *
+ * On the workspace page the conversation started 724px down an 844px screen, with its composer
+ * off the bottom entirely - so the thing the page is FOR could not be reached, let alone typed
+ * into, without scrolling past everything else. Measured: head 46, stepper 46, Actions 98,
+ * Tools 176, For review 159. 433px of chrome ahead of the content on a phone.
+ *
+ * `.workspace-rail` is already a flex column, so this needs no new markup: name the two things
+ * worth seeing before the conversation - which workspace this is, and what stage it is at -
+ * and let everything else fall below it. Both are one line tall and both answer a question you
+ * have before you read anything. The cards are still there, one scroll down, in the order they
+ * were in.
+ *
+ * Desktop keeps the order it has, where there is room for all of it at once and the reading
+ * order top-to-bottom is the right one.
+ */
+@media (max-width: 760px) {
+  .dev-root .workspace-rail > * { order: 3; }
+  .dev-root .workspace-rail > .workspace-rail__head { order: 0; }
+  .dev-root .workspace-rail > .stage-steps { order: 1; }
+  .dev-root .workspace-rail > .workspace-rail__live { order: 2; }
+
+  /*
+   * And enough of the screen to be worth having. Without a floor the conversation takes its
+   * content's height, which for a quiet pane is a couple of lines - so the screen it was just
+   * given back goes to whatever follows it.
+   */
+  .dev-root .workspace-rail > .workspace-rail__live { min-height: 62vh; }
 }
