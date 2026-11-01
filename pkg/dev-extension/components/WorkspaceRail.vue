@@ -174,6 +174,8 @@ export default {
        * replaces the list does not leave the sheet holding a conversation that is gone.
        */
       phoneChat: '',
+      /** Whether this page pushed a history entry for the sheet, so back closes it. */
+      sheetInHistory: false,
       status:      null,
       evidence:    [],
       /** The stage being looked at: the current one unless a past step was clicked. */
@@ -899,6 +901,18 @@ export default {
   },
 
   watch: {
+    /*
+     * The scroll lock belongs to the state, not to the button that changed it.
+     *
+     * It was set in the open handler and cleared in the close handler, which is correct until
+     * something closes the sheet without going through either: a back gesture, a route change,
+     * a workspace switch, a throw inside the transcript. Any of those left the page locked.
+     * Here there is one way for the lock to be on, and it is "the sheet is open".
+     */
+    phoneChat(open) {
+      document.body.style.overflow = open ? 'hidden' : '';
+    },
+
     /** Findings came or went: a discussion whose finding is gone is no longer open. */
     shownComments() {
       this.pruneDiscussions();
@@ -926,6 +940,8 @@ export default {
      * drawn with the old one's tabs.
      */
     'workspace.name'() {
+      // The sheet belongs to the workspace that opened it.
+      this.phoneChat = '';
       this.viewing = '';
       this.conversations = [];
       this.live = {};
@@ -940,6 +956,8 @@ export default {
   },
 
   mounted() {
+    // The phone's back gesture is the sheet's other way out; see openPhoneChat.
+    window.addEventListener('popstate', this.onSheetPop);
     // Which CLI this person holds conversations with, for the split button's plain press. The
     // same preference the drawer reads, so the + means the same thing in both places.
     readPrefs().then((prefs) => {
@@ -975,6 +993,7 @@ export default {
 
   beforeUnmount() {
     document.body.style.overflow = '';
+    window.removeEventListener('popstate', this.onSheetPop);
     this.stopPopouts?.();
     this.stopComments?.();
     this.timers.forEach((t) => clearInterval(t));
@@ -986,16 +1005,41 @@ export default {
   },
 
   methods: {
+    /*
+     * Opening the sheet puts an entry in history, so the phone's own back gesture closes it.
+     *
+     * Without that, Android's back button and iOS's edge swipe leave the page entirely - from
+     * a sheet, which is the one surface where back obviously means "out of this". And they
+     * would leave by a path that never runs the close handler, which used to be the only thing
+     * that released the scroll lock. A page that renders perfectly and will not move, with no
+     * scrollbar to hint why, is the same class of fault as the one this sheet was built to fix.
+     */
     openPhoneChat(conversation) {
       this.phoneChat = conversation.id;
-      // The page behind must not scroll under the sheet: a sheet you can scroll the page
-      // through is the nested-scrolling problem again, wearing a different hat.
-      document.body.style.overflow = 'hidden';
+      try {
+        history.pushState({ devSheet: conversation.id }, '');
+        this.sheetInHistory = true;
+      } catch {
+        // A browser that will not take the entry still gets a working sheet; it just closes
+        // by the chevron alone.
+        this.sheetInHistory = false;
+      }
     },
 
     closePhoneChat() {
+      if (this.sheetInHistory) {
+        // Back, so the entry goes with the sheet rather than piling up behind it. `popstate`
+        // does the closing, which keeps one path for every way out.
+        history.back();
+
+        return;
+      }
       this.phoneChat = '';
-      document.body.style.overflow = '';
+    },
+
+    onSheetPop() {
+      this.sheetInHistory = false;
+      this.phoneChat = '';
     },
 
     /** The rail's own row shape, as the shared code view takes it. See components/code/rows.ts. */
@@ -3526,6 +3570,13 @@ export default {
             >
               <span class="workspace-rail__phone-dot" :class="`workspace-rail__phone-dot--${ c.state || 'none' }`" />
               <span class="workspace-rail__phone-name">{{ c.title || 'Conversation' }}</span>
+              <!--
+                The chevron this page already uses for "goes somewhere else" - Pull request ›,
+                Reviewers ›, two cards below. Without it a conversation wears exactly the chrome
+                of `Ask the agent` and `Focus`, which act on this page, when pressing it is a
+                full-screen context switch.
+              -->
+              <i class="icon icon-chevron-right workspace-rail__phone-go" />
             </RcButton>
             <SplitButton
               class="workspace-rail__phone-new"
@@ -5980,9 +6031,17 @@ export default {
 }
 
 .workspace-rail__phone-name {
+  flex:          1 1 auto;
+  min-width:     0;
   overflow:      hidden;
   text-overflow: ellipsis;
   white-space:   nowrap;
+}
+
+.workspace-rail__phone-go {
+  flex:      0 0 auto;
+  margin-left: auto;
+  opacity:   .7;
 }
 
 /* The same dot the drawer's rows use, so "this one is working" means one thing everywhere. */

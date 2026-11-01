@@ -44,6 +44,8 @@ import hoverCard from './hover-card';
 import RancherPicker from './RancherPicker.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
 import Stack from '../design/Stack.vue';
+// `this.narrow`: how long a row's label may be is a decision, not a style. See rowLabel.
+import { NarrowMixin } from '../design/narrow';
 import Row from '../design/Row.vue';
 import { note } from '../dev-log.mjs';
 import { watch } from '../events';
@@ -266,7 +268,7 @@ export default {
     DevList, Stack, Row, ClaudeLogo, ToolMark, DevDialog, DevModal, RancherPicker, NavRow, NavHead, HoverCard
   },
 
-  mixins: [hoverCard],
+  mixins: [hoverCard, NarrowMixin],
 
   data() {
     return {
@@ -930,7 +932,21 @@ export default {
       // (the full one is on the hover card), and the cluster is appended when it is not the
       // local one, which is where most workspaces are.
       const full = workspaceTitle(workspace, resolved);
-      const parts = [full.length > 42 ? `${ full.slice(0, 42).trimEnd() }…` : full];
+      /*
+       * Two lines' worth on a phone, one on a laptop.
+       *
+       * The 42 is "a row's worth", and a row is one line in a 320px rail beside the page it
+       * describes. As the whole screen the drawer is the primary navigation, and six of eight
+       * names ended at the same width - which is not a choice between six things, it is a
+       * choice between six prefixes.
+       *
+       * This is where the truncation lives, and that is worth saying because three separate
+       * stylesheets tried to give these rows a second line and none of them could: the ellipsis
+       * is a character in the string, put here, long before any CSS sees it. `scrollWidth`
+       * equalled `clientWidth` the whole time - nothing was ever being clipped.
+       */
+      const cap = this.narrow ? 84 : 42;
+      const parts = [full.length > cap ? `${ full.slice(0, cap).trimEnd() }…` : full];
 
       if (workspace.cluster && workspace.cluster !== 'local') {
         parts.push(workspace.cluster);

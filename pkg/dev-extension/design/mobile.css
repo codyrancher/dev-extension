@@ -960,7 +960,25 @@
    * project from Webpack to Vite (..." - which is not a choice between three things, it is a
    * choice between three prefixes.
    */
+  /* Every box between the row and the text, or there is no constraint to pass down. */
+  .dev-root .dev-list__row,
+  .dev-root .dev-list__text,
+  .dev-root .dev-list__detail { min-width: 0 !important; }
+
   .dev-root .dev-list__name {
+    /*
+     * `min-width: 0` is the whole of it, and its absence is why this failed three times.
+     *
+     * The name is a flex item. A flex item's base size is its max-content width, and it will
+     * not shrink below that without `min-width: 0` - so the element was as wide as the whole
+     * untruncated title, the text had all the room it needed and never wrapped, and what
+     * looked like a one-line ellipsis was the row clipping an element wider than itself.
+     * `white-space: normal` and a max-height were both in force the entire time and had
+     * nothing to do: measured, computed `white-space: normal`, `max-height: 37.8px`, height
+     * 18px. Reading the matched rules showed the rule winning on all three attempts.
+     */
+    flex:        1 1 auto !important;
+    min-width:   0 !important;
     white-space: normal !important;
     overflow:    hidden;
     max-height:  2.7em;
