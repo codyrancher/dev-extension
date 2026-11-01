@@ -15,8 +15,11 @@
 // and owned by the pane's user, the same three places the harness put them.
 
 import {
-  podExecDetail, workspacePod, workspaceNamespace, WORKSPACE_CONTAINER, githubToken, devFetch, secretValue, clusterBase, activeCluster, GITHUB_BROWSER_CDP, GITHUB_BROWSER_CDP_DOWNSTREAM, sharedBrowserCdp
+  podExecDetail, workspacePod, workspaceContainerRestarts, workspaceNamespace, WORKSPACE_CONTAINER, githubToken, devFetch, secretValue, clusterBase, activeCluster, GITHUB_BROWSER_CDP, GITHUB_BROWSER_CDP_DOWNSTREAM, sharedBrowserCdp, OUR_VERSION
 } from './api';
+import { agentPod } from './agent';
+import { readyFields, readyStampCurrent } from './agent-reads.mjs';
+import { podStateText } from './pod-state';
 import { AGENT_SEED } from './agent-seed.generated';
 import { UNREWRITE_B64 } from './apps';
 import {
@@ -27,6 +30,7 @@ type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 const GH_VERSION = '2.76.1';
 const JQ_VERSION = '1.7.1';
+const TOOLS_WANTED = `gh-${ GH_VERSION },jq-${ JQ_VERSION }`;
 // Paths inside the workspace, as the pod's shell sees them.
 //
 // `$WS` rather than a directory: a workspace's tree is at /workspaces/<name>, which asRoot and
@@ -48,6 +52,7 @@ const BIN = '$WS/bin';
 const SHARED_TOOLS = '/workspaces/.shared/tools';
 const ENV_FILE = '$WS/.env';
 const SEED_MARKER = '$WS/.dev-seed';
+const READY_STAMP = '$WS/.dev-ready';
 
 /** Where the pod is: everything below execs into it. */
 export interface WorkspaceTarget {
@@ -113,6 +118,18 @@ function seedVersion(): string {
   return (h >>> 0).toString(16);
 }
 
+/** The API's seed version, which moves when a skill is edited (skills.ts), or '' when it cannot say. */
+async function servedSeedVersion(): Promise<string> {
+  const served = await devFetch(`${ clusterBase('local') }/api/v1/namespaces/dev-system/services/http:dev-api:8080/proxy/agent-seed/version`).catch(() => null);
+
+  return served?.version || '';
+}
+
+/** What `.dev-seed` holds once this seed is laid out for this workspace. */
+function seedMark(version: string, ctx: WorkspaceContext, workspace: string): string {
+  return `${ version }:${ ctx.issue || '' }:${ ctx.pr || '' }:${ workspace }`;
+}
+
 /**
  * Run a script in the pod, as root.
  *
@@ -173,8 +190,12 @@ async function asNode(target: WorkspaceTarget, script: string): Promise<string> 
  * Three components ask as a workspace page opens, and each was its own exec. `pgrep` sees only the
  * workspace pod, so this cannot move to the service, but they can share one. Stopping or starting
  * the server forgets the answer, so a person's own change is never hidden by this.
+ *
+ * Ten seconds, because the rail asks after its first status and evidence reads have landed, which
+ * was about 4.4s in and past the three this used to be, so that read was a second exec. It still
+ * needs the answer, for stopForStage. Nothing asks this on a beat shorter than the page's 15s.
  */
-const DEV_SERVER_FRESH_MS = 3_000;
+const DEV_SERVER_FRESH_MS = 10_000;
 const devServerAsked = new Map<string, { at: number; answer: Promise<{ running: boolean; paused: boolean }> }>();
 
 /**
@@ -242,6 +263,9 @@ export function contextFromName(workspace: string): WorkspaceContext {
 async function ensureBase(target: WorkspaceTarget): Promise<void> {
   const out = await asRoot(target, [
     'set -e',
+    // From here until the last step succeeds, nothing vouches for this workspace: a run that fails
+    // partway must not leave an older stamp saying everything is in place.
+    `rm -f ${ READY_STAMP } 2>/dev/null || true`,
     `mkdir -p ${ BIN } $WS/.claude $WS/artifacts/a11y $WS/.kube $WS/.queue $WS/.home/.local/bin $WS/.home/.config/gh`,
     // The apt path is root's and the rootfs is the pod's, so this repeats after a restart; it is
     // in the background because a review should not wait a minute for ffmpeg it may never use.
@@ -280,8 +304,7 @@ async function ensureSeed(target: WorkspaceTarget, ctx: WorkspaceContext): Promi
 
   // The API's version, which moves when a skill is edited (skills.ts); the bundle's own when
   // the API cannot be asked.
-  const served = await devFetch(`${ clusterBase('local') }/api/v1/namespaces/dev-system/services/http:dev-api:8080/proxy/agent-seed/version`).catch(() => null);
-  const version = `${ served?.version || seedVersion() }:${ ctx.issue || '' }:${ ctx.pr || '' }:${ target.workspace }`;
+  const version = seedMark(await servedSeedVersion() || seedVersion(), ctx, target.workspace);
   // The marker, and one file it is supposed to have written.
   //
   // A workspace made for an issue that had one before inherits whatever its old tree left on
@@ -432,8 +455,7 @@ async function ensureEnvironment(target: WorkspaceTarget, github: string, browse
   const rancher = await rancherToken(target, browserRancher);
   const login = github ? (await ghLogin(github)).login : '';
   const browser = /^https?:\/\/[^'\s]+$/.test(browserRancher) ? browserRancher.replace(/\/+$/, '') : '';
-  // A leased workspace has no Chromium of its own; it drives the shared one, by IP.
-  const browserCdp = isLte(target.workspace) ? await sharedBrowserCdp() : 'http://localhost:9222';
+  const browserCdp = await workspaceBrowserCdp(target.workspace);
 
   const out = await asRoot(target, [
     'set -e',
@@ -540,6 +562,11 @@ chown -R node:node $WS/.kube && chmod 600 $WS/.kube/config` : 'true',
   }
 }
 
+/** A leased workspace has no Chromium of its own; it drives the shared one, by IP. */
+function workspaceBrowserCdp(workspace: string): Promise<string> {
+  return isLte(workspace) ? sharedBrowserCdp() : Promise.resolve('http://localhost:9222');
+}
+
 let ghLoginPromise: Promise<{ login: string; name: string; email: string }> | null = null;
 
 /** Who the GitHub token is, for the fork's name and the commit identity. Asked once per page. */
@@ -557,7 +584,7 @@ function ghLogin(token: string): Promise<{ login: string; name: string; email: s
  * the identity, the credential helper, the harness's files kept out of the tree, and the PR
  * checked out when the workspace is for one. Plus playwright-core beside browser.mjs.
  */
-async function ensureCheckout(target: WorkspaceTarget, ctx: WorkspaceContext, github: string): Promise<void> {
+async function ensureCheckout(target: WorkspaceTarget, ctx: WorkspaceContext, github: string): Promise<boolean> {
   const who = github ? await ghLogin(github) : { login: '', name: '', email: '' };
   const name = (await secretValue('GIT_NAME').catch(() => '')) || who.name;
   const email = (await secretValue('GIT_EMAIL').catch(() => '')) || who.email;
@@ -581,35 +608,274 @@ async function ensureCheckout(target: WorkspaceTarget, ctx: WorkspaceContext, gi
     // already worked in is theirs.
     ctx.pr ? `if [ ! -f $WS/.pr-checkout ] && [ -z "$(git status --porcelain --untracked-files=no)" ] && git rev-parse --abbrev-ref HEAD | grep -qE '^(master|main)$'; then git fetch --depth 200 upstream pull/${ ctx.pr }/head:pr-${ ctx.pr } && git checkout pr-${ ctx.pr } && echo ${ ctx.pr } > $WS/.pr-checkout; fi` : 'true',
     '[ -d $WS/node_modules/playwright-core ] || (cd $WS && npm install --no-save --silent playwright-core >/dev/null 2>&1 || echo "playwright-core install failed")',
+    // The App's boot makes the repository and only then fetches, so a clone still running has a
+    // .git and no commit. And nothing above stops at a failed PR fetch, which leaves a PR's
+    // workspace on the default branch with nothing to say it was meant to be elsewhere.
+    'git rev-parse -q --verify HEAD >/dev/null 2>&1 || echo CHECKOUT-PENDING',
+    ctx.pr ? `[ -f $WS/.pr-checkout ] || ! git rev-parse --abbrev-ref HEAD 2>/dev/null | grep -qE '^(master|main)$' || echo CHECKOUT-PENDING` : 'true',
     'echo CHECKOUT-OK',
   ].join('\n'));
 
   if (!out.includes('CHECKOUT-OK') && !out.includes('NO-CHECKOUT')) {
     throw new Error(`The checkout could not be set up: ${ out.trim().slice(-300) }`);
   }
+
+  // False while the clone is running or a PR has not landed: the next load should try again.
+  return !out.includes('NO-CHECKOUT') && !out.includes('CHECKOUT-PENDING');
+}
+
+// ── Knowing it has been done ────────────────────────────────────────────────────────────────
+
+/** What a workspace's stamp says apart from when it was written and when its token runs out. */
+interface WantedStamp {
+  workspace: string;
+  pod: string;
+  boot: number;
+  seed: string;
+  tools: string;
+  rancher: string;
+  identity: string;
+  bundle: string;
+}
+
+/** SHA-256 as hex, or '' where the page is not allowed to hash (a plain-http origin). */
+async function sha256Hex(text: string): Promise<string> {
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return '';
+  }
 }
 
 /**
- * Everything a harness skill needs in the workspace's pod. Safe to call before every action,
- * and cheap the second time: the seed is hashed, the tools are checked, the token is verified.
+ * Everything provisioning would take as input right now, without one exec, or null if any of it
+ * cannot be known. Null means no skip and no stamp, so what happens is what always happened.
+ *
+ * Each field is here because changing it has to reach the workspace:
+ * - `pod` and `boot`: a new pod or a restarted container has lost what apt installed. These also
+ *   rule out a stamp left in an old tree by the workspace that last had this name.
+ * - `seed`: the same string as `.dev-seed`, so a skill edit, a seed upgrade or a changed issue or
+ *   PR reprovisions.
+ * - `tools`: a version bump in this file.
+ * - `rancher`: the origin this page is on, which ensureEnvironment writes as a fallback host. The
+ *   pod's own $API only changes with its pod template, which makes a new pod.
+ * - `identity`: a changed GitHub token, Git name or email and the shared browser's address. A hash
+ *   because the file is in the tree and goes back over HTTP; the tree has the token already and a
+ *   hash gives nobody else anything, since a token is too long to guess.
+ * - `bundle`: this extension's release, because the seed does not cover the scripts in this file. A
+ *   release that changes one reaches each workspace on its next load, at the cost of that load.
+ *
+ * An empty GitHub token gives null because the store reads as empty when it could not be read, and
+ * a workspace must not be vouched for on the strength of that. Someone with no token at all pays
+ * for provisioning on every load, as before.
+ *
+ * Another cluster's workspace gives null too: its tree is an sshfs mount the service will not read
+ * (state-api.mjs, readStampFile), so a stamp there could never be believed and is not worth an exec.
  */
-export async function ensureWorkspaceReady(workspace: string, ctx?: WorkspaceContext): Promise<WorkspaceTarget> {
+async function wantedStamp(target: WorkspaceTarget, ctx: WorkspaceContext, github: string): Promise<WantedStamp | null> {
+  if (activeCluster() !== 'local') {
+    return null;
+  }
+
+  const rancher = typeof window === 'undefined' ? '' : window.location.origin;
+  const [served, boot, gitName, gitEmail, browserCdp] = await Promise.all([
+    servedSeedVersion(),
+    workspaceContainerRestarts(target.namespace, target.pod),
+    secretValue('GIT_NAME').catch(() => ''),
+    secretValue('GIT_EMAIL').catch(() => ''),
+    workspaceBrowserCdp(target.workspace),
+  ]);
+  const identity = await sha256Hex(['dev-ready', target.workspace, github, gitName, gitEmail, browserCdp].join('\0'));
+
+  if (!github || !rancher || !served || boot === null || !identity) {
+    return null;
+  }
+
+  return {
+    workspace: target.workspace,
+    pod:       target.pod,
+    boot,
+    seed:      seedMark(served, ctx, target.workspace),
+    tools:     TOOLS_WANTED,
+    rancher,
+    identity,
+    bundle:    OUR_VERSION,
+  };
+}
+
+/**
+ * The stamp in a workspace's tree, as the agent pod's service reads it, or null.
+ *
+ * Null for every way this can fail: no agent pod, a service that is down or older than this route,
+ * no file, a bad file, a downstream tree whose mount is not answering. All of them provision.
+ */
+async function readReadyStamp(workspace: string): Promise<{ stamp: ReturnType<typeof readyFields>; now: number; autoShared: boolean } | null> {
+  try {
+    const pod = await agentPod();
+
+    if (!pod) {
+      return null;
+    }
+
+    const text = await podStateText(pod, `/ready?workspace=${ encodeURIComponent(workspace) }`);
+
+    if (!text) {
+      return null;
+    }
+
+    const { now, autoShared } = JSON.parse(text);
+
+    return { stamp: readyFields(text, workspace), now: Number(now), autoShared: autoShared === true };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the default share has already been made, if the service can say.
+ *
+ * False only means ask the workspace, so a service that cannot answer costs what it always did.
+ */
+export async function defaultShareMarked(workspace: string): Promise<boolean> {
+  const found = await readReadyStamp(workspace);
+
+  return !!found?.stamp && found.autoShared;
+}
+
+/**
+ * Record what was just provisioned, as the last step of a run that got that far.
+ *
+ * Its own exec with no secret in it: the token comes out of the workspace's .env, which asNode has
+ * already sourced. It vouches for what can be checked here and writes nothing otherwise, so the
+ * next load provisions again. That covers the three things provisioning can finish without having
+ * done: apt runs in the background and may not have landed, npm's failure is only printed, and
+ * ensureEnvironment writes an empty or dead Rancher token and still says ENV-OK.
+ *
+ * Reads the token's own record for its expiry. A record that will not say is 0, unknown, and then
+ * only the TTL bounds it.
+ */
+async function writeReadyStamp(target: WorkspaceTarget, wanted: WantedStamp): Promise<void> {
+  // Checked before it goes anywhere: these values are single-quoted below, and no valid one can
+  // hold a quote. What could not be read back is not worth writing.
+  if (!readyFields(JSON.stringify({ ...wanted, at: 1, expires: 0 }), target.workspace)) {
+    console.debug(`[workspace] ${ target.workspace } not stamped: a field is not the shape the service accepts`); // eslint-disable-line no-console
+
+    return;
+  }
+
+  const expiry = 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{let t={};try{t=JSON.parse(s)}catch{}console.log(t.expired===true||t.enabled===false?"dead":Math.floor(Date.parse(t.expiresAt||"")/1000)||0)})';
+  const out = await asNode(target, [
+    '[ -n "$RANCHER_TOKEN" ] && [ -n "$RANCHER_URL" ] || { echo READY-NOT no Rancher token; exit 0; }',
+    '[ -x $WS/bin/dev-shell ] || { echo READY-NOT no dev-shell; exit 0; }',
+    '{ command -v ffmpeg && command -v lsof; } >/dev/null 2>&1 || { echo READY-NOT packages still installing; exit 0; }',
+    '[ -d $WS/node_modules/playwright-core ] || { echo READY-NOT no playwright-core; exit 0; }',
+    '[ "$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $RANCHER_TOKEN" "$RANCHER_URL/v3/users?me=true")" = 200 ] || { echo READY-NOT the Rancher token does not answer; exit 0; }',
+    `EXPIRES=$(curl -sk --max-time 10 -H "Authorization: Bearer $RANCHER_TOKEN" "$RANCHER_URL/v3/tokens/\${RANCHER_TOKEN%%:*}" | node -e '${ expiry }' 2>/dev/null)`,
+    '[ "$EXPIRES" = dead ] && { echo READY-NOT the Rancher token is spent; exit 0; }',
+    'case "$EXPIRES" in ""|*[!0-9]*) EXPIRES=0 ;; esac',
+    `BODY='${ JSON.stringify(wanted).slice(0, -1) }'`,
+    `F=${ READY_STAMP }.$$`,
+    `printf '%s,"at":%s,"expires":%s}\\n' "$BODY" "$(date +%s)" "$EXPIRES" > "$F" && chmod 644 "$F" && mv -fT "$F" ${ READY_STAMP } && echo READY-OK`,
+    'rm -f "$F"',
+  ].join('\n'));
+
+  if (!out.includes('READY-OK')) {
+    console.debug(`[workspace] ${ target.workspace } not stamped: ${ out.trim().slice(-200) }`); // eslint-disable-line no-console
+  }
+}
+
+/** The steps, in order, and the stamp once all of them have really happened. */
+async function provision(target: WorkspaceTarget, context: WorkspaceContext, github: string, wanted: WantedStamp | null): Promise<void> {
+  await ensureBase(target);
+  await ensureSeed(target, context);
+  await ensureTools(target);
+  await ensureEnvironment(target, github, typeof window === 'undefined' ? '' : window.location.origin);
+
+  const checkedOut = await ensureCheckout(target, context, github);
+
+  // A login that did not come back left the fork and hosts.yml on a fallback name, and that is
+  // worth correcting on the next load.
+  if (!wanted || !checkedOut || !(await ghLogin(github)).login) {
+    return;
+  }
+  // The work is done by here, so a stamp that cannot be written costs the next load six execs and
+  // must not fail whatever the person pressed.
+  await writeReadyStamp(target, wanted).catch((e) => {
+    console.debug(`[workspace] ${ target.workspace } not stamped: ${ e?.message || e }`); // eslint-disable-line no-console
+  });
+}
+
+function checkedName(workspace: string): void {
   // An empty name is a caller bug, and a costly one: it would seed with no project, which is the
   // one input layout.mjs needs to place the tree. Refuse it here with a clear message rather than
   // let it reach the pod and fail deep in a build script.
   if (!workspace || !workspace.trim()) {
     throw new Error('ensureWorkspaceReady needs a workspace name; it was called with an empty one.');
   }
+}
+
+/**
+ * Everything a harness skill needs in the workspace's pod. Safe to call before every action,
+ * and cheap the second time: the seed is hashed, the tools are checked, the token is verified.
+ *
+ * For an action: something is about to run in this workspace, so this always does the work and
+ * always checks the Rancher token. Only opening a page believes a stamp.
+ *
+ * Nothing uses what comes back but the pod's address, and most callers ignore that. The Rancher
+ * token rancherToken finds or mints goes only to ensureEnvironment and is not returned from here.
+ */
+export async function ensureWorkspaceReady(workspace: string, ctx?: WorkspaceContext): Promise<WorkspaceTarget> {
+  checkedName(workspace);
 
   const target = await workspaceTarget(workspace);
   const context = ctx || contextFromName(workspace);
   const github = await githubToken().catch(() => '');
 
-  await ensureBase(target);
-  await ensureSeed(target, context);
-  await ensureTools(target);
-  await ensureEnvironment(target, github, typeof window === 'undefined' ? '' : window.location.origin);
-  await ensureCheckout(target, context, github);
+  await provision(target, context, github, await wantedStamp(target, context, github).catch(() => null));
+
+  return target;
+}
+
+/**
+ * The same, for a page that is only opening: nothing happens if the workspace's stamp says it would
+ * be the same work, and six execs and an exec URL with a token in it go unspent.
+ *
+ * ── A token that goes bad in the meantime ───────────────────────────────────────────────────
+ *
+ * rancherToken used to ask Rancher on every load, and skipping it needs something else to stop a
+ * workspace sitting on a bad token. Two things do. A token whose record gives an expiry inside the
+ * TTL never matches, so expiry is not a risk. And the stamp only lasts READY_TTL_MS.
+ *
+ * What that costs: a token revoked by hand goes unnoticed on page loads for at most an hour after
+ * the last provisioning, where it used to be replaced on the next load. Whatever goes through
+ * ensureWorkspaceReady does not wait for that: a send, either + button, the queued sweep. These
+ * do not go through it and do wait, with the dead token in their environment: typing in the page's
+ * shell tab, and a conversation started from a Focus card or a change set. A workspace nobody opens
+ * and nobody acts on has always kept its bad token, and still does.
+ *
+ * What a stamp vouches for going missing is not a cost of this: the service checks the files are
+ * still there before it answers (state-api.mjs, READY_NEEDS). What was in them is not checked.
+ *
+ * A forged stamp can only skip this one workspace's own provisioning. See agent-reads.mjs.
+ */
+export async function ensureWorkspaceOnOpen(workspace: string): Promise<WorkspaceTarget> {
+  checkedName(workspace);
+
+  const target = await workspaceTarget(workspace);
+  const context = contextFromName(workspace);
+  const github = await githubToken().catch(() => '');
+  const wanted = await wantedStamp(target, context, github).catch(() => null);
+
+  if (wanted) {
+    const found = await readReadyStamp(workspace);
+
+    if (found && readyStampCurrent(found.stamp, wanted, found.now)) {
+      return target;
+    }
+  }
+  await provision(target, context, github, wanted);
 
   return target;
 }

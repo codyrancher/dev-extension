@@ -26,7 +26,7 @@ import {
 } from './conversations';
 import type { ConversationOrigin } from './agent';
 import {
-  ensureWorkspaceReady, waitForWorkspacePod, conversationPane
+  ensureWorkspaceReady, ensureWorkspaceOnOpen, waitForWorkspacePod, conversationPane
 } from './workspace-tools';
 import type { WorkspaceContext } from './workspace-tools';
 import { rerunFailed } from './github';
@@ -1267,9 +1267,12 @@ export async function startDiscussion(workspace: string, title: string, prompt: 
   return openWith(workspace, title, prompt, undefined, undefined, undefined, from);
 }
 
-/** The workspace made ready for whatever a person types: the same preparation an action gets. */
+/**
+ * The workspace made ready for whatever a person types, as its page opens: the same preparation
+ * an action gets, unless the workspace's stamp says it has had it.
+ */
 export async function prepareWorkspace(workspace: string): Promise<void> {
-  await ensureWorkspaceReady(workspace);
+  await ensureWorkspaceOnOpen(workspace);
 }
 
 /** Say something into a running conversation: queued the same way, read by the pane's runner. */

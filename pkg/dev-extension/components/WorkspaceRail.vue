@@ -37,7 +37,7 @@ import {
   readStatusNow, knownStatus, provisionalStatus, agentLabel, displayTone, setManualStage, clearManualStage, isManual, workspaceTitle
 } from '../workspace-status';
 import {
-  stepsFor, gatherEvidence, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
+  stepsFor, gatherEvidence, forgetBranch, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
 } from '../workspace-rail';
 import { prFile, openConversation } from '../reviews';
 import { toggleTask } from '../pr-body.mjs';
@@ -49,7 +49,8 @@ import { pickConversation, isDiscussion } from '../conversation-pick.mjs';
 import {
   listConversations, startConversation, queuePrompt, startPaneDetached, workspaceAgentStates, sendToPane, renameConversation, endConversation, forkConversation
 } from '../conversations';
-import { ensureWorkspaceReady, putArtifact, saveArtifact, devServerState, stopDevServer } from '../workspace-tools';
+import { ensureWorkspaceReady, ensureWorkspaceOnOpen, putArtifact, saveArtifact, devServerState, stopDevServer } from '../workspace-tools';
+import { everyWhileShown } from '../read-pacing.mjs';
 import WorkspaceTools from './WorkspaceTools.vue';
 import { watchPopouts } from '../md-popout.mjs';
 import { isLte } from '../config/constants';
@@ -1007,8 +1008,10 @@ export default {
       // appears and goes on its own as agents start and stop.
       setInterval(() => this.refreshLive(), STATUS_MS),
       setInterval(() => this.refreshStatus(true), GITHUB_MS),
-      setInterval(() => this.refreshEvidence(), EVIDENCE_MS),
     ];
+    // The column carries the one read on this page that is still an exec on a beat, the branch, so
+    // it rests while nobody can see it and catches up once on their return.
+    this.stopEvidenceBeat = everyWhileShown(() => this.refreshEvidence(), EVIDENCE_MS);
     /*
      * The comment marker arrives rather than being asked for. It used to be a stat every two
      * and a half seconds, forever, in every tab - the cheapest request in the product and far
@@ -1032,6 +1035,7 @@ export default {
     this.stopPopouts?.();
     this.stopComments?.();
     this.timers.forEach((t) => clearInterval(t));
+    this.stopEvidenceBeat?.();
     clearTimeout(this.statusRetryTimer);
     clearTimeout(this.evidenceRetryTimer);
     clearTimeout(this.settleTimer);
@@ -1333,8 +1337,8 @@ export default {
      * `bin/dev-shell` and every command in it failed on a missing file. Asked for here
      * instead, where opening the workspace is the thing that happens first.
      *
-     * Cheap when everything is in place, and never in the way: it does not block the draw, and
-     * a failure is a line in the page rather than an empty page.
+     * Free when the workspace's stamp says everything is in place, and never in the way: it does
+     * not block the draw, and a failure is a line in the page rather than an empty page.
      */
     async ensureTunnel() {
       if (this.tunnelChecked || !this.workspace?.name) {
@@ -1342,7 +1346,7 @@ export default {
       }
       this.tunnelChecked = true;
       try {
-        await ensureWorkspaceReady(this.workspace.name);
+        await ensureWorkspaceOnOpen(this.workspace.name);
       } catch (e) {
         console.debug(`[rail] workspace setup: ${ e?.message || e }`); // eslint-disable-line no-console
       }
@@ -1392,6 +1396,7 @@ export default {
         // short wait lets GitHub reflect what the agent did, and this only fires on the agent-state
         // tick (github=false), so it does not chase its own tail.
         if (!github && beforeAgent === 'working' && next.agent !== 'working') {
+          forgetBranch(this.workspace.name);
           clearTimeout(this.agentSettleTimer);
           this.agentSettleTimer = setTimeout(() => this.refreshStatus(true), 2500);
         }

@@ -164,3 +164,116 @@ export function earlierScript({ file, start, nonce }) {
     'if [ -f "$FILE" ] && [ "$START" -gt "$FROM" ]; then echo "@@BACK-$N"; tail -c +$((FROM+1)) "$FILE" | head -c $((START - FROM)); echo; echo "@@ENDBACK-$N"; fi',
   ].join('\n');
 }
+
+/*
+ * ── The ready stamp ─────────────────────────────────────────────────────────────────────────
+ *
+ * What a workspace's last successful provisioning recorded in `<tree>/.dev-ready`, so a page load
+ * can tell it would provision the same thing again and leave the six execs and the exec URL with
+ * a token in it unspent. The pod's service reads the file (state-api.mjs, /ready) and the browser
+ * decides (workspace-tools.ts, ensureWorkspaceOnOpen). Both go through `readyFields`, here so the
+ * two cannot accept different things.
+ *
+ * The file sits in a workspace's tree, so it says whatever that workspace wants it to say, and
+ * anything running there can work out every field in it, the identity hash included: it has the
+ * token in its own .env. That is safe because of what a match can do, which is nothing at all. A
+ * match makes the page do less for that one workspace: no exec, and no token sent to it. The
+ * fields are compared for equality and never run, drawn or used to address anything, the file's
+ * workspace has to be the one asked about, and no other workspace's page reads this tree. So a
+ * forged stamp can only skip its own workspace's provisioning, which costs nobody but itself.
+ *
+ * That last sentence needs the service to read only local trees. A downstream tree is an sshfs mount
+ * in the agent pod, where the far side can hang an open and with it every other request on that
+ * mount, the mount keeper's `ls` included. So /ready refuses those and they have no stamps.
+ *
+ * No field takes a Rancher token as it is written, `token-xxxxx:secret`, or a GitHub token. That
+ * keeps an accident out of the answer and proves nothing against a tree that means it: it could
+ * spell its own token in the hash's alphabet. It would be telling the holder of the state token
+ * something only that tree knows, and the service holds no token of anyone's to give away.
+ */
+
+/** How long a stamp is believed. What this costs is said at ensureWorkspaceOnOpen. */
+export const READY_TTL_MS = 60 * 60_000;
+/** How far ahead of the reader a stamp's time may be: two pods' clocks, not a person's. */
+const READY_SKEW_MS = 60_000;
+
+const READY_FIELDS = {
+  workspace: /^[A-Za-z0-9_-]{1,120}$/,
+  pod:       /^[a-z0-9][a-z0-9.-]{0,252}$/,
+  // dev-api's seedVersion, `<fnv>+<commit>` and `+<resourceVersion>` once a skill has been edited,
+  // then seedMark's issue, PR and workspace.
+  seed:      /^[0-9a-f]{1,16}\+[0-9a-f]{1,40}(\+[0-9]{1,32})?:[0-9]*:[0-9]*:[A-Za-z0-9_-]{1,120}$/,
+  tools:     /^[a-z0-9]+-[0-9.]+(,[a-z0-9]+-[0-9.]+)*$/,
+  // A page's origin: a host and maybe a port, so nothing after the colon but digits.
+  rancher:   /^https?:\/\/([A-Za-z0-9.-]{1,250}|\[[0-9A-Fa-f:.]{2,45}\])(:[0-9]{1,5})?$/,
+  identity:  /^[0-9a-f]{64}$/,
+  bundle:    /^[0-9]+\.[0-9]+\.[0-9]+$/,
+};
+/** Whole numbers: the workspace container's restarts, and two times in epoch seconds. 0 expiry is unknown. */
+const READY_COUNTS = ['boot', 'at', 'expires'];
+
+/**
+ * The fields of a stamp for this workspace, and only those, or null if any of them is wrong.
+ *
+ * Anything else the file holds is dropped rather than passed on, so nothing in it reaches a reader
+ * unexamined: a file that is really something else, hard-linked or written here, parses to null.
+ */
+export function readyFields(text, workspace) {
+  let parsed;
+
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+
+  const out = {};
+
+  for (const [field, shape] of Object.entries(READY_FIELDS)) {
+    if (typeof parsed[field] !== 'string' || !shape.test(parsed[field])) {
+      return null;
+    }
+    out[field] = parsed[field];
+  }
+  for (const field of READY_COUNTS) {
+    if (!Number.isSafeInteger(parsed[field]) || parsed[field] < 0) {
+      return null;
+    }
+    out[field] = parsed[field];
+  }
+
+  return out.workspace === workspace && out.at > 0 ? out : null;
+}
+
+/**
+ * Whether a stamp says what this page would provision, recently enough to believe.
+ *
+ * @param stamp What `readyFields` made of the file.
+ * @param wanted What the page would provision now: every field `READY_FIELDS` names, and `boot`.
+ * @param now The reader's clock in milliseconds. The service's, so a person's wrong clock cannot
+ *   make a stale stamp look new.
+ *
+ * A token known to expire within the TTL does not match: it could expire with the next skip still
+ * ahead of it, and the skip would be what stood between it and being replaced.
+ */
+export function readyStampCurrent(stamp, wanted, now, ttlMs = READY_TTL_MS) {
+  if (!stamp || !wanted || !Number.isFinite(now)) {
+    return false;
+  }
+  for (const field of [...Object.keys(READY_FIELDS), 'boot']) {
+    if (stamp[field] !== wanted[field]) {
+      return false;
+    }
+  }
+
+  const age = now - (stamp.at * 1000);
+
+  if (age < -READY_SKEW_MS || age >= ttlMs) {
+    return false;
+  }
+
+  return !stamp.expires || (stamp.expires * 1000) - now > ttlMs;
+}

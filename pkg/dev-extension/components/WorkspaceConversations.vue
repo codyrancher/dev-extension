@@ -27,6 +27,7 @@ import { CLI_CHOICES, cliMark } from '../agent-clis.mjs';
 import { readPrefs } from '../prefs';
 import { agentStateOf } from '../workspace-status';
 import { prepareWorkspace } from '../reviews';
+import { ensureWorkspaceReady } from '../workspace-tools';
 import { ensureDefaultShare } from '../previews';
 import { note } from '../dev-log.mjs';
 
@@ -372,6 +373,10 @@ export default {
       this.error = '';
 
       try {
+        // Like the rail's +. What the page did as it opened may have believed a stamp, and this is
+        // somebody about to work here, on whatever token and files the workspace has now.
+        await ensureWorkspaceReady(this.workspace.name);
+
         const conversation = await startConversation(this.workspace.name, '', '', cli);
 
         this.conversations = [...this.conversations, conversation];

@@ -16,7 +16,7 @@ import { createWorkspaceInstance, deleteWorkspaceInstance, workspaceInstance } f
 import { PREVIEW_APP, RANCHER_SHARE_APP } from './apps';
 import { APP_INSTANCE } from './config/constants';
 import {
-  buildShare, workspaceBranch, readInWorkspace, workspaceTarget
+  buildShare, workspaceBranch, readInWorkspace, workspaceTarget, defaultShareMarked
 } from './workspace-tools';
 import { defaultRancher, talksToDefault, ownRancherUrl, listRanchers } from './ranchers';
 import {
@@ -281,6 +281,10 @@ export async function ensureDefaultShare(store: Store, workspace: string, cluste
   const target = await workspaceTarget(workspace).catch(() => null);
 
   if (!target) {
+    return;
+  }
+  // Without an exec when the service can say: this runs on every load, and the answer never changes.
+  if (await defaultShareMarked(workspace)) {
     return;
   }
   const done = await readInWorkspace(workspace, 'test -f $WS/.share/auto && echo AUTO-DONE || true');

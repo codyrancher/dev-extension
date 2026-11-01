@@ -2017,6 +2017,19 @@ export function workspacePod(name: string): Promise<string | null> {
 }
 
 /**
+ * How many times a workspace pod's container has restarted, or null when that cannot be read.
+ *
+ * A restarted container keeps its pod's name and loses its root filesystem, and so whatever apt
+ * installed there. The name alone would call that the same pod.
+ */
+export async function workspaceContainerRestarts(namespace: string, pod: string): Promise<number | null> {
+  const found = await devFetch(`${ BASE }/v1/pods/${ namespace }/${ pod }`, { timeoutMs: 5000 }).catch(() => null);
+  const restarts = (found?.status?.containerStatuses || []).find((c: Json) => c.name === WORKSPACE_CONTAINER)?.restartCount;
+
+  return Number.isInteger(restarts) ? restarts : null;
+}
+
+/**
  * How long each workspace took to become ready, and how often it has restarted.
  *
  * The Deployment records when it last became Available, and the namespace records when the
@@ -3157,7 +3170,7 @@ async function gzipBase64(text: string): Promise<string> {
  * `require` rather than an import because that is how index.ts already reads it, and because the
  * JSON has to survive the UMD build.
  */
-const OUR_VERSION = String((require('./package.json') as { version?: string }).version || '0.0.0');
+export const OUR_VERSION = String((require('./package.json') as { version?: string }).version || '0.0.0');
 
 /** Whether `a` is a later release than `b`. Three numbers; anything unparsable sorts as 0. */
 /** The release that wrote a ConfigMap, as a label so it can be read without the data. */

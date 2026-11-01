@@ -26,6 +26,7 @@ import { listConversations, startConversation, queuePrompt, paneCommand } from '
 import type { ConversationOrigin } from '../agent';
 import type { ProjectConversation } from '../conversations';
 import { readInWorkspace, ensureWorkspaceReady } from '../workspace-tools';
+import { everyWhileShown } from '../read-pacing.mjs';
 import { listApps } from '../apps';
 import { DEFAULT_APP, workspaceWorkdir } from '../config/constants';
 import { DEFAULT_REPO } from '../reviews';
@@ -64,7 +65,7 @@ const defaultBase = ref('');
 const selectedBase = ref('');
 const selectedHead = ref('');
 const SHA_RE = /^[0-9a-f]{7,40}$/;
-let timer: ReturnType<typeof setInterval> | null = null;
+let stopBeat: (() => void) | null = null;
 
 async function resolveRepo() {
   const apps = await listApps(store).catch(() => []);
@@ -379,17 +380,11 @@ watch([selectedBase, selectedHead], () => {
 onMounted(async() => {
   await resolveRepo();
   await Promise.all([refresh(), loadConversations()]);
-  timer = setInterval(() => {
-    if (!document.hidden) {
-      refresh();
-    }
-  }, REFRESH_MS);
+  stopBeat = everyWhileShown(() => refresh(), REFRESH_MS);
 });
 
 onBeforeUnmount(() => {
-  if (timer) {
-    clearInterval(timer);
-  }
+  stopBeat?.();
 });
 
 defineExpose({ refresh });

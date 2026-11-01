@@ -14,6 +14,7 @@ import {
 import type { LocalAttachment } from './reviews';
 import { issueBody } from './github';
 import { readInWorkspace } from './workspace-tools';
+import { sharedRead } from './read-pacing.mjs';
 import {
   parseHunks, highlightRows, highlightLines, hl, renderMd, escapeHtml
 } from './components/pr/diff';
@@ -337,7 +338,7 @@ export { ago } from './chat-state.mjs';
  * `edit` on one namespace here, and would be cluster-admin's neighbour in the agent pod, on nothing
  * more than somebody opening this page. git has no switch that ignores a repository's config.
  */
-async function readBranch(workspace: string): Promise<Branch | null> {
+async function readBranchNow(workspace: string): Promise<Branch | null> {
   const script = [
     'cd $WS/dashboard 2>/dev/null || { echo "@@NOREPO"; exit 0; }',
     'base=$(git merge-base upstream/master HEAD 2>/dev/null || git merge-base origin/master HEAD 2>/dev/null || git rev-parse HEAD)',
@@ -557,6 +558,22 @@ function feedback(d: Json, since: number, viewerIsAuthor = true, kinds: Record<s
 }
 
 const pushedAt = (d: Json) => Math.max(0, ...(d.commits || []).map((c: Json) => Date.parse(c.date || '') || 0));
+
+/**
+ * How long a branch read answers the next one to ask.
+ *
+ * A rail reads its evidence as it mounts and again once the first status lands, which is a second
+ * or several behind depending on GitHub, and that was two execs for one answer. Well under the
+ * minute the column re-reads on, so the beat always reads for real.
+ */
+const BRANCH_FRESH_MS = 10_000;
+
+const readBranch: { (workspace: string): Promise<Branch | null>; forget(workspace: string): void } = sharedRead(readBranchNow, BRANCH_FRESH_MS);
+
+/** The branch may have just moved: an agent working in it has stopped. */
+export function forgetBranch(workspace: string): void {
+  readBranch.forget(workspace);
+}
 
 /**
  * What there is to look at for one stage of a workspace's work - the current one, or one that

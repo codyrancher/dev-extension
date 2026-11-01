@@ -473,7 +473,7 @@ export default {
       // Only while it looks unready, and not on every poll: one exec answers whether the dev
       // server was stopped on purpose, which is the difference between a workspace that cannot
       // be used and one that simply is not serving a page.
-      if (!(this.workspace.ready > 0) && this.pod && Date.now() - this.devPausedAt > 15000) {
+      if (!(this.workspace.ready > 0) && this.pod && document.visibilityState !== 'hidden' && Date.now() - this.devPausedAt > 15000) {
         this.devPausedAt = Date.now();
         this.devPaused = await devServerState(this.name).then((d) => d.paused).catch(() => false);
       } else if (this.workspace.ready > 0) {

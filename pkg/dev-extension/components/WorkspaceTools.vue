@@ -234,12 +234,15 @@ export default {
      * changes state rather than every twenty seconds for ever; with no socket the watch falls
      * back to the same twenty-second fetch. The shares and the lease are read on the same
      * beat, because the thing that changes them is the thing that changed the tools.
+     *
+     * The dev server is not. It is the workspace with no tools to change, so on that page this
+     * only ever fires for the first answer, right after `fetch` read the server. Reading it here
+     * was the second pgrep of every load, and no later one came to justify it.
      */
     this.stopTools = watch(`/tools/${ this.workspace }`, (answer) => {
       this.tools = answer?.tools || [];
       this.releaseForStage().catch(() => {});
       this.readShares().catch(() => {});
-      this.readOwn().catch(() => {});
     }, { every: 20000 });
   },
 
@@ -269,7 +272,7 @@ export default {
           } catch { /* a browser without storage just gets the stop again */ }
         }
         // Said now rather than waited for: `bin/dev-server start` returns before webpack has
-        // compiled, and the twenty-second read below is what corrects the chip either way.
+        // compiled. The chip is corrected when this page is next opened.
         this.own = { running: start, paused: !start };
         this.$emit('notice', start
           ? 'Starting the dev server - it is ready to open once it says Running.'

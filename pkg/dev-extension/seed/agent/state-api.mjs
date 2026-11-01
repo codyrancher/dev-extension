@@ -96,6 +96,24 @@ const WAIT_MS = Number(process.env.STATE_API_WAIT_MS) || 8_000;
 const AGED_MS = Number(process.env.STATE_API_AGED_MS) || 55_000;
 /** `claude --help` changes when claude is upgraded, and takes seconds to ask. */
 const HELP_FRESH_MS = 10 * 60_000;
+/** Where the agent pod sees the workspaces' trees. A downstream's is an sshfs mount, which can hang. */
+const WORKSPACES = process.env.STATE_API_WORKSPACES || '/workspaces';
+/** How this process tells a mount from a directory without touching either. */
+const MOUNT_TABLE = process.env.STATE_API_MOUNT_TABLE || '/proc/self/mountinfo';
+/** A ready stamp is a few hundred bytes, so anything past this is not one. */
+const READY_MAX_BYTES = 2048;
+/** Longer than a local read ever takes and well under the browser's READ_TIMEOUT_MS. */
+const READY_WAIT_MS = 3_000;
+/** Reads a stuck disk may hold at once, of the four threads the file system calls share. */
+const READY_READS_MAX = 2;
+/**
+ * What provisioning writes and a pane cannot do without, so what a stamp is no use without.
+ *
+ * Each is put back by the steps a page skips on a match. The gh and jq links are not here: they are
+ * links, and ensureTools only mends the `.home/.local/bin` one when `bin/` is wrong too, so asking
+ * after it could only make a workspace provision on every load without repairing anything.
+ */
+const READY_NEEDS = ['.env', 'bin/dev-shell', '.git-credentials', '.kube/config'];
 
 const startedAt = Date.now();
 
@@ -568,6 +586,121 @@ function chatArgs(url) {
   };
 }
 
+/**
+ * The text of one workspace's ready stamp, or '' when there is not a plain file to read.
+ *
+ * The one read in this file of something inside a tree, and it runs no tool to do it: this pod is
+ * cluster-admin and the tree is whatever last ran in that workspace. So a link anywhere on the way
+ * is refused, the size is checked twice and capped in the read, and a second name for the file is
+ * refused too, since a hard link is how a tree would point this at a file that is not its own.
+ * O_NONBLOCK so a FIFO swapped in after the lstat cannot hold the open.
+ *
+ * Only for a tree on this pod's own disk. On an sshfs mount none of that holds: O_NONBLOCK stops at
+ * this kernel, so the far side's sftp-server blocks opening a FIFO, the attributes checked here are
+ * up to 20s old, and every other request on that mount then waits behind it in a state no signal
+ * reaches, mount-downstream.sh's `ls` included. So a mounted tree is not touched at all. The table
+ * is the kernel's and answers without going near the tree.
+ *
+ * Asynchronous and bounded by the caller anyway, because this process is what every other read on
+ * the pod depends on.
+ */
+async function treeIsMounted(tree) {
+  const table = await fs.promises.readFile(MOUNT_TABLE, 'utf8');
+
+  return table.split('\n').some((line) => {
+    const mountPoint = line.split(' ')[4];
+
+    return mountPoint === tree || !!mountPoint?.startsWith(`${ tree }/`);
+  });
+}
+
+/** The lstat of a path in a tree, if every step to it is a real directory and it is a plain file. */
+async function plainFileIn(tree, relative) {
+  const parts = relative.split('/');
+  let at = tree;
+
+  for (const [index, part] of parts.entries()) {
+    at = `${ at }/${ part }`;
+
+    const stat = await fs.promises.lstat(at).catch(() => null);
+
+    if (index === parts.length - 1) {
+      return stat?.isFile() ? stat : null;
+    }
+    if (!stat?.isDirectory()) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+const NO_STAMP = { text: '', autoShared: false };
+
+async function readStampFile(workspace) {
+  const tree = `${ WORKSPACES }/${ workspace }`;
+  const file = `${ tree }/.dev-ready`;
+  const plain = (stat) => stat.isFile() && stat.size <= READY_MAX_BYTES && stat.nlink === 1;
+
+  if (await treeIsMounted(tree)) {
+    return NO_STAMP;
+  }
+  if (!(await fs.promises.lstat(tree)).isDirectory() || !plain(await fs.promises.lstat(file))) {
+    return NO_STAMP;
+  }
+
+  // Lstat only: whether it is there is the question, and the contents are none of this file's business.
+  for (const need of READY_NEEDS) {
+    if (!(await plainFileIn(tree, need))) {
+      return NO_STAMP;
+    }
+  }
+  if (!((await plainFileIn(tree, 'bin/dev-shell')).mode & 0o111)) {
+    return NO_STAMP;
+  }
+
+  const autoShared = !!(await plainFileIn(tree, '.share/auto'));
+
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+  const handle = await fs.promises.open(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+
+  try {
+    if (!plain(await handle.stat())) {
+      return NO_STAMP;
+    }
+
+    const room = Buffer.alloc(READY_MAX_BYTES + 1);
+    const { bytesRead } = await handle.read(room, 0, room.length, 0);
+
+    return bytesRead > READY_MAX_BYTES ? NO_STAMP : { text: room.toString('utf8', 0, bytesRead), autoShared };
+  } finally {
+    await handle.close();
+  }
+}
+
+const readyReads = new Map();
+
+/** One read per workspace however many ask, and no stamp for anything that goes wrong or takes too long. */
+async function readyStamp(workspace) {
+  let read = readyReads.get(workspace);
+
+  if (!read) {
+    if (readyReads.size >= READY_READS_MAX) {
+      return NO_STAMP;
+    }
+    read = readStampFile(workspace).catch(() => NO_STAMP).finally(() => readyReads.delete(workspace));
+    readyReads.set(workspace, read);
+  }
+
+  let stamp = NO_STAMP;
+
+  await within(read.then((got) => {
+    stamp = got;
+  }), READY_WAIT_MS);
+
+  return stamp;
+}
+
 const ROUTES = [
   ['/healthz', async() => ({
     version: VERSION,
@@ -750,6 +883,34 @@ const ROUTES = [
     }
 
     return runOnce(asPane(home, reads.earlierScript({ file, start, nonce })));
+  }],
+  /*
+   * What a workspace's last provisioning recorded, for a page deciding whether to do it again.
+   *
+   * No stamp, an unreadable one, a wrong one, a tree on a mount and a tree missing what the stamp
+   * vouches for all answer with empty text, and the page provisions the way it always has. What goes
+   * back is what `readyFields` validated, this pod's clock so the page can tell the stamp's age
+   * without trusting its own, and whether the default share has been made, which saves the one exec
+   * that would otherwise repeat on every load. See agent-reads.mjs for what a forged stamp costs and
+   * what the fields' shapes do and do not keep out.
+   */
+  ['/ready', async(url) => {
+    const workspace = url.searchParams.get('workspace') || '';
+    const reads = await agentReads();
+
+    if (!reads?.readyFields) {
+      return refused('This pod cannot serve this read.');
+    }
+    if (!SAFE_NAME.test(workspace)) {
+      return refused('That is not a workspace name.');
+    }
+
+    const { text, autoShared } = await readyStamp(workspace);
+    const fields = reads.readyFields(text, workspace);
+
+    return {
+      version: VERSION, ok: true, text: fields ? JSON.stringify({ ...fields, autoShared, now: Date.now() }) : '', age: 0, stale: false, error: '',
+    };
   }],
   // Who started each conversation. As root, as the exec was. Uncached because a conversation is
   // marked just before it is listed, and one with no marker is drawn as the panel's.

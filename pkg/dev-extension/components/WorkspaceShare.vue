@@ -13,6 +13,7 @@ import {
   previewState, removePreview, shareWorkspace, previewBase, retargetPreview, rebuildPreview, pickShareHost, LOCAL_HOST
 } from '../previews';
 import { buildShare, shareStatus, workspaceBranches } from '../workspace-tools';
+import { everyWhileShown } from '../read-pacing.mjs';
 import { talksToDefault, defaultRancher, listRanchers } from '../ranchers';
 import { listApps } from '../apps';
 import { DEFAULT_APP } from '../config/constants';
@@ -66,16 +67,16 @@ export default {
       copiedUrl: '',
       error:     '',
       notice:    '',
-      timer:     null,
     };
   },
 
   mounted() {
-    this.timer = setInterval(() => this.refresh(), REFRESH_MS);
+    // Each beat is an exec for the status files, so it rests while the page is hidden.
+    this.stopBeat = everyWhileShown(() => this.refresh(), REFRESH_MS);
   },
 
   beforeUnmount() {
-    clearInterval(this.timer);
+    this.stopBeat?.();
   },
 
   methods: {
