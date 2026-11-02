@@ -478,9 +478,10 @@ export default {
         this.loading = false;
       }
 
+      // None is an answer, not a gap to fill: a drawer that started a conversation whenever it had
+      // none brought one back the moment the last was closed, and again on every reopen. It says
+      // so instead, under the + that starts one.
       if (!this.sessions.length) {
-        await this.startNew();
-
         return;
       }
 
@@ -639,10 +640,6 @@ export default {
         await endAgentSession(id);
       } catch (e) {
         this.error = e?.message || String(e);
-      }
-
-      if (!this.sessions.length) {
-        await this.startNew();
       }
     },
 
@@ -852,6 +849,17 @@ export default {
         />
       </Tab>
     </ConversationTabbed>
+    <div
+      v-if="!loading && !sessions.length"
+      class="mc-agent__empty"
+    >
+      <p class="mc-agent__empty-title">
+        No conversations
+      </p>
+      <p class="mc-agent__empty-text">
+        Start one with the + above.
+      </p>
+    </div>
   </div>
 </template>
 
@@ -939,6 +947,29 @@ export default {
    * content. `v-show` hides an inactive panel with an inline `display: none`, which beats these
    * rules, so making every panel a flex column does not unhide the ones behind it.
    */
+  // The strip still draws its row, with the +, when it has no tabs; this fills the space under it.
+  &__empty {
+    display:         flex;
+    flex:            1 1 auto;
+    flex-direction:  column;
+    align-items:     center;
+    justify-content: center;
+    gap:             var(--dev-space-2);
+    min-height:      0;
+    color:           var(--muted);
+    text-align:      center;
+
+    p { margin: 0; }
+  }
+
+  &__empty-title {
+    color:       var(--body-text);
+    font-size:   15px;
+    font-weight: 600;
+  }
+
+  &__empty-text { font-size: 13px; }
+
   &__tabbed {
     display:        flex;
     flex-direction: column;

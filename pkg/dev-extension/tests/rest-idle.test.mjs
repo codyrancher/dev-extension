@@ -161,3 +161,12 @@ test('it runs through a symlink, which is what every file in /seed is', (t) => {
 
   assert.match(run.stdout, /^@@END$/m);
 });
+
+test('the drawer: closing the last conversation leaves it empty rather than starting another', () => {
+  const panel = fs.readFileSync(new URL('../components/AgentPanel.vue', import.meta.url), 'utf8');
+  const close = panel.slice(panel.indexOf('async closeSession'), panel.indexOf('// Naming'));
+
+  assert.doesNotMatch(close, /startNew/);
+  assert.match(panel, /if \(!this\.sessions\.length\) \{\s+return;\s+\}/);
+  assert.match(panel, /v-if="!loading && !sessions\.length"[\s\S]*No conversations/);
+});
