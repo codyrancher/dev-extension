@@ -54,9 +54,9 @@ export function rancherSingleApp(): Json {
         agentToken: "",
         host: "none",
         image: `rancher/rancher:${ DEFAULT_RANCHER_VERSION }`,
-        // `{}` base64, which is an empty and valid docker config: a community instance pulls
-        // anonymously and this changes nothing. A Prime instance gets a real one at create time
-        // (ranchers.ts, primeAuth). The resource is in the bundle either way because Apps Plus
+        // `{}` base64, which is an empty and valid docker config: the instance pulls anonymously
+        // and this changes nothing. A Prime instance gets a real one at create time only when a
+        // SUSE registry login is set (ranchers.ts, primeAuth). The resource is in the bundle either way because Apps Plus
         // substitutes exact `${names}` and has no conditionals - see 25-pull-secret.yaml.
         primeAuth: "e30=",
       },

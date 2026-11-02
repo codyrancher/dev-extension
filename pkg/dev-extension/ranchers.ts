@@ -482,26 +482,23 @@ async function managedValues(): Promise<Record<string, string>> {
  * registries confirms: the repository path is `rancher/rancher` in all three, so a version is
  * a version whichever is picked and only the host in front of it changes.
  *
- * Both SUSE registries answer 401 to an anonymous pull (`www-authenticate: Bearer
- * realm=.../api/registry/authorize`), so a Prime instance needs credentials - see
- * PRIME_REGISTRY_USER in secrets.ts. That is the whole of the difference, and it is why Prime
- * is a choice rather than a default.
+ * Both SUSE registries open with a 401 naming a token server (scc.suse.com, stgscc.suse.com),
+ * which reads like a refusal and is not one: it is how Docker Hub opens too, and either server
+ * issues a pull token with no login. Measured: rancher/rancher and all 138 images of a Prime head
+ * build pull from stgregistry anonymously, and so does a released one from registry.rancher.com.
+ * So a Prime instance needs no credentials. PRIME_REGISTRY_USER and _PASSWORD in secrets.ts are
+ * for an image that ever does, and are used when both are set.
  *
  * Staging first because it is where pre-GA Prime builds are, which is what a Rancher made here
  * is usually for; remuda picks the same one.
  */
 export const RANCHER_REGISTRIES = [
   { id: 'community', label: 'Community (Docker Hub)', host: '', help: 'rancher/rancher, pulled anonymously. No credentials needed.' },
-  { id: 'prime-staging', label: 'Prime (staging)', host: 'stgregistry.suse.com', help: 'Pre-GA Prime builds. Needs SUSE registry credentials in Settings.' },
-  { id: 'prime', label: 'Prime (released)', host: 'registry.rancher.com', help: 'Released Prime builds. Needs SUSE registry credentials in Settings.' },
+  { id: 'prime-staging', label: 'Prime (staging)', host: 'stgregistry.suse.com', help: 'Pre-GA Prime builds (alpha, RC, head). Pulled anonymously; your SUSE registry login in Settings is used if you set one.' },
+  { id: 'prime', label: 'Prime (released)', host: 'registry.rancher.com', help: 'Released Prime builds. Pulled anonymously; your SUSE registry login in Settings is used if you set one.' },
 ] as const;
 
 export type RancherRegistryId = typeof RANCHER_REGISTRIES[number]['id'];
-
-/** Whether a registry choice is a Prime one, and so needs credentials. */
-export function isPrimeRegistry(id: string): boolean {
-  return !!RANCHER_REGISTRIES.find((r) => r.id === id)?.host;
-}
 
 /**
  * The image an instance runs, from the version and where it comes from.
@@ -523,7 +520,9 @@ export function rancherImage(version: string, registry: string = 'community'): s
 }
 
 /**
- * The docker config a Prime instance pulls with, base64 as a `.dockerconfigjson` wants it.
+ * The docker config a Prime instance pulls with, base64 as a `.dockerconfigjson` wants it: the
+ * SUSE registry login when one is set, and otherwise the same empty config a community instance
+ * gets, which pulls anonymously - both registries allow it (see RANCHER_REGISTRIES).
  *
  * `{}` for a community instance, which is a valid and empty config: the Secret is in the bundle
  * either way because Apps Plus substitutes exact `${names}` and has no conditionals, so a
@@ -539,8 +538,12 @@ export async function primeAuth(registry: string): Promise<string> {
   const user = (await secretValue('PRIME_REGISTRY_USER').catch(() => '')).trim();
   const password = (await secretValue('PRIME_REGISTRY_PASSWORD').catch(() => '')).trim();
 
+  if (!user && !password) {
+    return btoa('{}');
+  }
+  // Half a login is a mistake worth saying so about: sent, it is a pull the registry refuses.
   if (!user || !password) {
-    throw new Error(`A Prime instance pulls from ${ host }, which refuses an anonymous pull. Put your SUSE registry username and password in Settings → Tokens first.`);
+    throw new Error(`Only half of the SUSE registry login is set. Set both PRIME_REGISTRY_USER and PRIME_REGISTRY_PASSWORD in Settings, or clear both to pull ${ host } anonymously.`);
   }
 
   return btoa(JSON.stringify({ auths: { [host]: { auth: btoa(`${ user }:${ password }`) } } }));
@@ -562,8 +565,8 @@ export async function createRancherInstance(store: Store, name: string, app = RA
     ...(await managedValues()),
     agentToken,
     image:     rancherImage(options.version || '', registry),
-    // Before the Installation is written, so a Prime instance with no credentials is refused
-    // rather than created and then left pulling an image it cannot reach for ever.
+    // Before the Installation is written, so half a registry login is refused rather than
+    // created and then left pulling with a login the registry rejects.
     primeAuth: await primeAuth(registry),
   };
   const cloudCredentials = await cloudCredentialsManifest().catch(() => '');

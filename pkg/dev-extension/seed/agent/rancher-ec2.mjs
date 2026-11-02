@@ -150,13 +150,13 @@ async function ubuntu(cred) {
  */
 function userData(image, password, registryAuth = '') {
   /*
-   * A Prime image comes from a registry that refuses an anonymous pull, so the box logs in
-   * before it runs anything. The credentials are passed to docker on stdin rather than as
+   * When a SUSE registry login is set, the box logs in before it runs anything; a Prime image
+   * pulls anonymously without one (see registryAuth). The credentials are passed to docker on stdin rather than as
    * `-p` - `docker login -p` puts them in the process list, where every other process on the
    * box can read them - and the whole script is still user-data, which anything on the box can
    * read from the metadata service, so this is no worse than the bootstrap password already
-   * sitting beside it and no better either. Empty for a community image, where it costs a shell
-   * branch and nothing else.
+   * sitting beside it and no better either. Empty with no login, where it costs a shell branch
+   * and nothing else.
    */
   const login = registryAuth
     ? `printf '%s' '${ registryAuth.password }' | docker login ${ registryAuth.host } -u '${ registryAuth.user }' --password-stdin\n`
@@ -227,9 +227,10 @@ function rancherImage(version, registry) {
 /**
  * What to log in to the registry with, or '' when there is nothing to log in to.
  *
- * Both SUSE registries refuse an anonymous pull, so a Prime instance with no credentials would
- * boot, pull nothing and sit at a docker error nobody is watching - the kind of failure this
- * tool exists to not have. It is refused here instead, while there is somebody to tell.
+ * Nothing, usually: both SUSE registries hand out a pull token with no login, so a Prime image
+ * pulls anonymously like a community one (see RANCHER_REGISTRIES in ranchers.ts). A login is
+ * used when both halves are set, and half of one is refused here, while there is somebody to
+ * tell, rather than sent and rejected by the registry on a node nobody is watching.
  */
 function registryAuth(registry) {
   const host = REGISTRIES[registry || 'community'] ?? '';
@@ -240,8 +241,11 @@ function registryAuth(registry) {
   const user = (process.env.PRIME_REGISTRY_USER || '').trim();
   const password = (process.env.PRIME_REGISTRY_PASSWORD || '').trim();
 
+  if (!user && !password) {
+    return '';
+  }
   if (!user || !password) {
-    throw new Error(`${ host } refuses an anonymous pull, so a Prime instance needs PRIME_REGISTRY_USER and PRIME_REGISTRY_PASSWORD in the environment.`);
+    throw new Error(`Only half of the ${ host } login is set: give both PRIME_REGISTRY_USER and PRIME_REGISTRY_PASSWORD, or neither to pull anonymously.`);
   }
 
   return { host, user, password };

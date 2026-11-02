@@ -36,7 +36,7 @@ export const SECRET_GROUPS: SecretGroup[] = [
   {
     id:    'rancher',
     title: 'Rancher',
-    help:  'What a Rancher instance signs in and pulls with: the local admin password a workspace\'s fresh login and the Verify tools use, and your SUSE Customer Center login, which Prime images need from stgregistry.suse.com or registry.rancher.com. The registry login becomes the instance\'s pull Secret at create time.',
+    help:  'What a Rancher instance signs in and pulls with: the local admin password a workspace\'s fresh login and the Verify tools use, and a SUSE Customer Center login for stgregistry.suse.com and registry.rancher.com. Prime images pull from both anonymously, so the login is optional: when both halves are set, an instance pulls with it instead.',
   },
   {
     id:    'letsencrypt',

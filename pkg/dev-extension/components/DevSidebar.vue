@@ -22,7 +22,7 @@ import {
 import { readPrefs, shownApps } from '../prefs';
 import {
   listRanchers, setDefaultRancher, createRancherInstance, deleteRancherInstance, nextRancherName, rancherAddress, ensureRancherHosts, RANCHER_STEPS,
-  RANCHER_REGISTRIES, isPrimeRegistry
+  RANCHER_REGISTRIES
 } from '../ranchers';
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
@@ -674,11 +674,6 @@ export default {
     /** The registries, for the form. A method because an imported array is not on the component. */
     registries() {
       return RANCHER_REGISTRIES;
-    },
-
-    /** Whether what is picked needs SUSE credentials, so the form can say so before Create. */
-    needsPrimeCredentials() {
-      return isPrimeRegistry(this.rancherRegistry);
     },
 
     async makeRancher() {
@@ -1342,17 +1337,6 @@ export default {
           </label>
         </fieldset>
 
-        <!--
-          Said before Create, not after: a Prime instance with no credentials provisions a node,
-          pulls nothing and sits in ImagePullBackOff, which costs ten minutes to find out.
-        -->
-        <p
-          v-if="needsPrimeCredentials()"
-          class="dev-sidebar__field-help dev-sidebar__field-help--warn"
-        >
-          Prime images are pulled as you: put your SUSE registry username and password in
-          Settings → Tokens, or this will be refused rather than left pulling.
-        </p>
 
       </form>
       <!--
