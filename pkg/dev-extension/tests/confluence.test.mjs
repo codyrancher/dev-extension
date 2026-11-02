@@ -60,4 +60,6 @@ test('the wiring: read-only, behind the stored token, and told to agents', () =>
   assert.match(server, /secretFromStores\('CONFLUENCE_TOKEN'\)/);
   assert.match(server, /url\.pathname\.startsWith\('\/confluence\/rest\/'\) && req\.method === 'GET'/);
   assert.match(doc, /\/confluence\/search\?q=/);
+  // The drawer's conversations read this one instead; see shell.sh.
+  assert.match(fs.readFileSync(new URL('../seed/agent/session-claude.md', import.meta.url), 'utf8'), /\/confluence\/search\?q=/);
 });

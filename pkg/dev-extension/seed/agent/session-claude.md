@@ -174,6 +174,21 @@ curl -sk "$RANCHER_URL<docsUrl>" -H "Authorization: Bearer $RANCHER_TOKEN"
 An entry is a claim by whoever wrote the ConfigMap, not a promise by the Studio. `reachable`
 says whether its documentation actually answered when the list was built.
 
+### Confluence
+
+The docs on confluence.suse.com can be searched and read through dev-api, which holds the
+person's Confluence token and makes the call, so there is no token here to find:
+
+```bash
+API=${CLAUDE_HARNESS_API:-http://dev-api.dev-system.svc.cluster.local:8080}
+curl -s "$API/confluence/search?q=fleet+upgrade"          # &space=KEY, &limit=N (up to 50), or ?cql=...
+curl -s "$API/confluence/pages/<id>"                      # the page as plain text, with its URL
+```
+
+Anything else in Confluence's REST API is `$API/confluence/rest/...`, GET only. A 400 saying
+there is no token means nobody has set one in Settings yet: say so rather than working around
+it. Cite the page's URL when you rely on what it says.
+
 ### When there is no credential
 
 `~/.rancher/env` is missing if nobody has opened the panel since this pod was created, and the
