@@ -475,7 +475,17 @@ export default {
       :key="section.id"
       class="dev-settings__card"
     >
-      <div class="dev-settings__card-head">
+      <!-- The head is the accordion: anywhere on it opens the card, which is why there is no button
+           inside the card to find. -->
+      <div
+        class="dev-settings__card-head dev-settings__card-head--toggle"
+        role="button"
+        tabindex="0"
+        :aria-expanded="!!open[section.id]"
+        @click="toggle(section)"
+        @keydown.enter.prevent="toggle(section)"
+        @keydown.space.prevent="toggle(section)"
+      >
         <BrandImage
           v-if="section.logo"
           class="dev-settings__card-icon"
@@ -488,9 +498,7 @@ export default {
         />
         <div class="dev-settings__card-title">
           <h3>{{ section.title }}</h3>
-          <p v-if="section.subtitle">
-            {{ section.subtitle }}
-          </p>
+          <p>{{ configured(section) }} of {{ section.secrets.length }} keys configured</p>
           <p
             v-if="section.meta"
             class="dev-settings__card-meta"
@@ -498,19 +506,11 @@ export default {
             {{ section.meta }} &middot; {{ section.secrets.length }} keys
           </p>
         </div>
-      </div>
-
-      <button
-        type="button"
-        class="dev-settings__summary"
-        @click="toggle(section)"
-      >
         <i
-          class="icon"
-          :class="open[section.id] ? 'icon-chevron-down' : 'icon-chevron-right'"
+          class="icon dev-settings__card-chev"
+          :class="open[section.id] ? 'icon-chevron-up' : 'icon-chevron-down'"
         />
-        {{ configured(section) }} of {{ section.secrets.length }} keys configured
-      </button>
+      </div>
 
       <template v-if="open[section.id]">
         <p class="dev-settings__card-help">
@@ -584,15 +584,6 @@ export default {
                 </button>
               </template>
             </LabeledInput>
-            <!--
-              The help is a paragraph rather than LabeledInput's `sub-label`, because that slot
-              is `position: absolute; top: 100%` with pointer events, so it hangs over whatever
-              follows the field - and what follows is the line with the key on it. In flow it
-              takes its own height and nothing sits underneath anything.
-            -->
-            <p class="dev-settings__help">
-              {{ secret.help }}
-            </p>
             <div class="dev-settings__row">
               <span class="dev-settings__key">{{ secret.storeKey }}</span>
               <span
@@ -839,25 +830,29 @@ export default {
     <section
       class="dev-settings__card"
     >
-      <div class="dev-settings__card-head">
+      <div
+        class="dev-settings__card-head dev-settings__card-head--toggle"
+        role="button"
+        tabindex="0"
+        :aria-expanded="showActivity"
+        @click="showActivity = !showActivity"
+        @keydown.enter.prevent="showActivity = !showActivity"
+        @keydown.space.prevent="showActivity = !showActivity"
+      >
         <i class="dev-settings__card-icon icon icon-list-flat" />
         <div class="dev-settings__card-title">
           <h3>Activity</h3>
           <p>Every read this page load made, and everything that failed. Kept here rather than only in the browser's console, which is no use unless it was already open.</p>
+          <p class="dev-settings__card-meta">
+            {{ activity.length }} line{{ activity.length === 1 ? '' : 's' }}
+          </p>
         </div>
+        <i
+          class="icon dev-settings__card-chev"
+          :class="showActivity ? 'icon-chevron-up' : 'icon-chevron-down'"
+        />
       </div>
 
-      <button
-        type="button"
-        class="dev-settings__summary"
-        @click="showActivity = !showActivity"
-      >
-        <i
-          class="icon"
-          :class="showActivity ? 'icon-chevron-down' : 'icon-chevron-right'"
-        />
-        {{ activity.length }} line{{ activity.length === 1 ? '' : 's' }}
-      </button>
 
       <template v-if="showActivity">
         <p
@@ -1044,27 +1039,27 @@ export default {
       font-size: 13px;
     }
 
-    // The summary line, which is a control rather than a heading: pressing it is what shows the
-    // fields, and it says what someone came to find out before they press anything.
-    &__summary {
-      display:       flex;
-      align-items:   center;
-      gap:           var(--dev-space-3);
-      width:         100%;
-      min-height:    0;
-      margin:        0;
-      padding:       var(--dev-space-3) var(--dev-space-4);
-      border:        1px solid var(--border);
+    // A card that opens: its whole head is the control, so it says so on hover and focus. The
+    // negative margin gives the hover a little room past the text without moving anything.
+    &__card-head--toggle {
+      grid-template-columns: 28px 1fr auto;
+      margin:        calc(-1 * var(--dev-space-3));
+      padding:       var(--dev-space-3);
       border-radius: var(--r-sm);
-      background:    transparent;
-      color:         var(--body-text);
-      font:          inherit;
-      text-align:    left;
       cursor:        pointer;
 
-      &:hover {
-        background: var(--nav-hover, var(--accent-btn));
+      &:hover { background: var(--nav-hover, var(--accent-btn)); }
+
+      &:focus-visible {
+        outline:        2px solid var(--outline);
+        outline-offset: -2px;
       }
+    }
+
+    &__card-chev {
+      align-self: center;
+      color:      var(--muted);
+      font-size:  16px;
     }
 
     // ── A group of fields inside a card ───────────────────────────────────────────────────────

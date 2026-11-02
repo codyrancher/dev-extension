@@ -23,6 +23,7 @@ import { encodeFrame, closeFrame, decodeFrames, joinFrames, handshakeResponse, O
 import { newsOf } from './news.mjs';
 import { sweepHousekeeping, singleFlight, sweepsAreWorking, firstSweepDelay, nextSweepDelay, SWEEP_EVERY_MS } from './housekeeping.mjs';
 import { numbersIn } from '../artifact-subjects.mjs';
+import { searchCql, searchLimit, searchResult, pageAnswer } from './confluence.mjs';
 
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = 'https://kubernetes.default.svc';
@@ -492,6 +493,50 @@ async function jiraFetch(pathAndQuery, init = {}) {
   }
 
   return answer.status === 204 ? null : answer.json();
+}
+
+// ── Confluence, read-only ───────────────────────────────────────────────────────────
+//
+// confluence.suse.com, for the agents to look things up in. The same arrangement as Jira's just
+// above: a Server PAT is a bearer token, it lives in the stores and only this pod holds it. GET
+// only, because what was asked for is reading the docs. See dev-api/confluence.mjs.
+const CONFLUENCE_BASE = process.env.DEV_CONFLUENCE_BASE || 'https://confluence.suse.com';
+
+let confluenceTokenCache = { at: 0, token: '' };
+
+async function confluenceFetch(pathAndQuery) {
+  if (!(Date.now() - confluenceTokenCache.at < 60_000 && confluenceTokenCache.token)) {
+    confluenceTokenCache = { at: Date.now(), token: await secretFromStores('CONFLUENCE_TOKEN') };
+  }
+  const { token } = confluenceTokenCache;
+
+  if (!token) {
+    throw failure(400, 'No Confluence token. Add CONFLUENCE_TOKEN in Settings.');
+  }
+  if (!/^\/rest\//.test(pathAndQuery)) {
+    throw failure(400, 'Only Confluence REST paths can be proxied.');
+  }
+
+  const answer = await fetch(`${ CONFLUENCE_BASE }${ pathAndQuery }`, {
+    headers: { authorization: `Bearer ${ token }`, accept: 'application/json' },
+  });
+
+  if (!answer.ok) {
+    throw failure(answer.status, `Confluence answered ${ answer.status }: ${ (await answer.text()).slice(0, 300) }`);
+  }
+
+  return answer.json();
+}
+
+async function confluenceSearch(url) {
+  const cql = searchCql(url.searchParams);
+
+  if (!cql) {
+    throw failure(400, 'Say what to search for: ?q=<words>, optionally &space=<KEY>, or ?cql=<CQL>.');
+  }
+  const found = await confluenceFetch(`/rest/api/content/search?cql=${ encodeURIComponent(cql) }&limit=${ searchLimit(url.searchParams) }&expand=space,version`);
+
+  return { cql, total: Number(found?.totalSize ?? found?.size ?? 0), results: (found?.results || []).map((item) => searchResult(item, CONFLUENCE_BASE)) };
 }
 
 function failure(status, message) {
@@ -2976,6 +3021,25 @@ const OPENAPI = {
         summary:     'Report where this triage step has got to.',
         description: 'The same states as a review run, so a step that outlives a turn can be picked up where it stopped.',
         responses:   { 200: { description: 'The run as stored.' } },
+      },
+    },
+    '/confluence/search': {
+      get: {
+        operationId: 'confluenceSearch',
+        summary:     'Search confluence.suse.com.',
+        description: '`?q=` words to find, `&space=` a space key, `&type=blogpost` for blog posts, `&limit=` up to 50 (default 10); or `?cql=` for anything else. Each result has the `id` that `/confluence/pages/{id}` reads. 400 until somebody sets CONFLUENCE_TOKEN in Settings.',
+        responses:   { 200: { description: '`{ cql, total, results: [{ id, title, space, updated, url }] }`.' } },
+      },
+    },
+    '/confluence/pages/{pageId}': {
+      parameters: [{
+        name: 'pageId', in: 'path', required: true, schema: { type: 'integer' }, description: "The page's id, from a search or the page's URL.",
+      }],
+      get: {
+        operationId: 'confluencePage',
+        summary:     'One Confluence page, as text.',
+        description: 'Headings, lists, tables and code kept as plain text. Cut at 200,000 characters, and `truncated` says when.',
+        responses:   { 200: { description: '`{ id, title, space, version, updated, url, ancestors, text, truncated }`.' } },
       },
     },
     '/jira-attachment/{attachmentId}/{name}': {
@@ -6028,6 +6092,10 @@ const routes = [
   ['DELETE', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)$/, async(m) => stopTool(m[1], m[2])],
 
   // The harness's /my-work API, as far as its skills need it.
+  ['GET', /^\/confluence\/search$/, (m, url) => confluenceSearch(url)],
+  ['GET', /^\/confluence\/pages\/(\d+)$/, async(m) => pageAnswer(
+    await confluenceFetch(`/rest/api/content/${ m[1] }?expand=body.view,space,version,ancestors`), CONFLUENCE_BASE,
+  )],
   ['GET', /^\/my-work\/pr\/(\d+)$/, (m, url) => prDetail(repoOf(url), Number(m[1]))],
   // Whether evidence can be uploaded at all, before a review is submitted rather than after.
   ['GET', /^\/github\/session$/, () => githubBrowserSession()],
@@ -7990,6 +8058,15 @@ const server = http.createServer(async(req, res) => {
    * and it is the same arrangement as the GitHub asset route above: jira.suse.com wants a bearer
    * token, and a cross-site <img> carries none.
    */
+  // Confluence's own API, for what search and pages do not cover. GET only: see confluenceFetch.
+  if (url.pathname.startsWith('/confluence/rest/') && req.method === 'GET') {
+    try {
+      return send(res, 200, { answer: await confluenceFetch(url.pathname.slice('/confluence'.length) + (url.search || '')) });
+    } catch (e) {
+      return send(res, e.status || 502, { error: e.message || String(e) });
+    }
+  }
+
   const jiraAsset = /^\/jira-attachment\/(\d+)(?:\/.*)?$/.exec(url.pathname);
 
   if (jiraAsset && req.method === 'GET') {

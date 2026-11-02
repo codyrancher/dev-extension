@@ -60,6 +60,7 @@ function asConcrete(spec) {
     // `thing` made every Jira path look unserved. An attachment's id is a number, like a check's.
     .replace(/\{key\}/g, 'SURE-1')
     .replace(/\{attachmentId\}/g, '7')
+    .replace(/\{pageId\}/g, '7')
     // Any other placeholder, camelCase included - `{checkId}` is one, and a lower-case-only
     // pattern silently left it in the path and then called the route missing.
     .replace(/\{[A-Za-z]+\}/g, 'thing');

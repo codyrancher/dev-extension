@@ -12,7 +12,8 @@
 export interface DevSecret {
   key: string;
   label: string;
-  help: string;
+  /** What it is for. Not drawn on the Tokens card, whose groups say it once for all of theirs. */
+  help?: string;
   required: boolean;
   /** Made up the first time it is needed and kept, rather than typed. */
   generated?: boolean;
@@ -28,14 +29,19 @@ export interface SecretGroup {
 
 export const SECRET_GROUPS: SecretGroup[] = [
   {
-    id:    'access',
-    title: 'Access',
-    help:  'How this product reaches a service as you. What a workspace needs is in its Apps Plus app\'s values.',
+    id:    'services',
+    title: 'Services',
+    help:  'Personal access tokens for what My Work and the agents read as you. GitHub needs repo, read:user and read:project. jira.suse.com and confluence.suse.com are Server, so a token from your profile\'s Personal Access Tokens page is a bearer token, and dev-api makes those calls itself so neither token reaches a workspace. Figma needs file content read, for an agent reviewing a design.',
+  },
+  {
+    id:    'rancher',
+    title: 'Rancher',
+    help:  'What a Rancher instance signs in and pulls with: the local admin password a workspace\'s fresh login and the Verify tools use, and your SUSE Customer Center login, which Prime images need from stgregistry.suse.com or registry.rancher.com. The registry login becomes the instance\'s pull Secret at create time.',
   },
   {
     id:    'letsencrypt',
     title: 'Let\'s Encrypt',
-    help:  'A share is a link you send to somebody with no account here, so it should not open on a certificate warning. Fill this in and every share gets a real certificate for its own sslip.io name.',
+    help:  'A share is a link you send to somebody with no account here, so it should not open on a certificate warning. An address you own gets every share a real certificate for its own sslip.io name; empty means no share asks for one.',
   },
 ];
 
@@ -43,49 +49,48 @@ export const GLOBAL_SECRETS: DevSecret[] = [
   {
     key:      'GH_TOKEN',
     label:    'GitHub token',
-    help:     'A personal access token with repo, read:user and read:project. My Work reads your issues, pull requests and board status with it.',
     required: false,
-    group:    'access',
+    group:    'services',
   },
   {
     key:      'JIRA_TOKEN',
     label:    'Jira personal access token',
-    help:     'A personal access token from jira.suse.com (Profile -> Personal Access Tokens). My Work\'s Jira tab reads the SURE queues with it. jira.suse.com is Jira Server, so this is a bearer token on its own - not the email:token pair Jira Cloud uses.',
     required: false,
-    group:    'access',
+    group:    'services',
+  },
+  {
+    key:      'CONFLUENCE_TOKEN',
+    label:    'Confluence personal access token',
+    required: false,
+    group:    'services',
   },
   {
     key:      'RANCHER_PASSWORD',
     label:    'Rancher login password',
-    help:     'The password for the local "admin" account. A workspace opens on a fresh Rancher login, and the Verify tools copy this to your clipboard so you can sign in.',
     required: false,
-    group:    'access',
+    group:    'rancher',
   },
   {
     key:      'FIGMA_API_KEY',
     label:    'Figma personal access token',
-    help:     'A Figma personal access token with at least File content read access (Figma: Settings -> Security -> Personal access tokens). An agent reviewing a design reads the file through Figma\'s API with it, so a design link in a comment can be opened rather than guessed at.',
     required: false,
-    group:    'access',
+    group:    'services',
   },
   {
     key:      'PRIME_REGISTRY_USER',
     label:    'SUSE registry username',
-    help:     'Your SUSE Customer Center login. A Rancher instance built on a Prime image pulls it from stgregistry.suse.com or registry.rancher.com, and both refuse an anonymous pull - without this a Prime instance sits in ImagePullBackOff saying "unauthorized". Not needed for a community instance.',
     required: false,
-    group:    'access',
+    group:    'rancher',
   },
   {
     key:      'PRIME_REGISTRY_PASSWORD',
     label:    'SUSE registry password',
-    help:     'The password or registry token that goes with the username above. It is turned into the instance\'s own pull Secret at create time and is not stored on the instance in any other form.',
     required: false,
-    group:    'access',
+    group:    'rancher',
   },
   {
     key:      'LETSENCRYPT_EMAIL',
     label:    'Account email',
-    help:     'The contact address for the ACME account; no registration needed, just an address you own. Empty means no share asks for a certificate.',
     required: false,
     group:    'letsencrypt',
   },
