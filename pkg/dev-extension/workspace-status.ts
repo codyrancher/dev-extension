@@ -261,21 +261,15 @@ export function agentLabel(state: AgentState): string {
  *
  * The title is the name of the work: it comes from the workspace where that carries one, else
  * from the GitHub status read for it (`resolved`), because a downstream workspace has no title
- * of its own. The `issue-`/`pr-` name is the last resort, and keeps its prefix there, since a
- * bare number with nothing beside it is a mystery. A leased workspace says so either way: the
- * marker is in its name, so a heading that falls back to the name already carries it, and one
- * showing a title would otherwise look exactly like an all-in-one workspace.
+ * of its own. The `issue-`/`pr-` name is the last resort, and keeps that prefix there, since a
+ * bare number with nothing beside it is a mystery. `lte-` is never shown: it says how a workspace
+ * is run, which is nothing a person choosing between pieces of work needs, and six rows starting
+ * with the same four characters only shorten what fits.
  *
  * Untrimmed. Where it has to fit a row, the caller trims it - see DevSidebar's `rowLabel`.
  */
 export function workspaceTitle(workspace: { name: string; title?: string }, resolved = ''): string {
-  const title = workspace.title || resolved || '';
-
-  if (!title) {
-    return workspace.name;
-  }
-
-  return isLte(workspace.name) ? `${ LTE_PREFIX }${ title }` : title;
+  return workspace.title || resolved || (isLte(workspace.name) ? workspace.name.slice(LTE_PREFIX.length) : workspace.name);
 }
 
 // The agent's state is shown by the status disc's colour (see displayTone), not by a glyph of its

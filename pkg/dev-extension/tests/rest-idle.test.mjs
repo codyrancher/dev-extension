@@ -136,3 +136,10 @@ test('a tab: rename and close are in its menu on every strip, and the middle but
   assert.match(tab, /@mousedown\.middle\.prevent\s+@auxclick\.middle\.stop\.prevent="onMiddle"/);
   assert.doesNotMatch(tab, /control--rename|control--close/, 'only the caret is drawn on the tab');
 });
+
+test('a workspace is called by its work, and never by how it is run', () => {
+  const status = fs.readFileSync(new URL('../workspace-status.ts', import.meta.url), 'utf8');
+  const body = status.slice(status.indexOf('export function workspaceTitle'), status.indexOf('// The agent\'s state is shown'));
+
+  assert.match(body, /workspace\.title \|\| resolved \|\| \(isLte\(workspace\.name\) \? workspace\.name\.slice\(LTE_PREFIX\.length\) : workspace\.name\)/);
+});
