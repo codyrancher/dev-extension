@@ -452,20 +452,6 @@ export default {
       </div>
     </Banner>
 
-    <!-- Skills lives here now rather than as a rail shortcut of its own: it is something you set
-         up, like the secrets and the apps below it, not somewhere you go often. -->
-    <router-link
-      :to="skillsTo"
-      class="dev-settings__skills"
-    >
-      <i class="icon icon-file dev-settings__skills-glyph" />
-      <span class="dev-settings__skills-text">
-        <span class="dev-settings__skills-title">Skills</span>
-        <span class="dev-settings__skills-sub">View and edit the skills your agents run.</span>
-      </span>
-      <i class="icon icon-chevron-right dev-settings__skills-chev" />
-    </router-link>
-
     <Banner
       v-if="error"
       color="error"
@@ -488,7 +474,6 @@ export default {
       v-for="section in sections"
       :key="section.id"
       class="dev-settings__card"
-      :class="{ 'dev-settings__card--wide': open[section.id] }"
     >
       <div class="dev-settings__card-head">
         <BrandImage
@@ -644,7 +629,7 @@ export default {
       chosen ones into each instance at provision time. Changing this does not touch instances
       that already exist.
     -->
-    <section class="dev-settings__card dev-settings__card--wide">
+    <section class="dev-settings__card dev-settings__card--half">
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-globe" />
         <div class="dev-settings__card-title">
@@ -694,11 +679,42 @@ export default {
     </section>
 
     <!--
+      Which CLI a conversation is held with. A preference rather than a per-conversation choice:
+      a pane is its CLI for as long as it lives, so this decides what the next one opens with.
+    -->
+    <section class="dev-settings__card dev-settings__card--half">
+      <div class="dev-settings__card-head">
+        <i class="dev-settings__card-icon icon icon-terminal" />
+        <div class="dev-settings__card-title">
+          <h3>Agent CLI</h3>
+          <p>What a new conversation is held with. One already running keeps the CLI it was opened with, including after a pod restart.</p>
+        </div>
+      </div>
+
+      <div class="dev-settings__choices">
+        <label
+          v-for="choice in CLI_CHOICES"
+          :key="choice.id"
+          class="dev-settings__app"
+        >
+          <input
+            type="radio"
+            name="dev-cli"
+            :checked="(cli || 'claude') === choice.id"
+            @change="setCli(choice.id)"
+          >
+          <span class="dev-settings__app-name">{{ choice.label }}</span>
+          <span class="dev-settings__app-desc">{{ choice.what }}</span>
+        </label>
+      </div>
+    </section>
+
+    <!--
       Which Apps Plus apps to offer as templates. Every App in the cluster is one, and a cluster
       has Apps that are not for making workspaces from; the person says which, and the sidebar
       and the Create page show only those. A new App is shown until it is hidden.
     -->
-    <section class="dev-settings__card dev-settings__card--wide">
+    <section class="dev-settings__card">
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-apps" />
         <div class="dev-settings__card-title">
@@ -744,35 +760,23 @@ export default {
       </div>
     </section>
 
-    <!--
-      Which CLI a conversation is held with. A preference rather than a per-conversation choice:
-      a pane is its CLI for as long as it lives, so this decides what the next one opens with.
-    -->
-    <section class="dev-settings__card">
+    <!-- Skills lives here rather than as a rail shortcut of its own: it is something you set up,
+         like the secrets and the apps, not somewhere you go often. -->
+    <section class="dev-settings__card dev-settings__card--third">
       <div class="dev-settings__card-head">
-        <i class="dev-settings__card-icon icon icon-terminal" />
+        <i class="dev-settings__card-icon icon icon-file" />
         <div class="dev-settings__card-title">
-          <h3>Agent CLI</h3>
-          <p>What a new conversation is held with. One already running keeps the CLI it was opened with, including after a pod restart.</p>
+          <h3>Skills</h3>
+          <p>View and edit the skills your agents run.</p>
         </div>
       </div>
 
-      <div class="dev-settings__choices">
-        <label
-          v-for="choice in CLI_CHOICES"
-          :key="choice.id"
-          class="dev-settings__app"
-        >
-          <input
-            type="radio"
-            name="dev-cli"
-            :checked="(cli || 'claude') === choice.id"
-            @change="setCli(choice.id)"
-          >
-          <span class="dev-settings__app-name">{{ choice.label }}</span>
-          <span class="dev-settings__app-desc">{{ choice.what }}</span>
-        </label>
-      </div>
+      <router-link
+        :to="skillsTo"
+        class="btn role-secondary"
+      >
+        Open skills
+      </router-link>
     </section>
 
     <!--
@@ -786,7 +790,7 @@ export default {
       A dialog, not a card: a directory listing wants the width of the window, and this is
       something you open, read and shut rather than something the page should always be showing.
     -->
-    <section class="dev-settings__card">
+    <section class="dev-settings__card dev-settings__card--third">
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-folder" />
         <div class="dev-settings__card-title">
@@ -811,7 +815,7 @@ export default {
       button on the Conversations page, which is gone - and it never belonged there anyway: a
       browser everything shares is a setting, not a property of one conversation.
     -->
-    <section class="dev-settings__card">
+    <section class="dev-settings__card dev-settings__card--third">
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-globe" />
         <div class="dev-settings__card-title">
@@ -834,7 +838,6 @@ export default {
     -->
     <section
       class="dev-settings__card"
-      :class="{ 'dev-settings__card--wide': showActivity }"
     >
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-list-flat" />
@@ -900,45 +903,31 @@ export default {
 </template>
 
 <style lang="scss" scoped>
-  // Prose measure, and the narrowest a card may be before the page drops a column.
-  //
-  // The page used to be one 760px column whatever the window was: on anything wider than a
-  // laptop that is a strip of cards down the left and a third of the screen holding nothing,
-  // and the cards that hold a table - the credentials, the apps, the tokens when opened - were
-  // cramped inside it while the room they wanted sat unused beside them.
-  //
-  // Two numbers instead of one. `$card` is what a card needs to be worth reading, so the page
-  // fits as many columns as the window has room for and one column on a narrow one, with no
-  // breakpoint to pick. `$measure` is what a SENTENCE needs, which is a different question and
-  // the reason the old single column existed at all: prose set across 1500px is unreadable, so
-  // every paragraph keeps its own measure wherever its card ends up.
-  $card:    420px;
+  // Prose measure: the card may be as wide as the window; a sentence may not.
   $measure: 74ch;
 
+  // One grid, and every card takes a whole, a half or a third of it, so no row ever ends in a gap
+  // and a window of any width shows the same arrangement. It used to fit as many 420px columns as
+  // there was room for, which left a two-line card beside a void or a third card alone on a row
+  // whenever the window changed, and no two rows lined up.
+  //
+  // Cards in a row are one height, with whatever they end in pinned to the bottom, so the buttons
+  // across a row sit on one line. Below the width where a third is worth reading: one column.
   .dev-settings {
-    display:       grid;
-    // `min(100%, …)` so the track never exceeds the viewport on a phone, where a fixed 420px
-    // minimum would push the grid wider than the screen and scroll the page sideways.
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, #{ $card }), 1fr));
-    align-content: start;
-    // Cards keep their own height: stretching a two-line card to match a tall one beside it is
-    // a box with a void in it, which is what a settings page looks like when nobody decided.
-    align-items:   start;
-    gap:           var(--dev-space-5);
-    padding:       var(--dev-inset);
-    overflow-y:    auto;
+    display:               grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    align-content:         start;
+    gap:                   var(--dev-space-5);
+    padding:               var(--dev-inset);
+    overflow-y:            auto;
+
+    > * {
+      grid-column: 1 / -1;
+      min-width:   0;
+    }
   }
 
   .dev-settings {
-    // The page's own head and its banners are about the page, not about one card, so they take
-    // the full row however many columns there are.
-    &__intro,
-    &__install,
-    &__skills,
-    .banner {
-      grid-column: 1 / -1;
-    }
-
     // Declared `block` on purpose: as a bare <header> this was laid out as a row by something
     // further up, which put the page's one line of prose beside the title instead of under it,
     // starting a long way right of the cards it describes.
@@ -986,19 +975,23 @@ export default {
       border-radius:  var(--r-sm);
     }
 
-    // A card whose content is a table or a form rather than a sentence and a button: the two
-    // lists, a token card while its fields are open, the activity log while it is unrolled.
-    // Those want the window; the rest tile beside each other.
-    &__card--wide {
-      grid-column: 1 / -1;
+    // At the same specificity as the grid's `> *` plus one class, so these win it.
+    > .dev-settings__card--half  { grid-column: span 3; }
+    > .dev-settings__card--third { grid-column: span 2; }
+
+    @media (max-width: 1100px) {
+      > .dev-settings__card--half,
+      > .dev-settings__card--third {
+        grid-column: 1 / -1;
+      }
     }
 
-    // A control the card puts last - Save, or a button that opens something - sits apart from
-    // the rows above it rather than in the same rhythm as them.
+    // A control the card puts last - Save, or a button that opens something - goes to the bottom,
+    // so the ones across a row line up however long the sentences above them run.
     &__card > .btn,
     &__card > .dev-settings__actions {
       align-self: flex-start;
-      margin-top: var(--dev-space-2);
+      margin-top: auto;
     }
 
     &__card-head {
@@ -1191,9 +1184,10 @@ export default {
     // on every line is the thing that reads as broken.
     &__list {
       display:               grid;
-      grid-template-columns: max-content max-content 1fr max-content;
-      align-items:           center;
-      gap:                   var(--dev-space-2) var(--dev-space-4);
+      // `minmax(0, 1fr)`: a bare 1fr still grows to its content's width.
+      grid-template-columns: max-content max-content minmax(0, 1fr) max-content;
+      align-items:           baseline;
+      gap:                   var(--dev-space-3) var(--dev-space-4);
       margin-top:            0;
     }
 
@@ -1214,51 +1208,32 @@ export default {
      */
     &__choices {
       display:               grid;
-      grid-template-columns: max-content max-content 1fr;
+      grid-template-columns: max-content max-content minmax(0, 1fr);
       align-items:           baseline;
       gap:                   var(--dev-space-3) var(--dev-space-4);
       margin-top:            0;
-
-      // Two or three rows, not thirty: a description here has room to wrap rather than being
-      // cut off, which in a list this short reads as the sentence having been truncated.
-      .dev-settings__app-desc {
-        overflow:    visible;
-        white-space: normal;
-      }
     }
 
     &__app-name { font-weight: 600; }
 
+    // Wrapped, not cut off: these lists are a few rows, and a sentence with its end missing reads
+    // as a mistake.
     &__app-desc {
-      min-width:     0;
-      color:         var(--muted);
-      overflow:      hidden;
-      white-space:   nowrap;
-      text-overflow: ellipsis;
+      min-width: 0;
+      color:     var(--muted);
     }
 
-    // ── The Skills link ───────────────────────────────────────────────────────────────────────
-    //
-    // A card you press to leave, so it reads as one of the cards but shows it goes somewhere
-    // with a chevron and lifts on hover.
-    &__skills {
-      display:         flex;
-      align-items:     center;
-      gap:             var(--dev-space-4);
-      margin:          0;
-      padding:         var(--dev-space-4) var(--dev-space-5);
-      border:          1px solid var(--border);
-      border-radius:   var(--r-sm);
-      color:           var(--body-text);
-      text-decoration: none;
+    // A phone has no room for columns, so the name and the rest stack beside the checkbox.
+    @media (max-width: 760px) {
+      &__list,
+      &__choices {
+        grid-template-columns: max-content minmax(0, 1fr);
+      }
 
-      &:hover { background: var(--nav-hover, var(--accent-btn)); }
-
-      &-glyph { font-size: 20px; color: var(--muted); }
-      &-text  { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
-      &-title { font-size: 14px; font-weight: 600; }
-      &-sub   { font-size: 12px; color: var(--muted); }
-      &-chev  { color: var(--muted); }
+      &__app-desc,
+      &__list .dev-settings__card-meta {
+        grid-column: 2;
+      }
     }
 
     &__actions {

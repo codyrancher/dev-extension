@@ -22,6 +22,13 @@ import { listRanchers } from '../ranchers';
 import { devServerState, stopDevServer, startDevServer } from '../workspace-tools';
 import { watch } from '../events';
 
+/**
+ * Rancher's bull, the mark out of the shell's images/pl/rancher-logo.svg without the wordmark,
+ * inline so it takes the chip's colour like the glyphs beside it. The icon font has no character
+ * for it, and at this size the wordmark in BrandImage's logo is illegible.
+ */
+const RANCHER_MARK = { viewBox: '23 22.5 66 31.5', path: "M 88.78,29.59 88.07,25.3 c -0.23,-1.38 -0.77,-2.5 -1.19,-2.5 -0.43,0 -0.77,1.14 -0.77,2.54 v 1.12 c 0,1.39 -1.14,2.54 -2.54,2.54 h -1.12 c -0.08,0 -0.16,0 -0.24,0.01 v 3.08 c 0.08,0 0.16,0.01 0.24,0.01 h 4.22 c 1.39,-0.01 2.34,-1.13 2.11,-2.51 m 78.67,25.96 h -6.84 c -0.06,0 -0.11,0 -0.17,0.01 h -7.02 c -0.08,0 -0.16,0.01 -0.24,0.02 v -0.65 c 0,-1.39 -0.35,-2.54 -0.77,-2.54 -0.43,0 -0.96,1.13 -1.19,2.5 l -0.71,4.29 c -0.23,1.38 0.72,2.5 2.12,2.5 h 4.22 c 0.43,0 0.84,-0.07 1.2,-0.19 -0.13,0.72 -0.76,1.26 -1.52,1.26 h -5.91 c -0.96,0 -1.68,-0.86 -1.53,-1.8 l 0.6,-3.59 c 0.16,-0.94 -0.57,-1.8 -1.53,-1.8 H 29.95 c -0.63,0 -1.17,0.37 -1.41,0.91 L 23,35.31 c -0.09,0.14 -0.08,0.33 0.03,0.46 l 1.08,1.27 c 0.13,0.16 0.37,0.18 0.53,0.05 l 3.77,-2.97 v 18.04 c 0,0.86 0.69,1.55 1.55,1.55 h 8.35 c 0.86,0 1.55,-0.69 1.55,-1.55 v -6.27 c 0,-0.85 0.69,-1.55 1.55,-1.55 h 20.85 c 0.86,0 1.55,0.69 1.55,1.55 v 6.27 c 0,0.86 0.69,1.55 1.55,1.55 h 8.35 c 0.85,0 1.55,-0.69 1.55,-1.55 v -6.75 h -4.44 c -1.39,0 -2.54,-1.14 -2.54,-2.54 v -4.34 c 0,-0.83 0.4,-1.56 1.02,-2.02 v 5.18 c 0,1.39 1.14,2.54 2.54,2.54 h 6.84 c 1.39,0 2.54,-1.14 2.54,-2.54 V 28.5 c -0.01,-1.39 -1.15,-2.54 -2.55,-2.54" };
+
 export default {
   name: 'WorkspaceTools',
 
@@ -115,7 +122,7 @@ export default {
     /** The two shares, as rows of the same shape the tools use. */
     shareRows() {
       return [
-        { kind: 'dashboard', label: 'Rancher share', icon: 'icon-cloud', what: 'Build this branch and serve it on a public address' },
+        { kind: 'dashboard', label: 'Rancher share', mark: RANCHER_MARK, what: 'Build this branch and serve it on a public address' },
         { kind: 'storybook', label: 'Storybook share', icon: 'icon-folder', what: 'Build this branch\'s Storybook and serve it on a public address' },
       ].map((row) => {
         const state = this.shares[row.kind];
@@ -199,7 +206,7 @@ export default {
       return [
         ...this.selfRows,
         ...this.shareRows.map((row) => ({
-          id: `share:${ row.kind }`, kind: row.kind, label: row.label, icon: row.icon, what: row.what, up: row.up, state: row.up ? 'built' : 'not built', share: row,
+          id: `share:${ row.kind }`, kind: row.kind, label: row.label, icon: row.icon, mark: row.mark, what: row.what, up: row.up, state: row.up ? 'built' : 'not built', share: row,
         })),
         // Leased tools only. An all-in-one workspace has none to attach, and listing them as
         // "not attached" would offer something it cannot do.
@@ -549,7 +556,20 @@ export default {
         :title="entry.what"
         @click="openEntry(entry)"
       >
+        <svg
+          v-if="entry.mark"
+          class="workspace-tools__icon workspace-tools__mark"
+          :viewBox="entry.mark.viewBox"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path
+            fill="currentColor"
+            :d="entry.mark.path"
+          />
+        </svg>
         <i
+          v-else
           class="icon workspace-tools__icon"
           :class="entry.icon"
         />
@@ -954,6 +974,13 @@ export default {
     font-size:  14px;
     width:      16px;
     text-align: center;
+  }
+
+  // Twice as wide as it is tall, so it takes a little more room than a glyph to read at their height.
+  &__mark {
+    flex:   0 0 auto;
+    width:  22px;
+    height: 14px;
   }
 
   &__name { min-width: 76px; }
