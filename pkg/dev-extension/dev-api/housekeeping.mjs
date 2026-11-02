@@ -1,6 +1,10 @@
 /**
  * The node's tidying up, done by a service with a clock instead of by every open page.
  *
+ * Conversations joined them later, because a conversation lives in the agent pod and nothing about
+ * a workspace going away reaches it unless somebody remembers to say so. What a page says on its
+ * way out can fail, and other ways of deleting one never said it, so here they are noticed instead.
+ *
  * Three jobs lived in the sidebar's refresh: remove the trees of workspaces that are gone, keep
  * three node_modules templates, and tag each workspace's artifacts with what they are about. Each
  * was a `pods/exec` socket, so each cost a socket per refresh, per tab, per person - about fifteen
@@ -35,6 +39,9 @@ export const REGISTRAR_TRUSTED_MS = 90_000;
 
 /** A bound on a mistake nobody has thought of yet: the next sweep takes the next few. */
 export const TREES_PER_SWEEP = 3;
+
+/** The same bound for conversations, which cost only a claude if wrong and come back from a transcript. */
+export const CONVERSATIONS_PER_SWEEP = 20;
 
 /** About ten minutes, spread so that nothing lines up with anything else on a timer. */
 export const SWEEP_EVERY_MS = 10 * 60_000;
@@ -217,6 +224,78 @@ export function capturedTag(existing, name, numbers, at) {
   return JSON.stringify({
     workspace: name, issue: numbers.issue, pr: numbers.pr, capturedAt: at
   });
+}
+
+/**
+ * The conversations whose workspace is worth asking the cluster about, by workspace.
+ *
+ * A tree on the disk keeps its conversations: the registrar lists it, so a person can still open
+ * them. The drawer's belong to no workspace and are never here. With no list to trust, nothing is.
+ *
+ * @param {string[]} ids What the pod holds.
+ * @param {Set<string>|null} keep From workspacesToKeep.
+ * @param {{name: string}[]} entries The root's directory listing.
+ * @param {(id: string) => string} projectOf The workspace an id belongs to, or ''.
+ * @returns {Map<string, string[]>} The ids of each workspace that looks gone.
+ */
+export function orphanedConversations(ids, keep, entries, projectOf) {
+  const found = new Map();
+
+  if (!keep || !keep.size) {
+    return found;
+  }
+  const onDisk = new Set((entries || []).map((e) => e.name));
+
+  for (const id of ids || []) {
+    const name = housekeepingName(projectOf(id));
+
+    if (name && !keep.has(name) && !onDisk.has(name)) {
+      found.set(name, [...(found.get(name) || []), id]);
+    }
+  }
+
+  return found;
+}
+
+/**
+ * End the conversations nothing can reach any more, and drop the terminals nobody is holding.
+ *
+ * Ended by the same verb as a person's press, so the transcript stays and the record that would
+ * start it again after a restart goes. Any failure here is the next sweep's: none of this is worth
+ * stopping the template trim for.
+ */
+async function sweepConversations(deps, keep, entries, report) {
+  const {
+    listConversations, endConversation, reapClients, projectOf, readNamespace, readInstance
+  } = deps;
+
+  if (listConversations) {
+    const ids = await listConversations().catch(() => null);
+
+    for (const [name, held] of orphanedConversations(ids, keep, entries, projectOf)) {
+      if (report.conversations.length >= CONVERSATIONS_PER_SWEEP) {
+        break;
+      }
+      const [namespace, installation] = await Promise.all([
+        askCluster(() => readNamespace(name)),
+        askCluster(() => readInstance(name)),
+      ]);
+
+      if (!treeMayGo(namespace, installation)) {
+        continue;
+      }
+      for (const id of held.slice(0, CONVERSATIONS_PER_SWEEP - report.conversations.length)) {
+        if (await endConversation(id).catch(() => false)) {
+          report.conversations.push(id);
+        } else {
+          report.errors.push(`end ${ id }`);
+        }
+      }
+    }
+  }
+  if (reapClients) {
+    report.clients = await reapClients().catch(() => null) || report.clients;
+  }
 }
 
 /**
@@ -460,6 +539,10 @@ async function removeInside({ path, run }, parent, name) {
  * @param {(name: string) => Promise<object>} deps.readInstance Its Installation; throws with `.status`.
  * @param {(cmd: string, args: string[]) => Promise<number>} deps.run Runs a command, resolves its exit code.
  * @param {() => number} deps.now The clock.
+ * @param {() => Promise<string[]|null>} [deps.listConversations] Every workspace conversation the agent pod holds, or null.
+ * @param {(id: string) => Promise<boolean>} [deps.endConversation] End one, and say whether it worked.
+ * @param {() => Promise<{stuck: number, idle: number}|null>} [deps.reapClients] Drop the dead tmux clients.
+ * @param {(id: string) => string} [deps.projectOf] The workspace a conversation's id names.
  * @returns {Promise<object>} What it did.
  */
 export async function sweepHousekeeping(deps) {
@@ -467,7 +550,7 @@ export async function sweepHousekeeping(deps) {
     fs, path, root, listInstances, readRegistrar, readNamespace, readInstance, now
   } = deps;
   const report = {
-    at: new Date(now()).toISOString(), skipped: '', tagged: 0, trees: [], templates: [], kept: [], errors: []
+    at: new Date(now()).toISOString(), skipped: '', tagged: 0, trees: [], templates: [], kept: [], conversations: [], clients: { stuck: 0, idle: 0 }, errors: []
   };
   const instances = await listInstances().catch(() => null);
 
@@ -515,6 +598,8 @@ export async function sweepHousekeeping(deps) {
       report.errors.push(`remove ${ name }`);
     }
   }
+
+  await sweepConversations(deps, keep, entries, report);
 
   // `cd` that fails removes nothing, and neither does a directory that is not where it claims to
   // be: `.shared` or `template` being a symlink is not something to rm -rf through.

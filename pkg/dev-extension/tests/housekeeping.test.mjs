@@ -10,7 +10,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { numbersIn } from '../artifact-subjects.mjs';
 import {
-  housekeepingName, workspacesToKeep, treeCandidates, askCluster, treeMayGo, templatesToRemove, artifactTag, capturedTag,
+  housekeepingName, workspacesToKeep, treeCandidates, orphanedConversations, CONVERSATIONS_PER_SWEEP, askCluster, treeMayGo, templatesToRemove, artifactTag, capturedTag,
   nextSweepDelay, firstSweepDelay, singleFlight, browserFallbackDue, sweepHousekeeping, sweepsAreWorking,
   TREE_AGE_FLOOR_MS, TREES_PER_SWEEP, SWEEP_EVERY_MS, SWEEP_FIRST_MS, BROWSER_FALLBACK_EVERY_MS, REGISTRAR_TRUSTED_MS,
 } from '../dev-api/housekeeping.mjs';
@@ -769,4 +769,173 @@ test('sweep: a tag does not write through a symlinked artifacts directory', asyn
   fs.symlinkSync(outside, path.join(fresh, 'artifacts'));
   await sweepHousekeeping(deps);
   assert.deepEqual(fs.readdirSync(outside), []);
+});
+
+/* ── Conversations whose workspace has gone ───────────────────────────────────────────────────── */
+
+const projectOf = (id) => /^p-([a-z0-9-]+?)(?:_[a-z0-9-]+)?-\d+$/.exec(id)?.[1] || '';
+
+function withConversations(deps, ids) {
+  const ended = [];
+
+  Object.assign(deps, {
+    projectOf,
+    listConversations: async() => ids,
+    endConversation:   async(id) => ended.push(id) > 0,
+    reapClients:       async() => ({ stuck: 2, idle: 1 }),
+  });
+
+  return ended;
+}
+
+test('conversations: only a workspace off the list and off the disk is worth asking about', () => {
+  const found = orphanedConversations(
+    ['p-kept-1', 'p-tree-1', 'p-gone-1', 'p-gone_a-loc-2', 'agent-1', 'agent_pr-1-review-2', 'p-bad.tmp'],
+    new Set(['kept']),
+    [{ name: 'tree' }],
+    projectOf,
+  );
+
+  assert.deepEqual([...found], [['gone', ['p-gone-1', 'p-gone_a-loc-2']]]);
+});
+
+test('conversations: with no list to trust, none is an orphan', () => {
+  assert.equal(orphanedConversations(['p-gone-1'], null, [], projectOf).size, 0);
+  assert.equal(orphanedConversations(['p-gone-1'], new Set(), [], projectOf).size, 0);
+  assert.equal(orphanedConversations(null, new Set(['kept']), [], projectOf).size, 0);
+});
+
+test('sweep: a workspace known to be gone loses its conversations, and the rest keep theirs', async(t) => {
+  const { deps } = rig(t);
+  const ended = withConversations(deps, ['p-kept-1', 'p-gone-1', 'p-gone_loc-2', 'agent-3']);
+  const report = await sweepHousekeeping(deps);
+
+  assert.deepEqual(ended, ['p-gone-1', 'p-gone_loc-2']);
+  assert.deepEqual(report.conversations, ended);
+  assert.deepEqual(report.clients, { stuck: 2, idle: 1 });
+});
+
+test('sweep: a cluster that does not answer, or still has either half, ends nothing', async(t) => {
+  const refused = () => Object.assign(new Error('no'), { status: 403 });
+
+  for (const change of [{ readNamespace: async() => { throw refused(); } }, { readInstance: async() => ({ metadata: { name: 'gone' } }) }]) {
+    const { deps } = rig(t);
+    const ended = withConversations(deps, ['p-gone-1']);
+
+    Object.assign(deps, change);
+    await sweepHousekeeping(deps);
+    assert.deepEqual(ended, []);
+  }
+});
+
+test('sweep: a stale registrar ends nothing but still reaps dead terminals', async(t) => {
+  const { deps } = rig(t);
+  const ended = withConversations(deps, ['p-gone-1']);
+
+  deps.readRegistrar = async() => ({ at: new Date(Date.now() - REGISTRAR_TRUSTED_MS - 1000).toISOString(), workspaces: [{ name: 'kept' }] });
+  const report = await sweepHousekeeping(deps);
+
+  assert.deepEqual(ended, []);
+  assert.equal(report.skipped, 'registrar');
+  assert.deepEqual(report.clients, { stuck: 2, idle: 1 });
+});
+
+test('sweep: a conversation that will not end is reported, and a mistake is bounded', async(t) => {
+  const { deps } = rig(t);
+  const ids = Array.from({ length: CONVERSATIONS_PER_SWEEP + 5 }, (_, i) => `p-gone-${ i + 1 }`);
+  const ended = withConversations(deps, ids);
+
+  assert.equal((await sweepHousekeeping(deps)).conversations.length, CONVERSATIONS_PER_SWEEP);
+  assert.equal(ended.length, CONVERSATIONS_PER_SWEEP);
+
+  deps.endConversation = async() => false;
+  const report = await sweepHousekeeping(deps);
+
+  assert.deepEqual(report.conversations, []);
+  assert.ok(report.errors.includes('end p-gone-1'));
+});
+
+test('sweep: a seed older than the verbs changes nothing', async(t) => {
+  const { deps } = rig(t);
+
+  withConversations(deps, []);
+  deps.listConversations = async() => null;
+  deps.reapClients = async() => null;
+  const report = await sweepHousekeeping(deps);
+
+  assert.deepEqual(report.conversations, []);
+  assert.deepEqual(report.clients, { stuck: 0, idle: 0 });
+});
+
+/* ── The verbs and the guard, in a real shell ─────────────────────────────────────────────────── */
+
+const SEED = path.join(here, '..', 'seed');
+
+/** Run `script` as a user who is not root, as sessions.sh needs to be, with `stubs` first on PATH. */
+function asPaneUser(t, script, stubs) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reap-'));
+
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const [name, body] of Object.entries(stubs)) {
+    fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${ body }\n`, { mode: 0o755 });
+  }
+  // The real script, with its one fixed directory somewhere this user may make it.
+  fs.writeFileSync(path.join(dir, 'sessions.sh'), fs.readFileSync(path.join(SEED, 'agent', 'sessions.sh'), 'utf8').replace('SESSIONS=/workspace/sessions', `SESSIONS=${ dir }/w/sessions`), { mode: 0o755 });
+  fs.chmodSync(dir, 0o777);
+  const line = `cd ${ dir }; export PATH=${ dir }:$PATH; ${ script }`;
+
+  return process.getuid() === 0 ?
+    spawnSync('su', ['node', '-s', '/bin/sh', '-c', line], { encoding: 'utf8' }) :
+    spawnSync('/bin/sh', ['-c', line], { encoding: 'utf8' });
+}
+
+test('reap-clients: unlisted and old is killed, young or recently used stays, stale is told to go', (t) => {
+  const script = `
+    now=$(date +%s)
+    sleep 60 >/dev/null 2>&1 & deadold=$!
+    sleep 60 >/dev/null 2>&1 & deadyoung=$!
+    sleep 60 >/dev/null 2>&1 & stale=$!
+    sleep 60 >/dev/null 2>&1 & fresh=$!
+    printf '%s\\n' "$deadold 500 tmux: client" "$deadyoung 10 tmux: client" "$stale 90000 tmux: client" "$fresh 90000 tmux: client" "1 90000 tmux: server" > ps.out
+    printf '%s\\n' "$stale $((now - 90000)) $((now - 90000))" "$fresh $((now - 90000)) $now" > tmux.out
+    /bin/sh sessions.sh reap-clients
+    sleep 0.3
+    for p in deadold:$deadold deadyoung:$deadyoung stale:$stale fresh:$fresh; do
+      kill -0 "\${p#*:}" 2>/dev/null && echo "\${p%%:*} alive" || echo "\${p%%:*} gone"
+    done
+    kill $deadyoung $fresh 2>/dev/null
+    true`;
+  const { stdout } = asPaneUser(t, script, { ps: 'cat ps.out', tmux: 'cat tmux.out' });
+
+  assert.match(stdout, /^REAPED 1 1$/m);
+  assert.match(stdout, /^@@END$/m);
+  assert.match(stdout, /^deadold gone$/m);
+  assert.match(stdout, /^stale gone$/m);
+  assert.match(stdout, /^deadyoung alive$/m);
+  assert.match(stdout, /^fresh alive$/m);
+});
+
+test('reap-clients: a listing that fails kills nobody', (t) => {
+  const script = `
+    sleep 60 >/dev/null 2>&1 & p=$!
+    echo "$p 9000 tmux: client" > ps.out
+    /bin/sh sessions.sh reap-clients
+    kill -0 $p 2>/dev/null && echo alive
+    kill $p`;
+  const { stdout } = asPaneUser(t, script, { ps: 'cat ps.out', tmux: 'exit 1' });
+
+  assert.doesNotMatch(stdout, /REAPED/);
+  assert.match(stdout, /^@@END$/m);
+  assert.match(stdout, /^alive$/m);
+});
+
+test('the pod: restoring a pane needs its tree, and leaving a terminal detaches it', () => {
+  const shell = fs.readFileSync(path.join(SEED, 'shell.sh'), 'utf8');
+  const terminal = fs.readFileSync(path.join(here, '..', 'components', 'PodTerminal.vue'), 'utf8');
+  const sessions = fs.readFileSync(path.join(SEED, 'agent', 'sessions.sh'), 'utf8');
+
+  assert.ok(shell.indexOf('is gone"') > -1 && shell.indexOf('is gone"') < shell.indexOf('# Recorded, so that a pod restart'), 'refused before the record is rewritten');
+  assert.match(terminal, /this\.detachClient\(\);\s+this\.socket\?\.disconnect\(\);/);
+  assert.match(terminal, /addEventListener\('pagehide', this\.detachClient\)/);
+  assert.match(sessions, /rm -f "\$\(dirname "\$SESSIONS"\)\/\.queue\/\$ID"/);
 });

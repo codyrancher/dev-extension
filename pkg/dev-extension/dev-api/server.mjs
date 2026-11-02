@@ -5965,6 +5965,10 @@ const routes = [
    * through the teardown, and a delete that stalls on something else has still freed the
    * expensive part.
    *
+   * It ends the workspace's conversations too, because they live in the agent pod and nothing that
+   * goes with the Installation takes them. A conversation that deletes its own workspace ends
+   * itself here. The transcripts stay.
+   *
    * It does NOT remove the tree, so that the one path that removes a tree on request stays the
    * page's (`removeWorkspaceTree`), and the artifacts are kept first. What it leaves is a tree on
    * the disk, which the registrar lists as a workspace with nothing running; housekeeping keeps
@@ -5981,6 +5985,11 @@ const routes = [
     // Best effort, each on its own: a tool that will not release must not keep the workspace.
     await Promise.all(TOOL_KINDS.map((kind) => stopTool(name, kind).catch(() => null)));
     await k8s(`${ INSTANCES }/${ name }`, { method: 'DELETE' });
+    await heldConversations().then(async(ids) => {
+      for (const id of (ids || []).filter((held) => conversationProject(held) === name)) {
+        await endHeldConversation(id).catch(() => false);
+      }
+    }).catch(() => null);
 
     return { name, deleted: true, note: 'Tools released. The tree and its artifacts stay on the disk until a person deletes the workspace from the page.' };
   }],
@@ -8144,6 +8153,30 @@ function runForHousekeeping(cmd, args) {
   });
 }
 
+/** One sessions.sh verb in the agent pod, with nothing if there is no pod to ask. podExec hands back only stdout. */
+async function askAgentSessions(...args) {
+  const pod = await agentPod();
+
+  return pod ? podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '/seed/sessions.sh', ...args], 30_000) : '';
+}
+
+/** Null without `@@END`: a seed older than the verb, or an exec that was cut off, knows nothing. */
+async function heldConversations() {
+  const lines = (await askAgentSessions('ids')).split('\n').map((line) => line.trim());
+
+  return lines.includes('@@END') ? lines.filter((line) => line && line !== '@@END') : null;
+}
+
+async function endHeldConversation(id) {
+  return (await askAgentSessions('end', id)).trim().endsWith('ok');
+}
+
+async function reapTerminalClients() {
+  const reaped = /^REAPED (\d+) (\d+)$/m.exec(await askAgentSessions('reap-clients'));
+
+  return reaped ? { stuck: Number(reaped[1]), idle: Number(reaped[2]) } : null;
+}
+
 const sweepOnce = singleFlight(async() => {
   const report = await sweepHousekeeping({
     fs,
@@ -8156,10 +8189,14 @@ const sweepOnce = singleFlight(async() => {
     readRegistrar: () => readDoc(REGISTRAR, 'workspaces.json'),
     readNamespace: (name) => k8s(`/api/v1/namespaces/dev-${ name }`),
     readInstance:  (name) => k8s(`${ INSTANCES }/${ name }`),
+    projectOf:     conversationProject,
+    listConversations: heldConversations,
+    endConversation:   endHeldConversation,
+    reapClients:       reapTerminalClients,
   });
 
   lastHousekeeping = report;
-  if (report.tagged || report.trees.length || report.templates.length || report.errors.length) {
+  if (report.tagged || report.trees.length || report.templates.length || report.conversations.length || report.clients.stuck || report.clients.idle || report.errors.length) {
     console.log('[dev-api] housekeeping:', JSON.stringify(report));
   }
 

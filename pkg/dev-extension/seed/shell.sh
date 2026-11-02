@@ -323,6 +323,23 @@ else
   fi
 fi
 
+# A pane brought back for a workspace that has gone is a claude in a directory that does not
+# exist, holding half a gigabyte until the pod next restarts and then coming back again. So a
+# start with no tree does nothing, unless it has a prompt waiting: that is a conversation asked for
+# now, which may be ahead of its tree. Opening it from a page still starts it, for the moment a
+# downstream mount was late.
+if [ "$MODE" = start ]; then
+  case "$WORKDIR" in
+    /workspaces/*)
+      TREE_REST=${WORKDIR#/workspaces/}
+      if [ ! -d "/workspaces/${TREE_REST%%/*}" ] && [ ! -f "$(dirname "$HOME_DIR")/.queue/$SESSION" ]; then
+        echo "not restoring $SESSION: /workspaces/${TREE_REST%%/*} is gone"
+        exit 0
+      fi
+      ;;
+  esac
+fi
+
 # Recorded, so that a pod restart brings the pane back: boot.sh reads these and starts each
 # one detached, and the loop inside resumes the conversation by its id. One file per pane,
 # its arguments one per line, beside the sessions; removed when the conversation is ended

@@ -431,6 +431,9 @@ case "$VERB" in
     # comes back from the dead the next time that name is handed out.
     rm -rf "$SESSIONS/$ID"
 
+    # And anything still waiting to be said to it, which any open page would otherwise start.
+    rm -f "$(dirname "$SESSIONS")/.queue/$ID"
+
     # The transcript is deliberately left alone.
     #
     # Every conversation now runs in one shared directory so that any pane's resume picker can
@@ -446,6 +449,64 @@ case "$VERB" in
     # Taking it out means a read-modify-write of a file every running pane is also writing, and
     # losing somebody else's trust flags to a race is worse than a stale line of history.
     echo ok
+    ;;
+
+  ids)
+    # Every workspace conversation this pod holds in any form: a running session, the record that
+    # would bring one back after a restart, or the directory. dev-api ends the ones whose workspace
+    # has gone (dev-api/housekeeping.mjs), and a conversation with only a record left is still
+    # one that the next restart would start. `@@END` says an empty answer really is one.
+    {
+      tmux list-sessions -F '#{session_name}' 2>/dev/null | sed -n 's/^mc-//p' || true
+      ls "$(dirname "$SESSIONS")/.panes" 2>/dev/null || true
+      for dir in "$SESSIONS"/*/; do
+        [ -d "$dir" ] && basename "$dir"
+      done
+    } | grep '^p-' | sort -u || true
+    echo @@END
+    ;;
+
+  reap-clients)
+    # tmux clients nobody can be looking at.
+    #
+    # Each terminal a page opens is a tmux client in an exec, and an exec outlives its socket: the
+    # kubelet does not end the process, so a tab that went away without detaching leaves a client
+    # here for the life of the pod. One page load, one more of them, 2 MB each, up to hundreds.
+    #
+    # What tmux no longer lists has no session to show, so it is finished, and it is killed outright
+    # because it does not answer anything else: nothing is reading its terminal. The grace is for
+    # one that is starting and has not been listed yet.
+    #
+    # One tmux lists but which has had no key in a day is only told to go, which is what makes it
+    # unlisted for the next pass. If a page really was holding it, PodTerminal reattaches when
+    # somebody comes back to the tab, so being wrong about one costs a reconnect.
+    #
+    # A listing that fails says nothing about who is attached, so it reaps nothing.
+    GRACE=120
+    IDLE=86400
+    if listed=$(tmux list-clients -F '#{client_pid} #{client_created} #{client_activity}' 2>/dev/null); then
+      now=$(date +%s)
+      stuck=0
+      idle=0
+      for row in $(ps -eo pid=,etimes=,comm= | awk '$3 == "tmux:" && $4 == "client" { print $1 ":" $2 }'); do
+        pid=${row%%:*}
+        age=${row##*:}
+        line=$(printf '%s\n' "$listed" | grep "^$pid " || true)
+        if [ -z "$line" ]; then
+          if [ "$age" -gt "$GRACE" ] && kill -KILL "$pid" 2>/dev/null; then
+            stuck=$((stuck + 1))
+          fi
+        else
+          created=$(printf '%s' "$line" | cut -d' ' -f2)
+          active=$(printf '%s' "$line" | cut -d' ' -f3)
+          if [ $((now - created)) -gt "$IDLE" ] && [ $((now - active)) -gt "$IDLE" ] && kill -TERM "$pid" 2>/dev/null; then
+            idle=$((idle + 1))
+          fi
+        fi
+      done
+      echo "REAPED $stuck $idle"
+    fi
+    echo @@END
     ;;
 
   rename)
@@ -464,7 +525,7 @@ case "$VERB" in
     ;;
 
   *)
-    echo "unknown verb: $VERB (list [project], states [project], states-all, new [project], end ID, rename ID TITLE)" >&2
+    echo "unknown verb: $VERB (list [project], states [project], states-all, new [project], end ID, ids, reap-clients, rename ID TITLE)" >&2
     exit 2
     ;;
 esac

@@ -356,6 +356,7 @@ export default {
     this.$refs.xterm?.addEventListener('touchmove', this.onTouchMoveBound = (e) => this.onTouchMove(e), { passive: false });
     // The layout is not settled the moment this mounts: measure again once it is.
     this.settleFits();
+    window.addEventListener('pagehide', this.detachClient);
     window.addEventListener('focus', this.onRefocus);
     document.addEventListener('visibilitychange', this.onRefocus);
     this.$refs.xterm?.addEventListener('focusin', this.onRefocus);
@@ -376,8 +377,10 @@ export default {
     clearTimeout(this.podPollTimer);
     clearInterval(this.dprTimer);
     this.resizeObserver?.disconnect();
+    window.removeEventListener('pagehide', this.detachClient);
     // Only this end goes away. The tmux session in the pod keeps running, which
     // is the whole point of it: reopening the editor reattaches to it.
+    this.detachClient();
     this.socket?.disconnect();
     this.terminal?.dispose();
   },
@@ -925,6 +928,19 @@ export default {
         } finally {
           this.pasting = false;
         }
+      }
+    },
+
+    /**
+     * Tell tmux this terminal is leaving, with its own detach keys.
+     *
+     * Closing the socket does not do it: the kubelet leaves an exec's process running, so the client
+     * stays attached in the pod for good, one per page load. A tab that dies without getting here
+     * is what `sessions.sh reap-clients` is for.
+     */
+    detachClient() {
+      if (this.state === 'open') {
+        this.socket.send(STDIN + base64Encode('\x02d'));
       }
     },
 
