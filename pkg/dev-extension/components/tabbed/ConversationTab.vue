@@ -4,7 +4,7 @@
 // (AgentPanel, in the agents extension) - the same dot, the same two controls in the same places -
 // so the stage's conversation tabs and the drawer's read as one thing.
 //
-// The larger view and the fork are in the tab's own menu, which is what the caret opens -
+// Everything is also in the tab's own menu, rename and close included, which is what the caret opens -
 // right-click opens the same list, so the gesture that used to pop the conversation out still
 // works and now says what else it can do. It was a bare right-click with nothing on screen to
 // advertise it, which is fine for one hidden action and no good at all for two.
@@ -61,7 +61,8 @@ export default {
      * A prop because the two strips are not the same: a workspace's stage can open a
      * conversation over the page and the drawer cannot - it IS the thing over the page - so a
      * "Open it larger" there would be a row that did nothing. Default is both, which is the
-     * stage; the drawer passes the one it has.
+     * stage; the drawer passes the one it has. Rename and close are every tab's, so they are
+     * always listed around these.
      */
     actions: {
       type:    Array,
@@ -105,6 +106,12 @@ export default {
      */
     menu() {
       const rows = {
+        rename: {
+          id: 'rename', label: 'Rename', icon: 'icon-edit', what: 'Give this conversation a name',
+        },
+        close: {
+          id: 'close', label: 'Close', icon: 'icon-close', what: 'End this conversation',
+        },
         popout: {
           id: 'popout', label: 'Open it larger', icon: 'icon-external-link', what: 'Show this conversation over the page',
         },
@@ -113,7 +120,7 @@ export default {
         },
       };
 
-      return (Array.isArray(this.actions) ? this.actions : []).map((id) => rows[id]).filter(Boolean);
+      return ['rename', ...(Array.isArray(this.actions) ? this.actions : []), 'close'].map((id) => rows[id]).filter(Boolean);
     },
   },
 
@@ -147,7 +154,18 @@ export default {
 
     /** One row chosen. The ids are the events, so a new row is a row and nothing else. */
     onMenu(id) {
-      this.$emit(id);
+      if (id === 'rename') {
+        this.startRename();
+      } else {
+        this.$emit(id);
+      }
+    },
+
+    /** The middle button closes a tab, as it does in a browser. Not while a name is being typed. */
+    onMiddle() {
+      if (!this.renaming) {
+        this.$emit('close');
+      }
     },
   },
 };
@@ -160,6 +178,8 @@ export default {
     class="conversation-tab"
     :class="{ 'conversation-tab--active': active }"
     @contextmenu.prevent.stop="openMenu"
+    @mousedown.middle.prevent
+    @auxclick.middle.stop.prevent="onMiddle"
   >
     <!--
       The name, double click to rename in place. The input swallows the clicks and keys it sits
