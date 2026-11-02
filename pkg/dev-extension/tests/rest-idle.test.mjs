@@ -134,4 +134,5 @@ test('a tab: rename and close are in its menu on every strip, and the middle but
   assert.match(tab, /\['rename', \.\.\.\(Array\.isArray\(this\.actions\) \? this\.actions : \[\]\), 'close'\]/);
   assert.match(tab, /if \(id === 'rename'\) \{\s+this\.startRename\(\);/);
   assert.match(tab, /@mousedown\.middle\.prevent\s+@auxclick\.middle\.stop\.prevent="onMiddle"/);
+  assert.doesNotMatch(tab, /control--rename|control--close/, 'only the caret is drawn on the tab');
 });

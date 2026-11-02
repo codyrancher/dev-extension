@@ -1,10 +1,9 @@
 <script>
 // What one conversation's tab shows: a dot for what its agent is doing, its title (renamed in
-// place), and a rename and a close control. Deliberately identical to the agents panel's own tab
-// (AgentPanel, in the agents extension) - the same dot, the same two controls in the same places -
-// so the stage's conversation tabs and the drawer's read as one thing.
+// place), and a caret for its menu. The stage's conversation tabs and the drawer's are this one
+// component, so they read as one thing.
 //
-// Everything is also in the tab's own menu, rename and close included, which is what the caret opens -
+// Everything you can do to a tab is in its own menu, rename and close included, which is what the caret opens -
 // right-click opens the same list, so the gesture that used to pop the conversation out still
 // works and now says what else it can do. It was a bare right-click with nothing on screen to
 // advertise it, which is fine for one hidden action and no good at all for two.
@@ -220,17 +219,7 @@ export default {
         @dblclick.stop.prevent="startRename"
       >{{ title }}</span>
 
-      <!-- Rename, the tab's menu and close, on hover or focus, in reserved trailing space so the
-           tab holds its width. All three sit at the tab's right edge, close outermost. -->
-      <button
-        v-clean-tooltip="'Rename'"
-        type="button"
-        class="conversation-tab__control conversation-tab__control--rename"
-        aria-label="Rename conversation"
-        @click.stop.prevent="startRename"
-      >
-        <i class="icon icon-edit" />
-      </button>
+      <!-- The tab's menu, on hover or focus, in reserved trailing space so the tab holds its width. -->
       <TabMenu
         v-if="menu.length"
         ref="menu"
@@ -240,15 +229,6 @@ export default {
         :aria-label="`Actions for ${ title }`"
         @select="onMenu"
       />
-      <button
-        v-clean-tooltip="'Close conversation'"
-        type="button"
-        class="conversation-tab__control conversation-tab__control--close"
-        aria-label="Close conversation"
-        @click.stop.prevent="$emit('close')"
-      >
-        <i class="icon icon-close" />
-      </button>
     </template>
   </span>
 </template>
@@ -260,11 +240,9 @@ export default {
     align-items: center;
     min-width:   0;
     max-width:   200px;
-    // Trailing room for the three controls (close at 4px, the menu's caret at 26px, rename at
-    // 48px, each 20px wide), reserved so they can appear on hover without moving the label. It
-    // was 48px for two; the third is the menu, which is what took the actions off a right-click
-    // nothing advertised.
-    padding-right: 70px;
+    // Trailing room for the menu's caret (20px wide, at 4px), reserved so it can appear on hover
+    // without moving the label.
+    padding-right: 26px;
 
     // The agent's state as a filled dot, coloured by how much it wants a person. The same 7px
     // circle and colours the agents panel's tabs use.
@@ -311,7 +289,7 @@ export default {
       font-size:     13px;
     }
 
-    // The controls: absolute in the reserved trailing space, hidden until the tab is on show or
+    // The caret: absolute in the reserved trailing space, hidden until the tab is on show or
     // the pointer/focus is on it. A 20px glyph at 0.6 opacity, full on a quiet hover surface -
     // the agents panel's tab-control, to the pixel.
     &__control {
@@ -336,11 +314,7 @@ export default {
 
       &:hover { opacity: 1; background: var(--default-hover-bg, var(--body-bg)); }
 
-      &--close { right: 4px; }
-      &--menu { right: 26px; }
-      &--rename { right: 48px; }
-
-      &--close:hover { color: var(--error); }
+      &--menu { right: 4px; }
     }
 
     // The menu is a component rather than a button, so the shared rules reach it through the
