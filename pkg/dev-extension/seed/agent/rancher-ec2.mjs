@@ -219,7 +219,13 @@ const DEFAULT_VERSION = 'v2.12.3';
  */
 function rancherImage(version, registry) {
   const host = REGISTRIES[registry || 'community'] ?? '';
-  const tag = String(version || DEFAULT_VERSION).trim().replace(/^:/, '');
+  const tag = String(version || '').trim().replace(/^:/, '') || (host ? '' : DEFAULT_VERSION);
+
+  // DEFAULT_VERSION is Docker Hub's, and the SUSE registries do not carry every tag it does, so
+  // a Prime build has none: '' here, refused by `create` (not here, which every verb runs).
+  if (!tag) {
+    return '';
+  }
 
   return `${ host ? `${ host }/` : '' }rancher/rancher:${ tag }`;
 }
@@ -832,6 +838,23 @@ function readPassword(name) {
   }
 }
 
+/**
+ * Refuse a tag the registry does not have, before an EC2 node is launched to find out - a
+ * staging build has no floating `head`, and a node pulling one waits forever. Asked of dev-api;
+ * only a definite "not there" stops a create.
+ */
+async function checkImage(registry, image) {
+  const tag = image.slice(image.lastIndexOf(':') + 1);
+  const api = process.env.CLAUDE_HARNESS_API || 'http://dev-api.dev-system.svc.cluster.local:8080';
+  const answer = await fetch(`${ api }/rancher/image?registry=${ encodeURIComponent(registry || 'community') }&tag=${ encodeURIComponent(tag) }`, { signal: AbortSignal.timeout(20_000) })
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null);
+
+  if (answer?.exists === false) {
+    throw new Error(`${ image } is not there to pull. GET ${ api }/rancher/versions?registry=${ registry } lists the tags that are.`);
+  }
+}
+
 async function main() {
   const [verb, name] = process.argv.slice(2);
   const opts = {
@@ -856,6 +879,14 @@ async function main() {
   if (verb === 'create') {
     if (!name) {
       throw new Error('create needs a name');
+    }
+    if (!opts.image) {
+      const registry = process.env.RANCHER_EC2_REGISTRY;
+
+      throw new Error(`A ${ registry } Rancher needs RANCHER_EC2_VERSION: ${ REGISTRIES[registry] } has no default. GET $CLAUDE_HARNESS_API/rancher/versions?registry=${ registry } lists them.`);
+    }
+    if (!process.env.RANCHER_EC2_IMAGE) {
+      await checkImage(process.env.RANCHER_EC2_REGISTRY, opts.image);
     }
     await create(cred, name, opts);
     await record(cred).catch(() => undefined);

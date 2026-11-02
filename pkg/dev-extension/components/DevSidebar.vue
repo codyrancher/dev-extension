@@ -22,7 +22,7 @@ import {
 import { readPrefs, shownApps } from '../prefs';
 import {
   listRanchers, setDefaultRancher, createRancherInstance, deleteRancherInstance, nextRancherName, rancherAddress, ensureRancherHosts, RANCHER_STEPS,
-  RANCHER_REGISTRIES
+  RANCHER_REGISTRIES, rancherVersionsFor
 } from '../ranchers';
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
@@ -35,7 +35,6 @@ import DevList from './DevList.vue';
 import ToolMark from './ToolMark.vue';
 import DevDialog from './DevDialog.vue';
 import DevModal from './DevModal.vue';
-import { rancherVersions } from '../github';
 import { DEFAULT_RANCHER_VERSION } from '../apps-rancher';
 import NavRow from './NavRow.vue';
 import NavHead from './NavHead.vue';
@@ -282,8 +281,11 @@ export default {
       rancherVersion:  DEFAULT_RANCHER_VERSION,
       /** Where its image comes from; see RANCHER_REGISTRIES. */
       rancherRegistry: 'community',
-      /** The versions offered, read from GitHub when the form opens. See rancherVersions. */
-      rancherVersionList: [],
+      /**
+       * The versions offered for the build picked, read when the form opens and when the build
+       * changes, kept per build. See rancherVersionsFor: the tags differ by registry.
+       */
+      rancherVersionLists: {},
       /** Whether that read is still going, so the field says so rather than looking empty. */
       readingReleases: false,
       /** The Clusters block is a header until it is opened; the choice is kept per browser. */
@@ -342,7 +344,30 @@ export default {
     };
   },
 
+  watch: {
+    /**
+     * A version picked for one build is usually not a tag of another - Docker Hub's `head` is
+     * not on stgregistry, and a staging head build is not on Docker Hub - so a change of build
+     * moves the version to the new build's default unless it is on that build's list too.
+     */
+    async rancherRegistry(registry) {
+      const list = await this.readVersions(registry);
+
+      if (registry !== this.rancherRegistry || !list) {
+        return;
+      }
+      if (!list.versions.some((v) => v.tag === this.rancherVersion)) {
+        this.rancherVersion = list.default || list.versions[0]?.tag || '';
+      }
+    },
+  },
+
   computed: {
+    /** The versions offered for the build picked. */
+    rancherVersionList() {
+      return this.rancherVersionLists[this.rancherRegistry]?.versions || [];
+    },
+
     /**
      * The two bars, as the harness drew them.
      *
@@ -664,11 +689,23 @@ export default {
       this.askingRancher = true;
       // After the form is up, not before: the versions are a convenience and the name is the
       // only thing needed to press Create, so nothing waits on GitHub to open.
-      if (!this.rancherVersionList.length) {
-        this.readingReleases = true;
-        this.rancherVersionList = await rancherVersions().catch(() => []);
-        this.readingReleases = false;
+      await this.readVersions('community');
+    },
+
+    /** One build's versions, once per page. */
+    async readVersions(registry) {
+      if (this.rancherVersionLists[registry]) {
+        return this.rancherVersionLists[registry];
       }
+      this.readingReleases = true;
+      const list = await rancherVersionsFor(registry).catch(() => null);
+
+      this.readingReleases = false;
+      if (list?.versions?.length) {
+        this.rancherVersionLists = { ...this.rancherVersionLists, [registry]: list };
+      }
+
+      return list;
     },
 
     /** The registries, for the form. A method because an imported array is not on the component. */
@@ -1275,12 +1312,33 @@ export default {
           <span class="dev-sidebar__field-help">{{ rancherHint(proposedRancher) }}</span>
         </label>
 
+        <fieldset class="dev-sidebar__field">
+          <span class="dev-sidebar__field-label">Build</span>
+          <label
+            v-for="registry in registries()"
+            :key="registry.id"
+            class="dev-sidebar__radio"
+          >
+            <input
+              v-model="rancherRegistry"
+              type="radio"
+              :value="registry.id"
+            >
+            <span>
+              <span class="dev-sidebar__radio-label">{{ registry.label }}</span>
+              <span class="dev-sidebar__field-help">{{ registry.help }}</span>
+            </span>
+          </label>
+        </fieldset>
+
         <div class="dev-sidebar__field">
           <span class="dev-sidebar__field-label">Version</span>
           <!--
-            A text field, because `head`, a `vX.Y-head` floating tag and a build nobody released
-            are all legitimate and a select would make the list the limit rather than the
-            convenience. But the list is DRAWN rather than hidden in a `<datalist>`: a datalist
+            A text field, because a floating tag and a build nobody released are all legitimate and
+            a select would make the list the limit rather than the convenience. The list is the
+            Build's own (see rancherVersionsFor), which is why Build comes first: Docker Hub's
+            `head` is not a tag on the SUSE registries, and offering it there made Ranchers that
+            never started. The list is DRAWN rather than hidden in a `<datalist>`: a datalist
             shows nothing until you have typed a letter that happens to match, so a field
             offering twenty-nine versions looked like a field offering one. The reviewers field
             had the same fault and lost its datalist for the same reason.
@@ -1289,10 +1347,10 @@ export default {
             v-model="rancherVersion"
             class="dev-sidebar__input"
             type="text"
-            placeholder="head"
+            :placeholder="rancherVersionList[0]?.tag || ''"
           >
           <span class="dev-sidebar__field-help">
-            {{ readingReleases ? 'Reading the versions…' : 'Any tag of the Rancher server image; these are the ones there are.' }}
+            {{ readingReleases ? 'Reading the versions…' : 'Any tag of the Rancher server image from this build\'s registry; these are the ones there are.' }}
           </span>
           <ul
             v-if="rancherVersionList.length"
@@ -1317,25 +1375,6 @@ export default {
             </li>
           </ul>
         </div>
-
-        <fieldset class="dev-sidebar__field">
-          <span class="dev-sidebar__field-label">Build</span>
-          <label
-            v-for="registry in registries()"
-            :key="registry.id"
-            class="dev-sidebar__radio"
-          >
-            <input
-              v-model="rancherRegistry"
-              type="radio"
-              :value="registry.id"
-            >
-            <span>
-              <span class="dev-sidebar__radio-label">{{ registry.label }}</span>
-              <span class="dev-sidebar__field-help">{{ registry.help }}</span>
-            </span>
-          </label>
-        </fieldset>
 
 
       </form>

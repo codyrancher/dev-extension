@@ -24,6 +24,7 @@ import { newsOf } from './news.mjs';
 import { sweepHousekeeping, singleFlight, sweepsAreWorking, firstSweepDelay, nextSweepDelay, SWEEP_EVERY_MS } from './housekeeping.mjs';
 import { numbersIn } from '../artifact-subjects.mjs';
 import { searchCql, searchLimit, searchResult, pageAnswer } from './confluence.mjs';
+import { STAGING_CHARTS, IMAGE_REGISTRIES, RANCHER_REPO, stagingVersions, releasedVersions, imageExists, registryTags } from './rancher-images.mjs';
 
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = 'https://kubernetes.default.svc';
@@ -537,6 +538,60 @@ async function confluenceSearch(url) {
   const found = await confluenceFetch(`/rest/api/content/search?cql=${ encodeURIComponent(cql) }&limit=${ searchLimit(url.searchParams) }&expand=space,version`);
 
   return { cql, total: Number(found?.totalSize ?? found?.size ?? 0), results: (found?.results || []).map((item) => searchResult(item, CONFLUENCE_BASE)) };
+}
+
+// The versions a Rancher can be made from, for a Prime build, and whether a tag is there at all.
+// Here rather than in the page because neither the chart repository nor the registries send
+// CORS headers. See dev-api/rancher-images.mjs.
+const RANCHER_VERSIONS_TTL_MS = 10 * 60_000;
+const rancherVersionsCache = new Map();
+
+async function textOf(url) {
+  const answer = await fetch(url);
+
+  if (!answer.ok) {
+    throw failure(502, `${ new URL(url).host } answered ${ answer.status }.`);
+  }
+
+  return answer.text();
+}
+
+async function rancherVersions(url) {
+  const registry = url.searchParams.get('registry') || '';
+
+  if (!['prime-staging', 'prime'].includes(registry)) {
+    throw failure(400, '?registry= is prime-staging or prime. Community versions are the GitHub releases.');
+  }
+  const held = rancherVersionsCache.get(registry);
+
+  if (held && Date.now() - held.at < RANCHER_VERSIONS_TTL_MS) {
+    return held.answer;
+  }
+  const list = registry === 'prime-staging'
+    ? stagingVersions(await textOf(STAGING_CHARTS.latest), await textOf(STAGING_CHARTS.alpha))
+    : releasedVersions(await registryTags(IMAGE_REGISTRIES.prime, RANCHER_REPO).catch((e) => {
+      throw failure(502, e.message);
+    }));
+  const answer = { registry, ...list };
+
+  rancherVersionsCache.set(registry, { at: Date.now(), answer });
+
+  return answer;
+}
+
+async function rancherImageCheck(url) {
+  const registry = url.searchParams.get('registry') || 'community';
+  const tag = (url.searchParams.get('tag') || '').trim();
+  const host = IMAGE_REGISTRIES[registry];
+
+  if (!host || !tag) {
+    throw failure(400, `?registry= is one of ${ Object.keys(IMAGE_REGISTRIES).join(', ') }, and ?tag= the tag.`);
+  }
+  const exists = await imageExists(host, RANCHER_REPO, tag).catch((e) => {
+    throw failure(502, e.message);
+  });
+
+  return { registry, host, repo: RANCHER_REPO, tag, exists };
 }
 
 function failure(status, message) {
@@ -3021,6 +3076,22 @@ const OPENAPI = {
         summary:     'Report where this triage step has got to.',
         description: 'The same states as a review run, so a step that outlives a turn can be picked up where it stopped.',
         responses:   { 200: { description: 'The run as stored.' } },
+      },
+    },
+    '/rancher/versions': {
+      get: {
+        operationId: 'rancherVersions',
+        summary:     'The Rancher server tags a Prime build can be made from.',
+        description: '`?registry=prime-staging` is the newest head build of each line (newest main first) then the newest alphas and RCs, from the staging chart repository; `?registry=prime` is the released `vX.Y.Z` tags on registry.rancher.com. Staging has no floating `head` tag: every build is `vX.Y.Z-<sha>-head`.',
+        responses:   { 200: { description: '`{ registry, default, versions: [{ tag, note }] }`.' } },
+      },
+    },
+    '/rancher/image': {
+      get: {
+        operationId: 'rancherImage',
+        summary:     'Whether a rancher/rancher tag is there to pull.',
+        description: '`?registry=` community, prime-staging or prime, and `?tag=`. Asked of the registry anonymously, the way a node pulls. 502 when the registry would not say.',
+        responses:   { 200: { description: '`{ registry, host, repo, tag, exists }`.' } },
       },
     },
     '/confluence/search': {
@@ -6092,6 +6163,8 @@ const routes = [
   ['DELETE', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)$/, async(m) => stopTool(m[1], m[2])],
 
   // The harness's /my-work API, as far as its skills need it.
+  ['GET', /^\/rancher\/versions$/, (m, url) => rancherVersions(url)],
+  ['GET', /^\/rancher\/image$/, (m, url) => rancherImageCheck(url)],
   ['GET', /^\/confluence\/search$/, (m, url) => confluenceSearch(url)],
   ['GET', /^\/confluence\/pages\/(\d+)$/, async(m) => pageAnswer(
     await confluenceFetch(`/rest/api/content/${ m[1] }?expand=body.view,space,version,ancestors`), CONFLUENCE_BASE,

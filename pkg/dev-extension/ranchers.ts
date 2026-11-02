@@ -10,6 +10,8 @@ import { devFetch, clusterBase, cloudCredentialsManifest, secretValue, DEV_SYSTE
 import { APP_INSTANCE } from './config/constants';
 import { AGENT_NS, AGENT_BASE } from './pod';
 import { readPrefs, savePrefs } from './prefs';
+import { rancherVersions, RancherVersion } from './github';
+import { DEFAULT_RANCHER_VERSION } from './apps-rancher';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -494,11 +496,52 @@ async function managedValues(): Promise<Record<string, string>> {
  */
 export const RANCHER_REGISTRIES = [
   { id: 'community', label: 'Community (Docker Hub)', host: '', help: 'rancher/rancher, pulled anonymously. No credentials needed.' },
-  { id: 'prime-staging', label: 'Prime (staging)', host: 'stgregistry.suse.com', help: 'Pre-GA Prime builds (alpha, RC, head). Pulled anonymously; your SUSE registry login in Settings is used if you set one.' },
+  { id: 'prime-staging', label: 'Prime (staging)', host: 'stgregistry.suse.com', help: 'Pre-GA Prime builds: the newest head build of each line, alphas and RCs. There is no floating head tag here. Pulled anonymously; your SUSE registry login in Settings is used if you set one.' },
   { id: 'prime', label: 'Prime (released)', host: 'registry.rancher.com', help: 'Released Prime builds. Pulled anonymously; your SUSE registry login in Settings is used if you set one.' },
 ] as const;
 
 export type RancherRegistryId = typeof RANCHER_REGISTRIES[number]['id'];
+
+/**
+ * dev-api, through the apiserver's service proxy. Not reviews.ts's `devApi`, which imports this
+ * file.
+ */
+const DEV_API = `${ clusterBase('local') }/api/v1/namespaces/${ DEV_SYSTEM_NAMESPACE }/services/http:dev-api:8080/proxy`;
+
+/**
+ * The versions the form offers for a build, and the one it starts on.
+ *
+ * Per build because the tags are. Docker Hub has the floating `head` and `vX.Y-head`; the SUSE
+ * registries have neither - a staging head build is `v2.16.0-9456b5a-head`, one tag per commit -
+ * so offering Docker Hub's list for a Prime build offered tags that are not there, and the
+ * Rancher made from one never started. The Prime lists come from dev-api, which reads the
+ * staging chart repository and registry.rancher.com (neither answers a page: no CORS).
+ */
+export async function rancherVersionsFor(registry: string): Promise<{ default: string; versions: RancherVersion[] }> {
+  if (!RANCHER_REGISTRIES.find((r) => r.id === registry)?.host) {
+    return { default: DEFAULT_RANCHER_VERSION, versions: await rancherVersions() };
+  }
+  const answer = await devFetch(`${ DEV_API }/rancher/versions?registry=${ encodeURIComponent(registry) }`);
+
+  return { default: String(answer?.default || ''), versions: Array.isArray(answer?.versions) ? answer.versions : [] };
+}
+
+/**
+ * Refuse a tag the registry does not have, before an EC2 node is paid for to find out.
+ *
+ * Asked of dev-api, which asks the registry the way a node pulls. Only a definite "not there"
+ * stops a create: a registry or dev-api that cannot be reached says nothing either way, and a
+ * create that would have worked should not be the casualty.
+ */
+async function checkRancherTag(tag: string, registry: string): Promise<void> {
+  const answer = await devFetch(`${ DEV_API }/rancher/image?registry=${ encodeURIComponent(registry) }&tag=${ encodeURIComponent(tag) }`, { timeoutMs: 20_000 }).catch(() => null);
+
+  if (answer?.exists === false) {
+    const where = RANCHER_REGISTRIES.find((r) => r.id === registry);
+
+    throw new Error(`${ where?.host || 'Docker Hub' } has no rancher/rancher:${ tag }, so a Rancher made from it would never start. Pick one of the versions listed for ${ where?.label || registry }.`);
+  }
+}
 
 /**
  * The image an instance runs, from the version and where it comes from.
@@ -558,8 +601,17 @@ export async function createRancherInstance(store: Store, name: string, app = RA
   // The cloud credentials chosen in Settings, copied into the instance so it can provision
   // clusters on the same clouds. Read live at provision time, so there is nothing to keep in
   // sync; an instance created with none chosen simply gets none.
-  const agentToken = agentBearer();
   const registry = options.registry || 'community';
+  const tag = String(options.version || '').trim().replace(/^:/, '');
+
+  // An empty version is the App's default image, which is Docker Hub's: a Prime build has to say.
+  if (!tag && RANCHER_REGISTRIES.find((r) => r.id === registry)?.host) {
+    throw new Error('Pick a version: a Prime build has no default one.');
+  }
+  if (tag) {
+    await checkRancherTag(tag, registry);
+  }
+  const agentToken = agentBearer();
   const values: Record<string, string> = {
     ...RANCHER_INSTANCE_VALUES,
     ...(await managedValues()),
