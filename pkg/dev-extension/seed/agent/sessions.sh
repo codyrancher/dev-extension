@@ -474,7 +474,7 @@ case "$VERB" in
 
   rest-idle)
     # Close the conversations with nothing in progress. The reasoning is in the script.
-    exec node /seed/rest-idle.mjs ${ID:+"$ID"}
+    exec node /seed/rest-idle.mjs
     ;;
 
   reap-clients)
@@ -536,7 +536,7 @@ case "$VERB" in
     ;;
 
   *)
-    echo "unknown verb: $VERB (list [project], states [project], states-all, new [project], end ID, ids, reap-clients, rest-idle [--dry-run], rename ID TITLE)" >&2
+    echo "unknown verb: $VERB (list [project], states [project], states-all, new [project], end ID, ids, reap-clients, rest-idle, rename ID TITLE)" >&2
     exit 2
     ;;
 esac

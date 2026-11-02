@@ -12,8 +12,8 @@
  * wake-up still due, a cron not deleted, or any process under claude that is not an MCP server.
  *
  * `decide` has no disk and no clock of its own, and tests/rest-idle.test.mjs holds each refusal.
- * Run as the pane's user (sessions.sh rest-idle), since a tmux server belongs to a user. `--dry-run`
- * prints what it would do and closes nothing.
+ * Run as the pane's user (sessions.sh rest-idle), since a tmux server belongs to a user. Run directly
+ * with `--dry-run`, it prints what it would do and closes nothing.
  *
  * A restart still brings a closed conversation back, because boot.sh restores every pane record
  * and changing it would roll the pod. Thirty idle minutes later it is closed again.
@@ -356,6 +356,8 @@ function main(dryRun) {
   console.log('@@END');
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// By real path: /seed is a ConfigMap, so this file is a symlink, and import.meta.url is what it
+// points at while argv is the link. Compared plainly they never match and this does nothing, silently.
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   main(process.argv.includes('--dry-run'));
 }

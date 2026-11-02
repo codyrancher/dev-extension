@@ -3,6 +3,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { decide, inProgress, lastStampMs, IDLE_MS } from '../seed/agent/rest-idle.mjs';
 import { activityBucket } from '../chat-state.mjs';
 import { paneReadyScript } from '../pane-send.mjs';
@@ -142,4 +146,18 @@ test('a workspace is called by its work, and never by how it is run', () => {
   const body = status.slice(status.indexOf('export function workspaceTitle'), status.indexOf('// The agent\'s state is shown'));
 
   assert.match(body, /workspace\.title \|\| resolved \|\| \(isLte\(workspace\.name\) \? workspace\.name\.slice\(LTE_PREFIX\.length\) : workspace\.name\)/);
+});
+
+test('it runs through a symlink, which is what every file in /seed is', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-'));
+
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // A stand-in tmux with nothing to list, so reaching the end proves main ran.
+  fs.writeFileSync(path.join(dir, 'tmux'), '#!/bin/sh\n', { mode: 0o755 });
+  fs.symlinkSync(fileURLToPath(new URL('../seed/agent/rest-idle.mjs', import.meta.url)), path.join(dir, 'rest-idle.mjs'));
+  const run = spawnSync('node', [path.join(dir, 'rest-idle.mjs'), '--dry-run'], {
+    encoding: 'utf8', env: { ...process.env, PATH: `${ dir }:${ process.env.PATH }` },
+  });
+
+  assert.match(run.stdout, /^@@END$/m);
 });

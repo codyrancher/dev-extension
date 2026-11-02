@@ -1223,15 +1223,26 @@ export default {
       color:     var(--muted);
     }
 
-    // A phone has no room for columns, so the name and the rest stack beside the checkbox.
+    // A phone has no room for shared columns, so each row is a small grid of its own: the name and
+    // the rest stacked beside the checkbox. `!important` because design/mobile.css makes every
+    // label holding a checkbox an inline-flex row, for its touch target, and that outranks this.
     @media (max-width: 760px) {
       &__list,
       &__choices {
+        display:        flex;
+        flex-direction: column;
+      }
+
+      &__app {
+        display:               grid !important;
         grid-template-columns: max-content minmax(0, 1fr);
+        column-gap:            var(--dev-space-3);
+        align-items:           baseline;
+        width:                 100%;
       }
 
       &__app-desc,
-      &__list .dev-settings__card-meta {
+      &__app .dev-settings__card-meta {
         grid-column: 2;
       }
     }
