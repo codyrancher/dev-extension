@@ -1108,7 +1108,7 @@ export default {
         <span v-if="error" class="mc-chat__error">{{ error }}</span>
         <template v-else-if="pasting">{{ pasting }}</template>
         <template v-else-if="working" />
-        <template v-else-if="!attached">Not running</template>
+        <template v-else-if="!attached">Closed while idle. Sending wakes it.</template>
         <template v-else-if="pane.gone">
           {{ agentName }} is not running in this pane.
           <button

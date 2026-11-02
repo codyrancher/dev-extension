@@ -31,7 +31,7 @@ import type { SessionMode, ConversationOrigin, AgentActivity } from './agent';
 // One answer to every "which workspace is this id's" and "is this an id at all", shared with
 // agent.ts, the pod's sessions.sh and the in-cluster API. See conversation-id.mjs.
 import { conversationProject, conversationLabel, isConversationId, conversationBase } from './conversation-id.mjs';
-import { paneSendScript } from './pane-send.mjs';
+import { paneSendScript, paneReadyScript } from './pane-send.mjs';
 // The two timer-driven reads, as scripts the pod's state service runs from the same module.
 import { queuedScript, reportScript } from './agent-reads.mjs';
 import { podStateText, PodStateUnavailable } from './pod-state';
@@ -547,7 +547,7 @@ function base64Of(text: string): string {
  * shows the prompt gone from its composer: one press is not reliably taken, because a TUI that
  * has just been handed a bracketed paste is still reading it.
  */
-export async function sendToPane(id: string, text: string): Promise<void> {
+export async function sendToPane(id: string, text: string, woken = false): Promise<void> {
   const api = await requireAgents();
   const pod = await api.agent.pod();
 
@@ -587,6 +587,19 @@ export async function sendToPane(id: string, text: string): Promise<void> {
 
   if (said === 'SENT') {
     return;
+  }
+  // Idle ones are closed after half an hour (seed/agent/rest-idle.mjs), so no pane is ordinary now:
+  // start it, wait until it can take the message, and send once more.
+  const workspace = conversationProject(id);
+
+  if (said === 'NOPANE' && !woken && workspace) {
+    await startPaneDetached(workspace, id);
+    await podExecOnce(api.agent.namespace, pod, api.agent.container, ['/bin/sh', '-c', [
+      `as_user() { if [ "$(id -u)" = 0 ]; then setpriv --reuid=1000 --regid=1000 --init-groups env HOME=${ AGENT_HOME } "$@"; else "$@"; fi; }`,
+      ...paneReadyScript({ pane: `mc-${ id }`, as: 'as_user ' }),
+    ].join('\n')], AGENT_BASE);
+
+    return sendToPane(id, text, true);
   }
   throw new Error(SEND_FAILURE[said] || `The message could not be typed into ${ id }: ${ out.trim().slice(-200) || 'the pane did not answer' }`);
 }

@@ -332,6 +332,11 @@ case "$VERB" in
       alive=no
       tmux has-session -t "mc-$id" 2>/dev/null && alive=yes
 
+      # Closed for being idle, which is not the same as finished: see rest-idle.mjs.
+      if [ "$alive" = no ] && [ -f "$SESSIONS/$id.resting" ]; then
+        alive=rest
+      fi
+
       # The transcript this pane is on, named in the state file, and the newest of it and its
       # subagents' side transcripts - a long turn shows only in the subagents' files.
       transcript=$(sed -n 's/.*"transcript":"\([^"]*\)".*/\1/p' "$state" | head -1)
@@ -433,6 +438,7 @@ case "$VERB" in
 
     # And anything still waiting to be said to it, which any open page would otherwise start.
     rm -f "$(dirname "$SESSIONS")/.queue/$ID"
+    rm -f "$SESSIONS/$ID.resting"
 
     # The transcript is deliberately left alone.
     #
@@ -464,6 +470,11 @@ case "$VERB" in
       done
     } | grep '^p-' | sort -u || true
     echo @@END
+    ;;
+
+  rest-idle)
+    # Close the conversations with nothing in progress. The reasoning is in the script.
+    exec node /seed/rest-idle.mjs ${ID:+"$ID"}
     ;;
 
   reap-clients)
@@ -525,7 +536,7 @@ case "$VERB" in
     ;;
 
   *)
-    echo "unknown verb: $VERB (list [project], states [project], states-all, new [project], end ID, ids, reap-clients, rename ID TITLE)" >&2
+    echo "unknown verb: $VERB (list [project], states [project], states-all, new [project], end ID, ids, reap-clients, rest-idle [--dry-run], rename ID TITLE)" >&2
     exit 2
     ;;
 esac

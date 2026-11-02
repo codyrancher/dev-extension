@@ -50,7 +50,7 @@ import {
   commandsScript, earlierScript, optionsScript, thinkingScript
 } from './agent-reads.mjs';
 import { podStateText, PodStateUnavailable } from './pod-state';
-import { paneSendScript } from './pane-send.mjs';
+import { paneSendScript, paneReadyScript } from './pane-send.mjs';
 import {
   parseMcpList, isSafeOptionValue, noOptions, parseOptions, type ChatOptions, type McpServer,
 } from './chat-options';
@@ -911,6 +911,30 @@ export function useConversation(source: () => ConversationSource) {
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
 
+  /**
+   * Start a conversation that is not running and wait until it can take a message, saying how long
+   * that took. Idle ones are closed after half an hour (seed/agent/rest-idle.mjs), so this is an
+   * ordinary part of sending now, and it should be seen rather than look like a hang.
+   */
+  async function wake(): Promise<void> {
+    const began = Date.now();
+
+    pasting.value = 'Waking this conversation…';
+    try {
+      await start();
+      if (cli.value !== 'agy') {
+        await run(paneReadyScript({ pane: `"mc-${ paneId.value }"` }).join('\n'), 70000);
+      }
+      pasting.value = `Woke in ${ Math.round((Date.now() - began) / 1000) }s`;
+      setTimeout(() => {
+        pasting.value = '';
+      }, 8000);
+    } catch (e) {
+      pasting.value = '';
+      throw e;
+    }
+  }
+
   /* ── Reading ──────────────────────────────────────────────────────────────────────────────── */
 
   /**
@@ -1241,7 +1265,7 @@ export function useConversation(source: () => ConversationSource) {
         await Promise.all(uploads.value);
       }
       if (!attached.value) {
-        await start();
+        await wake();
       }
       const before = paneText.value;
 

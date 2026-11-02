@@ -345,6 +345,7 @@ fi
 # its arguments one per line, beside the sessions; removed when the conversation is ended
 # (sessions.sh end). A plain shell is not recorded - there is nothing in it to resume.
 if [ "$MODE" != shell ]; then
+  rm -f "$(dirname "$HOME_DIR")/sessions/$SESSION.resting" 2>/dev/null || true
   PANES_DIR="$(dirname "$HOME_DIR")/.panes"
   mkdir -p "$PANES_DIR" 2>/dev/null || true
   # `start` is the mode boot.sh uses to bring a pane back detached; the sixth line is which CLI

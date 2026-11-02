@@ -501,6 +501,8 @@ export interface AgentSession {
 export interface SessionActivity {
   /** Whether the conversation's tmux session exists in the pod. */
   alive: boolean;
+  /** Closed for being idle, and resumed by the next attach or send. See seed/agent/rest-idle.mjs. */
+  resting?: boolean;
   /** The last hook event the pane recorded (chat-hook.mjs), and its notification and time. */
   event: string;
   notification: string;
@@ -638,6 +640,7 @@ async function sessionStates(project = '', strict = false): Promise<Map<string, 
 
     const bucket = activityState({
       alive:        alive === 'yes',
+      resting:      alive === 'rest',
       event:        String(event.event || ''),
       notification: String(event.notification || ''),
       at:           String(event.at || ''),

@@ -41,6 +41,12 @@ if (!SESSION) {
   process.exit(0);
 }
 
+// Closed for being idle (rest-idle.mjs). Nothing ended as far as anyone reading is concerned, so
+// the last thing it really did stays the last thing on record, and nobody is told it stopped.
+if ((payload.hook_event_name || process.argv[2]) === 'SessionEnd' && fs.existsSync(path.join(DIR, `${ SESSION }.resting`))) {
+  process.exit(0);
+}
+
 const event = {
   event:      payload.hook_event_name || process.argv[2] || 'unknown',
   at:         new Date().toISOString(),

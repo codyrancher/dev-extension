@@ -1116,6 +1116,11 @@ export function activityBucket(a, podStartedMs = 0, now = Date.now()) {
     return 'none';
   }
 
+  // Closed for being idle, with everything in place to resume: see seed/agent/rest-idle.mjs.
+  if (a.resting) {
+    return 'idle';
+  }
+
   const hookMs = Date.parse(a.at) || 0;
 
   if (!a.alive) {

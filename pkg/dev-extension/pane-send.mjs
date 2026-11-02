@@ -17,6 +17,9 @@
 /** Six turns of roughly a second: long enough for a TUI to redraw, short enough for a click. */
 const TRIES = 6;
 
+/** Half-second looks: a minute, well past any resume measured. */
+const READY_TRIES = 120;
+
 /**
  * The shell for one send, as lines. Ends by echoing exactly one word: see PANE_SEND_RESULTS.
  *
@@ -85,6 +88,30 @@ export function paneSendScript({
     // turn - where "sent" over a pane that took nothing is not.
     '[ "$seen" = yes ] || [ "$moved" = yes ] && done_ STUCK',
     'done_ NOTTYPED',
+  ];
+}
+
+/**
+ * Wait for a pane that was just started to be able to take a prompt.
+ *
+ * A paste into a claude still resuming is lost. The footer is drawn with the composer, so it is
+ * the first thing on screen that means it. Claude only: nothing else draws it. Running out is not
+ * an error here; the send that follows reports what really happened.
+ *
+ * @param {object} o
+ * @param {string} o.pane The tmux target, quoted as the host needs it.
+ * @param {string} [o.as] A prefix that runs tmux as the pane's user.
+ * @returns {string[]}
+ */
+export function paneReadyScript({ pane, as = '' }) {
+  return [
+    'n=0',
+    `while [ $n -lt ${ READY_TRIES } ]; do`,
+    `  ${ as }tmux capture-pane -p -t ${ pane } 2>/dev/null | grep -q 'bypass permissions' && { echo READY; exit 0; }`,
+    '  sleep 0.5',
+    '  n=$((n+1))',
+    'done',
+    'echo NOTREADY',
   ];
 }
 

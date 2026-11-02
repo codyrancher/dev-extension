@@ -4944,6 +4944,11 @@ function conversationState(a, podStartedMs = 0) {
     return 'none';
   }
 
+  // Closed for being idle, with everything in place to resume: see seed/agent/rest-idle.mjs.
+  if (a.resting) {
+    return 'idle';
+  }
+
   const hookMs = Date.parse(a.at) || 0;
 
   if (!a.alive) {
@@ -5161,7 +5166,7 @@ async function listingTick() {
       if (!id || !CONVERSATION_ID.test(id)) {
         continue;
       }
-      rows.push({ ...rowOf(id, head), alive: alive === 'yes', wroteAgo: Number(wrote ?? -1) });
+      rows.push({ ...rowOf(id, head), alive: alive === 'yes', resting: alive === 'rest', wroteAgo: Number(wrote ?? -1) });
     }
 
     await absorb(rows, pod.metadata.name, agentStartedMs(pod), true, started);
@@ -8177,6 +8182,26 @@ async function reapTerminalClients() {
   return reaped ? { stuck: Number(reaped[1]), idle: Number(reaped[2]) } : null;
 }
 
+/**
+ * Close the idle conversations. What counts as idle is seed/agent/rest-idle.mjs's to decide, because
+ * only the agent pod can see the processes. Often, unlike the sweep, because a close that comes
+ * late only costs memory and one that is always late costs it for everybody.
+ */
+const REST_EVERY_MS = 5 * 60_000;
+const restIdle = singleFlight(async() => {
+  const pod = await agentPod();
+
+  if (!pod) {
+    return;
+  }
+  const out = await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '/seed/sessions.sh', 'rest-idle'], 60_000);
+  const rested = out.split('\n').filter((line) => line.startsWith('RESTED '));
+
+  if (rested.length) {
+    console.log('[dev-api] closed idle conversations:', rested.map((line) => line.slice(7).trim()).join(' '));
+  }
+});
+
 const sweepOnce = singleFlight(async() => {
   const report = await sweepHousekeeping({
     fs,
@@ -8216,6 +8241,7 @@ server.listen(PORT, () => {
   console.log(`[dev-api] listening on :${ PORT }`);
 
   scheduleHousekeeping(firstSweepDelay());
+  setInterval(() => restIdle().catch((e) => console.error('[dev-api] closing idle conversations failed:', e.message || e)), REST_EVERY_MS);
 
   // Finish workspace teardowns the browser did not, and keep finishing them. A minute apart, and
   // first a few seconds after boot rather than at the same instant everything else starts.
