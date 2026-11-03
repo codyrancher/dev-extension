@@ -639,6 +639,9 @@ export default {
     background:  transparent;
     color:       var(--pr-text);
     font-size:   13px;
+    // Rancher sets every `button` to a 40px line; teleported to <body> nothing put it back, and
+    // each login was a 51px row - six people to a screen.
+    line-height: 1.4;
     text-align:  left;
     cursor:      pointer;
 
