@@ -1958,8 +1958,23 @@ export default {
      */
 
     /** Mark a finding good, or take the mark off: the same toggle the PR panel has. */
+    /**
+     * Mark a finding good, or take that back - shown the moment it is pressed.
+     *
+     * The write is a file on dev-api and answers in a few tens of milliseconds, but the label
+     * waited for more than the write: it is drawn from the column's evidence, and the evidence
+     * changed only when the read that follows every write (the pull request, its threads, the
+     * artifacts - a second or more) came back. So the button sat on "Mark good" for as long as
+     * that took. The card's own copy changes now and goes back if the write fails.
+     */
     async markGood(c) {
-      await this.changeComment(c, () => updateComment(this.status.pr, c.id, { status: c.status === 'approved' ? 'pending' : 'approved' }));
+      const before = c.status;
+      const next = before === 'approved' ? 'pending' : 'approved';
+
+      c.status = next;
+      if (await this.changeComment(c, () => updateComment(this.status.pr, c.id, { status: next })) === false) {
+        c.status = before;
+      }
     },
 
     startEdit(c) {
@@ -2354,6 +2369,14 @@ export default {
     },
 
     /** Which thread a paged section is on, clamped to what it holds. */
+    /** "6 threads · 2 waiting", for the Conversation heading: how much, and how much is yours. */
+    threadSummary(item) {
+      const all = item.items || [];
+      const waiting = all.filter((c) => !c.answered).length;
+
+      return `${ all.length } thread${ all.length === 1 ? '' : 's' }${ waiting ? ` · ${ waiting } waiting` : ' · all answered' }`;
+    },
+
     pageOf(section, item) {
       return Math.min(this.pages[section.title] || 0, Math.max(0, item.items.length - 1));
     },
@@ -3977,6 +4000,18 @@ export default {
                 order, and a number jumps straight to one. A thread still waiting on an
                 answer is marked in the pager too, so it can be found without walking.
               -->
+              <!--
+                What the pager walks, said above it. Opened over the page the threads came
+                straight after the reviewers with nothing between, so a row of numbered boxes
+                was the first thing that said a conversation had started.
+              -->
+              <div
+                v-if="shownSection.id === 'pull-request'"
+                class="workspace-rail__comments-head"
+              >
+                <h4 class="workspace-rail__section-title">Conversation</h4>
+                <span class="workspace-rail__comments-count">{{ threadSummary(item) }}</span>
+              </div>
               <div
                 v-if="item.paged && item.items.length > 1"
                 class="workspace-rail__pager"
@@ -5970,7 +6005,6 @@ export default {
   }
 
   &__page-of {
-    margin-left: auto;
     color:       var(--pr-muted);
     font-size:   12px;
   }
@@ -6085,12 +6119,37 @@ export default {
   }
 }
 
-/* Who is looking at it, and who to ask - the block the Reviewers component fills. */
+/*
+ * Who is looking at it, and who to ask - the block the Reviewers component fills.
+ *
+ * Ruled off from the description above it, and no wider than a column. Opened over the page the
+ * section is 1,400px across, and the Reviewers row spread to fit it: the gear 1,400px from its
+ * label and each reviewer's state 1,400px from their name - read as two unrelated things.
+ */
 .workspace-rail__reviewers {
   display:        flex;
   flex-direction: column;
   gap:            var(--dev-space-3);
-  padding:        var(--dev-space-3) 0 0;
+  margin-top:     var(--dev-space-3);
+  padding:        var(--dev-space-4) 0 0;
+  border-top:     1px solid var(--border);
+
+  > .reviewers { max-width: 440px; }
+}
+
+/* The Conversation heading over the threads, ruled off the same way as the reviewers. */
+.workspace-rail__comments-head {
+  display:     flex;
+  align-items: baseline;
+  gap:         var(--dev-space-3);
+  margin-top:  var(--dev-space-3);
+  padding-top: var(--dev-space-4);
+  border-top:  1px solid var(--border);
+}
+
+.workspace-rail__comments-count {
+  color:     var(--muted);
+  font-size: 12px;
 }
 
 /* The one sentence left in the block: why a draft is not being reviewed yet. */

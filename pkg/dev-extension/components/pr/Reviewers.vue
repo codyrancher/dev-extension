@@ -174,8 +174,10 @@ export default {
         return;
       }
       this.top = anchor.bottom + 4;
-      this.left = anchor.left;
       this.width = Math.max(260, Math.min(360, anchor.width));
+      // Under the gear, right edges together, as GitHub's does - not at the block's left edge,
+      // which in a wide modal was most of the screen away from what was pressed.
+      this.left = Math.max(8, anchor.right - this.width);
       this.filter = '';
       this.active = 0;
       this.open = true;
@@ -558,9 +560,28 @@ export default {
 
   // ── The picker ────────────────────────────────────────────────────────────────────────────
 
+  /*
+   * Teleported to `<body>`, so two things the column gave it do not come along.
+   *
+   * Above a modal: the rail opens its Pull request section in a DevModal (z-index 1200, and a
+   * DevDialog is 3000), and at 100 the picker opened behind it - the gear looked dead. Over both.
+   *
+   * The `--pr-*` palette: it is declared on `.pr-review`/`.pr-tokens` (panel.scss), and out at
+   * `<body>` there is no such ancestor, so every colour here resolved to nothing. The ones this
+   * panel uses are declared on it, with panel.scss's values.
+   */
   &__panel {
+    --pr-bg:       var(--body-bg);
+    --pr-bg-2:     var(--sortable-table-header-bg);
+    --pr-el-hover: var(--dropdown-bg);
+    --pr-border:   var(--border);
+    --pr-text:     var(--body-text);
+    --pr-muted:    var(--muted);
+    --pr-success:  var(--status-done);
+
     position:       fixed;
-    z-index:        100;
+    z-index:        3100;
+    color:          var(--pr-text);
     display:        flex;
     flex-direction: column;
     max-height:     min(60vh, 420px);

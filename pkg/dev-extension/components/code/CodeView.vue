@@ -274,8 +274,21 @@ defineExpose({
 
 .cv__sign { color: var(--text-muted); text-align: center; user-select: none; }
 
+/*
+ * The line is a `<code>`, and Rancher styles every `code` as an inline chip - `inline-block`, a
+ * border, a fill, 5px of padding. Inside `.dev-root` something resets that; a CodeView teleported
+ * to `<body>` with a DevModal (the rail's Pull request section) had none, and every line of the
+ * diff came out as its own bordered box with the gutter out of line. So the reset is here, where
+ * it holds wherever the view is drawn.
+ */
 .cv__text {
-  padding-right: var(--s3);
+  display: block;
+  margin: 0;
+  padding: 0 var(--s3) 0 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font: inherit;
   color: var(--text-dim);
   /*
    * Wrapped, with the indentation of the lines that wrap preserved. `pre-wrap` keeps the leading

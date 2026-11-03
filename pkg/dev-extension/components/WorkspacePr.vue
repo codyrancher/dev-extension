@@ -1183,12 +1183,21 @@ async function shipIt() {
   }
 }
 
+// Shown at once and put back if the write fails, rather than drawn from the write's answer: the
+// button is the thing being looked at, and it should not wait on a round trip to say it worked.
 async function toggleApprove(c: LocalComment) {
+  const next = c.status === 'approved' ? 'pending' : 'approved';
+  const swap = (status: LocalComment['status']) => {
+    localComments.value = localComments.value.map((x) => (x.id === c.id ? { ...x, status } : x));
+  };
+
+  swap(next);
   try {
-    const updated = await updateComment(number.value, c.id, { status: c.status === 'approved' ? 'pending' : 'approved' });
+    const updated = await updateComment(number.value, c.id, { status: next });
 
     localComments.value = localComments.value.map((x) => (x.id === c.id ? updated : x));
   } catch (e: Json) {
+    swap(c.status);
     toast(`Update failed: ${ e?.message || e }`, 'error');
   }
 }
