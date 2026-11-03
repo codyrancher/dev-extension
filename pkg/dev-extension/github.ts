@@ -964,26 +964,47 @@ export async function branchPullRequest(repo: string, branch: string): Promise<n
   return (mine.find((pr) => pr.state === 'OPEN') || mine[mine.length - 1])?.number || 0;
 }
 
+/** How many times a query whose answer arrives cut short is asked again. */
+const CUT_SHORT_RETRIES = 2;
+
 async function graphql(query: string, variables: Record<string, unknown>): Promise<Json> {
   const token = await githubToken();
 
   if (!token) {
     throw new Error('No GitHub token is set. Add one in Settings.');
   }
+  // A query is safe to ask twice; a mutation may already have happened.
+  const retries = /^\s*mutation\b/.test(query) ? 0 : CUT_SHORT_RETRIES;
+  let body: Json;
 
-  const response = await fetch(ENDPOINT, {
-    method:  'POST',
-    headers: { authorization: `Bearer ${ token }`, 'content-type': 'application/json' },
-    body:    JSON.stringify({ query, variables }),
-  });
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(ENDPOINT, {
+      method:  'POST',
+      headers: { authorization: `Bearer ${ token }`, 'content-type': 'application/json' },
+      body:    JSON.stringify({ query, variables }),
+    });
 
-  if (!response.ok) {
-    throw new Error(response.status === 401
-      ? 'GitHub rejected the token. It may have expired, or it may not have the repo scope.'
-      : `GitHub answered ${ response.status }.`);
+    if (!response.ok) {
+      throw new Error(response.status === 401
+        ? 'GitHub rejected the token. It may have expired, or it may not have the repo scope.'
+        : `GitHub answered ${ response.status }.`);
+    }
+
+    // Read as text and parsed here, not `response.json()`: GitHub now and then ends a 200 partway
+    // through the body - My Work's query, about 400 KB, came back as its first 219 KB - and
+    // `json()` turned that into "Unterminated string in JSON at position 219170" on the page.
+    // Asked again, the same query answers whole.
+    const text = await response.text();
+
+    try {
+      body = JSON.parse(text);
+      break;
+    } catch {
+      if (attempt >= retries) {
+        throw new Error(`GitHub's answer stopped partway (${ text.length.toLocaleString() } characters in)${ retries ? `, ${ retries + 1 } times running` : '' }. Reload to ask again.`);
+      }
+    }
   }
-
-  const body = await response.json();
 
   if (body.errors?.length) {
     throw new Error(body.errors.map((error: Json) => error.message).join(' '));
