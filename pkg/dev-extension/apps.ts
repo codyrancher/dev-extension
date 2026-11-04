@@ -27,7 +27,7 @@ import { WORKSPACE_VUE_CONFIG } from './workspace-config';
 // The leased-tooling Apps: the slim workspace and the tools it attaches. Seeded here with the
 // rest, so one pass over Apps Plus writes every definition this product owns.
 import { lteApps } from './lte';
-import { rancherSingleApp, rancherShareApp } from './apps-rancher';
+import { rancherSingleApp, rancherShareApp, rancherMasterApp } from './apps-rancher';
 import { labVpnApp, VPN_APP } from './apps-vpn';
 import { ensureAppsPlusCrds } from './apps-plus';
 // The product's own log, which Settings shows: a render that failed must be findable.
@@ -241,6 +241,22 @@ async function ensureCleanupFinalizer(name: string): Promise<void> {
     method:  'PATCH',
     headers: { 'Content-Type': 'application/json-patch+json' },
     body:    JSON.stringify([{ op: 'add', path: '/metadata/finalizers', value: [...finalizers, CLEANUP_FINALIZER] }]),
+  });
+}
+
+/**
+ * Delete an Installation that is not a workspace, by name: the finalizer first and then the
+ * DELETE, for the reasons deleteWorkspaceInstance gives. For the one shared Installation this
+ * product makes that the sidebar must not list (rancher-master), which carries no workspace
+ * label for workspaceInstance to find it by.
+ */
+export async function deleteInstance(name: string): Promise<void> {
+  await ensureCleanupFinalizer(name).catch(() => null);
+  await devFetch(`${ clusterBase(activeCluster()) }/apis/appsplus.io/v1alpha1/appinstances/${ name }`, { method: 'DELETE' }).catch((e: Json) => {
+    // devFetch throws a plain Error; a 404 is the one answer that means it is already done.
+    if (!/not ?found|404/i.test(String(e?.message || e))) {
+      throw e;
+    }
   });
 }
 
@@ -1254,6 +1270,8 @@ export const PREVIEW_APP = 'dashboard-preview';
 export const BROWSER_APP = 'dev-browser';
 /** The Apps every Rancher gets; see ensureDefaultApp. */
 export const RANCHER_SHARE_APP = 'rancher-share';
+/** rancher/dashboard's master in front of a Rancher, one for everybody. See apps-rancher.ts. */
+export const RANCHER_MASTER_APP = 'rancher-master';
 /** The Apps every Rancher gets; see ensureDefaultApp. */
 export const DEFAULT_APPS = [DEFAULT_APP, PREVIEW_APP, BROWSER_APP, RANCHER_SHARE_APP, VPN_APP];
 
@@ -1619,7 +1637,7 @@ export async function ensureDefaultApp(store: Store): Promise<void> {
 
   const byName = new Map(apps.map((app: Json) => [app.metadata?.name, app]));
 
-  for (const body of [rancherWorkspaceApp(), dashboardPreviewApp(), devBrowserApp(), rancherSingleApp(), rancherShareApp(), labVpnApp(), ...lteApps()]) {
+  for (const body of [rancherWorkspaceApp(), dashboardPreviewApp(), devBrowserApp(), rancherSingleApp(), rancherShareApp(), rancherMasterApp(), labVpnApp(), ...lteApps()]) {
     // The definition's fingerprint rides on the App, so a definition that changed in this bundle
     // reaches a cluster that already has the App - the templates lesson: an App seeded once and
     // never touched again strands every workspace made after the definition moved on. Existing

@@ -1150,3 +1150,313 @@ spec:
     },
   };
 }
+
+/**
+ * The dashboard's master branch, in front of a Rancher, kept current by itself.
+ *
+ * A `rancher-share` whose build nobody has to make. rancher/dashboard's own CI uploads an
+ * embedded build of master - routed for `/dashboard/`, which is exactly what a share serves - to
+ * `releases.rancher.com/dashboard/master.tar.gz` about a quarter of an hour after every push,
+ * with the commit in its `VERSION.txt`. So the `sync` container here watches that tarball (and
+ * master's head, to say when a build is still on its way), keeps each build it sees under its
+ * commit, and points nginx at the newest - or at the one it was told to hold.
+ *
+ * Kept, because nothing else keeps them: that URL is overwritten on every push, so "go back to
+ * yesterday's master" is only possible for builds this pod saw. The last `keep` are on the
+ * volume, which survives a restart.
+ *
+ * Told what to do by the ConfigMap `control` in its namespace, which this App does NOT template:
+ * a Fleet bundle owns what it renders and would put it back. The Tools page writes it -
+ * `paused: "true"` stops it fetching, `pin: "<sha>"` serves that kept build whatever is newer -
+ * and the loop reads it every 15 seconds, so a revert takes effect about that quickly. What it is
+ * doing is published at `/.rancher-master.json` on its own address, for the page and for agents.
+ */
+export function rancherMasterApp(): Json {
+  return {
+    apiVersion: 'appsplus.io/v1alpha1',
+    kind:       'App',
+    metadata:   { name: 'rancher-master' },
+    spec:       {
+      description: "rancher/dashboard's master branch in front of a Rancher, on a public link: the build rancher/dashboard's CI publishes for every push to master, fetched within minutes of it landing. Keeps the builds it has seen, so it can be held on one or moved back to an earlier one from the Tools page. Everything but /dashboard/ is that Rancher's own.",
+      values:      {
+        host:            "none",
+        hostCluster:     "local",
+        ingressClass:    "traefik",
+        port:            8080,
+        rancherUpstream: "none",
+        keep:            20,
+        interval:        120,
+      },
+      valueLabels: {
+        host:            "Public hostname the cluster's ingress serves it on, e.g. rancher-master.dev-extension.<node ip>.sslip.io",
+        hostCluster:     "Management id of the cluster it runs on",
+        ingressClass:    "Ingress class of the cluster it runs on (traefik on the sidebar's Ranchers)",
+        port:            "Port nginx listens on",
+        rancherUpstream: "The Rancher to front, by its in-cluster Service, e.g. http://otter-rancher.cattle-system.svc.cluster.local:80",
+        keep:            "How many master builds to keep for going back to",
+        interval:        "Seconds between looks at master",
+      },
+      templates: [
+        {
+          name:    "namespace.yaml",
+          content: `apiVersion: v1
+kind: Namespace
+metadata:
+  name: \${namespace}
+  labels:
+    dev.rancher.io/app: \${app}
+    dev.rancher.io/cluster: \${hostCluster}
+  annotations:
+    dev.rancher.io/port: "\${port}"
+    dev.rancher.io/scheme: http
+`,
+        },
+        {
+          name:    "rbac.yaml",
+          content: `apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: \${namespace}
+  name: control-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: \${namespace}
+  name: control-reader
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [control]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: \${namespace}
+  name: control-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: control-reader
+subjects:
+  - kind: ServiceAccount
+    name: control-reader
+    namespace: \${namespace}
+`,
+        },
+        {
+          name:    "storage.yaml",
+          content: `apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  namespace: \${namespace}
+  name: builds
+  labels:
+    dev.rancher.io/app: \${app}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 4Gi
+`,
+        },
+        {
+          name:    "nginx.yaml",
+          content: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: \${namespace}
+  name: nginx
+  labels:
+    dev.rancher.io/app: \${app}
+data:
+  default.conf: |
+    map $http_upgrade $connection_upgrade { default upgrade; "" close; }
+    server {
+      listen \${port};
+      client_max_body_size 0;
+      location = /.rancher-master.json { default_type application/json; add_header Cache-Control no-store; add_header Access-Control-Allow-Origin *; alias /builds/.state/status.json; }
+      location = /dashboard/index.html { root /builds/.serve; add_header Cache-Control no-store; }
+      location /dashboard/ { root /builds/.serve; try_files $uri /dashboard/index.html; }
+      location / { proxy_pass \${rancherUpstream}; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto https; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_read_timeout 1h; proxy_buffering off; }
+    }
+`,
+        },
+        {
+          name:    "deployment.yaml",
+          content: `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: \${namespace}
+  name: \${namespace}
+  labels:
+    app: \${namespace}
+    dev.rancher.io/app: \${app}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: \${namespace}
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: \${namespace}
+        dev.rancher.io/app: \${app}
+    spec:
+      serviceAccountName: control-reader
+      containers:
+        # Watches master's build, keeps what it sees, and points nginx at the one wanted.
+        # No credentials: the tarball and master's refs are public, and the only thing it reads
+        # from the cluster is its own control ConfigMap.
+        - name: sync
+          image: nginx:1.27-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              B=/builds
+              SA=/var/run/secrets/kubernetes.io/serviceaccount
+              TAR=https://releases.rancher.com/dashboard/master.tar.gz
+              mkdir -p $B/.serve $B/.state
+              log() { echo "$(date -u +%FT%TZ) $*"; }
+              field() { echo "$2" | tr -d '\\n' | grep -o "\\"$1\\": *\\"[^\\"]*\\"" | cut -d'"' -f4; }
+              control() { curl -fsS --max-time 10 --cacert $SA/ca.crt -H "Authorization: Bearer $(cat $SA/token)" https://kubernetes.default.svc/api/v1/namespaces/\${namespace}/configmaps/control 2>/dev/null; }
+              etag=""; head=""; err=""; last=0
+              while true; do
+                c=$(control); paused=$(field paused "$c"); pin=$(field pin "$c")
+                now=$(date +%s)
+                if [ $((now - last)) -ge \${interval} ]; then
+                  last=$now
+                  h=$(curl -fsS --max-time 20 'https://github.com/rancher/dashboard.git/info/refs?service=git-upload-pack' | tr '\\000' '\\n' | grep ' refs/heads/master$' | head -1 | cut -c5-44)
+                  [ -n "$h" ] && head=$h
+                  if [ "$paused" != true ]; then
+                    e=$(curl -fsSI --max-time 20 $TAR | tr -d '\\r' | grep -i '^etag:' | cut -d' ' -f2-)
+                    if [ -n "$e" ] && [ "$e" != "$etag" ]; then
+                      if curl -fsS --max-time 300 -o /tmp/m.tgz $TAR; then
+                        v=$(tar -xzf /tmp/m.tgz -O dist/master-embedded/VERSION.txt 2>/dev/null | tr -dc '0-9a-f' | cut -c1-12)
+                        if [ -z "$v" ]; then
+                          err="the master build has no VERSION.txt"
+                        else
+                          if [ ! -d $B/$v ]; then
+                            rm -rf $B/.new && mkdir -p $B/.new && tar -xzf /tmp/m.tgz -C $B/.new \\
+                              && find $B/.new -name '*.map' -delete \\
+                              && date -u +%FT%TZ > $B/.new/dist/master-embedded/.fetched \\
+                              && mv $B/.new/dist/master-embedded $B/$v && log "kept the build of $v"
+                            rm -rf $B/.new
+                          fi
+                          etag=$e; err=""
+                        fi
+                      else
+                        err="could not download $TAR"
+                      fi
+                      rm -f /tmp/m.tgz
+                    fi
+                  fi
+                fi
+                cur=$(cat $B/.state/current 2>/dev/null)
+                newest=$(ls -t $B | head -1)
+                if [ -n "$pin" ] && [ -d "$B/$pin" ]; then want=$pin
+                elif [ -n "$pin" ]; then want=$cur; err="$pin is not one of the builds kept here"
+                elif [ "$paused" = true ] && [ -n "$cur" ] && [ -d "$B/$cur" ]; then want=$cur
+                else want=$newest; fi
+                if [ -n "$want" ] && { [ "$want" != "$cur" ] || [ ! -L $B/.serve/dashboard ]; }; then
+                  ln -sfn $B/$want $B/.serve/dashboard && echo "$want" > $B/.state/current && log "serving $want"
+                  cur=$want
+                fi
+                n=0
+                for d in $(ls -t $B); do
+                  n=$((n + 1))
+                  if [ $n -gt \${keep} ] && [ "$d" != "$pin" ] && [ "$d" != "$cur" ]; then rm -rf "$B/$d"; log "dropped $d"; fi
+                done
+                builds=""; sep=""
+                for d in $(ls -t $B); do
+                  builds="$builds$sep{\\"sha\\":\\"$d\\",\\"fetched\\":\\"$(cat $B/$d/.fetched 2>/dev/null)\\"}"; sep=","
+                done
+                p=false; [ "$paused" = true ] && p=true
+                printf '{"head":"%s","current":"%s","paused":%s,"pin":"%s","checked":"%s","error":"%s","builds":[%s]}' "$head" "$cur" "$p" "$pin" "$(date -u +%FT%TZ)" "$err" "$builds" > $B/.state/.s && mv $B/.state/.s $B/.state/status.json
+                sleep 15
+              done
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - name: builds
+              mountPath: /builds
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - name: http
+              containerPort: \${port}
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - name: builds
+              mountPath: /builds
+              readOnly: true
+            - name: nginx
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /.rancher-master.json
+              port: \${port}
+            periodSeconds: 10
+      volumes:
+        - name: builds
+          persistentVolumeClaim:
+            claimName: builds
+        - name: nginx
+          configMap:
+            name: nginx
+`,
+        },
+        {
+          name:    "service.yaml",
+          content: `apiVersion: v1
+kind: Service
+metadata:
+  namespace: \${namespace}
+  name: \${namespace}
+  labels:
+    dev.rancher.io/app: \${app}
+spec:
+  selector:
+    app: \${namespace}
+  ports:
+    - name: http
+      port: \${port}
+      targetPort: http
+`,
+        },
+        {
+          name:    "ingress.yaml",
+          content: `apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  namespace: \${namespace}
+  name: \${namespace}
+  labels:
+    dev.rancher.io/app: \${app}
+spec:
+  ingressClassName: \${ingressClass}
+  rules:
+    - host: \${host}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: \${namespace}
+                port:
+                  number: \${port}
+`,
+        },
+      ],
+    },
+  };
+}

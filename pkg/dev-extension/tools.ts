@@ -38,6 +38,11 @@ export interface Tool {
   detail?: string;
   /** The browser tool: the one Chromium every workspace shares, rather than a pod of its own. */
   shared?: boolean;
+  /** rancher-master: the commit it serves, master's head, and whether a person is holding it. */
+  build?: string;
+  head?: string;
+  paused?: boolean;
+  pin?: string;
   error?: string;
 }
 
@@ -78,6 +83,13 @@ export const TOOLS: Record<ToolKind, { label: string; icon: string; what: string
     multitenant: true,
     sharing:     'Yours while the lease lasts, and only yours: Firefox accepts one WebDriver BiDi session at a time, so there is no taking a context of your own the way the shared Chromium allows. End your session when you are done - a client that disconnects without ending it holds the browser until the pod restarts.',
   },
+  'rancher-master': {
+    label:       'Rancher (master)',
+    icon:        'icon-github',
+    what:        'rancher/dashboard\'s master branch in front of a Rancher, on a link that opens from anywhere: the build master\'s own CI publishes for every push, picked up within minutes. Try something against master here instead of building master to find out.',
+    multitenant: false,
+    sharing:     'One for everybody, and not leased: nothing to attach or release. Holding it on an earlier build, or pausing updates, holds it for every workspace - so say so, and put it back to following master when you are done.',
+  },
   browser: {
     label:       'Browser',
     icon:        'icon-globe',
@@ -91,7 +103,7 @@ export const TOOLS: Record<ToolKind, { label: string; icon: string; what: string
 export const SHARED_TOOLS: ToolKind[] = (Object.keys(TOOLS) as ToolKind[]).filter((kind) => !TOOLS[kind].multitenant);
 
 /** The order they are offered in: the one almost every piece of work wants, first. */
-export const TOOL_ORDER: ToolKind[] = ['dev-server', 'browser', 'firefox', 'storybook', 'rancher'];
+export const TOOL_ORDER: ToolKind[] = ['dev-server', 'browser', 'firefox', 'storybook', 'rancher', 'rancher-master'];
 
 /**
  * The tools a PERSON is offered, which is not all of them.

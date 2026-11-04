@@ -262,7 +262,7 @@ export function bareName(name: string): string {
  * trick that makes one Chromium serve everybody has no equivalent. One per workspace, leased
  * like the others.
  */
-export const TOOL_KINDS = ['dev-server', 'storybook', 'rancher', 'browser', 'firefox'] as const;
+export const TOOL_KINDS = ['dev-server', 'storybook', 'rancher', 'browser', 'firefox', 'rancher-master'] as const;
 export type ToolKind = typeof TOOL_KINDS[number];
 
 /** The Apps the pod-backed tools are rendered from, by kind. */

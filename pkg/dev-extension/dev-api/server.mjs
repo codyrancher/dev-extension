@@ -2434,6 +2434,19 @@ const OPENAPI = {
         responses:   { 200: { description: 'The tools.' } },
       },
     },
+    '/rancher-master': {
+      get: {
+        operationId: 'rancherMaster',
+        summary:     'rancher/dashboard master, in front of a Rancher: where it is and which build it serves.',
+        description: [
+          'One for every workspace. Open `url` to try something against master instead of building',
+          'master yourself. `status.current` is the commit being served, `status.head` is master now',
+          '(its build lands about 15 minutes after the push), and `status.paused` / `status.pin` say',
+          'whether a person has held it on an earlier build. Signing in is that Rancher\'s own.',
+        ].join('\n'),
+        responses: { 200: { description: 'Where it is, or `installed: false`.' } },
+      },
+    },
     '/tools/{workspace}': {
       get: {
         operationId: 'workspaceTools',
@@ -4450,7 +4463,7 @@ const MAX_LEASE_MINUTES = 8 * 60;
 const TOOL_APPS = {
   'dev-server': 'lte-dev-server', storybook: 'lte-storybook', rancher: 'lte-rancher', firefox: 'lte-firefox',
 };
-const TOOL_KINDS = [...Object.keys(TOOL_APPS), 'browser'];
+const TOOL_KINDS = [...Object.keys(TOOL_APPS), 'browser', 'rancher-master'];
 /** Where each tool answers, which is also what its Service publishes. */
 const TOOL_PORTS = {
   'dev-server': 8005, storybook: 6006, rancher: 443, firefox: 3000,
@@ -4577,6 +4590,91 @@ async function browserTool(workspace) {
   };
 }
 
+// -- rancher-master --------------------------------------------------------------------------
+//
+// rancher/dashboard's master in front of a sidebar Rancher, one for every workspace. The pod is
+// the `rancher-master` App on that Rancher's cluster, which this API cannot reach (it has no way
+// into a downstream cluster); the browser installs it and writes down here where it put it. What
+// it is serving comes from the pod itself, at `/.rancher-master.json` on its public address -
+// which is also how an agent's `tools url rancher-master` gets an answer without a browser open.
+
+const RANCHER_MASTER_DOC = 'dev-rancher-master';
+/** Commit lines by sha. A commit never changes, so nothing here expires. */
+const masterCommits = new Map();
+
+async function masterCommit(sha) {
+  if (!masterCommits.has(sha)) {
+    const c = await ghRest('GET', `/repos/rancher/dashboard/commits/${ encodeURIComponent(sha) }`).catch(() => null);
+
+    if (!c) {
+      return {};
+    }
+    masterCommits.set(sha, { message: String(c.commit?.message || '').split('\n')[0].slice(0, 200), date: c.commit?.committer?.date || '' });
+  }
+
+  return masterCommits.get(sha);
+}
+
+/** Its status page: https once the certificate is there, plain http until then. */
+async function masterStatus(host) {
+  for (const scheme of ['https', 'http']) {
+    const answer = await fetch(`${ scheme }://${ host }/.rancher-master.json`, { signal: AbortSignal.timeout(6000) }).catch(() => null);
+
+    if (answer?.ok) {
+      return answer.json();
+    }
+  }
+
+  return null;
+}
+
+async function rancherMaster() {
+  const where = await readDoc(RANCHER_MASTER_DOC, 'state');
+
+  if (!where?.host) {
+    return { installed: false, url: '', host: '', cluster: '', rancher: '', rancherUrl: '', status: null, detail: 'Not installed. Put it in front of a Rancher from the Tools page.' };
+  }
+  const status = await masterStatus(where.host).catch(() => null);
+
+  if (status) {
+    // The first line of each kept commit, for choosing one to go back to by what it was.
+    status.builds = await Promise.all((status.builds || []).map(async(b) => ({ ...b, ...(await masterCommit(b.sha)) })));
+  }
+
+  return {
+    installed: true,
+    ...where,
+    status,
+    detail:    status ? '' : `Not answering at ${ where.host } yet: the pod is starting, or fetching its first build.`,
+  };
+}
+
+/** As a tool: shared, never leased, and "started" by being there. */
+async function rancherMasterTool(workspace) {
+  const m = await rancherMaster();
+
+  if (!m.installed) {
+    return { kind: 'rancher-master', workspace, running: false, shared: true, detail: m.detail };
+  }
+  const s = m.status;
+  const held = s ? (s.pin ? `held on ${ s.pin }` : (s.paused ? 'updates paused' : 'following master')) : '';
+
+  return {
+    kind:    'rancher-master',
+    workspace,
+    running: true,
+    ready:   !!s?.current,
+    shared:  true,
+    url:     m.url,
+    build:   s?.current || '',
+    head:    s?.head || '',
+    paused:  !!s?.paused,
+    pin:     s?.pin || '',
+    rancher: m.rancherUrl,
+    detail:  s ? `serving master at ${ s.current || 'nothing yet' }${ s.head && !s.head.startsWith(s.current || '-') ? ` (master is at ${ s.head.slice(0, 7) })` : '' }, ${ held }` : m.detail,
+  };
+}
+
 /** What a pod-backed tool is doing, and where it answers. */
 async function podTool(workspace, kind) {
   const namespace = toolNs(workspace, kind);
@@ -4669,6 +4767,9 @@ function podTrouble(pod, deployment, ready) {
  * to hold, for a read it can simply do itself.
  */
 async function toolLogs(workspace, kind, tail = 60) {
+  if (kind === 'rancher-master') {
+    return { kind, workspace, log: 'rancher-master runs on a sidebar Rancher\'s cluster, which this API cannot read logs from. Its state is at <its url>/../.rancher-master.json.' };
+  }
   if (kind === 'browser') {
     return { kind, workspace, log: 'The browser tool is a context on the shared browser; it has no pod and no log of its own.' };
   }
@@ -4687,6 +4788,10 @@ async function toolLogs(workspace, kind, tail = 60) {
 }
 
 async function toolState(workspace, kind) {
+  if (kind === 'rancher-master') {
+    return rancherMasterTool(workspace);
+  }
+
   return kind === 'browser' ? browserTool(workspace) : podTool(workspace, kind);
 }
 
@@ -4715,6 +4820,11 @@ async function startTool(workspace, kind, body = {}) {
     // Nothing to create: the shared browser is already there, and saying where it is is the
     // whole of "starting" it.
     return browserTool(workspace);
+  }
+  if (kind === 'rancher-master') {
+    // The same, for the one master everybody shares: it is there or it is not, and a workspace
+    // cannot make one - installing it is the Tools page's.
+    return rancherMasterTool(workspace);
   }
 
   const appId = TOOL_APPS[kind];
@@ -4809,6 +4919,9 @@ async function renewTool(workspace, kind, minutes) {
   if (kind === 'browser') {
     return browserTool(workspace);
   }
+  if (kind === 'rancher-master') {
+    return rancherMasterTool(workspace);
+  }
 
   await k8s(`/api/v1/namespaces/${ toolNs(workspace, kind) }`, {
     method: 'PATCH',
@@ -4819,6 +4932,9 @@ async function renewTool(workspace, kind, minutes) {
 }
 
 async function stopTool(workspace, kind) {
+  if (kind === 'rancher-master') {
+    return { ...(await rancherMasterTool(workspace)), detail: 'rancher-master is shared and not leased; nothing is released' };
+  }
   if (kind === 'browser') {
     // It is shared and it is not leased, so there is nothing here that releasing could free.
     // Answered rather than refused, so a skill that tidies up after itself is not made to
@@ -6156,6 +6272,24 @@ const routes = [
     return { tools };
   }],
   ['GET', /^\/tools\/([a-z0-9-]+)$/, async(m) => ({ workspace: m[1], tools: await toolsOf(m[1]) })],
+  ['GET', /^\/rancher-master$/, async() => rancherMaster()],
+  ['PUT', /^\/rancher-master$/, async(m, url, body) => {
+    const host = String(body?.host || '');
+
+    if (!/^[a-z0-9.-]+$/.test(host)) {
+      throw failure(400, 'Send the host it is served on, and where: {host, url, cluster, rancher, rancherUrl}.');
+    }
+    await writeDoc(RANCHER_MASTER_DOC, 'state', {
+      host, url: String(body.url || `https://${ host }/dashboard/`), cluster: String(body.cluster || ''), rancher: String(body.rancher || ''), rancherUrl: String(body.rancherUrl || ''), since: new Date().toISOString(),
+    });
+
+    return rancherMaster();
+  }],
+  ['DELETE', /^\/rancher-master$/, async() => {
+    await writeDoc(RANCHER_MASTER_DOC, 'state', null);
+
+    return { installed: false };
+  }],
   ['GET', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)$/, async(m) => toolState(m[1], m[2])],
   ['POST', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)$/, async(m, url, body) => startTool(m[1], m[2], body)],
   ['POST', /^\/tools\/([a-z0-9-]+)\/([a-z-]+)\/renew$/, async(m, url, body) => renewTool(m[1], m[2], body?.minutes)],
