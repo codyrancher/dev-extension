@@ -194,9 +194,10 @@ async function instanceTarget(name: string, since: string, cluster: Json | undef
   // authoritative for whether Rancher itself answers yet: the node can be up a minute or two
   // before the chart's pod is ready, and this is the one path that tells the difference.
   if (cluster?.state === 'active') {
-    const [nodes, deployments] = await Promise.all([
+    const [nodes, deployments, bindings] = await Promise.all([
       devFetch(`${ clusterBase(cluster.id) }/v1/nodes`).catch(() => null),
       devFetch(`${ clusterBase(cluster.id) }/v1/apps.deployments/cattle-system`).catch(() => null),
+      devFetch(`${ clusterBase(cluster.id) }/v1/management.cattle.io.globalrolebindings`).catch(() => null),
     ]);
     const addresses: Json[] = (nodes?.data || []).flatMap((node: Json) => node.status?.addresses || []);
     // Same rule as the machine's above: only a public address can carry the instance's URL, and
@@ -206,7 +207,9 @@ async function instanceTarget(name: string, since: string, cluster: Json | undef
     // The chart's release is named for the instance, so its Deployment is `<name>-rancher`
     // (`ha-rancher`); a Rancher installed by hand is plain `rancher`.
     const deployment: Json = (deployments?.data || []).find((d: Json) => [`${ name }-rancher`, 'rancher'].includes(d.metadata?.name)) || null;
-    const ready = (deployment?.status?.readyReplicas || 0) > 0;
+    // The bundle's own Rancher names its admins; one installed by hand has none to wait for.
+    const bundled = deployment?.metadata?.name === `${ name }-rancher`;
+    const ready = (deployment?.status?.readyReplicas || 0) > 0 && (!bundled || adminsInEffect(bindings));
 
     if (ready && publicAddress) {
       return {
@@ -225,7 +228,7 @@ async function instanceTarget(name: string, since: string, cluster: Json | undef
     // that came up without them has already told every agent it issues to call home to
     // nowhere. See ensureRancherHosts.
     return {
-      ...base, phase: 'installing', step: 2, detail: deployment ? 'Rancher is starting' : 'Installing Rancher', clusterId: cluster.id, nodeIp: address,
+      ...base, phase: 'installing', step: 2, detail: !deployment ? 'Installing Rancher' : (deployment.status?.readyReplicas ? 'Rancher is setting up its admins' : 'Rancher is starting'), clusterId: cluster.id, nodeIp: address,
     };
   }
 
@@ -259,6 +262,29 @@ async function instanceTarget(name: string, since: string, cluster: Json | undef
   return {
     ...base, phase: 'provisioning', step: 1, detail: message || `Provisioning (${ cluster?.state || 'pending' })`,
   };
+}
+
+/**
+ * Whether the admins the bundle names (70-admins.yaml: `grb-admin-*`) are admins yet.
+ *
+ * Rancher's pod is ready - its readiness probe answers - a minute or more before its controllers
+ * have turned those GlobalRoleBindings into RBAC. Somebody who logged in inside that minute was,
+ * as far as Rancher could tell, a user with no permissions: a dashboard with Home and nothing
+ * else, an empty cluster list, no Cluster Management, no Users & Authentication - and it stayed
+ * like that until a reload, because the dashboard reads what it may see once. Measured on a
+ * Prime v2.15.2 instance: bindings made at 19:24:04, permissions in effect at 19:25:23.
+ *
+ * Rancher marks each binding `ClusterPermissionsReconciled` when it has done the work, so the
+ * instance is not "up" until every admin binding says so. A read that failed says nothing either
+ * way and does not hold the instance back - only bindings seen and not yet done do.
+ */
+function adminsInEffect(bindings: Json): boolean {
+  if (!Array.isArray(bindings?.data)) {
+    return true;
+  }
+  const admins = bindings.data.filter((b: Json) => /^grb-admin-/.test(b.metadata?.name || b.id || ''));
+
+  return admins.length > 0 && admins.every((b: Json) => (b.status?.localConditions || []).some((c: Json) => c.type === 'ClusterPermissionsReconciled' && c.status === 'True'));
 }
 
 /**
