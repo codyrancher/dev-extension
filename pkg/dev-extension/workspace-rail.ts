@@ -979,7 +979,8 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       rec.fields?.affectsVersions?.length ? `- Affects version = **${ rec.fields.affectsVersions.join(', ') }**` : '',
       rec.fields?.resolution ? `- Resolution = **${ rec.fields.resolution }**` : '',
       ...(rec.fields?.links || []).map((l) => `- Link ${ l.type } to **${ l.key }**`),
-      rec.comment ? `\n**The comment it would leave**\n\n> ${ rec.comment.split('\n').join('\n> ') }` : '',
+      // Only where there is no reason: with one, the reason IS the comment (JiraTriage's `conclusion`).
+      !rec.reason && rec.comment ? `\n**The comment it would leave**\n\n> ${ rec.comment.split('\n').join('\n> ') }` : '',
     ].filter(Boolean);
     const items: EvidenceItem[] = [{
       kind: 'text',

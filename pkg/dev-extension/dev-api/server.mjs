@@ -3003,13 +3003,13 @@ const OPENAPI = {
       post: {
         operationId: 'saveJiraRecommendation',
         summary:     'What a triage step concluded, for a person to approve.',
-        description: 'Send at least one of `toStatus`, `assignee`, `comment`, `team`, `fixVersions`, `affectsVersions`, `labels`, `resolution` or `links`, plus `reason` for why and `attachments` (`[{path, caption}]`, paths in your workspace) for the evidence. `githubIssue` carries either a draft (`{title, body, labels}`) or `{existing}` where an issue already covers it. One pending recommendation per bug: filing again supersedes the last.',
+        description: 'Send `reason` - your conclusion, which the panel posts to the ticket verbatim as the comment the reporter reads - and whichever of `toStatus`, `assignee`, `team`, `fixVersions`, `affectsVersions`, `labels`, `resolution` or `links` it calls for, plus `attachments` (`[{path, caption}]`, paths in your workspace) for the evidence. `githubIssue` carries either a draft (`{title, body, labels}`) or `{existing}` where an issue already covers it. One pending recommendation per bug: filing again supersedes the last.',
         responses:   { 200: { description: 'The recommendation as stored.' }, 400: { description: 'Nothing in it to apply.' } },
       },
       put: {
         operationId: 'amendJiraRecommendation',
         summary:     'Correct the prose of the proposal that is pending.',
-        description: 'Send `reason`, `comment`, or both. Only those two change; `post` supersedes the whole recommendation and would drop the attachments and the GitHub draft with it. For a person putting right what is about to be applied, which is why it keeps the same `createdAt`.',
+        description: 'Send `reason`, the conclusion that Apply posts as the comment (`comment` is still accepted, and posted only where there is no reason). Only those two change; `post` supersedes the whole recommendation and would drop the attachments and the GitHub draft with it. For a person putting right what is about to be applied, which is why it keeps the same `createdAt`.',
         responses:   { 200: { description: 'The recommendation as stored.' }, 400: { description: 'Neither reason nor comment was sent.' }, 404: { description: 'Nothing pending for that bug.' } },
       },
     },
@@ -6435,8 +6435,10 @@ const routes = [
       : [];
     const edits = parseJiraEdits(body);
 
-    if (!body?.toStatus && !body?.comment && !body?.assignee && !hasJiraEdits(edits)) {
-      throw failure(400, 'A recommendation needs at least one of toStatus, assignee, comment, team, fixVersions, affectsVersions, labels, resolution or links.');
+    // `reason` counts: it is what Apply posts as the comment, so a nudge with no move is a
+    // recommendation in its own right.
+    if (!body?.toStatus && !String(body?.reason || '').trim() && !body?.comment && !body?.assignee && !hasJiraEdits(edits)) {
+      throw failure(400, 'A recommendation needs at least one of reason, toStatus, assignee, comment, team, fixVersions, affectsVersions, labels, resolution or links.');
     }
     const issue = await jiraFetch(`/rest/api/2/issue/${ key }?fields=status`).catch(() => null);
     const recommendation = {

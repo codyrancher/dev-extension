@@ -1236,13 +1236,12 @@ export function conclusionPrompt(key: string, rec: { action?: string; reason?: s
   return [
     `The user wants to discuss the conclusion a triage step reached about ${ key }, which is pending their approval.`,
     rec?.action ? ` It proposes: ${ flat(rec.action, 120) }.` : '',
-    rec?.reason ? ` Its reason: "${ flat(rec.reason, 1200) }".` : '',
-    rec?.comment ? ` The comment it would put on the ticket: "${ flat(rec.comment, 1200) }".` : '',
+    rec?.reason ? ` Its conclusion, which Apply posts to the ticket verbatim as the comment the reporter reads: "${ flat(rec.reason, 1200) }".` : '',
     ` Read the ticket for context with: curl -s ${ api }/detail`,
     `, and the proposal as stored with: curl -s ${ api }/recommendation.`,
     opener,
     ' Keep it conversational and concise - this is a live discussion, and nothing said here reaches the reporter.',
-    ` When the user settles on better wording, correct the proposal in place: curl -s -X PUT ${ api }/recommendation -H 'Content-Type: application/json' -d '{"reason":"<why>","comment":"<what should go on the ticket>"}'.`,
+    ` When the user settles on better wording, correct the proposal in place: curl -s -X PUT ${ api }/recommendation -H 'Content-Type: application/json' -d '{"reason":"<the conclusion, written for the reporter>"}'. It is posted word for word, so keep anything only the user needs in this conversation.`,
     ' That amends the proposal and nothing else - the person still presses Apply, which is what writes to the ticket.',
     ` Do NOT move ${ key }, comment on it, or POST a new recommendation yourself.`,
   ].join('');
