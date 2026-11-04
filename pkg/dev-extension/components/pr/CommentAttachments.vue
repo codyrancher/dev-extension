@@ -61,8 +61,10 @@ export default {
   methods: {
     /** Where the bytes are: the one the caller resolved, else the PR's artifact route. */
     url(a) {
+      // A file picked from the workspace's own media arrives with the media route's whole
+      // address; the recommendation route's arrive relative to dev-api.
       if (a.url) {
-        return devApiUrl(a.url);
+        return /\/proxy\//.test(a.url) ? a.url : devApiUrl(a.url);
       }
 
       return a.found && this.pr ? artifactUrl(this.pr, a.path) : '';

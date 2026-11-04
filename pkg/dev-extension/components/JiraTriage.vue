@@ -21,9 +21,11 @@ import Row from '../design/Row.vue';
 import {
   jiraOptions, jiraProposal, jiraApply, dismissJiraRecommendation, amendJiraRecommendation, jiraEmbed, JIRA_BASE
 } from '../jira';
-import { devFetch, workspaceMediaListUrl } from '../api';
+import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from '../api';
+import { artifactKind } from '../artifact-kind';
 import { putArtifact } from '../workspace-tools';
 import CommentAttachments from './pr/CommentAttachments.vue';
+import ArtifactThumb from './pr/ArtifactThumb.vue';
 import { TRIAGE_MOVES, answeredBy } from '../jira-steps.mjs';
 import { startConclusionDiscussion, sayInConversation } from '../reviews';
 import { listConversations, paneCommand } from '../conversations';
@@ -47,7 +49,7 @@ export default {
   name: 'JiraTriage',
 
   components: {
-    RcButton, AsyncButton, Banner, Stack, Row, StudioTerminal, CommentAttachments,
+    RcButton, AsyncButton, Banner, Stack, Row, StudioTerminal, CommentAttachments, ArtifactThumb,
   },
 
   props: {
@@ -106,7 +108,7 @@ export default {
       done:     '',
       /** Whether the conclusion is being corrected, and the draft of it while it is. */
       editing:  false,
-      edit:     { reason: '', comment: '' },
+      edit:     { reason: '' },
       /*
        * The discussion about the conclusion: the conversation it is held in, the line waiting to
        * go into it, and whether one is being opened.
@@ -161,6 +163,38 @@ export default {
     },
 
     /**
+     * The conclusion, which is the comment.
+     *
+     * There used to be two pieces of prose: the agent's reasoning, read here, and a separate
+     * comment for the reporter underneath it - which said the same thing less well, and was the
+     * one of the two nobody read before pressing Apply. So where the agent concluded something,
+     * what it concluded is what goes on the ticket, and "Edit it" is where its wording is put
+     * right. Without a conclusion there is nothing to post but what a person writes, and the
+     * comment box is back for that.
+     */
+    conclusion() {
+      return String(this.recommendation?.reason || '').trim();
+    },
+
+    /**
+     * What Apply comments, exactly: the conclusion with the staged files named under it, or the
+     * comment box.
+     *
+     * The files are named here rather than written into the conclusion as they are staged,
+     * because the conclusion is the agent's proposal and is saved as one - an attach button that
+     * edited it would leave Jira markup in the stored reasoning. A name the conclusion already
+     * carries in Jira's own markup is not said twice.
+     */
+    outgoing() {
+      if (!this.conclusion) {
+        return this.form.comment.trim();
+      }
+      const marks = this.staged.map((a) => jiraEmbed(a.name, a.kind)).filter((m) => !this.conclusion.includes(m));
+
+      return marks.length ? `${ this.conclusion }\n\n${ marks.join('\n') }` : this.conclusion;
+    },
+
+    /**
      * The one move this dialog is for, when it was opened on one.
      *
      * Opened from a move's own button - "Another team", "Duplicate" - the dialog is about that
@@ -207,7 +241,7 @@ export default {
     hasChange() {
       const f = this.form;
 
-      return !!(f.toStatus || f.comment.trim() || f.assignee !== null || f.team || f.resolution
+      return !!(f.toStatus || this.outgoing || f.assignee !== null || f.team || f.resolution
         || f.fixVersions.length || f.affectsVersions.length || f.duplicate.trim()
         || this.staged.some((a) => !a.byAgent));
     },
@@ -216,7 +250,15 @@ export default {
     unstaged() {
       const on = new Set(this.staged.map((a) => a.path));
 
-      return this.media.filter((f) => !on.has(this.artifactPath(f.path)));
+      return this.media
+        .filter((f) => !on.has(this.artifactPath(f.path)))
+        .map((f) => ({
+          ...f,
+          url:  workspaceMediaFileUrl(this.workspace, f.path),
+          type: artifactKind(f.path),
+          name: f.path.split('/').pop(),
+          at:   new Date(f.mtimeMs || 0).toISOString(),
+        }));
     },
 
     /**
@@ -350,7 +392,7 @@ export default {
 
     /** Open the conclusion for correction, on a copy, so Cancel leaves what was filed alone. */
     startEdit() {
-      this.edit = { reason: this.recommendation?.reason || '', comment: this.recommendation?.comment || '' };
+      this.edit = { reason: this.recommendation?.reason || '' };
       this.editing = true;
     },
 
@@ -363,7 +405,7 @@ export default {
      */
     async saveEdit(done) {
       try {
-        const saved = await amendJiraRecommendation(this.bug, this.edit);
+        const saved = await amendJiraRecommendation(this.bug, { reason: this.edit.reason });
 
         if (this.proposal) {
           this.proposal = { ...this.proposal, recommendation: saved };
@@ -417,10 +459,10 @@ export default {
         path, name, caption: file.caption || '', kind, url: file.url || null, byAgent,
       }];
 
-      // Named in the comment only where there is a comment to name it in: a form opened on a
-      // move that does not comment has nowhere to put the markup, and adding one would be this
-      // panel writing prose of its own to a customer.
-      if (this.shows('comment')) {
+      // Named in the comment box only where there is one: under a conclusion, `outgoing` names
+      // the staged files at send time instead. And not at all on a move that does not comment,
+      // because adding a comment would be this panel writing prose of its own to a customer.
+      if (!this.conclusion && this.shows('comment')) {
         const body = this.form.comment;
         const mark = jiraEmbed(name, kind);
 
@@ -615,11 +657,13 @@ export default {
     async apply(done) {
       this.error = '';
       this.done = '';
+      const commented = !!this.outgoing;
+
       try {
         const keys = this.form.duplicate.split(/[\s,]+/).map((k) => k.trim().toUpperCase()).filter(Boolean);
         const result = await jiraApply(this.bug, {
           toStatus:        this.form.toStatus || null,
-          comment:         this.form.comment.trim(),
+          comment:         this.outgoing,
           assignee:        this.form.assignee,
           // Uploaded before anything else is written, which is the route's job rather than this
           // panel's: see jiraApply. The workspace rides along because the files are under its
@@ -636,7 +680,7 @@ export default {
           recommendation:  this.preset === 'recommendation',
         });
 
-        this.done = [this.form.comment.trim() ? 'commented' : '', result.status ? `moved to ${ result.status }` : '', ...(result.details || [])]
+        this.done = [commented ? 'commented' : '', result.status ? `moved to ${ result.status }` : '', ...(result.details || [])]
           .filter(Boolean).join(', ') || 'nothing to change';
         this.form = blank();
         this.preset = '';
@@ -751,6 +795,10 @@ export default {
           <strong>The agent's conclusion</strong>
           <span class="text-muted">{{ recommendation.action }}</span>
           <span
+            v-if="conclusion"
+            class="text-muted jira-triage__note"
+          >the comment the reporter reads</span>
+          <span
             v-if="recommendation.editedAt"
             class="text-muted jira-triage__note"
           >edited</span>
@@ -790,14 +838,6 @@ export default {
             class="jira-triage__editor"
             rows="8"
             aria-label="The agent's conclusion"
-          />
-          <label class="jira-triage__head">The comment it proposed</label>
-          <textarea
-            v-model="edit.comment"
-            class="jira-triage__editor"
-            rows="4"
-            aria-label="The comment it proposed"
-            placeholder="Nothing is commented unless this has something in it."
           />
           <Row
             gap="3"
@@ -1072,7 +1112,11 @@ export default {
           >
         </Row>
 
-        <Stack gap="2">
+        <!-- Only without a conclusion: with one, the conclusion is the comment. See `outgoing`. -->
+        <Stack
+          v-if="!conclusion && shows('comment')"
+          gap="2"
+        >
           <label>Comment - the reporter reads this</label>
           <textarea
             v-model="form.comment"
@@ -1137,6 +1181,12 @@ export default {
             <span class="text-muted jira-triage__note">The reporter sees everything attached here. A recording of your own cluster is the thing to think twice about.</span>
           </Row>
 
+          <!--
+            What else the workspace holds, drawn the way its artifacts column draws them
+            (ArtifactThumb): a screenshot is the screenshot and a script is its first lines, so
+            choosing what goes on a customer's ticket is done by looking rather than by path.
+            Pressing one stages it; nothing is uploaded until Apply.
+          -->
           <ul
             v-if="unstaged.length"
             class="jira-triage__media"
@@ -1147,10 +1197,26 @@ export default {
             >
               <button
                 type="button"
-                class="jira-triage__media-add"
+                class="jira-triage__tile"
+                :title="`Attach ${ f.path }`"
                 @click="stage(f)"
-              >Attach</button>
-              <code>{{ f.path }}</code>
+              >
+                <ArtifactThumb
+                  :url="f.url"
+                  :name="f.path"
+                  :type="f.type"
+                  :size="f.size || 0"
+                  :stamp="f.at"
+                />
+                <span
+                  class="jira-triage__tile-add"
+                  aria-hidden="true"
+                >+ Attach</span>
+              </button>
+              <span
+                class="jira-triage__tile-name"
+                :title="f.path"
+              >{{ f.path }}</span>
             </li>
           </ul>
         </Stack>
@@ -1289,41 +1355,68 @@ export default {
   // The real control is the button beside it; a file input draws a second one nobody styled.
   &__file { display: none; }
 
+  /*
+   * The workspace's files as tiles, the shape WorkspaceArtifacts gives them. Scrolls on its own
+   * past two rows, so twenty recordings do not push Apply's footer note out of reach.
+   */
   &__media {
-    margin:     0;
-    padding:    0;
-    list-style: none;
-    max-height: 168px;
-    overflow-y: auto;
+    display:               grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap:                   var(--dev-space-4) var(--dev-space-3);
+    max-height:            264px;
+    margin:                0;
+    padding:               0 var(--dev-space-1) 0 0;
+    list-style:            none;
+    overflow-y:            auto;
 
     li {
-      display:     flex;
-      align-items: center;
-      gap:         var(--dev-space-3);
-      padding:     var(--dev-space-1) 0;
-      font-size:   12px;
-    }
-
-    code {
-      overflow:      hidden;
-      text-overflow: ellipsis;
-      white-space:   nowrap;
+      display:        flex;
+      flex-direction: column;
+      gap:            var(--dev-space-1);
+      min-width:      0;
     }
   }
 
-  &__media-add {
-    flex:          0 0 auto;
+  &__tile {
+    position:      relative;
+    display:       block;
+    width:         100%;
+    aspect-ratio:  148 / 96;
     min-height:    0;
-    padding:       0 var(--dev-space-3);
+    margin:        0;
+    padding:       0;
     border:        1px solid var(--border);
-    border-radius: var(--dev-r-ctl);
-    background:    transparent;
+    border-radius: var(--r-sm);
+    background:    var(--box-bg);
+    line-height:   normal;
+    overflow:      hidden;
+    cursor:        copy;
+
+    &:hover, &:focus-visible { border-color: var(--link); }
+    &:hover .jira-triage__tile-add, &:focus-visible .jira-triage__tile-add { opacity: 1; }
+  }
+
+  /* Said on hover rather than printed on every tile, which would cover the picture it is about. */
+  &__tile-add {
+    position:        absolute;
+    inset:           0;
+    display:         flex;
+    align-items:     center;
+    justify-content: center;
+    background:      rgba(0, 0, 0, .45);
+    color:           #fff;
+    font-size:       12px;
+    font-weight:     600;
+    opacity:         0;
+    transition:      opacity .12s;
+  }
+
+  &__tile-name {
+    overflow:      hidden;
     color:         var(--muted);
     font-size:     11px;
-    line-height:   20px;
-    cursor:        pointer;
-
-    &:hover { color: var(--link); border-color: var(--link); }
+    text-overflow: ellipsis;
+    white-space:   nowrap;
   }
 
   /*
