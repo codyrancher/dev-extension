@@ -939,3 +939,75 @@ test('the pod: restoring a pane needs its tree, and leaving a terminal detaches 
   assert.match(terminal, /addEventListener\('pagehide', this\.detachClient\)/);
   assert.match(sessions, /rm -f "\$\(dirname "\$SESSIONS"\)\/\.queue\/\$ID"/);
 });
+
+/**
+ * The real sessions.sh against a pod laid out in a temporary directory: sessions, transcripts,
+ * a queue and screenshots, both kinds. Its four fixed places are moved there.
+ */
+function imagePod(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'images-'));
+  const w = path.join(dir, 'w');
+  const at = (...p) => path.join(w, ...p);
+  const put = (p, text, hoursAgo = 0) => {
+    fs.mkdirSync(path.dirname(at(p)), { recursive: true });
+    fs.writeFileSync(at(p), text);
+    if (hoursAgo) {
+      const when = new Date(Date.now() - hoursAgo * 3600_000);
+
+      fs.utimesSync(at(p), when, when);
+    }
+  };
+
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const script = fs.readFileSync(path.join(SEED, 'agent', 'sessions.sh'), 'utf8')
+    .replace(/^if \[ "\$\(id -u\)" = 0 \]; then[\s\S]*?^fi$/m, '')
+    .replace('SESSIONS=/workspace/sessions', `SESSIONS=${ w }/sessions`)
+    .replace('AGENT_HOME=/workspace/.home', `AGENT_HOME=${ w }/.home`)
+    .replace('IMAGES=/workspace/.images', `IMAGES=${ w }/.images`);
+
+  fs.writeFileSync(path.join(dir, 'sessions.sh'), script, { mode: 0o755 });
+  const one = 'aaaaaaaa-1111-1111-1111-111111111111';
+  const two = 'bbbbbbbb-2222-2222-2222-222222222222';
+
+  fs.mkdirSync(at('sessions', 'agent-1'), { recursive: true });
+  fs.mkdirSync(at('sessions', 'p-x-1'), { recursive: true });
+  put('sessions/agent-1.id', `${ one }\n`);
+  put('sessions/p-x-1.state.json', `{"event":"Stop","sessionId":"${ two }"}`);
+  put(`.home/.claude/projects/-workspace-conversations/${ one }.jsonl`, '{"text":"see /workspace/.images/kept-by-transcript.png"}\n');
+  put(`.home/.claude/projects/-workspace-conversations/${ two }.jsonl`, '{"text":"[Image: source: /workspace/.images/kept-by-hook.jpg]"}\n');
+  put('.queue/p-x-1', 'next /workspace/.images/kept-by-queue.png');
+  for (const f of ['kept-by-transcript.png', 'kept-by-hook.jpg', 'kept-by-queue.png', 'nobody.png', 'nobody.webp']) {
+    put(`.images/${ f }`, 'x', 2);
+  }
+  put('.images/just-pasted.png', 'x');
+  put('.images/agent-1/live.png', 'x', 2);
+  put('.images/p-gone-3/old.png', 'x', 2);
+  put('.images/p-making-1/new.png', 'x');
+  put('.images/p-x-1/its.png', 'x');
+
+  const run = (verb, ...args) => spawnSync('/bin/sh', [path.join(dir, 'sessions.sh'), verb, ...args], { encoding: 'utf8' });
+  const left = () => fs.readdirSync(at('.images'), { recursive: true }).map(String).filter((p) => /\.\w+$/.test(p)).sort();
+
+  return { run, left };
+}
+
+test('sweep-images: a conversation\'s own go with it; loose ones go when no live conversation mentions them', (t) => {
+  const pod = imagePod(t);
+  const { stdout } = pod.run('sweep-images');
+
+  assert.match(stdout, /^SWEPT 1 2$/m);
+  assert.deepEqual(pod.left(), [
+    'agent-1/live.png', 'just-pasted.png', 'kept-by-hook.jpg', 'kept-by-queue.png', 'kept-by-transcript.png', 'p-making-1/new.png', 'p-x-1/its.png',
+  ]);
+});
+
+test('end: a conversation\'s screenshots go with it, and what only it mentioned goes on the next sweep', (t) => {
+  const pod = imagePod(t);
+
+  assert.match(pod.run('end', 'p-x-1').stdout, /^ok$/m);
+  assert.ok(!pod.left().includes('p-x-1/its.png'));
+  pod.run('sweep-images');
+  assert.ok(!pod.left().includes('kept-by-hook.jpg'), 'only p-x-1 mentioned it');
+  assert.ok(!pod.left().includes('kept-by-queue.png'), 'its queue went with it');
+  assert.ok(pod.left().includes('kept-by-transcript.png'), 'agent-1 still mentions it');
+});

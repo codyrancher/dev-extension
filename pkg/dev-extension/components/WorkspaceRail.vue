@@ -34,7 +34,7 @@ import StageSteps from './StageSteps.vue';
 import CodeView from './code/CodeView.vue';
 import { fromRailRows } from './code/rows';
 import {
-  readStatusNow, knownStatus, provisionalStatus, agentLabel, displayTone, setManualStage, clearManualStage, isManual, workspaceTitle
+  readStatusNow, knownStatus, provisionalStatus, agentLabel, displayTone, setManualStage, clearManualStage, isManual, workspaceTitle, markSeen
 } from '../workspace-status';
 import {
   stepsFor, gatherEvidence, forgetBranch, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
@@ -57,7 +57,7 @@ import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
   startIssueFix, startPrReview, startJiraTriage, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers,
-  replyToComment, commentOnPr, quoted, commentsRevision, githubBrowserSession, editReviewComment, deleteReviewComment, amendPrReviewComment, DEFAULT_REPO
+  replyToComment, sendReplyDraft, discardReplyDraft, commentOnPr, quoted, commentsRevision, githubBrowserSession, editReviewComment, deleteReviewComment, amendPrReviewComment, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
@@ -211,6 +211,10 @@ export default {
       reviewerError: '',
       /** The thread a reply is being written in, by its root comment's id; '' when none is. */
       replyTo:   '',
+      /** The agent's draft the reply box was opened from, so posting it also clears the draft. */
+      replyFromDraft: null,
+      /** The draft being sent or discarded. */
+      draftBusy:      0,
       /** The pending reply being edited, by its GitHub comment id; 0 for none. */
       editingMsg:   0,
       editMsgDraft: '',
@@ -1189,6 +1193,7 @@ export default {
 
       this.replyTo = open ? String(c.id) : '';
       this.replyDraft = '';
+      this.replyFromDraft = null;
     },
 
     /**
@@ -1234,6 +1239,11 @@ export default {
           await commentOnPr(this.status.pr, body, this.repo);
         } else {
           await replyToComment(this.status.pr, Number(c.id), body, this.repo);
+        }
+        // Posted from an agent's draft: the draft is said now, so it goes.
+        if (this.replyFromDraft) {
+          await discardReplyDraft(this.status.pr, this.replyFromDraft.id).catch(() => {});
+          this.replyFromDraft = null;
         }
         this.replyTo = '';
         this.replyDraft = '';
@@ -1440,6 +1450,11 @@ export default {
     async refreshEvidence(shrinkable = false) {
       if (!this.status || !this.shown) {
         return;
+      }
+      // Open and on screen is seen: what is on the pull request now is on this page. A tab in the
+      // background is not somebody reading it.
+      if (this.workspace?.name && (typeof document === 'undefined' || document.visibilityState === 'visible')) {
+        markSeen(this.workspace.name);
       }
       // Every call is a new read; an older one still in flight lands and is ignored. So a step
       // clicked during a read gets its own read at once rather than waiting the read out.
@@ -2377,8 +2392,80 @@ export default {
       return `${ all.length } thread${ all.length === 1 ? '' : 's' }${ waiting ? ` · ${ waiting } waiting` : ' · all answered' }`;
     },
 
+    /**
+     * Which thread a paged section is on. Until somebody turns a page, the first one with
+     * something new in it - a reply since your review, or an answer an agent drafted - because
+     * that is what the section was opened to read, and page 1 of 14 in file order was rarely it.
+     */
     pageOf(section, item) {
-      return Math.min(this.pages[section.title] || 0, Math.max(0, item.items.length - 1));
+      const chosen = this.pages[section.id] ?? this.pages[section.title];
+      const start = chosen ?? Math.max(0, (item.items || []).findIndex((c) => c.fresh || (c.drafts && c.drafts.length)));
+
+      return Math.min(start, Math.max(0, item.items.length - 1));
+    },
+
+    /**
+     * Open the thread a "Since you last spoke" row is about, wherever this stage lists it: your
+     * threads first, then the whole conversation, then any other section that has it. A row with
+     * no thread - a comment on the conversation, a verdict - opens the conversation.
+     */
+    openThreadById(thread) {
+      const order = ['your-threads', 'pull-request'];
+      const sections = [...this.evidence].sort((a, b) => {
+        const rank = (s) => (order.includes(s.id) ? order.indexOf(s.id) : order.length);
+
+        return rank(a) - rank(b);
+      });
+
+      for (const section of sections) {
+        for (const item of section.items || []) {
+          const index = thread && item.kind === 'comments' ? (item.items || []).findIndex((c) => Number(c.id) === Number(thread) || (c.thread || []).some((t) => Number(t.id) === Number(thread))) : -1;
+
+          if (index >= 0) {
+            this.opened = section.id;
+            this.goTo(section, index);
+
+            return;
+          }
+        }
+      }
+      if (this.evidence.some((s) => s.id === 'pull-request')) {
+        this.opened = 'pull-request';
+      }
+    },
+
+    async sendDraft(c, r) {
+      this.draftBusy = r.id;
+      this.error = '';
+      try {
+        await sendReplyDraft(this.status.pr, r, r.body, this.repo);
+        forgetPrDetail(this.status.pr, this.repo);
+        await this.refreshEvidence();
+      } catch (e) {
+        this.error = `The reply was not posted: ${ e?.message || e }`;
+      } finally {
+        this.draftBusy = 0;
+      }
+    },
+
+    /** Into the reply box, to be changed before it goes; posting it there clears the draft. */
+    editDraft(c, r) {
+      this.replyTo = String(c.id);
+      this.replyDraft = r.body;
+      this.replyFromDraft = r;
+    },
+
+    async dropDraft(r) {
+      this.draftBusy = r.id;
+      try {
+        await discardReplyDraft(this.status.pr, r.id);
+        forgetPrDetail(this.status.pr, this.repo);
+        await this.refreshEvidence();
+      } catch (e) {
+        this.error = `The draft was not discarded: ${ e?.message || e }`;
+      } finally {
+        this.draftBusy = 0;
+      }
     },
 
     shownThreads(section, item) {
@@ -2389,8 +2476,9 @@ export default {
       this.goTo(section, Math.min(Math.max(0, this.pageOf(section, item) + by), item.items.length - 1));
     },
 
+    // By id: several titles carry a count, and a count that changes would lose the page.
     goTo(section, index) {
-      this.pages = { ...this.pages, [section.title]: index };
+      this.pages = { ...this.pages, [section.id || section.title]: index };
     },
 
     rowsAround(c) {
@@ -3890,6 +3978,35 @@ export default {
                 <dd :class="row.tone ? `workspace-rail__tone--${ row.tone }` : ''">{{ row.v }}</dd>
               </template>
             </dl>
+            <!--
+              What was said since your review, a row per thread: who, where, the first words.
+              Pressing one opens that thread where it is in the threads section - the reply is
+              read with the code and the question it answers, not out here on its own.
+            -->
+            <ul
+              v-else-if="item.kind === 'replies'"
+              class="workspace-rail__replies"
+            >
+              <li
+                v-for="(r, n) in item.items"
+                :key="`${ r.thread }-${ r.at }-${ n }`"
+              >
+                <button
+                  type="button"
+                  class="workspace-rail__reply-row"
+                  @click="openThreadById(r.thread)"
+                >
+                  <span class="workspace-rail__reply-who">{{ r.who }} <span class="workspace-rail__reply-what">{{ r.what }}</span></span>
+                  <span class="workspace-rail__reply-where">{{ r.where }}</span>
+                  <span
+                    v-if="r.drafted"
+                    class="workspace-rail__reply-drafted"
+                  >reply drafted</span>
+                  <span class="workspace-rail__reply-when">{{ r.at ? ago(r.at) : '' }}</span>
+                  <span class="workspace-rail__reply-body">{{ r.body }}</span>
+                </button>
+              </li>
+            </ul>
             <template v-else-if="item.kind === 'commits'">
               <div
                 v-if="combinedFor(item) === 'reading'"
@@ -4032,9 +4149,10 @@ export default {
                       'workspace-rail__page-num--on': n === pageOf(shownSection, item),
                       'workspace-rail__page-num--approved': !c.answered && c.local && c.status === 'approved',
                       'workspace-rail__page-num--open': !c.answered && !(c.local && c.status === 'approved'),
-                      'workspace-rail__page-num--draft': c.pending,
+                      'workspace-rail__page-num--draft': c.pending || (c.drafts && c.drafts.length),
+                      'workspace-rail__page-num--new': c.fresh,
                     }"
-                    :title="`${ c.where }${ c.pending ? ' · has an unsent reply' : '' }${ c.answered ? '' : c.status === 'approved' ? ' · approved' : ' · waiting' }`"
+                    :title="`${ c.where }${ c.fresh ? ' · replied since your review' : '' }${ c.pending || (c.drafts && c.drafts.length) ? ' · has an unsent reply' : '' }${ c.answered ? '' : c.status === 'approved' ? ' · approved' : ' · waiting' }`"
                     @click="goTo(shownSection, n)"
                   >{{ n + 1 }}</button>
                 </span>
@@ -4272,6 +4390,50 @@ export default {
                   :pr="status.pr"
                   :attachments="c.attachments"
                 />
+                <!--
+                  A reply an agent drafted into this thread (dev-api's reply-draft). Drawn under
+                  the message it answers and unmistakably not on GitHub yet: nothing is posted
+                  until Send, and Edit puts it in the reply box below to be changed first.
+                -->
+                <div
+                  v-for="r in (c.drafts || [])"
+                  :key="`draft-${ r.id }`"
+                  class="workspace-rail__msg workspace-rail__msg--draft workspace-rail__agent-draft"
+                >
+                  <div class="workspace-rail__msg-head">
+                    <span class="workspace-rail__agent-draft-label">Reply drafted by {{ r.who === 'agent' ? 'the agent' : r.who }}</span>
+                    <span class="text-muted">{{ r.at ? ago(r.at) : '' }} · not posted</span>
+                  </div>
+                  <div
+                    class="md-body"
+                    v-html="r.html"
+                  />
+                  <div class="workspace-rail__comment-actions">
+                    <PrButton
+                      size="sm"
+                      variant="primary"
+                      :disabled="draftBusy === r.id"
+                      @click="sendDraft(c, r)"
+                    >
+                      {{ draftBusy === r.id ? 'Posting…' : 'Send it' }}
+                    </PrButton>
+                    <PrButton
+                      size="sm"
+                      :disabled="draftBusy === r.id"
+                      @click="editDraft(c, r)"
+                    >
+                      Edit
+                    </PrButton>
+                    <PrButton
+                      size="sm"
+                      variant="danger"
+                      :disabled="draftBusy === r.id"
+                      @click="dropDraft(r)"
+                    >
+                      Discard
+                    </PrButton>
+                  </div>
+                </div>
                 <!--
                   Answering a thread by hand, which this column could only send you to GitHub
                   for. The agent's way in is Discuss, on a finding of yours; this is the other
@@ -5559,6 +5721,8 @@ export default {
    */
   // A thread holding an unsent reply of yours, so it can be found in the pager without walking.
   &__page-num--draft { box-shadow: inset 0 -2px 0 var(--pr-warning); }
+  /* A reply since your review: the pages a new round is read for. */
+  &__page-num--new { box-shadow: inset 0 2px 0 var(--link); font-weight: 700; color: var(--link); }
 
   &__msg--draft {
     border-left:   3px dashed var(--pr-warning);
@@ -5740,6 +5904,48 @@ export default {
    */
   &__count--good { color: var(--success); }
   &__count--warn { color: var(--warning); }
+  &__count--new { color: var(--link); font-weight: 600; }
+
+  /* What was said since your review, a row per thread, under the commits. */
+  &__replies {
+    display:        flex;
+    flex-direction: column;
+    gap:            var(--dev-space-2);
+    margin:         var(--dev-space-3) 0 0;
+    padding:        0;
+    list-style:     none;
+  }
+
+  &__reply-row {
+    display:               grid;
+    grid-template-columns: auto auto auto 1fr;
+    gap:                   2px var(--dev-space-3);
+    align-items:           baseline;
+    width:                 100%;
+    min-height:            0;
+    padding:               var(--dev-space-2) var(--dev-space-3);
+    border:                1px solid var(--border);
+    border-left:           2px solid var(--link);
+    border-radius:         var(--r-sm);
+    background:            transparent;
+    color:                 var(--body-text);
+    font-size:             12px;
+    line-height:           1.4;
+    text-align:            left;
+    cursor:                pointer;
+
+    &:hover { border-color: var(--link); }
+  }
+
+  &__reply-who { font-weight: 600; }
+  &__reply-what { font-weight: 400; color: var(--muted); }
+  &__reply-where { font-family: var(--font-family-mono, monospace); color: var(--muted); }
+  &__reply-drafted { color: var(--warning); }
+  &__reply-when { color: var(--muted); justify-self: end; }
+  &__reply-body { grid-column: 1 / -1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  &__agent-draft { border-left: 2px dashed var(--warning); }
+  &__agent-draft-label { font-weight: 600; color: var(--warning); }
 
   &__came-back-item {
     display:       inline-flex;

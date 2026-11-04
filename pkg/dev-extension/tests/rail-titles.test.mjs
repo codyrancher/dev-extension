@@ -24,3 +24,12 @@ test('a nought is drawn plain, because a colour there would say the opposite of 
   assert.deepEqual(threadsTitle(0, 3).parts.filter((p) => p.tone), [{ text: '3', tone: 'warn' }]);
   assert.deepEqual(threadsTitle(0, 0).parts.filter((p) => p.tone), []);
 });
+
+test('a round that came back is counted first, and the three still add up', () => {
+  const counted = threadsTitle(13, 0, 1);
+
+  assert.equal(titleOf(counted.parts), counted.title);
+  assert.equal(counted.title, 'Your threads (1 replied since your review, 13 answered earlier, 0 waiting on the developer)');
+  assert.deepEqual(counted.parts.filter((p) => p.tone), [{ text: '1', tone: 'new' }, { text: '13', tone: 'good' }]);
+  assert.equal(threadsTitle(5, 2, 0).title, 'Your threads (5 answered, 2 waiting on the developer)');
+});

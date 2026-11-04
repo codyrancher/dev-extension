@@ -83,6 +83,13 @@ export type EvidenceItem =
   | { kind: 'artifacts'; groups: ArtifactGroup[]; total: number; truncated: boolean; lead: string[] }
   | { kind: 'comments'; items: Comment[]; paged?: boolean }
   | { kind: 'commits'; pr: number; items: { sha: string; message: string; who: string; at: string }[]; since?: string }
+  /**
+   * What was SAID since your review, beside what was pushed: one row per thread somebody else
+   * spoke in, or an agent drafted an answer for, each opening that thread in `to` (a section id)
+   * at `index`. A reply with a question in it and no commit behind it is a round of its own, and
+   * "No new commits since your review" was all this section had to say about one.
+   */
+  | { kind: 'replies'; items: { thread: number; where: string; who: string; what: string; body: string; at: string; drafted: boolean }[] }
   | { kind: 'files'; items: { path: string; note: string }[]; open?: boolean }
   /** A way into the review tool, for a change that is read there rather than listed here. */
   | { kind: 'review'; label: string }
@@ -114,7 +121,7 @@ export interface ArtifactGroup {
 /** One run of a section's title, with the tone it is drawn in. See rail-titles.mjs. */
 export interface TitlePart {
   text: string;
-  tone?: 'good' | 'warn';
+  tone?: 'good' | 'warn' | 'new';
 }
 
 export interface EvidenceSection {
@@ -176,6 +183,13 @@ export interface Comment {
   mine: boolean;
   /** Whether the thread holds a message of yours that is drafted and not yet on GitHub. */
   pending: boolean;
+  /**
+   * Whether somebody else has said something in it since your last review: the developer
+   * answering, or another reviewer. What a new round of a review is read for.
+   */
+  fresh?: boolean;
+  /** Replies an agent drafted into this thread, for you to send. See dev-api's `reply-draft`. */
+  drafts?: { id: number; inReplyTo: number; body: string; html: string; who: string; at: string }[];
   /** The PR's head, for reading more of the file around the hunk. */
   headSha: string;
   /** GitHub's position in the diff, for its order. */
@@ -476,6 +490,99 @@ function prRows(d: Json): { k: string; v: string; tone?: string }[] {
  * in the PR, then the line; the discussion under the PR after them, oldest first. Each with
  * the whole hunk it is on and every message rendered.
  */
+/**
+ * Everything said on the pull request after `since` by somebody other than you, oldest first:
+ * replies in threads, comments on the conversation, and other people's verdicts. With a row for
+ * any thread an agent has drafted an answer in, said or not, because that is waiting on you too.
+ *
+ * `thread` is the thread's root comment, which is how the panel finds the card to open; a
+ * conversation comment has none and opens the conversation.
+ */
+function saidSince(d: Json, since: number, mine: Comment[]): Extract<EvidenceItem, { kind: 'replies' }> | null {
+  const viewer = d?.viewer || '';
+  const review: Json[] = d?.reviewComments || [];
+  const byId = new Map(review.map((c) => [c.id, c]));
+  const rootOf = (c: Json): Json => {
+    let cur = c;
+
+    for (let n = 0; n < 50 && cur.inReplyTo && byId.has(cur.inReplyTo); n++) {
+      cur = byId.get(cur.inReplyTo);
+    }
+
+    return cur;
+  };
+  const after = (at: string, who: string) => (Date.parse(at || '') || 0) > since && !!who && who !== viewer && !isBot(who);
+  const flat = (text: string) => String(text || '').replace(/\s+/g, ' ').slice(0, 160);
+  const rows: Extract<EvidenceItem, { kind: 'replies' }>['items'] = [];
+
+  for (const c of review) {
+    if (!c.pending && after(c.createdAt, c.author)) {
+      const root = rootOf(c);
+
+      rows.push({
+        thread: Number(root.id) || 0, where: root.path ? `${ root.path }${ root.line ? `:${ root.line }` : '' }` : 'PR', who: c.author, what: root.id === c.id ? 'commented on' : 'replied on', body: flat(c.body), at: c.createdAt, drafted: false,
+      });
+    }
+  }
+  for (const c of d?.discussion || []) {
+    if (after(c.createdAt, c.author)) {
+      rows.push({
+        thread: 0, where: 'the conversation', who: c.author, what: 'commented on', body: flat(c.body), at: c.createdAt, drafted: false,
+      });
+    }
+  }
+  for (const r of d?.reviews || []) {
+    const verdict = r.state === 'APPROVED' ? 'approved' : (r.state === 'CHANGES_REQUESTED' ? 'requested changes on' : '');
+
+    if (verdict && after(r.submittedAt, r.author)) {
+      rows.push({
+        thread: 0, where: 'the pull request', who: r.author, what: verdict, body: '', at: r.submittedAt, drafted: false,
+      });
+    }
+  }
+  // A thread with an agent's answer drafted in it and nothing new said: still something to do.
+  for (const c of mine) {
+    if (c.drafts?.length && !rows.some((r) => r.thread === Number(c.id))) {
+      rows.push({
+        thread: Number(c.id) || 0, where: c.where, who: c.drafts[0].who, what: 'drafted a reply on', body: flat(c.drafts[0].body), at: c.drafts[0].at, drafted: true,
+      });
+    }
+  }
+  for (const r of rows) {
+    r.drafted = r.drafted || !!mine.find((c) => Number(c.id) === r.thread)?.drafts?.length;
+  }
+  rows.sort((a, b) => (Date.parse(a.at || '') || 0) - (Date.parse(b.at || '') || 0));
+
+  return rows.length ? { kind: 'replies', items: rows } : null;
+}
+
+/** `Since you last spoke (2 commits, 3 messages)`: both halves of a round, in the strip, before it is opened. */
+function sinceTitle(commits: number, said: Extract<EvidenceItem, { kind: 'replies' }> | null): string {
+  const messages = said?.items.length || 0;
+  const parts = [
+    commits ? `${ commits } commit${ commits === 1 ? '' : 's' }` : '',
+    messages ? `${ messages } message${ messages === 1 ? '' : 's' }` : '',
+  ].filter(Boolean);
+
+  return parts.length ? `Since you last spoke (${ parts.join(', ') })` : 'Since you last spoke';
+}
+
+/**
+ * When you last said anything on the pull request: a review, a comment, a reply. What "since
+ * you last spoke" is measured from - later than your last review whenever you have answered
+ * somebody since, which is exactly when "since your review" showed answers you had already read.
+ */
+function lastSpoke(d: Json, submittedAt: number): number {
+  const viewer = d?.viewer || '';
+  const mine = [
+    ...(d?.reviewComments || []).filter((c: Json) => !c.pending && c.author === viewer).map((c: Json) => c.createdAt),
+    ...(d?.discussion || []).filter((c: Json) => c.author === viewer).map((c: Json) => c.createdAt),
+    ...(d?.reviews || []).filter((r: Json) => r.author === viewer).map((r: Json) => r.submittedAt),
+  ];
+
+  return Math.max(submittedAt, ...(viewer ? mine.map((at: string) => Date.parse(at || '') || 0) : [0]));
+}
+
 function threads(d: Json, since = 0, kinds: Record<string, string> = {}): Comment[] {
   const m = { ...(d.meta || {}), viewer: d.viewer || '' };
   const author = m.author || '';
@@ -513,8 +620,17 @@ function threads(d: Json, since = 0, kinds: Record<string, string> = {}): Commen
     const last = thread[thread.length - 1];
     const viewer = m.viewer || '';
 
+    const ids = new Set(thread.map((t) => t.id));
+    const drafts = (d.replyDrafts || [])
+      .filter((r: Json) => ids.has(Number(r.in_reply_to)))
+      .map((r: Json) => ({
+        id: Number(r.id), inReplyTo: Number(r.in_reply_to), body: String(r.body || ''), html: renderBody(String(r.body || ''), kinds), who: r.author || 'agent', at: r.created_at || '',
+      }));
+
     return {
       id: root.id, who: root.author || '?', where, path, line, body: String(root.body || '').slice(0, 400), at: last?.at || root.createdAt || '', answered: false, lastBy: last?.who || '', lastByAuthor: !!last?.author, thread,
+      fresh: thread.some((t) => t.isNew && !t.pending && (!viewer || t.who !== viewer)),
+      drafts,
       // An unsent draft is not a reply: `replied` is what says the author has spoken, and a
       // message GitHub has never seen has not been spoken to anyone.
       replied: thread.some((t) => t.author && !t.pending), mine: !!viewer && thread.some((t) => t.who === viewer), pending: thread.some((t) => t.pending), headSha: m.headSha || '', position: Number(root.position) || 0, context: '', rows, noPatch: false, url, order,
@@ -1149,14 +1265,16 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       // they have already said to each other. Without that, a second pass is judged as if it
       // were the first.
       if (status.reviewed && d) {
-        const since = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > submittedAt).map((c: Json) => ({
+        const spoke = lastSpoke(d, submittedAt);
+        const since = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > spoke).map((c: Json) => ({
           sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
         }));
         const mine = reviewThreads().map((c) => ({ ...c, answered: c.lastByAuthor }));
+        const said = saidSince(d, spoke, mine);
 
-        sections.push({ id: 'since-review', title: 'Since your review', items: since.length ? [{ kind: 'commits' as const, pr: status.pr, items: since, since: 'your review' }] : [{ kind: 'empty' as const, text: 'No new commits since your review.' }] });
+        sections.push({ id: 'since-review', title: sinceTitle(since.length, said), items: [...(since.length ? [{ kind: 'commits' as const, pr: status.pr, items: since, since: 'you last spoke' }] : [{ kind: 'empty' as const, text: 'No new commits since you last spoke on it.' }]), ...(said ? [said] : [])] });
         if (mine.length) {
-          sections.push({ id: 'your-threads', ...threadsTitle(mine.filter((c) => c.answered).length, mine.filter((c) => !c.answered).length), items: [{ kind: 'comments', items: mine, paged: true }] });
+          sections.push({ id: 'your-threads', ...threadsTitle(mine.filter((c) => c.answered && !c.fresh).length, mine.filter((c) => !c.answered && !c.fresh).length, mine.filter((c) => c.fresh).length), items: [{ kind: 'comments', items: mine, paged: true }] });
         }
       }
       artifactsSection('review');
@@ -1165,6 +1283,21 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     }
     case 'submitted': {
       const mine = submitted.length ? null : reviewThreads();
+
+      // Waiting on the developer, as far as the stage can tell - which is a reading, and readings
+      // miss things: another reviewer, an answer to your answer. So whatever was said or pushed
+      // since you last spoke is listed here as well, whenever there is any.
+      if (d) {
+        const spoke = lastSpoke(d, submittedAt);
+        const pushed = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > spoke).map((c: Json) => ({
+          sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
+        }));
+        const said = saidSince(d, spoke, reviewThreads());
+
+        if (pushed.length || said) {
+          sections.push({ id: 'since-review', title: sinceTitle(pushed.length, said), items: [...(pushed.length ? [{ kind: 'commits' as const, pr: status.pr, items: pushed, since: 'you last spoke' }] : []), ...(said ? [said] : [])] });
+        }
+      }
 
       // No "Your review" section: the Pull request section below now carries every comment on
       // the pull request, yours among them, laid out as the pull request has them. A second
@@ -1176,7 +1309,8 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     }
     case 'response':
       if (d) {
-        const newCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > submittedAt).map((c: Json) => ({
+        const spoke = lastSpoke(d, submittedAt);
+        const newCommits = (d.commits || []).filter((c: Json) => (Date.parse(c.date || '') || 0) > spoke).map((c: Json) => ({
           sha: String(c.sha || ''), message: c.message, who: c.author, at: c.date,
         }));
         // Every thread of the review in GitHub's own order, the unanswered ones marked, so what
@@ -1184,9 +1318,10 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         // Answered means the developer had the last word: a thread they replied in twice and
         // then heard something new in is still waiting on them.
         const mine = reviewThreads().map((c) => ({ ...c, answered: c.lastByAuthor }));
+        const said = saidSince(d, spoke, mine);
 
-        sections.push({ id: 'since-review', title: 'Since your review', items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits, since: 'your review' }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since your review.' }] : [])] });
-        sections.push({ id: 'your-threads', ...threadsTitle(mine.filter((c) => c.answered).length, mine.filter((c) => !c.answered).length), items: mine.length ? [{ kind: 'comments', items: mine, paged: true }] : [{ kind: 'empty', text: 'You have no threads on this PR.' }] });
+        sections.push({ id: 'since-review', title: sinceTitle(newCommits.length, said), items: [...(newCommits.length ? [{ kind: 'commits' as const, pr: status.pr, items: newCommits, since: 'you last spoke' }] : []), ...(!newCommits.length ? [{ kind: 'empty' as const, text: 'No new commits since you last spoke on it.' }] : []), ...(said ? [said] : [])] });
+        sections.push({ id: 'your-threads', ...threadsTitle(mine.filter((c) => c.answered && !c.fresh).length, mine.filter((c) => !c.answered && !c.fresh).length, mine.filter((c) => c.fresh).length), items: mine.length ? [{ kind: 'comments', items: mine, paged: true }] : [{ kind: 'empty', text: 'You have no threads on this PR.' }] });
       }
       if (report) {
         reportSection((Date.parse(report.at) || 0) > submittedAt ? 'What the agent found in the new commits' : 'Agent\'s review report (before the developer responded)');

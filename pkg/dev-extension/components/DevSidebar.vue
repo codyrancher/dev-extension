@@ -27,7 +27,7 @@ import {
 import { tickAgents } from '../agent-defs';
 import { startPendingConversations } from '../reviews';
 import {
-  workspaceStatuses, agentLabel, statusLine, stageName, attentionTone, attentionReason, autoStopIdle, workspaceTitle, knownStatus
+  workspaceStatuses, agentLabel, statusLine, stageName, attentionTone, attentionReason, autoStopIdle, workspaceTitle, knownStatus, unread, loadSeen
 } from '../workspace-status';
 import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import { ensureCertControllers } from '../certs';
@@ -271,6 +271,8 @@ export default {
 
   data() {
     return {
+      /** Whether the record of what has been seen has been read; until then nothing is new. */
+      seenLoaded:   false,
       workspaces:   cache.workspaces,
       clusters:     cache.clusters,
       ranchers:     cache.ranchers,
@@ -477,6 +479,10 @@ export default {
   },
 
   mounted() {
+    // What has been seen, so a row can say it has something new. See unread().
+    loadSeen().then(() => {
+      this.seenLoaded = true;
+    });
     /*
      * The column redraws when the workspace registrar moves, not on a timer.
      *
@@ -932,6 +938,11 @@ export default {
           tone:   status ? attentionTone(status) : undefined,
           // What that colour means, for the tooltip on the dot. See attentionReason.
           dotTitle: status ? attentionReason(status) : '',
+          // Something on the pull request you have not seen - a reply, a comment, a review, a
+          // push by somebody else - since you last spoke on it and last opened it. Whatever the
+          // stage says: see unread() in workspace-status.ts. `seenLoaded` is read so the row is
+          // worked out again once the record arrives.
+          unread: this.seenLoaded && workspace.name !== this.$route?.params?.workspace && unread(workspace.name, status),
           // The agent's state is carried by the row's status disc (its colour), not a glyph; the
           // words are on the card.
           agent:  status?.agent,

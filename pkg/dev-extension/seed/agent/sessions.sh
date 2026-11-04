@@ -42,6 +42,11 @@ AGENT_HOME=/workspace/.home
 # sessions. The sixth line is the CLI the conversation is held with.
 PANES=/workspace/.panes
 
+# Screenshots pasted into a conversation, one directory per conversation: `.images/<id>/`. A
+# conversation's pictures are found by its name, so ending it is one `rm -rf` and nothing has
+# to remember which files were whose. See `end` and `sweep-images`.
+IMAGES=/workspace/.images
+
 VERB=${1:-list}
 ID=$2
 
@@ -440,6 +445,10 @@ case "$VERB" in
     rm -f "$(dirname "$SESSIONS")/.queue/$ID"
     rm -f "$SESSIONS/$ID.resting"
 
+    # Its screenshots. They are its own by where they are (`.images/<id>/`), so this is all of
+    # them; anything this misses - a pod that died mid-end - `sweep-images` takes later.
+    rm -rf "$IMAGES/$ID"
+
     # The transcript is deliberately left alone.
     #
     # Every conversation now runs in one shared directory so that any pane's resume picker can
@@ -470,6 +479,63 @@ case "$VERB" in
       done
     } | grep '^p-' | sort -u || true
     echo @@END
+    ;;
+
+  sweep-images)
+    # Screenshots nobody can be holding.
+    #
+    # A conversation's own are `.images/<id>/`, and they go when `<id>` is no longer a
+    # conversation here: `end` removes them itself, so this is for the end that never finished.
+    #
+    # Before that layout every screenshot went into `.images/` itself with nothing to say whose it
+    # was. Those are kept while a conversation that is still here mentions one in its transcript
+    # or its queue, and go once none does - so they drain as their conversations end, rather than
+    # all at once and out from under somebody's open conversation.
+    #
+    # Nothing younger than GRACE minutes goes either way: a picture pasted into a message that has
+    # not been sent yet is in no transcript, and a conversation that is being made has no
+    # directory for a moment. Prints `SWEPT <owned dirs> <unowned files>`.
+    #
+    # Not under `set -e`: a grep that finds nothing is an answer here, not a failure.
+    set +e
+    GRACE=60
+    owned=0
+    loose=0
+    if [ -d "$IMAGES" ]; then
+      for dir in "$IMAGES"/*/; do
+        [ -d "$dir" ] || continue
+        id=$(basename "$dir")
+        [ -d "$SESSIONS/$id" ] && continue
+        [ -n "$(find "$dir" -type f -mmin -$GRACE -print -quit 2>/dev/null)" ] && continue
+        rm -rf "$dir" && owned=$((owned + 1))
+      done
+
+      # What the conversations still here refer to, by file name: every transcript they have had
+      # (`.id`, `.id.was`, and the one the hook last named), and what is queued to be said.
+      refs=$(mktemp)
+      for dir in "$SESSIONS"/*/; do
+        [ -d "$dir" ] || continue
+        id=$(basename "$dir")
+        {
+          cat "$SESSIONS/$id.id" "$SESSIONS/$id.id.was" 2>/dev/null
+          sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p' "$SESSIONS/$id.state.json" 2>/dev/null
+        } | tr -c 'a-zA-Z0-9-' '\n' | grep -E '^[0-9a-f-]{36}$' | sort -u | while read -r sid; do
+          for t in "$AGENT_HOME"/.claude/projects/*/"$sid".jsonl; do
+            [ -f "$t" ] && grep -oE '\.images/[A-Za-z0-9_.-]+\.(png|jpe?g|gif|webp)' "$t"
+          done
+        done >> "$refs"
+      done
+      cat "$(dirname "$SESSIONS")"/.queue/* 2>/dev/null | grep -oE '\.images/[A-Za-z0-9_.-]+\.(png|jpe?g|gif|webp)' >> "$refs"
+
+      for file in "$IMAGES"/*; do
+        [ -f "$file" ] || continue
+        [ -n "$(find "$file" -mmin -$GRACE -print 2>/dev/null)" ] && continue
+        grep -qxF ".images/$(basename "$file")" "$refs" && continue
+        rm -f "$file" && loose=$((loose + 1))
+      done
+      rm -f "$refs"
+    fi
+    echo "SWEPT $owned $loose"
     ;;
 
   rest-idle)

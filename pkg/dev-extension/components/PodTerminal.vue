@@ -22,7 +22,7 @@ import Socket, {
   EVENT_MESSAGE,
   EVENT_CONNECT_ERROR,
 } from '@shell/utils/socket';
-import { execUrl, writeImageToPod, AGENT_NS, AGENT_CONTAINER } from '../pod';
+import { execUrl, writeImageToPod, imagePathFor, AGENT_NS, AGENT_CONTAINER } from '../pod';
 import { agentPod, sessionCommand } from '../agent';
 import { readPrefs } from '../prefs';
 import ChatPane from './ChatPane.vue';
@@ -910,7 +910,9 @@ export default {
         // screenshot is usually called `image.png` every single time.
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const extension = (file.type.split('/')[1] || 'png').replace(/[^a-z0-9]/g, '');
-        const path = `${ this.imageDir }/${ stamp }.${ extension }`;
+        // In this conversation's own directory, which is what lets ending it take its pictures
+        // with it. See imagePathFor.
+        const path = imagePathFor(this.imageDir, this.session, `${ stamp }.${ extension }`);
 
         try {
           this.pasting = true;

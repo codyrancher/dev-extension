@@ -26,6 +26,7 @@ type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 import { activityState } from './agent';
 import { note } from './dev-log.mjs';
+import { readPrefs, savePrefs } from './prefs';
 
 export type AgentState = 'working' | 'input' | 'idle' | 'finished' | 'none';
 /**
@@ -161,6 +162,97 @@ export interface WorkspaceStatus {
   bug: string;
   /** When GitHub was last read for it; 0 when it never has been. */
   readAt: number;
+  /**
+   * The pull request's last activity by somebody other than you (a comment, a reply, a review, a
+   * commit), and when you last spoke on it (a review or a comment of yours). Both ms; 0 unknown.
+   * See unread() - they are what "new" in the sidebar is, whatever stage the heuristics settle on.
+   */
+  othersAt?: number;
+  spokeAt?: number;
+}
+
+/**
+ * When somebody else last did something on a pull request, and when you last spoke on it.
+ *
+ * Separate from the stage, and on purpose. The stage is a reading of the conversation - who is
+ * waiting on whom - and it is right most of the time and wrong in ways that are hard to see: a
+ * question in a thread with no commit, a second reviewer weighing in, an answer to your answer.
+ * Each of those is "something happened that you have not seen", which needs no reading at all.
+ * Bots do not count; an unsent draft of yours is not you speaking.
+ */
+export function activityTimes(d: Json): { othersAt: number; spokeAt: number } {
+  const viewer = d?.viewer || '';
+
+  if (!d || !viewer) {
+    return { othersAt: 0, spokeAt: 0 };
+  }
+  const said = [
+    ...(d.reviewComments || []).filter((c: Json) => !c.pending).map((c: Json) => ({ who: c.author, at: c.createdAt })),
+    ...(d.discussion || []).map((c: Json) => ({ who: c.author, at: c.createdAt })),
+    ...(d.reviews || []).map((r: Json) => ({ who: r.author, at: r.submittedAt })),
+  ].filter((s) => s.who && !isBot(s.who));
+  // By login: a commit's `author` is the name in it, which never equals a login. A commit GitHub
+  // could not match to an account is left out rather than guessed at - on your own pull request
+  // that guess would be your own push marking the workspace new.
+  const theirCommits = (d.commits || []).filter((c: Json) => c.login && c.login !== viewer && !isBot(c.login)).map((c: Json) => c.date);
+
+  return {
+    othersAt: latest([...said.filter((s) => s.who !== viewer).map((s) => s.at), ...theirCommits]),
+    spokeAt:  latest([...said.filter((s) => s.who === viewer).map((s) => s.at), ...(d.localComments || []).map((c: Json) => c.submitted_at)]),
+  };
+}
+
+/*
+ * When each workspace was last opened, kept in the person's preferences (see prefs.ts `seen`).
+ *
+ * `since` is when that started being kept: activity before it is not "new", or the first page
+ * load after this shipped would have marked every workspace with an old unanswered comment.
+ */
+const seen: Record<string, number> = {};
+let seenSince = 0;
+let seenRead: Promise<void> | null = null;
+let seenSave: ReturnType<typeof setTimeout> | null = null;
+
+/** Read the record once per page; a failed read leaves it empty, which marks nothing. */
+export function loadSeen(): Promise<void> {
+  if (!seenRead) {
+    seenRead = readPrefs().then((prefs) => {
+      Object.assign(seen, prefs.seen || {});
+      seenSince = prefs.seenSince || 0;
+      if (!seenSince) {
+        seenSince = Date.now();
+        savePrefs({ seenSince }).catch(() => {});
+      }
+    }).catch(() => {
+      seenSince = Date.now();
+    });
+  }
+
+  return seenRead;
+}
+
+/** The workspace is being looked at: everything on it up to now has been seen. */
+export function markSeen(name: string): void {
+  seen[name] = Date.now();
+  if (seenSave) {
+    clearTimeout(seenSave);
+  }
+  // Batched: a page that marks on every refresh writes the preference once, not every poll.
+  seenSave = setTimeout(() => {
+    seenSave = null;
+    loadSeen().then(() => savePrefs({ seen: { ...seen } })).catch(() => {});
+  }, 5000);
+}
+
+/**
+ * Whether a workspace has something on it you have not seen: activity by somebody else after
+ * you last spoke on the pull request, after you last opened the workspace, and after this
+ * started being kept. Nothing until the record has been read.
+ */
+export function unread(name: string, status: Pick<WorkspaceStatus, 'othersAt' | 'spokeAt'> | null | undefined): boolean {
+  const others = status?.othersAt || 0;
+
+  return !!seenSince && others > Math.max(status?.spokeAt || 0, seen[name] || 0, seenSince);
 }
 
 const AGENT_LABEL: Record<AgentState, string> = {
@@ -711,7 +803,7 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
     const rec = await reconcileStage(name, toDerived('review', w, pr));
 
     return {
-      ...display(rec, w), title: d.meta?.title || '', links, kind: 'review', pr,
+      ...display(rec, w), title: d.meta?.title || '', links, kind: 'review', pr, ...activityTimes(d),
     };
   }
   /*
@@ -768,7 +860,7 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
     const title = d?.meta?.title || (issue ? await issueBody(repo, issue).catch(() => ({ title: '' })).then((i) => i.title) : '') || '';
 
     return {
-      ...display(rec, w), title, links, kind: 'fix', pr: n,
+      ...display(rec, w), title, links, kind: 'fix', pr: n, ...(d ? activityTimes(d) : {}),
     };
   }
 

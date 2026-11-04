@@ -266,7 +266,7 @@ export function orphanedConversations(ids, keep, entries, projectOf) {
  */
 async function sweepConversations(deps, keep, entries, report) {
   const {
-    listConversations, endConversation, reapClients, projectOf, readNamespace, readInstance
+    listConversations, endConversation, reapClients, sweepImages, projectOf, readNamespace, readInstance
   } = deps;
 
   if (listConversations) {
@@ -295,6 +295,10 @@ async function sweepConversations(deps, keep, entries, report) {
   }
   if (reapClients) {
     report.clients = await reapClients().catch(() => null) || report.clients;
+  }
+  // After the conversations above are ended, so the screenshots of one ended this pass go in it.
+  if (sweepImages) {
+    report.images = await sweepImages().catch(() => null) || report.images;
   }
 }
 
@@ -542,6 +546,7 @@ async function removeInside({ path, run }, parent, name) {
  * @param {() => Promise<string[]|null>} [deps.listConversations] Every workspace conversation the agent pod holds, or null.
  * @param {(id: string) => Promise<boolean>} [deps.endConversation] End one, and say whether it worked.
  * @param {() => Promise<{stuck: number, idle: number}|null>} [deps.reapClients] Drop the dead tmux clients.
+ * @param {() => Promise<{owned: number, loose: number}|null>} [deps.sweepImages] Drop the screenshots no conversation holds.
  * @param {(id: string) => string} [deps.projectOf] The workspace a conversation's id names.
  * @returns {Promise<object>} What it did.
  */
@@ -550,7 +555,7 @@ export async function sweepHousekeeping(deps) {
     fs, path, root, listInstances, readRegistrar, readNamespace, readInstance, now
   } = deps;
   const report = {
-    at: new Date(now()).toISOString(), skipped: '', tagged: 0, trees: [], templates: [], kept: [], conversations: [], clients: { stuck: 0, idle: 0 }, errors: []
+    at: new Date(now()).toISOString(), skipped: '', tagged: 0, trees: [], templates: [], kept: [], conversations: [], clients: { stuck: 0, idle: 0 }, images: { owned: 0, loose: 0 }, errors: []
   };
   const instances = await listInstances().catch(() => null);
 

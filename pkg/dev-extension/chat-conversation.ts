@@ -55,7 +55,7 @@ import {
   parseMcpList, isSafeOptionValue, noOptions, parseOptions, type ChatOptions, type McpServer,
 } from './chat-options';
 import {
-  podExecOnce, statPodPath, readPodFileBase64, type PodTarget,
+  podExecOnce, statPodPath, readPodFileBase64, imagePathFor, type PodTarget,
 } from './pod';
 import { agentPod, sessionCommand } from './agent';
 import type { SessionMode } from './agent';
@@ -1843,7 +1843,7 @@ export function useConversation(source: () => ConversationSource) {
     // them, so the decision moves here and shrink is told rather than asked. Only the rare
     // failure below can make this wrong, and it repairs itself.
     const converting = blob.size >= 150_000 && typeof createImageBitmap === 'function';
-    let path = `${ from.value.imageDir || '/workspace/.images' }/${ stamp }.${ converting ? 'jpg' : original }`;
+    let path = imagePathFor(from.value.imageDir || '/workspace/.images', from.value.session, `${ stamp }.${ converting ? 'jpg' : original }`);
 
     // In the box before a byte has moved.
     draft.value = `${ draft.value }${ draft.value && !draft.value.endsWith(' ') ? ' ' : '' }${ path } `;

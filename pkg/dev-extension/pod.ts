@@ -452,3 +452,18 @@ export function clusterRoleBindingBody(): Record<string, unknown> {
     subjects:   [{ kind: 'ServiceAccount', name: AGENT_ACCOUNT, namespace: AGENT_NS }],
   };
 }
+
+/**
+ * Where a pasted image goes: the conversation's own directory under the pod's image directory.
+ *
+ * Ownership by place. `sessions.sh end <id>` removes `.images/<id>/` with everything else the
+ * conversation had, and `sessions.sh sweep-images` removes any `.images/<id>/` whose conversation is
+ * no longer there - so a screenshot cannot outlive the conversation it was pasted into, and nothing
+ * has to keep a list of which file is whose. A session that is not a plain id (or none) keeps the
+ * old flat place, which the sweep clears once no live transcript mentions the file.
+ */
+export function imagePathFor(imageDir: string, session: string | undefined, file: string): string {
+  const dir = (imageDir || '/workspace/.images').replace(/\/+$/, '');
+
+  return session && /^[A-Za-z0-9][A-Za-z0-9_-]{0,200}$/.test(session) ? `${ dir }/${ session }/${ file }` : `${ dir }/${ file }`;
+}

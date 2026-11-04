@@ -62,6 +62,15 @@ export interface DevPrefs {
    */
   cli: string;
   focus: FocusPrefs;
+  /**
+   * When each workspace was last opened, by name (ms), and when that started being recorded.
+   *
+   * What "new" in the sidebar is measured against: something somebody else did on the pull
+   * request after you last spoke on it AND after you last opened the workspace. The person's,
+   * not the browser's, so reading it on the phone clears it on the desk.
+   */
+  seen?: Record<string, number>;
+  seenSince?: number;
 }
 
 const EMPTY_FOCUS: FocusPrefs = { pinned: [], snoozed: {}, done: {} };
@@ -100,11 +109,19 @@ export async function readPrefs(): Promise<DevPrefs> {
       hiddenApps:     Array.isArray(parsed.hiddenApps) ? parsed.hiddenApps.filter((id: unknown) => typeof id === 'string') : [],
       defaultRancher: typeof parsed.defaultRancher === 'string' ? parsed.defaultRancher : '',
       trackedIssues:  Array.isArray(parsed.trackedIssues) ? parsed.trackedIssues.filter((key: unknown) => typeof key === 'string') : [],
+      // Read back, every one of them. `savePrefs` writes what this returns plus the change, so a
+      // field this leaves out is a field every other save wipes: the CLI chosen in Settings went
+      // back to Claude Code whenever an issue was tracked or a Rancher starred, and the Focus
+      // deck's set-aside cards came back the same way.
+      cli:            typeof parsed.cli === 'string' ? parsed.cli : '',
       focus:          {
         pinned:  Array.isArray(parsed.focus?.pinned) ? parsed.focus.pinned.filter((key: unknown) => typeof key === 'string') : [],
         snoozed: strings(parsed.focus?.snoozed),
         done:    strings(parsed.focus?.done),
+        ...(parsed.focus?.awaiting && typeof parsed.focus.awaiting === 'object' ? { awaiting: parsed.focus.awaiting } : {}),
       },
+      ...(parsed.seen && typeof parsed.seen === 'object' ? { seen: Object.fromEntries(Object.entries(parsed.seen).filter(([, v]) => typeof v === 'number')) as Record<string, number> } : {}),
+      ...(typeof parsed.seenSince === 'number' ? { seenSince: parsed.seenSince } : {}),
     };
   } catch {
     return { ...EMPTY };

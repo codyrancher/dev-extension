@@ -350,7 +350,7 @@ export default {
         <li
           v-for="row in block.rows"
           :key="row.key"
-          :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail || row.reserveDetail, 'dev-list__row--grouped': !!block.label }"
+          :class="{ 'dev-list__row--current': row.key === current, 'dev-list__row--tall': row.detail || row.reserveDetail, 'dev-list__row--grouped': !!block.label, 'dev-list__row--unread': row.unread }"
           class="dev-list__row"
           @mouseenter="showCard(row, $event)"
           @mouseleave="hideCard"
@@ -404,6 +404,11 @@ export default {
                 :class="detailClass(row)"
               >
                 <span class="dev-list__detail-text">{{ row.detail }}</span>
+                <span
+                  v-if="row.unread"
+                  class="dev-list__new"
+                  title="Something happened on the pull request since you last spoke on it or opened it"
+                >new</span>
               </span>
             </span>
             <!--
@@ -900,6 +905,27 @@ export default {
 @keyframes dev-list-deleting {
   0%, 100% { opacity: 0.85; }
   50%      { opacity: 0.4; }
+}
+
+/*
+ * Something you have not seen: the name in full weight and a word beside the stage, rather than
+ * one more colour - the dot's colour already says whether the work is waiting on you, and this
+ * says something different, that it moved while you were not looking.
+ */
+.dev-list__row--unread .dev-list__name { font-weight: 700; color: var(--body-text); }
+
+.dev-list__new {
+  margin-left:    6px;
+  padding:        0 5px;
+  border-radius:  var(--dev-r-xs, 3px);
+  background:     var(--link);
+  color:          var(--body-bg, #fff);
+  font-size:      10px;
+  font-weight:    700;
+  line-height:    15px;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  vertical-align: 1px;
 }
 </style>
 

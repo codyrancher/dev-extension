@@ -1770,6 +1770,66 @@ async function saveComments(num, comments) {
   await writeReview(num, 'comments.json', comments);
 }
 
+/*
+ * Replies an agent has drafted into somebody's thread, for a person to send.
+ *
+ * Kept apart from comments.json on purpose. Those are findings: they are counted, approved and
+ * submitted together as one review, and a reply is none of that - it goes into a thread that
+ * already exists, on its own, when somebody presses Send under it. Mixed in, every reader of the
+ * findings would have to know to leave replies out, and the first one that did not would post a
+ * reply as a new review comment on a line.
+ *
+ * Not a GitHub pending review either, which is what the harness this API stands in for used.
+ * GitHub allows one pending review per person per pull request, and the panel submits findings
+ * as a fresh review - so a pending review opened for a reply made every later submit fail.
+ */
+async function replyDrafts(num) {
+  return (await readReview(num, 'replies.json')) || [];
+}
+
+async function saveReplyDrafts(num, drafts) {
+  await writeReview(num, 'replies.json', drafts);
+}
+
+/** Every review thread on the pull request, with the id a reply is filed against. */
+async function prThreads(num, repo) {
+  const [owner, name] = repo.split('/');
+  const data = await graphql(`
+    query($owner: String!, $name: String!, $num: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $num) {
+          reviewThreads(first: 100) {
+            nodes {
+              id isResolved isOutdated
+              comments(first: 100) { nodes { databaseId body author { login } createdAt path line } }
+            }
+          }
+        }
+      }
+    }`, { owner, name, num });
+
+  return (data.repository?.pullRequest?.reviewThreads?.nodes || []).map((t) => {
+    const all = t.comments?.nodes || [];
+    const first = all[0] || {};
+    const last = all[all.length - 1] || {};
+
+    return {
+      threadId:   t.id,
+      resolved:   t.isResolved,
+      outdated:   t.isOutdated,
+      path:       first.path || null,
+      line:       first.line ?? null,
+      commentId:  first.databaseId ?? null,
+      author:     first.author?.login || null,
+      body:       first.body || '',
+      replies:    Math.max(all.length - 1, 0),
+      lastAuthor: last.author?.login || null,
+      lastBody:   last.body || '',
+      lastAt:     last.createdAt || null,
+    };
+  });
+}
+
 // Where the agent pod's files are, as this pod sees them. The Studio's agent keeps its
 // workspace on a hostPath; the same directory is mounted here read-only (see api.ts,
 // ensureWorkspaceApi) so a recording an agent made can be looked at before it goes anywhere.
@@ -2893,6 +2953,57 @@ const OPENAPI = {
         operationId: 'addPrComment',
         summary:     'Draft a comment on a line of the diff.',
         responses:   { 200: { description: 'The comment as stored.' } },
+      },
+    },
+    '/my-work/pr/{num}/threads': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }],
+      get: {
+        operationId: 'listPrThreads',
+        summary:     'Every review thread on the PR on GitHub: `commentId` is what a reply is drafted against.',
+        responses:   { 200: { description: '`{ threads: [{ threadId, commentId, path, line, author, body, replies, lastAuthor, lastBody, lastAt, resolved, outdated }] }`.' } },
+      },
+    },
+    '/my-work/pr/{num}/reply-draft': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }],
+      post: {
+        operationId: 'draftThreadReply',
+        summary:     'Draft a reply inside an existing review thread, for the person to send.',
+        description: [
+          'Send `{ commentId, body }` (or `threadId` in place of `commentId`). Nothing is posted: the',
+          'draft shows under that thread in the workspace panel, where the person sends it, edits',
+          'it or throws it away. One draft per call; draft again to add another.',
+        ].join('\n'),
+        responses:   { 200: { description: 'The draft as stored.' }, 404: { description: 'No such thread.' } },
+      },
+    },
+    '/my-work/pr/{num}/reply-drafts': {
+      parameters: [{
+        name: 'num', in: 'path', required: true, schema: { type: 'integer' },
+      }],
+      get: {
+        operationId: 'listReplyDrafts',
+        summary:     'The replies drafted into threads on this PR and not sent yet.',
+        responses:   { 200: { description: '`[{ id, in_reply_to, body, author, created_at }]`.' } },
+      },
+    },
+    '/my-work/pr/{num}/reply-drafts/{commentId}': {
+      parameters: [
+        { name: 'num', in: 'path', required: true, schema: { type: 'integer' } },
+        { name: 'commentId', in: 'path', required: true, schema: { type: 'integer' }, description: 'The draft\'s id, as the list gives it.' },
+      ],
+      put: {
+        operationId: 'amendReplyDraft',
+        summary:     'Change a drafted reply\'s wording: `{ body }`.',
+        responses:   { 200: { description: 'The draft.' }, 404: { description: 'No such draft.' } },
+      },
+      delete: {
+        operationId: 'discardReplyDraft',
+        summary:     'Throw a drafted reply away. The panel does this after sending one.',
+        responses:   { 200: { description: 'Gone.' } },
       },
     },
     '/my-work/pr/{num}/comments/revision': {
@@ -4145,6 +4256,9 @@ async function prDetail(repo, num) {
       sha:     c.sha,
       message: (c.commit?.message || '').split('\n')[0].slice(0, 120),
       author:  c.commit?.author?.name || c.author?.login || 'unknown',
+      // The GitHub account behind it, where GitHub could match one: `author` is the name in the
+      // commit, which is no use for telling your own pushes from somebody else's.
+      login:   c.author?.login || c.committer?.login || '',
       // The committer's date, not the author's: a rebase keeps the author date, and what the
       // page wants to know is when the commit reached the branch.
       date:    c.commit?.committer?.date || c.commit?.author?.date || null,
@@ -4160,6 +4274,7 @@ async function prDetail(repo, num) {
       id: c.id, author: c.user?.login, body: c.body, createdAt: c.created_at,
     })),
     localComments: (await localComments(num)).map(decorate),
+    replyDrafts:   await replyDrafts(num),
     run:           await readReview(num, 'run.json'),
     viewer:        await githubViewer(),
     // Every review submitted on the PR, whoever submitted it and from wherever: the rail's
@@ -6402,6 +6517,63 @@ const routes = [
 
     return { ok: true };
   }],
+  ['GET', /^\/my-work\/pr\/(\d+)\/threads$/, async(m, url) => ({ threads: await prThreads(Number(m[1]), repoOf(url)) })],
+  ['POST', /^\/my-work\/pr\/(\d+)\/reply-draft$/, async(m, url, body) => {
+    const num = Number(m[1]);
+    const text = typeof body?.body === 'string' ? body.body.trim() : '';
+    let commentId = Number(body?.commentId) || 0;
+    const threadId = typeof body?.threadId === 'string' ? body.threadId : '';
+
+    if (!text) {
+      throw failure(400, 'body is required');
+    }
+    if (!commentId && !threadId) {
+      throw failure(400, 'commentId or threadId is required: GET /my-work/pr/<n>/threads lists both.');
+    }
+    if (!commentId) {
+      commentId = (await prThreads(num, repoOf(url))).find((t) => t.threadId === threadId)?.commentId || 0;
+      if (!commentId) {
+        throw failure(404, `There is no review thread ${ threadId } on #${ num }.`);
+      }
+    }
+    const drafts = await replyDrafts(num);
+    const created = {
+      id:          drafts.reduce((max, d) => Math.max(max, d.id), 0) + 1,
+      pr:          num,
+      in_reply_to: commentId,
+      body:        text.slice(0, 60000),
+      author:      typeof body.author === 'string' ? body.author.slice(0, 40) : 'agent',
+      created_at:  new Date().toISOString(),
+    };
+
+    drafts.push(created);
+    await saveReplyDrafts(num, drafts);
+
+    return { ok: true, ...created, note: 'Drafted. It shows under that thread in the workspace panel, where the person sends, edits or discards it. Nothing has been posted.' };
+  }],
+  ['GET', /^\/my-work\/pr\/(\d+)\/reply-drafts$/, async(m) => replyDrafts(Number(m[1]))],
+  ['PUT', /^\/my-work\/pr\/(\d+)\/reply-drafts\/(\d+)$/, async(m, url, body) => {
+    const num = Number(m[1]);
+    const drafts = await replyDrafts(num);
+    const draft = drafts.find((d) => d.id === Number(m[2]));
+
+    if (!draft) {
+      throw failure(404, 'no such draft');
+    }
+    if (typeof body?.body === 'string' && body.body.trim()) {
+      draft.body = body.body.trim().slice(0, 60000);
+    }
+    await saveReplyDrafts(num, drafts);
+
+    return draft;
+  }],
+  ['DELETE', /^\/my-work\/pr\/(\d+)\/reply-drafts\/(\d+)$/, async(m) => {
+    const num = Number(m[1]);
+
+    await saveReplyDrafts(num, (await replyDrafts(num)).filter((d) => d.id !== Number(m[2])));
+
+    return { ok: true };
+  }],
   // A file as it is at a ref - the PR head - for expanding the context between hunks.
   ['GET', /^\/my-work\/pr\/(\d+)\/file$/, async(m, url) => {
     const filePath = url.searchParams.get('path') || '';
@@ -8462,6 +8634,13 @@ async function endHeldConversation(id) {
   return (await askAgentSessions('end', id)).trim().endsWith('ok');
 }
 
+/** Screenshots whose conversation has ended, and loose ones no conversation still mentions. See sessions.sh. */
+async function sweepConversationImages() {
+  const swept = /^SWEPT (\d+) (\d+)$/m.exec(await askAgentSessions('sweep-images'));
+
+  return swept ? { owned: Number(swept[1]), loose: Number(swept[2]) } : null;
+}
+
 async function reapTerminalClients() {
   const reaped = /^REAPED (\d+) (\d+)$/m.exec(await askAgentSessions('reap-clients'));
 
@@ -8504,10 +8683,11 @@ const sweepOnce = singleFlight(async() => {
     listConversations: heldConversations,
     endConversation:   endHeldConversation,
     reapClients:       reapTerminalClients,
+    sweepImages:       sweepConversationImages,
   });
 
   lastHousekeeping = report;
-  if (report.tagged || report.trees.length || report.templates.length || report.conversations.length || report.clients.stuck || report.clients.idle || report.errors.length) {
+  if (report.tagged || report.trees.length || report.templates.length || report.conversations.length || report.clients.stuck || report.clients.idle || report.images?.owned || report.images?.loose || report.errors.length) {
     console.log('[dev-api] housekeeping:', JSON.stringify(report));
   }
 

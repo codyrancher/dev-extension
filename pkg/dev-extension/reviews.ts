@@ -487,6 +487,29 @@ export async function deleteReviewComment(id: number, repo = DEFAULT_REPO): Prom
   await gh('DELETE', `/repos/${ repo }/pulls/comments/${ id }`);
 }
 
+/** A reply an agent drafted into a thread, as dev-api keeps it (`/my-work/pr/<n>/reply-draft`). */
+export interface ReplyDraft {
+  id: number;
+  inReplyTo: number;
+  body: string;
+}
+
+/**
+ * Send an agent's drafted reply: into its thread on GitHub now, then off the drafts. In that
+ * order, so a send that fails leaves the draft where it was rather than losing it.
+ */
+export async function sendReplyDraft(num: number, draft: ReplyDraft, body = draft.body, repo = DEFAULT_REPO): Promise<{ id: number; url: string }> {
+  const sent = await replyToComment(num, draft.inReplyTo, body, repo);
+
+  await discardReplyDraft(num, draft.id);
+
+  return sent;
+}
+
+export async function discardReplyDraft(num: number, id: number): Promise<void> {
+  await api(`/my-work/pr/${ num }/reply-drafts/${ id }`, { method: 'DELETE' });
+}
+
 export async function replyToComment(num: number, commentId: number, body: string, repo = DEFAULT_REPO): Promise<{ id: number; url: string }> {
   const reply = await gh('POST', `/repos/${ repo }/pulls/${ num }/comments/${ commentId }/replies`, { body });
 
