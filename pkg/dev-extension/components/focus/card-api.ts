@@ -68,6 +68,7 @@ import CardChecks from './CardChecks.vue';
 import CardSurface from './CardSurface.vue';
 import CodeView from '../code/CodeView.vue';
 import FileModal from '../code/FileModal.vue';
+import DevModal from '../DevModal.vue';
 
 /**
  * The surfaces a card can build out of, rather than build again.
@@ -119,6 +120,8 @@ export const CARD_COMPONENTS: Record<string, any> = {
   CardChecks,
   CodeView,
   FileModal,
+  /** Any other dialog a card opens: `<DevModal focus title="…" @close>`. Full screen on a phone. */
+  DevModal,
 };
 
 export interface CardApi {

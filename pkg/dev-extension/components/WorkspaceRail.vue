@@ -4622,18 +4622,16 @@ export default {
         A screenshot, a recording, a script, a report: whatever it is, in the viewer that shows
         it. One of the workspace's own files can be edited there and is saved back into it.
       -->
-      <Teleport to="body">
-        <ArtifactViewer
-          v-if="shot"
-          :key="shot.src"
-          :src="shot.src"
-          :name="shot.name"
-          :caption="shot.caption"
-          :save="shot.path ? saveShot : null"
-          @saved="refreshEvidence"
-          @close="shot = null"
-        />
-      </Teleport>
+      <ArtifactViewer
+        v-if="shot"
+        :key="shot.src"
+        :src="shot.src"
+        :name="shot.name"
+        :caption="shot.caption"
+        :save="shot.path ? saveShot : null"
+        @saved="refreshEvidence"
+        @close="shot = null"
+      />
 
       <!-- The approval: what it says, and the evidence that goes with it. -->
       <DevModal

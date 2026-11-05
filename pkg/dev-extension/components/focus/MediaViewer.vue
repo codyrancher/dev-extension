@@ -25,7 +25,7 @@ import ArtifactThumb from '../pr/ArtifactThumb.vue';
 import { highlight } from '../../highlight';
 import { artifactLanguage } from '../../artifact-kind';
 import IconButton from './IconButton.vue';
-import { holdOverlay, releaseOverlay } from './overlay';
+import DevModal from '../DevModal.vue';
 import { firstFrame, still } from './media';
 
 const props = defineProps<{ items: CardMedia[]; start?: number }>();
@@ -203,14 +203,16 @@ function onMove(event: PointerEvent) {
 
 const onUp = () => { dragging.value = false; };
 
-function onKey(event: KeyboardEvent) {
-  if (event.key === 'Escape') {
-    if (cameFromGrid.value && !grid.value) {
-      showAll();
-    } else {
-      emit('close');
-    }
+/** DevModal's close, with why: Escape steps back to the grid it came from, anything else leaves. */
+function onClose(why?: string) {
+  if (why === 'escape' && cameFromGrid.value && !grid.value) {
+    showAll();
+  } else {
+    emit('close');
   }
+}
+
+function onKey(event: KeyboardEvent) {
   if (grid.value) {
     /*
      * The arrows and the zoom reset belong to the one in view, and on the grid there is no "one"
@@ -233,22 +235,24 @@ function onKey(event: KeyboardEvent) {
 
 /*
  * The deck also listens on the window, and it turns on the arrow keys. While this is open the
- * arrows belong to the pictures, so the deck is told to keep its hands down.
+ * arrows belong to the pictures; DevModal tells the deck to keep its hands down.
  */
-onMounted(() => {
-  holdOverlay();
-  window.addEventListener('keydown', onKey);
-});
-
-onBeforeUnmount(() => {
-  releaseOverlay();
-  window.removeEventListener('keydown', onKey);
-});
+onMounted(() => window.addEventListener('keydown', onKey));
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 </script>
 
 <template>
-  <div class="viewer" @click.self="emit('close')">
-    <header class="viewer__bar" @click.stop>
+  <!--
+    DevModal at its `full` size: the whole window, frosted, no panel edge - the frame is what is
+    being looked at. Its header carries the way back, the name and the zoom; the close is its own.
+  -->
+  <DevModal
+    focus
+    size="full"
+    :title="grid ? 'Artifacts' : item.label"
+    @close="onClose"
+  >
+    <template #title>
       <!--
         The way back to the set, offered whenever there is a set - including when the viewer
         opened on one artifact from a comment, where "there are four of these" is news.
@@ -267,154 +271,156 @@ onBeforeUnmount(() => {
       <span class="viewer__label">{{ grid ? 'Artifacts' : item.label }}</span>
       <span v-if="grid" class="viewer__count">{{ items.length }} attached</span>
       <span v-else-if="items.length > 1" class="viewer__count">{{ at + 1 }} of {{ items.length }}</span>
+    </template>
 
-      <span class="viewer__tools">
-        <template v-if="!grid && item.kind === 'image'">
-          <IconButton name="minus" label="Zoom out" :size="34" @click="zoomAt(1 / 1.4)" />
-          <span class="viewer__scale">{{ Math.round(scale * 100) }}%</span>
-          <IconButton name="plus" label="Zoom in" :size="34" @click="zoomAt(1.4)" />
-          <IconButton name="expand" label="Fit to the window" :size="34" @click="reset" />
-        </template>
-        <IconButton name="cross" label="Close" :size="34" @click="emit('close')" />
-      </span>
-    </header>
-
-    <!--
-      All of them at once: the picker, and the view this opens on when a card hands over a set.
-      Nothing plays here - a tile is the frame the recording opens on, for the reason CommentBody
-      gives: five players in a dialog is five things making noise about where you have not looked.
-    -->
-    <div v-if="grid" class="viewer__grid" @click.self="emit('close')">
-      <button
-        v-for="(shot, n) in items"
-        :key="`${ shot.src }-${ n }`"
-        type="button"
-        class="shot"
-        :title="shot.caption ? `${ shot.label } — ${ shot.caption }` : `Open ${ shot.label }`"
-        @click="openOne(n)"
-      >
-        <span class="shot__frame">
-          <video
-            v-if="shot.kind === 'video'"
-            class="shot__media"
-            :src="firstFrame(shot.src)"
-            preload="metadata"
-            muted
-            playsinline
-            @loadedmetadata="still"
-          />
-          <!--
-            A text file gets a picture of itself, the way it does in the workspace's artifacts.
-            
-            It was a document glyph and an extension - because the browser cannot make a
-            thumbnail of a `.md` and an `<img>` pointed at one drew a broken image. But nothing
-            here had to: `ArtifactThumb` reads the first couple of kilobytes, puts them through
-            the same highlighter the diff uses, and renders markdown as the page it becomes. It
-            is lazy and it retries, which is the other half of why it exists. One component, two
-            views, rather than a glyph in this one.
-          -->
-          <ArtifactThumb
-            v-else-if="shot.kind === 'text'"
-            class="shot__thumb"
-            :url="shot.src"
-            :name="shot.label"
-          />
-          <img
-            v-else
-            class="shot__media"
-            :src="shot.src"
-            :alt="shot.caption || shot.label"
-            loading="lazy"
-          >
-
-          <span v-if="shot.kind === 'video'" class="shot__play"><AppIcon name="play" :size="16" /></span>
-        </span>
-
-        <!--
-          The name, in full and on two lines if it needs them. Three near-identical screenshots
-          of the same page is the normal case, so the file name is the whole difference between
-          them and an ellipsis through the middle of it takes that away.
-        -->
-        <span class="shot__name">{{ shot.label }}</span>
-        <span class="shot__meta">
-          <AppIcon :name="kindIcon(shot.kind)" :size="11" />
-          <template v-if="shot.dir">{{ shot.dir }} · </template>{{ kindLabel(shot) }}<template v-if="when(shot.at)"> · {{ when(shot.at) }}</template>
-        </span>
-      </button>
-    </div>
-
-    <!--
-      Only an image takes the wheel.
-
-      This was `@wheel.prevent`, and a Vue event modifier is not conditional: the handler ran
-      for an image and the `preventDefault` ran for everything, so on a text file the wheel was
-      cancelled by a listener that then did nothing with it - four hundred lines of script in a
-      box that would not scroll. `onWheel` calls `preventDefault` itself, which is where it
-      belongs: zooming is the case that means to swallow the event.
-    -->
-    <div
-      v-else
-      ref="stage"
-      class="viewer__stage"
-      :class="{ 'viewer__stage--grab': scale > 1, 'viewer__stage--held': dragging }"
-      @click.self="emit('close')"
-      @wheel="item.kind === 'image' ? onWheel($event) : undefined"
+    <template
+      v-if="!grid && item.kind === 'image'"
+      #head
     >
-      <img
-        v-if="item.kind === 'image'"
-        :src="item.src"
-        :alt="item.label"
-        class="viewer__img"
-        :style="{ transform: `translate(${ x }px, ${ y }px) scale(${ scale })`, transition: dragging ? 'none' : undefined }"
-        draggable="false"
-        @pointerdown="onDown"
-        @pointermove="onMove"
-        @pointerup="onUp"
-        @pointercancel="onUp"
-        @dblclick="scale > 1 ? reset() : zoomAt(2.4, $event.clientX, $event.clientY)"
-      >
+      <IconButton name="minus" label="Zoom out" :size="32" @click="zoomAt(1 / 1.4)" />
+      <span class="viewer__scale">{{ Math.round(scale * 100) }}%</span>
+      <IconButton name="plus" label="Zoom in" :size="32" @click="zoomAt(1.4)" />
+      <IconButton name="expand" label="Fit to the window" :size="32" @click="reset" />
+    </template>
 
-      <!-- The file itself, read rather than looked at. -->
-      <div
-        v-else-if="item.kind === 'text'"
-        class="viewer__text"
-        @click.stop
-      >
-        <p v-if="reading" class="viewer__note">Reading…</p>
-        <p v-else-if="unreadable" class="viewer__note">This file could not be read: {{ unreadable }}</p>
-        <!--
-          The file in its language's colours, through the same highlighter as the diff and the
-          thumbnails. It was a plain `<pre>`: correct, and no help at all on four hundred lines
-          of someone's exploration script.
+    <div class="viewer">
+      <!--
+        All of them at once: the picker, and the view this opens on when a card hands over a set.
+        Nothing plays here - a tile is the frame the recording opens on, for the reason CommentBody
+        gives: five players in a dialog is five things making noise about where you have not looked.
+      -->
+      <div v-if="grid" class="viewer__grid" @click.self="emit('close')">
+        <button
+          v-for="(shot, n) in items"
+          :key="`${ shot.src }-${ n }`"
+          type="button"
+          class="shot"
+          :title="shot.caption ? `${ shot.label } — ${ shot.caption }` : `Open ${ shot.label }`"
+          @click="openOne(n)"
+        >
+          <span class="shot__frame">
+            <video
+              v-if="shot.kind === 'video'"
+              class="shot__media"
+              :src="firstFrame(shot.src)"
+              preload="metadata"
+              muted
+              playsinline
+              @loadedmetadata="still"
+            />
+            <!--
+              A text file gets a picture of itself, the way it does in the workspace's artifacts.
+            
+              It was a document glyph and an extension - because the browser cannot make a
+              thumbnail of a `.md` and an `<img>` pointed at one drew a broken image. But nothing
+              here had to: `ArtifactThumb` reads the first couple of kilobytes, puts them through
+              the same highlighter the diff uses, and renders markdown as the page it becomes. It
+              is lazy and it retries, which is the other half of why it exists. One component, two
+              views, rather than a glyph in this one.
+            -->
+            <ArtifactThumb
+              v-else-if="shot.kind === 'text'"
+              class="shot__thumb"
+              :url="shot.src"
+              :name="shot.label"
+            />
+            <img
+              v-else
+              class="shot__media"
+              :src="shot.src"
+              :alt="shot.caption || shot.label"
+              loading="lazy"
+            >
 
-          `v-html` on `highlight()`'s output, which escapes what it is given before it marks it
-          up - see highlight.ts - so this is the library's spans and nothing of the file's own.
-        -->
-        <pre v-else class="viewer__pre"><code class="hljs" v-html="bodyHtml" /></pre>
+            <span v-if="shot.kind === 'video'" class="shot__play"><AppIcon name="play" :size="16" /></span>
+          </span>
+
+          <!--
+            The name, in full and on two lines if it needs them. Three near-identical screenshots
+            of the same page is the normal case, so the file name is the whole difference between
+            them and an ellipsis through the middle of it takes that away.
+          -->
+          <span class="shot__name">{{ shot.label }}</span>
+          <span class="shot__meta">
+            <AppIcon :name="kindIcon(shot.kind)" :size="11" />
+            <template v-if="shot.dir">{{ shot.dir }} · </template>{{ kindLabel(shot) }}<template v-if="when(shot.at)"> · {{ when(shot.at) }}</template>
+          </span>
+        </button>
       </div>
 
-      <video
-        v-else
-        :src="item.src"
-        class="viewer__video"
-        controls
-        autoplay
-        loop
-        playsinline
-      />
-    </div>
+      <!--
+        Only an image takes the wheel.
 
-    <footer class="viewer__foot" @click.stop>
-      <template v-if="grid">
-        <p class="viewer__caption">Open one to read it full size, zoom into it or scrub it.</p>
-      </template>
-      <template v-else>
-        <IconButton v-if="items.length > 1" name="chevron-left" label="Previous" :size="34" @click="go(-1)" />
-        <p class="viewer__caption">{{ item.caption || item.label }}</p>
-        <IconButton v-if="items.length > 1" name="chevron-right" label="Next" :size="34" @click="go(1)" />
-      </template>
-    </footer>
-  </div>
+        This was `@wheel.prevent`, and a Vue event modifier is not conditional: the handler ran
+        for an image and the `preventDefault` ran for everything, so on a text file the wheel was
+        cancelled by a listener that then did nothing with it - four hundred lines of script in a
+        box that would not scroll. `onWheel` calls `preventDefault` itself, which is where it
+        belongs: zooming is the case that means to swallow the event.
+      -->
+      <div
+        v-else
+        ref="stage"
+        class="viewer__stage"
+        :class="{ 'viewer__stage--grab': scale > 1, 'viewer__stage--held': dragging }"
+        @click.self="emit('close')"
+        @wheel="item.kind === 'image' ? onWheel($event) : undefined"
+      >
+        <img
+          v-if="item.kind === 'image'"
+          :src="item.src"
+          :alt="item.label"
+          class="viewer__img"
+          :style="{ transform: `translate(${ x }px, ${ y }px) scale(${ scale })`, transition: dragging ? 'none' : undefined }"
+          draggable="false"
+          @pointerdown="onDown"
+          @pointermove="onMove"
+          @pointerup="onUp"
+          @pointercancel="onUp"
+          @dblclick="scale > 1 ? reset() : zoomAt(2.4, $event.clientX, $event.clientY)"
+        >
+
+        <!-- The file itself, read rather than looked at. -->
+        <div
+          v-else-if="item.kind === 'text'"
+          class="viewer__text"
+          @click.stop
+        >
+          <p v-if="reading" class="viewer__note">Reading…</p>
+          <p v-else-if="unreadable" class="viewer__note">This file could not be read: {{ unreadable }}</p>
+          <!--
+            The file in its language's colours, through the same highlighter as the diff and the
+            thumbnails. It was a plain `<pre>`: correct, and no help at all on four hundred lines
+            of someone's exploration script.
+
+            `v-html` on `highlight()`'s output, which escapes what it is given before it marks it
+            up - see highlight.ts - so this is the library's spans and nothing of the file's own.
+          -->
+          <pre v-else class="viewer__pre"><code class="hljs" v-html="bodyHtml" /></pre>
+        </div>
+
+        <video
+          v-else
+          :src="item.src"
+          class="viewer__video"
+          controls
+          autoplay
+          loop
+          playsinline
+        />
+      </div>
+
+      <footer class="viewer__foot" @click.stop>
+        <template v-if="grid">
+          <p class="viewer__caption">Open one to read it full size, zoom into it or scrub it.</p>
+        </template>
+        <template v-else>
+          <IconButton v-if="items.length > 1" name="chevron-left" label="Previous" :size="34" @click="go(-1)" />
+          <p class="viewer__caption">{{ item.caption || item.label }}</p>
+          <IconButton v-if="items.length > 1" name="chevron-right" label="Next" :size="34" @click="go(1)" />
+        </template>
+      </footer>
+    </div>
+  </DevModal>
 </template>
 
 <!--
@@ -436,28 +442,17 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+/*
+ * The single artifact or the grid, and the caption under it: two rows, the first one scrolling.
+ * The bar that was the first row is DevModal's header now.
+ */
 .viewer {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: var(--s3);
-  padding: var(--s4) clamp(var(--s4), 3vw, var(--s6)) var(--s5);
-  background: color-mix(in srgb, var(--ground-deep) 88%, transparent);
-  backdrop-filter: blur(14px);
-  animation: viewer-in var(--base) var(--ease-out);
-}
-
-@keyframes viewer-in {
-  from { opacity: 0; backdrop-filter: blur(0); }
-}
-
-.viewer__bar {
-  display: flex;
-  align-items: center;
-  gap: var(--s3);
-  min-width: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 clamp(var(--s4), 3vw, var(--s6)) var(--s5);
 }
 
 .viewer__label {
@@ -469,8 +464,7 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 
-.viewer__count { color: var(--text-muted); font-size: var(--t-sm); }
-.viewer__tools { display: flex; align-items: center; gap: var(--s2); margin-left: auto; }
+.viewer__count { color: var(--text-muted); font-size: var(--t-sm); font-weight: 400; white-space: nowrap; }
 .viewer__scale { min-width: 4ch; color: var(--text-dim); font-size: var(--t-sm); text-align: center; }
 
 /*
@@ -535,7 +529,7 @@ onBeforeUnmount(() => {
 /* ── All of them at once ─────────────────────────────────────────────────────────────────── */
 /*
  * The tiles occupy the same `minmax(0, 1fr)` row the single artifact does - they are an `v-else`
- * of each other, so the dialog still has exactly three children for its three tracks. The row
+ * of each other, so the viewer still has exactly two children for its two tracks. The row
  * is what scrolls; the dialog never does.
  *
  * `align-content: start` because that row stretches: two artifacts in a full-height track with

@@ -1,8 +1,8 @@
 <script>
-import AppModal from '@shell/components/AppModal';
 import LabeledSelect from '@shell/components/form/LabeledSelect';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
+import DevModal from './DevModal.vue';
 import { importResource } from '../import-resource';
 import { PROVISIONING_CLUSTER } from '../config/types';
 
@@ -28,7 +28,7 @@ export default {
   name: 'ImportResourceModal',
 
   components: {
-    AppModal, LabeledSelect, Banner, RcButton
+    DevModal, LabeledSelect, Banner, RcButton
   },
 
   props: {
@@ -203,94 +203,73 @@ export default {
 </script>
 
 <template>
-  <AppModal
-    :width="640"
-    name="import-resource"
+  <DevModal
+    size="medium"
+    :title="t('appsPlus.import.title')"
     @close="$emit('close')"
   >
-    <div class="import">
-      <h4 class="import__title">
-        {{ t('appsPlus.import.title') }}
-      </h4>
+    <Banner
+      color="info"
+      :label="t('appsPlus.import.hint')"
+    />
 
-      <Banner
-        color="info"
-        :label="t('appsPlus.import.hint')"
-      />
+    <LabeledSelect
+      v-model:value="cluster"
+      class="mb-10"
+      :options="clusters"
+      :label="t('appsPlus.import.cluster')"
+    />
 
-      <LabeledSelect
-        v-model:value="cluster"
-        class="mb-10"
-        :options="clusters"
-        :label="t('appsPlus.import.cluster')"
-      />
+    <LabeledSelect
+      v-model:value="type"
+      class="mb-10"
+      :options="types"
+      :searchable="true"
+      :disabled="!types.length"
+      :label="t('appsPlus.import.type')"
+    >
+      <template #option="opt">
+        {{ opt.kind }} <span class="import__type-id">{{ opt.id }}</span>
+      </template>
+      <template #selected-option="opt">
+        {{ opt.kind }} <span class="import__type-id">{{ opt.id }}</span>
+      </template>
+    </LabeledSelect>
 
-      <LabeledSelect
-        v-model:value="type"
-        class="mb-10"
-        :options="types"
-        :searchable="true"
-        :disabled="!types.length"
-        :label="t('appsPlus.import.type')"
+    <LabeledSelect
+      v-model:value="resource"
+      class="mb-10"
+      :options="resources"
+      :searchable="true"
+      :disabled="!resources.length"
+      :label="t('appsPlus.import.resource')"
+    />
+
+    <Banner
+      v-if="error"
+      color="error"
+      :label="error"
+    />
+
+    <template #footer>
+      <RcButton
+        variant="primary"
+        :disabled="!canImport"
+        @click="importSelected"
       >
-        <template #option="opt">
-          {{ opt.kind }} <span class="import__type-id">{{ opt.id }}</span>
-        </template>
-        <template #selected-option="opt">
-          {{ opt.kind }} <span class="import__type-id">{{ opt.id }}</span>
-        </template>
-      </LabeledSelect>
-
-      <LabeledSelect
-        v-model:value="resource"
-        class="mb-10"
-        :options="resources"
-        :searchable="true"
-        :disabled="!resources.length"
-        :label="t('appsPlus.import.resource')"
-      />
-
-      <Banner
-        v-if="error"
-        color="error"
-        :label="error"
-      />
-
-      <div class="import__buttons">
-        <RcButton
-          variant="secondary"
-          @click="$emit('close')"
-        >
-          {{ t('generic.cancel') }}
-        </RcButton>
-        <RcButton
-          variant="primary"
-          :disabled="!canImport"
-          @click="importSelected"
-        >
-          {{ t('appsPlus.import.action') }}
-        </RcButton>
-      </div>
-    </div>
-  </AppModal>
+        {{ t('appsPlus.import.action') }}
+      </RcButton>
+      <RcButton
+        variant="secondary"
+        @click="$emit('close')"
+      >
+        {{ t('generic.cancel') }}
+      </RcButton>
+    </template>
+  </DevModal>
 </template>
 
 <style lang="scss" scoped>
-.import {
-  padding: 16px;
-
-  &__title {
-    margin-bottom: 12px;
-  }
-
-  &__buttons {
-    display:         flex;
-    justify-content: flex-end;
-    gap:             8px;
-    margin-top:      16px;
-  }
-}
-
 // Not nested under .import: the dropdown these render in is appended to <body>, outside it.
 // The scoped attribute still travels with the slot content, so this stays this component's.
 .import__type-id {

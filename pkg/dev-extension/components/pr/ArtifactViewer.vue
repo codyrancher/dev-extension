@@ -12,6 +12,7 @@
 // can also be edited here, when the caller says how it is saved.
 import CodeMirror from '@shell/components/CodeMirror';
 import DevDialog from '../DevDialog.vue';
+import DevModal from '../DevModal.vue';
 import ask from '../ask';
 import { artifactKind, artifactLanguage, editorMode, isTextKind, looksBinary, sizeDisplay } from '../../artifact-kind';
 import { highlight } from '../../highlight';
@@ -36,7 +37,7 @@ async function sha256(buffer) {
 export default {
   name: 'ArtifactViewer',
 
-  components: { CodeMirror, DevDialog },
+  components: { CodeMirror, DevDialog, DevModal },
 
   mixins: [ask],
 
@@ -165,13 +166,6 @@ export default {
   },
 
   mounted() {
-    this.onKey = (event) => {
-      // The discard question is a dialog of ours now, and it answers Escape itself. Without
-      // this, one Escape would cancel the question and re-open it in the same keypress.
-      if (event.key === 'Escape' && !this.asking) {
-        this.close();
-      }
-    };
     // Leaving the page with an edit unsaved is asked about, the way closing this is.
     this.onLeave = (event) => {
       if (this.dirty) {
@@ -179,13 +173,11 @@ export default {
         event.returnValue = '';
       }
     };
-    window.addEventListener('keydown', this.onKey);
     window.addEventListener('beforeunload', this.onLeave);
     this.load();
   },
 
   beforeUnmount() {
-    window.removeEventListener('keydown', this.onKey);
     window.removeEventListener('beforeunload', this.onLeave);
     if (this.objectUrl) {
       URL.revokeObjectURL(this.objectUrl);
@@ -354,249 +346,233 @@ export default {
       this.panY = 0;
     },
 
-    onBackdrop(event) {
-      if (event.target === event.currentTarget) {
-        this.close();
-      }
-    },
   },
 };
 </script>
 
 <template>
-  <div
-    class="artifact-viewer"
-    role="dialog"
-    aria-modal="true"
-    :aria-label="name"
-    @click="onBackdrop"
+  <DevModal
+    size="large"
+    :title="name"
+    @close="close"
   >
-    <div class="artifact-viewer__panel">
-      <header class="artifact-viewer__head">
-        <span class="artifact-viewer__name">{{ name }}</span>
+    <template #title>
+      <span class="artifact-viewer__name">{{ name }}</span>
+      <span
+        v-if="caption"
+        class="artifact-viewer__caption"
+      >{{ caption }}</span>
+    </template>
+    <template #head>
+      <span
+        v-if="sizeDisplay"
+        class="artifact-viewer__size"
+      >{{ sizeDisplay }}</span>
+      <template v-if="editing">
         <span
-          v-if="caption"
-          class="artifact-viewer__caption"
-        >{{ caption }}</span>
+          v-if="saving"
+          class="artifact-viewer__note"
+        >Saving…</span>
         <span
-          v-if="sizeDisplay"
-          class="artifact-viewer__size"
-        >{{ sizeDisplay }}</span>
-        <template v-if="editing">
-          <span
-            v-if="saving"
-            class="artifact-viewer__note"
-          >Saving…</span>
-          <span
-            v-else-if="savedAt && !dirty"
-            class="artifact-viewer__note artifact-viewer__note--ok"
-          >Saved</span>
-          <button
-            type="button"
-            class="artifact-viewer__btn artifact-viewer__btn--primary"
-            :disabled="!dirty || saving"
-            title="Save (Ctrl+S)"
-            @click="commit()"
-          >
-            Save
-          </button>
-          <button
-            type="button"
-            class="artifact-viewer__btn"
-            :disabled="saving"
-            @click="stopEditing"
-          >
-            {{ dirty ? 'Discard' : 'Done' }}
-          </button>
-        </template>
-        <template v-else>
-          <span
-            v-if="renderable && !loading && !error"
-            class="artifact-viewer__modes"
-            role="group"
-            aria-label="How to show the file"
-          >
-            <button
-              v-for="m in ['rendered', 'source']"
-              :key="m"
-              type="button"
-              class="artifact-viewer__btn"
-              :class="{ 'artifact-viewer__btn--on': mode === m }"
-              :aria-pressed="mode === m"
-              @click="mode = m"
-            >
-              {{ m === 'rendered' ? 'Rendered' : 'Source' }}
-            </button>
-          </span>
-          <button
-            v-if="isImage && scale !== 1"
-            type="button"
-            class="artifact-viewer__btn"
-            @click="resetZoom"
-          >
-            Reset zoom
-          </button>
-          <button
-            v-if="canEdit"
-            type="button"
-            class="artifact-viewer__btn"
-            @click="edit"
-          >
-            <i
-              class="icon icon-edit"
-              aria-hidden="true"
-            /> Edit
-          </button>
-          <a
-            v-if="!error"
-            :href="src"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="artifact-viewer__btn"
-          >Open in a tab</a>
-        </template>
+          v-else-if="savedAt && !dirty"
+          class="artifact-viewer__note artifact-viewer__note--ok"
+        >Saved</span>
         <button
           type="button"
-          class="artifact-viewer__btn artifact-viewer__close"
-          title="Close (Esc)"
-          aria-label="Close"
-          @click="close"
+          class="artifact-viewer__btn artifact-viewer__btn--primary"
+          :disabled="!dirty || saving"
+          title="Save (Ctrl+S)"
+          @click="commit()"
         >
-          &times;
+          Save
         </button>
-      </header>
-      <div
-        v-if="editing && (conflict || saveError)"
-        class="artifact-viewer__bar"
-        role="alert"
-      >
-        <template v-if="conflict">
-          <span>This file changed in the workspace after you opened it. Saving would replace what is there now.</span>
+        <button
+          type="button"
+          class="artifact-viewer__btn"
+          :disabled="saving"
+          @click="stopEditing"
+        >
+          {{ dirty ? 'Discard' : 'Done' }}
+        </button>
+      </template>
+      <template v-else>
+        <span
+          v-if="renderable && !loading && !error"
+          class="artifact-viewer__modes"
+          role="group"
+          aria-label="How to show the file"
+        >
           <button
+            v-for="m in ['rendered', 'source']"
+            :key="m"
             type="button"
             class="artifact-viewer__btn"
-            :disabled="saving"
-            @click="commit(true)"
+            :class="{ 'artifact-viewer__btn--on': mode === m }"
+            :aria-pressed="mode === m"
+            @click="mode = m"
           >
-            Save over it
+            {{ m === 'rendered' ? 'Rendered' : 'Source' }}
           </button>
-          <button
-            type="button"
-            class="artifact-viewer__btn"
-            :disabled="saving"
-            @click="reload"
-          >
-            Drop my changes and reload
-          </button>
-        </template>
-        <span v-else>{{ saveError }}</span>
-      </div>
-      <div
-        class="artifact-viewer__body artifact-code"
-        :class="{
-          'artifact-viewer__body--image': isImage,
-          'artifact-viewer__body--drag': dragging,
-          'artifact-viewer__body--text': !loading && !error && !isMedia,
-        }"
-        @wheel="onWheel"
-        @mousedown="onDown"
-        @mousemove="onMove"
-        @mouseup="onUp"
-        @mouseleave="onUp"
-      >
-        <div
-          v-if="loading"
-          class="artifact-viewer__state"
+        </span>
+        <button
+          v-if="isImage && scale !== 1"
+          type="button"
+          class="artifact-viewer__btn"
+          @click="resetZoom"
         >
-          <i class="icon icon-spinner icon-spin" /> Loading
-        </div>
-        <div
-          v-else-if="error"
-          class="artifact-viewer__state artifact-viewer__state--error"
-        >
-          {{ error }}
-        </div>
-        <img
-          v-else-if="isImage"
-          :src="objectUrl"
-          :alt="name"
-          class="artifact-viewer__image"
-          :style="stageStyle"
-          draggable="false"
-        >
-        <video
-          v-else-if="isVideo"
-          :src="objectUrl"
-          class="artifact-viewer__video"
-          controls
-          autoplay
-        />
-        <audio
-          v-else-if="isAudio"
-          :src="objectUrl"
-          controls
-        />
-        <iframe
-          v-else-if="isPdf"
-          :src="objectUrl"
-          class="artifact-viewer__pdf"
-          title="PDF"
-        />
-        <div
-          v-else-if="binary"
-          class="artifact-viewer__state artifact-viewer__nopreview"
+          Reset zoom
+        </button>
+        <button
+          v-if="canEdit"
+          type="button"
+          class="artifact-viewer__btn"
+          @click="edit"
         >
           <i
-            class="icon icon-file"
+            class="icon icon-edit"
             aria-hidden="true"
-          />
-          <span>{{ baseName }} is not something that can be shown here{{ sizeDisplay ? ` (${ sizeDisplay })` : '' }}.</span>
-          <a
-            :href="src"
-            :download="baseName"
-            class="artifact-viewer__btn"
-          >Download</a>
-        </div>
-        <div
-          v-else-if="editing"
-          class="artifact-viewer__editor"
+          /> Edit
+        </button>
+        <a
+          v-if="!error"
+          :href="src"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="artifact-viewer__btn"
+        >Open in a tab</a>
+      </template>
+  </template>
+    <div
+      v-if="editing && (conflict || saveError)"
+      class="artifact-viewer__bar"
+      role="alert"
+    >
+      <template v-if="conflict">
+        <span>This file changed in the workspace after you opened it. Saving would replace what is there now.</span>
+        <button
+          type="button"
+          class="artifact-viewer__btn"
+          :disabled="saving"
+          @click="commit(true)"
         >
-          <CodeMirror
-            :value="draft"
-            :options="editorOptions"
-            @onInput="draft = $event"
-            @onReady="$event.focus()"
-          />
-        </div>
-        <div
-          v-else-if="showPage && kind === 'markdown'"
-          class="artifact-viewer__md"
-          v-html="markdown"
-        />
-        <!--
-          An agent's HTML, drawn but not run: the empty `sandbox` gives the frame an origin of
-          its own with no scripts, no forms and no way to navigate this page.
-        -->
-        <iframe
-          v-else-if="showPage"
-          :srcdoc="text"
-          sandbox=""
-          class="artifact-viewer__html"
-          :title="name"
-        />
-        <div
-          v-else
-          class="artifact-viewer__source"
+          Save over it
+        </button>
+        <button
+          type="button"
+          class="artifact-viewer__btn"
+          :disabled="saving"
+          @click="reload"
         >
-          <pre
-            class="artifact-viewer__gutter"
-            aria-hidden="true"
-          >{{ lineNumbers }}</pre>
-          <pre class="artifact-viewer__text"><code
-            class="hljs"
-            v-html="code"
-          /></pre>
-        </div>
+          Drop my changes and reload
+        </button>
+      </template>
+      <span v-else>{{ saveError }}</span>
+    </div>
+    <div
+      class="artifact-viewer__body artifact-code"
+      :class="{
+        'artifact-viewer__body--image': isImage,
+        'artifact-viewer__body--drag': dragging,
+        'artifact-viewer__body--text': !loading && !error && !isMedia,
+      }"
+      @wheel="onWheel"
+      @mousedown="onDown"
+      @mousemove="onMove"
+      @mouseup="onUp"
+      @mouseleave="onUp"
+    >
+      <div
+        v-if="loading"
+        class="artifact-viewer__state"
+      >
+        <i class="icon icon-spinner icon-spin" /> Loading
+      </div>
+      <div
+        v-else-if="error"
+        class="artifact-viewer__state artifact-viewer__state--error"
+      >
+        {{ error }}
+      </div>
+      <img
+        v-else-if="isImage"
+        :src="objectUrl"
+        :alt="name"
+        class="artifact-viewer__image"
+        :style="stageStyle"
+        draggable="false"
+      >
+      <video
+        v-else-if="isVideo"
+        :src="objectUrl"
+        class="artifact-viewer__video"
+        controls
+        autoplay
+      />
+      <audio
+        v-else-if="isAudio"
+        :src="objectUrl"
+        controls
+      />
+      <iframe
+        v-else-if="isPdf"
+        :src="objectUrl"
+        class="artifact-viewer__pdf"
+        title="PDF"
+      />
+      <div
+        v-else-if="binary"
+        class="artifact-viewer__state artifact-viewer__nopreview"
+      >
+        <i
+          class="icon icon-file"
+          aria-hidden="true"
+        />
+        <span>{{ baseName }} is not something that can be shown here{{ sizeDisplay ? ` (${ sizeDisplay })` : '' }}.</span>
+        <a
+          :href="src"
+          :download="baseName"
+          class="artifact-viewer__btn"
+        >Download</a>
+      </div>
+      <div
+        v-else-if="editing"
+        class="artifact-viewer__editor"
+      >
+        <CodeMirror
+          :value="draft"
+          :options="editorOptions"
+          @onInput="draft = $event"
+          @onReady="$event.focus()"
+        />
+      </div>
+      <div
+        v-else-if="showPage && kind === 'markdown'"
+        class="artifact-viewer__md"
+        v-html="markdown"
+      />
+      <!--
+        An agent's HTML, drawn but not run: the empty `sandbox` gives the frame an origin of
+        its own with no scripts, no forms and no way to navigate this page.
+      -->
+      <iframe
+        v-else-if="showPage"
+        :srcdoc="text"
+        sandbox=""
+        class="artifact-viewer__html"
+        :title="name"
+      />
+      <div
+        v-else
+        class="artifact-viewer__source"
+      >
+        <pre
+          class="artifact-viewer__gutter"
+          aria-hidden="true"
+        >{{ lineNumbers }}</pre>
+        <pre class="artifact-viewer__text"><code
+          class="hljs"
+          v-html="code"
+        /></pre>
       </div>
     </div>
     <DevDialog
@@ -605,47 +581,21 @@ export default {
       @confirm="asking.answer(true, $event)"
       @cancel="asking.answer(false)"
     />
-  </div>
+  </DevModal>
 </template>
 
 <style lang="scss" src="../hljs-theme.scss"></style>
 
 <style lang="scss" scoped>
 .artifact-viewer {
-  position:        fixed;
-  inset:           0;
-  z-index:         3000;
-  background:      rgba(0, 0, 0, 0.62);
-  display:         flex;
-  align-items:     center;
-  justify-content: center;
-  padding:         24px;
+  &__name { font-family: monospace; font-size: 13px; font-weight: 600; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  &__caption { color: var(--muted); font-size: 12px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  &__size { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
-  &__panel {
-    width:          min(1400px, 96vw);
-    height:         min(900px, 92vh);
-    display:        flex;
-    flex-direction: column;
-    background:     var(--body-bg);
-    color:          var(--body-text);
-    border:         1px solid var(--border);
-    border-radius: var(--r-md);
-    box-shadow:     0 12px 40px rgba(0, 0, 0, 0.45);
-    overflow:       hidden;
+  // A phone has room for the name and the controls; what the file is called by the agent waits.
+  @media (max-width: 760px) {
+    &__caption, &__size { display: none; }
   }
-
-  &__head {
-    display:       flex;
-    align-items:   center;
-    gap:           10px;
-    padding:       8px 12px;
-    border-bottom: 1px solid var(--border);
-    font-size:     12px;
-  }
-
-  &__name { font-family: monospace; font-weight: 600; }
-  &__caption { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  &__size { color: var(--muted); margin-left: auto; }
 
   &__btn {
     min-height:      0;
@@ -663,7 +613,6 @@ export default {
     &:hover { border-color: var(--link); color: var(--link); }
   }
 
-  &__close { font-size: 18px; padding: 0 8px; }
 
   &__body {
     flex:            1 1 auto;

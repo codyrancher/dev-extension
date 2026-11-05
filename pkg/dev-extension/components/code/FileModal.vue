@@ -17,13 +17,12 @@
  * opens and its result is drawn; a failure is said rather than left as an empty frame.
  */
 import {
-  onBeforeUnmount, onMounted, nextTick, ref, watch
+  onMounted, nextTick, ref, watch
 } from 'vue';
 import CodeView from './CodeView.vue';
-import AppIcon from '../focus/AppIcon.vue';
+import DevModal from '../DevModal.vue';
 import { fromText, fromFileWithPatch } from './rows';
 import type { CodeRow } from './rows';
-import { holdOverlay, releaseOverlay } from '../focus/overlay';
 
 const props = defineProps<{
   path: string;
@@ -94,97 +93,47 @@ function show() {
   }
 }
 
-function onKey(event: KeyboardEvent) {
-  if (event.key === 'Escape') {
-    event.stopPropagation();
-    emit('close');
-  }
-}
-
-onMounted(() => {
-  holdOverlay();
-  window.addEventListener('keydown', onKey, true);
-  read();
-});
-
-onBeforeUnmount(() => {
-  releaseOverlay();
-  window.removeEventListener('keydown', onKey, true);
-});
+onMounted(read);
 
 watch(() => [props.path, props.mark?.[0]], read);
 </script>
 
 <template>
-  <!-- Teleported and carrying the view's class: the deck transforms every card it holds, and a
-       fixed child of a transform is fixed to the transform. See FocusModal. -->
-  <Teleport to="body">
-    <div class="dev-focus file-layer">
-      <div class="file-veil" @click="emit('close')" />
+  <!-- DevModal, the one dialog: the veil, the teleport out of the deck's transform, Escape and
+       the phone's full screen are its. -->
+  <DevModal
+    focus
+    size="large"
+    :title="path"
+    @close="emit('close')"
+  >
+    <template #title>
+      <code class="file__path">{{ path }}</code>
+    </template>
+    <template
+      v-if="at || mark"
+      #head
+    >
+      <span v-if="at" class="file__at">{{ at }}</span>
+      <span v-if="mark" class="file__mark">
+        {{ mark[0] === mark[1] ? `line ${ mark[0] }` : `lines ${ mark[0] }–${ mark[1] }` }}
+      </span>
+    </template>
 
-      <div class="file" role="dialog" :aria-label="path">
-        <header class="file__head">
-          <code class="file__path">{{ path }}</code>
-          <span v-if="at" class="file__at">{{ at }}</span>
-          <span v-if="mark" class="file__mark">
-            {{ mark[0] === mark[1] ? `line ${ mark[0] }` : `lines ${ mark[0] }–${ mark[1] }` }}
-          </span>
-          <button type="button" class="file__close" aria-label="Close" @click="emit('close')">
-            <AppIcon name="cross" :size="15" />
-          </button>
-        </header>
-
-        <div ref="scroller" class="file__body">
-          <p v-if="busy" class="file__note">Reading {{ path }}…</p>
-          <p v-else-if="error" class="file__note file__note--bad">{{ error }}</p>
-          <CodeView
-            v-else
-            :rows="rows"
-            :mark-lines="mark || null"
-            :label="''"
-          />
-        </div>
-      </div>
+    <div ref="scroller" class="file__body">
+      <p v-if="busy" class="file__note">Reading {{ path }}…</p>
+      <p v-else-if="error" class="file__note file__note--bad">{{ error }}</p>
+      <CodeView
+        v-else
+        :rows="rows"
+        :mark-lines="mark || null"
+        :label="''"
+      />
     </div>
-  </Teleport>
+  </DevModal>
 </template>
 
 <style scoped>
-.file-layer { position: fixed; inset: 0; z-index: 70; }
-
-.file-veil {
-  position: fixed;
-  inset: 0;
-  background: rgba(6, 8, 14, 0.62);
-  backdrop-filter: blur(4px);
-}
-
-.file {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  display: flex;
-  flex-direction: column;
-  width: min(1180px, 94vw);
-  height: min(860px, 88vh);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-xl);
-  background: var(--surface);
-  box-shadow: var(--shadow-3);
-  overflow: hidden;
-  transform: translate(-50%, -50%);
-}
-
-.file__head {
-  display: flex;
-  align-items: center;
-  gap: var(--s3);
-  flex: 0 0 auto;
-  padding: var(--s3) var(--s4);
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-sunk);
-}
-
 .file__path {
   min-width: 0;
   overflow: hidden;
@@ -196,24 +145,8 @@ watch(() => [props.path, props.mark?.[0]], read);
 }
 
 .file__at,
-.file__mark { flex: 0 0 auto; color: var(--text-faint); font-size: var(--t-xs); }
+.file__mark { flex: 0 0 auto; color: var(--text-faint); font-size: var(--t-xs); font-weight: 400; white-space: nowrap; }
 .file__mark { color: var(--accent); }
-
-.file__close {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  margin-left: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.file__close:hover { border-color: var(--border-strong); color: var(--text); }
 
 .file__body {
   flex: 1 1 auto;

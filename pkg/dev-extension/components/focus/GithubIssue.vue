@@ -11,7 +11,6 @@ import type { PoolIssue } from '../../focus-artifacts';
 import CommentBody from './CommentBody.vue';
 import IssueMarks from './IssueMarks.vue';
 import MediaViewer from './MediaViewer.vue';
-import { isNarrow } from '../../design/narrow';
 import { ghAssetUrl } from '../../reviews';
 import type { NoteMedia } from '../../focus-review';
 import { ref } from 'vue';
@@ -58,20 +57,11 @@ const viewer = ref<{ items: NoteMedia[]; at: number } | null>(null);
     </div>
     <p v-else class="gh__none">No description on the issue.</p>
 
-    <!--
-      Out to the body on a phone, or the deck's `perspective` is the box this fills and the page
-      header stays over it. Wider it stays in the card, as it always has; `at` is not a prop of
-      the viewer, so that path opens on the grid. See CardEvidence for the same wrapper.
-    -->
-    <Teleport v-if="viewer && isNarrow()" to="body">
-      <div class="dev-focus">
-        <MediaViewer :items="viewer.items" :start="viewer.at" @close="viewer = null" />
-      </div>
-    </Teleport>
+    <!-- Over the page, opened on the thumbnail that was clicked. MediaViewer is a DevModal. -->
     <MediaViewer
-      v-else-if="viewer"
+      v-if="viewer"
       :items="viewer.items"
-      :at="viewer.at"
+      :start="viewer.at"
       @close="viewer = null"
     />
   </article>

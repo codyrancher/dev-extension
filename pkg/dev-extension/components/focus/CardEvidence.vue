@@ -299,16 +299,12 @@ const more = ref<HTMLElement | null>(null);
       </Teleport>
     </template>
 
-    <Teleport to="body">
-      <div class="dev-focus">
-        <MediaViewer
-          v-if="viewing"
-          :items="artifacts.media"
-          :start="viewing.start"
-          @close="viewing = null"
-        />
-      </div>
-    </Teleport>
+    <MediaViewer
+      v-if="viewing"
+      :items="artifacts.media"
+      :start="viewing.start"
+      @close="viewing = null"
+    />
   </div>
 </template>
 

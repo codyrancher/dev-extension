@@ -7,6 +7,7 @@ import LabeledSelect from '@shell/components/form/LabeledSelect';
 import { LabeledInput } from '@components/Form/LabeledInput';
 import { Checkbox } from '@components/Form/Checkbox';
 import { RcButton } from '@components/RcButton';
+import DevModal from '../components/DevModal.vue';
 import {
   getAgent, saveAgent, validName, cronValid, CRON_PRESETS, triggersOf, compileFilter, filterError, PROMPT_KEYS
 } from '../agent-defs';
@@ -24,7 +25,7 @@ export default {
   name: 'AgentEdit',
 
   components: {
-    Banner, AsyncButton, LabeledSelect, LabeledInput, Checkbox, RcButton
+    Banner, AsyncButton, LabeledSelect, LabeledInput, Checkbox, RcButton, DevModal
   },
 
   data() {
@@ -488,31 +489,17 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
       />
     </div>
 
-    <Teleport to="body">
-      <div
-        v-if="doc"
-        class="agent-edit__modal"
-        role="dialog"
-        aria-modal="true"
-        @click.self="doc = null"
-      >
-        <div class="agent-edit__modal-panel">
-          <header class="agent-edit__modal-head">
-            <code>/{{ doc.name }}</code>
-            <span class="text-muted">the skill, as the agents carry it</span>
-            <button
-              type="button"
-              class="agent-edit__modal-close"
-              title="Close"
-              @click="doc = null"
-            >
-              &times;
-            </button>
-          </header>
-          <pre class="agent-edit__modal-body">{{ doc.text }}</pre>
-        </div>
-      </div>
-    </Teleport>
+    <DevModal
+      v-if="doc"
+      size="wide"
+      :title="`/${ doc.name }`"
+      @close="doc = null"
+    >
+      <template #head>
+        <span class="text-muted agent-edit__modal-note">the skill, as the agents carry it</span>
+      </template>
+      <pre class="agent-edit__modal-body">{{ doc.text }}</pre>
+    </DevModal>
   </div>
 </template>
 
@@ -640,33 +627,8 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
   &__always { display: flex; align-items: center; gap: var(--dev-space-2); margin: 0 0 var(--dev-space-3); font-size: 13px; .icon { color: var(--success); } }
   &__trigger { display: flex; flex-direction: column; gap: var(--dev-space-2); padding: var(--dev-space-2) 0 var(--dev-space-3); border-top: 1px solid var(--border); }
 
-  &__modal {
-    position:        fixed;
-    inset:           0;
-    z-index:         3000;
-    background:      rgba(0, 0, 0, 0.6);
-    display:         flex;
-    align-items:     center;
-    justify-content: center;
-    padding:         24px;
-  }
-
-  &__modal-panel {
-    width:          min(900px, 96vw);
-    height:         min(80vh, 900px);
-    display:        flex;
-    flex-direction: column;
-    background:     var(--body-bg);
-    color:          var(--body-text);
-    border:         1px solid var(--border);
-    border-radius: var(--r-md);
-    box-shadow:     0 12px 40px rgba(0, 0, 0, 0.45);
-    overflow:       hidden;
-  }
-
-  &__modal-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
-  &__modal-close { margin-left: auto; min-height: 0; height: 26px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: transparent; color: var(--body-text); font-size: 18px; line-height: 24px; cursor: pointer; }
-  &__modal-body { flex: 1 1 auto; margin: 0; padding: 14px 18px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  &__modal-note { font-size: 12px; font-weight: 400; }
+  &__modal-body { flex: 1 1 auto; margin: 0; padding: 14px 18px; border: 0; border-radius: 0; background: transparent; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 }
 
 /* ── Phones: the form is one column and the buttons are full width. ── */

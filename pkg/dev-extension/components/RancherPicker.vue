@@ -6,9 +6,9 @@
 // returns a promise the confirm/cancel resolves: the chosen Rancher's URL ('' for this one), or
 // null when the person closes it, which the caller turns into a quiet abort.
 //
-// Its own small centered dialog rather than DevModal, which is sized (92vh) for the full-page Review
-// and Browser views and would render a one-line choice into a near-empty full-screen sheet.
+// A DevModal at its `auto` size: as tall as the list of Ranchers, and the whole screen on a phone.
 import { RcButton } from '@components/RcButton';
+import DevModal from './DevModal.vue';
 import {
   listRanchers, registerRancherPicker, RANCHER_STEPS
 } from '../ranchers';
@@ -16,7 +16,7 @@ import {
 export default {
   name: 'RancherPicker',
 
-  components: { RcButton },
+  components: { DevModal, RcButton },
 
   data() {
     return {
@@ -52,17 +52,10 @@ export default {
 
   mounted() {
     registerRancherPicker(this.pick);
-    this.onKey = (e) => {
-      if (this.open && e.key === 'Escape') {
-        this.cancel();
-      }
-    };
-    window.addEventListener('keydown', this.onKey);
   },
 
   beforeUnmount() {
     registerRancherPicker(null);
-    window.removeEventListener('keydown', this.onKey);
     this.settle(null); // a start awaiting the picker on a closing page is cancelled, not left hanging
   },
 
@@ -118,131 +111,69 @@ export default {
 </script>
 
 <template>
-  <Teleport to="body">
+  <DevModal
+    v-if="open"
+    title="Where should this workspace run?"
+    @close="cancel"
+  >
+    <p class="rancher-picker__lead">New work runs on the Rancher you pick. This defaults to your last choice.</p>
+
     <div
-      v-if="open"
-      class="rancher-picker"
-      role="dialog"
-      aria-label="Where should this workspace run?"
-      @click.self="cancel"
-    >
-      <div class="rancher-picker__panel">
-        <div class="rancher-picker__head">
-          <span class="rancher-picker__title">Where should this workspace run?</span>
-          <button
-            type="button"
-            class="rancher-picker__x"
-            aria-label="Close"
-            @click="cancel"
-          >&times;</button>
-        </div>
+      v-if="loading && !rows.length"
+      class="rancher-picker__loading"
+    >Loading Ranchers…</div>
 
-        <p class="rancher-picker__lead">New work runs on the Rancher you pick. This defaults to your last choice.</p>
+    <ul class="rancher-picker__list">
+      <li
+        v-for="row in rows"
+        :key="row.value + row.name"
+      >
+        <button
+          type="button"
+          class="rancher-picker__row"
+          :class="{
+            'rancher-picker__row--on':       row.ready && row.value === selected,
+            'rancher-picker__row--disabled': !row.ready,
+          }"
+          :disabled="!row.ready"
+          @click="choose(row)"
+        >
+          <span class="rancher-picker__radio">
+            <i
+              v-if="row.ready && row.value === selected"
+              class="icon icon-checkmark"
+            />
+          </span>
+          <span class="rancher-picker__body">
+            <span class="rancher-picker__name">
+              {{ row.name }}
+              <span
+                v-if="row.kind === 'host'"
+                class="rancher-picker__tag"
+              >this Rancher</span>
+            </span>
+            <span class="rancher-picker__where">{{ row.ready ? row.host : row.detail }}</span>
+          </span>
+        </button>
+      </li>
+    </ul>
 
-        <div
-          v-if="loading && !rows.length"
-          class="rancher-picker__loading"
-        >Loading Ranchers…</div>
-
-        <ul class="rancher-picker__list">
-          <li
-            v-for="row in rows"
-            :key="row.value + row.name"
-          >
-            <button
-              type="button"
-              class="rancher-picker__row"
-              :class="{
-                'rancher-picker__row--on':       row.ready && row.value === selected,
-                'rancher-picker__row--disabled': !row.ready,
-              }"
-              :disabled="!row.ready"
-              @click="choose(row)"
-            >
-              <span class="rancher-picker__radio">
-                <i
-                  v-if="row.ready && row.value === selected"
-                  class="icon icon-checkmark"
-                />
-              </span>
-              <span class="rancher-picker__body">
-                <span class="rancher-picker__name">
-                  {{ row.name }}
-                  <span
-                    v-if="row.kind === 'host'"
-                    class="rancher-picker__tag"
-                  >this Rancher</span>
-                </span>
-                <span class="rancher-picker__where">{{ row.ready ? row.host : row.detail }}</span>
-              </span>
-            </button>
-          </li>
-        </ul>
-
-        <div class="rancher-picker__actions">
-          <RcButton
-            variant="secondary"
-            @click="cancel"
-          >Cancel</RcButton>
-          <RcButton
-            variant="primary"
-            :disabled="!canConfirm"
-            @click="confirm"
-          >Start here</RcButton>
-        </div>
-      </div>
-    </div>
-  </Teleport>
+    <template #footer>
+      <RcButton
+        variant="primary"
+        :disabled="!canConfirm"
+        @click="confirm"
+      >Start here</RcButton>
+      <RcButton
+        variant="secondary"
+        @click="cancel"
+      >Cancel</RcButton>
+    </template>
+  </DevModal>
 </template>
 
 <style lang="scss" scoped>
 .rancher-picker {
-  position:        fixed;
-  inset:           0;
-  z-index:         1200;
-  display:         flex;
-  align-items:     center;
-  justify-content: center;
-  padding:         16px;
-  background:      rgba(0, 0, 0, .5);
-
-  &__panel {
-    display:        flex;
-    flex-direction: column;
-    gap:            14px;
-    width:          100%;
-    max-width:      460px;
-    max-height:     85vh;
-    overflow:       auto;
-    padding:        20px;
-    border:         1px solid var(--border);
-    border-radius:  var(--r-md);
-    background:     var(--default);
-    box-shadow:     0 8px 32px rgba(0, 0, 0, .35);
-  }
-
-  &__head {
-    display:         flex;
-    align-items:     center;
-    justify-content: space-between;
-  }
-
-  &__title {
-    font-size:   16px;
-    font-weight: 600;
-  }
-
-  &__x {
-    border:      0;
-    background:  none;
-    color:       var(--muted);
-    font-size:   22px;
-    line-height: 1;
-    cursor:      pointer;
-
-    &:hover { color: var(--body-text); }
-  }
-
   &__lead {
     margin: 0;
     color:  var(--muted);
@@ -330,12 +261,6 @@ export default {
   &__where {
     color:     var(--muted);
     font-size: 12px;
-  }
-
-  &__actions {
-    display:         flex;
-    justify-content: flex-end;
-    gap:             8px;
   }
 }
 </style>

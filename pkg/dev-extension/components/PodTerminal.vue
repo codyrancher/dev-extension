@@ -1241,20 +1241,17 @@ export default {
     >
       {{ imageError || 'Putting the image in the pod' }}
     </div>
-    <!-- Teleported, because the viewer is position: fixed and the panel this terminal sits in
-         is animated with a transform - which makes a fixed child position against that panel
-         instead of the viewport, so the modal opens somewhere nobody can see. -->
-    <Teleport to="body">
-      <PodFileViewer
-        v-if="viewerPath"
-        :pod="viewerPod"
-        :path="viewerPath"
-        :container="container"
-        :namespace="namespace"
-        :home="home"
-        @close="viewerPath = ''"
-      />
-    </Teleport>
+    <!-- A DevModal, which takes itself to the body: the panel this terminal sits in is animated
+         with a transform, and a fixed child of a transform opens against the panel. -->
+    <PodFileViewer
+      v-if="viewerPath"
+      :pod="viewerPod"
+      :path="viewerPath"
+      :container="container"
+      :namespace="namespace"
+      :home="home"
+      @close="viewerPath = ''"
+    />
     <div
       v-if="state !== 'open'"
       class="mc-terminal__status"

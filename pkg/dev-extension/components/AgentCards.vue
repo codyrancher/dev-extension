@@ -9,6 +9,7 @@ import { Banner } from '@components/Banner';
 import AsyncButton from '@shell/components/AsyncButton';
 import { RcButton } from '@components/RcButton';
 import DevDialog from './DevDialog.vue';
+import DevModal from './DevModal.vue';
 import AgentRunRow from './AgentRunRow.vue';
 import {
   listAgents, listRuns, runAgent, deleteAgent, skillOf, triggersOf
@@ -27,7 +28,7 @@ export default {
   name: 'AgentCards',
 
   components: {
-    Banner, AsyncButton, RcButton, DevDialog, AgentRunRow
+    Banner, AsyncButton, RcButton, DevDialog, DevModal, AgentRunRow
   },
 
   data() {
@@ -341,58 +342,34 @@ export default {
       @confirm="reallyRemove"
       @cancel="removing = null"
     />
-    <Teleport to="body">
-      <div
-        v-if="history"
-        class="agent-skill"
-        @click.self="history = null"
+    <DevModal
+      v-if="history"
+      size="wide"
+      :title="history.def.name"
+      @close="history = null"
+    >
+      <template #head>
+        <span class="text-muted agent-skill__note">{{ history.total }} run{{ history.total === 1 ? '' : 's' }}</span>
+      </template>
+      <ul
+        class="agent-card__runs agent-card__runs--all"
+        data-testid="agent-history-modal"
       >
-        <div class="agent-skill__panel">
-          <header class="agent-skill__head">
-            <span>{{ history.def.name }}</span>
-            <span class="text-muted">{{ history.total }} run{{ history.total === 1 ? '' : 's' }}</span>
-            <button
-              type="button"
-              class="agent-card__link"
-              @click="history = null"
-            >
-              Close
-            </button>
-          </header>
-          <ul
-            class="agent-card__runs agent-card__runs--all"
-            data-testid="agent-history-modal"
-          >
-            <AgentRunRow
-              v-for="run in history.runs"
-              :key="run.id"
-              :run="run"
-            />
-          </ul>
-        </div>
-      </div>
-    </Teleport>
-    <Teleport to="body">
-      <div
-        v-if="skill"
-        class="agent-skill"
-        @click.self="skill = null"
-      >
-        <div class="agent-skill__panel">
-          <header class="agent-skill__head">
-            <span>/{{ skill.name }}</span>
-            <button
-              type="button"
-              class="agent-card__link"
-              @click="skill = null"
-            >
-              close
-            </button>
-          </header>
-          <pre class="agent-skill__text">{{ skill.text }}</pre>
-        </div>
-      </div>
-    </Teleport>
+        <AgentRunRow
+          v-for="run in history.runs"
+          :key="run.id"
+          :run="run"
+        />
+      </ul>
+    </DevModal>
+    <DevModal
+      v-if="skill"
+      size="wide"
+      :title="`/${ skill.name }`"
+      @close="skill = null"
+    >
+      <pre class="agent-skill__text">{{ skill.text }}</pre>
+    </DevModal>
   </section>
 </template>
 
@@ -566,28 +543,8 @@ export default {
 }
 
 .agent-skill {
-  position:        fixed;
-  inset:           0;
-  z-index:         3000;
-  background:      rgba(0, 0, 0, 0.55);
-  display:         flex;
-  align-items:     center;
-  justify-content: center;
-  padding:         24px;
-
-  &__panel {
-    width:          min(900px, 94vw);
-    height:         min(760px, 90vh);
-    display:        flex;
-    flex-direction: column;
-    background:     var(--body-bg);
-    border:         1px solid var(--border);
-    border-radius: var(--r-md);
-    overflow:       hidden;
-  }
-
-  &__head { display: flex; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid var(--border); font-family: monospace; font-weight: 600; }
-  &__text { flex: 1 1 auto; margin: 0; padding: 14px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+  &__note { font-size: 12px; font-weight: 400; }
+  &__text { flex: 1 1 auto; margin: 0; padding: 14px; border: 0; border-radius: 0; background: transparent; overflow: auto; font-size: 12px; white-space: pre-wrap; }
 }
 
 /* ── Phones: one card per row, and a run's line drops the columns it can do without. ── */

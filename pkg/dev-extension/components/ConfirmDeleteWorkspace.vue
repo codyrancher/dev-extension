@@ -5,17 +5,16 @@
 // modal is how the two would come to say different things about what deleting means. It owns
 // the call as well as the markup, so the pages only have to say which workspace and what to do
 // afterwards.
-import AppModal from '@shell/components/AppModal';
 import AsyncButton from '@shell/components/AsyncButton';
-import { Card } from '@components/Card';
 import { RcButton } from '@components/RcButton';
+import DevModal from './DevModal.vue';
 import { deleteWorkspace } from '../api';
 
 export default {
   name: 'ConfirmDeleteWorkspace',
 
   components: {
-    AppModal, AsyncButton, Card, RcButton
+    AsyncButton, DevModal, RcButton
   },
 
   props: {
@@ -45,47 +44,30 @@ export default {
 </script>
 
 <template>
-  <AppModal
-    name="dev-delete-workspace"
-    :width="480"
+  <DevModal
+    :title="`Delete ${ workspace.name }?`"
     @close="$emit('close')"
   >
-    <Card :show-highlight-border="false">
-      <template #title>
-        <h4 class="text-default-text">
-          Delete {{ workspace.name }}?
-        </h4>
-      </template>
-      <template #body>
-        <p>
-          This removes the Apps Plus installation <b>{{ workspace.name }}</b>, and with it the
-          namespace <b>{{ workspace.namespace }}</b> and everything in it. It cannot be undone.
-        </p>
-      </template>
-      <template #actions>
-        <div class="dev-confirm__actions">
-          <RcButton
-            variant="secondary"
-            @click="$emit('close')"
-          >
-            Cancel
-          </RcButton>
-          <AsyncButton
-            mode="delete"
-            class="btn bg-error"
-            @click="remove"
-          />
-        </div>
-      </template>
-    </Card>
-  </AppModal>
+    <p class="dev-confirm__text">
+      This removes the Apps Plus installation <b>{{ workspace.name }}</b>, and with it the
+      namespace <b>{{ workspace.namespace }}</b> and everything in it. It cannot be undone.
+    </p>
+    <template #footer>
+      <AsyncButton
+        mode="delete"
+        class="btn bg-error"
+        @click="remove"
+      />
+      <RcButton
+        variant="secondary"
+        @click="$emit('close')"
+      >
+        Cancel
+      </RcButton>
+    </template>
+  </DevModal>
 </template>
 
 <style lang="scss" scoped>
-  .dev-confirm__actions {
-    display:         flex;
-    gap:             var(--dev-space-4);
-    justify-content: flex-end;
-    width:           100%;
-  }
+  .dev-confirm__text { margin: 0; line-height: 1.5; }
 </style>

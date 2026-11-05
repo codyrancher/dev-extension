@@ -29,12 +29,13 @@ import { useConversation, escapeText, customizeFor } from '../chat-conversation'
 import { readLook, writeLook } from '../look';
 import PodFileViewer from './PodFileViewer.vue';
 import DevDialog from './DevDialog.vue';
+import DevModal from './DevModal.vue';
 import ask from './ask';
 
 export default {
   name: 'ChatPane',
 
-  components: { PodFileViewer, DevDialog },
+  components: { PodFileViewer, DevDialog, DevModal },
 
   mixins: [ask],
 
@@ -259,13 +260,6 @@ export default {
     /** Every poll, not only on a change: this is what PodTerminal's status line reads. */
     polledAt() {
       this.$emit('state', this.attached ? 'open' : 'waiting');
-    },
-
-    /** Focus it, so Esc closes it without a click first. */
-    panel(now) {
-      if (now) {
-        this.$nextTick(() => document.querySelector('.mc-chat__lightbox--panel')?.focus());
-      }
     },
   },
 
@@ -679,11 +673,6 @@ export default {
     },
 
     /** The panel modal: closed by its button or by Esc. */
-    onPanelKey(event) {
-      if (event.key === 'Escape') {
-        this.panel = null;
-      }
-    },
   },
 };
 </script>
@@ -983,45 +972,32 @@ export default {
     </div>
 
 
-    <Teleport to="body">
-      <PodFileViewer
-        v-if="viewerPath && media"
-        :pod="media.pod"
-        :path="viewerPath"
-        :container="media.container"
-        :namespace="media.namespace"
-        :home="media.home"
-        @close="viewerPath = ''"
-      />
+    <PodFileViewer
+      v-if="viewerPath && media"
+      :pod="media.pod"
+      :path="viewerPath"
+      :container="media.container"
+      :namespace="media.namespace"
+      :home="media.home"
+      @close="viewerPath = ''"
+    />
+    <DevModal
+      v-if="panel"
+      size="medium"
+      :padded="false"
+      :title="panel.title"
+      @close="panel = null"
+    >
+      <pre class="mc-chat__panel-text">{{ panel.text }}</pre>
+    </DevModal>
+    <DevModal
+      v-if="viewerData"
+      size="full"
+      title="Image"
+      @close="viewerData = ''"
+    >
       <div
-        v-if="panel"
-        class="mc-chat__lightbox mc-chat__lightbox--panel"
-        role="dialog"
-        :aria-label="panel.title"
-        tabindex="-1"
-        @click.self="panel = null"
-        @keydown="onPanelKey"
-      >
-        <div class="mc-chat__panel">
-          <div class="mc-chat__panel-head">
-            <span class="mc-chat__panel-title">{{ panel.title }}</span>
-            <button
-              type="button"
-              class="mc-chat__pill"
-              title="Close (Esc)"
-              @click="panel = null"
-            >
-              Close
-            </button>
-          </div>
-          <pre class="mc-chat__panel-text">{{ panel.text }}</pre>
-        </div>
-      </div>
-      <div
-        v-if="viewerData"
         class="mc-chat__lightbox"
-        role="dialog"
-        aria-label="Image"
         @click="viewerData = ''"
       >
         <img
@@ -1029,7 +1005,7 @@ export default {
           alt="image"
         >
       </div>
-    </Teleport>
+    </DevModal>
 
     <!-- What the pane is asking, when it is asking something a text box cannot answer. -->
     <div
@@ -1811,33 +1787,11 @@ export default {
     background:    var(--body-bg);
   }
 
-  &__lightbox--panel { cursor: default; }
-
-  &__panel {
-    background:    var(--body-bg);
-    color:         var(--body-text);
-    border:        1px solid var(--border);
-    border-radius: var(--r-sm);
-    width:         min(92vw, 760px);
-    max-height:    88vh;
-    display:       flex;
-    flex-direction: column;
-    box-shadow:    0 12px 40px rgba(0, 0, 0, 0.35);
-  }
-
-  &__panel-head {
-    display:         flex;
-    align-items:     center;
-    justify-content: space-between;
-    padding:         10px 14px;
-    border-bottom:   1px solid var(--border);
-  }
-
-  &__panel-title { font-family: monospace; font-weight: 600; }
-
   &__panel-text {
     margin:      0;
     padding:     12px 14px;
+    border:      0;
+    background:  transparent;
     overflow:    auto;
     font-size:   12px;
     line-height: 1.45;
@@ -1845,16 +1799,15 @@ export default {
   }
 
   &__lightbox {
-    position:        fixed;
-    inset:           0;
-    z-index:         1000;
-    background:      rgba(0, 0, 0, 0.8);
+    flex:            1 1 auto;
+    min-height:      0;
     display:         flex;
     align-items:     center;
     justify-content: center;
+    padding:         0 16px 16px;
     cursor:          zoom-out;
 
-    img { max-width: 96vw; max-height: 96vh; object-fit: contain; }
+    img { max-width: 100%; max-height: 100%; object-fit: contain; }
   }
 
   &__dialog-header {

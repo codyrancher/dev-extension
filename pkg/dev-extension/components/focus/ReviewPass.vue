@@ -600,21 +600,13 @@ function pickedRun(note: ReviewNote): [number, number] | null {
       @close="sayAll = false"
     />
 
-    <!--
-      Teleported: this is inside the deck's transformed, clipped card, and a `position: fixed`
-      child of a transform is fixed to the transform rather than to the window. Carrying
-      `.dev-focus` with it, because the view's tokens are declared there. See FocusModal.
-    -->
-    <Teleport to="body">
-      <div class="dev-focus">
-        <MediaViewer
-          v-if="viewer"
-          :items="viewer.items"
-          :start="viewer.at"
-          @close="viewer = null"
-        />
-      </div>
-    </Teleport>
+    <!-- A DevModal: it takes itself out of the deck's transformed, clipped card. -->
+    <MediaViewer
+      v-if="viewer"
+      :items="viewer.items"
+      :start="viewer.at"
+      @close="viewer = null"
+    />
   </section>
 </template>
 

@@ -171,16 +171,7 @@
   .dev-root .btn.btn-sm,
   .dev-root .btn.role-tertiary { min-height: 32px; }
 
-  /* A dialog is the width of the screen, less a margin. */
-  .dev-root .dev-dialog__panel,
-  .dev-root .artifact-viewer__panel,
-  .dev-root .agent-skill__panel,
-  .dev-root .agent-edit__modal-panel {
-    width: calc(100vw - 16px) !important;
-    max-width: calc(100vw - 16px);
-    height: auto;
-    max-height: 88vh;
-  }
+  /* A dialog is the screen: every one is a DevModal, which says so itself. */
 
   /*
    * Rancher's growls sit over the terminal drawer's keys otherwise - and the container keeps

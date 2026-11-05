@@ -3,6 +3,7 @@ import { statPodPath, listPodDir, readPodFileBase64 } from '../pod';
 import { renderMarkdown } from '../chat';
 import { highlight, languageFor, looksLikeDiff } from '../highlight';
 import { readLook, writeLook } from '../look';
+import DevModal from './DevModal.vue';
 
 // What a browser can show inline. Anything else is named and sized rather than guessed at.
 const IMAGE = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'];
@@ -24,6 +25,8 @@ const MIME = {
  */
 export default {
   name: 'PodFileViewer',
+
+  components: { DevModal },
 
   props: {
     pod:  { type: String, required: true },
@@ -223,189 +226,150 @@ export default {
 </script>
 
 <template>
-  <div
-    class="pfv"
-    @click.self="$emit('close')"
+  <DevModal
+    size="large"
+    :title="current"
+    @close="$emit('close')"
   >
-    <div class="pfv__panel">
-      <div class="pfv__head">
+    <template #title>
+      <button
+        v-if="parent"
+        class="btn role-tertiary btn-sm"
+        @click="current = parent"
+      >
+        <i class="icon icon-chevron-left" /> Up
+      </button>
+      <code
+        class="pfv__path"
+        :title="current"
+      ><span class="pfv__path-full">{{ current }}</span><span class="pfv__path-short">{{ baseName }}</span></code>
+    </template>
+    <template #head>
+      <!--
+        The mouse instructions and the zoom, split, because only one of them survives a
+        phone: "scroll to zoom, drag to pan, double-click to reset" is advice for a pointer
+        nobody holding a phone has, and at 390px it was pushing the close button off the
+        header and the path down to a single "/".
+      -->
+      <span
+        v-if="isImage"
+        class="text-muted pfv__hint"
+      >scroll to zoom &middot; drag to pan &middot; double-click to reset</span>
+      <span
+        v-if="isImage"
+        class="text-muted pfv__zoom"
+      >{{ Math.round(scale * 100) }}%</span>
+      <span
+        v-if="kind === 'file' && text && renderable"
+        class="pfv__modes"
+        role="group"
+        aria-label="How to show the file"
+      >
         <button
-          v-if="parent"
-          class="btn role-tertiary btn-sm"
-          @click="current = parent"
+          v-for="m in ['rendered', 'raw']"
+          :key="m"
+          type="button"
+          class="btn btn-sm"
+          :class="mode === m ? 'role-primary' : 'role-tertiary'"
+          @click="setMode(m)"
         >
-          <i class="icon icon-chevron-left" /> Up
+          {{ m }}
         </button>
-        <code
-          class="pfv__path"
-          :title="current"
-        ><span class="pfv__path-full">{{ current }}</span><span class="pfv__path-short">{{ baseName }}</span></code>
-        <!--
-          The mouse instructions and the zoom, split, because only one of them survives a
-          phone: "scroll to zoom, drag to pan, double-click to reset" is advice for a pointer
-          nobody holding a phone has, and at 390px it was pushing the close button off the
-          header and the path down to a single "/".
-        -->
-        <span
-          v-if="isImage"
-          class="text-muted pfv__hint"
-        >scroll to zoom &middot; drag to pan &middot; double-click to reset</span>
-        <span
-          v-if="isImage"
-          class="text-muted pfv__zoom"
-        >{{ Math.round(scale * 100) }}%</span>
-        <span
-          v-if="kind === 'file' && text && renderable"
-          class="pfv__modes"
-          role="group"
-          aria-label="How to show the file"
+      </span>
+    </template>
+
+    <div class="pfv__body">
+      <div v-if="loading">
+        Loading&hellip;
+      </div>
+      <div
+        v-else-if="error"
+        class="text-error"
+      >
+        {{ error }}
+      </div>
+
+      <ul
+        v-else-if="kind === 'dir'"
+        class="pfv__list"
+      >
+        <li
+          v-for="entry in entries"
+          :key="entry.name"
         >
           <button
-            v-for="m in ['rendered', 'raw']"
-            :key="m"
-            type="button"
-            class="btn btn-sm"
-            :class="mode === m ? 'role-primary' : 'role-tertiary'"
-            @click="setMode(m)"
+            class="pfv__entry"
+            @click="open(entry)"
           >
-            {{ m }}
+            <i :class="entry.dir ? 'icon icon-folder' : 'icon icon-file'" />
+            {{ entry.name }}
           </button>
-        </span>
-        <button
-          class="btn role-tertiary btn-sm pfv__close"
-          aria-label="Close the file"
-          title="Close the file"
-          @click="$emit('close')"
+        </li>
+        <li v-if="!entries.length">
+          <span class="text-muted">empty</span>
+        </li>
+      </ul>
+
+      <div
+        v-else-if="isImage"
+        class="pfv__stage"
+        :class="{ 'pfv__stage--dragging': dragging }"
+        @wheel="onWheel"
+        @mousedown="onDragStart"
+        @mousemove="onDragMove"
+        @mouseup="onDragEnd"
+        @mouseleave="onDragEnd"
+        @dblclick="resetView"
+      >
+        <img
+          :src="dataUrl"
+          class="pfv__img"
+          :style="{ transform: `translate(${ panX }px, ${ panY }px) scale(${ scale })` }"
+          draggable="false"
         >
-          <i
-            class="icon icon-close"
-            aria-hidden="true"
-          />
-        </button>
       </div>
-
-      <div class="pfv__body">
-        <div v-if="loading">
-          Loading&hellip;
-        </div>
-        <div
-          v-else-if="error"
-          class="text-error"
-        >
-          {{ error }}
-        </div>
-
-        <ul
-          v-else-if="kind === 'dir'"
-          class="pfv__list"
-        >
-          <li
-            v-for="entry in entries"
-            :key="entry.name"
-          >
-            <button
-              class="pfv__entry"
-              @click="open(entry)"
-            >
-              <i :class="entry.dir ? 'icon icon-folder' : 'icon icon-file'" />
-              {{ entry.name }}
-            </button>
-          </li>
-          <li v-if="!entries.length">
-            <span class="text-muted">empty</span>
-          </li>
-        </ul>
-
-        <div
-          v-else-if="isImage"
-          class="pfv__stage"
-          :class="{ 'pfv__stage--dragging': dragging }"
-          @wheel="onWheel"
-          @mousedown="onDragStart"
-          @mousemove="onDragMove"
-          @mouseup="onDragEnd"
-          @mouseleave="onDragEnd"
-          @dblclick="resetView"
-        >
-          <img
-            :src="dataUrl"
-            class="pfv__img"
-            :style="{ transform: `translate(${ panX }px, ${ panY }px) scale(${ scale })` }"
-            draggable="false"
-          >
-        </div>
-        <video
-          v-else-if="isVideo"
-          :src="dataUrl"
-          controls
-          class="pfv__media"
-        />
-        <audio
-          v-else-if="isAudio"
-          :src="dataUrl"
-          controls
-          class="pfv__media"
-        />
-        <iframe
-          v-else-if="isPdf"
-          :src="dataUrl"
-          class="pfv__pdf"
-        />
-        <div
-          v-else-if="mode === 'rendered' && isMarkdown"
-          class="pfv__md"
-          v-html="rendered"
-        />
-        <pre
-          v-else-if="mode === 'rendered' && language"
-          class="pfv__text"
-        ><code
-          class="hljs"
-          v-html="rendered"
-        /></pre>
-        <pre
-          v-else
-          class="pfv__text"
-        >{{ text }}</pre>
-      </div>
+      <video
+        v-else-if="isVideo"
+        :src="dataUrl"
+        controls
+        class="pfv__media"
+      />
+      <audio
+        v-else-if="isAudio"
+        :src="dataUrl"
+        controls
+        class="pfv__media"
+      />
+      <iframe
+        v-else-if="isPdf"
+        :src="dataUrl"
+        class="pfv__pdf"
+      />
+      <div
+        v-else-if="mode === 'rendered' && isMarkdown"
+        class="pfv__md"
+        v-html="rendered"
+      />
+      <pre
+        v-else-if="mode === 'rendered' && language"
+        class="pfv__text"
+      ><code
+        class="hljs"
+        v-html="rendered"
+      /></pre>
+      <pre
+        v-else
+        class="pfv__text"
+      >{{ text }}</pre>
     </div>
-  </div>
+  </DevModal>
 </template>
 
 <style lang="scss" scoped>
-.pfv {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.pfv__panel {
-  background: var(--body-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  width: min(1100px, 92vw);
-  max-height: 88vh;
-  display: flex;
-  flex-direction: column;
-}
-
-.pfv__head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  // Nothing in this row may push the close button out of the panel, which is what a header
-  // with one flexible child and three rigid ones will do as soon as one of them is a sentence.
-  min-width: 0;
-}
-
 .pfv__path {
   flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 600;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -418,19 +382,9 @@ export default {
   white-space: nowrap;
 }
 
-.pfv__close {
-  flex: none;
-  margin-left: auto;
-}
-
 .pfv__path-short { display: none; }
 
 @media (max-width: 760px) {
-  .pfv__head {
-    gap: 6px;
-    padding: 8px;
-  }
-
   // Advice for a pointer, on a device that has none.
   .pfv__hint { display: none; }
 
@@ -446,9 +400,21 @@ export default {
   .pfv__path-short { display: inline; }
 }
 
+// The panel's height, whatever is in it: a stage or a PDF fills what is left under the header.
 .pfv__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 12px;
   overflow: auto;
+}
+
+.pfv__body > .pfv__stage,
+.pfv__body > .pfv__pdf {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 
 .pfv__list {
@@ -485,7 +451,7 @@ export default {
 
 .pfv__img {
   max-width: 100%;
-  max-height: 72vh;
+  max-height: 100%;
   transform-origin: center center;
   will-change: transform;
   // No transition: a wheel zoom that animates lags behind the pointer it is meant to track.

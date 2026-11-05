@@ -275,16 +275,14 @@ export default {
       </section>
     </div>
 
-    <Teleport to="body">
-      <ArtifactViewer
-        v-if="shot"
-        :key="shot.src"
-        :src="shot.src"
-        :name="shot.name"
-        :caption="shot.caption"
-        @close="shot = null"
-      />
-    </Teleport>
+    <ArtifactViewer
+      v-if="shot"
+      :key="shot.src"
+      :src="shot.src"
+      :name="shot.name"
+      :caption="shot.caption"
+      @close="shot = null"
+    />
     <DevDialog
       v-if="asking"
       v-bind="asking.question"

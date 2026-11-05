@@ -152,15 +152,13 @@ export default {
     </div>
 
     <!-- Opened over the page, in the viewer the agents' terminals use for a clicked path. -->
-    <Teleport to="body">
-      <ArtifactViewer
-        v-if="opened"
-        :src="url(opened)"
-        :name="opened.name"
-        :caption="opened.caption || ''"
-        @close="open = null"
-      />
-    </Teleport>
+    <ArtifactViewer
+      v-if="opened"
+      :src="url(opened)"
+      :name="opened.name"
+      :caption="opened.caption || ''"
+      @close="open = null"
+    />
   </div>
 </template>
 
