@@ -212,7 +212,7 @@ export default {
         :class="agent && agent !== 'none' ? `conversation-tab__cli--${ agent }` : ''"
         :mark="mark"
         :size="13"
-        :state="agent && agent !== 'none' ? label : ''"
+        :status="agent && agent !== 'none' ? label : ''"
       />
       <span
         v-else-if="agent && agent !== 'none'"

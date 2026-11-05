@@ -28,15 +28,19 @@ export default {
      * tab colours it by state). Added to the tooltip and the accessible name, because the SVG's
      * own `<title>` is what a hover shows - a `title` attribute on it is never seen.
      */
-    state: {
+    status: {
       type:    String,
       default: '',
     },
   },
 
   computed: {
-    name() {
-      return this.state ? `${ this.mark.label } · ${ this.state }` : this.mark.label;
+    /*
+     * Not `name`, which it was for one release: the shell's Vue resolved `name` in the template to
+     * something of its own, and the tooltip read "Claude · [object Object]".
+     */
+    tip() {
+      return this.status ? `${ this.mark.label } · ${ this.status }` : this.mark.label;
     },
   },
 };
@@ -50,10 +54,10 @@ export default {
     :height="size"
     viewBox="0 0 24 24"
     role="img"
-    :aria-label="name"
+    :aria-label="tip"
     focusable="false"
   >
-    <title>{{ name }}</title>
+    <title>{{ tip }}</title>
     <path
       :d="mark.path"
       fill="currentColor"
