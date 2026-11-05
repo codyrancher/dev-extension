@@ -415,7 +415,9 @@ export default {
  */
 .split-btn__menu {
   position:      fixed;
-  z-index:       1000;
+  // Above every dialog (DevModal, 1200 and up): a split button inside one - the phone's
+  // conversation list is a dialog of nothing else - opened its menu behind the veil.
+  z-index:       1400;
   width:         max-content;
   min-width:     140px;
   margin:        0;

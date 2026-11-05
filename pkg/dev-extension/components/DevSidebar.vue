@@ -42,6 +42,7 @@ import HoverCard from './HoverCard.vue';
 import hoverCard from './hover-card';
 import RancherPicker from './RancherPicker.vue';
 import ClaudeLogo from './ClaudeLogo.vue';
+import { isAdminUser } from '@shell/store/type-map';
 import Stack from '../design/Stack.vue';
 // `this.narrow`: how long a row's label may be is a decision, not a style. See rowLabel.
 import { NarrowMixin } from '../design/narrow';
@@ -269,6 +270,12 @@ export default {
 
   mixins: [hoverCard, NarrowMixin],
 
+  /**
+   * `conversations`: the phone's way to the terminal drawer's conversations was pressed. The
+   * shell owns the drawer this sits in, so it closes that and opens the list (GlobalConversations).
+   */
+  emits: ['conversations'],
+
   data() {
     return {
       /** Whether the record of what has been seen has been read; until then nothing is new. */
@@ -337,6 +344,17 @@ export default {
         {
           label: 'Agents', logo: true, route: AGENTS_ROUTE
         },
+        /*
+         * The terminal drawer's conversations, on a phone only.
+         *
+         * A laptop opens those with the chord, into AgentPanel, and has no use for a row here.
+         * A phone has no chord, so this was the one set of conversations it could not reach.
+         * The only entry that is not a page: it opens a dialog over this one, which is why it
+         * carries an action instead of a route. Admin only, as the drawer is.
+         */
+        {
+          label: 'Conversations', icon: 'icon-terminal', action: 'conversations', phone: true, admin: true
+        },
         // Last, and on the end of the row on purpose: it is the one entry you go to to change
         // something rather than to work, and that is where a settings control belongs.
         {
@@ -365,6 +383,13 @@ export default {
   },
 
   computed: {
+    /** The nav rows this person on this screen gets: see `globals` for the two that vary. */
+    shownGlobals() {
+      const admin = isAdminUser(this.$store.getters);
+
+      return this.globals.filter((g) => (!g.phone || this.narrow) && (!g.admin || admin));
+    },
+
     /** The versions offered for the build picked. */
     rancherVersionList() {
       return this.rancherVersionLists[this.rancherRegistry]?.versions || [];
@@ -1423,10 +1448,24 @@ export default {
     <!-- The things that are not workspaces, out of the way of the things that are. -->
     <div class="dev-sidebar__globals">
       <template
-        v-for="global in globals"
+        v-for="global in shownGlobals"
         :key="global.label"
       >
+        <button
+          v-if="global.action"
+          type="button"
+          :aria-label="global.label"
+          :data-testid="`dev-nav-${ global.action }`"
+          @click="$emit(global.action)"
+        >
+          <i
+            class="icon"
+            :class="global.icon"
+          />
+          <span class="dev-sidebar__globals-label">{{ global.label }}</span>
+        </button>
         <router-link
+          v-else
           v-clean-tooltip="global.label"
           :to="globalTo(global.route)"
           :aria-label="global.label"
@@ -2007,7 +2046,8 @@ export default {
        * label is from that, so using both here is what makes a nav row and a workspace row line
        * up rather than nearly line up.
        */
-      a {
+      a,
+      button {
         display:         flex;
         align-items:     center;
         justify-content: flex-start;

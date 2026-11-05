@@ -19,6 +19,7 @@ import PromptRemove from '@shell/components/PromptRemove';
 import ModalManager from '@shell/components/ModalManager';
 import GrowlManager from '@shell/components/GrowlManager';
 import DevSidebar from '../components/DevSidebar.vue';
+import GlobalConversations from '../components/GlobalConversations.vue';
 import ClaudeLogo from '../components/ClaudeLogo.vue';
 import FocusMark from '../components/FocusMark.vue';
 import { socketsWork, rancherOwnAddress } from '../sockets';
@@ -30,12 +31,20 @@ export default {
   name: 'DevShell',
 
   components: {
-    WindowManager, ActionMenu, PromptRemove, ModalManager, GrowlManager, DevSidebar, ClaudeLogo, FocusMark
+    WindowManager, ActionMenu, PromptRemove, ModalManager, GrowlManager, DevSidebar, GlobalConversations, ClaudeLogo, FocusMark
   },
 
   data() {
     return {
       drawer: false, menu: false, socketsBlocked: false, ownAddress: '',
+      /**
+       * The terminal drawer's conversations, open over the page (GlobalConversations).
+       *
+       * Not closed by a route change the way the drawer is: closing the list's own history entry
+       * is a popstate, which vue-router reports as one, and that would close the list from under
+       * the conversation that was open over it.
+       */
+      conversations: false,
     };
   },
 
@@ -110,6 +119,12 @@ export default {
   },
 
   methods: {
+    /** The drawer goes as the list comes: it is a nav entry, and a nav entry leaves the drawer. */
+    openConversations() {
+      this.drawer = false;
+      this.conversations = true;
+    },
+
     onKey(event) {
       if (event.key === 'Escape') {
         this.drawer = false;
@@ -231,6 +246,7 @@ export default {
         v-if="!bare"
         class="default-side-nav dev-nav"
         :class="{ 'dev-nav--open': drawer }"
+        @conversations="openConversations"
       />
       <div
         v-if="drawer"
@@ -280,6 +296,10 @@ export default {
         drew.
       -->
       <GrowlManager />
+      <GlobalConversations
+        v-if="conversations"
+        @close="conversations = false"
+      />
     </div>
   </div>
 </template>

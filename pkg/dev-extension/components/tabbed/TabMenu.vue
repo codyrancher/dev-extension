@@ -220,7 +220,8 @@ export default {
    SplitButton's menu is, because they are the same thing in two places. */
 .tab-menu__list {
   position:            fixed;
-  z-index:             1000;
+  // Above every dialog (DevModal, 1200 and up), for a tab row inside one. See SplitButton.
+  z-index:             1400;
   width:               max-content;
   min-width:           170px;
   max-width:           calc(100vw - 16px);

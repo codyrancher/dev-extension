@@ -89,7 +89,23 @@ export default {
    */
   emits: ['close'],
 
+  data() {
+    return { depth: 0 };
+  },
+
   computed: {
+    /**
+     * One above the dialog under it.
+     *
+     * Document order alone put the newest on top, as long as every dialog was teleported in
+     * the order it opened. A conversation opened from the phone's conversation list, and an
+     * image or a file opened from inside that conversation, are three dialogs deep, and the
+     * order they open in is the order they are stacked whatever the document says.
+     */
+    layer() {
+      return this.depth ? { zIndex: 1200 + this.depth } : null;
+    },
+
     flush() {
       return this.padded === null ? !['auto', 'medium'].includes(this.size) : !this.padded;
     },
@@ -104,6 +120,8 @@ export default {
      * cycles within, and focus goes back where it came from.
      */
     stack.push(this);
+    // Its place in the pile, for the z-index: see `layer`.
+    this.depth = stack.length - 1;
     // The Focus deck turns on the window's arrow keys and wheel; while a dialog is up they are
     // the dialog's.
     holdOverlay();
@@ -112,16 +130,17 @@ export default {
       if (stack[stack.length - 1] !== this) {
         return;
       }
+      /*
+       * Neither key, when a terminal or an editor has the caret. Escape is what interrupts
+       * Claude in a conversation open in one of these, and what leaves a completion list in an
+       * editor; closing the dialog round it took the conversation away instead. Tab is
+       * completion there, and Shift+Tab is Claude's mode switch: a trap that moved focus on
+       * either took the key from the program it was typed into. The close button is still there.
+       */
+      if (e.target?.closest?.('.xterm, .CodeMirror, .cm-editor')) {
+        return;
+      }
       if (e.key === 'Escape') {
-        /*
-         * Not when a terminal or an editor has the caret. Escape is what interrupts Claude in a
-         * conversation popped out into one of these, and what leaves a completion list in an
-         * editor; closing the dialog round it took the conversation away instead. The close
-         * button is still there.
-         */
-        if (e.target?.closest?.('.xterm, .CodeMirror, .cm-editor')) {
-          return;
-        }
         // Capture phase, and stopped: the deck and the page under this have Escape bindings of
         // their own, and the keypress was this dialog's.
         e.stopPropagation();
@@ -214,6 +233,7 @@ export default {
     <div
       class="dev-modal"
       :class="{ 'dev-focus': focus, 'dev-modal--focus': focus, [`dev-modal--${ size }`]: true }"
+      :style="layer"
       @click.self="onVeil"
     >
       <!--
@@ -304,9 +324,9 @@ export default {
   position:        fixed;
   inset:           0;
   // Above Rancher's header, its side nav and the docked agent panel (900); below the menus a
-  // dialog's own controls open (SMenu 2000, the reviewer picker 3100), and above everything
-  // else of ours. One number for all of them: a dialog opened over another is later in the
-  // document, so it is on top without needing a bigger one.
+  // dialog's own controls open (the shell's selects and tooltips 1300, SplitButton and TabMenu
+  // 1400, SMenu 2000, the reviewer picker 3100), and above everything else of ours. A dialog
+  // opened over another is one higher (`layer`), which is room for a hundred of them.
   z-index:         1200;
   display:         flex;
   align-items:     center;
