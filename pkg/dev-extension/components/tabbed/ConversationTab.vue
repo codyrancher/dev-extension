@@ -1,5 +1,5 @@
 <script>
-// What one conversation's tab shows: a dot for what its agent is doing, its title (renamed in
+// What one conversation's tab shows: its CLI's mark, coloured for what its agent is doing, its title (renamed in
 // place), and a caret for its menu. The stage's conversation tabs and the drawer's are this one
 // component, so they read as one thing.
 //
@@ -29,7 +29,7 @@ export default {
       required: true,
     },
 
-    /** The agent's state, for the dot. 'none' draws none. */
+    /** The agent's state, for the mark's colour (or the dot, with no mark). 'none' is neither. */
     agent: {
       type:    String,
       default: 'none',
@@ -200,18 +200,25 @@ export default {
       @blur="commit"
     >
     <template v-else>
-      <!-- What the agent is doing, as a dot before the title - the agents panel's dot, exactly. -->
-      <span
-        v-if="agent && agent !== 'none'"
-        class="conversation-tab__dot"
-        :class="`conversation-tab__dot--${ agent }`"
-        :title="label"
-      />
+      <!--
+        What the agent is doing, said by the CLI's own mark: coloured by how much it wants a
+        person, and pulsing while it works. It was a dot and then the mark beside it, two glyphs
+        and two gaps for what one glyph can say, in a strip where every pixel is a title's.
+        The dot is left for a conversation no CLI has run yet, which has no mark to colour.
+      -->
       <CliMark
         v-if="mark"
         class="conversation-tab__cli"
+        :class="agent && agent !== 'none' ? `conversation-tab__cli--${ agent }` : ''"
         :mark="mark"
-        :size="12"
+        :size="13"
+        :state="agent && agent !== 'none' ? label : ''"
+      />
+      <span
+        v-else-if="agent && agent !== 'none'"
+        class="conversation-tab__dot"
+        :class="`conversation-tab__dot--${ agent }`"
+        :title="label"
       />
       <span
         class="conversation-tab__name"
@@ -265,9 +272,20 @@ export default {
       &--idle     { background: var(--status-idle); }
     }
 
+    // The mark, carrying the state the dot used to: the same colours, and the same opacity-only
+    // pulse, so the title beside it never moves.
     &__cli {
       flex:         0 0 auto;
       margin-right: 6px;
+
+      &--working {
+        color:     var(--status-working);
+        animation: conversation-tab-dot-pulse 1.4s ease-in-out infinite;
+      }
+
+      &--input    { color: var(--status-input); }
+      &--finished { color: var(--status-done); }
+      &--idle     { color: var(--status-idle); }
     }
 
     &__name {

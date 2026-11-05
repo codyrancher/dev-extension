@@ -23,6 +23,21 @@ export default {
       type:    Number,
       default: 12,
     },
+    /**
+     * What the agent behind it is doing, when the mark is also standing for that (a conversation
+     * tab colours it by state). Added to the tooltip and the accessible name, because the SVG's
+     * own `<title>` is what a hover shows - a `title` attribute on it is never seen.
+     */
+    state: {
+      type:    String,
+      default: '',
+    },
+  },
+
+  computed: {
+    name() {
+      return this.state ? `${ this.mark.label } · ${ this.state }` : this.mark.label;
+    },
   },
 };
 </script>
@@ -35,10 +50,10 @@ export default {
     :height="size"
     viewBox="0 0 24 24"
     role="img"
-    :aria-label="mark.label"
+    :aria-label="name"
     focusable="false"
   >
-    <title>{{ mark.label }}</title>
+    <title>{{ name }}</title>
     <path
       :d="mark.path"
       fill="currentColor"
