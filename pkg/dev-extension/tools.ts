@@ -61,39 +61,39 @@ export const TOOLS: Record<ToolKind, { label: string; icon: string; what: string
   'dev-server': {
     label:       'Dev server',
     icon:        'icon-play',
-    what:        'The dashboard compiled and served from this checkout, so a change can be seen. Two gigabytes while it runs.',
+    what:        'The dashboard served from this checkout. About 2 GB while it runs.',
     multitenant: true,
   },
   storybook: {
     label:       'Storybook',
     icon:        'icon-document',
-    what:        'The component gallery built from this checkout, for a change to a component in isolation.',
+    what:        'The component gallery built from this checkout.',
     multitenant: true,
   },
   rancher: {
     label:       'Rancher',
     icon:        'icon-cluster',
-    what:        'A Rancher of its own to point the work at, with its own embedded k3s. Up in a couple of minutes.',
+    what:        'A Rancher of its own on an embedded k3s. Ready in a couple of minutes.',
     multitenant: true,
   },
   firefox: {
     label:       'Firefox',
     icon:        'icon-compass',
-    what:        'A Firefox of this workspace\'s own, with a desktop to watch and WebDriver BiDi to drive. For the bug that only happens outside Chromium.',
+    what:        'A Firefox of its own, with a desktop to watch and WebDriver BiDi to drive.',
     multitenant: true,
     sharing:     'Yours while the lease lasts, and only yours: Firefox accepts one WebDriver BiDi session at a time, so there is no taking a context of your own the way the shared Chromium allows. End your session when you are done - a client that disconnects without ending it holds the browser until the pod restarts.',
   },
   'rancher-master': {
     label:       'Rancher (master)',
     icon:        'icon-github',
-    what:        'rancher/dashboard\'s master, as its own CI builds it on every push, in front of a Rancher on a link that opens from anywhere. Try something against master here instead of building it.',
+    what:        'rancher/dashboard master as its CI builds it on every push, in front of a Rancher.',
     multitenant: false,
     sharing:     'One for everybody, and not leased: nothing to attach or release. Holding it on an earlier build, or pausing updates, holds it for every workspace - so say so, and put it back to following master when you are done.',
   },
   browser: {
     label:       'Browser',
     icon:        'icon-globe',
-    what:        'The shared Chromium every workspace drives, with the GitHub and Rancher logins already in it. Always there, nothing to attach.',
+    what:        'The Chromium every workspace drives, signed in to GitHub and Rancher. Always there.',
     multitenant: false,
     sharing:     'One Chromium for every workspace. Two agents driving it at once are in each other\'s tabs, so take a context of your own (see the shared-CDP context in the agent rules) rather than the default one, and do not close tabs you did not open.',
   },
@@ -224,7 +224,7 @@ export interface WorkspaceAsTool {
 
 export const WORKSPACE_TOOL: WorkspaceAsTool = {
   label: 'Workspace',
-  what:  'A unit of work: a checkout with its dependencies and its command-line tools, with nothing running until a tool is attached. An agent can take one and give it back.',
+  what:  'A checkout with its dependencies and command-line tools. Everything above attaches to one.',
   multitenant: true,
   openapi: [
     'openapi: 3.1.0',

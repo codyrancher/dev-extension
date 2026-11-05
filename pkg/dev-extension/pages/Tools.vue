@@ -15,7 +15,6 @@
  */
 import { Banner } from '@components/Banner';
 import DevPage from '../components/DevPage.vue';
-import DevCard from '../components/DevCard.vue';
 import { RcButton } from '@components/RcButton';
 import { inject } from 'vue';
 import {
@@ -35,7 +34,7 @@ export default {
   name: 'DevTools',
 
   components: {
-    Banner, RcButton, DevPage, DevCard
+    Banner, RcButton, DevPage
   },
 
   /**
@@ -362,65 +361,47 @@ export default {
       :key="tool.kind"
       class="dev-tools__tool"
     >
+      <!--
+        Name, then what is unusual about it, then the two ways to read further on the right. Per
+        workspace is what every tool but two is, so only "shared" is said; what sharing costs is
+        its tooltip, and for rancher-master the held note below says it when it is true.
+      -->
       <header class="dev-tools__head">
         <i
-          class="icon"
+          class="icon dev-tools__icon"
           :class="tool.icon"
         />
-        <strong>{{ tool.label }}</strong>
-
-        <!--
-          Whether two pieces of work can hold one. The shared one is the interesting case, so it
-          says what sharing it costs rather than only that it is shared.
-        -->
+        <strong class="dev-tools__name">{{ tool.label }}</strong>
         <span
+          v-if="!tool.multitenant"
           class="dev-tools__tenancy"
-          :class="tool.multitenant ? 'dev-tools__tenancy--per' : 'dev-tools__tenancy--shared'"
-          :title="tool.multitenant ? 'One instance per workspace' : tool.sharing"
-        >{{ tool.multitenant ? 'per workspace' : 'shared' }}</span>
-
+          :title="tool.sharing"
+        >shared</span>
         <span
-          v-if="tool.kind !== 'rancher-master'"
-          class="dev-tools__count"
-        >
-          {{ tool.instances.length }} running
-        </span>
-        <span
-          v-else-if="masterState.label"
+          v-if="tool.kind === 'rancher-master' && masterState.label"
           class="dev-tools__state"
           :class="`dev-tools__state--${ masterState.tone }`"
         >{{ masterState.label }}</span>
 
-        <RcButton
-          v-if="tool.openapi"
-          variant="link"
-          size="small"
-          @click="spec = spec === tool.kind ? '' : tool.kind"
-        >
-          {{ spec === tool.kind ? 'Hide the API' : 'How to talk to it' }}
-        </RcButton>
-
-        <a
-          v-if="tool.app"
-          :href="appHref(tool.app)"
-          class="dev-tools__app"
-          :title="`Edit ${ tool.app } - the templates are the tool`"
-        >{{ tool.app }}</a>
+        <span class="dev-tools__links">
+          <RcButton
+            v-if="tool.openapi"
+            variant="link"
+            size="small"
+            @click="spec = spec === tool.kind ? '' : tool.kind"
+          >
+            {{ spec === tool.kind ? 'Hide the API' : 'API' }}
+          </RcButton>
+          <a
+            v-if="tool.app"
+            :href="appHref(tool.app)"
+            class="dev-tools__app"
+            :title="`Edit ${ tool.app } - the templates are the tool`"
+          >{{ tool.app }}</a>
+        </span>
       </header>
 
       <p class="dev-tools__what">{{ tool.what }}</p>
-
-      <!--
-        Not for rancher-master: what sharing it costs is only worth a banner while somebody is
-        holding it, and its card says so then, beside the button that lets go. The chip carries
-        it as a tooltip the rest of the time.
-      -->
-      <Banner
-        v-if="!tool.multitenant && tool.kind !== 'rancher-master'"
-        color="info"
-      >
-        {{ tool.sharing }}
-      </Banner>
 
       <!-- The OpenAPI, as written on the App. See toolMeta in lte.ts. -->
       <pre
@@ -672,13 +653,14 @@ export default {
         >{{ masterNote }}</p>
       </div>
 
+      <!-- The shared Chromium is always up and has no rows to show; saying "none running" of it is wrong. -->
       <p
-        v-else-if="!tool.instances.length"
-        class="text-muted dev-tools__none"
-      >Nothing running. One is attached from a workspace, or with <code>tools start {{ tool.kind }}</code> inside one.</p>
+        v-else-if="!tool.instances.length && tool.multitenant"
+        class="dev-tools__none"
+      >None running &middot; <code>tools start {{ tool.kind }}</code></p>
 
       <table
-        v-else
+        v-else-if="tool.instances.length"
         class="dev-tools__table"
       >
         <thead>
@@ -687,7 +669,7 @@ export default {
             <th>Where</th>
             <th>Lease</th>
             <th>State</th>
-            <th />
+            <th v-if="tool.multitenant" />
           </tr>
         </thead>
         <tbody>
@@ -695,7 +677,7 @@ export default {
             v-for="inst in tool.instances"
             :key="inst.workspace + inst.kind"
           >
-            <td>{{ inst.workspace }}</td>
+            <td class="dev-tools__ws">{{ inst.workspace }}</td>
             <td>
               <a
                 v-if="toolHref(inst)"
@@ -720,9 +702,16 @@ export default {
               <span v-else-if="inst.ready">ready</span>
               <span v-else>{{ inst.detail || 'starting' }}</span>
             </td>
-            <td class="dev-tools__row-actions">
-              <!-- The shared tool has no lease of its own and nothing to stop. -->
-              <template v-if="!inst.shared">
+            <!--
+              The shared tool has no lease of its own and nothing to stop. The flex row is inside
+              the cell: a td that is itself display:flex stops being a table cell, and the row's
+              rule stopped short of the card's edge.
+            -->
+            <td
+              v-if="tool.multitenant"
+              class="dev-tools__row-actions"
+            >
+              <div v-if="!inst.shared">
                 <RcButton
                   variant="link"
                   size="small"
@@ -739,7 +728,7 @@ export default {
                 >
                   Stop
                 </RcButton>
-              </template>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -754,20 +743,17 @@ export default {
     -->
     <div class="dev-tools__tool dev-tools__tool--subject">
       <header class="dev-tools__head">
-        <i class="icon icon-folder" />
-        <strong>{{ WORKSPACE_TOOL.label }}</strong>
-        <span
-          class="dev-tools__tenancy dev-tools__tenancy--per"
-          title="Every workspace is its own; two pieces of work never share one"
-        >per workspace</span>
-        <span class="dev-tools__count">what the tools attach to</span>
-        <RcButton
-          variant="link"
-          size="small"
-          @click="spec = spec === 'workspace' ? '' : 'workspace'"
-        >
-          {{ spec === 'workspace' ? 'Hide the API' : 'How to talk to it' }}
-        </RcButton>
+        <i class="icon icon-folder dev-tools__icon" />
+        <strong class="dev-tools__name">{{ WORKSPACE_TOOL.label }}</strong>
+        <span class="dev-tools__links">
+          <RcButton
+            variant="link"
+            size="small"
+            @click="spec = spec === 'workspace' ? '' : 'workspace'"
+          >
+            {{ spec === 'workspace' ? 'Hide the API' : 'API' }}
+          </RcButton>
+        </span>
       </header>
 
       <p class="dev-tools__what">{{ WORKSPACE_TOOL.what }}</p>
@@ -789,43 +775,61 @@ export default {
   color: var(--muted);
 }
 
-/* The box itself is DevCard's; what is left here is this page's own spacing inside it. */
+/*
+ * One card per tool: a header, a line saying what it is, and then whatever it has - a table, the
+ * master facts, or one muted line. The card's gap is the only vertical rhythm inside it, so no
+ * child carries a margin of its own.
+ */
 .dev-tools__tool {
-  margin:        0 0 var(--dev-space-4);
-  padding:       var(--dev-space-3);
-  border:        1px solid var(--border);
-  border-radius: var(--r-sm);
-  background:    var(--box-bg);
+  display:        flex;
+  flex-direction: column;
+  gap:            var(--dev-space-4);
+  margin:         0 0 var(--dev-space-4);
+  padding:        14px var(--dev-space-5);
+  border:         1px solid var(--border);
+  border-radius:  var(--r-sm);
+  background:     var(--box-bg);
+
+  > * { margin: 0; }
 }
 
 .dev-tools__head {
-  display: flex;
+  display:     flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap:         var(--dev-space-4);
+  flex-wrap:   wrap;
+  min-height:  24px;
 }
 
-.dev-tools__tenancy {
-  padding: 0 8px;
-  border-radius: var(--r-md);
-  font-size: 11px;
-}
+.dev-tools__icon { color: var(--muted); }
+.dev-tools__name { font-size: 14px; }
 
-.dev-tools__tenancy--per    { background: var(--default); color: var(--muted); }
 /* A fact about the tool, not a warning: amber is kept for a shared tool somebody is holding
    (rancher-master's state pill), which is the moment sharing costs anybody anything. */
-.dev-tools__tenancy--shared { border: 1px solid var(--border); color: var(--muted); }
+.dev-tools__tenancy {
+  padding:       0 8px;
+  border:        1px solid var(--border);
+  border-radius: var(--r-md);
+  color:         var(--muted);
+  font-size:     11px;
+  line-height:   18px;
+  cursor:        help;
+}
 
-.dev-tools__count { color: var(--muted); font-size: 12px; }
+.dev-tools__links {
+  display:     inline-flex;
+  align-items: center;
+  gap:         var(--dev-space-5);
+  margin-left: auto;
+}
 
-.dev-tools__app { margin-left: auto; font-family: monospace; font-size: 12px; }
+.dev-tools__app { font-family: monospace; font-size: 12px; }
 
-.dev-tools__what { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.dev-tools__what { color: var(--muted); font-size: 13px; line-height: 1.45; }
 
-.dev-tools__none { margin: 8px 0 0; font-size: 12px; }
+.dev-tools__none { color: var(--muted); font-size: 12px; }
 
 .dev-tools__spec {
-  margin: 8px 0 0;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: var(--dev-r-ctl);
@@ -837,22 +841,41 @@ export default {
 
 .dev-tools__table {
   width: 100%;
-  margin-top: 10px;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
 
   th, td {
     text-align: left;
-    padding: 4px 8px;
-    border-bottom: 1px solid var(--border);
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
   }
 
-  th { color: var(--muted); font-weight: normal; }
+  th:first-child, td:first-child { padding-left: 0; }
+  th:last-child, td:last-child { padding-right: 0; }
+
+  th {
+    border-top:     0;
+    padding-top:    0;
+    color:          var(--muted);
+    font-size:      11px;
+    font-weight:    normal;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
 }
+
+.dev-tools__ws { font-weight: 600; }
 
 .dev-tools__ns { margin-left: 8px; color: var(--muted); }
 
-.dev-tools__master { margin-top: 12px; font-size: 13px; }
+.dev-tools__master {
+  display:        flex;
+  flex-direction: column;
+  gap:            var(--dev-space-4);
+  font-size:      13px;
+
+  > * { margin: 0; }
+}
 
 /* Where it stands, as a pill: green while it follows master, amber while somebody holds it. */
 .dev-tools__state {
@@ -883,7 +906,7 @@ export default {
   grid-template-columns: max-content minmax(0, 1fr);
   gap:                   8px 16px;
   margin:                0;
-  padding:               10px 12px;
+  padding:               12px 14px;
   border:                1px solid var(--border);
   border-radius:         var(--dev-r-ctl);
 
@@ -921,10 +944,9 @@ export default {
 
 .dev-tools__move-note { flex-basis: 100%; font-size: 12px; }
 
-.dev-tools__master-error { margin: 8px 0 0; color: var(--error); }
+.dev-tools__master-error { color: var(--error); }
 
 .dev-tools__held {
-  margin:        8px 0 0;
   padding:       6px 10px;
   border-left:   3px solid var(--warning);
   border-radius: var(--dev-r-ctl);
@@ -937,7 +959,6 @@ export default {
   flex-wrap:   wrap;
   gap:         8px;
   align-items: center;
-  margin-top:  10px;
 
   select { max-width: 100%; }
 }
@@ -956,7 +977,7 @@ export default {
 
 .dev-tools__master-remove { margin-left: auto; }
 
-.dev-tools__row-actions {
+.dev-tools__row-actions > div {
   display: flex;
   gap: 6px;
   justify-content: flex-end;
