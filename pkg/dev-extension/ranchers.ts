@@ -11,7 +11,8 @@ import { APP_INSTANCE } from './config/constants';
 import { AGENT_NS, AGENT_BASE } from './pod';
 import { readPrefs, savePrefs } from './prefs';
 import { rancherVersions, RancherVersion } from './github';
-import { DEFAULT_RANCHER_VERSION } from './apps-rancher';
+import { DEFAULT_RANCHER_VERSION, rancherSingleApp } from './apps-rancher';
+import { INSTANCE_ADMINS_CONFIGMAP, instanceAdminValues } from './instance-admins.mjs';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -652,6 +653,11 @@ export async function createRancherInstance(store: Store, name: string, app = RA
   if (cloudCredentials) {
     values.cloudCredentials = cloudCredentials;
   }
+  // Read live, like the cloud credentials: dev-system/dev-instance-admins is who else is an
+  // administrator of every instance made from now on.
+  const admins = await devFetch(`${ clusterBase('local') }/v1/configmaps/${ DEV_SYSTEM_NAMESPACE }/${ INSTANCE_ADMINS_CONFIGMAP }`).catch(() => null);
+
+  Object.assign(values, await instanceAdminValues(admins?.data, [rancherSingleApp().spec.values.githubUserId]));
 
   const instance = await store.dispatch('management/create', {
     type:     APP_INSTANCE,

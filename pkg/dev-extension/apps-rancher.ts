@@ -48,6 +48,12 @@ export function rancherSingleApp(): Json {
         // silently broke every instance already installed, because nothing compared the two.
         githubClientSecret: "",
         githubUserId: "55104481",
+        // Everyone else made an administrator, from dev-system/dev-instance-admins on the managing
+        // Rancher: createRancherInstance renders that ConfigMap into these two (instance-admins.mjs).
+        // YAML comments rather than empty, because an empty value is an unset one and the install
+        // form would ask for it.
+        adminPrincipals: "      # nobody else listed",
+        adminUsers: "    # nobody else listed",
         // The bearer an agent uses to talk to this instance, generated per instance by the
         // browser that creates it (ranchers.ts, agentBearer) and empty for an instance made by
         // hand - in which case no machine account is created and nothing else changes.
@@ -744,10 +750,10 @@ stringData:
 #
 # so the User object can be written before anybody has ever logged in, and the login finds it
 # instead of making a second one. The GlobalRoleBinding next to it can then name that user
-# directly. Adding somebody is those two resources with their id run through that formula (and
-# \`local://\` + that name as the second principal), and
-# their id added to allowedPrincipalIds in 60-github-auth.yaml - that list is what decides who
-# may log in at all, and an admin who is not on it cannot get far enough to use the binding.
+# directly. Everyone besides githubUserId comes from dev-system/dev-instance-admins on the
+# managing Rancher, rendered into the adminPrincipals and adminUsers values below the same way: the
+# allow-list entry decides who may log in at all, and an admin who is not on it cannot get far
+# enough to use the binding.
 #
 # The label Rancher puts on the users it creates itself is an index and is deliberately not
 # reproduced: this Rancher's own admin carries a GitHub principal without one and resolves by
@@ -781,6 +787,7 @@ data:
     allowedPrincipalIds:
       - github_user://\${githubUserId}
       - github_org://9343010
+\${adminPrincipals}
     clientId: \${githubClientId}
     clientSecret: cattle-global-data:githubconfig-clientsecret
     hostname: github.com
@@ -859,6 +866,7 @@ data:
       name: grb-admin-rancher-org
     globalRoleName: admin
     groupPrincipalName: github_org://9343010
+\${adminUsers}
 `,
         },
         {
