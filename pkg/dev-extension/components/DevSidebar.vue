@@ -2076,6 +2076,9 @@ export default {
         flex:            0 0 24px;
         width:           24px;
         height:          24px;
+        // The shell puts 6px after an icon in a BUTTON, and Conversations is the one row that is
+        // a button: its label sat 6px right of the five above it.
+        margin:          0;
         font-size:       18px;
         display:         inline-flex;
         align-items:     center;

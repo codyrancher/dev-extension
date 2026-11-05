@@ -285,8 +285,12 @@ export default {
 </script>
 
 <template>
+  <!--
+    `large`, not `full`: both are the whole screen on a phone, but `full` is the gallery's, with
+    no panel and a veil the page shows through, and a list wants a surface of its own.
+  -->
   <DevModal
-    size="full"
+    size="large"
     title="Conversations"
     @close="back"
   >
@@ -372,7 +376,7 @@ export default {
   -->
   <DevModal
     v-if="chatSession"
-    size="full"
+    size="large"
     :title="chatSession.title || 'Conversation'"
     @close="back"
   >

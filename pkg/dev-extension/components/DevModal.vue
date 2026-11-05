@@ -141,6 +141,14 @@ export default {
         return;
       }
       if (e.key === 'Escape') {
+        /*
+         * Not while a menu is open over this. A split button's or a tab's menu is on the body
+         * and closes on Escape from the document, after this capture listener - so the press
+         * that was meant to put the menu away closed the dialog round it instead.
+         */
+        if (document.querySelector('.split-btn__menu, .tab-menu__list, .s-menu__panel')) {
+          return;
+        }
         // Capture phase, and stopped: the deck and the page under this have Escape bindings of
         // their own, and the keypress was this dialog's.
         e.stopPropagation();
