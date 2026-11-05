@@ -57,7 +57,7 @@ import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
   startIssueFix, startPrReview, startJiraTriage, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers,
-  replyToComment, sendReplyDraft, discardReplyDraft, commentOnPr, quoted, commentsRevision, githubBrowserSession, editReviewComment, deleteReviewComment, amendPrReviewComment, DEFAULT_REPO
+  replyToComment, sendReplyDraft, discardReplyDraft, updateReplyDraft, commentOnPr, quoted, commentsRevision, githubBrowserSession, editReviewComment, deleteReviewComment, amendPrReviewComment, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
@@ -212,9 +212,8 @@ export default {
       /** The thread a reply is being written in, by its root comment's id; '' when none is. */
       replyTo:   '',
       /** The agent's draft the reply box was opened from, so posting it also clears the draft. */
-      replyFromDraft: null,
       /** The draft being sent or discarded. */
-      draftBusy:      0,
+      sendingDraft:   false,
       /** The pending reply being edited, by its GitHub comment id; 0 for none. */
       editingMsg:   0,
       editMsgDraft: '',
@@ -660,8 +659,8 @@ export default {
           // `comment` for a finding, `reply` for a draft of yours on GitHub - which the rail
           // keys `gh<id>`, so the key is rebuilt here rather than the bare id being handed on
           // to maps that do not hold it.
-          const discussed = /^Discuss (comment|reply) #(\d+)/.exec(String(c.title || ''));
-          const comment = discussed ? `${ discussed[1] === 'reply' ? 'gh' : '' }${ discussed[2] }` : '';
+          const discussed = /^Discuss (comment|reply|draft) #(\d+)/.exec(String(c.title || ''));
+          const comment = discussed ? `${ ({ reply: 'gh', draft: 'rd' })[discussed[1]] || '' }${ discussed[2] }` : '';
 
           return { id: c.id, title: c.title || 'Conversation', comment };
         });
@@ -1193,7 +1192,6 @@ export default {
 
       this.replyTo = open ? String(c.id) : '';
       this.replyDraft = '';
-      this.replyFromDraft = null;
     },
 
     /**
@@ -1239,11 +1237,6 @@ export default {
           await commentOnPr(this.status.pr, body, this.repo);
         } else {
           await replyToComment(this.status.pr, Number(c.id), body, this.repo);
-        }
-        // Posted from an agent's draft: the draft is said now, so it goes.
-        if (this.replyFromDraft) {
-          await discardReplyDraft(this.status.pr, this.replyFromDraft.id).catch(() => {});
-          this.replyFromDraft = null;
         }
         this.replyTo = '';
         this.replyDraft = '';
@@ -2049,7 +2042,22 @@ export default {
 
     /** A discussion key that cannot collide with a finding's: GitHub's ids are not dev-api's. */
     msgKey(t) {
-      return `gh${ t.id }`;
+      return t.rd ? t.id : `gh${ t.id }`;
+    },
+
+    /**
+     * A card's messages, with the replies an agent drafted into it on the end as messages too.
+     *
+     * Keyed `rd<id>`: a draft's id is dev-api's counter, which would collide with nothing on
+     * GitHub in practice but is not GitHub's to begin with, and the same key is what Edit and
+     * Discuss are tracked by. `rd` carries the draft itself, for Send it and Discard.
+     */
+    threadOf(c) {
+      const drafts = (c.drafts || []).map((r) => ({
+        id: `rd${ r.id }`, rd: r, who: r.who, body: r.body, html: r.html, at: r.at, pending: false, isNew: false, author: false,
+      }));
+
+      return drafts.length ? [...(c.thread || []), ...drafts] : (c.thread || []);
     },
 
     startMsgEdit(t) {
@@ -2222,6 +2230,7 @@ export default {
       const here = new Set(this.shownComments.flatMap((c) => [
         String(c.id),
         ...(c.thread || []).filter((t) => t.pending).map((t) => this.msgKey(t)),
+        ...(c.drafts || []).map((r) => `rd${ r.id }`),
       ]));
       const gone = open.filter((id) => !here.has(String(id)));
 
@@ -2434,37 +2443,82 @@ export default {
       }
     },
 
-    async sendDraft(c, r) {
-      this.draftBusy = r.id;
+    /** Post an agent's draft into its thread, then off the drafts - see sendReplyDraft. */
+    async sendDraft(t) {
+      if (this.msgBusy) {
+        return;
+      }
+      this.msgBusy = t.id;
+      this.sendingDraft = true;
       this.error = '';
       try {
-        await sendReplyDraft(this.status.pr, r, r.body, this.repo);
+        await sendReplyDraft(this.status.pr, t.rd, t.rd.body, this.repo);
+        this.closeDraft(t);
         forgetPrDetail(this.status.pr, this.repo);
-        await this.refreshEvidence();
+        await this.refreshEvidence(true);
       } catch (e) {
         this.error = `The reply was not posted: ${ e?.message || e }`;
       } finally {
-        this.draftBusy = 0;
+        this.msgBusy = 0;
+        this.sendingDraft = false;
       }
     },
 
-    /** Into the reply box, to be changed before it goes; posting it there clears the draft. */
-    editDraft(c, r) {
-      this.replyTo = String(c.id);
-      this.replyDraft = r.body;
-      this.replyFromDraft = r;
+    /** Edit on a draft saves back into the draft; nothing goes to GitHub until Send it. */
+    async saveDraftEdit(t) {
+      const body = this.editMsgDraft.trim();
+
+      if (!body || this.msgBusy) {
+        return;
+      }
+      this.msgBusy = t.id;
+      this.error = '';
+      try {
+        await updateReplyDraft(this.status.pr, t.rd.id, body);
+        // Drawn with the new text now, ahead of the rebuild that will say the same.
+        t.rd.body = body;
+        if (this.editingMsg === t.id) {
+          this.editingMsg = 0;
+          this.editMsgDraft = '';
+        }
+      } catch (e) {
+        this.error = `The draft was not saved: ${ e?.message || e }`;
+        this.msgBusy = 0;
+
+        return;
+      }
+      this.msgBusy = 0;
+      forgetPrDetail(this.status.pr, this.repo);
+      this.refreshEvidence();
     },
 
-    async dropDraft(r) {
-      this.draftBusy = r.id;
+    async dropDraft(c, t) {
+      if (this.msgBusy) {
+        return;
+      }
+      this.msgBusy = t.id;
+      this.error = '';
       try {
-        await discardReplyDraft(this.status.pr, r.id);
+        await discardReplyDraft(this.status.pr, t.rd.id);
+        this.closeDraft(t);
         forgetPrDetail(this.status.pr, this.repo);
-        await this.refreshEvidence();
+        await this.refreshEvidence(true);
       } catch (e) {
         this.error = `The draft was not discarded: ${ e?.message || e }`;
       } finally {
-        this.draftBusy = 0;
+        this.msgBusy = 0;
+      }
+    },
+
+    /** A draft that is gone takes its editor and its discussion with it. */
+    closeDraft(t) {
+      if (this.editingMsg === t.id) {
+        this.editingMsg = 0;
+        this.editMsgDraft = '';
+      }
+      if (this.discussing[t.id]) {
+        this.discussing = { ...this.discussing, [t.id]: false };
+        forgetDiscussion(this.status?.pr || 0, t.id);
       }
     },
 
@@ -4264,8 +4318,14 @@ export default {
                     since the last round, and the one still waiting for an answer - the last
                     of an unanswered thread - carry the same yellow border.
                   -->
+                  <!--
+                    The thread, then any reply an agent drafted into it (dev-api's reply-draft),
+                    drawn as one more message of the same kind: the same head, padding, inline
+                    Edit and Discuss as a pending reply of yours, because that is what it is -
+                    something of yours that nobody else can see yet. See threadOf.
+                  -->
                   <div
-                    v-for="(t, k) in c.thread"
+                    v-for="(t, k) in threadOf(c)"
                     :key="t.id || `at${ k }`"
                     class="comment"
                     :class="[
@@ -4280,10 +4340,10 @@ export default {
                       // A reply of yours that is drafted and not submitted. It sits in the
                       // thread where you wrote it, dimmed and dashed, so it is plainly not the
                       // same thing as a message the other person can see.
-                      { 'workspace-rail__msg--draft': t.pending },
+                      { 'workspace-rail__msg--draft': t.pending || t.rd },
                       // Not on a local finding: the edge above already says where it stands,
                       // and two borders arguing about one comment is how neither gets read.
-                      { 'workspace-rail__msg--flag': !c.local && !t.pending && (t.isNew || (!c.answered && k === c.thread.length - 1)) },
+                      { 'workspace-rail__msg--flag': !c.local && !t.pending && !t.rd && (t.isNew || (!c.answered && k === c.thread.length - 1)) },
                     ]"
                   >
                     <div class="comment-head">
@@ -4303,6 +4363,11 @@ export default {
                         class="workspace-rail__tag workspace-rail__tag--draft"
                         title="Drafted in a review you have not submitted. Only you can see it."
                       >pending</span>
+                      <span
+                        v-if="t.rd"
+                        class="workspace-rail__tag workspace-rail__tag--draft"
+                        title="Drafted for you to send. Nothing is on GitHub until you press Send it."
+                      >draft · not posted</span>
                       <!--
                         Quote this message into the reply box, GitHub's own Quote reply. On
                         the message rather than on the thread, because which message is being
@@ -4310,7 +4375,7 @@ export default {
                         that is a draft of yours and has no thread on GitHub to answer in.
                       -->
                       <button
-                        v-if="!c.local && !t.pending && status.pr"
+                        v-if="!c.local && !t.pending && !t.rd && status.pr"
                         type="button"
                         class="workspace-rail__quote"
                         :title="`Quote ${ t.who } in a reply`"
@@ -4335,7 +4400,7 @@ export default {
                           size="sm"
                           variant="primary"
                           :disabled="!editMsgDraft.trim() || msgBusy === t.id"
-                          @click="saveMsgEdit(c, t)"
+                          @click="t.rd ? saveDraftEdit(t) : saveMsgEdit(c, t)"
                         >
                           Save
                         </PrButton>
@@ -4360,6 +4425,46 @@ export default {
                       are still writing: it can be fixed, thrown away, or talked over with the
                       agent before it goes out with the review.
                     -->
+                    <!--
+                      An agent's draft: Send it is the one that matters, so it leads. Edit saves
+                      back into the draft rather than posting; Discuss talks the wording over
+                      with the agent, which may rewrite the draft but never send it.
+                    -->
+                    <div
+                      v-if="t.rd && editingMsg !== t.id"
+                      class="workspace-rail__comment-actions"
+                    >
+                      <PrButton
+                        size="sm"
+                        variant="primary"
+                        :disabled="msgBusy === t.id"
+                        @click="sendDraft(t)"
+                      >
+                        {{ msgBusy === t.id && sendingDraft ? 'Posting…' : 'Send it' }}
+                      </PrButton>
+                      <PrButton
+                        size="sm"
+                        :disabled="msgBusy === t.id"
+                        @click="startMsgEdit(t)"
+                      >
+                        Edit
+                      </PrButton>
+                      <PrButton
+                        size="sm"
+                        :variant="discussing[msgKey(t)] ? 'accent' : 'default'"
+                        @click="toggleDiscussMsg(c, t)"
+                      >
+                        {{ discussing[msgKey(t)] ? 'Discussing' : 'Discuss' }}
+                      </PrButton>
+                      <PrButton
+                        size="sm"
+                        variant="danger"
+                        :disabled="msgBusy === t.id"
+                        @click="dropDraft(c, t)"
+                      >
+                        Discard
+                      </PrButton>
+                    </div>
                     <div
                       v-if="t.pending && editingMsg !== t.id"
                       class="workspace-rail__comment-actions"
@@ -4388,12 +4493,12 @@ export default {
                       </PrButton>
                     </div>
                     <CommentDiscussion
-                      v-if="t.pending && discussing[msgKey(t)]"
+                      v-if="(t.pending || t.rd) && discussing[msgKey(t)]"
                       :pr="status.pr"
                       :repo="repo"
                       :workspace="workspace.name"
-                      :comment="{ id: t.id, body: t.body, path: c.path, line: c.line }"
-                      lives="github"
+                      :comment="{ id: t.rd ? t.rd.id : t.id, body: t.body, path: c.path, line: c.line }"
+                      :lives="t.rd ? 'draft' : 'github'"
                       :session="discussSession[msgKey(t)] || ''"
                       @session="rememberMsgDiscussion(t, $event)"
                       @close="toggleDiscussMsg(c, t)"
@@ -4405,50 +4510,6 @@ export default {
                   :pr="status.pr"
                   :attachments="c.attachments"
                 />
-                <!--
-                  A reply an agent drafted into this thread (dev-api's reply-draft). Drawn under
-                  the message it answers and unmistakably not on GitHub yet: nothing is posted
-                  until Send, and Edit puts it in the reply box below to be changed first.
-                -->
-                <div
-                  v-for="r in (c.drafts || [])"
-                  :key="`draft-${ r.id }`"
-                  class="workspace-rail__msg workspace-rail__msg--draft workspace-rail__agent-draft"
-                >
-                  <div class="workspace-rail__msg-head">
-                    <span class="workspace-rail__agent-draft-label">Reply drafted by {{ r.who === 'agent' ? 'the agent' : r.who }}</span>
-                    <span class="text-muted">{{ r.at ? ago(r.at) : '' }} · not posted</span>
-                  </div>
-                  <div
-                    class="md-body"
-                    v-html="r.html"
-                  />
-                  <div class="workspace-rail__comment-actions">
-                    <PrButton
-                      size="sm"
-                      variant="primary"
-                      :disabled="draftBusy === r.id"
-                      @click="sendDraft(c, r)"
-                    >
-                      {{ draftBusy === r.id ? 'Posting…' : 'Send it' }}
-                    </PrButton>
-                    <PrButton
-                      size="sm"
-                      :disabled="draftBusy === r.id"
-                      @click="editDraft(c, r)"
-                    >
-                      Edit
-                    </PrButton>
-                    <PrButton
-                      size="sm"
-                      variant="danger"
-                      :disabled="draftBusy === r.id"
-                      @click="dropDraft(r)"
-                    >
-                      Discard
-                    </PrButton>
-                  </div>
-                </div>
                 <!--
                   Answering a thread by hand, which this column could only send you to GitHub
                   for. The agent's way in is Discuss, on a finding of yours; this is the other
@@ -5957,8 +6018,6 @@ export default {
   &__reply-when { color: var(--muted); justify-self: end; }
   &__reply-body { grid-column: 1 / -1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  &__agent-draft { border-left: 2px dashed var(--warning); }
-  &__agent-draft-label { font-weight: 600; color: var(--warning); }
 
   &__came-back-item {
     display:       inline-flex;

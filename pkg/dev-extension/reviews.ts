@@ -507,6 +507,11 @@ export async function sendReplyDraft(num: number, draft: ReplyDraft, body = draf
   return sent;
 }
 
+/** Change a drafted reply's wording. It stays a draft: this posts nothing. */
+export async function updateReplyDraft(num: number, id: number, body: string): Promise<void> {
+  await api(`/my-work/pr/${ num }/reply-drafts/${ id }`, { method: 'PUT', body: JSON.stringify({ body }) });
+}
+
 export async function discardReplyDraft(num: number, id: number): Promise<void> {
   await api(`/my-work/pr/${ num }/reply-drafts/${ id }`, { method: 'DELETE' });
 }
@@ -1228,7 +1233,7 @@ export function discussPrompt(
    * that costs more than doing nothing, so a GitHub comment is given no write routes at all and
    * told plainly to hand the wording back.
    */
-  lives: 'local' | 'github' = 'local',
+  lives: 'local' | 'github' | 'draft' = 'local',
 ): string {
   const oneline = String(comment.body).replace(/\s+/g, ' ').slice(0, 400);
   const where = comment.path ? `file ${ comment.path }${ comment.line ? `, line ${ comment.line }` : '' }` : 'a PR-level comment';
@@ -1238,8 +1243,16 @@ export function discussPrompt(
   const apiHint = API_HINT;
   const subject = lives === 'github'
     ? `the user's own unsubmitted reply (GitHub review comment #${ comment.id })`
-    : `pending review comment #${ comment.id }`;
-  const ending = lives === 'github'
+    : lives === 'draft'
+      ? `reply draft #${ comment.id }, an unposted answer drafted into a review thread for the user to send`
+      : `pending review comment #${ comment.id }`;
+  /*
+   * A drafted reply is in the harness API's own store (reply-drafts), so unlike a GitHub draft
+   * the agent can rewrite it - and must not post it: sending is the person's, from the panel.
+   */
+  const ending = lives === 'draft'
+    ? ` The draft and the thread it answers: curl -s ${ apiHint }/${ num }/reply-drafts and curl -s ${ apiHint }/${ num }/threads. When the user settles on improved wording, update the draft: curl -s -X PUT ${ apiHint }/${ num }/reply-drafts/${ comment.id } -H 'Content-Type: application/json' -d '{"body":"<new text>"}'. If they decide to drop it: curl -s -X DELETE ${ apiHint }/${ num }/reply-drafts/${ comment.id }. Never post it or any other reply to GitHub yourself — the user sends it from the panel.`
+    : lives === 'github'
     ? ` This comment is a draft in the user's unsubmitted review on GitHub, not in the harness API, so you cannot change or delete it yourself and must not try — there is no route that would work, and the delete route for harness findings answers "ok" without deleting anything of GitHub's. When the user settles on improved wording, give them the final text in a fenced block and tell them to paste it into Edit on that reply.`
     : ` When the user settles on improved wording, update the comment: curl -s -X PUT ${ apiHint }/${ num }/comments/${ comment.id } -H 'Content-Type: application/json' -d '{"body":"<new text>"}'. If they decide to drop it: curl -s -X DELETE ${ apiHint }/${ num }/comments/${ comment.id }.`;
 

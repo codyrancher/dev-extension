@@ -107,7 +107,7 @@ export default {
        * question asked inside a draft-reply discussion comes back pointing at a finding that
        * does not exist.
        */
-      return `Discuss ${ this.lives === 'github' ? 'reply' : 'comment' } #${ this.comment?.id }`;
+      return `Discuss ${ ({ github: 'reply', draft: 'draft' })[this.lives] || 'comment' } #${ this.comment?.id }`;
     },
   },
 
