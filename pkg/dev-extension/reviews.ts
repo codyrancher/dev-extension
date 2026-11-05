@@ -29,7 +29,8 @@ import {
   ensureWorkspaceReady, ensureWorkspaceOnOpen, waitForWorkspacePod, conversationPane
 } from './workspace-tools';
 import type { WorkspaceContext } from './workspace-tools';
-import { rerunFailed } from './github';
+import { rerunFailed, setIssueStatus } from './github';
+import type { GithubBoardStatus } from './github';
 import { source } from './source-cache.mjs';
 import {
   DEFAULT_APP, DEV_API_IN_CLUSTER, LTE_APP, isLte
@@ -943,6 +944,13 @@ export interface Started {
   workspace: string;
   conversation: ProjectConversation;
   created: boolean;
+  /**
+   * Start fix only: the issue's board status once starting moved it to Working (or found it
+   * further along), null when it is on no board with a Working column, and `boardError` when
+   * GitHub refused - a token without `project` scope, most often.
+   */
+  board?: GithubBoardStatus | null;
+  boardError?: string;
 }
 
 const sweepAttempted = new Map<string, number>();
@@ -1031,6 +1039,14 @@ export async function startPrReview(store: Store, pr: { number: number; title?: 
  * panes, both queued with the same prompt, racing each other over one checkout.
  */
 export async function startIssueFix(store: Store, issue: { number: number; title: string }, repo = DEFAULT_REPO): Promise<Started> {
+  // The board says somebody has picked it up: Working, unless it is already past that (see
+  // setIssueStatus). Here rather than in one page, because a fix is started from My Work, from
+  // Focus and from the workspace itself, and the board should not depend on which. Asked for
+  // first and awaited last, so it costs the button no time; it never fails the fix.
+  const boardSoon = setIssueStatus(repo, issue.number).then(
+    (board) => ({ board, boardError: '' }),
+    (e: Json) => ({ board: null, boardError: e?.message || String(e) }),
+  );
   const workspace = await workspaceFor(`issue-${ issue.number }`);
   const created = await ensureWorkspace(store, workspace, issue.title || '', repo);
   const title = `Fix #${ issue.number }`;
@@ -1039,12 +1055,16 @@ export async function startIssueFix(store: Store, issue: { number: number; title
   if (existing) {
     await deliverTo(workspace, existing, fixPrompt(issue.number, repo));
 
-    return { workspace, conversation: existing, created };
+    return {
+      workspace, conversation: existing, created, ...await boardSoon
+    };
   }
 
   const conversation = await openWith(workspace, title, fixPrompt(issue.number, repo), { issue: issue.number }, undefined, store, `issue-${ issue.number }-fix`);
 
-  return { workspace, conversation, created };
+  return {
+    workspace, conversation, created, ...await boardSoon
+  };
 }
 
 /**

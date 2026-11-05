@@ -153,6 +153,11 @@ export interface GithubPr {
 /** Where an issue sits on its GitHub project board: the board's "Status" single-select field. */
 export interface GithubBoardStatus {
   name: string;
+  /**
+   * Whether setIssueStatus moved it, on its answer only: false when the issue was already in
+   * that column or past it, and the status is the one it already had.
+   */
+  changed?: boolean;
   /** The board's own colour for that column: GRAY, BLUE, GREEN, YELLOW, ORANGE, RED, PINK or PURPLE. */
   color: string;
   project: string;
@@ -638,10 +643,16 @@ async function issueStatuses(repos?: string[], without?: string[]): Promise<Map<
  * the option to set - so this fetches them for the one issue and then writes. Matching is on the
  * option name, case-insensitive, because a board names its "working" column whatever it likes.
  *
- * Returns the status that was set, or null when the issue is on no board with a Status field, or
- * none of `wanted` is one of that field's options - both ordinary outcomes, not errors. Writing a
- * project field needs the token's `project` scope; a token without it makes the mutation throw,
- * which the caller (Start fix) swallows so the fix still starts.
+ * Forward only. A board's Status options are its columns, in the board's own order, so an issue
+ * already in a column at or past the one wanted - Review, QA, Done - is left where it is: starting
+ * a fix on an issue whose fix is in review should not drag it back to Working. An issue with no
+ * Status yet counts as before every column.
+ *
+ * Returns the status the issue ends up with (`changed` says whether this moved it), or null when
+ * the issue is on no board with a Status field, or none of `wanted` is one of that field's
+ * options - both ordinary outcomes, not errors. Writing a project field needs the token's
+ * `project` scope; a token without it makes the mutation throw, and the caller decides what that
+ * costs (startIssueFix: nothing, the fix still starts, and the error is handed back to say).
  */
 const ISSUE_STATUS_FIELDS_QUERY = `
   query IssueStatusFields($owner: String!, $name: String!, $number: Int!) {
@@ -650,6 +661,9 @@ const ISSUE_STATUS_FIELDS_QUERY = `
         projectItems(first: 10) {
           nodes {
             id
+            fieldValueByName(name: "Status") {
+              ... on ProjectV2ItemFieldSingleSelectValue { optionId name color }
+            }
             project {
               id
               title
@@ -681,10 +695,21 @@ export async function setIssueStatus(repo: string, number: number, wanted: strin
 
   for (const item of items) {
     const field = item.project?.field;
-    const option = (field?.options || []).find((candidate: Json) => targets.includes(String(candidate.name).toLowerCase()));
+    const options: Json[] = field?.options || [];
+    const at = options.findIndex((candidate: Json) => targets.includes(String(candidate.name).toLowerCase()));
 
-    if (!field?.id || !option) {
+    if (!field?.id || at < 0) {
       continue;
+    }
+    const option = options[at];
+    const project = { project: item.project.title || '', url: item.project.url || '' };
+    const now = item.fieldValueByName;
+    const nowAt = now?.optionId ? options.findIndex((candidate: Json) => candidate.id === now.optionId) : -1;
+
+    if (nowAt >= at) {
+      return {
+        name: now.name || options[nowAt].name, color: now.color || options[nowAt].color || 'GRAY', ...project, changed: false,
+      };
     }
 
     await graphql(SET_ISSUE_STATUS_MUTATION, {
@@ -692,7 +717,7 @@ export async function setIssueStatus(repo: string, number: number, wanted: strin
     });
 
     return {
-      name: option.name, color: option.color || 'GRAY', project: item.project.title || '', url: item.project.url || '',
+      name: option.name, color: option.color || 'GRAY', ...project, changed: true,
     };
   }
 

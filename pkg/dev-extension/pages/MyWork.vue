@@ -14,7 +14,7 @@ import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import AsyncButton from '@shell/components/AsyncButton';
-import { myWork, setIssueStatus, ALL_SECTIONS } from '../github';
+import { myWork, ALL_SECTIONS } from '../github';
 // The assigned-issues table, shared with the Issue tracker page. See issue-table.js.
 import {
   issueHeadersFor, issueRowsFrom, narrowed,
@@ -1114,15 +1114,18 @@ export default {
       this.error = '';
 
       try {
+        // Which also moves the issue to its board's Working column unless it is further along
+        // (startIssueFix, setIssueStatus). The row shows what the board now says; a refusal is
+        // said beside the fix having started, because a status that silently stays Backlog
+        // reads as the button not having worked.
         const started = await startIssueFix(this.$store, issue, issue.repo || this.repo);
 
-        // Starting the fix moves the issue to its board's "working" column, so the board reflects
-        // that somebody has picked it up. Best effort and optimistic: the status shows as changed
-        // at once, and a board with no working column - or a token without project scope - just
-        // leaves it where it was rather than failing the button.
-        setIssueStatus(issue.repo || this.repo, issue.number)
-          .then((status) => status && this.applyIssueStatus(issue.key, status))
-          .catch(() => {});
+        if (started.board) {
+          this.applyIssueStatus(issue.key, started.board);
+        }
+        if (started.boardError) {
+          this.error = `The fix started, but its board status could not be set to Working: ${ started.boardError }`;
+        }
 
         this.started(started.workspace, `Fixing #${ issue.number }`);
         done(true);

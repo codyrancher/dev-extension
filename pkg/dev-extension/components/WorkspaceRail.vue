@@ -62,7 +62,7 @@ import {
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
 } from '../skills';
-import { markReadyForReview, describePr } from '../github';
+import { markReadyForReview, describePr, setIssueStatus } from '../github';
 import { TRIAGE_ACTIONS, JIRA_BASE } from '../jira';
 import { TRIAGE_MOVES, jiraStageOf, actionForStatus } from '../jira-steps.mjs';
 import { movedNote } from '../review-anchors.mjs';
@@ -3019,12 +3019,27 @@ export default {
       }
       const edited = this.prompts.startFix;
 
+      let board = null;
+      let boardError = '';
+
       if (edited) {
+        // An edited prompt goes round startIssueFix, so the board move it makes is made here.
+        const moved = setIssueStatus(this.repo, this.issue).catch((e) => {
+          boardError = e?.message || String(e);
+
+          return null;
+        });
+
         await this.say(`Fix #${ this.issue }`, expandPrompt(edited, this.varsNow()), true);
+        board = await moved;
       } else {
-        await startIssueFix(this.$store, { number: this.issue, title: this.workspace.title || '' });
+        ({ board = null, boardError = '' } = await startIssueFix(this.$store, { number: this.issue, title: this.workspace.title || '' }, this.repo));
       }
-      this.notice = 'The fix is running; it opens the PR when it is done.';
+      this.notice = [
+        'The fix is running; it opens the PR when it is done.',
+        board?.changed ? `#${ this.issue } is now ${ board.name } on ${ board.project || 'its board' }.` : '',
+        boardError ? `Its board status could not be set to Working: ${ boardError }` : '',
+      ].filter(Boolean).join(' ');
       await this.loadConversations();
       await this.refreshStatus();
     },

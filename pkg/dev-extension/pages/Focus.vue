@@ -1653,7 +1653,7 @@ async function takeIssue(task: FocusTask, issue: PoolIssue) {
     await assignToMe(issue.repo || DEFAULT_REPO, issue.number, me.value);
     const started = await startIssueFix(store, { number: issue.number, title: issue.title });
 
-    say(`#${ issue.number } is yours; the fix is starting in ${ started.workspace }.`);
+    say(`#${ issue.number } is yours; the fix is starting in ${ started.workspace }.${ started.boardError ? ` Its board status could not be set to Working: ${ started.boardError }` : '' }`);
     await load();
   } catch (e) {
     error.value = (e as Error)?.message || String(e);
@@ -1744,7 +1744,7 @@ async function pickUpTheIssue(task: FocusTask): Promise<string> {
   }
   const started = await startIssueFix(store, { number: issue, title: task.title });
 
-  say(`Fix started in ${ started.workspace }.`);
+  say(`Fix started in ${ started.workspace }.${ started.boardError ? ` Its board status could not be set to Working: ${ started.boardError }` : '' }`);
 
   return started.conversation?.id || '';
 }
