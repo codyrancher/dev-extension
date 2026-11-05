@@ -267,7 +267,8 @@ export default {
         animation: conversation-tab-dot-pulse 1.4s ease-in-out infinite;
       }
 
-      &--input    { background: var(--status-input); }
+      // An agent that asked something: the one loud colour, see --status-asking.
+      &--input    { background: var(--status-asking); }
       &--finished { background: var(--status-done); }
       &--idle     { background: var(--status-idle); }
     }
@@ -283,7 +284,7 @@ export default {
         animation: conversation-tab-dot-pulse 1.4s ease-in-out infinite;
       }
 
-      &--input    { color: var(--status-input); }
+      &--input    { color: var(--status-asking); }
       &--finished { color: var(--status-done); }
       &--idle     { color: var(--status-idle); }
     }

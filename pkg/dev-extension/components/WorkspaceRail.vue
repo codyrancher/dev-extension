@@ -6476,7 +6476,7 @@ export default {
 }
 
 .workspace-rail__phone-dot--working { background: var(--status-running, var(--primary)); }
-.workspace-rail__phone-dot--input   { background: var(--status-input, var(--warning)); }
+.workspace-rail__phone-dot--input   { background: var(--status-asking, var(--warning)); }
 .workspace-rail__phone-dot--finished { background: var(--status-done, var(--success)); }
 
 .workspace-rail__phone-new { width: 100%; }

@@ -138,6 +138,11 @@
  * reference to one of them from :root resolves to nothing at all. Everything below body
  * inherits these, which is everywhere this product draws.
  */
+body.theme-light {
+  /* --status-asking on white: the dark theme's orange is 2.8:1 there, this is 5:1. */
+  --status-asking: #c2410c;
+}
+
 body {
   --dev-accent:    var(--link);
   --dev-on-accent: var(--body-bg);
@@ -167,10 +172,14 @@ body {
    * shared `--status-input` with "nothing is running, your move", which is a different claim
    * with a different urgency, and one amber for both meant neither was worth looking twice at.
    *
-   * Rancher's `--warning` at full strength rather than a hue of our own, so it is the same
-   * orange the dashboard warns in everywhere else.
+   * A hue of our own, and an orange rather than Rancher's `--warning`. That was the first
+   * answer - "the same orange the dashboard warns in" - and in the dark theme it is not orange:
+   * `--warning` there is #ffe47a, a pale yellow, beside an "it is your move" that is the same
+   * yellow softened. Two yellows one shade apart is the thing this token exists to prevent, and
+   * it was reported as exactly that: easy to miss. So a real orange, set per theme, because the
+   * one that reads on the dark sidebar is too light to read on white.
    */
-  --status-asking: var(--warning);
+  --status-asking: #f97316;
 
   /*
    * The other state that is about whose turn it is - and it is not yours.

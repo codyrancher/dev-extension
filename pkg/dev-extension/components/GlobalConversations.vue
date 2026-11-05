@@ -483,7 +483,7 @@ export default {
 }
 
 .global-convs__dot--working  { background: var(--status-running, var(--primary)); }
-.global-convs__dot--input    { background: var(--status-input, var(--warning)); }
+.global-convs__dot--input    { background: var(--status-asking, var(--warning)); }
 .global-convs__dot--finished { background: var(--status-done, var(--success)); }
 
 /* Everything the dialog's header does not take, so the transcript scrolls inside it. */
