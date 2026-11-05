@@ -868,9 +868,11 @@ export default {
           <button
             type="button"
             class="mc-chat__disclose"
+            :aria-expanded="thoughtOpen(m.key) ? 'true' : 'false'"
             @click="toggleThought(m.key)"
           >
-            {{ thoughtOpen(m.key) ? '▾' : '▸' }} Thinking
+            <!-- No arrow typed here: `__disclose` draws it, flipped by aria-expanded. Both drew one. -->
+            Thinking
           </button>
           <pre
             v-if="thoughtOpen(m.key)"
