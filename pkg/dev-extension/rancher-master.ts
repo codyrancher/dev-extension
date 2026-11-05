@@ -15,7 +15,7 @@
 //   an agent's `tools url rancher-master` reads. The browser tells dev-api where it put it.
 
 import { devApi } from './reviews';
-import { devFetch, clusterBase } from './api';
+import { devFetch, clusterBase, activeCluster } from './api';
 import { APP_INSTANCE, LABEL_APP, LABEL_CLUSTER } from './config/constants';
 import { RANCHER_MASTER_APP, deleteInstance, appsPlusAvailable } from './apps';
 import type { RancherTarget } from './ranchers';
@@ -130,6 +130,49 @@ export async function installRancherMaster(store: Store, rancher: RancherTarget)
 export async function removeRancherMaster(): Promise<void> {
   await deleteInstance(RANCHER_MASTER);
   await devApi('/rancher-master', { method: 'DELETE' });
+}
+
+/**
+ * Put it in front of a different Rancher.
+ *
+ * Not an edit of the Installation: the share runs on the Rancher's own cluster and reaches it by
+ * that cluster's Service, so a different Rancher is a different cluster, host and upstream - every
+ * value the Installation has. Changing those in place leaves Fleet and Apps Plus to work out a
+ * move between clusters; removing it and installing it again is the two paths this file already
+ * has, in order. What does not come along is the old cluster's state: its kept builds and any
+ * hold, so it starts out following master.
+ *
+ * The install has to wait for the delete to finish, because they share a name and the delete is
+ * a finalizer's teardown rather than an instant. `step` says where it has got to.
+ */
+export async function moveRancherMaster(store: Store, rancher: RancherTarget, step: (what: string) => void = () => {}): Promise<RancherMaster> {
+  if (rancher.kind !== 'instance' || rancher.phase !== 'ready' || !rancher.clusterId || !rancher.nodeIp) {
+    throw new Error(`${ rancher.name } is not a Rancher of the sidebar's that is up with a public node.`);
+  }
+  // Before anything is taken down: a Rancher with no Service to proxy to would leave nothing.
+  await rancherUpstream(rancher.clusterId);
+
+  step('Taking it down where it is');
+  await removeRancherMaster();
+
+  const url = `${ clusterBase(activeCluster()) }/apis/appsplus.io/v1alpha1/appinstances/${ RANCHER_MASTER }`;
+  const until = Date.now() + 180000;
+
+  for (;;) {
+    const gone = await devFetch(url).then(() => false, (e: Json) => /not ?found|404/i.test(String(e?.message || e)));
+
+    if (gone) {
+      break;
+    }
+    if (Date.now() > until) {
+      throw new Error(`The old one is still being taken down after three minutes, so nothing was installed on ${ rancher.name } yet. Install it there once this page says it is not installed.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+
+  step(`Installing it in front of ${ rancher.name }`);
+
+  return installRancherMaster(store, rancher);
 }
 
 /**

@@ -86,7 +86,7 @@ export const TOOLS: Record<ToolKind, { label: string; icon: string; what: string
   'rancher-master': {
     label:       'Rancher (master)',
     icon:        'icon-github',
-    what:        'rancher/dashboard\'s master branch in front of a Rancher, on a link that opens from anywhere: the build master\'s own CI publishes for every push, picked up within minutes. Try something against master here instead of building master to find out.',
+    what:        'rancher/dashboard\'s master, as its own CI builds it on every push, in front of a Rancher on a link that opens from anywhere. Try something against master here instead of building it.',
     multitenant: false,
     sharing:     'One for everybody, and not leased: nothing to attach or release. Holding it on an earlier build, or pausing updates, holds it for every workspace - so say so, and put it back to following master when you are done.',
   },

@@ -28,7 +28,7 @@ import { toolDefinitions } from '../lte';
 import { ago } from '../workspace-rail';
 import { listRanchers } from '../ranchers';
 import {
-  readRancherMaster, installRancherMaster, removeRancherMaster, controlRancherMaster, masterCommitUrl, RANCHER_MASTER_OPENAPI
+  readRancherMaster, installRancherMaster, removeRancherMaster, moveRancherMaster, controlRancherMaster, masterCommitUrl, RANCHER_MASTER_OPENAPI
 } from '../rancher-master';
 
 export default {
@@ -71,10 +71,58 @@ export default {
       back:         '',
       /** Said after a change, until the pod has had its 15 seconds to act on it. */
       masterNote:   '',
+      /** Choosing a different Rancher to put it in front of, and which. */
+      moving:       false,
+      moveTo:       '',
     };
   },
 
   computed: {
+    /**
+     * Where it stands, in one phrase and a tone: the header's pill. Held and paused are the two
+     * a person did and has to undo, so they are the ones drawn as a warning.
+     */
+    masterState() {
+      const m = this.master;
+
+      if (!m) {
+        return { label: '', tone: '' };
+      }
+      if (!m.installed) {
+        return { label: 'Not installed', tone: 'off' };
+      }
+      if (!m.status) {
+        return { label: 'Starting', tone: 'off' };
+      }
+      if (m.status.pin) {
+        return { label: `Held on ${ m.status.pin }`, tone: 'held' };
+      }
+      if (m.status.paused) {
+        return { label: 'Updates paused', tone: 'held' };
+      }
+
+      return { label: 'Following master', tone: 'ok' };
+    },
+
+    /** The served build's own entry, for its message. */
+    masterServing() {
+      const st = this.master?.status;
+
+      return (st?.builds || []).find((b) => b.sha === st.current) || null;
+    },
+
+    /** Whether master has moved past what is served, which is the one thing worth saying about master. */
+    masterBehind() {
+      const st = this.master?.status;
+
+      return !!(st?.head && st.current && !st.head.startsWith(st.current));
+    },
+
+    /** The Ranchers it could move to: every one it could be installed on, less the one it is on. */
+    moveChoices() {
+      return this.ranchers.filter((r) => r.name !== this.master?.rancher);
+    },
+
     WORKSPACE_TOOL() {
       return WORKSPACE_TOOL;
     },
@@ -157,13 +205,40 @@ export default {
           this.back = (builds.find((b) => b.sha !== this.master.status.current) || builds[0] || {}).sha || '';
         }
         if (!this.master.installed && !this.ranchers.length) {
-          this.ranchers = (await listRanchers(this.$store).catch(() => []))
-            .filter((r) => r.kind === 'instance' && r.phase === 'ready' && r.clusterId && r.nodeIp);
-          this.pick = this.pick || this.ranchers[0]?.name || '';
+          await this.readRanchers();
         }
       } catch (e) {
         this.masterError = e.message || String(e);
       }
+    },
+
+    /** The sidebar's Ranchers that are up with a public node: what it can be put in front of. */
+    async readRanchers() {
+      this.ranchers = (await listRanchers(this.$store).catch(() => []))
+        .filter((r) => r.kind === 'instance' && r.phase === 'ready' && r.clusterId && r.nodeIp);
+      this.pick = this.pick || this.ranchers[0]?.name || '';
+    },
+
+    /** Open the backend picker, with the list read fresh: a Rancher made since the page loaded counts. */
+    async startMove() {
+      this.moving = true;
+      await this.readRanchers();
+      this.moveTo = this.moveChoices.some((r) => r.name === this.moveTo) ? this.moveTo : (this.moveChoices[0]?.name || '');
+    },
+
+    moveMaster() {
+      const rancher = this.ranchers.find((r) => r.name === this.moveTo);
+
+      if (!rancher) {
+        return;
+      }
+
+      return this.masterDo('move', async() => {
+        await moveRancherMaster(this.$store, rancher, (step) => {
+          this.masterNote = `${ step }\u2026`;
+        });
+        this.moving = false;
+      }, `Moved in front of ${ rancher.name }. Its first build is fetched as the pod starts, which takes a minute or two; the link has changed with it.`);
     },
 
     async masterDo(what, fn, note = '') {
@@ -311,9 +386,10 @@ export default {
           {{ tool.instances.length }} running
         </span>
         <span
-          v-else
-          class="dev-tools__count"
-        >{{ master && master.installed ? (master.status ? (master.status.pin ? `held on ${ master.status.pin }` : (master.status.paused ? 'updates paused' : 'following master')) : 'starting') : 'not installed' }}</span>
+          v-else-if="masterState.label"
+          class="dev-tools__state"
+          :class="`dev-tools__state--${ masterState.tone }`"
+        >{{ masterState.label }}</span>
 
         <RcButton
           v-if="tool.openapi"
@@ -334,8 +410,13 @@ export default {
 
       <p class="dev-tools__what">{{ tool.what }}</p>
 
+      <!--
+        Not for rancher-master: what sharing it costs is only worth a banner while somebody is
+        holding it, and its card says so then, beside the button that lets go. The chip carries
+        it as a tooltip the rest of the time.
+      -->
       <Banner
-        v-if="!tool.multitenant"
+        v-if="!tool.multitenant && tool.kind !== 'rancher-master'"
         color="info"
       >
         {{ tool.sharing }}
@@ -363,129 +444,194 @@ export default {
         </Banner>
 
         <template v-if="master && master.installed">
-          <div class="dev-tools__master-line">
-            <a
-              :href="master.url"
-              target="_blank"
-              rel="noopener noreferrer"
-            >{{ master.url }}</a>
-            <span class="text-muted">in front of</span>
-            <a
-              v-if="master.rancherUrl"
-              :href="master.rancherUrl"
-              target="_blank"
-              rel="noopener noreferrer"
-            >{{ master.rancher }}</a>
-            <span v-else>{{ master.rancher }}</span>
-          </div>
+          <!--
+            Three facts, a label each: where to open it, what it serves, and what it is in front
+            of. master's own head is only news when it is ahead of what is served, so it is a
+            clause on Serving rather than a row of its own.
+          -->
+          <dl class="dev-tools__master-facts">
+            <dt>Link</dt>
+            <dd>
+              <a
+                :href="master.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="dev-tools__master-url"
+              >{{ master.url }}</a>
+            </dd>
 
-          <p
-            v-if="!master.status"
-            class="text-muted dev-tools__none"
-          >{{ master.detail }}</p>
-
-          <template v-else>
-            <dl class="dev-tools__master-facts">
-              <dt>Serving</dt>
-              <dd>
-                <template v-if="master.status.current">
-                  <a
-                    :href="masterCommitUrl(master.status.current)"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  ><code>{{ master.status.current }}</code></a>
-                  <span>{{ ((master.status.builds || []).find((b) => b.sha === master.status.current) || {}).message || '' }}</span>
-                </template>
-                <span
-                  v-else
-                  class="text-muted"
-                >nothing yet: the first build is being fetched</span>
-              </dd>
-              <dt>master</dt>
-              <dd>
+            <dt>Serving</dt>
+            <dd v-if="!master.status">
+              <span class="text-muted">{{ master.detail }}</span>
+            </dd>
+            <dd v-else-if="!master.status.current">
+              <span class="text-muted">nothing yet: the first build is being fetched</span>
+            </dd>
+            <dd v-else>
+              <a
+                :href="masterCommitUrl(master.status.current)"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="dev-tools__sha"
+              >{{ master.status.current }}</a>
+              <span class="dev-tools__msg">{{ masterServing ? masterServing.message : '' }}</span>
+              <span
+                v-if="masterBehind"
+                class="text-muted"
+              >· master is at
                 <a
-                  v-if="master.status.head"
                   :href="masterCommitUrl(master.status.head)"
                   target="_blank"
                   rel="noopener noreferrer"
-                ><code>{{ master.status.head.slice(0, 7) }}</code></a>
-                <span
-                  v-if="master.status.head && master.status.current && !master.status.head.startsWith(master.status.current)"
-                  class="text-muted"
-                >{{ master.status.paused || master.status.pin ? 'newer than what is served' : 'its build lands about 15 minutes after the push' }}</span>
-                <span
-                  v-else-if="master.status.head"
-                  class="text-muted"
-                >served</span>
-              </dd>
-              <dt>Checked</dt>
-              <dd class="text-muted">
-                {{ master.status.checked ? ago(master.status.checked) : '' }} · {{ (master.status.builds || []).length }} builds kept
-              </dd>
-            </dl>
+                  class="dev-tools__sha"
+                >{{ master.status.head.slice(0, 7) }}</a>{{ master.status.paused || master.status.pin ? '' : ', its build lands about 15 minutes after the push' }}</span>
+            </dd>
 
-            <p
-              v-if="master.status.error"
-              class="dev-tools__master-error"
-            >{{ master.status.error }}</p>
-
-            <div class="dev-tools__master-actions">
-              <RcButton
-                v-if="!master.status.paused"
-                size="small"
-                variant="secondary"
-                :disabled="!!busy"
-                @click="pauseMaster"
-              >
-                Pause updates
-              </RcButton>
-              <RcButton
-                v-if="master.status.paused || master.status.pin"
-                size="small"
-                variant="secondary"
-                :disabled="!!busy"
-                @click="followMaster"
-              >
-                {{ master.status.pin ? 'Follow master again' : 'Resume updates' }}
-              </RcButton>
-
-              <span class="dev-tools__master-back">
-                <label for="dev-tools-master-back">Go back to</label>
-                <select
-                  id="dev-tools-master-back"
-                  v-model="back"
-                  :disabled="!!busy || (master.status.builds || []).length < 2"
-                >
-                  <option
-                    v-for="b in master.status.builds"
-                    :key="b.sha"
-                    :value="b.sha"
-                  >{{ buildLabel(b) }}{{ b.sha === master.status.current ? ' · serving' : '' }}</option>
-                </select>
-                <RcButton
-                  size="small"
-                  variant="secondary"
-                  :disabled="!!busy || !back || back === master.status.current"
-                  @click="serveBuild"
-                >
-                  Serve this build
-                </RcButton>
-              </span>
-
+            <dt>Backend</dt>
+            <dd v-if="!moving">
+              <a
+                v-if="master.rancherUrl"
+                :href="master.rancherUrl"
+                target="_blank"
+                rel="noopener noreferrer"
+              >{{ master.rancher }}</a>
+              <span v-else>{{ master.rancher }}</span>
               <RcButton
                 variant="link"
                 size="small"
-                class="dev-tools__master-remove"
                 :disabled="!!busy"
-                @click="removeMaster"
+                @click="startMove"
               >
-                Remove
+                Change
               </RcButton>
-            </div>
-            <p class="text-muted dev-tools__none">
-              Only builds this tool has fetched can be gone back to: master's build is published at one address and replaced by each push, so the history starts when it was installed.
-            </p>
-          </template>
+            </dd>
+            <dd
+              v-else
+              class="dev-tools__move"
+            >
+              <template v-if="moveChoices.length">
+                <select
+                  v-model="moveTo"
+                  aria-label="The Rancher to put master in front of instead"
+                  :disabled="!!busy"
+                >
+                  <option
+                    v-for="r in moveChoices"
+                    :key="r.name"
+                    :value="r.name"
+                  >{{ r.name }}</option>
+                </select>
+                <RcButton
+                  size="small"
+                  variant="primary"
+                  :disabled="!!busy || !moveTo"
+                  @click="moveMaster"
+                >
+                  <i
+                    v-if="busy === 'master/move'"
+                    class="icon icon-spinner icon-spin"
+                  />
+                  Move it there
+                </RcButton>
+              </template>
+              <span
+                v-else
+                class="text-muted"
+              >No other Rancher in the sidebar is up with a public node.</span>
+              <RcButton
+                variant="link"
+                size="small"
+                :disabled="!!busy"
+                @click="moving = false"
+              >
+                Cancel
+              </RcButton>
+              <span
+                v-if="moveChoices.length"
+                class="dev-tools__move-note text-muted"
+              >It is reinstalled on that Rancher's cluster, so the link changes, kept builds stay behind and it goes back to following master.</span>
+            </dd>
+          </dl>
+
+          <p
+            v-if="master.status && master.status.error"
+            class="dev-tools__master-error"
+          >{{ master.status.error }}</p>
+
+          <!--
+            The one thing the old banner was for, said when it is true: a hold is everybody's.
+          -->
+          <p
+            v-if="master.status && (master.status.paused || master.status.pin)"
+            class="dev-tools__held"
+          >
+            Held for every workspace. Put it back to following master when you are done.
+          </p>
+
+          <div
+            v-if="master.status"
+            class="dev-tools__master-actions"
+          >
+            <RcButton
+              v-if="master.status.paused || master.status.pin"
+              size="small"
+              variant="secondary"
+              :disabled="!!busy"
+              @click="followMaster"
+            >
+              {{ master.status.pin ? 'Follow master again' : 'Resume updates' }}
+            </RcButton>
+            <RcButton
+              v-if="!master.status.paused"
+              size="small"
+              variant="secondary"
+              :disabled="!!busy"
+              @click="pauseMaster"
+            >
+              Pause updates
+            </RcButton>
+
+            <!-- Only once there is something to go back to: one kept build is the one served. -->
+            <span
+              v-if="(master.status.builds || []).length > 1"
+              class="dev-tools__master-back"
+            >
+              <select
+                v-model="back"
+                aria-label="An earlier build to serve"
+                title="Only builds this tool has fetched: master's build is published at one address and replaced by each push, so the history starts when it was installed."
+                :disabled="!!busy"
+              >
+                <option
+                  v-for="b in master.status.builds"
+                  :key="b.sha"
+                  :value="b.sha"
+                >{{ buildLabel(b) }}{{ b.sha === master.status.current ? ' · serving' : '' }}</option>
+              </select>
+              <RcButton
+                size="small"
+                variant="secondary"
+                :disabled="!!busy || !back || back === master.status.current"
+                @click="serveBuild"
+              >
+                Serve this build
+              </RcButton>
+            </span>
+
+            <span class="dev-tools__checked text-muted">
+              Checked {{ master.status.checked ? ago(master.status.checked) : '' }} · {{ (master.status.builds || []).length }} {{ (master.status.builds || []).length === 1 ? 'build' : 'builds' }} kept
+            </span>
+
+            <RcButton
+              variant="link"
+              size="small"
+              class="dev-tools__master-remove"
+              :disabled="!!busy"
+              @click="removeMaster"
+            >
+              Remove
+            </RcButton>
+          </div>
         </template>
 
         <template v-else-if="master">
@@ -666,7 +812,9 @@ export default {
 }
 
 .dev-tools__tenancy--per    { background: var(--default); color: var(--muted); }
-.dev-tools__tenancy--shared { background: var(--warning-banner-bg); color: var(--warning); }
+/* A fact about the tool, not a warning: amber is kept for a shared tool somebody is holding
+   (rancher-master's state pill), which is the moment sharing costs anybody anything. */
+.dev-tools__tenancy--shared { border: 1px solid var(--border); color: var(--muted); }
 
 .dev-tools__count { color: var(--muted); font-size: 12px; }
 
@@ -704,41 +852,107 @@ export default {
 
 .dev-tools__ns { margin-left: 8px; color: var(--muted); }
 
-.dev-tools__master { margin-top: 8px; font-size: 12px; }
+.dev-tools__master { margin-top: 12px; font-size: 13px; }
 
-.dev-tools__master-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+/* Where it stands, as a pill: green while it follows master, amber while somebody holds it. */
+.dev-tools__state {
+  display:       inline-flex;
+  align-items:   center;
+  gap:           6px;
+  padding:       0 8px;
+  border-radius: var(--r-md);
+  font-size:     11px;
+  line-height:   18px;
+  background:    var(--default);
+  color:         var(--muted);
 
-.dev-tools__master-facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 12px;
-  margin: 8px 0 0;
-
-  dt { color: var(--muted); }
-  dd { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+  &::before {
+    content:       '';
+    width:         6px;
+    height:        6px;
+    border-radius: 50%;
+    background:    currentColor;
+  }
 }
 
-.dev-tools__master-error { margin: 6px 0 0; color: var(--error); }
+.dev-tools__state--ok   { background: var(--success-banner-bg); color: var(--success); }
+.dev-tools__state--held { background: var(--warning-banner-bg); color: var(--warning); }
+
+.dev-tools__master-facts {
+  display:               grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap:                   8px 16px;
+  margin:                0;
+  padding:               10px 12px;
+  border:                1px solid var(--border);
+  border-radius:         var(--dev-r-ctl);
+
+  dt {
+    color:          var(--muted);
+    font-size:      11px;
+    line-height:    20px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+
+  dd {
+    display:     flex;
+    flex-wrap:   wrap;
+    gap:         4px 8px;
+    align-items: center;
+    min-width:   0;
+    margin:      0;
+    line-height: 20px;
+  }
+}
+
+.dev-tools__master-url { overflow-wrap: anywhere; }
+
+.dev-tools__sha {
+  font-family: monospace;
+  font-size:   12px;
+}
+
+.dev-tools__msg { min-width: 0; }
+
+.dev-tools__move {
+  select { min-width: 0; max-width: 240px; }
+}
+
+.dev-tools__move-note { flex-basis: 100%; font-size: 12px; }
+
+.dev-tools__master-error { margin: 8px 0 0; color: var(--error); }
+
+.dev-tools__held {
+  margin:        8px 0 0;
+  padding:       6px 10px;
+  border-left:   3px solid var(--warning);
+  border-radius: var(--dev-r-ctl);
+  background:    var(--warning-banner-bg);
+  color:         var(--body-text);
+}
 
 .dev-tools__master-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  display:     flex;
+  flex-wrap:   wrap;
+  gap:         8px;
   align-items: center;
-  margin-top: 10px;
+  margin-top:  10px;
 
   select { max-width: 100%; }
 }
 
 .dev-tools__master-back {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  display:     inline-flex;
+  flex-wrap:   wrap;
+  gap:         6px;
   align-items: center;
+  min-width:   0;
 
-  label { margin: 0; color: var(--muted); }
-  select { min-width: 0; max-width: 460px; }
+  select { min-width: 0; max-width: 360px; }
 }
+
+.dev-tools__checked { font-size: 12px; }
 
 .dev-tools__master-remove { margin-left: auto; }
 
