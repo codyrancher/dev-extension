@@ -23,6 +23,7 @@ import { encodeFrame, closeFrame, decodeFrames, joinFrames, handshakeResponse, O
 import { newsOf } from './news.mjs';
 import { sweepHousekeeping, singleFlight, sweepsAreWorking, firstSweepDelay, nextSweepDelay, SWEEP_EVERY_MS } from './housekeeping.mjs';
 import { numbersIn } from '../artifact-subjects.mjs';
+import { branchState } from './branch-state.mjs';
 import { searchCql, searchLimit, searchResult, pageAnswer } from './confluence.mjs';
 import { STAGING_CHARTS, IMAGE_REGISTRIES, RANCHER_REPO, stagingVersions, releasedVersions, imageExists, registryTags } from './rancher-images.mjs';
 
@@ -2573,6 +2574,19 @@ const OPENAPI = {
         operationId: 'readPrompts',
         summary:     'The prompt templates the cards and the rail send, with any local edits.',
         responses:   { 200: { description: 'The prompts.' } },
+      },
+    },
+    '/workspaces/coded': {
+      get: {
+        operationId: 'readWorkspacesCoded',
+        summary:     'Whether each named workspace\'s checkout has commits of its own: a fix\'s Assess or Code.',
+        description: [
+          '`?names=a,b,c` (up to 60). Answers `{ <name>: { branch, coded } }`: the branch HEAD is on,',
+          'and whether its reflog records commits made in the checkout. `coded` is null where there is',
+          'no checkout to read. Read from git\'s files on the shared disk, without running git and',
+          'without the workspace\'s pod.',
+        ].join('\n'),
+        responses: { 200: { description: 'One entry per name asked for.' } },
       },
     },
     '/system/stats': {
@@ -6034,6 +6048,13 @@ const routes = [
    * /templates, which is where the only caller was already looking.
    */
   ['GET', /^\/$/, async() => ({ api: 'ok' })],
+  /*
+   * Whether each named workspace's checkout has commits of its own: `{ <name>: { branch, coded } }`.
+   * The sidebar's Assess-to-Code, without opening the workspace or reaching its pod. From git's
+   * files, not by running git - see branch-state.mjs. Up to 60 names, which is more than a sidebar.
+   */
+  ['GET', /^\/workspaces\/coded$/, async(m, url) => Object.fromEntries((url.searchParams.get('names') || '').split(',').filter(Boolean).slice(0, 60)
+    .map((name) => [name, branchState(WORKSPACES_ROOT, name, { fs, path })]))],
   // -- Conversations -------------------------------------------------------------------------
   //
   // What every claude in the Studio's agent pod is doing, and how many times each has stopped

@@ -6,7 +6,7 @@
 // from GitHub - the PR a review is about, the PR an issue's fix opened - which is several
 // calls per workspace, so each workspace is read every five minutes, one at a time, in the
 // background; the sidebar shows whatever was last read and never waits on it.
-import { prDetail, DEFAULT_REPO } from './reviews';
+import { prDetail, DEFAULT_REPO, devApi } from './reviews';
 import { afterSubmission } from './review-stage.mjs';
 import { jiraDetail, JIRA_BASE } from './jira';
 import { jiraStageOf } from './jira-steps.mjs';
@@ -867,11 +867,54 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
   return { links, kind: 'other' };
 }
 
-/** Whether a fix workspace's branch has commits yet - told by the page, which reads the checkout. */
+/**
+ * Whether a fix workspace's branch has commits yet.
+ *
+ * Told by two readers: the workspace page, which runs git in the checkout while it is open, and
+ * refreshCoded below, which asks dev-api for every fix workspace the sidebar lists. Only the page
+ * did, so a row stayed Assess until somebody opened it - and the switch to Code is the moment the
+ * row exists to announce.
+ */
 const coded: Record<string, boolean> = {};
 
 export function noteCoded(name: string, value: boolean): void {
   coded[name] = value;
+}
+
+const CODED_EVERY_MS = 30000;
+let codedAt = 0;
+let codedInFlight: Promise<void> | null = null;
+
+/**
+ * Ask dev-api which fix workspaces' checkouts have commits (GET /workspaces/coded, which reads
+ * git's reflog off the disk - see dev-api/branch-state.mjs). Every 30 seconds at most, one
+ * request in flight, and a null answer - no checkout yet - leaves what was known. A dev-api from
+ * before the route answers 404, which is the same as not knowing.
+ */
+async function refreshCoded(names: string[]): Promise<void> {
+  const fixes = names.filter((name) => isFix(name) && !statuses.get(name)?.links.some((l) => l.label.startsWith('PR')));
+
+  if (!fixes.length || Date.now() - codedAt < CODED_EVERY_MS) {
+    return codedInFlight || undefined;
+  }
+  codedAt = Date.now();
+  codedInFlight = (async() => {
+    try {
+      const answer = await devApi(`/workspaces/coded?names=${ encodeURIComponent(fixes.join(',')) }`);
+
+      for (const [name, state] of Object.entries(answer || {}) as [string, { coded: boolean | null }][]) {
+        if (typeof state?.coded === 'boolean') {
+          coded[name] = state.coded;
+        }
+      }
+    } catch (e) {
+      note('dev', 'which workspaces have commits could not be read', e);
+    } finally {
+      codedInFlight = null;
+    }
+  })();
+
+  return codedInFlight;
 }
 
 /** What the name alone says - the kind, the links - so a page can draw its rail before any read answers. */
@@ -1022,6 +1065,9 @@ export async function workspaceStatuses(workspaces: { name: string; cluster?: st
    * shared by every caller. The sidebar's poll pays nothing for it.
    */
   await refreshAgents();
+  // Before the rewrite below reads `coded`, so a fix whose agent has committed moves to Code
+  // on this poll rather than on the next visit to its page.
+  await refreshCoded(names);
   void readStale(names);
 
   const out: Record<string, WorkspaceStatus> = {};
