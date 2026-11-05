@@ -51,7 +51,7 @@ import { note } from '../dev-log.mjs';
 import { watch } from '../events';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
-  MY_WORK_ROUTE, ARTIFACTS_ROUTE, TOOLS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE
+  MY_WORK_ROUTE, TOOLS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
@@ -331,10 +331,6 @@ export default {
       globals: [
         {
           label: 'My Work', icon: 'icon-list-flat', route: MY_WORK_ROUTE
-        },
-        // What the work left behind, which outlives the workspace that made it.
-        {
-          label: 'Artifacts', icon: 'icon-folder', route: ARTIFACTS_ROUTE
         },
         // What can be attached to a piece of work, and what is attached now. A mark of its own,
         // because Rancher's font has no tool in it - see ToolMark.
