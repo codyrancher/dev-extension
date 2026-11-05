@@ -27,6 +27,7 @@
 // a different shape overrides one of them rather than forking the file.
 import { useConversation, escapeText, customizeFor } from '../chat-conversation';
 import { readLook, writeLook } from '../look';
+import { toolGroup } from '../chat-state.mjs';
 import PodFileViewer from './PodFileViewer.vue';
 import DevDialog from './DevDialog.vue';
 import DevModal from './DevModal.vue';
@@ -116,6 +117,8 @@ export default {
     return {
       openTools:      {},
       openThoughts:   {},
+      /** Which messages' Commands rows are open, by message key; the rest follow `look.commands`. */
+      openGroups:     {},
       openSummaries:  {},
       /** The path open in the viewer, and an image from the transcript itself, open large. */
       viewerPath:     '',
@@ -199,6 +202,7 @@ export default {
       return [
         { key: 'bubbles', label: 'Your messages in a bubble' },
         { key: 'thoughts', label: 'Thinking open by default' },
+        { key: 'commands', label: 'Commands open by default' },
         { key: 'toolIo', label: 'Tool input and output open by default' },
         { key: 'times', label: 'Show times' },
       ];
@@ -348,6 +352,16 @@ export default {
 
     thoughtOpen(key) {
       return key in this.openThoughts ? this.openThoughts[key] : this.look.thoughts;
+    },
+
+    toolGroup,
+
+    toggleGroup(key) {
+      this.openGroups = { ...this.openGroups, [key]: !this.groupOpen(key) };
+    },
+
+    groupOpen(key) {
+      return key in this.openGroups ? this.openGroups[key] : !!this.look.commands;
     },
 
     setLook(key, value) {
@@ -863,6 +877,110 @@ export default {
             class="mc-chat__pre"
           >{{ m.thinking }}</pre>
         </div>
+        <!--
+          What it ran, under its thinking and above what it said, which is the order it happened
+          in. Two or more fold into one Commands row (see toolGroup): a turn that ran fifteen
+          commands used to end in fifteen lines between its answer and the next message. Closed,
+          the row still says what is running and what failed, and shows any image a call returned.
+        -->
+        <div
+          v-for="g in (m.toolRows.length ? [toolGroup(m.toolRows)] : [])"
+          :key="`cmds-${ m.key }`"
+          class="mc-chat__cmds"
+          :class="{ 'mc-chat__cmds--grouped': g.grouped }"
+        >
+          <button
+            v-if="g.grouped"
+            type="button"
+            class="mc-chat__disclose mc-chat__cmds-head"
+            :aria-expanded="groupOpen(m.key) ? 'true' : 'false'"
+            @click="toggleGroup(m.key)"
+          >
+            <span class="mc-chat__cmds-label">{{ g.label }}</span>
+            <span
+              v-if="g.failed"
+              class="mc-chat__cmds-failed"
+            >{{ g.failed }} failed</span>
+            <template v-if="g.running && !groupOpen(m.key)">
+              <span class="mc-chat__tool-name mc-chat__cmds-now">{{ g.running.label || g.running.name }}</span>
+              <span
+                class="mc-chat__tool-summary"
+                v-html="g.running.summaryHtml"
+              />
+              <span class="mc-chat__tool-state">…</span>
+            </template>
+          </button>
+          <div
+            v-if="g.grouped && !groupOpen(m.key) && g.images.length"
+            class="mc-chat__shots"
+          >
+            <img
+              v-for="(image, i) in g.images"
+              :key="i"
+              :src="image"
+              class="mc-chat__shot"
+              alt="image a command returned"
+              @click="viewerData = image"
+            >
+          </div>
+          <div
+            v-if="!g.grouped || groupOpen(m.key)"
+            class="mc-chat__cmds-list"
+          >
+            <div
+              v-for="t in m.toolRows"
+              :key="t.id"
+              class="mc-chat__tool"
+              :class="{ 'mc-chat__tool--error': t.resultIsError, 'mc-chat__tool--pending': t.result === undefined }"
+            >
+              <button
+                type="button"
+                class="mc-chat__disclose"
+                :aria-expanded="toolOpen(t.id) ? 'true' : 'false'"
+                @click="toggleTool(t.id)"
+              >
+                <span class="mc-chat__tool-name">{{ t.label || t.name }}</span>
+                <span
+                  class="mc-chat__tool-summary"
+                  v-html="t.summaryHtml"
+                />
+                <span
+                  v-if="t.result === undefined"
+                  class="mc-chat__tool-state"
+                >…</span>
+              </button>
+              <div
+                v-if="toolOpen(t.id)"
+                class="mc-chat__tool-detail"
+              >
+                <span class="mc-chat__io">IN</span>
+                <pre class="mc-chat__pre">{{ JSON.stringify(t.input, null, 2) }}</pre>
+                <span
+                  v-if="t.result !== undefined"
+                  class="mc-chat__io"
+                >OUT</span>
+                <pre
+                  v-if="t.result !== undefined"
+                  class="mc-chat__pre mc-chat__pre--result"
+                >{{ t.result.slice(0, 6000) }}{{ t.result.length > 6000 ? '\n…' : '' }}</pre>
+              </div>
+              <!-- An image the tool returned is worth seeing without opening the row. -->
+              <div
+                v-if="t.images && t.images.length"
+                class="mc-chat__shots"
+              >
+                <img
+                  v-for="(image, i) in t.images"
+                  :key="i"
+                  :src="image"
+                  class="mc-chat__shot"
+                  alt="image the tool returned"
+                  @click="viewerData = image"
+                >
+              </div>
+            </div>
+          </div>
+        </div>
         <div
           v-if="(m.role === 'assistant' || m.role === 'note' || (m.role === 'summary' && openSummaries[m.key])) && m.html"
           class="mc-chat__body mc-chat__md"
@@ -891,58 +1009,6 @@ export default {
             <template v-else>🖼 {{ image }}</template>
           </li>
         </ul>
-        <div
-          v-for="t in m.toolRows"
-          :key="t.id"
-          class="mc-chat__tool"
-          :class="{ 'mc-chat__tool--error': t.resultIsError, 'mc-chat__tool--pending': t.result === undefined }"
-        >
-          <button
-            type="button"
-            class="mc-chat__disclose"
-            :aria-expanded="toolOpen(t.id) ? 'true' : 'false'"
-            @click="toggleTool(t.id)"
-          >
-            <span class="mc-chat__tool-name">{{ t.label || t.name }}</span>
-            <span
-              class="mc-chat__tool-summary"
-              v-html="t.summaryHtml"
-            />
-            <span
-              v-if="t.result === undefined"
-              class="mc-chat__tool-state"
-            >…</span>
-          </button>
-          <div
-            v-if="toolOpen(t.id)"
-            class="mc-chat__tool-detail"
-          >
-            <span class="mc-chat__io">IN</span>
-            <pre class="mc-chat__pre">{{ JSON.stringify(t.input, null, 2) }}</pre>
-            <span
-              v-if="t.result !== undefined"
-              class="mc-chat__io"
-            >OUT</span>
-            <pre
-              v-if="t.result !== undefined"
-              class="mc-chat__pre mc-chat__pre--result"
-            >{{ t.result.slice(0, 6000) }}{{ t.result.length > 6000 ? '\n…' : '' }}</pre>
-          </div>
-          <!-- An image the tool returned is worth seeing without opening the row. -->
-          <div
-            v-if="t.images && t.images.length"
-            class="mc-chat__shots"
-          >
-            <img
-              v-for="(image, i) in t.images"
-              :key="i"
-              :src="image"
-              class="mc-chat__shot"
-              alt="image the tool returned"
-              @click="viewerData = image"
-            >
-          </div>
-        </div>
           </div>
         </slot>
       </template>
@@ -2130,6 +2196,23 @@ export default {
   }
 
   &__thought { margin: 0 0 6px; color: var(--muted); }
+
+  // A message's commands, under its thinking. Folded once there are two or more: the head says
+  // how many, what failed and what is running, and opens to the rows, indented under it.
+  &__cmds { margin: 0 0 6px; }
+
+  &__cmds-head { font-size: 12px; }
+
+  &__cmds-label { flex: 0 0 auto; }
+
+  &__cmds-failed { flex: 0 0 auto; color: var(--error); }
+
+  &__cmds--grouped &__cmds-list {
+    margin:       2px 0 0 4px;
+    padding-left: 10px;
+    border-left:  1px solid var(--border);
+  }
+
 
   // Working: three dots that breathe, and a status that shimmers, like a reply being typed.
   &__working {

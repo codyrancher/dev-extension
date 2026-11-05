@@ -605,3 +605,24 @@ test('the marks a held choice is judged against only move for a command or an an
   assert.equal(during.answeredMark, before.answeredMark);
   assert.notEqual(answered.answeredMark, before.answeredMark);
 });
+
+test('toolGroup folds two or more calls and says what is running and what failed', async() => {
+  const { toolGroup } = await import('../chat-state.mjs');
+
+  assert.equal(toolGroup([]).grouped, false);
+  assert.equal(toolGroup([{ id: 'a', result: 'ok' }]).grouped, false);
+
+  const g = toolGroup([
+    { id: 'a', result: 'ok', images: ['data:image/png;base64,x'] },
+    { id: 'b', result: 'boom', resultIsError: true },
+    { id: 'c' },
+  ]);
+
+  assert.equal(g.grouped, true);
+  assert.equal(g.label, '3 commands');
+  assert.equal(g.failed, 1);
+  assert.equal(g.running.id, 'c');
+  assert.deepEqual(g.images, ['data:image/png;base64,x']);
+  assert.equal(toolGroup([{ id: 'a', result: '' }, { id: 'b', result: 'x' }]).running, null);
+  assert.equal(toolGroup(null).count, 0);
+});

@@ -31,6 +31,8 @@ const props = defineProps<{
   times?: boolean;
   toolIo?: boolean;
   thoughts?: boolean;
+  /** A turn's Commands row open without being asked. */
+  commands?: boolean;
   /** Bumped by the conversation when a poll landed transcript, and when it landed a new one. */
   grew?: number;
   restarted?: number;
@@ -197,6 +199,7 @@ defineExpose({ scrollToEnd, atBottom });
         :times="times"
         :tool-io="toolIo"
         :thoughts="thoughts"
+        :commands="commands"
         @resend="emit('resend', $event)"
       />
 

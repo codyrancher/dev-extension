@@ -1205,3 +1205,33 @@ export function activityBucket(a, podStartedMs = 0, now = Date.now()) {
     return 'idle';
   }
 }
+
+/**
+ * A message's tool calls, folded into one "Commands" row once there are enough to be a block.
+ *
+ * The calls used to be drawn one line each under the message's text, so a turn that ran fifteen
+ * commands ended in fifteen lines of RUN and WRITE between its answer and the next message. The
+ * chat now draws them as one row under Thinking that opens to the list, and this is what that
+ * row says while it is closed: how many, how many failed, and the one still running - the call
+ * a person watching a live turn wants to see without opening anything.
+ *
+ * `grouped` is false below GROUP_AT: one call is one line either way, and a fold around it is a
+ * click spent to see a line.
+ */
+export const TOOL_GROUP_AT = 2;
+
+export function toolGroup(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const running = [...list].reverse().find((row) => row && row.result === undefined) || null;
+  const failed = list.filter((row) => row && row.resultIsError).length;
+  const images = list.flatMap((row) => (row && Array.isArray(row.images) ? row.images : []));
+
+  return {
+    grouped: list.length >= TOOL_GROUP_AT,
+    count:   list.length,
+    label:   `${ list.length } ${ list.length === 1 ? 'command' : 'commands' }`,
+    failed,
+    running,
+    images,
+  };
+}

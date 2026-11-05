@@ -14,8 +14,8 @@
  * is say them out loud, because a message that claude has no record of has to be visible as
  * such - that is the whole reason the pending list exists.
  */
-import { computed } from 'vue';
-import { ago, fullTime } from '../../chat-state.mjs';
+import { computed, ref } from 'vue';
+import { ago, fullTime, toolGroup } from '../../chat-state.mjs';
 import ChatToolRow from './ChatToolRow.vue';
 import type { ConversationTurn } from '../../chat-conversation';
 
@@ -27,7 +27,19 @@ const props = defineProps<{
   toolIo?: boolean;
   /** Thinking open without being asked. */
   thoughts?: boolean;
+  /** The Commands row open without being asked. */
+  commands?: boolean;
 }>();
+
+/** Its tool calls, folded once there are two or more: see toolGroup in chat-state.mjs. */
+const group = computed(() => toolGroup(props.turn.toolRows));
+
+/** Followed from the `<details>` itself, so the images a call returned show while it is folded. */
+const cmdsOpen = ref(!!props.commands);
+
+function onCmdsToggle(event: Event) {
+  cmdsOpen.value = (event.target as HTMLDetailsElement).open;
+}
 
 const emit = defineEmits<{
   (e: 'resend', turn: ConversationTurn): void;
@@ -105,6 +117,35 @@ const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) =>
     </details>
 
     <!--
+      What it ran, under its thinking and above what it said: the order it happened in. Two or
+      more fold into one Commands row whose head says how many, what failed and what is running.
+    -->
+    <details v-if="group.grouped" class="turn__cmds" :open="commands" @toggle="onCmdsToggle">
+      <summary class="turn__thought-head turn__cmds-head">
+        <span class="turn__cmds-count">{{ group.label }}</span>
+        <span v-if="group.failed" class="turn__cmds-failed">{{ group.failed }} failed</span>
+        <span v-if="group.running" class="turn__cmds-now">{{ group.running.label || group.running.name }} …</span>
+      </summary>
+      <div class="turn__cmds-list">
+        <ChatToolRow
+          v-for="call in turn.toolRows"
+          :key="call.id"
+          :call="call"
+          :tool-io="toolIo"
+        />
+      </div>
+    </details>
+    <div v-if="group.grouped && !cmdsOpen && group.images.length" class="turn__shots">
+      <img v-for="(image, i) in group.images" :key="i" :src="image" class="turn__shot" alt="image a command returned">
+    </div>
+    <ChatToolRow
+      v-for="call in (group.grouped ? [] : turn.toolRows)"
+      :key="call.id"
+      :call="call"
+      :tool-io="toolIo"
+    />
+
+    <!--
       A summary folds; everything else is the body. `v-html` because the HTML is this product's
       own - renderMarkdown and renderPlain in chat.ts, which escape before they build.
     -->
@@ -126,12 +167,6 @@ const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) =>
       </li>
     </ul>
 
-    <ChatToolRow
-      v-for="call in turn.toolRows"
-      :key="call.id"
-      :call="call"
-      :tool-io="toolIo"
-    />
   </article>
 </template>
 
@@ -226,7 +261,20 @@ const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) =>
 .turn--failed .turn__body { border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 
 .turn__thought,
+.turn__cmds,
 .turn__fold { flex: 0 0 auto; min-width: 0; }
+
+.turn__cmds-count { flex: 0 0 auto; }
+.turn__cmds-failed { flex: 0 0 auto; color: var(--danger); }
+.turn__cmds-now { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--accent); }
+.turn__cmds[open] > .turn__cmds-head .turn__cmds-now { display: none; }
+
+.turn__cmds-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-left: var(--s2);
+}
 
 .turn__thought-head,
 .turn__fold-head {
@@ -257,6 +305,7 @@ const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) =>
 }
 
 .turn__thought[open] > .turn__thought-head::before,
+.turn__cmds[open] > .turn__cmds-head::before,
 .turn__fold[open] > .turn__fold-head::before { content: '▾'; }
 
 .turn__pre {

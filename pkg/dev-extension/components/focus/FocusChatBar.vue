@@ -375,6 +375,7 @@ defineExpose({ ask, focus: focusBox });
             :times="look.times"
             :tool-io="look.toolIo"
             :thoughts="look.thoughts"
+            :commands="look.commands"
             :grew="grew"
             :restarted="restarted"
             @resend="chat.resend($event)"

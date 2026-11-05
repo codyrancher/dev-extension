@@ -12,6 +12,8 @@ export interface Look {
   bubbles: boolean;
   /** Thinking rows open by default. */
   thoughts: boolean;
+  /** A message's Commands row open by default, rather than folded to a count. */
+  commands: boolean;
   /** Tool input and output open by default. */
   toolIo: boolean;
   times: boolean;
@@ -20,7 +22,7 @@ export interface Look {
 }
 
 export const LOOK_DEFAULTS: Look = {
-  size: 'medium', density: 'comfortable', bubbles: true, thoughts: false, toolIo: false, times: true, files: 'rendered',
+  size: 'medium', density: 'comfortable', bubbles: true, thoughts: false, commands: false, toolIo: false, times: true, files: 'rendered',
 };
 
 export function readLook(): Look {
