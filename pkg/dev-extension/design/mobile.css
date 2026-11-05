@@ -711,6 +711,28 @@
     width:     100% !important;
     min-width: 0 !important;
   }
+
+  /*
+   * Except the two halves of a split button, which are one control: the wrapper takes the row,
+   * the press takes what is left of it, and the caret stays a caret. The rule above gave each
+   * half the full width, so the caret pushed the press down to nothing and its label ran out
+   * of the left edge ("Ask for ch" over a full-width chevron).
+   */
+  .dev-root .workspace-rail__group .split-btn {
+    display: flex !important;
+  }
+
+  .dev-root .workspace-rail__group .split-btn .split-btn__main {
+    flex:      1 1 auto !important;
+    width:     auto !important;
+    min-width: 0 !important;
+  }
+
+  .dev-root .workspace-rail__group .split-btn .split-btn__more {
+    flex:      0 0 36px !important;
+    width:     36px !important;
+    min-width: 0 !important;
+  }
 }
 
 /*
