@@ -11,6 +11,7 @@
 // closed on Escape together when one was opened over another. On a phone they were a box
 // floating in a 94vw margin with its own rounded corners, on a screen with no room to spare.
 // Now there is one, and on a phone it is the screen.
+import { RcButton } from '@components/RcButton';
 import { holdOverlay, releaseOverlay } from './focus/overlay';
 
 /**
@@ -24,6 +25,8 @@ const stack = [];
 
 export default {
   name: 'DevModal',
+
+  components: { RcButton },
 
   props: {
     title: {
@@ -273,7 +276,8 @@ export default {
           >
             <slot name="head" />
           </div>
-          <button
+          <RcButton
+            variant="secondary"
             type="button"
             class="dev-modal__close"
             aria-label="Close"
@@ -292,7 +296,7 @@ export default {
               stroke-linecap="round"
               fill="none"
             /></svg>
-          </button>
+          </RcButton>
         </div>
         <div class="dev-modal__body">
           <slot />
@@ -441,25 +445,31 @@ export default {
     min-width:   0;
   }
 
-  // One close control, the same size and place in every dialog. Written out in full rather
-  // than with the shell's `.btn`, because the Focus view resets every button and the dashboard
-  // sizes every one - a class that looks right in one view is 40px tall or invisible in the other.
-  &__close {
-    display:         inline-flex;
-    align-items:     center;
-    justify-content: center;
-    flex:            0 0 auto;
-    width:           32px;
-    height:          32px;
-    min-height:      0;
-    padding:         0;
-    border:          1px solid var(--dm-border);
-    border-radius:   999px;
-    background:      transparent;
-    color:           var(--dm-muted);
-    cursor:          pointer;
+  /*
+   * One close control, the same size and place in every dialog: Rancher's own secondary button,
+   * squared to the glyph, so it is the same control as the dialog's other buttons rather than a
+   * circle that belonged to nothing else on the page.
+   *
+   * From the head down, and with RcButton's size class, because RcButton sizes itself with
+   * `button.btn-medium:not(.btn-sm)` and a one-class rule loses to that. The radius is stated
+   * because the Focus view resets every button's radius to 0 and the shell's `.btn` that would
+   * have given it 4px loses to that reset. And the filled look RcButton gives a focused button is
+   * kept for the keyboard only: the dialog focuses its first control when it opens, which is
+   * usually this one, and a close button that opens already lit reads as pressed.
+   */
+  &__head &__close.btn-medium {
+    flex:          0 0 auto;
+    width:         32px;
+    height:        32px;
+    min-width:     0;
+    min-height:    0;
+    padding:       0;
+    border-radius: var(--dev-r-ctl, 4px);
 
-    &:hover { color: var(--dm-text); border-color: var(--dm-edge); }
+    &:focus:not(:focus-visible) {
+      background: var(--secondary, transparent);
+      color:      var(--on-secondary, var(--primary));
+    }
   }
 
   &__body {
@@ -537,7 +547,7 @@ export default {
       min-height:  52px;
     }
 
-    &__close { width: 40px; height: 40px; }
+    &__head &__close.btn-medium { width: 40px; height: 40px; }
 
     // A row of controls scrolls sideways rather than pushing the close button off the screen.
     &__extra { overflow-x: auto; scrollbar-width: none; }

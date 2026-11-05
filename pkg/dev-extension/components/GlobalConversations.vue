@@ -433,7 +433,7 @@ export default {
 .global-convs__new { width: 100%; }
 
 // The main half carries the row; the caret is an affordance beside it. As the workspace card.
-.global-convs__chat :deep(.split-btn__main) {
+.global-convs__chat.split-btn :deep(.split-btn__main) {
   flex:            1 1 auto;
   display:         flex;
   align-items:     center;
@@ -441,6 +441,10 @@ export default {
   justify-content: flex-start;
   text-align:      left;
   min-height:      44px;
+  // The dot as far in from the left edge as the chevron's stroke is from the right. The
+  // chevron's glyph carries about 10px of empty box past its stroke, so the same 4px on both
+  // sides put the dot against the border and the chevron well clear of it.
+  padding:         0 4px 0 14px;
 }
 
 .global-convs__chat :deep(.split-btn__more),

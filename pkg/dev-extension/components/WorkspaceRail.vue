@@ -6415,7 +6415,7 @@ export default {
 .workspace-rail__phone-chat { width: 100%; }
 
 // The main half carries the row; the caret is an affordance beside it, not half the control.
-.workspace-rail__phone-chat :deep(.split-btn__main) {
+.workspace-rail__phone-chat.split-btn :deep(.split-btn__main) {
   flex:            1 1 auto;
   display:         flex;
   align-items:     center;
@@ -6423,6 +6423,10 @@ export default {
   justify-content: flex-start;
   text-align:      left;
   min-height:      44px;
+  // The dot as far in from the left edge as the chevron's stroke is from the right. The
+  // chevron's glyph carries about 10px of empty box past its stroke, so the same 4px on both
+  // sides put the dot against the border and the chevron well clear of it.
+  padding:         0 4px 0 14px;
 }
 
 .workspace-rail__phone-chat :deep(.split-btn__more) {
