@@ -1691,7 +1691,7 @@ export default {
     /** Everything a template may write, with what each one is right now. */
     varsNow() {
       return [
-        ...promptVars(this.status, this.issue, this.workspace.name),
+        ...promptVars(this.status, this.issue, this.workspace.name, this.repo),
         { name: 'contextClause', value: this.status?.pr ? ` - its context: $CLAUDE_HARNESS_API/my-work/pr/${ this.status.pr }.` : '.', about: 'Where to read the PR, or just a full stop' },
       ];
     },
@@ -1946,7 +1946,7 @@ export default {
       this.error = '';
       this.notice = '';
       try {
-        const text = skillPrompt(button, this.status, this.issue, this.workspace.name, this.templateOf(button));
+        const text = skillPrompt(button, this.status, this.issue, this.workspace.name, this.templateOf(button), this.repo);
 
         const title = button.fresh ? `${ button.label } #${ this.status.pr || this.issue }` : '';
 

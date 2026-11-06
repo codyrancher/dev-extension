@@ -817,20 +817,24 @@ const workspacesByCluster = new Map<string, DevWorkspace[]>();
  * Returns null when even this read fails, so the caller keeps its previous list rather than trusting
  * an empty answer.
  */
-async function liveInstanceClusters(): Promise<Map<string, { cluster: string, role: string }> | null> {
+async function liveInstanceClusters(): Promise<Map<string, { cluster: string, role: string, repo: string }> | null> {
   const response = await devFetch(`${ clusterBase(DEFAULT_CLUSTER) }/v1/${ APP_INSTANCE }`).catch(() => null);
 
   if (!response) {
     return null;
   }
 
-  const byWorkspace = new Map<string, { cluster: string, role: string }>();
+  const byWorkspace = new Map<string, { cluster: string, role: string, repo: string }>();
 
   for (const instance of (response.data || []) as Json[]) {
     const workspace = instance.metadata?.labels?.[LABEL_WORKSPACE];
 
     if (workspace && !instance.metadata?.deletionTimestamp) {
-      byWorkspace.set(workspace, { cluster: instance.metadata?.labels?.[LABEL_CLUSTER] || DEFAULT_CLUSTER, role: instance.metadata?.labels?.[LABEL_ROLE] || '' });
+      byWorkspace.set(workspace, {
+        cluster: instance.metadata?.labels?.[LABEL_CLUSTER] || DEFAULT_CLUSTER,
+        role:    instance.metadata?.labels?.[LABEL_ROLE] || '',
+        repo:    String(instance.spec?.values?.repo || '').trim(),
+      });
     }
   }
 
@@ -947,7 +951,11 @@ async function listAllWorkspacesLive(): Promise<DevWorkspace[]> {
   }
 
   return [...workspacesByCluster.values()].flat()
-    .map((workspace) => ({ ...workspace, role: instances?.get(workspace.name)?.role || workspace.role || '' }))
+    .map((workspace) => ({
+      ...workspace,
+      role: instances?.get(workspace.name)?.role || workspace.role || '',
+      repo: instances?.get(workspace.name)?.repo || workspace.repo,
+    }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 

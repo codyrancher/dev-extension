@@ -585,6 +585,7 @@ function lastSpoke(d: Json, submittedAt: number): number {
 
 function threads(d: Json, since = 0, kinds: Record<string, string> = {}): Comment[] {
   const m = { ...(d.meta || {}), viewer: d.viewer || '' };
+  const repo = String(m.repo || DEFAULT_REPO);
   const author = m.author || '';
   const files: Json[] = d.files || [];
   /*
@@ -613,7 +614,7 @@ function threads(d: Json, since = 0, kinds: Record<string, string> = {}): Commen
   };
   const roots = review.filter((c) => rootOf(c).id === c.id);
   const msg = (c: Json) => ({
-    id: Number(c.id) || 0, who: c.author || '?', author: c.author === author, body: String(c.body || ''), html: renderBody(String(c.body || ''), kinds), at: c.createdAt || '', isNew: since > 0 && (Date.parse(c.createdAt) || 0) > since, pending: !!c.pending,
+    id: Number(c.id) || 0, who: c.author || '?', author: c.author === author, body: String(c.body || ''), html: renderBody(String(c.body || ''), kinds, undefined, repo), at: c.createdAt || '', isNew: since > 0 && (Date.parse(c.createdAt) || 0) > since, pending: !!c.pending,
   });
   const card = (root: Json, members: Json[], where: string, path: string, line: number, rows: CodeRow[], order: number, url: string): Comment => {
     const thread = members.sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0)).map(msg);
@@ -624,7 +625,7 @@ function threads(d: Json, since = 0, kinds: Record<string, string> = {}): Commen
     const drafts = (d.replyDrafts || [])
       .filter((r: Json) => ids.has(Number(r.in_reply_to)))
       .map((r: Json) => ({
-        id: Number(r.id), inReplyTo: Number(r.in_reply_to), body: String(r.body || ''), html: renderBody(String(r.body || ''), kinds), who: r.author || 'agent', at: r.created_at || '',
+        id: Number(r.id), inReplyTo: Number(r.in_reply_to), body: String(r.body || ''), html: renderBody(String(r.body || ''), kinds, undefined, repo), who: r.author || 'agent', at: r.created_at || '',
       }));
 
     return {
@@ -888,6 +889,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
   const artifacts = have.artifacts || null;
   const d = have.d || null;
   const kinds = have.kinds || {};
+  const repo = String(d?.meta?.repo || DEFAULT_REPO);
   const sections: EvidenceSection[] = [];
 
   // A read that failed - the in-cluster API restarting, GitHub rate-limiting - is said here.
@@ -974,10 +976,10 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
     items.push({
       kind: 'text',
       text: body,
-      html: numberTaskBoxes(renderBody(body || '_(no description)_', kinds)),
+      html: numberTaskBoxes(renderBody(body || '_(no description)_', kinds, undefined, repo)),
       taskBody: body,
       pr: Number(d.meta?.number) || 0,
-      repo: String(d.meta?.repo || DEFAULT_REPO),
+      repo,
     });
     items.push(reviewersItem(d));
     /*
@@ -1237,7 +1239,7 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
         const evidence = { pr: status.pr, attachments };
 
         return {
-          local: !c.submitted_at, status: c.status || 'pending', attachments: attachments.filter((a) => !(placed.has(a.name) || placed.has(a.path)) || !a.found), id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ id: c.id, who: c.author || 'agent', author: false, body, html: renderBody(body, kinds, evidence), at: c.created_at || '', isNew: false, pending: false }], replied: false, mine: true,
+          local: !c.submitted_at, status: c.status || 'pending', attachments: attachments.filter((a) => !(placed.has(a.name) || placed.has(a.path)) || !a.found), id: c.id, who: c.author || 'agent', where: c.path ? `${ c.path }${ c.line ? `:${ c.line }` : '' }` : 'PR', path: c.path || '', line: Number(c.line) || 0, body: body.slice(0, 400), at: c.created_at || '', answered: !!c.submitted_at, lastBy: c.author || 'agent', lastByAuthor: false, thread: [{ id: c.id, who: c.author || 'agent', author: false, body, html: renderBody(body, kinds, evidence, repo), at: c.created_at || '', isNew: false, pending: false }], replied: false, mine: true,
           // `pending` is for a GitHub draft of yours inside somebody else's thread. A local
           // finding is also unsent, but it is marked as one already - `local` and `status` draw
           // its edge - and two markers arguing about one comment is how neither gets read.
@@ -1339,9 +1341,9 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
   return sections;
 }
 
-/** GitHub's `#123` references as links, in rendered markdown (outside tags and code). */
-export function linkRefs(html: string): string {
-  return html.split(/(<[^>]+>)/).map((part, i) => (i % 2 ? part : part.replace(/(^|[\s(])#(\d{2,7})\b/g, `$1<a href="https://github.com/${ DEFAULT_REPO }/issues/$2" target="_blank" rel="noopener noreferrer">#$2</a>`))).join('');
+/** GitHub's `#123` references as links into `repo`, in rendered markdown (outside tags and code). */
+export function linkRefs(html: string, repo = DEFAULT_REPO): string {
+  return html.split(/(<[^>]+>)/).map((part, i) => (i % 2 ? part : part.replace(/(^|[\s(])#(\d{2,7})\b/g, `$1<a href="https://github.com/${ repo }/issues/$2" target="_blank" rel="noopener noreferrer">#$2</a>`))).join('');
 }
 
 // One source, two uses: `ASSET_SOURCE` builds a fresh regex each time it is needed. A shared
@@ -1410,8 +1412,8 @@ function placeAttached(html: string, pr: number, attachments: LocalAttachment[])
   });
 }
 
-export function renderBody(text: string, kinds: Record<string, string> = {}, evidence?: { pr: number; attachments: LocalAttachment[] }): string {
-  let html = linkRefs(renderMd(text || ''));
+export function renderBody(text: string, kinds: Record<string, string> = {}, evidence?: { pr: number; attachments: LocalAttachment[] }, repo = DEFAULT_REPO): string {
+  let html = linkRefs(renderMd(text || ''), repo);
 
   if (evidence && evidence.pr) {
     html = placeAttached(html, evidence.pr, evidence.attachments || []);
@@ -1689,16 +1691,16 @@ export interface PromptVar {
   about: string;
 }
 
-export function promptVars(status: WorkspaceStatus | null, issue: number, workspace: string): PromptVar[] {
+export function promptVars(status: WorkspaceStatus | null, issue: number, workspace: string, repo = repoOf(workspace)): PromptVar[] {
   const pr = status?.pr || 0;
 
   return [
-    { name: 'repo', value: DEFAULT_REPO, about: 'The repository this workspace works in' },
+    { name: 'repo', value: repo, about: 'The repository this workspace works in' },
     { name: 'pr', value: pr ? `#${ pr }` : '', about: 'The pull request, when there is one' },
     { name: 'prNumber', value: pr ? String(pr) : '', about: 'Its number alone' },
     { name: 'issue', value: issue ? `#${ issue }` : '', about: 'The issue this workspace is for' },
     { name: 'issueNumber', value: issue ? String(issue) : '', about: 'Its number alone' },
-    { name: 'subject', value: pr ? `${ DEFAULT_REPO } PR #${ pr }` : issue ? `${ DEFAULT_REPO } issue #${ issue }` : 'this workspace', about: 'The PR if there is one, else the issue' },
+    { name: 'subject', value: pr ? `${ repo } PR #${ pr }` : issue ? `${ repo } issue #${ issue }` : 'this workspace', about: 'The PR if there is one, else the issue' },
     { name: 'title', value: status?.title || '', about: 'Its title on GitHub' },
     { name: 'workspace', value: workspace, about: 'This workspace\'s name' },
     { name: 'stage', value: status?.stage || '', about: 'Where the work is on the rail' },
@@ -1731,8 +1733,8 @@ function contextClause(status: WorkspaceStatus | null): PromptVar {
   return { name: 'contextClause', value: status?.pr ? ` - its context: $CLAUDE_HARNESS_API/my-work/pr/${ status.pr }.` : '.', about: 'Where to read the PR, or just a full stop' };
 }
 
-export function skillPrompt(button: SkillButton, status: WorkspaceStatus, issue: number, workspace = '', template = ''): string {
-  const vars = [...promptVars(status, issue, workspace), contextClause(status)];
+export function skillPrompt(button: SkillButton, status: WorkspaceStatus, issue: number, workspace = '', template = '', repo = repoOf(workspace)): string {
+  const vars = [...promptVars(status, issue, workspace, repo), contextClause(status)];
 
   return expandPrompt(template || skillTemplate(button), vars);
 }

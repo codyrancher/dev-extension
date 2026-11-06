@@ -37,9 +37,8 @@ import {
 import type { LocalComment, ReviewRun } from '../reviews';
 import { paneCommand } from '../conversations';
 import { linkedPullRequest } from '../github';
-import { listApps } from '../apps';
+import { workspaceRepo } from '../workspace-status';
 import { listConversations } from '../conversations';
-import { DEFAULT_APP } from '../config/constants';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -71,11 +70,7 @@ const resolving = ref(true);
 const resolveMessage = ref('');
 
 async function resolveRepo() {
-  const apps = await listApps(store).catch(() => []);
-  const own = apps.find((app: Json) => app.id === props.workspace.app && app.repo);
-  const fallback = apps.find((app: Json) => app.id === DEFAULT_APP && app.repo) || apps.find((app: Json) => !!app.repo);
-
-  repo.value = (own || fallback)?.repo || DEFAULT_REPO;
+  repo.value = await workspaceRepo(store, props.workspace);
 }
 
 async function resolveNumber() {
