@@ -337,39 +337,52 @@ const callerRequest = new AsyncLocalStorage();
  * apiserver's own proxy - and empty for a workspace made before the label existed, both of
  * which leave the caller to the rules that were there before.
  */
-const ownerByIp = new Map();
+const callerByIp = new Map();
 
-async function ownerOfCaller(req) {
+/**
+ * The workspace Installation a request came from, as the two things read off it: its owner, and
+ * the repository it works in (`spec.values.repo`, empty for the default). Both empty for a caller
+ * that is not a workspace's pod.
+ */
+async function callerOf(req) {
+  const nobody = { owner: '', repo: '' };
   const ip = String(req?.socket?.remoteAddress || '').replace(/^::ffff:/, '');
 
   if (!ip || ip === '127.0.0.1' || ip === '::1') {
-    return '';
+    return nobody;
   }
 
-  const held = ownerByIp.get(ip);
+  const held = callerByIp.get(ip);
 
   // A pod's IP outlives one request and is reused when the pod is replaced, so this is a short
   // memo rather than a cache: long enough that a page of calls costs one lookup.
   if (held && Date.now() - held.at < 60_000) {
-    return held.owner;
+    return held.caller;
   }
 
-  const owner = await (async() => {
+  const caller = await (async() => {
     const pods = await k8s(`/api/v1/pods?fieldSelector=status.podIP%3D${ encodeURIComponent(ip) }&limit=2`).catch(() => null);
     const namespace = pods?.items?.[0]?.metadata?.namespace || '';
     const workspace = /^dev-(.+)$/.exec(namespace)?.[1] || '';
 
     if (!workspace) {
-      return '';
+      return nobody;
     }
     const instance = await k8s(`${ INSTANCES }/${ encodeURIComponent(workspace) }`).catch(() => null);
 
-    return String(instance?.metadata?.labels?.['dev.rancher.io/owner'] || '');
-  })().catch(() => '');
+    return {
+      owner: String(instance?.metadata?.labels?.['dev.rancher.io/owner'] || ''),
+      repo:  String(instance?.spec?.values?.repo || '').trim(),
+    };
+  })().catch(() => nobody);
 
-  ownerByIp.set(ip, { at: Date.now(), owner });
+  callerByIp.set(ip, { at: Date.now(), caller });
 
-  return owner;
+  return caller;
+}
+
+async function ownerOfCaller(req) {
+  return (await callerOf(req)).owner;
 }
 
 async function secretFromStores(key, caller = '') {
@@ -1290,10 +1303,23 @@ async function graphql(query, variables) {
   return body.data;
 }
 
-function repoOf(url) {
+/**
+ * The repository a request is about: the one `?repo=` names, else the one the calling workspace
+ * works in, else the default.
+ *
+ * The middle step is for the skills. They ask for `$CLAUDE_HARNESS_API/my-work/pr/<n>` and its
+ * sub-paths with no `?repo=`, so a review in a rancher/virtual-clusters-ui workspace was handed
+ * rancher/dashboard's PR of the same number - the wrong diff, the wrong CI, the wrong files.
+ */
+async function repoOf(url) {
   const asked = url.searchParams.get('repo') || '';
 
-  return REPO_NAME.test(asked) ? asked : DEFAULT_REPO;
+  if (REPO_NAME.test(asked)) {
+    return asked;
+  }
+  const own = (await callerOf(callerRequest.getStore())).repo;
+
+  return REPO_NAME.test(own) ? own : DEFAULT_REPO;
 }
 
 // -- CI --------------------------------------------------------------------------------------
@@ -6263,7 +6289,7 @@ const routes = [
       throw new Error(`No such file in the agent workspace: ${ body?.path }`);
     }
 
-    const repo = typeof body?.repo === 'string' && body.repo.includes('/') ? body.repo : DEFAULT_REPO;
+    const repo = typeof body?.repo === 'string' && body.repo.includes('/') ? body.repo : await repoOf(url);
     const { href, cached } = await uploadToGithub(file, `https://github.com/${ repo }/pull/${ num }`);
 
     return {
@@ -6439,7 +6465,7 @@ const routes = [
   ['GET', /^\/confluence\/pages\/(\d+)$/, async(m) => pageAnswer(
     await confluenceFetch(`/rest/api/content/${ m[1] }?expand=body.view,space,version,ancestors`), CONFLUENCE_BASE,
   )],
-  ['GET', /^\/my-work\/pr\/(\d+)$/, (m, url) => prDetail(repoOf(url), Number(m[1]))],
+  ['GET', /^\/my-work\/pr\/(\d+)$/, async(m, url) => prDetail(await repoOf(url), Number(m[1]))],
   // Whether evidence can be uploaded at all, before a review is submitted rather than after.
   ['GET', /^\/github\/session$/, () => githubBrowserSession()],
   ['GET', /^\/my-work\/pr\/(\d+)\/comments$/, async(m) => (await localComments(Number(m[1]))).map(decorate)],
@@ -6538,7 +6564,7 @@ const routes = [
 
     return { ok: true };
   }],
-  ['GET', /^\/my-work\/pr\/(\d+)\/threads$/, async(m, url) => ({ threads: await prThreads(Number(m[1]), repoOf(url)) })],
+  ['GET', /^\/my-work\/pr\/(\d+)\/threads$/, async(m, url) => ({ threads: await prThreads(Number(m[1]), await repoOf(url)) })],
   ['POST', /^\/my-work\/pr\/(\d+)\/reply-draft$/, async(m, url, body) => {
     const num = Number(m[1]);
     const text = typeof body?.body === 'string' ? body.body.trim() : '';
@@ -6552,7 +6578,7 @@ const routes = [
       throw failure(400, 'commentId or threadId is required: GET /my-work/pr/<n>/threads lists both.');
     }
     if (!commentId) {
-      commentId = (await prThreads(num, repoOf(url))).find((t) => t.threadId === threadId)?.commentId || 0;
+      commentId = (await prThreads(num, await repoOf(url))).find((t) => t.threadId === threadId)?.commentId || 0;
       if (!commentId) {
         throw failure(404, `There is no review thread ${ threadId } on #${ num }.`);
       }
@@ -6605,7 +6631,7 @@ const routes = [
     }
 
     const token = await githubToken();
-    const response = await fetch(`https://api.github.com/repos/${ repoOf(url) }/contents/${ encodeURI(filePath) }?ref=${ encodeURIComponent(ref) }`, {
+    const response = await fetch(`https://api.github.com/repos/${ await repoOf(url) }/contents/${ encodeURI(filePath) }?ref=${ encodeURIComponent(ref) }`, {
       headers: { authorization: `Bearer ${ token }`, accept: 'application/vnd.github.raw', 'user-agent': 'dev-extension' },
     });
 
@@ -6618,7 +6644,7 @@ const routes = [
   // The files a subset of the PR's commits changed. A contiguous run is one compare; anything
   // else is each commit's own patch, labelled, since line numbers differ per commit.
   ['GET', /^\/my-work\/pr\/(\d+)\/commits-diff$/, async(m, url) => {
-    const repo = repoOf(url);
+    const repo = await repoOf(url);
     const num = Number(m[1]);
     const shas = (url.searchParams.get('shas') || '').split(',').map((sha) => sha.trim()).filter(Boolean);
 
@@ -7098,11 +7124,11 @@ const routes = [
 
     return { run };
   }],
-  ['GET', /^\/my-work\/pr\/(\d+)\/ci$/, (m, url) => ciFailures(repoOf(url), Number(m[1]))],
-  ['GET', /^\/my-work\/pr\/(\d+)\/ci\/(\d+)$/, (m, url) => ciFailureDetail(repoOf(url), Number(m[1]), Number(m[2]))],
-  ['GET', /^\/my-work\/pr\/(\d+)\/ci\/(\d+)\/log$/, (m, url) => ciFailureLog(repoOf(url), Number(m[1]), Number(m[2]))],
-  ['GET', /^\/my-work\/dependabot$/, (m, url) => fetchDependabot(repoOf(url))],
-  ['GET', /^\/my-work\/dependabot\/pr\/(\d+)\/review-context$/, (m, url) => dependabotReviewContext(repoOf(url), Number(m[1]))],
+  ['GET', /^\/my-work\/pr\/(\d+)\/ci$/, async(m, url) => ciFailures(await repoOf(url), Number(m[1]))],
+  ['GET', /^\/my-work\/pr\/(\d+)\/ci\/(\d+)$/, async(m, url) => ciFailureDetail(await repoOf(url), Number(m[1]), Number(m[2]))],
+  ['GET', /^\/my-work\/pr\/(\d+)\/ci\/(\d+)\/log$/, async(m, url) => ciFailureLog(await repoOf(url), Number(m[1]), Number(m[2]))],
+  ['GET', /^\/my-work\/dependabot$/, async(m, url) => fetchDependabot(await repoOf(url))],
+  ['GET', /^\/my-work\/dependabot\/pr\/(\d+)\/review-context$/, async(m, url) => dependabotReviewContext(await repoOf(url), Number(m[1]))],
   ['GET', /^\/my-work\/dependabot\/reviews$/, () => ({ reviews: readStoreDoc(dependabotFile()) || {} })],
   ['PUT', /^\/my-work\/dependabot\/reviews\/(\d+)$/, async(m, url, body) => {
     const all = readStoreDoc(dependabotFile()) || {};

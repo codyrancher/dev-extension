@@ -15,8 +15,7 @@ import {
 import { buildShare, shareStatus, workspaceBranches } from '../workspace-tools';
 import { everyWhileShown } from '../read-pacing.mjs';
 import { talksToDefault, defaultRancher, listRanchers } from '../ranchers';
-import { listApps } from '../apps';
-import { DEFAULT_APP } from '../config/constants';
+import { workspaceRepo } from '../workspace-status';
 import { DEFAULT_REPO } from '../reviews';
 
 const REFRESH_MS = 8000;
@@ -82,11 +81,7 @@ export default {
   methods: {
     /** Which repository, and what the checkout is on: its branch and head, read from the workspace. */
     async resolve() {
-      const apps = await listApps(this.$store).catch(() => []);
-      const own = apps.find((app) => app.id === this.workspace.app && app.repo);
-      const fallback = apps.find((app) => app.id === DEFAULT_APP && app.repo) || apps.find((app) => !!app.repo);
-
-      this.repo = (own || fallback)?.repo || DEFAULT_REPO;
+      this.repo = await workspaceRepo(this.$store, this.workspace);
       this.number = this.pr || 0;
       // The starred Rancher (the sidebar's Ranchers list), else the one this page is on.
       this.rancher = await talksToDefault(this.$store);

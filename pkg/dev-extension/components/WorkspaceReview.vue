@@ -27,8 +27,8 @@ import type { ConversationOrigin } from '../agent';
 import type { ProjectConversation } from '../conversations';
 import { readInWorkspace, ensureWorkspaceReady } from '../workspace-tools';
 import { everyWhileShown } from '../read-pacing.mjs';
-import { listApps } from '../apps';
-import { DEFAULT_APP, workspaceWorkdir } from '../config/constants';
+import { workspaceRepo } from '../workspace-status';
+import { workspaceWorkdir } from '../config/constants';
 import { DEFAULT_REPO } from '../reviews';
 import { useStore } from 'vuex';
 
@@ -68,11 +68,7 @@ const SHA_RE = /^[0-9a-f]{7,40}$/;
 let stopBeat: (() => void) | null = null;
 
 async function resolveRepo() {
-  const apps = await listApps(store).catch(() => []);
-  const own = apps.find((app: Json) => app.id === props.workspace.app && app.repo);
-  const fallback = apps.find((app: Json) => app.id === DEFAULT_APP && app.repo) || apps.find((app: Json) => !!app.repo);
-
-  repo.value = (own || fallback)?.repo || DEFAULT_REPO;
+  repo.value = await workspaceRepo(store, props.workspace);
 }
 
 /** Where the agents work: the workspace's own checkout, which is where its dev server runs from too. */

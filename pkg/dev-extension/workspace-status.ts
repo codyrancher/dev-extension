@@ -14,7 +14,8 @@ import { passRunning } from './review-pass.mjs';
 import { linkedPullRequest, branchPullRequest, issueBody } from './github';
 import { conversationStates, agentConversations, ConversationState } from './conversations';
 import { setWorkspaceRunning } from './api';
-import { isLte, LTE_PREFIX } from './config/constants';
+import { isLte, LTE_PREFIX, DEFAULT_APP } from './config/constants';
+import { listApps } from './apps';
 import { reconcileStage } from './stages';
 import type { DerivedStage, StageRecord } from './stages';
 
@@ -444,6 +445,26 @@ export function noteRepo(name: string, repo: string): void {
 /** The repository a workspace is for, falling back to this product's own. */
 export function repoOf(name: string): string {
   return repos[name] || DEFAULT_REPO;
+}
+
+/**
+ * The repository a workspace is for, from the workspace itself: its Installation's `repo` value,
+ * else its App's, else the default App's.
+ *
+ * The Installation comes first because an App's `repo` is only the default a new workspace is
+ * made with. `lte-pr-222`, a rancher/virtual-clusters-ui PR, was made from lte-workspace, whose
+ * default is rancher/dashboard; reading the App alone pointed its PR, Review and Share tabs at
+ * rancher/dashboard#222.
+ */
+export async function workspaceRepo(store: Parameters<typeof listApps>[0], workspace: { app?: string; repo?: string }): Promise<string> {
+  if (workspace.repo) {
+    return workspace.repo;
+  }
+  const apps = await listApps(store).catch(() => []);
+  const own = apps.find((app) => app.id === workspace.app && app.repo);
+  const fallback = apps.find((app) => app.id === DEFAULT_APP && app.repo) || apps.find((app) => !!app.repo);
+
+  return (own || fallback)?.repo || DEFAULT_REPO;
 }
 
 /** The branch a workspace's checkout is on - told by the page, which reads the checkout. */
