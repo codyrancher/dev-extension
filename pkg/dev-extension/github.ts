@@ -335,11 +335,16 @@ const SEARCHES: Record<WorkSection, (scope: string) => string> = {
    * claim in the deck. A team's queue is a real thing to want, but it is a different list with
    * a different name, not this one silently.
    */
+  /*
+   * `-author:@me` on both. GitHub counts review comments you leave on your own pull request as a
+   * review by you, so `reviewed-by:@me` returned your own work here, beside - and ahead of - the
+   * pull requests other people are waiting on you for. Yours are the next table down.
+   */
   reviewing: (scope) => `
-    reviewing: search(query: "${ scope }is:open is:pr user-review-requested:@me archived:false", type: ISSUE, first: $page) {
+    reviewing: search(query: "${ scope }is:open is:pr user-review-requested:@me -author:@me archived:false", type: ISSUE, first: $page) {
       nodes { ...pr }
     }
-    reviewed: search(query: "${ scope }is:open is:pr reviewed-by:@me archived:false", type: ISSUE, first: $page) {
+    reviewed: search(query: "${ scope }is:open is:pr reviewed-by:@me -author:@me archived:false", type: ISSUE, first: $page) {
       nodes { ...pr }
     }`,
   mine: (scope) => `
@@ -864,6 +869,10 @@ export async function myWork(repos?: string[], without?: string[], sections: Wor
   ]) {
     const pr = prFrom(node, login, requested);
 
+    // And here as well, for a cached response from before the searches said so.
+    if (login && pr.author === login) {
+      continue;
+    }
     if (!seen.has(pr.key)) {
       seen.add(pr.key);
       reviewing.push(pr);
