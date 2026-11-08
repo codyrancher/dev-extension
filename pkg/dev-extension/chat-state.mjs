@@ -608,6 +608,91 @@ export function questionStep(question, paneText) {
   return bestScore >= 2 ? { index: best, review: false, seen: true } : { index: 0, review: false, seen: false };
 }
 
+/**
+ * The question dialog read off the pane, for the seconds the transcript has not caught up.
+ *
+ * The CLI draws an AskUserQuestion dialog before it has written the call into the transcript -
+ * measured live, the dialog was up and answerable for several seconds with no tool_use on record.
+ * In that window the chat drew whatever numbered list the pane showed and pressed a digit and
+ * Enter, which is the one way this dialog must not be answered (see questionStep): picking
+ * "Green" for the first of two questions answered the second with "Small" and landed on the
+ * review screen. So the pane's own shape is read, and it is a recognisable one:
+ *
+ *   - the list ends in "Type something." (the free-text row) and "Chat about this";
+ *   - a multi-select's rows carry a box, ☐ or ☒ ([ ] and [×] on a plain terminal);
+ *   - after the last of several questions comes "Review your answers / Ready to submit".
+ *
+ * @param {string} paneText
+ * @returns {null | { review: boolean, prompt: string, options: { key: string, label: string, selected: boolean }[], multi: boolean, chatKey: string, otherKey: string, of: number, at: number }}
+ */
+export function paneAsk(paneText) {
+  const lines = String(paneText || '').replace(/\r/g, '').split('\n').map((l) => l.replace(/[│┃]/g, ' ').replace(/\s+$/, '')).slice(-40);
+  const ROW = /^\s*(?:❯|›|>)?\s*(\d{1,2})\.\s+(\S.*)$/;
+  const FURNITURE = /^[\s─╌═┃│┌┐└┘╭╮╰╯▔▁]*$/;
+  const BOX = /^(☐|☒|\[ \]|\[[x×X]\])\s*/;
+  // The last run of consecutively numbered rows. What sits between them - the dialog's rule, a
+  // description - does not break a run; a number that does not follow on starts a new one, which
+  // is how a list in claude's own message above the dialog is left behind.
+  let rows = [];
+  let first = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = ROW.exec(lines[i]);
+
+    if (!m) {
+      continue;
+    }
+    if (!rows.length || Number(m[1]) !== Number(rows[rows.length - 1].key) + 1) {
+      rows = [];
+      first = i;
+    }
+    rows.push({ key: m[1], text: m[2].replace(/\s{2,}.*$/, '').trim() });
+  }
+  if (rows.length < 2) {
+    return null;
+  }
+  const bottom = lines.slice(-30).join('\n');
+
+  if (/Ready to submit your answers\?/i.test(bottom) && rows.some((r) => /^Submit answers$/i.test(r.text))) {
+    return {
+      review: true, prompt: '', options: [], multi: false, chatKey: '', otherKey: '', of: 0, at: 0,
+    };
+  }
+  const chat = rows.find((r) => /^Chat about this$/i.test(r.text));
+  const other = rows.find((r) => /^Type something\.?$/i.test(r.text));
+
+  if (!chat && !other) {
+    return null;
+  }
+  const answers = rows.filter((r) => r !== chat && r !== other);
+  const multi = answers.some((r) => BOX.test(r.text));
+  // The question: what sits between the tab strip (when there is one) and the list.
+  const above = lines.slice(Math.max(0, first - 12), first);
+  const tabsAt = above.findIndex((l) => /✔\s*Submit|←.*→/.test(l));
+  const tabs = tabsAt >= 0 ? above[tabsAt] : '';
+  const prompt = above.slice(tabsAt >= 0 ? tabsAt + 1 : Math.max(0, above.length - 3))
+    .filter((l) => l.trim() && !FURNITURE.test(l))
+    .map((l) => l.trim())
+    .join('\n');
+  const of = (tabs.match(/[☐☒]|\[[ x×X]\]/g) || []).length;
+  const done = (tabs.match(/☒|\[[x×X]\]/g) || []).length;
+
+  return {
+    review:   false,
+    prompt,
+    options:  answers.map((r) => {
+      const box = BOX.exec(r.text);
+
+      return { key: r.key, label: r.text.replace(BOX, ''), selected: !!box && box[1] !== '☐' && box[1] !== '[ ]' };
+    }),
+    multi,
+    chatKey:  chat ? chat.key : '',
+    otherKey: other ? other.key : '',
+    of,
+    at:       of ? Math.min(of, done + 1) : 0,
+  };
+}
+
 const OAUTH_RE = /(https:\/\/(?:claude\.com|claude\.ai|console\.anthropic\.com)\/[^\s]*oauth[^\s]*)/i;
 
 /** The login flow, the one state only the pane shows. */

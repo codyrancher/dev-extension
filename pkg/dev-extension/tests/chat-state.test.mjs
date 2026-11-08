@@ -17,7 +17,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, promptTextOf, duration, tokens, ago, promptKey, reconcilePending,
-  parseEntries, deriveState, foldQueue, foldModel, promptRecords, isCliText, questionStep, chatAboutKey, isPreviewQuestion
+  parseEntries, deriveState, foldQueue, foldModel, promptRecords, isCliText, questionStep, chatAboutKey, isPreviewQuestion, paneAsk
 } from '../chat-state.mjs';
 
 // ── The login flow: the one state only the pane shows ──────────────────────────────────────
@@ -786,4 +786,90 @@ test('Chat about this is the row after Other, and a preview question is its own 
   assert.equal(isPreviewQuestion(TWO.questions[0]), false);
   assert.equal(isPreviewQuestion({ options: [{ label: 'a', preview: 'x' }, { label: 'b' }] }), true);
   assert.equal(isPreviewQuestion({ multiSelect: true, options: [{ label: 'a', preview: 'x' }, { label: 'b' }] }), false);
+});
+
+
+// ── The question dialog read off the pane ───────────────────────────────────────────────────
+
+/*
+ * As the live run of 2026-11-08 drew it, with the transcript not yet holding the call: the end
+ * of claude's message, the dialog's rule, its tab strip, the question, the rows.
+ */
+const TWO_ON_PANE = [
+  '● I will ask you now. When you have answered I will reply with the two answers,',
+  '  separated by a comma.',
+  '────────────────────────────────────────────────────────',
+  '←  ☐ Color  ☐ Size  ✔ Submit  →',
+  '',
+  'Which color do you want?',
+  '',
+  '❯ 1. Red',
+  '  2. Green',
+  '  3. Blue',
+  '  4. Type something.',
+  '────────────────────────────────────────────────────────',
+  '  5. Chat about this',
+  '',
+  'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+].join('\n');
+
+test('paneAsk knows the question dialog by its own rows, and leaves those rows out', () => {
+  const ask = paneAsk(TWO_ON_PANE);
+
+  assert.ok(ask);
+  assert.equal(ask.review, false);
+  assert.equal(ask.prompt, 'Which color do you want?');
+  assert.deepEqual(ask.options.map((o) => `${ o.key } ${ o.label }`), ['1 Red', '2 Green', '3 Blue']);
+  assert.equal(ask.chatKey, '5');
+  assert.equal(ask.otherKey, '4');
+  assert.equal(ask.multi, false);
+  assert.deepEqual([ask.at, ask.of], [1, 2]);
+});
+
+test('paneAsk counts an answered tab', () => {
+  const second = TWO_ON_PANE.replace('☐ Color', '☒ Color').replace('Which color do you want?', 'Which size do you want?')
+    .replace('1. Red', '1. Small').replace('2. Green', '2. Large').replace('  3. Blue\n', '')
+    .replace('4. Type something.', '3. Type something.').replace('5. Chat about this', '4. Chat about this');
+  const ask = paneAsk(second);
+
+  assert.deepEqual(ask.options.map((o) => o.label), ['Small', 'Large']);
+  assert.equal(ask.chatKey, '4');
+  assert.deepEqual([ask.at, ask.of], [2, 2]);
+});
+
+test('paneAsk knows the review screen', () => {
+  const review = [
+    '←  ☒ Color  ☒ Size  ✔ Submit  →',
+    'Review your answers',
+    ' ● Which color do you want?',
+    '   → Green',
+    ' ● Which size do you want?',
+    '   → Small',
+    'Ready to submit your answers?',
+    '❯ 1. Submit answers',
+    '  2. Cancel',
+  ].join('\n');
+
+  assert.equal(paneAsk(review).review, true);
+});
+
+test('paneAsk reads a multi-select by its boxes', () => {
+  const pane = [
+    'Which toppings? (Select all that apply)',
+    '❯ 1. ☒ Cheese',
+    '  2. ☐ Ham',
+    '  3. ☐ Olives',
+    '  4. Type something',
+    '  5. Chat about this',
+  ].join('\n');
+  const ask = paneAsk(pane);
+
+  assert.equal(ask.multi, true);
+  assert.deepEqual(ask.options.map((o) => [o.label, o.selected]), [['Cheese', true], ['Ham', false], ['Olives', false]]);
+});
+
+test('paneAsk leaves every other numbered list alone', () => {
+  assert.equal(paneAsk('Do you want to proceed?\n❯ 1. Yes\n  2. No'), null);
+  assert.equal(paneAsk('1: Bad    2: Fine   3: Good   0: Dismiss'), null);
+  assert.equal(paneAsk(''), null);
 });

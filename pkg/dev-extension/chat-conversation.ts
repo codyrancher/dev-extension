@@ -37,7 +37,7 @@ import {
 } from './chat';
 import {
   ago, deriveState, foldModel, noModelEvidence, parseEntries, reconcilePending, unwrapPasted,
-  questionStep, isPreviewQuestion, chatAboutKey,
+  questionStep, isPreviewQuestion, chatAboutKey, paneAsk,
 } from './chat-state.mjs';
 import {
   modelInfo as describeModel, pickedChoice, settlePicked,
@@ -150,6 +150,10 @@ export interface ConversationDialog {
   reply?: 'clarify' | 'feedback';
   /** The question tool call's id, so a host's own state about it can reset when it changes. */
   id?: string;
+  /** Read off the pane rather than the transcript: it is on screen by construction. See paneAsk. */
+  fromPane?: boolean;
+  /** The key of the dialog's "Chat about this" row, when it was read off the pane. */
+  chatKey?: string;
 }
 
 const POLL_MS = 1500;
@@ -422,10 +426,43 @@ function paneFromState(state: any, paneText = '', picks: DialogPicks = {}): { bu
     // and the pane reader knows the shape of a numbered list with the current choice marked;
     // its options are the same keystrokes, so the buttons work the same. This is the one place
     // the terminal's look is read for structure, and only while claude itself says to.
-    const seen = readPane(paneText);
+    //
+    // A question dialog first, by its own rows (see paneAsk): it is the one shape here that must
+    // not be answered with a digit and an Enter, and the one most often drawn before the
+    // transcript has it.
+    const ask = paneAsk(paneText);
 
-    if (seen.dialog && seen.dialog.options.length) {
-      dialog = { ...seen.dialog, header: '', press: 'keys' } as ConversationDialog;
+    if (ask?.review) {
+      dialog = {
+        kind:     'review',
+        header:   'Review your answers',
+        prompt:   '',
+        options:  [{ key: 'submit', label: 'Submit answers', selected: true }, { key: 'back', label: 'Back', selected: false }],
+        url:      '',
+        answers:  [],
+        reply:    'clarify',
+        fromPane: true,
+      };
+    } else if (ask) {
+      dialog = {
+        kind:     'options',
+        header:   '',
+        prompt:   ask.prompt,
+        options:  ask.options,
+        url:      '',
+        press:    ask.multi ? 'toggle' : 'pick',
+        step:     ask.of > 1 ? { at: ask.at, of: ask.of } : undefined,
+        next:     ask.multi ? 'Next' : undefined,
+        reply:    ask.chatKey ? 'clarify' : undefined,
+        chatKey:  ask.chatKey,
+        fromPane: true,
+      };
+    } else {
+      const seen = readPane(paneText);
+
+      if (seen.dialog && seen.dialog.options.length) {
+        dialog = { ...seen.dialog, header: '', press: 'keys' } as ConversationDialog;
+      }
     }
   }
 
@@ -1535,6 +1572,9 @@ export function useConversation(source: () => ConversationSource) {
     const looks = () => {
       const question = state.value.question;
 
+      if (pane.value.dialog?.fromPane) {
+        return true;
+      }
       if (!question) {
         return false;
       }
@@ -1601,6 +1641,28 @@ export function useConversation(source: () => ConversationSource) {
     const dialog = pane.value.dialog;
     const question = state.value.question;
 
+    // Before the transcript has the question: the dialog's own "Chat about this" row, by its key.
+    if (dialog?.fromPane && dialog.reply === 'clarify') {
+      if (dialog.kind === 'review') {
+        await keys('Left');
+        await wait(400);
+        await poll();
+      }
+      const key = pane.value.dialog?.chatKey;
+
+      if (!key) {
+        throw new Error('the question is not where a message can reach it; answer it above, or in the terminal');
+      }
+      await keys(key);
+      for (let i = 0; i < 16; i++) {
+        await wait(500);
+        await poll();
+        if (!pane.value.dialog) {
+          return 'clarify';
+        }
+      }
+      throw new Error('the question did not close; answer it above, or in the terminal');
+    }
     if (state.value.phase !== 'question' || !question || !dialog?.reply) {
       return '';
     }
