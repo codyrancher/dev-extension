@@ -1481,6 +1481,11 @@ export function useConversation(source: () => ConversationSource) {
     const chosen = option as DialogOption;
 
     try {
+      if (dialog?.press && dialog.press !== 'keys' && !await questionOnScreen()) {
+        error.value = 'The question is not on the terminal\'s screen yet. Give it a moment and choose again.';
+
+        return;
+      }
       if (dialog?.kind === 'review') {
         await keys(chosen.key === 'back' ? 'Left' : 'Enter');
       } else if (dialog?.press === 'toggle') {
@@ -1518,9 +1523,47 @@ export function useConversation(source: () => ConversationSource) {
     setTimeout(() => poll(), 400);
   }
 
+  /**
+   * Whether the question the card shows is up in the pane, so a key goes to the dialog.
+   *
+   * The card is drawn from the transcript, which records a question as soon as claude asks it; the
+   * terminal draws the dialog a moment later, and a key pressed in between went into the prompt
+   * box - a stray digit at the front of the person's next message. Read again once before saying
+   * no, because the poll that drew the card can be a second old.
+   */
+  async function questionOnScreen(): Promise<boolean> {
+    const looks = () => {
+      const question = state.value.question;
+
+      if (!question) {
+        return false;
+      }
+      if (question.tool === 'ExitPlanMode') {
+        // Its choices are read off the pane, so having any is the dialog being there.
+        return !!pane.value.dialog?.options.length;
+      }
+      const at = questionStep(question, paneText.value);
+
+      return at.seen || at.review;
+    };
+
+    if (looks()) {
+      return true;
+    }
+    await wait(600);
+    await poll();
+
+    return looks();
+  }
+
   /** A multi-select's Next, or Submit on the last question: the dialog's Tabs binding. */
   async function nextQuestion(): Promise<void> {
     try {
+      if (!await questionOnScreen()) {
+        error.value = 'The question is not on the terminal\'s screen yet. Give it a moment and try again.';
+
+        return;
+      }
       await keys('Right');
     } catch (e: any) {
       error.value = e.message || String(e);
@@ -1572,6 +1615,9 @@ export function useConversation(source: () => ConversationSource) {
       await say(text);
 
       return 'feedback';
+    }
+    if (!await questionOnScreen()) {
+      throw new Error('the question is not on the terminal\'s screen yet; send again in a moment');
     }
     const questions: any[] = Array.isArray(question.questions) ? question.questions : [];
     let at = questionStep(question, paneText.value);
