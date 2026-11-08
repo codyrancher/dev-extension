@@ -1,6 +1,12 @@
 <script>
-// Inline discussion for one pending review comment, or for a few selected lines: a box to open
-// with, then the Studio's terminal onto a conversation scoped to that comment.
+// Inline discussion for one pending review comment, or for a few selected lines: the chat onto a
+// conversation scoped to that comment, opened as soon as Discuss is pressed.
+//
+// What the agent needs to know - the comment, the file and line, the routes it may use - is given
+// to it quietly (startDiscussion stages it; the pane's hook hands it over with the first prompt),
+// so the chat begins with the person's own first message rather than with a paragraph of context
+// they never wrote. There used to be an opener box here first, which was the only way to say
+// something before that paragraph went in; with the paragraph gone, the chat's own box is it.
 //
 // The harness ran these in its own container; here each is a conversation in the workspace,
 // namespaced like the rest (see conversations.ts) so the Studio's drawer never lists it, and
@@ -112,8 +118,9 @@ export default {
   },
 
   mounted() {
+    // Straight into the conversation: there is nothing to say before it opens any more.
     if (!this.current) {
-      this.$nextTick(() => this.$refs.input?.focus());
+      this.start();
     }
   },
 
@@ -128,16 +135,16 @@ export default {
 
       try {
         const message = this.draft.trim();
-        const prompt = this.lines
-          ? linesPrompt(this.pr, this.lines, message, this.repo)
-          : discussPrompt(this.pr, this.comment, message, this.repo, this.lives);
-        // The file and the line go into the conversation's id as well as into the prompt, so
+        const context = this.lines
+          ? linesPrompt(this.pr, this.lines, '', this.repo, true)
+          : discussPrompt(this.pr, this.comment, '', this.repo, this.lives, true);
+        // The file and the line go into the conversation's id as well as into the context, so
         // that coming back to this comment tomorrow - or finding the pane in `tmux ls` - says
         // which line it was about. See conversation-id.mjs.
         const at = this.lines || this.comment || {};
-        const conversation = await startDiscussion(this.workspace, this.title, prompt, {
+        const conversation = await startDiscussion(this.workspace, this.title, context, {
           path: at.path || '', line: at.line || 0, label: `pr-${ this.pr }-comment`,
-        });
+        }, message);
 
         this.current = conversation.id;
         this.draft = '';
@@ -204,30 +211,18 @@ export default {
       v-if="!current"
       class="cd__compose"
     >
-      <textarea
-        ref="input"
-        v-model="draft"
-        class="cd__textarea"
-        :placeholder="lines
-          ? 'Opening message (optional) - Enter to open; the selected code goes to the agent as context'
-          : 'Opening message (optional) - Enter to open; the comment goes to the agent as context'"
-        :disabled="starting"
-        @keydown.enter.exact.prevent="start"
-      />
-      <div class="cd__actions">
-        <span
-          v-if="starting"
-          class="cd__hint"
-        >Opening a conversation in the agent pod</span>
-        <PrButton
-          variant="primary"
-          size="sm"
-          :disabled="starting"
-          @click="start"
-        >
-          {{ starting ? 'Opening…' : 'Start discussion' }}
-        </PrButton>
-      </div>
+      <span
+        v-if="starting"
+        class="cd__hint"
+      >Opening a conversation about {{ lines ? 'these lines' : 'this comment' }}…</span>
+      <PrButton
+        v-else-if="error"
+        variant="primary"
+        size="sm"
+        @click="start"
+      >
+        Try again
+      </PrButton>
     </div>
     <StudioTerminal
       v-else
@@ -288,36 +283,13 @@ export default {
     &__error { margin: var(--dev-space-2) var(--dev-space-4); }
 
     &__compose {
-      flex:           1;
-      min-height:     0;
-      display:        flex;
-      flex-direction: column;
-      gap:            var(--dev-space-3);
-      padding:        var(--dev-space-4);
-    }
-
-    &__textarea {
-      flex:          1;
-      min-height:    0;
-      background:    var(--pr-bg);
-      color:         var(--pr-text);
-      border:        1px solid var(--pr-border);
-      border-radius: var(--r-sm);
-      padding:       var(--dev-space-3) var(--dev-space-4);
-      font-family:   inherit;
-      font-size:     13px;
-      line-height:   1.5;
-      resize:        none;
-      outline:       none;
-
-      &:focus { border-color: var(--pr-accent); }
-    }
-
-    &__actions {
+      flex:            1;
+      min-height:      0;
       display:         flex;
       align-items:     center;
-      justify-content: flex-end;
-      gap:             var(--dev-space-4);
+      justify-content: center;
+      gap:             var(--dev-space-3);
+      padding:         var(--dev-space-4);
       font-size:       12px;
     }
 

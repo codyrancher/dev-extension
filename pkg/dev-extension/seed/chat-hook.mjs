@@ -72,6 +72,33 @@ if (payload.stop_hook_active !== undefined) {
   event.stopHookActive = !!payload.stop_hook_active;
 }
 
+/*
+ * Context staged for this conversation's next prompt (agent.ts, stageSessionContext), handed to
+ * claude quietly.
+ *
+ * A discussion opened from a comment or some lines knows what it is about before anyone types,
+ * and saying all of that as the conversation's first message filled the chat with a paragraph
+ * of routes and line numbers the person never wrote. As hook context claude reads it with the
+ * prompt, and the transcript keeps it as an attachment the chat does not draw. Taken once - moved
+ * aside rather than deleted, so what a conversation was told can still be read - so it goes with
+ * the first prompt and with nothing after.
+ */
+let context = '';
+
+if (event.event === 'UserPromptSubmit' && SESSION) {
+  const staged = path.join(DIR, `${ SESSION }.context.md`);
+
+  try {
+    context = fs.readFileSync(staged, 'utf8');
+    fs.renameSync(staged, path.join(DIR, `${ SESSION }.context.sent.md`));
+  } catch {
+    context = '';
+  }
+  if (context.trim()) {
+    event.context = context.length;
+  }
+}
+
 try {
   fs.mkdirSync(DIR, { recursive: true });
   const state = path.join(DIR, `${ SESSION }.state.json`);
@@ -129,6 +156,14 @@ try {
  * dev-api that is rolling - which happens on every release - must not add a second to somebody's
  * turn, and the thirty-second sweep is what makes losing this harmless.
  */
+// The staged context, as the hook's answer. Written synchronously: stdout is a pipe, and the
+// process.exit below would cut an asynchronous write short.
+if (context.trim()) {
+  try {
+    fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context } }));
+  } catch { /* a hook must never fail the turn it is observing */ }
+}
+
 const NOTIFY = new Set(['Stop', 'Notification', 'SessionEnd']);
 
 if (NOTIFY.has(event.event)) {

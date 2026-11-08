@@ -25,6 +25,7 @@ import {
   listConversations, startConversation, endConversation, queuePrompt, startPaneDetached, queuedNotStarted, conversationStates, sendToPane, Attachment, ProjectConversation
 } from './conversations';
 import type { ConversationOrigin } from './agent';
+import { stageSessionContext } from './agent';
 import {
   ensureWorkspaceReady, ensureWorkspaceOnOpen, waitForWorkspacePod, conversationPane
 } from './workspace-tools';
@@ -835,11 +836,26 @@ async function wakeWorkspace(workspace: string, onNote?: (note: string) => void)
   });
 }
 
-async function openWith(workspace: string, title: string, prompt: string, ctx?: WorkspaceContext, onNote?: (note: string) => void, store?: Store, from: ConversationOrigin = ''): Promise<ProjectConversation> {
+async function openWith(workspace: string, title: string, prompt: string, ctx?: WorkspaceContext, onNote?: (note: string) => void, store?: Store, from: ConversationOrigin = '', context = ''): Promise<ProjectConversation> {
   // `from` is where this was started, and it goes into the conversation's id rather than only
   // into its title: a title is renamed, by a person or by claude, and the id is what a
   // transcript, a tmux session and a pane record are all filed under. See conversation-id.mjs.
   const conversation = await startConversation(workspace, title, '', '', from);
+
+  // Context given quietly, before anything is queued: the pane starts below, and the hook hands
+  // the context over with the first prompt it sees, which must not beat this write. If it cannot
+  // be staged it is said instead, the way every discussion used to open - visible, but there.
+  if (context) {
+    const staged = await stageSessionContext(conversation.attach?.id || conversation.id, context).then(() => true, (e: Json) => {
+      note('dev', 'staging the discussion context failed', e);
+
+      return false;
+    });
+
+    if (!staged) {
+      prompt = [context, prompt].filter(Boolean).join('\n\n');
+    }
+  }
 
   // Queue the opening prompt now, up front, not after the workspace is ready. It goes into the
   // agent pod (queueSessionPrompt writes `<agent home>/.queue/<id>`), which is always up and has
@@ -1203,6 +1219,17 @@ export async function startCiTriage(store: Store, pr: { number: number; title?: 
 
 /** The opening prompt of a discussion about one pending comment: the harness's, with this API in it. */
 /**
+ * What a discussion opened quietly says where the visible one said "anything after this sentence
+ * is their question": the person's messages arrive on their own, after this, as the conversation.
+ */
+const QUIET_OPENER = ' The user\'s messages in this conversation are their side of it: answer what they say, and do not repeat this context back to them.';
+
+/** A discussion's opening, marked as context the dashboard gave rather than words the person typed. */
+export function quietContext(text: string): string {
+  return `Context for this conversation, set by the dashboard it was opened from - the user did not type this and does not see it. ${ text }`;
+}
+
+/**
  * Typed to the four fields it reads, so a caller that has a note rather than a comment can pass one.
  *
  * It took a whole `LocalComment`, and the Focus deck's Discuss has a `ReviewNote` - so that call
@@ -1234,12 +1261,16 @@ export function discussPrompt(
    * told plainly to hand the wording back.
    */
   lives: 'local' | 'github' | 'draft' = 'local',
+  /** Given as hidden context rather than said as the first message: see stageSessionContext. */
+  quiet = false,
 ): string {
   const oneline = String(comment.body).replace(/\s+/g, ' ').slice(0, 400);
   const where = comment.path ? `file ${ comment.path }${ comment.line ? `, line ${ comment.line }` : '' }` : 'a PR-level comment';
-  const opener = message
-    ? ` The user's opening message about it: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" — address that directly first.`
-    : ' Anything after this sentence is their question — answer that; if there is nothing there, start with your read of the code in question and whether the comment holds up.';
+  const opener = quiet
+    ? QUIET_OPENER
+    : message
+      ? ` The user's opening message about it: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" — address that directly first.`
+      : ' Anything after this sentence is their question — answer that; if there is nothing there, start with your read of the code in question and whether the comment holds up.';
   const apiHint = API_HINT;
   const subject = lives === 'github'
     ? `the user's own unsubmitted reply (GitHub review comment #${ comment.id })`
@@ -1256,16 +1287,24 @@ export function discussPrompt(
     ? ` This comment is a draft in the user's unsubmitted review on GitHub, not in the harness API, so you cannot change or delete it yourself and must not try — there is no route that would work, and the delete route for harness findings answers "ok" without deleting anything of GitHub's. When the user settles on improved wording, give them the final text in a fenced block and tell them to paste it into Edit on that reply.`
     : ` When the user settles on improved wording, update the comment: curl -s -X PUT ${ apiHint }/${ num }/comments/${ comment.id } -H 'Content-Type: application/json' -d '{"body":"<new text>"}'. If they decide to drop it: curl -s -X DELETE ${ apiHint }/${ num }/comments/${ comment.id }.`;
 
-  return `The user wants to discuss ${ subject } on ${ repo } PR #${ num } — ${ where }: "${ oneline }". Fetch the PR for context with: curl -s ${ apiHint }/${ num } (find the relevant hunk in files[].patch${ comment.path ? ` for ${ comment.path }` : '' }).${ opener } Keep responses conversational and concise — this is a live discussion.${ ending }`;
+  const said = `The user wants to discuss ${ subject } on ${ repo } PR #${ num } — ${ where }: "${ oneline }". Fetch the PR for context with: curl -s ${ apiHint }/${ num } (find the relevant hunk in files[].patch${ comment.path ? ` for ${ comment.path }` : '' }).${ opener } Keep responses conversational and concise — this is a live discussion.${ ending }`;
+
+  return quiet ? quietContext(said) : said;
 }
 
 /** The opening prompt of a discussion about some lines, with no comment filed. */
-export function linesPrompt(num: number, lines: { path: string; line: number; startLine: number | null; side: string; code?: string }, message: string, repo = DEFAULT_REPO): string {
+export function linesPrompt(num: number, lines: { path: string; line: number; startLine: number | null; side: string; code?: string }, message: string, repo = DEFAULT_REPO, quiet = false): string {
   const range = lines.startLine ? `lines ${ lines.startLine }-${ lines.line }` : `line ${ lines.line }`;
   const apiHint = API_HINT;
   const code = (lines.code || '').slice(0, 4000);
+  const opener = quiet
+    ? QUIET_OPENER
+    : message
+      ? ` Their opening message: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" — address it directly.`
+      : ' Anything after this sentence is their question — answer that; if there is nothing there, start with your read of that code.';
+  const said = `The user is reviewing ${ repo } PR #${ num } and wants to discuss ${ lines.path } ${ range } (${ lines.side } side of the diff). Fetch the PR with: curl -s ${ apiHint }/${ num } and find that file in files[].patch for context.${ code ? ` The selected lines are:\n\n${ code }\n` : '' }${ opener } Keep it conversational. Do NOT file a review comment unless the user asks; if they do, run: curl -s -X POST ${ apiHint }/${ num }/comments -H 'Content-Type: application/json' -d '{"path":"${ lines.path }","line":${ lines.line }${ lines.startLine ? `,"startLine":${ lines.startLine }` : '' },"side":"${ lines.side }","body":"<comment>"}'`;
 
-  return `The user is reviewing ${ repo } PR #${ num } and wants to discuss ${ lines.path } ${ range } (${ lines.side } side of the diff). Fetch the PR with: curl -s ${ apiHint }/${ num } and find that file in files[].patch for context.${ code ? ` The selected lines are:\n\n${ code }\n` : '' }${ message ? ` Their opening message: "${ message.replace(/\s+/g, ' ').slice(0, 600) }" — address it directly.` : ' Anything after this sentence is their question — answer that; if there is nothing there, start with your read of that code.' } Keep it conversational. Do NOT file a review comment unless the user asks; if they do, run: curl -s -X POST ${ apiHint }/${ num }/comments -H 'Content-Type: application/json' -d '{"path":"${ lines.path }","line":${ lines.line }${ lines.startLine ? `,"startLine":${ lines.startLine }` : '' },"side":"${ lines.side }","body":"<comment>"}'`;
+  return quiet ? quietContext(said) : said;
 }
 
 /**
@@ -1282,14 +1321,15 @@ export function linesPrompt(num: number, lines: { path: string; line: number; st
  * the one the process requires, and an agent that commented during a discussion about whether to
  * comment is the crossover the runbook forbids.
  */
-export function conclusionPrompt(key: string, rec: { action?: string; reason?: string; comment?: string } | null, message: string): string {
+export function conclusionPrompt(key: string, rec: { action?: string; reason?: string; comment?: string } | null, message: string, quiet = false): string {
   const api = `$CLAUDE_HARNESS_API/my-work/jira/${ key }`;
   const flat = (text: string, cap: number) => String(text || '').replace(/\s+/g, ' ').slice(0, cap);
-  const opener = message
-    ? ` The user's opening message about it: "${ flat(message, 600) }" - address that directly first.`
-    : ' Anything after this sentence is their question - answer that; if there is nothing there, start with the part of your conclusion you are least sure of.';
-
-  return [
+  const opener = quiet
+    ? QUIET_OPENER
+    : message
+      ? ` The user's opening message about it: "${ flat(message, 600) }" - address that directly first.`
+      : ' Anything after this sentence is their question - answer that; if there is nothing there, start with the part of your conclusion you are least sure of.';
+  const said = [
     `The user wants to discuss the conclusion a triage step reached about ${ key }, which is pending their approval.`,
     rec?.action ? ` It proposes: ${ flat(rec.action, 120) }.` : '',
     rec?.reason ? ` Its conclusion, which Apply posts to the ticket verbatim as the comment the reporter reads: "${ flat(rec.reason, 1200) }".` : '',
@@ -1301,6 +1341,8 @@ export function conclusionPrompt(key: string, rec: { action?: string; reason?: s
     ' That amends the proposal and nothing else - the person still presses Apply, which is what writes to the ticket.',
     ` Do NOT move ${ key }, comment on it, or POST a new recommendation yourself.`,
   ].join('');
+
+  return quiet ? quietContext(said) : said;
 }
 
 /**
@@ -1314,12 +1356,20 @@ export async function startConclusionDiscussion(
 ): Promise<ProjectConversation> {
   const bug = key.toUpperCase();
 
-  return startDiscussion(workspace, `Discuss ${ bug }`, conclusionPrompt(bug, rec, message), { label: `${ bug.toLowerCase() }-conclusion` });
+  return startDiscussion(workspace, `Discuss ${ bug }`, conclusionPrompt(bug, rec, '', true), { label: `${ bug.toLowerCase() }-conclusion` }, message);
 }
 
-/** A discussion: a conversation in the workspace, opened with its context, the pod made ready. */
-export async function startDiscussion(workspace: string, title: string, prompt: string, from: ConversationOrigin = ''): Promise<ProjectConversation> {
-  return openWith(workspace, title, prompt, undefined, undefined, undefined, from);
+/**
+ * A discussion: a conversation in the workspace that knows what it is about, the pod made ready.
+ *
+ * `context` is what the agent is told - the comment, the lines, the routes it may use - and it is
+ * given quietly (stageSessionContext), so the chat opens on nothing but what the person says.
+ * `message` is the person's own first words when they typed some before it opened; it is queued
+ * as the opening prompt and is all the chat shows of the start. With no message the conversation
+ * waits for one, and the context goes with it.
+ */
+export async function startDiscussion(workspace: string, title: string, context: string, from: ConversationOrigin = '', message = ''): Promise<ProjectConversation> {
+  return openWith(workspace, title, message.trim(), undefined, undefined, undefined, from, context);
 }
 
 /**

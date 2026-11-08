@@ -28,9 +28,9 @@ import InlineChat from './InlineChat.vue';
 import Markdown from './Markdown.vue';
 import { isNarrow, onNarrowChange } from '../../design/narrow';
 import { listConversations, startConversation, paneCommand } from '../../conversations';
-import { startAgentSession, queueSessionPrompt } from '../../agent';
+import { startAgentSession, queueSessionPrompt, stageSessionContext } from '../../agent';
 import type { ConversationOrigin } from '../../agent';
-import { linesPrompt, discussPrompt } from '../../reviews';
+import { linesPrompt, discussPrompt, quietContext } from '../../reviews';
 
 const props = withDefaults(defineProps<{
   files: CardFile[];
@@ -286,24 +286,26 @@ async function discuss(comment: CardComment): Promise<void> {
      * been sent and quite wrong for somebody else's: nobody wants an agent helpfully editing a
      * reviewer's words.
      */
-    const prompt = comment.pending && props.pr
+    /*
+     * Given quietly (stageSessionContext): the chat opens on nothing, the first thing in it is
+     * what the person asks, and this goes to the agent with that.
+     */
+    const context = comment.pending && props.pr
       ? discussPrompt(props.pr, {
         id: comment.id, body: comment.body, path: comment.path, line: comment.line,
-      }, '')
-      : [
+      }, '', undefined, 'local', true)
+      : quietContext([
         `The user is reading ${ props.pr ? `${ DEFAULT_REPO } PR #${ props.pr }` : 'a change' } and wants to talk about a review comment`,
         `${ comment.mine ? 'they' : comment.author } left on ${ comment.path }${ comment.line ? ` line ${ comment.line }` : '' }:`,
         `\n\n"${ String(comment.body).replace(/\s+/g, ' ').slice(0, 600) }"\n\n`,
-        'Read that part of the change and say whether the comment holds up, what it would take to address it, and anything it misses.',
+        'Read that part of the change when they ask: whether the comment holds up, what it would take to address it, and anything it misses.',
         'This is somebody else\'s comment: discuss it, do not edit or resolve it.',
-        'Anything after this sentence is their question - answer that first if there is one.',
-      ].join(' ');
+        'Answer what they say.',
+      ].join(' '));
 
-    // By id, not through `attach`. `queuePrompt` reads `attach.id`, and the no-workspace branch
-    // of `conversationFor` returns `{ session: id }` with no `id` on it - so for a card with no
-    // workspace, which is exactly the card with other people's comments on it, this queued
-    // `undefined` and the catch swallowed it: a conversation opened about nothing at all.
-    await queueSessionPrompt(conversation.id, prompt).catch(() => {});
+    // By id, not through `attach`: the no-workspace branch of `conversationFor` returns
+    // `{ session: id }` with no `id` on it.
+    await stageSessionContext(conversation.id, context).catch(() => queueSessionPrompt(conversation.id, context)).catch(() => {});
     set({ session: conversation.id });
   } catch (e) {
     set({ error: (e as Error)?.message || String(e) });
@@ -581,17 +583,18 @@ async function openThread(thread: CodeThread, code: string): Promise<void> {
     // line 193 is held in `p-<ws>_shell-dialog-add-auth-provider-dialog-vue-l193-<n>`, not in
     // one of nine identical names. See conversation-id.mjs.
     const conversation = await conversationFor(title, { path: thread.path, line: thread.from });
-    const prompt = props.pr
+    // The lines and the routes, quietly; the person's question, as theirs. If the context cannot
+    // be staged it is said, ahead of the question, the way these always opened.
+    const context = props.pr
       ? linesPrompt(props.pr, {
         path: thread.path, line: thread.to, startLine: thread.from === thread.to ? null : thread.from, side: 'RIGHT', code,
-      }, thread.text)
-      : `About ${ thread.path } ${ thread.label }:\n\n\`\`\`\n${ code }\n\`\`\`\n\n${ thread.text }`;
+      }, '', undefined, true)
+      : quietContext(`The user is asking about ${ thread.path } ${ thread.label }:\n\n\`\`\`\n${ code }\n\`\`\`\n\nAnswer what they say.`);
+    const staged = await stageSessionContext(conversation.id, context).then(() => true, () => false);
 
-    // By id, not through `attach`. `queuePrompt` reads `attach.id`, and the no-workspace branch
-    // of `conversationFor` returns `{ session: id }` with no `id` on it - so for a card with no
-    // workspace, which is exactly the card with other people's comments on it, this queued
-    // `undefined` and the catch swallowed it: a conversation opened about nothing at all.
-    await queueSessionPrompt(conversation.id, prompt).catch(() => {});
+    // By id, not through `attach`: the no-workspace branch of `conversationFor` returns
+    // `{ session: id }` with no `id` on it.
+    await queueSessionPrompt(conversation.id, staged ? thread.text : `${ context }\n\n${ thread.text }`).catch(() => {});
     patch(thread.id, { session: conversation.id });
   } catch (e) {
     patch(thread.id, { error: (e as Error)?.message || String(e) });

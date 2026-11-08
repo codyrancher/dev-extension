@@ -1100,6 +1100,44 @@ export async function queueSessionPrompt(id: string, prompt: string): Promise<vo
 }
 
 /**
+ * Give a conversation context it should have without anyone seeing it said.
+ *
+ * A discussion opened from a comment, some lines or a triage conclusion used to open with all of
+ * it as its first message - the comment, the file and line, the curl for every route the agent
+ * might need - so the chat began with a wall the person had not written, and their own question
+ * came second. Now the context waits in `<sessions>/<id>.context.md` and chat-hook.mjs hands it
+ * to claude with the next prompt as hook context (`additionalContext`), which claude reads and the
+ * chat does not draw: the transcript records it as a `hook_additional_context` attachment. The
+ * hook takes it once, so it rides on the first thing the person says and nothing after.
+ */
+export async function stageSessionContext(id: string, context: string): Promise<void> {
+  if (!isSessionId(id)) {
+    throw new Error(`"${ id }" is not a conversation id.`);
+  }
+
+  const pod = await agentPod();
+
+  if (!pod) {
+    throw new Error('The agent pod is not running yet, so there is nowhere to put the context.');
+  }
+
+  const bytes = new TextEncoder().encode(context);
+  let binary = '';
+
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  const file = `${ AGENT_SESSIONS }/${ id }.context.md`;
+  const script = `mkdir -p ${ AGENT_SESSIONS } && echo ${ btoa(binary) } | base64 -d > ${ file } && chown 1000:1000 ${ file } 2>/dev/null; echo staged`;
+  const result = await podExecResult(pod, ['/bin/sh', '-c', script], 15000, AGENT_CONTAINER);
+
+  if (!result.stdout.includes('staged')) {
+    throw new Error(`The context could not be written into the agent pod: ${ result.stderr.trim() || result.status || `exit ${ result.code }` }`);
+  }
+}
+
+/**
  * The argv a pane runs for one conversation - the thing PodTerminal's `command` prop takes.
  *
  * Spelled here once rather than by every extension that places a pane: shell.sh's arguments are

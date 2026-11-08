@@ -20,11 +20,13 @@ import { fromDiffLines, highlighted } from '../code/rows';
 import CommentBody from './CommentBody.vue';
 import TextModal from './TextModal.vue';
 import MediaViewer from './MediaViewer.vue';
-import { ghAssetUrl, discussPrompt, startDiscussion } from '../../reviews';
+import {
+  ghAssetUrl, discussPrompt, startDiscussion, quietContext
+} from '../../reviews';
 import type { NoteMedia } from '../../focus-review';
 import InlineChat from './InlineChat.vue';
 import { listConversations, paneCommand } from '../../conversations';
-import { startAgentSession, queueSessionPrompt } from '../../agent';
+import { startAgentSession, stageSessionContext } from '../../agent';
 import type { ConversationOrigin } from '../../agent';
 
 /** What you decided about one comment. The prototype's word for it, and its four states. */
@@ -287,27 +289,26 @@ async function discuss(note: ReviewNote) {
 }
 
 /**
- * What the box is pre-filled with: the finding, and what the agent may do about it.
+ * What the agent is told about the finding, and what it may do about it - quietly.
  *
- * A draft rather than a sent message, so it is read before it goes and edited if it is not the
- * question you wanted. `discussPrompt` is the same text the agent used to be handed - it tells
- * it how to reword or drop this comment, which is only right because a finding is the agent's
- * own - and without a pull request number there is nothing to reword against, so that falls
- * back to a plain reading of it.
+ * Given as hidden context (stageSessionContext), so the chat opens empty and the first thing in
+ * it is what the person asks. `discussPrompt` tells it how to reword or drop this comment, which
+ * is only right because a finding is the agent's own; without a pull request number there is
+ * nothing to reword against, so that falls back to a plain reading of it.
  */
 function contextFor(note: ReviewNote): string {
   if (props.pr) {
     return discussPrompt(props.pr, {
       id: note.commentId, body: note.body, path: note.path, line: note.line,
-    }, '');
+    }, '', undefined, 'local', true);
   }
 
-  return [
-    'About this review finding',
+  return quietContext([
+    'The user wants to talk about this review finding',
     note.path ? `on ${ note.path }${ note.line ? ` line ${ note.line }` : '' }` : 'about the change as a whole',
     `:\n\n"${ String(note.body).replace(/\s+/g, ' ').slice(0, 600) }"\n\n`,
-    'Does it hold up, and what would it take to address it?',
-  ].join(' ');
+    'Whether it holds up and what it would take to address it is what they will be asking; answer what they say.',
+  ].join(' '));
 }
 
 /**
@@ -328,14 +329,14 @@ const talking = ref<Record<string, { session: string; opening: boolean; error: s
  * own, which is the same fallback the deck's bar uses. Those have no title to find them by, so
  * there it is one per press.
  */
-async function conversationFor(title: string, from: ConversationOrigin = '', prompt = ''): Promise<{ id: string; attach: unknown }> {
+async function conversationFor(title: string, from: ConversationOrigin = '', context = ''): Promise<{ id: string; attach: unknown }> {
   if (!props.workspace) {
     const id = await startAgentSession('panel', from);
 
-    // The same queue, for a conversation with no workspace behind it: written into the agent
-    // pod beside the conversation and read when claude starts, rather than typed at a pane.
-    if (prompt) {
-      await queueSessionPrompt(id, prompt).catch(() => undefined);
+    // The same quiet context, for a conversation with no workspace behind it: it waits beside the
+    // conversation in the agent pod and goes to claude with the first thing the person says.
+    if (context) {
+      await stageSessionContext(id, context).catch(() => undefined);
     }
 
     return { id, attach: { session: id } };
@@ -358,7 +359,7 @@ async function conversationFor(title: string, from: ConversationOrigin = '', pro
    * the queueing is done by `openWith`, which is what `startDiscussion` calls. Asking the wrong
    * one is how the context ended up as something a person had to send by hand.
    */
-  return startDiscussion(props.workspace, title, prompt, from);
+  return startDiscussion(props.workspace, title, context, from);
 }
 
 
