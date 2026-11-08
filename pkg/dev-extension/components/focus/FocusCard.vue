@@ -42,6 +42,9 @@ import { devApi } from '../../reviews';
 import { NO_ARTIFACTS, subjectOf } from '../../focus-artifacts';
 import { DEFAULT_REPO } from '../../reviews';
 import PrSheet from './PrSheet.vue';
+import IssueSheet from './IssueSheet.vue';
+import { numbersIn } from '../../artifact-subjects.mjs';
+import type { StageRowItem } from '../../stage-actions';
 import type {
   CardArtifacts, CardComment, PoolIssue, BumpRow
 } from '../../focus-artifacts';
@@ -82,6 +85,15 @@ const props = defineProps<{
   notesFailed?: boolean;
   /** Edited prompts by key; what a button sends if its key is in here. */
   prompts?: Record<string, string>;
+  /**
+   * The actions of the stage this card's workspace is at, as the standard view offers them.
+   *
+   * The deck's cards declared their own buttons and the rail had its own per stage, so one draft
+   * PR offered different things depending on which view it was read in. Where the card's work is
+   * a workspace at a stage, these replace the card's own - the same labels, the same order, the
+   * same calls (stage-actions.ts) - and only the deck's own "put it off" stays beside them.
+   */
+  stage?: StageRowItem[] | null;
 }>();
 
 const emit = defineEmits<{
@@ -304,15 +316,40 @@ const bundleBody = computed(() => {
   return loaded?.module && !loaded.error ? componentFor(loaded) : null;
 });
 
-/** The ones this card is offering at all, in the definition's order - or the module's. */
+/** GitHub calls and deletions: two presses here, as the deck asks before anything public. */
+const STAGE_CONFIRMS = new Set(['markReady', 'merge', 'remove', 'requestChanges', 'shipWithComments', 'postComments', 'openApprove']);
+
+/** A stage's row item as a card action: see `stage`. */
+function fromStage(item: StageRowItem): CardAction {
+  return {
+    label:        item.label,
+    verb:         'stage',
+    run:          item.run,
+    arg:          item.arg,
+    skill:        item.skill,
+    stagePrimary: item.isPrimary,
+    ai:           item.ai,
+    confirm:      STAGE_CONFIRMS.has(item.run),
+  };
+}
+
+/** The ones this card is offering at all: the stage's own where there is one, else the definition's - or the module's. */
 const shown = computed(() => {
+  if (props.stage?.length) {
+    return [...props.stage.map(fromStage), ...props.task.card.actions.filter((action) => action.verb === 'snooze')];
+  }
   const own = actionsFrom(bundle.value, cardApi);
 
   return (own || props.task.card.actions).filter(visible);
 });
 
-const primary = computed(() => shown.value[0] || null);
-const others = computed(() => shown.value.slice(1));
+/*
+ * The big button. For a stage, the one the stage names, or none: a stage with nothing to press is
+ * a real state in the rail - the work there is reading what the agent is doing - and promoting its
+ * first skill to the big button would say otherwise.
+ */
+const primary = computed(() => (props.stage?.length ? shown.value.find((action) => action.stagePrimary) || null : shown.value[0] || null));
+const others = computed(() => shown.value.filter((action) => action !== primary.value));
 
 /**
  * Opens something somewhere else: a link, not a decision.
@@ -364,6 +401,7 @@ const navs = computed(() => others.value
 const decisions = computed(() => others.value.filter((action) => !action.group
   && action.verb !== 'snooze'
   && action.verb !== 'ask'
+  && !(action.verb === 'stage' && action.ai)
   && !navs.value.includes(action)));
 
 /**
@@ -383,7 +421,7 @@ const decisions = computed(() => others.value.filter((action) => !action.group
  * not in `decisions` (which excludes `ask`), not anywhere. A card that declares an action and
  * sees nothing is the worst kind of missing.
  */
-const asks = computed(() => others.value.filter((action) => action.verb === 'ask' && !action.group));
+const asks = computed(() => others.value.filter((action) => (action.verb === 'ask' || (action.verb === 'stage' && action.ai)) && !action.group));
 
 /** The first of them, for the places that only care whether there is one. */
 const asked = computed(() => asks.value[0] || null);
@@ -427,7 +465,8 @@ const groups = computed(() => {
 });
 
 /* Only an agentic one counts: a menu of GitHub calls is not this card offering to be asked. */
-const offersAsk = computed(() => Boolean(asked.value) || groups.value.some((group) => group.agentic) || primary.value?.verb === 'ask');
+// A stage's row is the stage's, whole: it adds no "Ask about this" the standard view does not have.
+const offersAsk = computed(() => Boolean(asked.value) || groups.value.some((group) => group.agentic) || primary.value?.verb === 'ask' || !!props.stage?.length);
 
 /*
  * Whether the primary sets an agent working, and so carries the sparkle the ghost beside it has.
@@ -637,7 +676,7 @@ const talkText = computed(() => talk.value
  */
 const readOn = ref<'' | 'prose' | 'talk'>('');
 
-watch(() => props.task.key, () => { readOn.value = ''; prOpen.value = false; });
+watch(() => props.task.key, () => { readOn.value = ''; prOpen.value = false; issueOpen.value = false; });
 
 /**
  * The pull request this card is about, and where it lives: what `PR #n` on the evidence line
@@ -651,6 +690,21 @@ const prOf = computed(() => {
   return number ? { number, repo: art.value.pr?.repo || named || DEFAULT_REPO } : null;
 });
 const prOpen = ref(false);
+
+/**
+ * The issue, for a card with no pull request: the subject's own number, else the one its
+ * workspace is named for (`lte-issue-16356`). What `Issue #n` on the evidence line opens.
+ */
+const issueOf = computed(() => {
+  if (prOf.value) {
+    return null;
+  }
+  const number = subjectOf(props.task).issue || numbersIn(props.task.workspace || '').issue;
+  const named = /github\.com\/([^/]+\/[^/]+)\/issues\/\d+/.exec(String(props.task.url || ''))?.[1] || '';
+
+  return number ? { number, repo: named || DEFAULT_REPO } : null;
+});
+const issueOpen = ref(false);
 
 /**
  * The action that has been pressed once and is waiting to be meant.
@@ -1296,9 +1350,11 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           :prose="prosePill ? proseLabel : ''"
           :talk="talk.length"
           :pr="prOf?.number || 0"
+          :issue="issueOf?.number || 0"
           @read="readOn = 'prose'"
           @talk="readOn = 'talk'"
           @pr="prOpen = true"
+          @issue="issueOpen = true"
         />
       </div>
 
@@ -1668,6 +1724,14 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
       :pr="prOf.number"
       :repo="prOf.repo"
       @close="prOpen = false"
+    />
+
+    <!-- And the issue, for a card with no pull request yet: see IssueSheet. -->
+    <IssueSheet
+      v-if="issueOpen && issueOf"
+      :issue="issueOf.number"
+      :repo="issueOf.repo"
+      @close="issueOpen = false"
     />
   </article>
 </template>

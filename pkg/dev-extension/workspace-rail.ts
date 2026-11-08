@@ -1714,7 +1714,7 @@ export function skillTemplate(button: SkillButton): string {
 }
 
 /** The clause a PR adds; empty without one, so the sentence still ends properly. */
-function contextClause(status: WorkspaceStatus | null): PromptVar {
+export function contextClause(status: WorkspaceStatus | null): PromptVar {
   return { name: 'contextClause', value: status?.pr ? ` - its context: $CLAUDE_HARNESS_API/my-work/pr/${ status.pr }.` : '.', about: 'Where to read the PR, or just a full stop' };
 }
 

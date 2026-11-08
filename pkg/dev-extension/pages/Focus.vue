@@ -63,8 +63,13 @@ import {
 } from '../config/constants';
 import type { RancherTarget } from '../ranchers';
 import {
-  myWork, assignToMe, requestReviewers, describePr, createPullRequest, markReadyForReview
+  myWork, assignToMe, requestReviewers, describePr, createPullRequest, markReadyForReview, setIssueStatus
 } from '../github';
+import { stageRow, stagePrompt, sayInWorkspace } from '../stage-actions';
+import type { StageRowItem } from '../stage-actions';
+import { numbersIn } from '../artifact-subjects.mjs';
+import { deleteWorkspace } from '../api';
+import type { WorkspaceStatus } from '../workspace-status';
 import type { GithubWork } from '../github';
 import { workspaceBranch, startDevServer, stopDevServer } from '../workspace-tools';
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
@@ -838,7 +843,8 @@ const chatWorkspace = ref('');
  * pane will not take a paste yet (a workspace still coming up), and that falls back to the
  * queue, which is read when the conversation finally starts.
  */
-async function askHere(task: FocusTask | null, prompt: string): Promise<string> {
+/** Open the bar on this card's conversation, saying nothing yet: the rail's "Ask the agent". */
+async function openChatOn(task: FocusTask | null): Promise<string> {
   const where = await conversationFor(task).catch(() => ({ id: '', workspace: '' }));
 
   if (!where.id) {
@@ -853,6 +859,16 @@ async function askHere(task: FocusTask | null, prompt: string): Promise<string> 
   // The bar's conversation is derived from these two props; it has to see them before it sends.
   await nextTick();
 
+  return where.id;
+}
+
+async function askHere(task: FocusTask | null, prompt: string): Promise<string> {
+  const id = await openChatOn(task);
+
+  if (!id) {
+    return '';
+  }
+
   const said = await bar.value?.ask(prompt);
 
   if (!said) {
@@ -860,7 +876,7 @@ async function askHere(task: FocusTask | null, prompt: string): Promise<string> 
     say('Queued \u2014 it runs when the conversation starts.');
   }
 
-  return where.id;
+  return id;
 }
 
 /** Everything the queue has, drawn: pinned ones are marked and then held back from the deck. */
@@ -868,6 +884,23 @@ const all = computed<FocusTask[]>(() => focusDeck(items.value, { ...config.value
 const pinned = computed(() => all.value.filter((task) => task.pinned));
 const deck = computed(() => all.value.filter((task) => !task.pinned));
 const current = computed(() => deck.value[index.value] || null);
+
+/**
+ * The top card's stage actions, where its work is a workspace at a stage: what the standard view
+ * offers there, computed the same way (stage-actions.ts). Null for anything else - a card with no
+ * workspace, or one whose kind has no stages - which keeps the card's own.
+ */
+const stageNow = computed<StageRowItem[] | null>(() => {
+  const name = current.value?.workspace || '';
+  const status = (name ? spaceStatus.value[name] : null) as WorkspaceStatus | null;
+
+  if (!status || !status.stage || (status.kind !== 'fix' && status.kind !== 'review')) {
+    return null;
+  }
+  const row = stageRow(status, status.stage, numbersIn(name).issue);
+
+  return row.length ? row : null;
+});
 
 /** How many are behind the ones this column names. The row that says so opens the whole queue. */
 
@@ -1402,6 +1435,105 @@ async function putBack(task: FocusTask, from?: DOMRect) {
   }
 }
 
+/** The prompts edited in the standard view's editor (middle click on a stage action), read once. */
+let railPrompts: Promise<Record<string, string>> | null = null;
+
+/**
+ * One of the stage's actions, run from its card: the same calls the standard view makes for it.
+ *
+ * Where the rail opens something only it has - the Jira triage panel - the workspace's own page is
+ * opened instead, where that is the press. Prompts are the rail's, edited ones included, and go
+ * where the rail sends them (sayInWorkspace): the conversation on show there, else the one the
+ * action is about, else the newest of the workspace's own.
+ */
+async function runStage(task: FocusTask, action: CardAction) {
+  const name = task.workspace;
+  const status = (name ? spaceStatus.value[name] : null) as WorkspaceStatus | null;
+
+  if (!name || !status) {
+    say('This card has no workspace at a stage to act on.');
+
+    return;
+  }
+  const issue = numbersIn(name).issue;
+  const pr = status.pr || subjectOf(task).pr;
+  const repo = spaces.value.find((ws) => ws.name === name)?.repo || cardRepo();
+
+  railPrompts = railPrompts || readPrompts().catch(() => ({}));
+  const edited = await railPrompts;
+  const tell = async(title: string, text: string, reuse = !title) => {
+    const sent = await sayInWorkspace(name, title, text, { reuse, from: title, pr });
+
+    say(`${ action.label }: ${ sent.started ? `started as ${ title || 'a new conversation' }` : `sent to ${ sent.conversation.title || 'the workspace conversation' }${ sent.running ? '' : ', which is starting again to read it' }` }.`);
+  };
+
+  if (action.skill) {
+    const title = action.skill.fresh ? `${ action.skill.label } #${ pr || issue }` : '';
+
+    await tell(title, stagePrompt({ run: '', skill: action.skill }, status, issue, name, repo, edited), !action.skill.fresh);
+
+    return;
+  }
+  switch (action.run) {
+  case 'startFix':
+    if (edited.startFix) {
+      setIssueStatus(repo, issue).catch(() => null);
+      await tell(`Fix #${ issue }`, stagePrompt({ run: 'startFix' }, status, issue, name, repo, edited), true);
+    } else {
+      await handToAgent(task, await pickUpTheIssue(task));
+    }
+    break;
+  case 'startReview':
+    if (edited.startReview) {
+      await tell(`Review #${ pr }`, stagePrompt({ run: 'startReview' }, status, issue, name, repo, edited), true);
+    } else {
+      await handToAgent(task, await pickUpTheReview(task));
+    }
+    break;
+  case 'answerFeedback':
+    await tell(`Feedback on #${ pr }`, stagePrompt({ run: 'answerFeedback' }, status, issue, name, repo, edited), true);
+    break;
+  case 'reverify':
+  case 'reviewAgain':
+    await tell('', stagePrompt({ run: action.run }, status, issue, name, repo, edited), true);
+    break;
+  case 'markReady':
+    await markReadyForReview(repo, pr);
+    say(`PR #${ pr } is ready for review. Request a reviewer on GitHub.`);
+    await load();
+    break;
+  case 'merge':
+    await mergePr(pr, repo);
+    say(`PR #${ pr } merged.`);
+    await load();
+    break;
+  case 'requestChanges':
+    await finishReview(task, { ...action, event: 'REQUEST_CHANGES', withComments: true });
+    break;
+  case 'shipWithComments':
+    await finishReview(task, { ...action, event: 'APPROVE', withComments: true });
+    break;
+  case 'postComments':
+    await finishReview(task, { ...action, event: 'COMMENT', withComments: true });
+    break;
+  case 'openApprove':
+    await finishReview(task, { ...action, event: 'APPROVE', withComments: false });
+    break;
+  case 'focusAsk':
+  case 'openTab':
+    // The conversation, which here is the bar: opened on this workspace's, ready to be typed into.
+    await openChatOn(task);
+    break;
+  case 'remove':
+    await deleteWorkspace(store, name);
+    say(`Deleting ${ name }. Its PR and the conversations' transcripts stay.`);
+    await load();
+    break;
+  default:
+    openWorkspace(name);
+  }
+}
+
 /** From the rail: the same act, with where it was on the way in. */
 function unpin(task: FocusTask, event: MouseEvent) {
   const rect = (event.currentTarget as HTMLElement)?.getBoundingClientRect();
@@ -1427,7 +1559,9 @@ async function act({ task, action }: { task: FocusTask; action: CardAction }) {
   busy.value = true;
   error.value = '';
   try {
-    if (action.verb === 'snooze') {
+    if (action.verb === 'stage') {
+      await runStage(task, action);
+    } else if (action.verb === 'snooze') {
       await snooze(task, action.hours || 8);
     } else if (action.verb === 'done') {
       await done(task);
@@ -2406,6 +2540,7 @@ onBeforeUnmount(closeSettings);
           :prompts="promptEdits"
           :notes-failed="notesFailed"
           :artifacts="artifacts"
+          :stage="stageNow"
           :reading="readingNow"
           :loading="settling"
           :setup="setupNeeded"

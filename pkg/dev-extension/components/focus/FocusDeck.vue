@@ -41,6 +41,8 @@ const props = defineProps<{
   prompts?: Record<string, string>;
   /** Everything else the card on top has to show. See focus-artifacts.ts; opaque here. */
   artifacts?: unknown;
+  /** The card on top's stage actions, where its work is a workspace at a stage. See FocusCard. */
+  stage?: unknown;
   /** Those artifacts are still being read, so the top card says so. */
   reading?: boolean;
   /** The queue itself has not been gathered yet, which is not the same as it being empty. */
@@ -739,6 +741,7 @@ watch(() => props.index, () => {
           @prompt-save="emit('prompt-save', $event)"
           @prompt-reset="emit('prompt-reset', $event)"
           :artifacts="(artifacts as any)"
+          :stage="(stage as any)"
           :reading="reading"
           @act="(action) => emit('act', { task: current!, action })"
           @ask="emit('ask', current!)"

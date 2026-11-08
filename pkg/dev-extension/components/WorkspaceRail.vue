@@ -40,14 +40,15 @@ import {
   stepsFor, gatherEvidence, forgetBranch, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
 } from '../workspace-rail';
 import { prFile, openConversation } from '../reviews';
+import { stageAction, sayInWorkspace } from '../stage-actions';
 import { toggleTask } from '../pr-body.mjs';
 import { isProjectConversationId } from '../conversation-id.mjs';
 // Which conversation an action's prompt goes to, and what counts as a discussion rather than one
 // of the workspace's own. Pure and tested, because this has been wrong three times and each time
 // it looked like the button doing nothing. See conversation-pick.mjs.
-import { pickConversation, isDiscussion } from '../conversation-pick.mjs';
+import { isDiscussion } from '../conversation-pick.mjs';
 import {
-  listConversations, startConversation, queuePrompt, startPaneDetached, workspaceAgentStates, sendToPane, renameConversation, endConversation, forkConversation
+  listConversations, startConversation, startPaneDetached, workspaceAgentStates, renameConversation, endConversation, forkConversation
 } from '../conversations';
 import { ensureWorkspaceReady, ensureWorkspaceOnOpen, putArtifact, saveArtifact, devServerState, stopDevServer } from '../workspace-tools';
 import { everyWhileShown } from '../read-pacing.mjs';
@@ -743,180 +744,7 @@ export default {
         };
       }
 
-      if (s.kind === 'fix') {
-        switch (stage) {
-        case 'assess':
-          // An issue workspace is here to be fixed, so "Fix it" is the action at this stage whatever
-          // the agent is doing: it runs the whole my-issue-fix flow - reproduce, fix, verify, open a
-          // draft PR. It is the primary while nothing is being worked, and a tool while the agent is
-          // mid-assessment so it does not cut across a conversation already going. The assessment
-          // skills (reproduce, root cause) sit beside it on the Actions row, marked as the
-          // agent's.
-          // A developer workspace not named for an issue has nothing for "Fix it" to start from.
-          if (!this.issue) {
-            return s.agent === 'input' ? {
-              headline: 'The agent is waiting for an answer', detail: 'It asked something in its conversation and stopped until it hears back.', primary: { label: 'Answer it', run: 'openTab', arg: 'conversations' }, tools: [],
-            } : {
-              headline: s.agent === 'working' ? 'The agent is working' : 'Nothing is on this branch yet', detail: 'This workspace is not for an issue: say what it is for in its conversation.', primary: null, tools: [],
-            };
-          }
-          if (s.agent === 'input') {
-            return {
-              headline: 'The agent is waiting for an answer', detail: 'It asked something in its conversation and stopped until it hears back.', primary: { label: 'Answer it', run: 'openTab', arg: 'conversations' }, tools: [{ label: 'Fix it', run: 'startFix' }],
-            };
-          }
-          if (s.agent === 'working') {
-            return {
-              headline: 'The agent is looking at the issue', detail: 'Follow along in the conversation, or tell it to go ahead and fix it.', primary: { label: 'Fix it', run: 'startFix' }, tools: [],
-            };
-          }
-
-          return {
-            headline: s.agent === 'none' ? 'Nothing has started on this issue' : 'The agent stopped before opening a PR', detail: 'Fix it starts a conversation that reproduces the issue, fixes it, verifies the fix and opens a draft PR.', primary: { label: 'Fix it', run: 'startFix' }, tools: [],
-          };
-        case 'code':
-          if (s.agent === 'input') {
-            return {
-              headline: 'The agent is waiting for an answer', detail: 'It asked something in its conversation and stopped until it hears back.', primary: { label: 'Answer it', run: 'openTab', arg: 'conversations' }, tools: [],
-            };
-          }
-
-          return {
-            headline: s.agent === 'working' ? 'The agent is working on the fix' : 'The agent stopped before opening a PR', detail: s.agent === 'working' ? 'Follow along in the conversation, or ask it something below.' : 'Read its report on the left; ask it to carry on, or to change course, below.', primary: null, tools: [],
-          };
-        case 'draft':
-          return {
-            // No "Ask for a change" beside it: the conversation is on this page, under this
-            // bar, with its own box to type in. A button whose whole job is to move the cursor
-            // into a box the reader can already see is a button that reads as another decision.
-            headline: 'The draft PR is ready for you to read', detail: 'Read the description and the change on the left. Marking it ready is yours; so is the reviewer, on GitHub.', primary: { label: 'Mark ready for review', run: 'markReady' }, tools: [],
-          };
-        case 'review':
-          return {
-            headline: 'Waiting for a reviewer', detail: 'Nothing here is yours until someone comments. The agent can still be asked for something meanwhile.', primary: { label: 'Ask the agent', run: 'focusAsk' }, tools: [],
-          };
-        case 'feedback':
-          return {
-            headline: 'Reviewers left comments after your last push', detail: 'The agent reads each comment, answers or changes the code, re-verifies and pushes. You read its report before anything else happens.', primary: { label: 'Answer the feedback', run: 'answerFeedback' }, tools: [{ label: 'Re-verify the fix', run: 'reverify' }, { label: 'Ask the agent', run: 'focusAsk' }],
-          };
-        case 'merged':
-          // Merged is not the end of the conversation. The agent that did the work is the one
-          // that knows how it was done, and the questions that follow a merge - why this way,
-          // what about the other call site, can you write the follow-up issue - are worth more
-          // here than anywhere else. So the way in stays on the page; only deleting the
-          // workspace takes it away.
-          return {
-            headline: s.label === 'Approved' ? 'Approved' : 'Merged', detail: 'Nothing is waiting on you. The agent is still here for follow-up questions; deleting the workspace is what ends it (the PR and the transcript stay).', primary: s.label === 'Approved' ? { label: 'Merge', run: 'merge' } : null, tools: [{ label: 'Delete the workspace', run: 'remove' }],
-          };
-        }
-      }
-      /*
-       * No "Open the whole PR" anywhere in here.
-       *
-       * Every stage that had it already carries the pull request: its number and its link are
-       * in the header, the Pull request section below holds the description, the checks, the
-       * checklist and now the whole conversation, and each finding links to its own thread on
-       * GitHub. A button to open what is already open, next to links that already go there,
-       * was a third way to say the same thing.
-       */
-      if (s.kind === 'review') {
-        switch (stage) {
-        case 'agent':
-          if (s.agent === 'none') {
-            return {
-              headline: 'No review has run yet', detail: 'Starts a review conversation over the PR; its findings land on the left as it goes.', primary: { label: 'Review this PR', run: 'startReview' }, tools: [],
-            };
-          }
-
-          // This stage never had "Open the conversation" and no stage has it now, for the reason
-          // that kept it off this one: the conversation is already on this page, in the strip
-          // above this box, so a button to open what is open is one more thing to read past.
-          /*
-           * Whether the pass is still being made, which is not the same question as whether the
-           * main agent is writing this second.
-           *
-           * The stage is held here by the agent's own run record now (review-pass.mjs), so
-           * `idle` is the ordinary reading of a pass whose work is in subagents - and reading
-           * the agent state alone put "The agent stopped" over a review with seven passes
-           * running. `working` on the tone is what the run record set.
-           */
-          return {
-            headline: s.agent === 'working' || s.tone === 'working' ? 'The agent is reviewing' : 'The agent stopped',
-            // What has landed so far, where the status counted it: a pass an hour in with six
-            // findings on the left said nothing here about either. Only the running pass's own
-            // label, which is that count - the other labels this stage carries ("not started")
-            // are not a number of anything.
-            detail:   s.tone === 'working' && s.label ? `${ s.label } on the left; go through them once it is done.` : 'Its findings land on the left as it goes; go through them once it is done.',
-            primary:  { label: 'Full review', run: 'startReview' },
-            tools:    [],
-          };
-        case 'findings':
-          // A pass ends one of three ways, and all three are here: send the findings back as
-          // changes to make, approve with them attached, or approve and let them go. Each
-          // marked-good finding rides along; the cards on the left are where they are read.
-          //
-          // A pass after a review of yours is another round of the same step, so it says so
-          // and offers the agent another look at what the developer did.
-          // Every finding went, so the two buttons that carry findings back to GitHub have
-          // nothing to carry. The pass is still yours: ship it, or send the agent round again.
-          if (s.label === 'nothing left to go through') {
-            return {
-              headline: 'Nothing left from the agent\'s pass',
-              detail:   'Its findings have all been read and cleared. Ship the PR, or ask for another look.',
-              primary:  { label: 'Ship it', run: 'openApprove' },
-              tools:    [
-                { label: 'Review this PR again', run: s.reviewed ? 'reviewAgain' : 'startReview' },
-              ],
-            };
-          }
-
-          return {
-            headline: s.reviewed ? 'A new pass over what the agent found in the developer\'s changes' : 'The agent\'s findings are ready for your pass',
-            detail:   s.reviewed ? 'The findings are on the left, under them what the agent looked at, then the commits and threads of this round.' : 'Go through them on the left: keep the ones you agree with, then send them back or approve.',
-            primary:  { label: 'Ask for changes', run: 'requestChanges' },
-            tools:    [
-              { label: 'Ship it with comments', run: 'shipWithComments' },
-              { label: 'Ship it', run: 'openApprove' },
-              // Filing what is pending without a verdict on the pull request - the third thing
-              // a finished pass can do, and the only one that was not on this row.
-              { label: 'Post comments', run: 'postComments' },
-              ...(s.reviewed ? [{ label: 'Review the new commits again', run: 'reviewAgain' }] : []),
-              // No "Ask the agent" at this stage, on either round. The conversation is on the
-              // page under these buttons, and the row here is for deciding what happens to the
-              // findings - a general "ask it something" is not one of those decisions.
-            ],
-          };
-        case 'submitted':
-          // One button, because there is one thing to do. The review is with the developer:
-          // the stage either waits or it is approved, and "Go through the findings" and
-          // "Review the branch" were two more ways to look at what is already on the page
-          // below - offered at the one stage with nothing to decide but that.
-          return {
-            headline: 'Your review is with the developer',
-            // Says what actually moves it on, which is not a push: a commit can be a rebase or a
-            // merge of main, and the stage used to take any of them for an answer.
-            detail:   s.pushedSince
-              ? 'They have pushed since your review but have not answered your comments or asked for another look, so this is still with them. You can review the new commits anyway.'
-              : 'This moves on when they reply to your comments or ask you to look again. Your comments are on the left; the PR and its diff are a click away.',
-            primary: { label: 'Approve', run: 'openApprove' },
-            tools:   s.pushedSince ? [{ label: 'Review the new commits', run: 'reviewAgain' }] : [],
-          };
-        case 'response':
-          // Nothing is filed yet: what the agent finds puts the rail back on Your pass, which
-          // is where findings are gone through, whichever round it is.
-          return {
-            headline: 'The developer responded', detail: 'New commits and replies since your review are on the left. The agent can review what changed against your comments; what it finds comes back here as a second pass.', primary: { label: 'Review the new commits', run: 'reviewAgain' }, tools: [{ label: 'Approve', run: 'openApprove' }],
-          };
-        case 'approved':
-          return {
-            // Your part is over either way: merging is the author's, so what is left here is
-            // to let the workspace go. The conversations and the PR outlive it.
-            headline: s.label === 'Merged' ? 'Merged' : 'Approved', detail: s.label === 'Merged' ? 'Nothing is waiting on you. The agent is still here if you want to ask it something about what it found.' : 'Your review is done and the author merges. The agent is still here for anything you want to ask about it.', primary: null, tools: [{ label: 'Delete the workspace', run: 'remove' }],
-          };
-        }
-      }
-
-      return null;
+      return stageAction(s, stage, this.issue);
     },
   },
 
@@ -2969,61 +2797,19 @@ export default {
      * keeps the short id. See conversation-id.mjs.
      */
     async say(title, text, reuse = !title, from = title, what = '') {
-      await ensureWorkspaceReady(this.workspace.name);
-      // The workspace's own, never a discussion: see `mine`, and the measurement in its note.
-      const conversations = this.mine(await listConversations(this.workspace.name).catch(() => []));
-      /*
-       * Which one it goes to, in the order a person would expect.
-       *
-       * The tab on show first. That is what "inject it into the conversation" means when there
-       * is a conversation in front of you, and it is the only one of these the person can see
-       * and change. It reads `liveShown` - the strip's own answer - rather than
-       * `currentConversation`, which was set from the end of the raw list on every poll and so
-       * named whichever conversation happened to be newest, discussions included.
-       *
-       * Then the one the action is about: a review, a fix, the conversation named for this PR.
-       * That is the "original conversation" an action belongs in when nothing is open.
-       *
-       * Then the newest of this workspace's own, which is the fallback that was always here.
-       */
-      const newest = pickConversation(conversations, {
-        focused: this.liveShown, current: this.currentConversation, pr: this.status?.pr || 0,
+      // Where it goes and how is stage-actions.ts's, so the Focus deck sends the same way; the
+      // strip on show is the first choice, which is what "into the conversation" means here.
+      const { conversation, running, started } = await sayInWorkspace(this.workspace.name, title, text, {
+        reuse, from, focused: this.liveShown, current: this.currentConversation, pr: this.status?.pr || 0,
       });
 
-      if (newest && reuse) {
-        // Is there a claude in that pane to type into. Asked of the same pair the strip's dots
-        // come from, so one answer: `finished` is a pane whose claude has exited and `none` is a
-        // conversation that has never run, and both want the queue-and-start path below - which
-        // is what restarts claude - rather than a keystroke into a pane with nothing reading it.
-        const states = await workspaceAgentStates(this.workspace.name).catch(() => ({}));
-        const running = ['working', 'input', 'idle'].includes(states[newest.id]);
-
-        if (running) {
-          // Typed into the pane, because a queued prompt is only read when claude starts: on a
-          // conversation already running it would sit in the queue and nothing would happen.
-          await sendToPane(newest.id, text);
-        } else {
-          await queuePrompt(newest.attach, text);
-          await startPaneDetached(this.workspace.name, newest.id).catch(() => {});
-        }
-        await this.loadConversations();
-        this.showConversation(newest.id);
-        // `running`, which is the name of the thing twenty lines up. This read `alive`, which is
-        // not defined anywhere in this component - so every press that reused a conversation
-        // threw `alive is not defined` AFTER the prompt had already been sent, and the rail
-        // showed a red error over work that had in fact started.
-        this.notice = this.sentNotice(what, newest, running);
-
-        return newest;
-      }
-
-      const started = await startConversation(this.workspace.name, title, text, '', from);
-
       await this.loadConversations();
-      this.showConversation(started.id);
-      this.notice = [what, `${ title || 'A conversation' } has started; it is the tab now on show.`].filter(Boolean).join(' - ');
+      this.showConversation(conversation.id);
+      this.notice = started
+        ? [what, `${ title || 'A conversation' } has started; it is the tab now on show.`].filter(Boolean).join(' - ')
+        : this.sentNotice(what, conversation, running);
 
-      return started;
+      return conversation;
     },
 
     /**

@@ -52,6 +52,8 @@ export const KINDS: FocusKind[] = ['review', 'issue', 'agent', 'question', 'sign
  */
 export type ActionVerb =
   | 'open' | 'url' | 'ask' | 'snooze' | 'done'
+  /* One of the work's stage's own actions, the rail's: see stage-actions.ts. */
+  | 'stage'
   | 'share' | 'review' | 'fix' | 'post' | 'merge'
   | 'create-pr' | 'describe' | 'ready'
   /* The two actions that are about a list rather than a subject: see the `bumps` card... */
@@ -119,6 +121,15 @@ export interface CardAction {
    * ones matter?", which is the right first move at nought decided.
    */
   when?: 'patched' | 'unpatched' | 'mergeable' | 'anyKept' | 'allKept' | 'suggested';
+  /** For `stage`: the rail method it is, and its argument. See stage-actions.ts. */
+  run?: string;
+  arg?: string;
+  /** For `stage`: the stage skill it runs, as the rail's skill buttons carry it. */
+  skill?: { label: string; skill: string; note: string; fresh?: boolean };
+  /** For `stage`: the stage's one thing to press, or none of them is. */
+  stagePrimary?: boolean;
+  /** For `stage`: it sets the agent working. */
+  ai?: boolean;
 }
 
 /**
@@ -646,6 +657,10 @@ export const AGENTIC_VERBS = new Set(['ask', 'review', 'fix', 'describe']);
 export function isAgentic(action: CardAction | null | undefined, describeAsks = false): boolean {
   if (!action) {
     return false;
+  }
+
+  if (action.verb === 'stage') {
+    return !!action.ai;
   }
 
   return action.verb === 'describe' ? describeAsks : AGENTIC_VERBS.has(action.verb);
