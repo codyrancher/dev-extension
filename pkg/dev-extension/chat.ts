@@ -122,6 +122,22 @@ export function parseTranscript(lines: string[]): ChatMessage[] {
     // second one, `[Image: source: /workspace/.images/….png]`, which showed as the person
     // sending the same thing twice.
     if (entry.isMeta === true) {
+      /*
+       * Except a turn the agent scheduled for itself - a /loop, a ScheduleWakeup - which the CLI
+       * writes as meta with `promptSource: system`. Skipped like the rest, claude started
+       * working under a log whose last line was its own previous answer, with nothing saying
+       * what had woken it.
+       */
+      const wakeup = entry.type === 'user' && entry.promptSource === 'system' && (entry.turnOrigin === 'scheduled' || entry.wakeupSource);
+      const said = wakeup ? promptParts(entry.message?.content).text : '';
+
+      if (said) {
+        const line = said.split('\n').find((l) => l.trim())?.trim() || '';
+
+        messages.push({
+          key: entry.uuid || `${ messages.length }`, role: 'note', text: `Woke on schedule: ${ line.length > 160 ? `${ line.slice(0, 157) }…` : line }`, tools: [], thinking: '', images: [], at: entry.timestamp || '',
+        });
+      }
       continue;
     }
 

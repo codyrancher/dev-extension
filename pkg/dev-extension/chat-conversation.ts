@@ -37,6 +37,7 @@ import {
 } from './chat';
 import {
   ago, deriveState, foldModel, noModelEvidence, parseEntries, reconcilePending, unwrapPasted,
+  questionStep, isPreviewQuestion, chatAboutKey,
 } from './chat-state.mjs';
 import {
   modelInfo as describeModel, pickedChoice, settlePicked,
@@ -114,13 +115,41 @@ export interface ChatAgentRow extends ChatAgent {
   when: string;
 }
 
-/** What the pane is asking, when it is asking something a text box cannot answer. */
+/** One choice in a dialog. `input` is a row that wants words, not a click ("No, keep planning"). */
+export interface DialogOption {
+  key: string;
+  label: string;
+  description?: string;
+  selected: boolean;
+  input?: boolean;
+}
+
+/**
+ * What the pane is asking, when it is asking something a text box cannot answer.
+ *
+ * `press` is how a choice is put to the CLI, because its dialogs do not all take a key the same
+ * way (chat-state.mjs, questionStep): `pick` is the digit alone, `move` is the digit and then
+ * Enter, `toggle` is the digit as a tick in a multi-select, `keys` is a dialog read off the pane
+ * and answered the way it always was. `review` is the screen after the last of several
+ * questions, where the answers are submitted.
+ */
 export interface ConversationDialog {
   kind: string;
   header?: string;
   prompt: string;
-  options: { key: string; label: string; description?: string; selected: boolean }[];
+  options: DialogOption[];
   url: string;
+  press?: 'pick' | 'move' | 'toggle' | 'keys';
+  /** Which of several questions this is, 1-based. */
+  step?: { at: number; of: number };
+  /** A multi-select's button: Next, or Submit on the last question. */
+  next?: string;
+  /** What was answered, on the review screen. */
+  answers?: { question: string; answer: string }[];
+  /** What a message typed while this is open does: ask to clarify, or reject a plan with it. */
+  reply?: 'clarify' | 'feedback';
+  /** The question tool call's id, so a host's own state about it can reset when it changes. */
+  id?: string;
 }
 
 const POLL_MS = 1500;
@@ -299,26 +328,90 @@ export const CUSTOMIZE = [
  * The template's view of the state: the same four things a chat always drew, decided by
  * chat-state.mjs rather than by the look of the terminal.
  */
-function paneFromState(state: any, paneText = ''): { busy: boolean; idle: boolean; gone: boolean; dialog: ConversationDialog | null; status: string } {
+/**
+ * What has been chosen here for a question still open, by `<tool use id>:<question index>`: the
+ * labels, for the review screen, and the keys ticked in a multi-select, for its boxes.
+ */
+export type DialogPicks = Record<string, { labels: string[]; keys: string[] }>;
+
+export function pickKey(id: string, index: number): string {
+  return `${ id }:${ index }`;
+}
+
+/**
+ * The plan approval, with the CLI's own choices.
+ *
+ * They are not fixed. The dialog builds them from the session's modes - clear context or keep
+ * it, bypass permissions, auto mode, Ultraplan - so the "1 Yes / 2 No" this used to draw put
+ * "No, keep planning" on a key the dialog gives to one of the yeses. The pane has the real list.
+ * "No, keep planning" is a text row: it wants to be told what to change, which here is what is
+ * typed in the box.
+ */
+function planDialog(q: any, paneText: string): ConversationDialog {
+  const seen = readPane(paneText);
+  const options: DialogOption[] = seen.dialog?.kind === 'options' && seen.dialog.options.length >= 2
+    ? seen.dialog.options.map((o) => ({
+      key: o.key, label: o.label, selected: o.selected, input: /keep planning/i.test(o.label),
+    }))
+    : [];
+
+  return {
+    kind:   'options',
+    header: 'Plan ready',
+    prompt: String(q.plan || '').slice(0, 4000),
+    options,
+    url:    '',
+    press:  'pick',
+    reply:  'feedback',
+    id:     q.id,
+  };
+}
+
+/** The question the CLI's dialog is on, or its review screen. */
+function questionDialog(q: any, paneText: string, picks: DialogPicks): ConversationDialog {
+  const questions: any[] = Array.isArray(q.questions) ? q.questions : [];
+  const step = questionStep(q, paneText);
+  const of = questions.length;
+
+  if (step.review) {
+    return {
+      kind:    'review',
+      header:  'Review your answers',
+      prompt:  '',
+      options: [{ key: 'submit', label: 'Submit answers', selected: true }, { key: 'back', label: 'Back', selected: false }],
+      url:     '',
+      step:    { at: of, of },
+      answers: questions.map((one, i) => ({ question: String(one?.question || ''), answer: (picks[pickKey(q.id, i)]?.labels || []).join(', ') })),
+      reply:   'clarify',
+      id:      q.id,
+    };
+  }
+  const current = questions[step.index] || {};
+  const multi = !!current.multiSelect;
+  const ticked = picks[pickKey(q.id, step.index)]?.keys || [];
+
+  return {
+    kind:    'options',
+    header:  current.header || '',
+    prompt:  String(current.question || ''),
+    options: (Array.isArray(current.options) ? current.options : []).map((o: any, i: number) => ({
+      key: String(i + 1), label: o?.label || `option ${ i + 1 }`, description: o?.description || '', selected: multi && ticked.includes(String(i + 1)),
+    })),
+    url:   '',
+    press: multi ? 'toggle' : isPreviewQuestion(current) ? 'move' : 'pick',
+    step:  of > 1 ? { at: step.index + 1, of } : undefined,
+    next:  multi ? (step.index >= of - 1 ? 'Submit' : 'Next') : undefined,
+    reply: 'clarify',
+    id:    q.id,
+  };
+}
+
+function paneFromState(state: any, paneText = '', picks: DialogPicks = {}): { busy: boolean; idle: boolean; gone: boolean; dialog: ConversationDialog | null; status: string } {
   const gone = state.phase === 'gone' || state.phase === 'absent';
   let dialog: ConversationDialog | null = null;
 
   if (state.phase === 'question' && state.question) {
-    const q = state.question;
-    const first = q.questions[0] || {};
-    const options = q.tool === 'ExitPlanMode'
-      ? [{ key: '1', label: 'Yes, proceed', selected: false }, { key: '2', label: 'No, keep planning', selected: false }]
-      : (first.options || []).map((o: any, i: number) => ({
-        key: String(i + 1), label: o.label || `option ${ i + 1 }`, description: o.description || '', selected: false,
-      }));
-
-    dialog = {
-      kind:    'options',
-      header:  q.tool === 'ExitPlanMode' ? 'Plan ready' : (first.header || ''),
-      prompt:  q.tool === 'ExitPlanMode' ? q.plan.slice(0, 4000) : String(first.question || ''),
-      options,
-      url:     '',
-    };
+    dialog = state.question.tool === 'ExitPlanMode' ? planDialog(state.question, paneText) : questionDialog(state.question, paneText, picks);
   } else if (state.phase === 'login' && state.login) {
     dialog = {
       kind: state.login.kind, prompt: 'Claude needs you to sign in.', options: [], url: state.login.url,
@@ -332,7 +425,7 @@ function paneFromState(state: any, paneText = ''): { busy: boolean; idle: boolea
     const seen = readPane(paneText);
 
     if (seen.dialog && seen.dialog.options.length) {
-      dialog = { ...seen.dialog, header: '' } as ConversationDialog;
+      dialog = { ...seen.dialog, header: '', press: 'keys' } as ConversationDialog;
     }
   }
 
@@ -516,6 +609,8 @@ export function useConversation(source: () => ConversationSource) {
   const echoes = ref<any[]>([]);
   /** The terminal's panel for /usage, /status and the like, for a host to show until it is closed. */
   const panel = ref<{ title: string; text: string } | null>(null);
+  /** What was chosen here in the question dialog still open: see DialogPicks. */
+  const picks = ref<DialogPicks>({});
   /**
    * The interactive command last put into the pane, while its picker is still up.
    *
@@ -1160,7 +1255,11 @@ export function useConversation(source: () => ConversationSource) {
         state.value = { ...state.value, phase };
       }
     }
-    pane.value = paneFromState(state.value, frame.pane);
+    // A question answered or gone takes what was chosen for it along: the next one starts clean.
+    if (!state.value.question && Object.keys(picks.value).length) {
+      picks.value = {};
+    }
+    pane.value = paneFromState(state.value, frame.pane, picks.value);
     picked.value = settlePicked(picked.value, state.value);
     seekModel();
   }
@@ -1267,6 +1366,15 @@ export function useConversation(source: () => ConversationSource) {
       if (!attached.value) {
         await wake();
       }
+      // A question or a plan on screen takes this message as its answer instead: see replyToDialog.
+      if (!/^\//.test(text) && await replyToDialog(text) === 'feedback') {
+        // It is the plan's answer, written into the transcript as that: there is no prompt for a
+        // held copy to wait on, and one would only turn into "not recorded".
+        draft.value = '';
+        error.value = '';
+
+        return;
+      }
       const before = paneText.value;
 
       await say(text);
@@ -1358,15 +1466,144 @@ export function useConversation(source: () => ConversationSource) {
     draft.value = `${ draft.value }${ draft.value && !draft.value.endsWith(' ') ? ' ' : '' }@${ path } `;
   }
 
-  async function choose(option: { key: string }): Promise<void> {
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /**
+   * Answer the dialog the way that dialog takes an answer: see ConversationDialog.press.
+   *
+   * It was always the option's digit and then Enter, which is right for exactly one of the
+   * dialog's shapes. A plain choice is taken on its digit and the dialog moves straight on, so
+   * the Enter answered the NEXT question with whatever it had highlighted - its first option -
+   * and on the last one it pressed a button on the review screen.
+   */
+  async function choose(option: DialogOption | { key: string }): Promise<void> {
+    const dialog = pane.value.dialog;
+    const chosen = option as DialogOption;
+
     try {
-      await keys(option.key);
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      await keys('Enter');
+      if (dialog?.kind === 'review') {
+        await keys(chosen.key === 'back' ? 'Left' : 'Enter');
+      } else if (dialog?.press === 'toggle') {
+        await keys(chosen.key);
+        notePick(dialog, chosen, true);
+      } else if (dialog?.press === 'move') {
+        await keys(chosen.key);
+        await wait(250);
+        await keys('Enter');
+        notePick(dialog, chosen, false);
+      } else if (dialog?.press === 'pick') {
+        if (chosen.input) {
+          // "No, keep planning" wants to be told what to change, and the box is where words go.
+          pasting.value = 'Type what should change below and send it: it goes back with the plan.';
+          setTimeout(() => {
+            if (pasting.value.startsWith('Type what should change')) {
+              pasting.value = '';
+            }
+          }, 10000);
+
+          return;
+        }
+        await keys(chosen.key);
+        notePick(dialog, chosen, false);
+      } else {
+        // A dialog read off the pane - a permission prompt, the session survey - answered the
+        // way those always were, its own key and then Enter.
+        await keys(chosen.key);
+        await wait(250);
+        await keys('Enter');
+      }
     } catch (e: any) {
       error.value = e.message || String(e);
     }
     setTimeout(() => poll(), 400);
+  }
+
+  /** A multi-select's Next, or Submit on the last question: the dialog's Tabs binding. */
+  async function nextQuestion(): Promise<void> {
+    try {
+      await keys('Right');
+    } catch (e: any) {
+      error.value = e.message || String(e);
+    }
+    setTimeout(() => poll(), 400);
+  }
+
+  /** What was chosen, kept for the review screen and for a multi-select's ticks. */
+  function notePick(dialog: ConversationDialog, option: DialogOption, toggle: boolean): void {
+    const at = pickKey(dialog.id || '', (dialog.step?.at || 1) - 1);
+    const was = picks.value[at] || { labels: [], keys: [] };
+    const ticked = toggle
+      ? (was.keys.includes(option.key) ? was.keys.filter((k) => k !== option.key) : [...was.keys, option.key])
+      : [option.key];
+    const labels = ticked.map((k) => dialog.options.find((o) => o.key === k)?.label || k);
+
+    picks.value = { ...picks.value, [at]: { labels, keys: ticked } };
+    pane.value = paneFromState(state.value, paneText.value, picks.value);
+  }
+
+  /**
+   * Say something while claude is asking a question, without it landing in the question.
+   *
+   * Pasted into the dialog, a message became the free-text answer to whichever question the
+   * dialog was on, and every Enter the send then pressed to make sure it went answered the next
+   * question with its first option. So it is said the way the dialog itself offers. A question is
+   * closed with "Chat about this", which tells claude the person wants to clarify and lists what
+   * was asked, and the message follows as an ordinary prompt; a plan is turned down with the
+   * message as what to change.
+   *
+   * @returns 'clarify' when the message is still to be sent as a prompt, 'feedback' when it went
+   *   in as the plan's answer, '' when nothing was open.
+   */
+  async function replyToDialog(text: string): Promise<'' | 'clarify' | 'feedback'> {
+    const dialog = pane.value.dialog;
+    const question = state.value.question;
+
+    if (state.value.phase !== 'question' || !question || !dialog?.reply) {
+      return '';
+    }
+    if (dialog.reply === 'feedback') {
+      const no = dialog.options.find((o) => o.input);
+
+      if (!no) {
+        throw new Error('the plan\'s choices are not on screen yet: answer it in the terminal');
+      }
+      await keys(no.key);
+      await wait(300);
+      await say(text);
+
+      return 'feedback';
+    }
+    const questions: any[] = Array.isArray(question.questions) ? question.questions : [];
+    let at = questionStep(question, paneText.value);
+
+    if (at.review) {
+      // The review screen has no "Chat about this"; the last question does.
+      await keys('Left');
+      await wait(300);
+      at = { index: Math.max(0, questions.length - 1), review: false, seen: false };
+    }
+    const current = questions[at.index] || {};
+
+    if (isPreviewQuestion(current)) {
+      // Here a digit only moves the highlight: to the last option, one down, and Enter.
+      await keys(String(current.options.length));
+      await wait(200);
+      await keys('Down');
+      await wait(200);
+      await keys('Enter');
+    } else {
+      await keys(chatAboutKey(current));
+    }
+    // The message goes in once the dialog has closed: a paste that reached it first would be
+    // taken as the answer this is here to avoid.
+    for (let i = 0; i < 16; i++) {
+      await wait(500);
+      await poll();
+      if (state.value.phase !== 'question') {
+        return 'clarify';
+      }
+    }
+    throw new Error('the question did not close; answer it above, or in the terminal');
   }
 
   async function submitCode(): Promise<void> {
@@ -2044,6 +2281,7 @@ export function useConversation(source: () => ConversationSource) {
     pickCommand,
     mention,
     choose,
+    nextQuestion,
     submitCode,
     stop,
     login,

@@ -1081,15 +1081,34 @@ export default {
       class="mc-chat__dialog"
     >
       <div
-        v-if="pane.dialog.header"
+        v-if="pane.dialog.header || pane.dialog.step"
         class="mc-chat__dialog-header"
-      >{{ pane.dialog.header }}</div>
+      >
+        <span
+          v-if="pane.dialog.step"
+          class="mc-chat__dialog-step"
+        >{{ pane.dialog.kind === 'review' ? `All ${ pane.dialog.step.of } answered` : `Question ${ pane.dialog.step.at } of ${ pane.dialog.step.of }` }}</span>
+        <span v-if="pane.dialog.header">{{ pane.dialog.header }}</span>
+      </div>
       <pre
         v-if="pane.dialog.prompt"
         class="mc-chat__dialog-prompt"
       >{{ pane.dialog.prompt }}</pre>
+      <!-- The review screen after the last of several questions: what goes back, then Submit. -->
+      <ul
+        v-if="pane.dialog.kind === 'review'"
+        class="mc-chat__dialog-answers"
+      >
+        <li
+          v-for="(a, i) in pane.dialog.answers"
+          :key="i"
+        >
+          <span class="mc-chat__dialog-q">{{ a.question }}</span>
+          <span class="mc-chat__dialog-a">{{ a.answer || 'answered in the terminal' }}</span>
+        </li>
+      </ul>
       <div
-        v-if="pane.dialog.kind === 'options' || pane.dialog.kind === 'yes-no'"
+        v-if="pane.dialog.kind === 'options' || pane.dialog.kind === 'yes-no' || pane.dialog.kind === 'review'"
         class="mc-chat__options"
       >
         <button
@@ -1099,17 +1118,39 @@ export default {
           class="mc-chat__option"
           :class="{ 'mc-chat__option--selected': o.selected }"
           :title="o.description || ''"
+          :aria-pressed="pane.dialog.press === 'toggle' ? String(o.selected) : null"
           @click="choose(o)"
         >
-          <span class="mc-chat__option-key">{{ o.key }}</span> {{ o.label }}
+          <span
+            v-if="pane.dialog.kind !== 'review'"
+            class="mc-chat__option-key"
+          >{{ pane.dialog.press === 'toggle' ? (o.selected ? '☑' : '☐') : o.key }}</span> {{ o.label }}
           <span
             v-if="o.description"
             class="mc-chat__option-desc"
           >{{ o.description }}</span>
         </button>
+        <button
+          v-if="pane.dialog.next"
+          type="button"
+          class="mc-chat__option mc-chat__option--next"
+          @click="nextQuestion"
+        >
+          {{ pane.dialog.next }} →
+        </button>
+        <span
+          v-if="!pane.dialog.options.length"
+          class="mc-chat__dialog-hint"
+        >The choices are in the terminal; they show here once they are on its screen.</span>
       </div>
+      <p
+        v-if="pane.dialog.reply"
+        class="mc-chat__dialog-hint"
+      >
+        {{ pane.dialog.reply === 'feedback' ? 'Or type below what should change and send it.' : `Or type below to answer in your own words: ${ agentName } is told you want to talk it over, and gets your message.` }}
+      </p>
       <div
-        v-else
+        v-if="pane.dialog.kind === 'login' || pane.dialog.kind === 'code'"
         class="mc-chat__login"
       >
         <a
@@ -2306,6 +2347,34 @@ export default {
     min-width:   14px;
     color:       var(--muted);
     font-family: monospace;
+  }
+
+  &__option--next { border-color: var(--link); color: var(--link); }
+
+  &__dialog-step {
+    margin-right: 8px;
+    color:        var(--muted);
+    font-weight:  normal;
+    font-size:    11px;
+  }
+
+  &__dialog-answers {
+    display:        flex;
+    flex-direction: column;
+    gap:            4px;
+    margin:         0 0 8px;
+    padding:        0;
+    list-style:     none;
+    font-size:      12px;
+  }
+
+  &__dialog-q { display: block; color: var(--muted); }
+  &__dialog-a { display: block; font-weight: 600; }
+
+  &__dialog-hint {
+    margin:    8px 0 0;
+    color:     var(--muted);
+    font-size: 11px;
   }
 
   &__login { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

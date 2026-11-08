@@ -388,6 +388,7 @@ defineExpose({ ask, focus: focusBox });
             v-if="pane.dialog"
             :dialog="pane.dialog"
             @choose="chat.choose($event)"
+            @next="chat.nextQuestion()"
             @code="onCode"
           />
 

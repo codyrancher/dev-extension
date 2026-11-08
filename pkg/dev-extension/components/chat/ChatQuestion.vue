@@ -21,6 +21,7 @@ defineProps<{
 
 const emit = defineEmits<{
   (e: 'choose', option: { key: string }): void;
+  (e: 'next'): void;
   (e: 'code', text: string): void;
 }>();
 
@@ -38,10 +39,21 @@ function sendCode(): void {
 
 <template>
   <section class="ask" :class="`ask--${ dialog.kind }`">
-    <p v-if="dialog.header" class="ask__head">{{ dialog.header }}</p>
+    <p v-if="dialog.header || dialog.step" class="ask__head">
+      <span v-if="dialog.step" class="ask__step">{{ dialog.kind === 'review' ? `All ${ dialog.step.of } answered` : `Question ${ dialog.step.at } of ${ dialog.step.of }` }}</span>
+      {{ dialog.header }}
+    </p>
     <pre v-if="dialog.prompt" class="ask__prompt">{{ dialog.prompt }}</pre>
 
-    <div v-if="dialog.options.length" class="ask__options">
+    <!-- The review screen after the last of several questions: what goes back, then Submit. -->
+    <ul v-if="dialog.kind === 'review'" class="ask__answers">
+      <li v-for="(a, i) in dialog.answers" :key="i">
+        <span class="ask__q">{{ a.question }}</span>
+        <span class="ask__a">{{ a.answer || 'answered in the terminal' }}</span>
+      </li>
+    </ul>
+
+    <div v-if="dialog.options.length || dialog.next" class="ask__options">
       <button
         v-for="option in dialog.options"
         :key="option.key"
@@ -49,15 +61,22 @@ function sendCode(): void {
         class="ask__option"
         :class="{ 'ask__option--on': option.selected }"
         :title="option.description || ''"
+        :aria-pressed="dialog.press === 'toggle' ? String(option.selected) : undefined"
         @click="emit('choose', option)"
       >
-        <span class="ask__key">{{ option.key }}</span>
+        <span v-if="dialog.kind !== 'review'" class="ask__key">{{ dialog.press === 'toggle' ? (option.selected ? '☑' : '☐') : option.key }}</span>
         <span class="ask__label">{{ option.label }}</span>
         <span v-if="option.description" class="ask__desc">{{ option.description }}</span>
       </button>
+      <button v-if="dialog.next" type="button" class="ask__option ask__option--next" @click="emit('next')">{{ dialog.next }} →</button>
     </div>
+    <p v-else-if="dialog.kind === 'options'" class="ask__hint">The choices are in the terminal; they show here once they are on its screen.</p>
 
-    <div v-else class="ask__login">
+    <p v-if="dialog.reply" class="ask__hint">
+      {{ dialog.reply === 'feedback' ? 'Or type what should change and send it.' : 'Or type to answer in your own words: the agent is told you want to talk it over, and gets your message.' }}
+    </p>
+
+    <div v-if="dialog.kind === 'login' || dialog.kind === 'code'" class="ask__login">
       <a
         v-if="dialog.url"
         :href="dialog.url"
@@ -154,6 +173,36 @@ function sendCode(): void {
 .ask__option--on .ask__key { color: var(--ink-on-kind); }
 
 .ask__label { min-width: 0; }
+
+.ask__option--next {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ask__step {
+  margin-right: var(--s2);
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+.ask__answers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--t-sm);
+}
+
+.ask__q { display: block; color: var(--text-muted); }
+.ask__a { display: block; color: var(--text); font-weight: 600; }
+
+.ask__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+}
 
 .ask__desc {
   color: var(--text-muted);
