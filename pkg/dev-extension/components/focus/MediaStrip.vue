@@ -32,8 +32,10 @@ const MOST = 4;
 const shown = computed(() => {
   const pictures = props.items.map((item, at) => ({ item, at })).filter(({ item }) => item.kind !== 'text');
   const chosen = pictures.filter(({ item }) => item.featured).sort((a, b) => (a.item.featured || 0) - (b.item.featured || 0));
+  // Ranked, if anything carries a place at all - 0 is "not on the card" - and then only the chosen.
+  const ranked = pictures.some(({ item }) => item.featured !== undefined);
 
-  return (chosen.length ? chosen : pictures).slice(0, MOST);
+  return (ranked ? chosen : pictures).slice(0, MOST);
 });
 
 const KIND = { image: 'Screenshot', video: 'Recording', text: 'File' } as const;
@@ -72,7 +74,7 @@ const KIND = { image: 'Screenshot', video: 'Recording', text: 'File' } as const;
         >
         <span v-if="item.kind === 'video'" class="ms__play"><AppIcon name="play" :size="10" /></span>
         <!-- What it was recorded for, which is the directory it was written into. -->
-        <span v-if="item.dir" class="ms__dir">{{ item.dir }}</span>
+        <span v-if="item.badge || item.dir" class="ms__dir">{{ item.badge || item.dir }}</span>
       </button>
     </div>
 

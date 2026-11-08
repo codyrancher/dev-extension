@@ -9,7 +9,9 @@
  * Nothing is read here. Everything comes off `PrSummary`, which `readArtifacts` fills from the
  * `meta` that already comes back with the diff, so a card drawing this pays for no extra call.
  */
-import { computed, ref } from 'vue';
+import {
+  computed, onBeforeUnmount, onMounted, ref, watch,
+} from 'vue';
 import type { PrSummary } from '../../focus-artifacts';
 import CommentBody from './CommentBody.vue';
 import AppIcon from './AppIcon.vue';
@@ -17,7 +19,65 @@ import MediaViewer from './MediaViewer.vue';
 import { ghAssetUrl } from '../../reviews';
 import type { NoteMedia } from '../../focus-review';
 
-const props = defineProps<{ pr: PrSummary }>();
+const props = withDefaults(defineProps<{
+  pr: PrSummary;
+  /**
+   * The description's checklist, live: a box pressed here is a box ticked on GitHub.
+   *
+   * The renderer draws a task list as disabled boxes, which is right on a card and wrong on the
+   * sheet whose job includes ticking them. The host does the write (PrSheet) - this only says
+   * which box, counted in the order they are drawn, which is the order they are written in.
+   */
+  live?: boolean;
+  /** The box being written, drawn as waiting; -1 for none. */
+  ticking?: number;
+}>(), { live: false, ticking: -1 });
+
+const emit = defineEmits<{ (e: 'tick', n: number): void }>();
+
+/*
+ * The boxes, made pressable and numbered. A MutationObserver rather than once on mount, because
+ * the body is drawn by a child that redraws on its own when the description changes - and every
+ * redraw puts the boxes back to disabled.
+ */
+const bodyEl = ref<HTMLElement | null>(null);
+let watching: MutationObserver | null = null;
+
+function boxes(): HTMLInputElement[] {
+  return bodyEl.value ? [...bodyEl.value.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')] : [];
+}
+
+function liven(): void {
+  if (!props.live) {
+    return;
+  }
+  boxes().forEach((box, n) => {
+    box.disabled = props.ticking >= 0;
+    box.classList.toggle('gh__box--waiting', n === props.ticking);
+  });
+}
+
+function onBodyClick(event: MouseEvent): void {
+  const box = (event.target as HTMLElement)?.closest?.('input[type="checkbox"]') as HTMLInputElement | null;
+
+  if (!props.live || !box) {
+    return;
+  }
+  // Drawn as it was until GitHub has agreed: a tick that undoes itself a second later is worse
+  // than one that waits for the write.
+  box.checked = !box.checked;
+  emit('tick', boxes().indexOf(box));
+}
+
+onMounted(() => {
+  liven();
+  if (props.live && bodyEl.value && typeof MutationObserver !== 'undefined') {
+    watching = new MutationObserver(() => liven());
+    watching.observe(bodyEl.value, { childList: true, subtree: true });
+  }
+});
+onBeforeUnmount(() => watching?.disconnect());
+watch(() => [props.ticking, props.pr.body], () => liven(), { flush: 'post' });
 
 /** What a recording in the description opens into. The same viewer the findings use. */
 const viewer = ref<{ items: NoteMedia[]; at: number } | null>(null);
@@ -90,7 +150,13 @@ const blocked = computed(() => {
       to several screens, and the tab it is in is one pane of a card.
     -->
     <!-- Through CommentBody, so a recording in the description is a player. See GithubIssue. -->
-    <div v-if="pr.body" class="gh__body">
+    <div
+      v-if="pr.body"
+      ref="bodyEl"
+      class="gh__body"
+      :class="{ 'gh__body--live': live }"
+      @click="onBodyClick"
+    >
       <CommentBody :body="pr.body" :asset-url="ghAssetUrl" @open="viewer = $event" />
     </div>
     <p v-else class="gh__none">No description.</p>
@@ -204,6 +270,9 @@ const blocked = computed(() => {
   padding-top: var(--s2);
   border-top: 1px solid var(--border);
 }
+
+.gh__body--live :deep(input[type="checkbox"]) { cursor: pointer; }
+.gh__body--live :deep(.gh__box--waiting) { opacity: 0.45; cursor: progress; }
 
 .gh__none {
   margin: 0;

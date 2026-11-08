@@ -39,7 +39,9 @@ import { loadedCards } from '../../focus-cards';
 import { componentFor, actionsFrom, CARD_COMPONENTS } from './card-api';
 import type { CardApi } from './card-api';
 import { devApi } from '../../reviews';
-import { NO_ARTIFACTS } from '../../focus-artifacts';
+import { NO_ARTIFACTS, subjectOf } from '../../focus-artifacts';
+import { DEFAULT_REPO } from '../../reviews';
+import PrSheet from './PrSheet.vue';
 import type {
   CardArtifacts, CardComment, PoolIssue, BumpRow
 } from '../../focus-artifacts';
@@ -635,7 +637,20 @@ const talkText = computed(() => talk.value
  */
 const readOn = ref<'' | 'prose' | 'talk'>('');
 
-watch(() => props.task.key, () => { readOn.value = ''; });
+watch(() => props.task.key, () => { readOn.value = ''; prOpen.value = false; });
+
+/**
+ * The pull request this card is about, and where it lives: what `PR #n` on the evidence line
+ * opens, as the sheet that renders it in full, ticks its checklist and takes a review. The repo
+ * is the one the card read it from, then the one its link names, then this product's own.
+ */
+const prOf = computed(() => {
+  const number = art.value.pr?.number || subjectOf(props.task).pr;
+  const named = /github\.com\/([^/]+\/[^/]+)\/pull\/\d+/.exec(String(props.task.url || ''))?.[1] || '';
+
+  return number ? { number, repo: art.value.pr?.repo || named || DEFAULT_REPO } : null;
+});
+const prOpen = ref(false);
 
 /**
  * The action that has been pressed once and is waiting to be meant.
@@ -1280,8 +1295,10 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
           :waited="waitedOnLine"
           :prose="prosePill ? proseLabel : ''"
           :talk="talk.length"
+          :pr="prOf?.number || 0"
           @read="readOn = 'prose'"
           @talk="readOn = 'talk'"
+          @pr="prOpen = true"
         />
       </div>
 
@@ -1643,6 +1660,14 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
       :text="readOn === 'talk' ? talkText : prose"
       :at="task.what"
       @close="readOn = ''"
+    />
+
+    <!-- The pull request in full, over the card: see PrSheet. -->
+    <PrSheet
+      v-if="prOpen && prOf"
+      :pr="prOf.number"
+      :repo="prOf.repo"
+      @close="prOpen = false"
     />
   </article>
 </template>

@@ -469,6 +469,26 @@ export async function approveWithNothing(num: number, repo = DEFAULT_REPO): Prom
   return { url: review?.html_url || null, unsent };
 }
 
+/**
+ * A review that is words and a verdict and nothing else: what the Focus PR sheet posts.
+ *
+ * Not `submitReview`, which posts the workspace's findings and stamps them sent - a review typed
+ * into the sheet has nothing to do with those, and must not sweep them up or mark them gone.
+ * GitHub wants words for a comment and for a request for changes; an approval may be bare.
+ */
+export async function reviewWithBody(num: number, repo: string, event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES', body: string): Promise<string> {
+  const said = String(body || '').trim();
+
+  if (!said && event !== 'APPROVE') {
+    throw new Error('a comment or a request for changes needs something said in it');
+  }
+  const review = await gh('POST', `/repos/${ repo }/pulls/${ num }/reviews`, { event, ...(said ? { body: said } : {}) });
+
+  forgetPrDetail(num, repo);
+
+  return review?.html_url || '';
+}
+
 /** Reply to a comment on GitHub. There is no draft for a reply: it lands in the thread now. */
 /**
  * Change or drop a review comment on GitHub, yours, wherever it is in its thread.

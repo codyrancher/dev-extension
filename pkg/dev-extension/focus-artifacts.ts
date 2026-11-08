@@ -19,7 +19,7 @@
 // Focus.vue for the one place that asks.
 
 import {
-  DEFAULT_REPO, prDetail, ciFailures, ciFailureDetail, artifactUrl
+  DEFAULT_REPO, prDetail, forgetPrDetail, ciFailures, ciFailureDetail, artifactUrl
 } from './reviews';
 import type { LocalComment, LocalAttachment } from './reviews';
 import { issueBody } from './github';
@@ -194,10 +194,12 @@ export interface CardMedia {
    */
   dir?: string;
   /**
-   * Its place among the few a card draws as thumbnails, from 1. Unset on the rest, which are
-   * behind `Show all`. See `mediaOf` for how they are chosen.
+   * Its place among the few a card draws as thumbnails, from 1; 0 on the rest of a ranked set,
+   * which are behind `Show all`; unset where nothing ranked them. See `mediaOf`.
    */
   featured?: number;
+  /** What a drawn thumbnail is called on the card, where its directory is not the word: `before`, `after`. */
+  badge?: string;
 }
 
 /**
@@ -686,8 +688,19 @@ const MEDIA_KIND = (type: string, name: string): 'image' | 'video' | 'text' => {
 const MEDIA_PER_DIR = 12;
 /** How many a card holds in all, which is what the viewer's grid shows behind `Show all`. */
 const MEDIA_MOST = 48;
-/** How many of them are drawn on the card itself. */
-const MEDIA_FEATURED = 4;
+/**
+ * The two a pull request is given, and so the only two a card draws.
+ *
+ * my-pr-create uploads exactly this pair into the description - the recording of the bug as
+ * "Before fix" and of the fix working as "After fix" - and a review workspace's demo-issue and
+ * demo-changes are the same pair for somebody else's change. The card drew four, one from each
+ * directory round the list, so a run's working notes and a docs screenshot sat beside the
+ * evidence as if they were evidence; everything else is still one press away, behind Show all.
+ */
+const PR_PAIR: { badge: string; dirs: string[] }[] = [
+  { badge: 'before', dirs: ['reproduce', 'demo-issue'] },
+  { badge: 'after', dirs: ['verify', 'demo-changes'] },
+];
 
 /**
  * The directories the skills record into, most telling first: the fix working, the change shown,
@@ -719,9 +732,8 @@ const MEDIA_NOISE = /(^|\/)(scratch|scripts?|tmp|logs?|frames?)(\/|$)/i;
  *   2. the pictures that are working files, newest first;
  *   3. everything that is read rather than looked at.
  *
- * `featured` goes round the directories of the first group taking one from each before taking a
- * second from any, so the four on the card are the fix, the change, the bug and one more rather
- * than four screenshots of the fix.
+ * `featured` is the pull request's pair (see PR_PAIR): the newest recording of the bug and of the
+ * fix, a screenshot where there is no recording. Nothing else is drawn on the card.
  */
 async function mediaOf(workspace: string): Promise<CardMedia[]> {
   if (!workspace) {
@@ -775,12 +787,18 @@ async function mediaOf(workspace: string): Promise<CardMedia[]> {
 
   let picked = 0;
 
-  for (let round = 0; picked < MEDIA_FEATURED && dirs.some((d) => d.list.length > round); round++) {
-    for (const d of dirs) {
-      if (picked < MEDIA_FEATURED && d.list[round]) {
-        d.list[round].media.featured = ++picked;
-      }
+  for (const pair of PR_PAIR) {
+    // Each list is already recordings first and newest first: see `dirs` above.
+    const best = pair.dirs.map((dir) => byDir.get(dir) || []).find((list) => list.length)?.[0];
+
+    if (best) {
+      best.media.featured = ++picked;
+      best.media.badge = pair.badge;
     }
+  }
+  // The rest are ranked out rather than unranked, so the strip does not fall back to drawing them.
+  for (const f of found) {
+    f.media.featured = f.media.featured || 0;
   }
 
   return [
@@ -1470,6 +1488,51 @@ export function keptKeys(): string[] {
 /** The states that mean a conversation has stopped and the work is a person's again. */
 const SETTLED_STATES = new Set(['input', 'idle', 'finished', 'gone']);
 
+/**
+ * A pull request as GitHub describes it, off the `meta` block `prDetail` carries.
+ *
+ * `capped` is for a card, which draws a description in a pane and keeps it short; a sheet that
+ * writes the description back (PrSheet, ticking a box) must have all of it, or the write would
+ * cut the pull request's own text off at the cap.
+ */
+export function prSummaryFrom(meta: Json, num: number, capped = false): PrSummary {
+  return {
+    number:         Number(meta.number || num),
+    repo:           String(meta.repo || DEFAULT_REPO),
+    title:          String(meta.title || ''),
+    url:            String(meta.url || ''),
+    state:          String(meta.state || ''),
+    draft:          !!meta.draft,
+    merged:         !!meta.merged,
+    author:         String(meta.author || ''),
+    baseRef:        String(meta.baseRef || ''),
+    headRef:        String(meta.headRef || ''),
+    body:           capped ? capBody(String(meta.body || '')) : String(meta.body || ''),
+    stat:           {
+      files:   Number(meta.changedFiles || 0),
+      added:   Number(meta.additions || 0),
+      removed: Number(meta.deletions || 0),
+    },
+    approved:       !!meta.approved,
+    approvedBy:     Array.isArray(meta.approvedBy) ? meta.approvedBy.map(String) : [],
+    mergeable:      !!meta.mergeable,
+    mergeableState: String(meta.mergeableState || ''),
+  };
+}
+
+/**
+ * One pull request's summary, read on its own - for a sheet opened over a card that never asked
+ * for `pr`. `fresh` skips the few seconds `prDetail` keeps a read, which is what a write needs.
+ */
+export async function readPrSummary(num: number, repo = DEFAULT_REPO, fresh = false): Promise<PrSummary | null> {
+  if (fresh) {
+    forgetPrDetail(num, repo);
+  }
+  const detail = await prDetail(num, repo).catch(() => null);
+
+  return detail?.meta ? prSummaryFrom(detail.meta, num) : null;
+}
+
 /** The stopped conversation in this workspace as the `conversation` artifact, or null. */
 export function turnFromSnapshot(agents: ConversationSnapshot | null, workspace: string): AgentTurn | null {
   const found = Object.values(agents?.conversations || {})
@@ -1727,28 +1790,7 @@ export async function readArtifacts(
       if (!want.has('pr') || !meta) {
         return;
       }
-      out.pr = {
-        number:         Number(meta.number || subject.pr),
-        repo:           String(meta.repo || DEFAULT_REPO),
-        title:          String(meta.title || ''),
-        url:            String(meta.url || ''),
-        state:          String(meta.state || ''),
-        draft:          !!meta.draft,
-        merged:         !!meta.merged,
-        author:         String(meta.author || ''),
-        baseRef:        String(meta.baseRef || ''),
-        headRef:        String(meta.headRef || ''),
-        body:           capBody(String(meta.body || '')),
-        stat:           {
-          files:   Number(meta.changedFiles || 0),
-          added:   Number(meta.additions || 0),
-          removed: Number(meta.deletions || 0),
-        },
-        approved:       !!meta.approved,
-        approvedBy:     Array.isArray(meta.approvedBy) ? meta.approvedBy.map(String) : [],
-        mergeable:      !!meta.mergeable,
-        mergeableState: String(meta.mergeableState || ''),
-      };
+      out.pr = prSummaryFrom(meta, subject.pr, true);
     })(),
 
     /*

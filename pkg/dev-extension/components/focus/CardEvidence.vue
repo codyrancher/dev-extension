@@ -70,9 +70,14 @@ const props = defineProps<{
    * the recordings pill opens the recordings.
    */
   talk?: number;
+  /**
+   * The pull request this card is about, when it is about one: the line then opens it - the
+   * description as it renders, its checklist and a review box - over the card. See PrSheet.
+   */
+  pr?: number;
 }>();
 
-const emit = defineEmits<{ (e: 'read'): void; (e: 'talk'): void }>();
+const emit = defineEmits<{ (e: 'read'): void; (e: 'talk'): void; (e: 'pr'): void }>();
 
 /*
  * Teleported rather than opened in place: this card is inside a transformed, clipped element,
@@ -86,8 +91,16 @@ const emit = defineEmits<{ (e: 'read'): void; (e: 'talk'): void }>();
  */
 const viewing = ref<{ start?: number } | null>(null);
 
-/** Whether a thumbnail is drawn, which is what makes this row as tall as one. */
-const pictured = computed(() => props.artifacts.media.some((item) => item.kind !== 'text'));
+/**
+ * Whether a thumbnail is drawn, which is what makes this row as tall as one - by MediaStrip's own
+ * rule: in a ranked set only the chosen are drawn (see PR_PAIR in focus-artifacts.ts), so a set
+ * with neither recording of the pair draws none and the row stays a line.
+ */
+const pictured = computed(() => {
+  const pictures = props.artifacts.media.filter((item) => item.kind !== 'text');
+
+  return pictures.some((item) => item.featured !== undefined) ? pictures.some((item) => item.featured) : pictures.length > 0;
+});
 
 /** The overflow, when there are more things to go and look at than fit on a 26px line. */
 const moreOpen = ref(false);
@@ -160,7 +173,7 @@ const facts = computed<Fact[]>(() => {
 interface Go {
   key: string;
   label: string;
-  icon: 'expand' | 'play' | 'pencil' | 'send';
+  icon: 'expand' | 'play' | 'pencil' | 'send' | 'document';
   url: string;
   /** For a live build: which of the four states its dot is in. */
   state: string;
@@ -169,14 +182,22 @@ interface Go {
 
 const goes = computed<Go[]>(() => {
   const a = props.artifacts;
-  const out: Go[] = a.live.map((live) => ({
+  /*
+   * The pull request first: of the things on this line it is the one every PR card has, and the
+   * only one that opens all of it - so it is the chip that is never folded into `+n`.
+   */
+  const out: Go[] = props.pr ? [{
+    key: 'pr', label: `PR #${ props.pr }`, icon: 'document', url: '', state: '', title: 'The pull request as it renders, with its checklist and a review box',
+  }] : [];
+
+  out.push(...a.live.map((live) => ({
     key:   `live-${ live.kind }`,
     label: live.state === 'serving' ? live.label : `${ live.label } ${ live.state }`,
     icon:  'expand' as const,
     url:   live.url || '',
     state: live.state,
     title: live.detail || live.label,
-  }));
+  })));
 
   if (props.talk) {
     const label = `${ props.talk } ${ props.talk === 1 ? 'comment' : 'comments' }`;
@@ -211,6 +232,8 @@ function pressed(go: Go) {
     emit('read');
   } else if (go.key === 'talk') {
     emit('talk');
+  } else if (go.key === 'pr') {
+    emit('pr');
   }
 }
 

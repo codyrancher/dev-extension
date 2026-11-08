@@ -1235,6 +1235,24 @@ export async function describePr(repo: string, pr: number, changes: { title?: st
   await rest('PATCH', `/repos/${ repo }/pulls/${ pr }`, changes);
 }
 
+let loginSoon: Promise<string> | null = null;
+
+/**
+ * The GitHub login this dashboard acts as, asked once a page.
+ *
+ * What decides whether a pull request is yours, which decides what a review of it may say:
+ * GitHub refuses an approval, or a request for changes, on your own.
+ */
+export function githubLogin(): Promise<string> {
+  loginSoon = loginSoon || rest('GET', '/user').then((user: Json) => String(user?.login || '')).catch(() => {
+    loginSoon = null;
+
+    return '';
+  });
+
+  return loginSoon;
+}
+
 /** Open the pull request for a branch that already has the work on it. */
 export async function createPullRequest(repo: string, from: { head: string; base: string; title: string; body?: string; draft?: boolean }): Promise<{ number: number; url: string }> {
   const made = await rest('POST', `/repos/${ repo }/pulls`, {
