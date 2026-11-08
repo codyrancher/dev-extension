@@ -385,6 +385,16 @@ export function foldModel(entries) {
  * answer to "which one did this take out" being unknown is not a licence to take out another.
  * What is left over by the drift is handled where it is read rather than here: the CLI's own
  * lines are not messages, so neither `promptRecords` nor the chat's log counts them.
+ *
+ * A `dequeue` names nothing either, and taking the front for it is the same mistake in the other
+ * direction. The drift leaves its phantoms at the front - a background task's notice the CLI
+ * enqueued and then let go of without a word - so the next dequeue took the phantom and the
+ * person's message, which claude had just started a turn on, stayed in the list as "in claude's
+ * queue" for the rest of the session. Measured on pr-222: "Reduce every comment to be no more
+ * than 2 lines." was enqueued, dequeued and answered at 02:46, and read as queued until the pane
+ * closed. A dequeue is followed, a few lines on, by the prompt line of the turn it started, so
+ * that line says which item went: the one whose words it carries. The front is only the answer
+ * when nothing does.
  */
 export function foldQueue(entries, sinceIndex = 0) {
   let queue = [];
@@ -399,7 +409,19 @@ export function foldQueue(entries, sinceIndex = 0) {
 
     switch (entry.operation) {
     case 'enqueue': queue.push(content); break;
-    case 'dequeue': queue.shift(); break;
+    case 'dequeue': {
+      const started = dequeuedKeys(entries, i);
+      let at = -1;
+
+      for (const key of started) {
+        at = queue.findIndex((queued) => promptKey(queued) === key);
+        if (at >= 0) {
+          break;
+        }
+      }
+      queue.splice(at >= 0 ? at : 0, 1);
+      break;
+    }
     case 'remove': {
       const at = queue.indexOf(content);
 
@@ -416,6 +438,40 @@ export function foldQueue(entries, sinceIndex = 0) {
   }
 
   return queue;
+}
+
+/** How far past a `dequeue` its turn's prompt line is looked for: it lands within a few lines. */
+const DEQUEUE_REACH = 60;
+
+/**
+ * The words a `dequeue` may have started a turn on, as they compare (promptKey), nearest first;
+ * none when the prompt line is not in what has been read yet - the tail of a live file.
+ *
+ * Every user line up to the next dequeue, meta ones included. What the CLI queues for itself is
+ * written as meta when it is dequeued - a /loop or ScheduleWakeup prompt is `isMeta: true` with
+ * `promptSource: system` - so a reading of only the person's lines left those in the list.
+ */
+function dequeuedKeys(entries, at) {
+  const end = Math.min(entries.length, at + DEQUEUE_REACH);
+  const keys = [];
+
+  for (let j = at + 1; j < end; j++) {
+    const entry = entries[j];
+
+    if (entry.type === 'queue-operation' && entry.operation === 'dequeue') {
+      break;
+    }
+    if (entry.type !== 'user' || blocksOf(entry).some((b) => b.type === 'tool_result')) {
+      continue;
+    }
+    const key = promptKey(textOf(entry));
+
+    if (key) {
+      keys.push(key);
+    }
+  }
+
+  return keys;
 }
 
 /** The question claude is waiting on, if the last one it asked has no answer yet. */
@@ -462,6 +518,94 @@ export function pendingQuestion(entries) {
   }
 
   return null;
+}
+
+/**
+ * ── Where the CLI's question dialog is, read off the pane ─────────────────────────────────
+ *
+ * The transcript says what was asked - every question of an AskUserQuestion call - and nothing
+ * about how far through them the person is: the answers are written down once, when the last
+ * one is submitted. The CLI's dialog steps through them one at a time and then shows a review
+ * screen, so a chat that drew the first question for the whole of that time was drawing a
+ * question the terminal had already moved past, and the next click landed on the wrong one.
+ * Measured: every multi-question answer in the pod's transcripts has the second question
+ * answered with its first option, including one where the first was answered with its third.
+ *
+ * How the dialog takes keys, from the CLI's own source (2.1.319, the AskUserQuestion view):
+ *
+ *   - a plain single choice selects on its digit and moves on at once - Enter is not needed,
+ *     and an Enter sent after it lands on whatever comes next;
+ *   - a single choice with previews only moves the highlight on a digit; Enter selects;
+ *   - a multi-select toggles on a digit, toggles on Enter too, and moves on with the Tabs
+ *     binding (Right arrow), which nothing in the list takes for itself;
+ *   - after the last of several questions comes "Review your answers", where Enter submits;
+ *   - "Chat about this" is the row after Other: digit options+2, or for a preview question
+ *     Down from the last option and Enter. It closes the dialog and hands claude "the user wants
+ *     to clarify these questions", which is what a typed reply to a question should do.
+ */
+
+/** The digit that reaches "Chat about this" in a plain or multi-select question. */
+export function chatAboutKey(question) {
+  const count = Array.isArray(question?.options) ? question.options.length : 0;
+
+  return String(count + 2);
+}
+
+/** Whether a question is drawn as the preview view, which takes a digit as a move, not a choice. */
+export function isPreviewQuestion(question) {
+  return !question?.multiSelect && Array.isArray(question?.options) && question.options.some((o) => o && o.preview !== undefined);
+}
+
+const squash = (text) => String(text || '').replace(/[│┃╭╮╰╯─]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * Which question of a pending AskUserQuestion the pane is showing, or its review screen.
+ *
+ * @param {{ questions?: object[] }|null} question  state.question
+ * @param {string} paneText                        the pane's last lines
+ * @returns {{ index: number, review: boolean, seen: boolean }} `seen` is false when the pane
+ *   shows none of them - not drawn yet, or scrolled - and the index is then a guess of 0.
+ */
+export function questionStep(question, paneText) {
+  const questions = Array.isArray(question?.questions) ? question.questions : [];
+  const lines = String(paneText || '').replace(/\r/g, '').split('\n');
+  const bottom = squash(lines.slice(-30).join('\n'));
+
+  // A single plain question is submitted by its answer; several, or a multi-select, end on a
+  // review screen.
+  const reviewed = questions.length > 1 || questions.some((q) => q?.multiSelect);
+
+  if (reviewed && /review your answers|ready to submit your answers\?/.test(bottom)) {
+    return { index: questions.length, review: true, seen: true };
+  }
+  const pane = squash(lines.join('\n'));
+  let best = -1;
+  let bestScore = 0;
+
+  questions.forEach((q, i) => {
+    const text = squash(q?.question);
+    let score = 0;
+
+    if (text && pane.includes(text.slice(0, 48))) {
+      score += 3;
+    }
+    if (text.length > 48 && pane.includes(text.slice(-48))) {
+      score += 3;
+    }
+    for (const option of Array.isArray(q?.options) ? q.options : []) {
+      const label = squash(option?.label);
+
+      if (label && pane.includes(label)) {
+        score += 1;
+      }
+    }
+    if (score > bestScore) {
+      best = i;
+      bestScore = score;
+    }
+  });
+
+  return bestScore >= 2 ? { index: best, review: false, seen: true } : { index: 0, review: false, seen: false };
 }
 
 const OAUTH_RE = /(https:\/\/(?:claude\.com|claude\.ai|console\.anthropic\.com)\/[^\s]*oauth[^\s]*)/i;
@@ -681,6 +825,7 @@ export function deriveState(input) {
       state.phase = 'idle';
       state.since = hook.at;
       state.status = state.interrupted ? 'Interrupted' : 'Ready';
+      state.queue = [];
 
       return state;
     }
@@ -726,6 +871,18 @@ export function deriveState(input) {
   state.phase = 'idle';
   state.since = lastEndAt;
   state.status = state.interrupted ? 'Interrupted' : 'Ready';
+  /*
+   * Nothing is queued in a conversation that is not doing anything.
+   *
+   * The CLI starts on the head of its queue the moment a turn ends - the dequeue lands within a
+   * second of the turn's end, measured on every transcript in the pod - so an idle claude with
+   * something in its queue is a state the CLI does not have. What the fold holds here is drift
+   * (see foldQueue): items the CLI let go of without writing it down. Across 51 transcripts
+   * every one of the 24 the fold still held at the end was one of those, and the chat drew the
+   * person's among them as "in claude's queue" under a conversation that had long since
+   * answered it.
+   */
+  state.queue = [];
 
   return state;
 }

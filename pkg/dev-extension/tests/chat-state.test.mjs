@@ -17,7 +17,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   loginFrom, verbFrom, pendingQuestion, splitPasted, unwrapPasted, promptTextOf, duration, tokens, ago, promptKey, reconcilePending,
-  parseEntries, deriveState, foldQueue, foldModel, promptRecords, isCliText
+  parseEntries, deriveState, foldQueue, foldModel, promptRecords, isCliText, questionStep, chatAboutKey, isPreviewQuestion
 } from '../chat-state.mjs';
 
 // ── The login flow: the one state only the pane shows ──────────────────────────────────────
@@ -305,6 +305,79 @@ test('an unplaceable remove does not go on to eat the next dequeue\'s answer', (
   // 'mine' was started on. Before, the stray remove dropped it and the dequeue dropped 'theirs',
   // leaving 'mine' - the one thing claude had already read - showing as queued.
   assert.deepEqual(queue, ['theirs']);
+});
+
+/*
+ * pr-222, 2026-11-06: a background task's notice was enqueued and let go of with no operation
+ * written, so it sat at the front of the fold. The person's message was enqueued behind it,
+ * dequeued, and answered - and stayed in the list as "in claude's queue" for the rest of the
+ * session, because the dequeue took the phantom.
+ */
+const promptLine = (text) => ({ type: 'user', timestamp: '2026-11-06T02:46:55Z', message: { role: 'user', content: text } });
+const turnEnd = () => ({ type: 'system', subtype: 'turn_duration', timestamp: '2026-11-06T02:48:11Z' });
+
+test('a dequeue takes the item its turn started on, not a phantom in front of it', () => {
+  const queue = foldQueue([
+    op('enqueue', TASK),
+    op('enqueue', 'Reduce every comment to be no more than 2 lines.'),
+    op('dequeue'),
+    turnEnd(),
+    promptLine('Reduce every comment to be no more than 2 lines.'),
+  ]);
+
+  assert.deepEqual(queue, [TASK]);
+});
+
+test('a dequeue matches what the CLI queued for itself, which it writes down as meta', () => {
+  // pr-1225, 2026-11-06: a /loop wakeup, recorded `isMeta: true, promptSource: 'system'`.
+  const wakeup = 'Check on the PR 1225 review agents and continue the my-pr-full-review phases.';
+  const queue = foldQueue([
+    op('enqueue', TASK),
+    op('enqueue', wakeup),
+    op('dequeue'),
+    { type: 'system', subtype: 'scheduled_task_fire', timestamp: '2026-11-06T21:58:00Z' },
+    { ...promptLine(wakeup), isMeta: true, promptSource: 'system' },
+  ]);
+
+  assert.deepEqual(queue, [TASK]);
+});
+
+test('a dequeue whose prompt line has not been read yet still takes the front', () => {
+  assert.deepEqual(foldQueue([op('enqueue', 'one'), op('enqueue', 'two'), op('dequeue')]), ['two']);
+});
+
+test('a dequeue matches through what the CLI does to a paste', () => {
+  const sent = 'line one of a long message\nline two of it';
+  const recorded = `<pasted_content id="9a3f">\n${ sent }\n</pasted_content id="9a3f">`;
+
+  assert.deepEqual(foldQueue([op('enqueue', 'other'), op('enqueue', sent), op('dequeue'), promptLine(recorded)]), ['other']);
+});
+
+test('an idle conversation has nothing queued, whatever the fold was left holding', () => {
+  const entries = [
+    promptLine('first'),
+    op('enqueue', 'Reduce every comment to be no more than 2 lines.'),
+    turnEnd(),
+  ];
+  const state = deriveState({
+    entries, hook: null, attached: true, alive: true, paneText: '', now: Date.parse('2026-11-06T03:00:00Z'),
+  });
+
+  assert.equal(state.phase, 'idle');
+  assert.deepEqual(state.queue, []);
+});
+
+test('a working conversation keeps what is really waiting', () => {
+  const entries = [
+    promptLine('first'),
+    op('enqueue', 'and then this'),
+  ];
+  const state = deriveState({
+    entries, hook: null, attached: true, alive: true, paneText: '', now: Date.parse('2026-11-06T03:00:00Z'),
+  });
+
+  assert.equal(state.phase, 'working');
+  assert.deepEqual(state.queue, ['and then this']);
 });
 
 // ── Whose line is it ────────────────────────────────────────────────────────────────────────
@@ -625,4 +698,92 @@ test('toolGroup folds two or more calls and says what is running and what failed
   assert.deepEqual(g.images, ['data:image/png;base64,x']);
   assert.equal(toolGroup([{ id: 'a', result: '' }, { id: 'b', result: 'x' }]).running, null);
   assert.equal(toolGroup(null).count, 0);
+});
+
+
+// ── Where the CLI's question dialog is ──────────────────────────────────────────────────────
+
+/*
+ * The shape of 588788ec, 2026-11-04: two questions, both answered with option 1 - the second by
+ * the Enter the chat pressed after the first one's digit, because the dialog had already moved.
+ */
+const TWO = {
+  id: 'toolu_1',
+  questions: [
+    {
+      question: 'The 19 issues moved to Next Up today each have a codyrancher comment with a reproduction video. For the Next Up check, how should those count?',
+      header: 'Steps',
+      options: [{ label: 'Add steps to our comments (Recommended)' }, { label: 'Video is enough' }, { label: 'Strict: move them back' }],
+    },
+    {
+      question: 'Which Next Up issues should the check cover?',
+      header: 'Scope',
+      options: [{ label: 'Only small-scope (mixin)' }, { label: 'All of Next Up' }],
+    },
+  ],
+};
+
+const paneOn = (q) => [
+  '● Here is what I found.',
+  '───────────────────────────────────────────',
+  '←  ☒ Steps  ☐ Scope  ✔ Submit  →',
+  '',
+  q.question,
+  '',
+  ...q.options.map((o, i) => `${ i === 0 ? '❯' : ' ' } ${ i + 1 }. ${ o.label }`),
+  `  ${ q.options.length + 1 }. Type something.`,
+  '───────────────────────────────────────────',
+  `  ${ q.options.length + 2 }. Chat about this`,
+  '',
+  'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+].join('\n');
+
+test('questionStep follows the dialog to the question it is on', () => {
+  assert.deepEqual(questionStep(TWO, paneOn(TWO.questions[0])), { index: 0, review: false, seen: true });
+  assert.deepEqual(questionStep(TWO, paneOn(TWO.questions[1])), { index: 1, review: false, seen: true });
+});
+
+test('questionStep reads a question the pane has wrapped across lines', () => {
+  const wrapped = paneOn(TWO.questions[0]).replace('reproduction video. For', 'reproduction\nvideo. For');
+
+  assert.equal(questionStep(TWO, wrapped).index, 0);
+});
+
+test('questionStep knows the review screen after the last question', () => {
+  const pane = [
+    '←  ☒ Steps  ☒ Scope  ✔ Submit  →',
+    'Review your answers',
+    ' ● Which Next Up issues should the check cover?',
+    '   → All of Next Up',
+    'Ready to submit your answers?',
+    '❯ 1. Submit answers',
+    '  2. Cancel',
+  ].join('\n');
+
+  assert.deepEqual(questionStep(TWO, pane), { index: 2, review: true, seen: true });
+});
+
+test('questionStep says when the pane shows none of it', () => {
+  assert.deepEqual(questionStep(TWO, '❯ \n? for shortcuts'), { index: 0, review: false, seen: false });
+  assert.deepEqual(questionStep(null, ''), { index: 0, review: false, seen: false });
+});
+
+test('a single question has no review screen to find', () => {
+  const one = { id: 't', questions: [TWO.questions[1]] };
+
+  assert.equal(questionStep(one, 'Review your answers').review, false);
+});
+
+test('a single multi-select question does end on one', () => {
+  const one = { id: 't', questions: [{ ...TWO.questions[1], multiSelect: true }] };
+
+  assert.deepEqual(questionStep(one, 'Review your answers\nReady to submit your answers?'), { index: 1, review: true, seen: true });
+});
+
+test('Chat about this is the row after Other, and a preview question is its own view', () => {
+  assert.equal(chatAboutKey(TWO.questions[0]), '5');
+  assert.equal(chatAboutKey(TWO.questions[1]), '4');
+  assert.equal(isPreviewQuestion(TWO.questions[0]), false);
+  assert.equal(isPreviewQuestion({ options: [{ label: 'a', preview: 'x' }, { label: 'b' }] }), true);
+  assert.equal(isPreviewQuestion({ multiSelect: true, options: [{ label: 'a', preview: 'x' }, { label: 'b' }] }), false);
 });
