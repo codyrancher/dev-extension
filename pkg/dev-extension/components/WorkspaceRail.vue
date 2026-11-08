@@ -1791,11 +1791,6 @@ export default {
       return action?.skill ? skillTemplate(action) : ACTION_TEMPLATES[action?.run] || '';
     },
 
-    /** The dialect, for the editor's preview. Bound as a prop, so it has to be a plain value. */
-    expandForEditor(template, vars) {
-      return expandPrompt(template, vars);
-    },
-
     /** The skill section's two buttons, which differ only in whether the save is committed. */
     onSaveSkill(text, commit) {
       this.skillDraft = text;
@@ -4172,7 +4167,6 @@ export default {
               v-if="item.kind === 'artifacts'"
               :workspace="workspace.name"
               :groups="item.groups"
-              :total="item.total"
               :truncated="item.truncated"
               :lead="item.lead"
               @open="shot = $event"
@@ -4843,12 +4837,10 @@ export default {
         @close="inspecting = null"
       >
         <PromptEditor
-          :label="inspecting.label"
           :template="promptDraft"
           :shipped="shippedPrompt(inspecting.action)"
           :vars="varsNow()"
           :token="(name) => `{${ '{' } ${ name } }${ '}' }`"
-          :expand="expandForEditor"
           :skill="inspecting.skill || ''"
           :skill-content="inspecting.content || ''"
           :skill-overridden="!!inspecting.overridden"
@@ -4886,7 +4878,6 @@ export default {
           v-else-if="modal === 'share'"
           :workspace="workspace"
           :pr="pr"
-          :issue="issue"
         />
       </DevModal>
 

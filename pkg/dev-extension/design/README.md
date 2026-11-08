@@ -28,8 +28,6 @@ sits between.
 | --- | --- |
 | `Stack` | things in a column, one gap apart |
 | `Row` | things in a line, one gap apart, with an alignment |
-| `Spacer` | nothing, that takes the leftover room |
-| `Panel` | a bordered box with a head that stays put and a body that scrolls |
 
 They exist because `display: flex` is not the hard part. Writing it in thirty components means
 choosing the gap thirty times, and the gap is the thing that was never the same twice. Here it

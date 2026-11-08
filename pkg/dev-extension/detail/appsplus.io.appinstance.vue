@@ -3,7 +3,6 @@ import ResourceTabs from '@shell/components/form/ResourceTabs';
 import SortableTable from '@shell/components/SortableTable';
 import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
-import { RcButton } from '@components/RcButton';
 import {
   FLEET_BUNDLE, FLEET_BUNDLE_DEPLOYMENT, APP, PROVISIONING_CLUSTER, REGISTRATION_TOKEN, steveType
 } from '../config/types';
@@ -20,7 +19,7 @@ export default {
   name: 'DetailAppInstance',
 
   components: {
-    ResourceTabs, Tab, Banner, RcButton, SortableTable
+    ResourceTabs, Tab, Banner, SortableTable
   },
 
   props: {

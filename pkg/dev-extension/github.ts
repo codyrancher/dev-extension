@@ -730,69 +730,6 @@ export async function setIssueStatus(repo: string, number: number, wanted: strin
 }
 
 /**
- * The open Dependabot alerts on one repository, folded by advisory.
- *
- * REST rather than GraphQL: `vulnerabilityAlerts` on the GraphQL side needs the same permission
- * and returns the same thing in a shape that still has to be folded, and this is one request
- * either way. It is a separate request from the rest of My Work because it is about a repository
- * rather than about a person.
- *
- * A token without access to a repository's security tab gets a 403 here, which is not an error
- * worth stopping the page for: the section says it cannot see them and the rest still renders.
- */
-export async function dependabotAlerts(repo: string): Promise<GithubAlert[]> {
-  const token = await githubToken();
-
-  if (!token || !repo) {
-    return [];
-  }
-
-  const response = await fetch(`https://api.github.com/repos/${ repo }/dependabot/alerts?state=open&per_page=100`, {
-    headers: { authorization: `Bearer ${ token }`, accept: 'application/vnd.github+json' },
-  });
-
-  if (!response.ok) {
-    throw new Error(response.status === 403
-      ? `The token cannot read ${ repo }'s Dependabot alerts. That needs a token with security_events, and access to that repository's security tab.`
-      : `GitHub answered ${ response.status } for ${ repo }'s Dependabot alerts.`);
-  }
-
-  const alerts: Json[] = await response.json();
-  const byAdvisory = new Map<string, GithubAlert & { manifests: Set<string>; names: Set<string> }>();
-
-  for (const alert of alerts) {
-    const advisory = alert.security_advisory || {};
-    const key = advisory.ghsa_id || String(alert.number);
-    const found = byAdvisory.get(key) || {
-      key,
-      severity: advisory.severity || '',
-      summary:  advisory.summary || '',
-      ghsa:     advisory.ghsa_id || '',
-      cve:      advisory.cve_id || '',
-      packages: [],
-      // The advisory's own page on the repository, which is where a person goes to read it.
-      url:      alert.html_url || '',
-      alerts:   0,
-      files:    0,
-      patched:  alert.security_vulnerability?.first_patched_version?.identifier || '',
-      manifests: new Set<string>(),
-      names:     new Set<string>(),
-    };
-
-    found.alerts += 1;
-    found.manifests.add(alert.dependency?.manifest_path || '');
-    found.names.add(alert.dependency?.package?.name || '');
-    byAdvisory.set(key, found);
-  }
-
-  return [...byAdvisory.values()].map((entry) => ({
-    ...entry,
-    files:    entry.manifests.size,
-    packages: [...entry.names].filter(Boolean),
-  }));
-}
-
-/**
  * Ask GitHub to run the failed jobs again.
  *
  * `rerun-failed-jobs` rather than `rerun`, which is the difference between running the two that
@@ -903,7 +840,6 @@ export async function myWork(repos?: string[], without?: string[], sections: Wor
     projectStatusError,
   };
 }
-
 
 // ── One pull request ────────────────────────────────────────────────────────────────────────
 

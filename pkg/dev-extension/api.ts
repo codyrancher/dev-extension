@@ -15,7 +15,6 @@
  * Steve on `/k8s/clusters/<cluster>/v1`, with the CSRF header the API wants on writes. There
  * is no controller and no credential anywhere in here.
  */
-import { WORKSPACE_VUE_CONFIG, WORKSPACE_CONFIG_MOUNT } from './workspace-config';
 import { WORKSPACE_API_SERVER } from './workspace-api';
 import { AGENT_SEED } from './agent-seed.generated';
 import { numbersIn } from './artifact-subjects.mjs';
@@ -36,7 +35,6 @@ import {
 // The labels live in config/constants now, beside the Apps Plus names that use them; re-exported
 // so the components that always imported them from here keep working.
 export { LABEL_WORKSPACE, LABEL_APP, LABEL_CLUSTER };
-
 
 // The `local` cluster, like the pod this dev server runs in. The product shows no cluster
 // switcher, so there is nothing that could make this a choice.
@@ -71,7 +69,6 @@ export function setCluster(cluster: string): void {
 export function activeCluster(): string {
   return currentCluster;
 }
-
 
 /** One cluster this Rancher manages, with enough of its capacity to choose between them. */
 export type ClusterHealth = 'ok' | 'warn' | 'error';
@@ -150,13 +147,6 @@ async function nodeLive(cluster: string, node: string): Promise<{ memory: number
   return Number.isFinite(memory) && Number.isFinite(disk) ? {
     memory, disk, memoryTotal: Number.isFinite(memoryTotal) ? memoryTotal : 0, diskTotal: Number.isFinite(diskTotal) ? diskTotal : 0,
   } : null;
-}
-
-/** The active clusters, with nothing measured: what the workspace list needs, and no wait. */
-export async function listClusterIds(): Promise<string[]> {
-  const response = await devFetch('/v3/clusters').catch(() => null);
-
-  return (response?.data || []).filter((cluster: Json) => cluster.state === 'active').map((cluster: Json) => cluster.id);
 }
 
 /**
@@ -325,7 +315,6 @@ export function readableBytes(value: number): string {
 
   return `${ scaled >= 10 || unit === 0 ? Math.round(scaled) : scaled.toFixed(1) } ${ units[unit] }`;
 }
-
 
 /**
  * Ask Steve for the labelled things only, rather than for everything.
@@ -1013,8 +1002,6 @@ export async function getWorkspace(name: string): Promise<DevWorkspace | null> {
   return repo ? { ...built, repo } : built;
 }
 
-
-
 /**
  * Why this name cannot be used right now, or '' when it can.
  *
@@ -1289,7 +1276,6 @@ async function setWorkspaceTitle(name: string, title: string): Promise<void> {
   }).catch(() => {});
 }
 
-
 /**
  * The per-workspace objects this product owns, for a namespace that has just appeared.
  *
@@ -1396,58 +1382,6 @@ export async function setWorkspaceRunning(name: string, running: boolean, cluste
 
   deployment.spec.replicas = running ? 1 : 0;
   await devFetch(url, { method: 'PUT', body: JSON.stringify(deployment) });
-}
-
-/**
- * Bring a workspace's Service and dev server into line with the origin its template asks for.
- *
- * Both halves have to agree or neither works: a dev server built with a router base of the proxy
- * prefix hangs on its loading spinner when it is loaded at a node port (measured, and it makes no
- * API calls at all), and one built with no prefix has every in-app link pointing at the root of
- * Rancher's origin when it is loaded through the proxy.
- *
- * Done at start rather than continuously, because both are read when the pod starts, and only
- * when something actually differs, so starting a workspace that is already right does not restart
- * it for nothing.
- */
-/**
- * The dev server config a workspace boots with, brought up to date.
- *
- * Written on every start rather than only at create, for the reason the sidecar scripts are: the
- * file is this repo's, the workspace copies it in on boot, and a workspace made a week ago would
- * otherwise go on booting last week's copy for ever. It is not academic. The version that only
- * wrote it at create left a workspace crash-looping on `DEV_PROXY_PATH must be set` after the
- * config learned to do without one, because the pod had the old file and the new environment.
- */
-async function ensureWorkspaceConfig(name: string): Promise<void> {
-  const namespace = workspaceNamespace(name);
-  const url = `${ BASE }/v1/configmaps/${ namespace }/${ WORKSPACE_CONFIG_MAP }`;
-  const existing = await devFetch(url).catch(() => null);
-  const data = { 'vue.config.js': WORKSPACE_VUE_CONFIG };
-
-  // Created when it is not there, not skipped. A workspace whose ConfigMap has gone - deleted by
-  // hand, or lost with a create that got part way - crash-loops on `cp: cannot stat
-  // /dev-config/vue.config.js`, and the one function whose job is bringing a workspace up to
-  // date was walking past the reason.
-  if (!existing) {
-    await devFetch(`${ BASE }/v1/configmaps`, {
-      method: 'POST',
-      body:   JSON.stringify({
-        apiVersion: 'v1',
-        kind:       'ConfigMap',
-        metadata:   { namespace, name: WORKSPACE_CONFIG_MAP },
-        data,
-      }),
-    }).catch(() => null);
-
-    return;
-  }
-
-  if (existing.data?.['vue.config.js'] === WORKSPACE_VUE_CONFIG) {
-    return;
-  }
-
-  await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data }) });
 }
 
 /**
@@ -1560,10 +1494,6 @@ async function ensureWorkspaceTerminal(name: string, cluster = ''): Promise<void
   await devFetch(url, { method: 'PUT', body: JSON.stringify({ ...existing, data }) }).catch(() => null);
 }
 
-
-
-
-
 /**
  * The address a published port answers on, which is the node's own.
  *
@@ -1592,7 +1522,6 @@ export const nodeAddress = source(async(): Promise<string> => {
   // no address at all is worse, and this is the case where the person cannot read the nodes.
   return of('ExternalIP') || of('InternalIP') || window.location.hostname;
 }, { name: 'node-address', ttl: Infinity }) as () => Promise<string>;
-
 
 /**
  * Run something in the agent pod, which is the one pod that has every workspace's tree.
@@ -1716,76 +1645,6 @@ export interface ArtifactSource {
 }
 
 /**
- * Everywhere artifacts are, in one read: every live workspace and every kept set.
- *
- * The page used to list only kept sets, which meant the evidence an agent was producing right now
- * was not on it - a workspace had to be deleted before its recordings appeared, which is exactly
- * backwards. Both are directories of the same shape with the same tag beside them, so both are
- * read by one walk here and told apart by `live`.
- *
- * One exec, because this is a listing: a page opening on thirty workspaces should cost one round
- * trip, not thirty.
- */
-export async function listArtifactSources(): Promise<ArtifactSource[]> {
-  const script = [
-    `for d in /workspaces/*/artifacts "${ ARTIFACT_SETS_DIR }"/*; do`,
-    `  [ -d "$d" ] || continue`,
-    `  n=$(ls -A "$d" 2>/dev/null | grep -v '^${ ARTIFACT_TAG }$' | head -1)`,
-    // A workspace with an artifacts directory and nothing in it is not a source of anything.
-    `  [ -n "$n" ] || continue`,
-    `  case "$d" in`,
-    `    ${ ARTIFACT_SETS_DIR }/*) echo "SRC kept $(basename "$d")" ;;`,
-    `    *) echo "SRC live $(basename "$(dirname "$d")")" ;;`,
-    `  esac`,
-    `  cat "$d/${ ARTIFACT_TAG }" 2>/dev/null | tr -d '\\n'; echo`,
-    `  echo "COUNT $(find "$d" -type f ! -name '${ ARTIFACT_TAG }' 2>/dev/null | wc -l)"`,
-    // The newest file's time, which is when this source last had anything to say.
-    `  echo "NEWEST $(find "$d" -type f ! -name '${ ARTIFACT_TAG }' -printf '%T@\\n' 2>/dev/null | sort -rn | head -1)"`,
-    `done`,
-  ].join('\n');
-  const out = await inAgentPod(script).catch(() => '');
-  const sources: ArtifactSource[] = [];
-  let current: ArtifactSource | null = null;
-
-  for (const raw of out.split('\n')) {
-    const line = raw.trim();
-    const head = /^SRC (live|kept) (\S+)$/.exec(line);
-
-    if (head) {
-      current = {
-        workspace: head[2], live: head[1] === 'live', ...numbersIn(head[2]), at: '', files: 0,
-      };
-      sources.push(current);
-      continue;
-    }
-    if (!current) {
-      continue;
-    }
-    const count = /^COUNT (\d+)$/.exec(line);
-    const newest = /^NEWEST ([\d.]+)$/.exec(line);
-
-    if (count) {
-      current.files = Number(count[1]);
-    } else if (newest) {
-      // Only when the tag did not already say when: a kept set's capture time is the better
-      // answer, because its files keep the modification times they had in the workspace.
-      current.at = current.at || new Date(Number(newest[1]) * 1000).toISOString();
-    } else if (line.startsWith('{')) {
-      try {
-        const tag = JSON.parse(line);
-
-        // The tag outranks the name: it can say what no name could.
-        current.issue = Number(tag.issue) || current.issue;
-        current.pr = Number(tag.pr) || current.pr;
-        current.at = tag.capturedAt || current.at;
-      } catch { /* a set written before there were tags; its name still says what it is about */ }
-    }
-  }
-
-  return sources;
-}
-
-/**
  * Tag every workspace's artifacts with what they are about, where that has not been done.
  *
  * Written once per workspace and never rewritten: the tag is the first thing that knew, and
@@ -1812,21 +1671,6 @@ async function tagWorkspaceArtifacts(workspaces: { name: string }[]): Promise<vo
   }).join('\n');
 
   await inAgentPod(script).catch(() => '');
-}
-
-/**
- * Remove one kept set. The only thing that ever deletes one, and it is a person pressing it.
- *
- * The whole point of a set is that it outlives the workspace, so nothing reclaims these on a
- * schedule: a set is evidence until somebody says it is not.
- */
-export async function removeArtifactSet(workspace: string): Promise<void> {
-  const name = safeName(workspace);
-
-  if (!name) {
-    return;
-  }
-  await inAgentPod(`rm -rf "${ ARTIFACT_SETS_DIR }/${ name }" 2>/dev/null; echo SET-GONE`).catch(() => '');
 }
 
 /**
@@ -1984,11 +1828,6 @@ async function removeWorkspaceNamespace(name: string): Promise<void> {
   }
 }
 
-/** How to speak to what a workspace serves. */
-export function workspaceScheme(workspace: DevWorkspace | null | undefined): string {
-  return workspace?.scheme === 'https' ? 'https' : DEFAULT_WORKSPACE_SCHEME;
-}
-
 /**
  * A running pod in a namespace carrying all of the given labels, or null while there isn't
  * one.
@@ -2035,105 +1874,6 @@ export async function workspaceContainerRestarts(namespace: string, pod: string)
   const restarts = (found?.status?.containerStatuses || []).find((c: Json) => c.name === WORKSPACE_CONTAINER)?.restartCount;
 
   return Number.isInteger(restarts) ? restarts : null;
-}
-
-/**
- * How long each workspace took to become ready, and how often it has restarted.
- *
- * The Deployment records when it last became Available, and the namespace records when the
- * workspace was created, so the difference is the boot this cluster actually delivered. It is
- * the Deployment's own history rather than anything kept here, which is why it survives this
- * page never having been open before.
- */
-export async function workspaceReadyTimes(names: string[]): Promise<Record<string, { seconds: number | null; restarts: number }>> {
-  if (!names.length) {
-    return {};
-  }
-
-  const [namespaces, deployments, pods] = await Promise.all([
-    devFetch(`${ BASE }/v1/namespaces?${ WORKSPACE_FILTER }`).catch(() => null),
-    devFetch(`${ BASE }/v1/apps.deployments?${ WORKSPACE_FILTER }`).catch(() => null),
-    devFetch(`${ BASE }/v1/pods?${ WORKSPACE_FILTER }`).catch(() => null),
-  ]);
-
-  const createdAt: Record<string, number> = {};
-  const out: Record<string, { seconds: number | null; restarts: number }> = {};
-
-  for (const namespace of namespaces?.data || []) {
-    const name = namespace.metadata?.labels?.[LABEL_WORKSPACE];
-
-    if (name) {
-      createdAt[name] = Date.parse(namespace.metadata.creationTimestamp);
-    }
-  }
-
-  for (const name of names) {
-    out[name] = { seconds: null, restarts: 0 };
-  }
-
-  for (const deployment of deployments?.data || []) {
-    const name = deployment.metadata?.labels?.[LABEL_WORKSPACE];
-
-    // The workspace's own Deployment, not a sidecar's. See ownedByWorkspace.
-    if (!name || !ownedByWorkspace(deployment, name)) {
-      continue;
-    }
-
-    const available = (deployment.status?.conditions || [])
-      .find((condition: Json) => condition.type === 'Available' && condition.status === 'True');
-
-    if (name && available && createdAt[name]) {
-      const seconds = Math.round((Date.parse(available.lastTransitionTime) - createdAt[name]) / 1000);
-
-      // A workspace that was stopped and started again transitions to Available a second time,
-      // which is not a boot from nothing. Only a positive, plausible first interval is kept.
-      out[name] = { ...out[name], seconds: seconds > 0 ? seconds : null };
-    }
-  }
-
-  for (const pod of pods?.data || []) {
-    const name = pod.metadata?.labels?.[LABEL_WORKSPACE];
-    const restarts = pod.status?.containerStatuses?.[0]?.restartCount || 0;
-
-    if (name && ownedByWorkspace(pod, name) && out[name]) {
-      out[name] = { ...out[name], restarts };
-    }
-  }
-
-  return out;
-}
-
-/** Warnings from the workspaces' namespaces, newest first. */
-export async function workspaceEvents(names: string[]): Promise<Json[]> {
-  const results = await Promise.all(names.map((name) => (
-    devFetch(`${ BASE }/v1/events/${ workspaceNamespace(name) }`)
-      .then((events: Json) => ({ name, events }))
-      .catch(() => ({ name, events: { data: [] } }))
-  )));
-
-  const out: Json[] = [];
-
-  for (const { name, events } of results) {
-    for (const event of events.data || []) {
-      // `_type`, not `type`. Steve puts its own schema id in `type` on everything it returns
-      // (here, the string "event") and moves the Kubernetes value out to `_type`, so a filter
-      // written against `type` matches nothing and the page reports that nothing has gone wrong.
-      if (event._type !== 'Warning') {
-        continue;
-      }
-
-      out.push({
-        id:        event.id || `${ name }-${ event.metadata?.name }`,
-        workspace: name,
-        reason:    event.reason,
-        message:   event.message,
-        count:     event.count || 1,
-        last:      event.lastTimestamp || event.metadata?.creationTimestamp,
-      });
-    }
-  }
-
-  return out.sort((a, b) => Date.parse(b.last) - Date.parse(a.last));
 }
 
 /**
@@ -2224,8 +1964,6 @@ export const CREDENTIALS_KEY = 'credentials.json';
 /** The hand-made Secret the store replaced. Only the migration that folds it in still names it. */
 export const GITHUB_SECRET = 'github-token';
 
-
-
 /**
  * The shared GitHub browser's CDP endpoint, in cluster.
  *
@@ -2271,9 +2009,6 @@ const GITHUB_BROWSER_HOST_PATH = '/var/lib/rancher/extension-studio/browser-conf
 // exposes it on the pod IP). The flags are the linuxserver/chromium container's own.
 const GITHUB_BROWSER_CHROME_CLI = 'https://github.com/ --no-first-run --start-maximized --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --allow-insecure-localhost --ignore-certificate-errors --remote-debugging-port=9222 --allow-running-insecure-content';
 
-/** The dev server config a workspace boots with, in the workspace's own namespace. */
-const WORKSPACE_CONFIG_MAP = 'dev-workspace-config';
-
 /**
  * The terminal scripts a workspace's pod runs, in the workspace's own namespace.
  *
@@ -2300,7 +2035,6 @@ const WORKSPACE_TERMINAL_MOUNT = '/seed';
  * point is not to depend on how this dashboard happens to be served.
  */
 const STUDIO_NAMESPACE = 'extension-studio';
-
 
 /**
  * Where the originals live: this pod's own seed ConfigMap.
@@ -2730,29 +2464,6 @@ function decodeSecret(value: string): string {
 }
 
 /**
- * A Secret's data, decoded, or null when it is not there or cannot be read.
- *
- * Through Steve on the browser's own session, so what comes back is what this user is allowed
- * to see. Nothing here returns a token to anywhere it could be displayed: the callers take the
- * one field they need and the pages show identities rather than credentials.
- */
-async function readSecret(name: string): Promise<Record<string, string> | null> {
-  const secret = await devFetch(`${ BASE }/v1/secrets/${ DEV_SYSTEM_NAMESPACE }/${ name }`).catch(() => null);
-
-  if (!secret) {
-    return null;
-  }
-
-  const out: Record<string, string> = {};
-
-  for (const [key, value] of Object.entries(secret.data || {})) {
-    out[key] = value ? decodeSecret(value as string) : '';
-  }
-
-  return out;
-}
-
-/**
  * The GitHub token, for the caller to send. Never rendered and never logged.
  *
  * Out of the one store rather than the hand-made `github-token` Secret that used to hold it: the
@@ -2768,62 +2479,6 @@ export interface ClaudeIdentity {
   subscriptionType: string;
   expiresAt: number;
   scopes: string[];
-}
-
-export async function claudeIdentity(): Promise<ClaudeIdentity | null> {
-  const data = await readSecret(CREDENTIALS_SECRET);
-
-  if (!data?.[CREDENTIALS_KEY]) {
-    return null;
-  }
-
-  try {
-    const oauth = JSON.parse(data[CREDENTIALS_KEY])?.claudeAiOauth;
-
-    if (!oauth?.accessToken) {
-      return null;
-    }
-
-    return {
-      subscriptionType: oauth.subscriptionType || 'unknown',
-      expiresAt:        Number(oauth.expiresAt) || 0,
-      scopes:           oauth.scopes || [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Whether the dev server's pod is running as the ServiceAccount the global terminals need.
- *
- * A pod takes its ServiceAccount at start, so setting one on the Deployment restarts the pod,
- * and that pod is the one someone has a terminal in. So the extension does not do it: this
- * reports the state and Settings offers it as something to do deliberately.
- */
-export async function devPodServiceAccount(): Promise<{ current: string; wanted: string }> {
-  const deployment = await devFetch(`${ BASE }/v1/apps.deployments/${ DEV_POD_NAMESPACE }/${ POD_SERVICE }`).catch(() => null);
-
-  return {
-    current: deployment?.spec?.template?.spec?.serviceAccountName || 'default',
-    wanted:  GLOBAL_SERVICE_ACCOUNT,
-  };
-}
-
-/**
- * Put the global terminal's ServiceAccount on the dev server's Deployment.
- *
- * This restarts the pod, which is why nothing calls it on its own. Everything in the pod's
- * `/app` survives (it is a volume), but a tmux session does not, and neither does an install
- * that is part way through.
- */
-export async function setDevPodServiceAccount(): Promise<void> {
-  const url = `${ BASE }/v1/apps.deployments/${ DEV_POD_NAMESPACE }/${ POD_SERVICE }`;
-  const deployment = await devFetch(url);
-
-  deployment.spec.template.spec.serviceAccountName = GLOBAL_SERVICE_ACCOUNT;
-
-  await devFetch(url, { method: 'PUT', body: JSON.stringify(deployment) });
 }
 
 /**
@@ -3037,10 +2692,6 @@ export async function saveSecrets(changes: Record<string, string>): Promise<void
   forgetSecretStore();
 }
 
-
-
-
-
 /**
  * Fold the hand-made github-token Secret into the store, once.
  *
@@ -3072,19 +2723,6 @@ export async function migrateGithubToken(): Promise<void> {
   // with it.
   await devFetch(`${ BASE }/v1/secrets/${ DEV_SYSTEM_NAMESPACE }/${ GITHUB_SECRET }`, { method: 'DELETE' }).catch(() => null);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /**
  * Queue a conversation in a workspace: a prompt the next pane to open will start on.
@@ -3128,13 +2766,6 @@ export async function queueConversation(workspace: string, session: string | num
  */
 const API_NAME = 'dev-api';
 const API_PORT = 8080;
-
-
-/** Where a pod reaches it, which is what an action inside a workspace is given. */
-export function workspaceApiUrl(): string {
-  return `http://${ API_NAME }.${ DEV_SYSTEM_NAMESPACE }.svc:${ API_PORT }`;
-}
-
 
 /**
  * Create the service if it is not there, and keep its script and its templates current.
@@ -3742,41 +3373,6 @@ export async function ensureGithubBrowser(): Promise<void> {
   });
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /**
  * Where a workspace's own server is served, on Rancher's origin.
  *
@@ -3848,8 +3444,6 @@ export function workspaceMediaFileUrl(name: string, relPath: string): string {
 export function workspaceServing(name: string, port: number, scheme = 'http'): Promise<boolean> {
   return proxyServing(workspaceProxyUrl(name, port, scheme));
 }
-
-
 
 async function proxyServing(url: string): Promise<boolean> {
   try {
@@ -4058,71 +3652,6 @@ function asWorkspaceUser(command: string): string[] {
 /** The tmux session one conversation is, named the same way in both places that need it. */
 function workspaceSession(session: string | number): string {
   return `ws-${ session }`;
-}
-
-/**
- * The conversations a workspace actually has, which is what its pod says rather than what this
- * page last remembered.
- *
- * A conversation is a tmux session, so it outlives the browser tab that made it. The list used to
- * be component state that started at one row on every load, which meant a reload lost every
- * conversation but the first: they carried on in the pod with claude in them, invisible, and the
- * delete on a row had nothing to act on. So the pod is asked.
- *
- * Nothing yet, a pod with no tmux, and a pod that has gone away all answer the same way here, and
- * the caller shows one conversation, which is what a workspace nobody has opened has.
- */
-export async function listWorkspaceConversations(name: string): Promise<number[]> {
-  const namespace = workspaceNamespace(name);
-  const pod = await workspacePod(name);
-
-  if (!pod) {
-    return [];
-  }
-
-  const out = await podExecOnce(namespace, pod, WORKSPACE_CONTAINER, asWorkspaceUser(
-    'tmux ls -F "#{session_name}" 2>/dev/null || true',
-  ));
-
-  // `mc-ws-2` is conversation 2. The prefix is shell.sh's (`mc-$SESSION`) and the `ws-` is
-  // workspaceSession's, so a global terminal's session in some other pod could never be read as
-  // one of these even if it were listed here.
-  const numbers = out.split('\n')
-    .map((line) => /^mc-ws-(\d+)$/.exec(line.trim())?.[1])
-    .filter((found): found is string => !!found)
-    .map(Number);
-
-  return [...new Set(numbers)].sort((a, b) => a - b);
-}
-
-/**
- * End a conversation in the pod, not only in the browser.
- *
- * Closing the pane closes a socket, and tmux is the whole reason that is not enough: the session
- * carries on in the pod with claude in it, and creating a conversation with the same number
- * later would reattach to it. So a deleted conversation is one whose session is killed, which is
- * what makes the delete on its row mean what the delete on a workspace's row means.
- */
-export async function deleteWorkspaceConversation(name: string, session: string | number): Promise<void> {
-  const namespace = workspaceNamespace(name);
-  // The workspace's own pod, not one of its sidecars: they are in the same namespace and carry
-  // the same label, and none of them has the session to kill. See findPod.
-  const pod = await workspacePod(name);
-
-  if (!pod) {
-    return;
-  }
-
-  // `|| true` so a session that was never started, or a pod with no tmux in it yet, is a command
-  // that succeeds at doing nothing rather than an error nobody is listening for.
-  await podExecOnce(namespace, pod, WORKSPACE_CONTAINER, asWorkspaceUser(
-    `tmux kill-session -t mc-${ workspaceSession(session) } 2>/dev/null || true`,
-  ));
-}
-
-/** WebSocket URL for a conversation in a workspace's pod. */
-export function workspaceShellUrl(name: string, pod: string): string {
-  return podExecUrl(workspaceNamespace(name), pod, WORKSPACE_CONTAINER, workspaceTerminalCommand(name, 1));
 }
 
 // ---------------------------------------------------------------------------

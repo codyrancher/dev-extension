@@ -46,7 +46,7 @@ import { runtimeFacts } from '../components/focus/card-runtime';
 import { followCards, loadedCards, cardsWatch, cardsSettled } from '../focus-cards';
 import {
   readFocusConfig, saveFocusConfig, readFocusState, saveFocusState, focusDeck, manualItem,
-  weightRows, actionPrompt, promptKeyOf, cardOf, KINDS
+  weightRows, actionPrompt, cardOf, KINDS
 } from '../focus';
 import { readPrompts, savePromptTemplate, resetPromptTemplate } from '../skills';
 import type {
@@ -82,7 +82,7 @@ import {
 } from '../reviews';
 import { movedNote } from '../review-anchors.mjs';
 import { previewState } from '../previews';
-import { updateComment, deleteComment, discussPrompt } from '../reviews';
+import { updateComment, deleteComment } from '../reviews';
 import '../design/focus.css';
 
 /**
@@ -843,45 +843,6 @@ const all = computed<FocusTask[]>(() => focusDeck(items.value, { ...config.value
 const pinned = computed(() => all.value.filter((task) => task.pinned));
 const deck = computed(() => all.value.filter((task) => !task.pinned));
 const current = computed(() => deck.value[index.value] || null);
-
-/**
- * What is coming, for the column beside the deck.
- *
- * The column measured 196x524 - 19% of the main region - and held the word PINNED and the sentence
- * "Nothing pinned. Pin a card to keep it here while you work on it", which is about 164x67px of
- * content: 89% of the largest piece of empty space on the screen. Meanwhile the only thing saying
- * what was next was the rail's column of 26 nine-pixel dots, of which the window has room for 13
- * and which says nothing about the other 13 beyond a chevron.
- *
- * So the column is the queue. The next six in words, which is the one thing a deck structurally
- * hides, and the index with each so a row can turn straight to it.
- *
- * No lede number on these rows, tempting as it is: a card's numbers come from `readArtifacts`, and
- * that is read for the card on top and nothing else - a deck of thirty would be thirty pull
- * requests fetched to draw a sidebar. How long it has waited is on every item already.
- */
-const behindMe = computed(() => deck.value
-  .map((task, n) => ({ task, n }))
-  .filter((row) => row.n > index.value));
-
-/*
- * Eight, which is how many fit.
- *
- * It was four, and before that six: four rows of 58px end at y325 in a column measured 196x524, so
- * 257px - 49% of the largest piece of empty space on the screen - was blank, with `pinsScroll
- * [524, 524]` saying nothing was cut off. There simply was no fifth row. Meanwhile the rail beside
- * the deck advertised 26 dots and "9 above / 16 below", so the two things on this screen that say
- * how long the deck is disagreed by twenty-two.
- *
- * Six was dropped because the titles ellipsised at 196px; they are two clamped lines now (see
- * `.up__title`), so the count is a question of height and nothing else.
- *
- * Seven, not eight: eight rows plus the closing row measured `[540, 570]` - 30px of scroll, with
- * `+17 more` half under the edge. The closing row is the part that makes this column rather than
- * the rail the thing that answers "what else is there", so it is the row that must be on screen.
- * Seven is 524 of the 540 the column measures, and nothing scrolls.
- */
-const comingUp = computed(() => behindMe.value.slice(0, 7));
 
 /** How many are behind the ones this column names. The row that says so opens the whole queue. */
 
@@ -2099,8 +2060,6 @@ async function resolveNote({ note, verdict, body }: { note: ReviewNote; verdict:
 
 /* ── The weights ──────────────────────────────────────────────────────────────────────────── */
 
-const widest = computed(() => Math.max(100, ...rows.value.map((row) => row.score)));
-
 async function setWeight(id: string, value: number) {
   const weights = { ...config.value.weights, [id]: value };
 
@@ -2340,10 +2299,6 @@ onBeforeUnmount(closeSettings);
         Pinned first - taken out of the queue because you are dealing with them. They keep their
         hue and their title and nothing else: a pinned thing is a reminder, and a reminder that
         needs reading is a card, which is what the deck is for.
-
-        Then the queue itself, because this column was 196x524 - 19% of the main region - holding
-        the word PINNED and one sentence of empty-state copy, about 89% of it empty, while the only
-        thing saying what was next was a rail of 26 nine-pixel dots. See `comingUp`.
 
         The lane is always here, empty or not. It used to appear with the first pin, which moved
         the deck sideways - and, because nothing is pinned while the queue is still being read,
@@ -2938,22 +2893,6 @@ onBeforeUnmount(closeSettings);
   border: 0;
   border-top: 1px solid var(--border);
 }
-
-/* ── What is coming ───────────────────────────────────────────────────────── */
-
-/*
- * One row per card that is coming, at the height everything pressable in this view is: a hue bar
- * down its left edge, what kind of thing it is, its title on one line, and how long it has sat.
- */
-
-/* Two lines, because one was never a title at 196px: see `comingUp` for what was measured. */
-
-/*
- * The last row: what this column is not showing, in the column's own rhythm.
- *
- * Quieter than a card row because it is not a card - it is the count the rail was being asked to
- * carry in nine-pixel dots - and at `--control-h` because it is pressed.
- */
 
 .focus__pins-head {
   color: var(--text-muted);

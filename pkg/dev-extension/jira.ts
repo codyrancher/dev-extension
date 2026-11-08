@@ -16,7 +16,6 @@ export {
 } from './jira-steps.mjs';
 
 export const JIRA_BASE = 'https://jira.suse.com';
-export const JIRA_PROJECT = 'SURE';
 
 /** Jira's own dashboard for this queue, for the "open it where it lives" link. */
 export const DASHBOARD_URL = `${ JIRA_BASE }/secure/Dashboard.jspa?selectPageId=57330`;

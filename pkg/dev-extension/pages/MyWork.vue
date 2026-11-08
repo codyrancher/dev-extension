@@ -42,7 +42,7 @@ import { savePrefs } from '../prefs';
 import { issueStage } from '../issue-stage.mjs';
 import { stepsFor as stagesFor } from '../workspace-rail';
 import {
-  issueWorkspaceName, issueWorkspaceLocation, hasIssueWorkspace, appForWorkspace
+  issueWorkspaceName, issueWorkspaceLocation, hasIssueWorkspace
 } from '../issue-table';
 import { priorityQueue } from '../priority';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
@@ -189,9 +189,6 @@ const REFRESH_MS = 30000;
  * because the name is in the address, so a link to one is a link somebody can send.
  */
 const TABS = ['reviewing', 'mine', 'issues', 'tracker', 'jira', 'dependabot', 'priority'];
-
-/** The tabs that are one `myWork` section each, by the section they read. See WorkSection. */
-const SECTION_TABS = ['reviewing', 'mine', 'issues'];
 
 /** The tab an address names, or the default when it names none or one that does not exist. */
 function tabFromHash(hash) {

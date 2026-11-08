@@ -20,7 +20,6 @@
  */
 import { computed } from 'vue';
 import AppButton from './AppButton.vue';
-import AppIcon from './AppIcon.vue';
 import SectionHead from './SectionHead.vue';
 import type { BumpRow } from '../../focus-artifacts';
 

@@ -24,7 +24,7 @@ import {
 import type { LocalComment, LocalAttachment } from './reviews';
 import { issueBody } from './github';
 import type { ConversationSnapshot } from './conversations';
-import { reviewNotes, parsePatch, hunkAround } from './focus-review';
+import { parsePatch, hunkAround } from './focus-review';
 import type { DiffLine, ReviewNote } from './focus-review';
 import { devFetch, workspaceMediaListUrl, workspaceMediaFileUrl } from './api';
 import { listConversations } from './conversations';

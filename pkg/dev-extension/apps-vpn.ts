@@ -323,24 +323,3 @@ spec:
     },
   };
 }
-
-/**
- * What a workspace needs in its environment to reach the lab through a connection, given the
- * namespace that connection is installed in.
- *
- * `NO_PROXY` is most of what makes this safe to set: everything in the cluster and every address
- * this Rancher answers on has to keep going direct, or a workspace pointed at the proxy stops
- * being able to reach its own API. The lab is the only thing that goes through it.
- */
-export function labProxyEnv(namespace: string, install: string, proxyPort = '8888'): Record<string, string> {
-  const proxy = `http://${ install }-vpn.${ namespace }.svc.cluster.local:${ proxyPort }`;
-
-  return {
-    HTTP_PROXY:  proxy,
-    HTTPS_PROXY: proxy,
-    http_proxy:  proxy,
-    https_proxy: proxy,
-    NO_PROXY:    'localhost,127.0.0.1,.svc,.svc.cluster.local,.cluster.local,10.42.0.0/16,10.43.0.0/16,rancher.ourhome.dev',
-    no_proxy:    'localhost,127.0.0.1,.svc,.svc.cluster.local,.cluster.local,10.42.0.0/16,10.43.0.0/16,rancher.ourhome.dev',
-  };
-}

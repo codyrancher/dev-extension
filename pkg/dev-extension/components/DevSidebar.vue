@@ -865,19 +865,6 @@ export default {
     },
 
 
-    readable(value) {
-      return readableBytes(value);
-    },
-
-    /** Every workspace, asked for rather than landed on. See the Workspaces page. */
-    listTo() {
-      return {
-        name:   WORKSPACES_ROUTE,
-        params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER },
-        query:  { all: null },
-      };
-    },
-
     /**
      * The create page. No App in the link any more: which kind of workspace it is - a leased
      * one, or the all-in-one - is chosen there, beside the name and the Rancher, rather than

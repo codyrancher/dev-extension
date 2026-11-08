@@ -24,7 +24,7 @@ import {
 import FocusCard from './FocusCard.vue';
 import type { FocusTask } from '../../focus';
 
-const props = defineProps<{
+defineProps<{
   task: FocusTask;
   /** Blur the card behind the labels, for a miniature nobody is meant to read. */
   blur?: boolean;

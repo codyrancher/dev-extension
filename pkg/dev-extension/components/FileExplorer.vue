@@ -116,7 +116,6 @@ export default {
 
   methods: {
     humanSize,
-    isWalkable,
     shared,
 
     /** The agent pod's name, when this was not given one. Nothing can be read without it. */

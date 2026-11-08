@@ -80,13 +80,6 @@ export function toggleTask(body, n) {
   return text.slice(0, box.at) + (box.done ? ' ' : 'x') + text.slice(box.at + 1);
 }
 
-/** How many boxes there are and how many are ticked. The column's "7 of 9" line. */
-export function taskCount(body) {
-  const boxes = taskPositions(body);
-
-  return { ticked: boxes.filter((box) => box.done).length, total: boxes.length };
-}
-
 /**
  * The rendered task boxes, numbered and live.
  *

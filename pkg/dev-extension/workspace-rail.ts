@@ -1284,8 +1284,6 @@ function compose(status: WorkspaceStatus, stage: Stage, have: Sources): Evidence
       break;
     }
     case 'submitted': {
-      const mine = submitted.length ? null : reviewThreads();
-
       // Waiting on the developer, as far as the stage can tell - which is a reading, and readings
       // miss things: another reviewer, an answer to your answer. So whatever was said or pushed
       // since you last spoke is listed here as well, whenever there is any.
@@ -1440,11 +1438,6 @@ export function renderBody(text: string, kinds: Record<string, string> = {}, evi
   return html;
 }
 
-/** The GitHub URL of the PR a status is about, or of the issue when there is no PR yet. */
-export function primaryLink(status: WorkspaceStatus): string {
-  return (status.links.find((l) => l.label.startsWith('PR')) || status.links[0])?.url || `https://github.com/${ DEFAULT_REPO }`;
-}
-
 /** One commit's patch, out of the checkout: what a commit row expands to. Bounded. */
 export async function commitPatch(workspace: string, sha: string): Promise<string> {
   if (!/^[0-9a-f]{6,40}$/i.test(sha)) {
@@ -1453,14 +1446,6 @@ export async function commitPatch(workspace: string, sha: string): Promise<strin
   const out = await readInWorkspace(workspace, `cd $WS/dashboard 2>/dev/null || exit 0; git show --no-color --format='%H%n%an · %aI%n%n%B%n---' --stat=100 -p ${ sha } 2>/dev/null | head -1500`);
 
   return out.trim();
-}
-
-/** A patch as rows the page colours: the first character says which kind each line is. */
-export function diffRows(patch: string): { cls: string; text: string }[] {
-  return (patch || '').split('\n').map((text) => ({
-    cls: /^\+\+\+ |^--- /.test(text) ? 'file' : text.startsWith('+') ? 'add' : text.startsWith('-') ? 'del' : text.startsWith('@@') ? 'hunk' : /^diff --git/.test(text) ? 'file' : '',
-    text,
-  }));
 }
 
 /**

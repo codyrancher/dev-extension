@@ -310,15 +310,6 @@ export default {
     validationPassed() {
       return !!this.value.metadata?.name && !!this.value.spec.app && !this.missing.length;
     },
-
-    /** What the instance will actually deploy to, however it was chosen. */
-    effectiveTargets() {
-      if (this.provisions) {
-        return [this.clusterName || this.value.metadata?.name || ''];
-      }
-
-      return this.targetNames;
-    },
   },
 
   methods: {
@@ -341,10 +332,6 @@ export default {
       }
 
       this.values = values;
-    },
-
-    isMissing(name) {
-      return this.missing.includes(name);
     },
   },
 };

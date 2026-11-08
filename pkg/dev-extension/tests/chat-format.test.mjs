@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  toolKind, toolSummary, canonicalTool, canonicalMessages, plain, KIND_LABEL, TOOL_KINDS,
+  toolKind, toolSummary, canonicalTool, plain, KIND_LABEL, TOOL_KINDS,
 } from '../chat-format.mjs';
 
 test('the same act gets the same kind whichever CLI did it', () => {
@@ -90,20 +90,3 @@ test('the call keeps its own name and arguments', () => {
   assert.equal(out.id, '3-0');
 });
 
-test('messages without tools pass through untouched', () => {
-  const messages = [{ key: 'a', role: 'user', text: 'hello', tools: [] }];
-
-  assert.deepEqual(canonicalMessages(messages), messages);
-  assert.deepEqual(canonicalMessages([]), []);
-  assert.deepEqual(canonicalMessages(undefined), []);
-});
-
-test('messages with tools get canonical ones', () => {
-  const out = canonicalMessages([
-    { key: 'm1', role: 'assistant', text: '', tools: [{ id: '1', name: 'Bash', input: { description: 'Run the tests' } }] },
-    { key: 'm2', role: 'assistant', text: '', tools: [{ id: '2', name: 'run_command', input: { toolSummary: '"Run the tests"' } }] },
-  ]);
-
-  assert.equal(out[0].tools[0].label, out[1].tools[0].label, 'one badge for one act');
-  assert.equal(out[0].tools[0].summary, out[1].tools[0].summary, 'one summary for one act');
-});

@@ -18,7 +18,7 @@
  * says less, which is honest for work that has nothing to show yet.
  */
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
-import type { FocusTask, CardAction, CardSurface } from '../../focus';
+import type { FocusTask, CardAction } from '../../focus';
 import { isAgentic, promptKeyOf, promptTemplate, actionPrompt } from '../../focus';
 import PromptEditor from '../PromptEditor.vue';
 import InlineChat from './InlineChat.vue';
@@ -30,18 +30,8 @@ import KindChip from './KindChip.vue';
 import AppIcon from './AppIcon.vue';
 import Markdown from './Markdown.vue';
 import TextModal from './TextModal.vue';
-import ReviewPass from './ReviewPass.vue';
-import ChangeSet from './ChangeSet.vue';
-import CardComments from './CardComments.vue';
 import CardEvidence from './CardEvidence.vue';
 import CardChecks from './CardChecks.vue';
-import CardPool from './CardPool.vue';
-import CardBumps from './CardBumps.vue';
-import CardReviewers from './CardReviewers.vue';
-import CardCommits from './CardCommits.vue';
-import CardAgent from './CardAgent.vue';
-import CardFacts from './CardFacts.vue';
-import CheckList from './CheckList.vue';
 import SectionHead from './SectionHead.vue';
 import IssueMarks from './IssueMarks.vue';
 import * as cardVue from 'vue';
@@ -1633,12 +1623,10 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
       @close="inspecting = null"
     >
       <PromptEditor
-        :label="inspecting.action.label || inspecting.action.verb"
         :template="inspecting.template"
         :shipped="inspecting.shipped"
         :vars="promptVars"
         :token="(name) => `{${ name }}`"
-        :expand="(text, vars) => vars.reduce((out, v) => out.split(`{${ v.name }}`).join(v.value), text)"
         :busy="promptBusy"
         :error="promptError"
         @close="inspecting = null"

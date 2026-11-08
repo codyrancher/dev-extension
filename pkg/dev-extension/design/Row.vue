@@ -6,9 +6,8 @@
 // alignment and its own answer to "which of these takes the leftover width".
 //
 // `spread` is worth naming rather than leaving to `justify-content`, because what people
-// actually want is almost always one of three things: everything at the start, everything at
-// the start with one thing pushed to the end, or the two ends apart. `justify` covers the
-// first and third; the second is what `<Spacer />` inside a Row is for.
+// actually want is almost always one of two things: everything at the start, or the two ends
+// apart. `justify` covers both; one thing pushed to the end is `margin-left: auto` on it.
 import { SPACE, spaceVar } from './tokens';
 
 export default {

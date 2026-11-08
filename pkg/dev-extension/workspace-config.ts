@@ -150,6 +150,3 @@ base.devServer = {
 
 module.exports = base;
 `;
-
-/** Where the ConfigMap holding it is mounted, and what the workspace copies it from. */
-export const WORKSPACE_CONFIG_MOUNT = '/dev-config';

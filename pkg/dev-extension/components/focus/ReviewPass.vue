@@ -14,7 +14,6 @@
 import { computed, ref, watch } from 'vue';
 import type { DiffLine, ReviewNote } from '../../focus-review';
 import AppButton from './AppButton.vue';
-import AppIcon from './AppIcon.vue';
 import CodeView from '../code/CodeView.vue';
 import { fromDiffLines, highlighted } from '../code/rows';
 import CommentBody from './CommentBody.vue';
@@ -25,15 +24,12 @@ import {
 } from '../../reviews';
 import type { NoteMedia } from '../../focus-review';
 import InlineChat from './InlineChat.vue';
-import { listConversations, paneCommand } from '../../conversations';
+import { paneCommand } from '../../conversations';
 import { startAgentSession, stageSessionContext } from '../../agent';
 import type { ConversationOrigin } from '../../agent';
 
 /** What you decided about one comment. The prototype's word for it, and its four states. */
 type NoteVerdict = 'pending' | 'good' | 'edited' | 'dropped';
-
-/** A turn in the conversation you can have about one of the agent's comments. */
-interface NoteReply { from: 'you' | 'agent'; text: string }
 
 const props = withDefaults(defineProps<{
   notes: ReviewNote[];
@@ -85,7 +81,6 @@ const viewer = ref<{ items: NoteMedia[]; at: number } | null>(null);
 
 const verdicts = ref<Record<string, NoteVerdict>>({});
 const bodies = ref<Record<string, string>>({});
-const threads = ref<Record<string, NoteReply[]>>({});
 const selectedId = ref(props.notes[0]?.id ?? '');
 const editingId = ref('');
 const draft = ref('');

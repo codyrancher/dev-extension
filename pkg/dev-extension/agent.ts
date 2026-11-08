@@ -519,29 +519,6 @@ export interface SessionActivity {
 }
 
 /**
- * How recently the transcript must have moved for the conversation to count as working. Long
- * enough to cover a subagent thinking between writes, short enough that a conversation nobody is
- * in stops claiming to be busy. Kept in step with the Dev extension's WORKING_WINDOW_S, which is
- * the same threshold applied to the same signals for the same reason.
- */
-const WORKING_WINDOW_S = 90;
-
-/**
- * The hook events that are the last word on a conversation, when they are the latest thing to
- * have happened.
- *
- * `Stop` and `SessionEnd` say the turn is over, and both fire after the final writes of that
- * turn land - so for a few seconds afterwards the transcript still looks like it is moving.
- * `Notification` says claude is waiting, and it fires right after the tool call it is asking
- * permission for was written down. Each of those has to be able to overrule a transcript that
- * has only just stopped, which is what the few seconds of margin below are for.
- *
- * `SessionStart` and `UserPromptSubmit` are not on this list, and that is the point of having
- * one: neither says anything about whether claude is busy now.
- */
-const SPEAKS_LAST = new Set(['Stop', 'SessionEnd', 'Notification']);
-
-/**
  * The bucket a conversation falls in, from what the pod reported about it.
  *
  * A copy of the Dev extension's `agentStateOf` rather than a call to it: the two extensions do
@@ -1187,11 +1164,6 @@ export async function sessionPane(id: string, lines = 60): Promise<{ text: strin
   const text = result.stdout || '';
 
   return { running: !text.includes('BARN-NO-SESSION'), text: text.replace('BARN-NO-SESSION', '').trim() };
-}
-
-/** The pane for one of a project's conversations: the same shell.sh, the same directory. */
-export function projectShellUrl(pod: string, id: string, mode = 'claude'): string {
-  return agentShellUrl(pod, id, mode);
 }
 
 /** What each thing the fork script can end with means, said the way the strip shows it. */

@@ -1,23 +1,4 @@
-// Resolving which manifest path a form input edits, by asking the form instead of guessing.
-//
-// The old approach read the label beside an input and tried to translate words into a path; it
-// resolved nothing. This one observes the actual data binding: write a sentinel value into the
-// input, dispatch the events Vue listens for, and deep-diff the bound model against a snapshot.
-// The path that changed IS the input's path. Then put the original value back.
-//
-// Pure DOM + data functions - no Vue instance, no store - so the whole judgement of "did the
-// probe resolve this input" is testable and readable on its own.
 
-/** `apps/v1` + `Deployment` -> `apps.deployment`, the way Steve names types. */
-export function steveTypeFor(apiVersion: string, kind: string): string | null {
-  if (!apiVersion || !kind) {
-    return null;
-  }
-
-  const group = apiVersion.includes('/') ? apiVersion.split('/')[0] : '';
-
-  return group ? `${ group }.${ kind.toLowerCase() }` : kind.toLowerCase();
-}
 
 /**
  * A plain deep copy of the manifest-shaped part of a model.

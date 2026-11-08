@@ -17,9 +17,9 @@ import { Banner } from '@components/Banner';
 import StudioTerminal from '../StudioTerminal.vue';
 import PrButton from './PrButton.vue';
 import {
-  startDiscussion, sayInConversation, discussPrompt, linesPrompt, DEFAULT_REPO
+  startDiscussion, discussPrompt, linesPrompt, DEFAULT_REPO
 } from '../../reviews';
-import { listConversations, paneCommand } from '../../conversations';
+import { paneCommand } from '../../conversations';
 
 export default {
   name: 'CommentDiscussion',
@@ -159,24 +159,6 @@ export default {
     /** The argv of one conversation's pane: claude in the workspace's pod, reached through the agent pod. */
     paneFor(id) {
       return paneCommand(this.workspace, id);
-    },
-
-    /** Reattached to a conversation somebody typed into before: a new line goes into it. */
-    async say() {
-      const message = this.draft.trim();
-
-      if (!message || !this.current) {
-        return;
-      }
-
-      const conversation = (await listConversations(this.workspace).catch(() => [])).find((c) => c.id === this.current);
-
-      if (conversation) {
-        await sayInConversation(conversation, message).catch((e) => {
-          this.error = e.message || String(e);
-        });
-        this.draft = '';
-      }
     },
   },
 };

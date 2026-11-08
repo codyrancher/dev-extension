@@ -33,7 +33,6 @@ export default {
   props: {
     workspace: { type: Object, required: true },
     pr:        { type: Number, default: 0 },
-    issue:     { type: Number, default: 0 },
   },
 
   async fetch() {

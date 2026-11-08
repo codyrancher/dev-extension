@@ -142,12 +142,6 @@ function pollAll() {
   }
 }
 
-function pollNone() {
-  for (const watch of watches.values()) {
-    stopPolling(watch);
-  }
-}
-
 /**
  * Tell the server what this page wants, once per turn of the event loop.
  *
@@ -516,15 +510,6 @@ export function watch(path: string, onValue: Listener, opts: { every?: number; r
   };
 }
 
-/** Whether the page is currently being pushed to, and how, for anything that wants to say so. */
-export function eventsUp(): boolean {
-  return up;
-}
-
-export function eventsTransport(): string {
-  return up ? transport : '';
-}
-
 /** For a page that has just changed something and does not want to wait for the next read. */
 export function nudge(path: string, opts: { force?: boolean } = {}): void {
   const held = watches.get(path);
@@ -546,14 +531,4 @@ export function nudge(path: string, opts: { force?: boolean } = {}): void {
     held.text = '';
   }
   held.read().then((value) => deliver(held, value)).catch(() => {});
-}
-
-/** Tests and teardown: forget everything and close. */
-export function resetEvents(): void {
-  for (const held of watches.values()) {
-    stopPolling(held);
-  }
-  watches.clear();
-  pollNone();
-  idle();
 }

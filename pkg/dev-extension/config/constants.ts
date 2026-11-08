@@ -90,18 +90,6 @@ const SERVED_FROM = servedFrom();
 export const DEV_POD_NAMESPACE = SERVED_FROM.namespace;
 /** The Deployment, the Service and the seed ConfigMap all carry this name. */
 export const DEV_POD_SERVICE = SERVED_FROM.service;
-export const DEV_POD_LABELS = { app: SERVED_FROM.service };
-export const DEV_POD_CONTAINER = 'devserver';
-
-/**
- * The tmux session prefix for a global terminal.
- *
- * `/seed/shell.sh <id> <dir>` starts or reattaches `mc-<id>`, and the editor's pane in the
- * barn extension uses `editor`, so anything not called that is a session of its own.
- * The numbers after it are the drawer's terminal numbers, so Terminal 2 is always the same
- * conversation, whether it was closed and reopened or reached from a link (see terminals.ts).
- */
-export const TERMINAL_SESSION_PREFIX = 'global';
 
 // ── Apps Plus, where templates live ─────────────────────────────────────────────────────────
 //
@@ -242,11 +230,6 @@ export function lteName(name: string): string {
   return isLte(name) ? name : `${ LTE_PREFIX }${ name }`;
 }
 
-/** A name without it, for reading the issue or PR number out of it. */
-export function bareName(name: string): string {
-  return isLte(name) ? name.slice(LTE_PREFIX.length) : name;
-}
-
 /**
  * The tools a workspace can attach, and what each one is.
  *
@@ -270,11 +253,6 @@ export const TOOL_APPS: Record<string, string> = {
   rancher:      'lte-rancher',
   firefox:      'lte-firefox',
 };
-
-/** What a tool's own namespace is called: one per workspace and kind. */
-export function toolNamespace(workspace: string, kind: string): string {
-  return `dev-${ workspace }-${ kind }`;
-}
 
 /** On a tool's namespace and objects: which tool it is, and whose. */
 export const LABEL_TOOL = 'dev.rancher.io/tool';

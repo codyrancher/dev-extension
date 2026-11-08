@@ -7,7 +7,6 @@
 // workspace it is in.
 import { Banner } from '@components/Banner';
 import AsyncButton from '@shell/components/AsyncButton';
-import { RcButton } from '@components/RcButton';
 import DevDialog from './DevDialog.vue';
 import DevModal from './DevModal.vue';
 import AgentRunRow from './AgentRunRow.vue';
@@ -16,7 +15,7 @@ import {
 } from '../agent-defs';
 import { readSkill } from '../skills';
 import {
-  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, AGENT_EDIT_ROUTE, DEV_API_IN_CLUSTER
+  DEV_PRODUCT, BLANK_CLUSTER, AGENT_EDIT_ROUTE, DEV_API_IN_CLUSTER
 } from '../config/constants';
 
 /** How many runs a card shows before the rest go behind its History link. */
@@ -28,7 +27,7 @@ export default {
   name: 'AgentCards',
 
   components: {
-    Banner, AsyncButton, RcButton, DevDialog, DevModal, AgentRunRow
+    Banner, AsyncButton, DevDialog, DevModal, AgentRunRow
   },
 
   data() {
@@ -168,16 +167,6 @@ export default {
       this.skill = { name, text: text || `There is no skill called ${ name }; the workspace may still have one.` };
     },
 
-    when(iso) {
-      if (!iso) {
-        return '';
-      }
-      const d = new Date(iso);
-
-      return Number.isNaN(d.getTime()) ? '' : d.toLocaleString([], {
-        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-      });
-    },
 
   },
 };

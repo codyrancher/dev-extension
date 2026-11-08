@@ -74,18 +74,3 @@ export function withSources(overrides: Partial<DevSources>): DevSources {
  * whole design: a component with no provider is a component talking to the API.
  */
 export const DEV_SOURCES: InjectionKey<DevSources> = Symbol('dev.sources');
-
-/**
- * The custom properties a host may set to restyle these components.
- *
- * Styling is a separate question from where the data comes from, and this half is mostly
- * already true: the components are written in tokens rather than literal colours, so a host
- * that redefines the tokens restyles them without touching the components. This names the ones
- * that are this product's own rather than Rancher's, so there is a list to override rather than
- * a reading exercise.
- *
- * Deliberately short. A long list of knobs nobody turns is worse than a few that are honest.
- */
-export const STYLE_TOKENS = [
-  '--dev-space-1', '--dev-space-2', '--dev-space-3', '--dev-space-4', '--dev-space-6',
-] as const;

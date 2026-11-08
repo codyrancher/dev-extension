@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  taskPositions, toggleTask, taskCount, numberTaskBoxes
+  taskPositions, toggleTask, numberTaskBoxes
 } from '../pr-body.mjs';
 
 const BODY = [
@@ -74,11 +74,6 @@ test('a box that is not there changes nothing', () => {
   assert.equal(toggleTask(BODY, -1), BODY);
   assert.equal(toggleTask('', 0), '');
   assert.equal(toggleTask(undefined, 0), '');
-});
-
-test('the count is the one the column prints', () => {
-  assert.deepEqual(taskCount(BODY), { ticked: 2, total: 5 });
-  assert.deepEqual(taskCount('no boxes here'), { ticked: 0, total: 0 });
 });
 
 test('the rendered boxes are numbered in the same order, and live', () => {

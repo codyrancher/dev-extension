@@ -91,11 +91,6 @@ export function fromDiffRows(rows: DiffRow[]): CodeRow[] {
   }));
 }
 
-/** A patch, straight to rows. */
-export function fromPatch(patch: string): CodeRow[] {
-  return fromDiffLines(parsePatch(patch || ''));
-}
-
 /**
  * A whole file, as rows numbered from one.
  *
@@ -198,9 +193,4 @@ export function highlighted(rows: CodeRow[], path: string): CodeRow[] {
   });
 
   return out;
-}
-
-/** Where in `rows` a line number falls, on whichever side it is numbered. -1 when it is not there. */
-export function rowAtLine(rows: CodeRow[], line: number): number {
-  return rows.findIndex((row) => row.new === line || (row.new === null && row.old === line));
 }

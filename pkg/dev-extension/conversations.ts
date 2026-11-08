@@ -303,7 +303,6 @@ export async function conversationSnapshot(): Promise<ConversationSnapshot | nul
   return snapshotFromAnswer(answer);
 }
 
-
 /**
  * The states a snapshot already contains, without asking for it again.
  *
@@ -843,41 +842,6 @@ export async function startPaneDetached(workspace: string, id: string, cli = '')
   // as claude. '' leaves shell.sh's own answer, which is every caller that had one already.
   const argv = ['/bin/sh', '/seed/shell.sh', id, workspaceWorkdir(workspace), AGENT_HOME, 'start', workspaceShellWrapper(workspace), ...(cli ? [cli] : [])];
 
-  await podExecOnce(api.agent.namespace, pod, api.agent.container, argv, AGENT_BASE);
-}
-
-/**
- * Put a conversation back onto the login on disk, without losing it.
- *
- * The pod's own `claude-credentials.mjs reconnect` does it: claude in the pane is stopped and
- * the loop that owns the pane starts it again on the same conversation, so the transcript, the
- * name and the scrollback are all still there. The pane itself is never killed, which is the
- * difference between this and closing the tab.
- *
- * It is manual on purpose. The daemon that keeps one login shared between pods used to do this
- * by itself whenever a newer token arrived, which - while a login is being refreshed - is every
- * few seconds, and it interrupted whatever each conversation was doing. Now it writes the token
- * and leaves the panes alone; this is the button that picks it up.
- */
-export async function reconnectConversation(attach: Attachment): Promise<void> {
-  await reconnectIn(attach.workspace, attach.id);
-}
-
-/** The same for every conversation in one place: the drawer, or one workspace. */
-export async function reconnectEverything(workspace: string): Promise<void> {
-  await reconnectIn(workspace, '');
-}
-
-async function reconnectIn(workspace: string, id: string): Promise<void> {
-  const argv = ['node', '/seed/claude-credentials.mjs', 'reconnect', ...(id ? [id] : [])];
-  // Every pane, a workspace's included, is a tmux session in the agent pod, so `workspace` says
-  // nothing about where to run this - only `id` does, and without one it reconnects them all.
-  const api = await requireAgents();
-  const pod = await api.agent.pod();
-
-  if (!pod) {
-    throw new Error('The agent pod is not running, so there is nothing to reconnect.');
-  }
   await podExecOnce(api.agent.namespace, pod, api.agent.container, argv, AGENT_BASE);
 }
 

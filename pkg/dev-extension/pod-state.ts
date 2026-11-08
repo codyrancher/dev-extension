@@ -699,13 +699,6 @@ function fromFeed(it: Known, path: string): string | null {
   return String(held.answer.text ?? '');
 }
 
-/** Whether this pod is currently being read over HTTP rather than exec, for the record. */
-export function podStateUp(pod: string): boolean {
-  const it = known.get(pod);
-
-  return !!it && !!it.token && !it.downSince;
-}
-
 /** Tests, and a page that wants to start again from nothing. */
 export function resetPodState(): void {
   for (const it of known.values()) {

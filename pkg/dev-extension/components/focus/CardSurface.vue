@@ -296,9 +296,7 @@ watch(shown, (which) => api.shell.showing(which), { immediate: true });
       <ChangeSet
         v-else-if="shown === 'files'"
         :files="art.files"
-        :total="art.stat?.files || 0"
         :busy="busy"
-        :claimed="claimed"
         :workspace="task.workspace || ''"
         :pr="pr"
         :live="interactive"

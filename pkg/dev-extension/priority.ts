@@ -755,7 +755,6 @@ function fromBotPrs(prs: Json[], reviews: Json): PriorityItem[] {
       score:     weightOf(green ? 'bot-green' : 'bot-red'),
     });
   } else if (pile.length) {
-    const green = pile.filter(botGreen).length;
     const oldest = pile
       .map((pr) => Date.parse(pr.updatedAt || ''))
       .filter((at) => Number.isFinite(at))

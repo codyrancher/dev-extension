@@ -22,7 +22,7 @@ export function init($plugin: IPlugin, store: any) {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function devProduct($plugin: IPlugin, store: any) {
-  const { product, basicType, virtualType } = $plugin.DSL(store, DEV_PRODUCT);
+  const { product } = $plugin.DSL(store, DEV_PRODUCT);
 
   // See the note above productOpts: `public` is honoured at runtime but not declared on
   // TypeMapProduct, so the literal is widened for the production build's sake.

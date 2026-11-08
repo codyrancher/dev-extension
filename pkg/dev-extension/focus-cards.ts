@@ -90,9 +90,6 @@ export const loadedCards = ref<Record<string, LoadedCard>>(Object.fromEntries(
   Object.entries(CARD_SOURCES).map(([id, source]) => [id, evaluate(id, source, `bundled`)]),
 ));
 
-/** Where a card's source came from, for the editor to say so before someone overwrites it. */
-export const cardSource = (id: string) => (loadedCards.value[id]?.rev === 'bundled' ? 'bundled' : 'configmap');
-
 /** Set while the first list is in flight, so the deck can wait rather than flash the built-ins. */
 export const cardsSettled = ref(false);
 

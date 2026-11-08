@@ -21,7 +21,6 @@ import type { CardFile, CardComment } from '../../focus-artifacts';
 import type { DiffLine } from '../../focus-review';
 import AppButton from './AppButton.vue';
 import AppIcon from './AppIcon.vue';
-import SectionHead from './SectionHead.vue';
 import CodeView from '../code/CodeView.vue';
 import { fromDiffLines, highlighted } from '../code/rows';
 import InlineChat from './InlineChat.vue';
@@ -47,33 +46,7 @@ const props = withDefaults(defineProps<{
    */
   comments?: CardComment[];
   busy?: boolean;
-  /**
-   * How many files the change really has, where that is more than were fetched.
-   *
-   * The card showed "157 FILES +13281 ADDED" in its evidence row and "What it changed · 40 files"
-   * four lines under it, and presented both as the size of the same change - because `files` is
-   * capped at the first 40 with a patch while the stat is the pull request's own total. Two
-   * numbers for one thing, neither of them labelled. The header says which this is.
-   */
-  total?: number;
-  /**
-   * The fact the card's 36px lede already said. See `claimed` in FocusCard.
-   *
-   * On draft-pr and describe-pr the lede is `13 files changed` and this head read `13 files` 150px
-   * below it. Where the list is a *subset* the count is a different fact and stays - "first 40 of
-   * 157 files" says the list is not the change - which is the one case this head was written for.
-   */
-  claimed?: string;
-}>(), { busy: false, total: 0, claimed: '', workspace: '', pr: 0, live: true, comments: () => [] });
-
-/** The count beside the head's label, or nothing where the lede has already said it. */
-const subset = computed(() => {
-  if (props.total > props.files.length) {
-    return `first ${ props.files.length } of ${ props.total } files`;
-  }
-
-  return props.claimed === 'files' ? '' : `${ props.files.length } files`;
-});
+}>(), { busy: false, workspace: '', pr: 0, live: true, comments: () => [] });
 
 const emit = defineEmits<{
   (e: 'ask', value: { path: string; label: string; code: string; text: string }): void;
@@ -637,16 +610,6 @@ function ask(text = question.value.trim()) {
   nextTick(() => showInPane(root.value?.querySelector(`[data-thread="${ thread.id }"]`) as HTMLElement | null));
 }
 
-/**
- * GitHub's own words for what happened to a file, in shorter ones.
- *
- * `modified` is not in here on purpose: nearly every file in a diff is modified, so a badge
- * saying so on every file is a badge saying nothing. What is worth a word is the file that is new,
- * gone or moved - which is the one case where the +/− pair beside it is misleading on its own.
- */
-const statusWord: Record<string, string> = {
-  added: 'new', removed: 'gone', renamed: 'moved', copied: 'copied',
-};
 </script>
 
 <template>

@@ -17,7 +17,7 @@ import { useStore } from 'vuex';
 import { watchPopouts } from '../md-popout.mjs';
 import { movedNote } from '../review-anchors.mjs';
 import {
-  parseHunks, highlightRows, hl, escapeHtml, renderMd
+  parseHunks, highlightRows, hl, renderMd
 } from './pr/diff';
 import type { DiffRow } from './pr/diff';
 import { Banner } from '@components/Banner';

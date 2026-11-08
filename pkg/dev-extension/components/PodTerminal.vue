@@ -306,13 +306,6 @@ export default {
       return this.mode || this.prefCli || 'claude';
     },
 
-    /** Which pod this pane is for, as the file viewer and the image writer address it. */
-    podTarget() {
-      return {
-        pod: this.viewerPod, container: this.container, namespace: this.namespace, home: this.home,
-      };
-    },
-
     statusText() {
       return {
         waiting:    this.waitingText,

@@ -112,7 +112,6 @@ export function highlightLines(path: string, lines: string[]): string[] {
 }
 
 const hlByRow = new WeakMap<DiffRow, string>();
-export const EXT_LANGS = EXT_LANG;
 
 export function highlightRows(path: string, rows: DiffRow[]): void {
   const sides: { rows: DiffRow[]; texts: string[] }[] = [
@@ -166,7 +165,6 @@ export function renderMd(text: string): string {
     return escapeHtml(cleaned);
   }
 }
-
 
 // ── Diff parsing ──
 

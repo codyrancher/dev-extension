@@ -28,11 +28,10 @@ import {
   computed, nextTick, ref, watch,
 } from 'vue';
 import AppIcon from './AppIcon.vue';
-import IconButton from './IconButton.vue';
 import ChatTurns from '../chat/ChatTurns.vue';
 import ChatComposer from '../chat/ChatComposer.vue';
 import ChatQuestion from '../chat/ChatQuestion.vue';
-import { useConversation, type ConversationTurn } from '../../chat-conversation';
+import { useConversation } from '../../chat-conversation';
 import { readLook } from '../../look';
 import { AGENT_NS } from '../../pod';
 import { AGENT_CONTAINER } from '../../agent';

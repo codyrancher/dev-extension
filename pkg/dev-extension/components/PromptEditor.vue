@@ -8,17 +8,15 @@
  *
  * Deliberately knows nothing about *how* a prompt is stored or expanded. The two callers do not
  * agree on either: the rail writes `{{ name }}` and expands against a workspace, the deck writes
- * `{name}` and expands against the card's own item. So the dialect arrives as `token` and
- * `expand`, and saving is the host's - this owns the draft, the preview and the warnings, which
- * is the part that was worth not writing twice.
+ * `{name}` and expands against the card's own item. So the dialect arrives as `token`, and
+ * saving is the host's - this owns the draft and the warnings, which is the part that was worth
+ * not writing twice.
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 
 export interface EditorVar { name: string; value: string; about: string }
 
 const props = withDefaults(defineProps<{
-  /** The button's own name, for the title. */
-  label: string;
   /** What it sends now: the shipped prompt, or the saved one if this button has been edited. */
   template: string;
   /** What it shipped with, so "edited" is a fact rather than a guess and reset has a target. */
@@ -26,8 +24,6 @@ const props = withDefaults(defineProps<{
   vars: EditorVar[];
   /** How this caller writes a variable - `{{ name }}` in the rail, `{name}` in the deck. */
   token: (name: string) => string;
-  /** How this caller fills them in, for the preview. */
-  expand: (template: string, vars: EditorVar[]) => string;
   /** The skill the prompt invokes, when it invokes one. */
   skill?: string;
   skillContent?: string;
@@ -131,8 +127,6 @@ const segments = computed<{ text: string; name: string; value: string }[]>(() =>
 
   return out;
 });
-
-const preview = computed(() => props.expand(draft.value, props.vars));
 
 /* The box and its ghost scroll as one; the ghost is what paints the token's background. */
 const ghost = ref<HTMLElement | null>(null);

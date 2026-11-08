@@ -25,7 +25,6 @@ export default {
     workspace: { type: String, required: true },
     /** ArtifactGroup[] (workspace-rail.ts), already in the order they are drawn. */
     groups:    { type: Array, required: true },
-    total:     { type: Number, default: 0 },
     /** There were more files than the listing will count. */
     truncated: { type: Boolean, default: false },
     /** The directories this stage is about, which open with more of themselves showing. */

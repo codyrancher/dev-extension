@@ -12,7 +12,6 @@
 // Everything offered here is something Jira will accept: the statuses are that ticket's own legal
 // transitions and the versions, teams and resolutions are its `editmeta` allowed values, read
 // through `/options`. A free-text box that 400s on submit is not a choice.
-import { mapGetters } from 'vuex';
 import { RcButton } from '@components/RcButton';
 import AsyncButton from '@shell/components/AsyncButton';
 import Banner from '@components/Banner/Banner.vue';
@@ -138,8 +137,6 @@ export default {
   },
 
   computed: {
-    ...mapGetters({ t: 'i18n/t' }),
-
     status() {
       return this.proposal?.current?.status || '';
     },

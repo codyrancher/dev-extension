@@ -65,26 +65,8 @@ import {
   readDrawerState, writeDrawerState, arrange, PLACEMENTS, DEFAULT_PLACEMENT, MIN_SIZE, VIEWPORT_MARGIN,
 } from '../drawer';
 
-/** The mouse button a tab is closed with, as `MouseEvent.button` numbers it. */
-const MIDDLE_BUTTON = 1;
-
 /** The id of the one stylesheet this panel reserves the dashboard's room with. */
 const RESERVATION_ID = 'mc-agent-reservation';
-
-/**
- * How far the pointer travels before pressing a tab is a drag rather than a click.
- *
- * A tab is both the thing you click to switch conversation and the thing you drag to move it,
- * so one of the two has to wait for the pointer to say which it is. A few pixels is under the
- * wobble of a deliberate click and well inside the width of the smallest tab.
- */
-const DRAG_THRESHOLD = 4;
-
-/** How fast the tab row scrolls when a drag reaches its edge, in pixels per frame. */
-const EDGE_SCROLL = 12;
-
-/** How close to the edge of the row a drag has to be for that to start, in pixels. */
-const EDGE_ZONE = 32;
 
 /**
  * How often the tabs re-read what their conversations are doing, for the status dots.
@@ -301,10 +283,6 @@ export default {
     /** What the chord does. It is also the only way to dismiss the panel: there is no X. */
     toggle() {
       this.setOpen(!this.open);
-    },
-
-    close() {
-      this.setOpen(false);
     },
 
     setOpen(open) {

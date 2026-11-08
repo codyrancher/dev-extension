@@ -907,16 +907,6 @@ export async function conversationPane(workspace: string, id: string, lines = 60
   return { running: !out.includes('BARN-NO-SESSION'), text: out.replace('BARN-NO-SESSION', '').trim() };
 }
 
-/** End the pane in the workspace pod: the tmux session and everything claude started in it. */
-export async function endPane(workspace: string, id: string): Promise<void> {
-  const target = await workspaceTarget(workspace).catch(() => null);
-
-  if (!target) {
-    return;
-  }
-  await asNode(target, `tmux kill-session -t mc-${ id } 2>/dev/null || true`);
-}
-
 // ── Sharing: the checkout, built, for nginx to serve ────────────────────────────────────────
 
 export type ShareKind = 'dashboard' | 'storybook';

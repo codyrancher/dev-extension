@@ -790,7 +790,6 @@ export default {
           v-if="seen.share"
           :workspace="workspace"
           :pr="prNumber"
-          :issue="issueNumber"
         />
       </Tab>
 

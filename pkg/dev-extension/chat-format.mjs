@@ -184,10 +184,3 @@ export function canonicalTool(call) {
     summary: toolSummary(kind, call?.input),
   };
 }
-
-/** Every tool call of every message, canonical. The last thing an adapter does. */
-export function canonicalMessages(messages) {
-  return (messages || []).map((m) => (
-    m?.tools?.length ? { ...m, tools: m.tools.map(canonicalTool) } : m
-  ));
-}

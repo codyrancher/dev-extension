@@ -24,7 +24,3 @@ export function spaceVar(step: string | number): string {
 
 /** Control heights, by the same rule: named here, valued in the stylesheet. */
 export const CONTROL = ['row', 'sm', 'md'];
-
-export function controlVar(size: string): string {
-  return { row: 'var(--dev-control-row)', sm: 'var(--dev-control-sm)', md: 'var(--dev-control)' }[size] || 'auto';
-}
