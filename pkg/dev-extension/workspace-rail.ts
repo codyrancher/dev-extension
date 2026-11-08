@@ -1524,6 +1524,13 @@ export const ACTION_TEMPLATES: Record<string, string> = {
   startReview:    'Use the my-pr-full-review skill to review {{ repo }} PR {{ pr }} - harness portal context, file through {{ context }}.',
   answerFeedback: 'Use the my-pr-address-feedback skill to address the review feedback on {{ repo }} PR {{ pr }}: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.',
   reverify:       'Use the my-fix-demonstrate skill to re-verify the fix on this branch (PR {{ pr }}) and record a fresh video of the same walk.',
+  /*
+   * Putting a branch up for review: the my-pr-create skill, which pushes the branch, uploads the
+   * recordings, opens the draft pull request and checks the body it rendered. The same words the
+   * skill's own button sent, now the code stage's primary: opening the PR straight through the
+   * API skipped all of that, and could not push a branch that was not on GitHub yet.
+   */
+  openPr:         'Use the my-pr-create skill. {{ subject }}{{ contextClause }}',
   reviewAgain:    'Use the my-pr-review-new-commits skill on {{ repo }} PR {{ pr }} - the developer pushed new commits or replied since your review was submitted. File through {{ context }}.',
   /*
    * The four steps of the bug-triage process, one template each.
@@ -1627,7 +1634,6 @@ export function skillsFor(kind: WorkspaceStatus['kind'], stage: Stage, reviewed 
       return [
         { label: 'Verify the fix', skill: 'my-fix-verify', note: 'Self-review, a test that fails without the fix, edge cases' },
         { label: 'Demonstrate it', skill: 'my-fix-demonstrate', note: 'Record the same walk, now correct' },
-        { label: 'Open the PR', skill: 'my-pr-create', note: 'Branch, push, upload the media, open the draft PR' },
       ];
     case 'draft':
       /*

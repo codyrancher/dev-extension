@@ -1253,15 +1253,6 @@ export function githubLogin(): Promise<string> {
   return loginSoon;
 }
 
-/** Open the pull request for a branch that already has the work on it. */
-export async function createPullRequest(repo: string, from: { head: string; base: string; title: string; body?: string; draft?: boolean }): Promise<{ number: number; url: string }> {
-  const made = await rest('POST', `/repos/${ repo }/pulls`, {
-    head: from.head, base: from.base, title: from.title, body: from.body || '', draft: from.draft ?? true,
-  });
-
-  return { number: made.number, url: made.html_url };
-}
-
 /**
  * Take a draft PR out of draft. The person's own act - the skills never do it - and the one
  * thing GitHub's UI is otherwise needed for at the draft stage.

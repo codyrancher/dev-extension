@@ -2918,6 +2918,11 @@ export default {
       await this.say(`Feedback on #${ pr }`, this.promptOf('answerFeedback'), true, `Feedback on #${ pr }`, 'Answering the feedback');
     },
 
+    /** The branch up for review: push, the recordings, the draft PR - the my-pr-create skill. */
+    async openPr() {
+      await this.say('', this.promptOf('openPr'), true, '', 'Putting it up for review: the agent pushes the branch, uploads the recordings and opens the draft PR');
+    },
+
     async reverify() {
       const pr = this.status?.pr;
 

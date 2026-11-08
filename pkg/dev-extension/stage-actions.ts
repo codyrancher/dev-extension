@@ -93,8 +93,12 @@ export function stageAction(s: WorkspaceStatus | any, stage: string, issue = 0):
         };
       }
 
+      // Stopped with the work on the branch and no PR: putting it up is the one thing to press.
       return {
-        headline: s.agent === 'working' ? 'The agent is working on the fix' : 'The agent stopped before opening a PR', detail: s.agent === 'working' ? 'Follow along in the conversation, or ask it something below.' : 'Read its report on the left; ask it to carry on, or to change course, below.', primary: null, tools: [],
+        headline: s.agent === 'working' ? 'The agent is working on the fix' : 'The agent stopped before opening a PR',
+        detail:   s.agent === 'working' ? 'Follow along in the conversation, or ask it something below.' : 'Read its report on the left. Put it up for review pushes the branch, uploads the recordings and opens a draft PR; or ask the agent to carry on, or to change course, below.',
+        primary:  s.agent === 'working' ? null : { label: 'Put it up for review', run: 'openPr' },
+        tools:    [],
       };
     case 'draft':
       return {

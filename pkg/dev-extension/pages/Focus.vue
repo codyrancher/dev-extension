@@ -63,7 +63,7 @@ import {
 } from '../config/constants';
 import type { RancherTarget } from '../ranchers';
 import {
-  myWork, assignToMe, requestReviewers, describePr, createPullRequest, markReadyForReview, setIssueStatus
+  myWork, assignToMe, requestReviewers, describePr, markReadyForReview, setIssueStatus
 } from '../github';
 import { stageRow, stagePrompt, sayInWorkspace } from '../stage-actions';
 import type { StageRowItem } from '../stage-actions';
@@ -71,7 +71,7 @@ import { numbersIn } from '../artifact-subjects.mjs';
 import { deleteWorkspace } from '../api';
 import type { WorkspaceStatus } from '../workspace-status';
 import type { GithubWork } from '../github';
-import { workspaceBranch, startDevServer, stopDevServer } from '../workspace-tools';
+import { startDevServer, stopDevServer } from '../workspace-tools';
 import { dependabotData, dependabotReviews, DEFAULT_REPO } from '../reviews';
 import { workspaceStatuses, readStatusNow, agentOf } from '../workspace-status';
 import { conversationFor, panelConversation, queueForLater } from '../focus-agent';
@@ -1461,10 +1461,17 @@ async function runStage(task: FocusTask, action: CardAction) {
 
   railPrompts = railPrompts || readPrompts().catch(() => ({}));
   const edited = await railPrompts;
+  /*
+   * Said to the agent, and then the card is the agent's: put aside until it stops, which is what
+   * takes it off the deck and brings the next card up. It comes back when the agent stops - with
+   * the stage moved on, as a different card, when the work did what it was asked.
+   */
   const tell = async(title: string, text: string, reuse = !title) => {
+    say(`${ action.label }: sending it to the agent…`);
     const sent = await sayInWorkspace(name, title, text, { reuse, from: title, pr });
 
-    say(`${ action.label }: ${ sent.started ? `started as ${ title || 'a new conversation' }` : `sent to ${ sent.conversation.title || 'the workspace conversation' }${ sent.running ? '' : ', which is starting again to read it' }` }.`);
+    await handToAgent(task, sent.conversation.id);
+    say(`${ action.label }: ${ sent.started ? `started as ${ title || 'a new conversation' }` : `sent to ${ sent.conversation.title || 'the workspace conversation' }${ sent.running ? '' : ', which is starting again to read it' }` }. The card is put aside until the agent stops.`);
   };
 
   if (action.skill) {
@@ -1489,6 +1496,10 @@ async function runStage(task: FocusTask, action: CardAction) {
     } else {
       await handToAgent(task, await pickUpTheReview(task));
     }
+    break;
+  case 'openPr':
+    await tell('', stagePrompt({ run: 'openPr' }, status, issue, name, repo, edited), true);
+    say('Putting it up for review: the agent pushes the branch, uploads the recordings and opens a draft PR. The card is put aside until it stops; the draft comes back as a card of its own.');
     break;
   case 'answerFeedback':
     await tell(`Feedback on #${ pr }`, stagePrompt({ run: 'answerFeedback' }, status, issue, name, repo, edited), true);
@@ -1714,31 +1725,28 @@ async function readyForReview(task: FocusTask) {
  * than either.
  */
 async function openThePr(task: FocusTask) {
-  const { workspace } = subjectOf(task);
-  // `workspaceBranch` answers with the branch and its sha; only the name is wanted here.
-  const branch = workspace ? (await workspaceBranch(workspace).catch(() => null))?.branch || '' : '';
+  const name = task.workspace;
 
-  if (!branch) {
-    error.value = 'Could not work out which branch to open it from.';
+  if (!name) {
+    error.value = 'There is no workspace behind this card to put up for review.';
 
     return;
   }
   /*
-   * The default, and knowingly so: this opens a pull request that does not exist yet, so there
-   * is no PR summary to take a repository from. It should be the WORKSPACE's repo - the one
-   * thing on this path that knows - and Focus does not hold that today. A workspace in another
-   * repository cannot open its first pull request from here; it can from its own page.
+   * Through the agent, as the stage's own "Put it up for review" goes (see runStage): the branch
+   * is usually not on GitHub yet, and the API cannot open a pull request from a branch it cannot
+   * see - so this created nothing, and said so in an error drawn behind the chat bar.
    */
-  const made = await createPullRequest(DEFAULT_REPO, {
-    head:  branch,
-    base:  'master',
-    title: task.title || `Work from ${ workspace }`,
-    draft: true,
-  });
+  const status = (spaceStatus.value[name] || null) as WorkspaceStatus | null;
+  const issue = numbersIn(name).issue;
+  const repo = spaces.value.find((ws) => ws.name === name)?.repo || DEFAULT_REPO;
 
-  say(`Opened PR #${ made.number } as a draft.`);
-  window.open(made.url, '_blank', 'noopener');
-  await done(task);
+  railPrompts = railPrompts || readPrompts().catch(() => ({}));
+  say('Putting it up for review: sending it to the agent…');
+  const sent = await sayInWorkspace(name, '', stagePrompt({ run: 'openPr' }, status, issue, name, repo, await railPrompts), { reuse: true });
+
+  await handToAgent(task, sent.conversation.id);
+  say('Putting it up for review: the agent pushes the branch, uploads the recordings and opens a draft PR. The card is put aside until it stops; the draft comes back as a card of its own.');
 }
 
 /**
@@ -3079,8 +3087,14 @@ onBeforeUnmount(closeSettings);
 .focus__error {
   position: fixed;
   left: 50%;
-  bottom: var(--s5);
-  z-index: 45;
+  /*
+   * Above the chat bar, on top of it. These were at the bottom of the window under the bar's own
+   * line and a layer below it, so every message this view sends - "Opened PR #n", every error - was
+   * drawn behind the bar, and a press that worked or failed looked the same: like nothing.
+   */
+  bottom: calc(var(--bar-bottom, var(--s5)) + var(--bar-h, 40px) + var(--s3));
+  z-index: 55;
+  max-width: min(720px, calc(100vw - 2 * var(--s4)));
   margin: 0;
   padding: var(--s2) var(--s4);
   border: 1px solid var(--border-strong);
