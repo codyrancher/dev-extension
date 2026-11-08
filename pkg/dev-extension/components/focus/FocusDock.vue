@@ -1,16 +1,16 @@
 <script setup lang="ts">
 /**
- * What else is running, from a corner of the deck.
+ * What else is running, behind one status badge in the deck's top-right corner.
  *
  * The deck is one card at a time on purpose, and the cost of that is losing sight of everything
  * else - four workspaces with agents in them and two Ranchers up, and the view shows you one
  * card. This is the answer to "what else is there" without leaving.
  *
- * One component for both corners rather than one per corner. The behaviour is the whole of what
- * this is - when it opens, when it goes, that it survives the pointer crossing the gap - and that
- * behaviour is identical for workspaces and for Ranchers; only the rows differ. Two copies of it
- * would be two sets of timings to keep in step, which is the drift SectionHead was just pulled
- * out of six components to stop.
+ * It was two badges, Workspaces and Ranchers, in the bottom-left corner on the chat bar's line,
+ * where they crowded the bar's first words. Now it is one, in the header: a dot that says the
+ * state of the whole - something waiting on you, something broken, something working, all quiet
+ * - and a count, and the lists behind it, one section each. The badge says whether to look; the
+ * card says what at.
  *
  * Hovered rather than clicked, and it stays while the pointer is on the card, because what is in
  * it is a list of links - a control that exists only while the pointer is on the mark is a
@@ -19,25 +19,20 @@
 import { computed, onBeforeUnmount, ref } from 'vue';
 import AppIcon from './AppIcon.vue';
 import type { IconName } from './icons';
-import type { DockRow } from './dock';
+import type { DockRow, DockSection } from './dock';
 
 const props = withDefaults(defineProps<{
+  /** What the badge is, for the title and for a screen reader. */
   label: string;
-  rows: DockRow[];
+  sections: DockSection[];
   icon?: IconName;
-  /** The one the card on top belongs to, marked in the list. */
-  here?: string;
-  /** Extra lines under the name: what the normal view shows about this thing. */
-  meters?: boolean;
-  /** What to say when there are none. */
-  empty?: string;
 }>(), {
-  icon: 'tasks', here: '', empty: 'Nothing here yet.', meters: false,
+  icon: 'server',
 });
 
 const emit = defineEmits<{
-  (e: 'open', id: string): void;
-  (e: 'act', value: { row: DockRow; action: string }): void;
+  (e: 'open', value: { id: string; section: string }): void;
+  (e: 'act', value: { row: DockRow; action: string; section: string }): void;
 }>();
 
 /**
@@ -48,8 +43,8 @@ const emit = defineEmits<{
  */
 const sure = ref('');
 
-function press(row: DockRow, action: { id: string; danger?: boolean }) {
-  const key = `${ row.id }:${ action.id }`;
+function press(section: string, row: DockRow, action: { id: string; danger?: boolean }) {
+  const key = `${ section }:${ row.id }:${ action.id }`;
 
   if (action.danger && sure.value !== key) {
     sure.value = key;
@@ -57,7 +52,7 @@ function press(row: DockRow, action: { id: string; danger?: boolean }) {
     return;
   }
   sure.value = '';
-  emit('act', { row, action: action.id });
+  emit('act', { row, action: action.id, section });
 }
 
 const open = ref(false);
@@ -143,10 +138,39 @@ onBeforeUnmount(() => {
   }
 });
 
-/** Up first, then the rest; a stopped one is still worth seeing, just not first. */
-const sorted = computed(() => [...props.rows].sort((a, b) => Number(b.up) - Number(a.up) || a.name.localeCompare(b.name)));
+/** Each section's rows, up first and then the rest: a stopped one is still worth seeing, just not first. */
+const shown = computed(() => props.sections.map((section) => {
+  const rows = [...section.rows].sort((a, b) => Number(b.up) - Number(a.up) || a.name.localeCompare(b.name));
 
-const live = computed(() => sorted.value.filter((row) => row.up).length);
+  return { ...section, rows, live: rows.filter((row) => row.up).length };
+}));
+
+/**
+ * The state of everything at once, worst first: something waiting on you, something broken,
+ * something working, everything up, nothing up. One dot, so the corner can be read without
+ * opening it - and the words beside it say how many of the worst there are.
+ */
+const status = computed<{ tone: 'needs' | 'bad' | 'busy' | 'good' | 'muted'; text: string }>(() => {
+  const rows = shown.value.flatMap((section) => section.rows);
+  const needs = rows.filter((row) => row.tone === 'needs').length;
+  const bad = rows.filter((row) => row.bad || row.tone === 'bad').length;
+  const live = rows.filter((row) => row.up).length;
+
+  if (needs) {
+    return { tone: 'needs', text: `${ needs } need${ needs === 1 ? 's' : '' } you` };
+  }
+  if (bad) {
+    return { tone: 'bad', text: `${ bad } failing` };
+  }
+  if (rows.some((row) => row.tone === 'busy')) {
+    return { tone: 'busy', text: `${ live } running` };
+  }
+
+  return { tone: live ? 'good' : 'muted', text: live ? `${ live } running` : 'Nothing running' };
+});
+
+/** The badge's title: every section's count, the way each section's own header says it. */
+const summary = computed(() => shown.value.map((section) => `${ section.label }: ${ section.live } of ${ section.rows.length } up`).join(' · '));
 </script>
 
 <template>
@@ -155,21 +179,18 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
       type="button"
       class="dock__mark"
       :class="{ 'dock__mark--on': open }"
-      :title="`${ label }: ${ live } of ${ sorted.length } up`"
+      :title="summary"
+      :aria-label="`${ label }: ${ status.text }. ${ summary }`"
       ref="mark"
       :aria-expanded="open ? 'true' : 'false'"
       @click="place(); open = !open"
     >
       <AppIcon :name="icon" :size="15" />
+      <span class="dock__dot" :class="`dock__dot--${ status.tone }`" />
       <!--
-        What it counts, in words.
-
-        The mark drew a bare number - "5" and "2", two 55x34 chips in a corner - and the `label`
-        prop it was given never appeared anywhere you could see without opening it. A corner
-        control with a number and no noun is a thing people press to find out what it is.
+        What it is saying, in words: a dot alone is a thing people press to find out what it means.
       -->
-      <span class="dock__name">{{ label }}</span>
-      <span v-if="live" class="dock__live">{{ live }}</span>
+      <span class="dock__name">{{ status.text }}</span>
     </button>
 
     <Teleport to="body">
@@ -183,25 +204,26 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
               ...(at.top === null ? { bottom: `${ at.bottom }px` } : { top: `${ at.top }px` }),
             }"
           >
+        <section v-for="section in shown" :key="section.key" class="dock__section">
         <header class="dock__head">
-          <span class="dock__title">{{ label }}</span>
-          <span class="dock__count">{{ live }} of {{ sorted.length }} up</span>
+          <span class="dock__title">{{ section.label }}</span>
+          <span class="dock__count">{{ section.live }} of {{ section.rows.length }} up</span>
         </header>
 
-        <ul v-if="sorted.length" class="dock__list">
-          <li v-for="row in sorted" :key="row.id">
+        <ul v-if="section.rows.length" class="dock__list">
+          <li v-for="row in section.rows" :key="row.id">
             <button
               type="button"
               class="ws"
-              :class="{ 'ws--here': row.id === here || row.name === here }"
-              @click="emit('open', row.id)"
+              :class="{ 'ws--here': section.here && (row.id === section.here || row.name === section.here) }"
+              @click="emit('open', { id: row.id, section: section.key })"
             >
               <span
                 class="ws__dot"
                 :class="{ 'ws__dot--up': row.up, 'ws__dot--bad': row.bad }"
               />
               <span class="ws__name">{{ row.name }}</span>
-              <span v-if="row.id === here || row.name === here" class="u-badge">this card</span>
+              <span v-if="section.here && (row.id === section.here || row.name === section.here)" class="u-badge">this card</span>
               <span class="ws__state" :class="`ws__state--${ row.tone || 'muted' }`">{{ row.state }}</span>
             </button>
 
@@ -212,9 +234,9 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
                 :key="action.id"
                 type="button"
                 class="ws__act"
-                :class="{ 'ws__act--danger': action.danger, 'ws__act--sure': sure === `${ row.id }:${ action.id }` }"
-                :title="sure === `${ row.id }:${ action.id }` ? `${ action.label } — press again` : action.label"
-                @click="press(row, action)"
+                :class="{ 'ws__act--danger': action.danger, 'ws__act--sure': sure === `${ section.key }:${ row.id }:${ action.id }` }"
+                :title="sure === `${ section.key }:${ row.id }:${ action.id }` ? `${ action.label } — press again` : action.label"
+                @click="press(section.key, row, action)"
               >
                 <AppIcon :name="(action.icon as never)" :size="12" />
               </button>
@@ -222,7 +244,7 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 
             <!-- What the normal view says about it: what it needs, and the room it has. -->
             <p v-if="row.note" class="ws__note">{{ row.note }}</p>
-            <div v-if="meters && row.room" class="ws__room">
+            <div v-if="section.meters && row.room" class="ws__room">
               <span v-for="meter in row.room" :key="meter.label" class="meter" :title="`${ meter.label }: ${ meter.text }`">
                 <span class="meter__label">{{ meter.label }}</span>
                 <span class="meter__track"><span class="meter__fill" :style="{ width: meter.fill }" /></span>
@@ -232,7 +254,8 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
           </li>
         </ul>
 
-        <p v-else class="dock__empty">{{ empty }}</p>
+        <p v-else class="dock__empty">{{ section.empty || 'Nothing here yet.' }}</p>
+        </section>
           </div>
         </Transition>
       </div>
@@ -241,7 +264,7 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 </template>
 
 <style scoped>
-/* Positioned by the row it is in: the page's header. See Focus.vue. */
+/* Positioned by the row it is in: the page's header, at its right end. See Focus.vue. */
 .dock { position: relative; }
 
 .dock__mark {
@@ -267,12 +290,34 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 
 .dock__name { color: var(--text-dim); font-size: var(--t-sm); white-space: nowrap; }
 
-.dock__live {
-  color: var(--accent);
-  font-family: var(--font);
-  font-size: var(--t-xs);
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
+/* The state of the whole, worst first: see `status`. The tones are the sidebar rows' own. */
+.dock__dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.dock__dot--needs { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.dock__dot--bad { background: var(--danger); }
+.dock__dot--busy { background: var(--kind-agent, var(--success)); animation: dock-pulse 1.6s ease-in-out infinite; }
+.dock__dot--good { background: var(--success); }
+
+@keyframes dock-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dock__dot--busy { animation: none; }
+}
+
+/* A rule between the sections, and the sections' own scroll: the card scrolls as one. */
+.dock__section + .dock__section {
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border);
 }
 
 /*
@@ -312,8 +357,8 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
 .dock__title { color: var(--text); font-size: var(--t-sm); font-weight: 650; }
 .dock__count { margin-left: auto; color: var(--text-faint); font-size: var(--t-xs); }
 
-/* Never taller than the room its side has; the rest scrolls. */
-.dock__card { max-height: min(46vh, calc(100vh - 96px)); display: flex; flex-direction: column; }
+/* Never taller than the room its side has; the rest scrolls, as one list of sections. */
+.dock__card { max-height: min(70vh, calc(100vh - 96px)); display: flex; flex-direction: column; overflow-y: auto; }
 
 .dock__list {
   /*
@@ -325,11 +370,9 @@ const live = computed(() => sorted.value.filter((row) => row.up).length);
   display: flex;
   flex-direction: column;
   gap: 1px;
-  max-height: 46vh;
   margin: 0;
   padding: 0;
   list-style: none;
-  overflow-y: auto;
 }
 
 /*

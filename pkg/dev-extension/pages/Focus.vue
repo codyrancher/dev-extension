@@ -38,7 +38,7 @@ import MiniCard from '../components/focus/MiniCard.vue';
 import CardFlight from '../components/focus/CardFlight.vue';
 import FileModal from '../components/code/FileModal.vue';
 import FocusDock from '../components/focus/FocusDock.vue';
-import type { DockRow } from '../components/focus/dock';
+import type { DockRow, DockSection } from '../components/focus/dock';
 import CardGallery from '../components/focus/CardGallery.vue';
 import FocusChatBar from '../components/focus/FocusChatBar.vue';
 import { holdOverlay, releaseOverlay } from '../components/focus/overlay';
@@ -494,6 +494,31 @@ const rancherRows = computed<DockRow[]>(() => ranchers.value.map((target) => ({
     ...(target.kind !== 'host' ? [{ id: 'delete', label: 'Delete this Rancher, with its cluster and node', icon: 'trash', danger: true }] : []),
   ],
 })));
+
+/** The status badge's lists, in the order they are read: the work, then where it runs. */
+const statusSections = computed<DockSection[]>(() => [
+  {
+    key: 'workspaces', label: 'Workspaces', rows: workspaceRows.value, here: current.value?.workspace || '', empty: 'No workspaces. A card that needs one offers to make it.',
+  },
+  {
+    key: 'ranchers', label: 'Ranchers', rows: rancherRows.value, empty: 'No Rancher instances.',
+  },
+]);
+
+/**
+ * A row pressed in the status card: a workspace opens its page, a Rancher opens its address.
+ *
+ * In the script rather than the template, because a template cannot see `window`: the Rancher
+ * corner's handler was `window.open(...)` written inline, which is `undefined.open` there, so
+ * pressing a Rancher did nothing but throw.
+ */
+function openFromStatus({ id, section }: { id: string; section: string }) {
+  if (section === 'workspaces') {
+    openWorkspace(id);
+  } else if (id) {
+    window.open(id, '_blank', 'noopener');
+  }
+}
 
 /** Just the host, for a dock row: a full URL in a 340px card is a line of ellipsis. */
 function host(url: string): string {
@@ -2290,6 +2315,19 @@ onBeforeUnmount(closeSettings);
         <template v-else-if="snoozedCount">{{ snoozedCount }} put off</template>
       </p>
 
+      <!--
+        What is running behind the one card on screen - the workspaces, and the Ranchers they are
+        pointed at - as one status badge at the header's right end. It was two badges fixed in the
+        bottom-left corner on the chat bar's line, where they crowded the bar's first words; one
+        dot here says whether anything wants a look, and the lists are behind it. See FocusDock.
+      -->
+      <FocusDock
+        label="What is running"
+        :sections="statusSections"
+        class="focus__status"
+        @open="openFromStatus"
+        @act="({ row, action }) => actOnRow(row, action)"
+      />
     </header>
 
     <div class="focus__main">
@@ -2436,41 +2474,6 @@ onBeforeUnmount(closeSettings);
       asking for a conversation because somebody started typing into it before there was one.
       See components/focus/FocusChatBar.vue.
     -->
-    <!--
-      What is running behind the one card on screen: the workspaces, and the Ranchers they are
-      pointed at. Fixed in the bottom-left corner.
-
-      They were moved up into the header once because two fixed layers were fighting over the
-      same forty pixels: the chat bar was `left: 50%` with a 980px body, which put its first
-      button straight over the first dock. That is no longer true - the bar is inset by
-      `--pins-w` and starts at the card's own left edge - so the corner is free again, and it
-      is where a thing you glance at rather than read belongs.
-
-      The marks open upward from here, which FocusDock works out for itself: it measures the
-      room above and below its own button and picks the side with space, so nothing had to be
-      told about the move.
-    -->
-    <div class="focus__docks">
-        <FocusDock
-          label="Workspaces"
-          icon="tasks"
-          :rows="workspaceRows"
-          :here="current?.workspace || ''"
-          empty="No workspaces. A card that needs one offers to make it."
-          @open="openWorkspace"
-          @act="({ row, action }) => actOnRow(row, action)"
-        />
-
-        <FocusDock
-          label="Ranchers"
-          icon="scales"
-          :rows="rancherRows"
-          empty="No Rancher instances."
-          @open="(url) => url && window.open(url, '_blank', 'noopener')"
-          @act="({ row, action }) => actOnRow(row, action)"
-        />
-      </div>
-
     <!--
       Everything waiting, in the right-hand corner.
 
@@ -2922,12 +2925,7 @@ onBeforeUnmount(closeSettings);
 
 .pin:hover { transform: translateX(2px) scale(1.015); }
 
-/*
- * The docks, in the page's own header rather than fixed over its bottom-left corner, where the
- * chat bar is. In the flow, so nothing can be drawn on top of them and nothing has to be kept in
- * step with the bar's offsets. See the markup for what the overlap measured.
- */
-/* The other end of the same row: fixed to the window, not to the card's box. */
+/* The other end of the chat bar's row: fixed to the window, not to the card's box. */
 .focus__corner {
   position: fixed;
   right: var(--s3, 16px);
@@ -2938,19 +2936,7 @@ onBeforeUnmount(closeSettings);
   box-shadow: var(--shadow-2);
 }
 
-.focus__docks {
-  position: fixed;
-  left: var(--s3, 16px);
-  /* On the bar's own line, at the bar's own height: one row, two ends. */
-  bottom: var(--bar-bottom);
-  height: var(--bar-h);
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  gap: var(--s2);
-  /* Above the page, below the chat bar's veil: opening the conversation should dim these too. */
-  z-index: 30;
-}
+.focus__status { flex: 0 0 auto; }
 
 /* ── What the page says to you ────────────────────────────────────────────────────────────── */
 .focus__notice,

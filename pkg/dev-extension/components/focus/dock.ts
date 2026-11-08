@@ -27,3 +27,17 @@ export interface DockRow {
    */
   actions?: { id: string; label: string; icon: string; danger?: boolean }[];
 }
+
+/** One list in the status card: the workspaces, or the Ranchers. */
+export interface DockSection {
+  /** What the page is told a row came from, with an open or an act. */
+  key: string;
+  label: string;
+  rows: DockRow[];
+  /** The one the card on top belongs to, marked in the list. */
+  here?: string;
+  /** Extra lines under the name: what the normal view shows about this thing. */
+  meters?: boolean;
+  /** What to say when there are none. */
+  empty?: string;
+}
