@@ -75,9 +75,14 @@ const props = defineProps<{
    * description as it renders, its checklist and a review box - over the card. See PrSheet.
    */
   pr?: number;
+  /**
+   * The issue this card's work is for, where there is no pull request yet: the line then opens
+   * the issue in full - its description as it renders, and its comments - over the card.
+   */
+  issue?: number;
 }>();
 
-const emit = defineEmits<{ (e: 'read'): void; (e: 'talk'): void; (e: 'pr'): void }>();
+const emit = defineEmits<{ (e: 'read'): void; (e: 'talk'): void; (e: 'pr'): void; (e: 'issue'): void }>();
 
 /*
  * Teleported rather than opened in place: this card is inside a transformed, clipped element,
@@ -188,6 +193,8 @@ const goes = computed<Go[]>(() => {
    */
   const out: Go[] = props.pr ? [{
     key: 'pr', label: `PR #${ props.pr }`, icon: 'document', url: '', state: '', title: 'The pull request as it renders, with its checklist and a review box',
+  }] : props.issue ? [{
+    key: 'issue', label: `Issue #${ props.issue }`, icon: 'document', url: '', state: '', title: 'The issue as it renders, with what was said under it',
   }] : [];
 
   out.push(...a.live.map((live) => ({
@@ -234,6 +241,8 @@ function pressed(go: Go) {
     emit('talk');
   } else if (go.key === 'pr') {
     emit('pr');
+  } else if (go.key === 'issue') {
+    emit('issue');
   }
 }
 
