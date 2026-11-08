@@ -184,6 +184,7 @@ function onCode(text: string): void {
       v-if="pane.dialog"
       :dialog="pane.dialog"
       @choose="chat.choose($event)"
+      @next="chat.nextQuestion()"
       @code="onCode"
     />
 
