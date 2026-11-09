@@ -906,6 +906,43 @@
  */
 .md-body :deep(:not(a) > img) { cursor: zoom-in; }
 
+/*
+ * A recording in a body: a still of it with a play mark, opened in the one player on a press
+ * (videoFrame in workspace-rail.ts). The still is a picture, so it takes no pointer of its own.
+ */
+.md-body :deep(.md-video) {
+  position:      relative;
+  display:       inline-block;
+  max-width:     100%;
+  margin:        var(--dev-space-1) 0;
+  border-radius: var(--r-sm);
+  cursor:        pointer;
+}
+.md-body :deep(.md-video video) { pointer-events: none; max-height: 40vh; }
+.md-body :deep(.md-video__play) {
+  position:      absolute;
+  inset:         0;
+  width:         56px;
+  height:        56px;
+  margin:        auto;
+  border-radius: 50%;
+  background:    rgba(0, 0, 0, 0.6);
+  box-shadow:    0 0 0 2px rgba(255, 255, 255, 0.85);
+  transition:    transform 0.12s ease, background 0.12s ease;
+}
+.md-body :deep(.md-video__play)::after {
+  content:      '';
+  position:     absolute;
+  top:          50%;
+  left:         54%;
+  transform:    translate(-50%, -50%);
+  border-style: solid;
+  border-width: 11px 0 11px 18px;
+  border-color: transparent transparent transparent #fff;
+}
+.md-body :deep(.md-video:hover .md-video__play),
+.md-body :deep(.md-video:focus-visible .md-video__play) { transform: scale(1.08); background: rgba(0, 0, 0, 0.75); }
+
 /* A recording in a comment: as wide as the comment and no wider, never taller than a screenful. */
 .md-body :deep(video) {
   display:       block;

@@ -1428,6 +1428,16 @@ export default {
      * text, and a link is still a link.
      */
     openShot(event) {
+      // A recording is a still in the body (videoFrame in workspace-rail.ts): it plays in the
+      // viewer's player, the same one every recording plays in.
+      const frame = event?.target?.closest?.('[data-video]');
+
+      if (frame) {
+        event.preventDefault();
+        this.shot = { src: frame.dataset.video, name: frame.dataset.name || 'recording.mp4', caption: frame.dataset.caption || '' };
+
+        return;
+      }
       const img = event?.target;
 
       if (!img || img.tagName !== 'IMG' || !img.src || img.closest('a')) {
@@ -3877,6 +3887,7 @@ export default {
                 class="md-body workspace-rail__md"
                 :class="{ 'workspace-rail__md--live': item.taskBody }"
                 @click="(event) => onBodyClick(event, item)"
+                @keydown.enter="openShot"
                 v-html="item.html"
               />
               <template v-else>{{ item.text }}</template>
@@ -4262,6 +4273,7 @@ export default {
                       v-else
                       class="comment-body md-body"
                       @click="openShot"
+                      @keydown.enter="openShot"
                       v-html="t.html"
                     />
                     <!--
@@ -5935,8 +5947,6 @@ export default {
   &__section--opened {
     gap:     var(--dev-space-5);
     padding: var(--dev-inset);
-    // DevModal's body padding, which a sticky pager would otherwise sit below. See `__pager`.
-    --pager-stick: -20px;
 
     /*
      * A file's header sticks to the top of whatever scrolls, and here that is the modal's body
@@ -6075,9 +6085,10 @@ export default {
    * long one. Opaque, and over what scrolls under it (no sticky element in a thread card competes).
    * One row: the numbers scroll sideways rather than wrap, so it never grows over the thread.
    *
-   * `--pager-stick`, because Chrome pins a sticky box inside its scroller's padding: at `top: 0` it
-   * sat that far below the edge with the thread showing above it. The modal's body has 20px; see
-   * `__section--opened`.
+   * `top: 0` is the scroller's top edge here: a section opens in DevModal's view mode, whose body
+   * has no padding. Chrome pins a sticky box inside its scroller's padding, so a scroller that had
+   * some would want `--pager-stick` set to minus it - the 20px that was assumed for this one put
+   * the pager half under the modal's header.
    */
   &__pager {
     position:      sticky;

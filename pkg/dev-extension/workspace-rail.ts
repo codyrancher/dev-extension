@@ -1400,7 +1400,7 @@ function placeAttached(html: string, pr: number, attachments: LocalAttachment[])
     const alt = escapeHtml(found.name || name);
 
     if (found.kind === 'video') {
-      return `<video controls preload="metadata" src="${ url }"></video>`;
+      return videoFrame(url, found.name || name, found.caption || '');
     }
     if (found.kind === 'image') {
       return `<img src="${ url }" alt="${ alt }" data-caption="${ caption }" loading="lazy">`;
@@ -1408,6 +1408,25 @@ function placeAttached(html: string, pr: number, attachments: LocalAttachment[])
 
     return `<a target="_blank" rel="noopener" href="${ url }">${ alt }</a>`;
   });
+}
+
+/** A recording's type as the extension ArtifactViewer names its kind by. */
+const VIDEO_EXT: Record<string, string> = {
+  'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov', 'video/x-matroska': 'mkv',
+};
+
+/**
+ * A recording in a rendered body: a still of it with a play mark, which opens the one player.
+ *
+ * It was a `<video controls>` in the HTML, the browser's player as it came, playing from a source
+ * that could not seek - so a recording in a pull request could be watched but not scrubbed, and it
+ * was a different player from the one every viewer uses. A body is `v-html`, which cannot hold a
+ * component, so it holds the still and the rail opens the recording in ArtifactViewer (and so in
+ * VideoPlayer) on a press, as it already does for a screenshot. `#t=2`, because the first frames
+ * of a recording of a page are usually the page before it has painted.
+ */
+export function videoFrame(src: string, name: string, caption: string): string {
+  return `<span class="md-video" role="button" tabindex="0" data-video="${ escapeHtml(src) }" data-name="${ escapeHtml(name) }" data-caption="${ escapeHtml(caption) }" title="Play the recording"><video src="${ escapeHtml(src) }#t=2" preload="metadata" muted playsinline></video><span class="md-video__play" aria-hidden="true"></span></span>`;
 }
 
 export function renderBody(text: string, kinds: Record<string, string> = {}, evidence?: { pr: number; attachments: LocalAttachment[] }, repo = DEFAULT_REPO): string {
@@ -1426,7 +1445,7 @@ export function renderBody(text: string, kinds: Record<string, string> = {}, evi
     const kind = kinds[href] || '';
 
     if (/^video\//.test(kind)) {
-      return `<video controls preload="metadata" src="${ ghAssetUrl(href) }"></video>`;
+      return videoFrame(ghAssetUrl(href), `recording.${ VIDEO_EXT[kind] || 'mp4' }`, '');
     }
     if (/^image\//.test(kind)) {
       return `<a target="_blank" rel="noopener" href="${ href }"><img src="${ ghAssetUrl(href) }" alt="attachment" loading="lazy"></a>`;

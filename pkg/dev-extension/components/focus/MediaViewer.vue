@@ -26,6 +26,7 @@ import { highlight } from '../../highlight';
 import { artifactLanguage } from '../../artifact-kind';
 import IconButton from './IconButton.vue';
 import DevModal from '../DevModal.vue';
+import VideoPlayer from '../VideoPlayer.vue';
 import { firstFrame, still } from './media';
 
 const props = defineProps<{ items: CardMedia[]; start?: number }>();
@@ -398,14 +399,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           <pre v-else class="viewer__pre"><code class="hljs" v-html="bodyHtml" /></pre>
         </div>
 
-        <video
+        <!-- The one player, as everywhere a recording plays. See VideoPlayer. -->
+        <VideoPlayer
           v-else
           :src="item.src"
           class="viewer__video"
-          controls
           autoplay
           loop
-          playsinline
         />
       </div>
 

@@ -13,6 +13,7 @@
 import CodeMirror from '@shell/components/CodeMirror';
 import DevDialog from '../DevDialog.vue';
 import DevModal from '../DevModal.vue';
+import VideoPlayer from '../VideoPlayer.vue';
 import ask from '../ask';
 import { artifactKind, artifactLanguage, editorMode, isTextKind, looksBinary, sizeDisplay } from '../../artifact-kind';
 import { highlight } from '../../highlight';
@@ -37,7 +38,9 @@ async function sha256(buffer) {
 export default {
   name: 'ArtifactViewer',
 
-  components: { CodeMirror, DevDialog, DevModal },
+  components: {
+    CodeMirror, DevDialog, DevModal, VideoPlayer
+  },
 
   mixins: [ask],
 
@@ -501,11 +504,11 @@ export default {
         :style="stageStyle"
         draggable="false"
       >
-      <video
+      <!-- The one player, as everywhere a recording plays. See VideoPlayer. -->
+      <VideoPlayer
         v-else-if="isVideo"
         :src="objectUrl"
         class="artifact-viewer__video"
-        controls
         autoplay
       />
       <audio

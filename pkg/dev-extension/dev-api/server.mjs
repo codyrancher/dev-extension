@@ -24,6 +24,7 @@ import { newsOf } from './news.mjs';
 import { sweepHousekeeping, singleFlight, sweepsAreWorking, firstSweepDelay, nextSweepDelay, SWEEP_EVERY_MS } from './housekeeping.mjs';
 import { numbersIn } from '../artifact-subjects.mjs';
 import { branchState } from './branch-state.mjs';
+import { byteRange } from './ranges.mjs';
 import { searchCql, searchLimit, searchResult, pageAnswer } from './confluence.mjs';
 import { STAGING_CHARTS, IMAGE_REGISTRIES, RANCHER_REPO, stagingVersions, releasedVersions, imageExists, registryTags } from './rancher-images.mjs';
 
@@ -5169,6 +5170,30 @@ async function reapTools() {
 
 // -- HTTP ------------------------------------------------------------------------------------
 
+/**
+ * A body, or the one range of it the request asked for (ranges.mjs), with `Accept-Ranges` either
+ * way: what a video player needs before it will seek. `read(start, end)` writes those bytes,
+ * inclusive, and ends the response.
+ */
+function sendBytes(req, res, headers, size, read) {
+  const all = { ...headers, 'accept-ranges': 'bytes' };
+  const range = byteRange(req.headers.range, size);
+
+  if (range === 'unsatisfiable') {
+    res.writeHead(416, { ...all, 'content-range': `bytes */${ size }` });
+
+    return res.end();
+  }
+  if (range) {
+    res.writeHead(206, { ...all, 'content-length': range.end - range.start + 1, 'content-range': `bytes ${ range.start }-${ range.end }/${ size }` });
+
+    return read(range.start, range.end);
+  }
+  res.writeHead(200, { ...all, 'content-length': size });
+
+  return size > 0 ? read(0, size - 1) : res.end();
+}
+
 function send(res, status, body) {
   const text = JSON.stringify(body);
 
@@ -8390,10 +8415,8 @@ const server = http.createServer(async(req, res) => {
 
     const type = ARTIFACT_TYPES[extOf(file)] || 'application/octet-stream';
 
-    res.writeHead(200, {
-      'content-type': type, 'content-length': fs.statSync(file).size, 'access-control-allow-origin': '*', 'cache-control': 'private, max-age=60',
-    });
-    fs.createReadStream(file).pipe(res);
+    // In ranges, so a recording attached to a comment can be scrubbed: see sendBytes.
+    sendBytes(req, res, { 'content-type': type, 'access-control-allow-origin': '*', 'cache-control': 'private, max-age=60' }, fs.statSync(file).size, (start, end) => fs.createReadStream(file, { start, end }).pipe(res));
 
     return;
   }
@@ -8573,13 +8596,13 @@ const server = http.createServer(async(req, res) => {
       if (!got.body) {
         return send(res, 413, { error: 'The attachment is too large to show here; open it on GitHub.' });
       }
-      res.writeHead(200, {
+      // In ranges: the before-and-after recordings of a pull request are GitHub attachments, and
+      // sent whole every time they could be played but not scrubbed. See sendBytes.
+      sendBytes(req, res, {
         'content-type':                got.type || 'application/octet-stream',
-        'content-length':              got.body.length,
         'access-control-allow-origin': '*',
         'cache-control':               'private, max-age=3600',
-      });
-      res.end(got.body);
+      }, got.body.length, (start, end) => res.end(got.body.subarray(start, end + 1)));
     } catch (e) {
       return send(res, e.status || 502, { error: `GitHub asset: ${ e.message }` });
     }
@@ -8601,30 +8624,12 @@ const server = http.createServer(async(req, res) => {
     const headers = {
       'content-type':                /^text\/|json$/.test(type) ? `${ type }; charset=utf-8` : type,
       'access-control-allow-origin': '*',
-      'accept-ranges':               'bytes',
       'cache-control':               'private, max-age=60',
       'x-content-type-options':      'nosniff',
     };
-    // One range, which is all a browser asks for: a player seeking, or a thumbnail that wants
-    // the first screenful of a log rather than the log. Anything else gets the whole file.
-    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
 
-    if (range && (range[1] || range[2]) && size > 0) {
-      const start = range[1] ? parseInt(range[1], 10) : Math.max(0, size - parseInt(range[2], 10));
-      const end = range[1] && range[2] ? Math.min(size - 1, parseInt(range[2], 10)) : size - 1;
-
-      if (start > end || start >= size) {
-        res.writeHead(416, { ...headers, 'content-range': `bytes */${ size }` });
-
-        return res.end();
-      }
-      res.writeHead(206, { ...headers, 'content-length': end - start + 1, 'content-range': `bytes ${ start }-${ end }/${ size }` });
-      fs.createReadStream(file, { start, end }).pipe(res);
-
-      return;
-    }
-    res.writeHead(200, { ...headers, 'content-length': size });
-    fs.createReadStream(file).pipe(res);
+    // A player seeking, or a thumbnail that wants the first screenful of a log rather than the log.
+    sendBytes(req, res, headers, size, (start, end) => fs.createReadStream(file, { start, end }).pipe(res));
 
     return;
   }

@@ -4,6 +4,7 @@ import { renderMarkdown } from '../chat';
 import { highlight, languageFor, looksLikeDiff } from '../highlight';
 import { readLook, writeLook } from '../look';
 import DevModal from './DevModal.vue';
+import VideoPlayer from './VideoPlayer.vue';
 
 // What a browser can show inline. Anything else is named and sized rather than guessed at.
 const IMAGE = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'];
@@ -26,7 +27,7 @@ const MIME = {
 export default {
   name: 'PodFileViewer',
 
-  components: { DevModal },
+  components: { DevModal, VideoPlayer },
 
   props: {
     pod:  { type: String, required: true },
@@ -328,10 +329,10 @@ export default {
           draggable="false"
         >
       </div>
-      <video
+      <!-- The one player, as everywhere a recording plays. See VideoPlayer. -->
+      <VideoPlayer
         v-else-if="isVideo"
         :src="dataUrl"
-        controls
         class="pfv__media"
       />
       <audio
