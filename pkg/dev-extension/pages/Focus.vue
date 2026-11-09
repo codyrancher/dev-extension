@@ -46,8 +46,9 @@ import { runtimeFacts } from '../components/focus/card-runtime';
 import { followCards, loadedCards, cardsWatch, cardsSettled } from '../focus-cards';
 import {
   readFocusConfig, saveFocusConfig, readFocusState, saveFocusState, focusDeck, manualItem,
-  weightRows, actionPrompt, cardOf, KINDS
+  weightRows, actionPrompt, cardOf, KINDS, awaitingAgent
 } from '../focus';
+import { HANDOVER_GRACE_MS } from '../agent-await.mjs';
 import { readPrompts, savePromptTemplate, resetPromptTemplate } from '../skills';
 import type {
   FocusConfig, FocusState, FocusTask, CardAction, ManualTask, FocusKind, WeightRow
@@ -880,8 +881,19 @@ async function askHere(task: FocusTask | null, prompt: string): Promise<string> 
   return id;
 }
 
+/**
+ * Moved when a hand-off's grace window runs out (see `handToAgent`). Nothing else announces that
+ * moment - the snapshot only moves when a conversation does - so a card whose prompt was never
+ * picked up stayed aside until something unrelated happened to change.
+ */
+const graceEnds = ref(0);
+
 /** Everything the queue has, drawn: pinned ones are marked and then held back from the deck. */
-const all = computed<FocusTask[]>(() => focusDeck(items.value, { ...config.value, cards: cards.value }, state.value, agents.value));
+const all = computed<FocusTask[]>(() => {
+  void graceEnds.value; // a dependency only: the deck is judged at the time it is drawn
+
+  return focusDeck(items.value, { ...config.value, cards: cards.value }, state.value, agents.value);
+});
 const pinned = computed(() => all.value.filter((task) => task.pinned));
 const deck = computed(() => all.value.filter((task) => !task.pinned));
 const current = computed(() => deck.value[index.value] || null);
@@ -929,6 +941,52 @@ watch(deck, (now, before) => {
     index.value = place.index;
   }
 }, { flush: 'sync' });
+
+/*
+ * A card coming back from its agent is read again before it is believed.
+ *
+ * The deck ranks from the statuses read when the page loaded, and the agent the card went to has
+ * usually changed the work under it: put up for review, a branch with no PR is now a draft. So the
+ * card came back as it went - "Put it up for review" again, over a pull request that existed. Read
+ * again as it returns, it comes back as what the work is now. `load` does the same for the ones an
+ * agent handed back while the page was shut.
+ */
+const heldNow = computed(() => {
+  void graceEnds.value;
+
+  return Object.keys(state.value.awaiting || {}).filter((key) => awaitingAgent(key, state.value, agents.value));
+});
+
+watch(heldNow, (now, before) => {
+  if (loading.value) {
+    return;
+  }
+  for (const key of before || []) {
+    const name = now.includes(key) ? '' : (items.value.find((item) => item.key === key)?.workspace || '');
+
+    if (name) {
+      void rereadWorkspace(name);
+    }
+  }
+});
+
+/** Set by each `load`: one workspace read again, and the queue ranked again with it. */
+let rereadOne: ((name: string) => Promise<void>) | null = null;
+
+async function rereadWorkspace(name: string) {
+  if (rereadOne) {
+    await rereadOne(name).catch(() => undefined);
+
+    return;
+  }
+  // Before the first ranking has its GitHub reads there is nothing to rank again with: the
+  // status alone, for the card's own stage row.
+  const next = await readStatusNow(name).catch(() => null);
+
+  if (next) {
+    spaceStatus.value = { ...spaceStatus.value, [name]: next as unknown as Json };
+  }
+}
 
 /** How many are behind the ones this column names. The row that says so opens the whole queue. */
 
@@ -1044,6 +1102,10 @@ async function handToAgent(task: FocusTask, conversation: string) {
   void refreshConversations().then(() => conversationSnapshot()).then((fresh) => {
     agents.value = fresh || agents.value;
   });
+  // And judged again when the grace window ends, whether or not anything has moved by then.
+  setTimeout(() => {
+    graceEnds.value += 1;
+  }, HANDOVER_GRACE_MS + 1000);
   say('Put aside until the agent stops.');
 }
 
@@ -1213,6 +1275,14 @@ async function load() {
     lastDepend = dependabot;
     lastBotReviews = botReviews;
 
+    // A card back from its agent, read again and ranked again: see `heldNow`. With this load's
+    // GitHub reads, not new ones - what changed is the one workspace.
+    rereadOne = async(name: string) => {
+      statuses[name] = await readStatusNow(name).catch(() => statuses[name]);
+      spaceStatus.value = { ...statuses } as Record<string, Json>;
+      reRank();
+    };
+
     work.value = found;
     alsoFrom.value = {
       alerts: (dependabot?.groups || []) as Json[],
@@ -1238,7 +1308,23 @@ async function load() {
      * can be read, and the ranking it affects is a refinement - without it a review workspace is
      * ranked by what GitHub alone can see, and the findings its agent has already left are missed.
      */
-    const unread = Object.entries(statuses).filter(([, status]) => !(status as Json).readAt).map(([name]) => name);
+    /*
+     * And the ones an agent handed back while the page was shut, where the status was read before
+     * the agent stopped: the card comes back as what the work is now. See `heldNow`.
+     */
+    const handedBack = Object.entries(st.awaiting || {})
+      .filter(([key]) => key.startsWith('ws:') && !awaitingAgent(key, st, seen))
+      .filter(([key, held]) => {
+        const status = statuses[key.slice(3)] as Json;
+        const stopped = Date.parse(seen?.conversations?.[held.conversation]?.changedAt || held.at) || 0;
+
+        return status && (status.readAt || 0) < stopped;
+      })
+      .map(([key]) => key.slice(3));
+    const unread = [...new Set([
+      ...Object.entries(statuses).filter(([, status]) => !(status as Json).readAt).map(([name]) => name),
+      ...handedBack,
+    ])];
 
     if (unread.length) {
       filling.value += 1;

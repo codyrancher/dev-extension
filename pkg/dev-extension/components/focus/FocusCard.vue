@@ -729,7 +729,7 @@ const confirming = ref('');
  */
 const requesting = ref(false);
 const requestText = ref('');
-const requestBox = ref<{ focus:() => void } | null>(null);
+const requestBox = ref<{ focus: () => void } | null>(null);
 
 function openRequest() {
   confirming.value = '';

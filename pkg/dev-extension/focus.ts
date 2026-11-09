@@ -446,8 +446,8 @@ const AWAIT_HOURS = 72;
  * stops. What is recorded at the press, and every way the card comes back, is `stillWithAgent`
  * in agent-await.mjs, where the tests can reach it.
  */
-export function awaitingAgent(key: string, state: FocusState, agents: ConversationSnapshot | null): boolean {
-  return stillWithAgent(state.awaiting?.[key], agents);
+export function awaitingAgent(key: string, state: FocusState, agents: ConversationSnapshot | null, now = Date.now()): boolean {
+  return stillWithAgent(state.awaiting?.[key], agents, now);
 }
 
 /**
@@ -522,7 +522,7 @@ export function focusDeck(items: PriorityItem[], config: FocusConfig, state: Foc
       return !until || Date.parse(until) <= now;
     })
     // Set an agent working and the card goes; it comes back when the agent stops. See awaitingAgent.
-    .filter((item) => !awaitingAgent(item.key, state, agents))
+    .filter((item) => !awaitingAgent(item.key, state, agents, now))
     .map((item) => released(item, state, agents))
     .map((item) => {
       const card = cardFor(config.cards, item.rule);
