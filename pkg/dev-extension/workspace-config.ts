@@ -53,7 +53,12 @@ process.env.ROUTER_BASE = proxyPath ? proxyPath + '/' : '/';
 // handed to vue-cli-service as VUE_CLI_SERVICE_CONFIG_PATH (see apps.ts, WORKSPACE_SCRIPT), so
 // it lives outside the checkout and the checkout's own vue.config.js is never rewritten: the
 // tree stays clean, a branch switch never trips over it, and nothing an agent commits carries it.
-const base = require(require('path').join(process.cwd(), 'vue.config.js'));
+const loaded = require(require('path').join(process.cwd(), 'vue.config.js'));
+
+// vue-cli accepts a config that is a function and calls it; an extension repo built from the
+// extension template commonly exports one (rancher/security-ui-exts does). Overrides set on the
+// function itself would be lost, so resolve it to the object first.
+const base = typeof loaded === 'function' ? loaded() : loaded;
 
 // The proxy rewrites absolute URLs in HTML as they pass through, which is what lets a naive UI
 // work behind it at all, so an asset URL that already carried the prefix would carry it twice.
