@@ -830,6 +830,17 @@ async function liveInstanceClusters(): Promise<Map<string, { cluster: string, ro
   return byWorkspace;
 }
 
+/**
+ * Every workspace's repository from its Installation, '' where it names none, or null when the
+ * Installations could not be read. For a read that has to know before it asks GitHub; see
+ * workspace-repos.mjs.
+ */
+export async function installationRepos(): Promise<Map<string, string> | null> {
+  const instances = await liveInstanceClusters();
+
+  return instances ? new Map([...instances].map(([name, { repo }]) => [name, repo])) : null;
+}
+
 /** dev-api's registrar: the projection it keeps of every workspace (see its reconcileWorkspaces). */
 const REGISTRAR_CONFIGMAP = 'dev-workspaces';
 /** How stale the projection may be before the browser stops trusting it and reads clusters live. */

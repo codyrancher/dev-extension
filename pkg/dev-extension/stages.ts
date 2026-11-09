@@ -25,6 +25,8 @@
 import { devFetch, DEV_SYSTEM_NAMESPACE, clusterBase } from './api';
 import type { Stage, FixStage, ReviewStage } from './workspace-status';
 import { STAGE_LABELS } from './workspace-status';
+import { DEFAULT_REPO } from './reviews';
+import { readFrom } from './workspace-repos.mjs';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -40,6 +42,8 @@ export interface StageRecord {
   reviewed: boolean;
   /** The PR the stage was about when stored, for context; the live PR is read fresh elsewhere. */
   pr: number;
+  /** The repository the stage was read from. Absent on records from before it was kept: DEFAULT_REPO. */
+  repo?: string;
   at: string;
 }
 
@@ -52,6 +56,8 @@ export interface DerivedStage {
   round: number;
   reviewed: boolean;
   pr: number;
+  /** The repository the work was read from. */
+  repo?: string;
 }
 
 // How advanced each stage is within its kind, so a soft signal can carry a workspace forward but not
@@ -205,12 +211,13 @@ async function flush(): Promise<void> {
 
 function recordOf(d: DerivedStage, manual: boolean, hard: boolean): StageRecord {
   return {
-    stage: d.stage, stageLabel: d.stageLabel, manual, hard, round: d.round, reviewed: d.reviewed, pr: d.pr, at: new Date().toISOString(),
+    stage: d.stage, stageLabel: d.stageLabel, manual, hard, round: d.round, reviewed: d.reviewed, pr: d.pr, repo: d.repo || DEFAULT_REPO, at: new Date().toISOString(),
   };
 }
 
 function same(a: StageRecord, b: StageRecord): boolean {
-  return a.stage === b.stage && a.stageLabel === b.stageLabel && a.manual === b.manual && a.hard === b.hard && a.round === b.round && a.reviewed === b.reviewed;
+  return a.stage === b.stage && a.stageLabel === b.stageLabel && a.manual === b.manual && a.hard === b.hard && a.round === b.round && a.reviewed === b.reviewed &&
+    readFrom(a, b.repo, DEFAULT_REPO);
 }
 
 /**
@@ -220,7 +227,9 @@ function same(a: StageRecord, b: StageRecord): boolean {
  */
 export async function reconcileStage(name: string, d: DerivedStage): Promise<StageRecord> {
   await ensureLoaded();
-  const stored = cache[name];
+  // A record read from another repository is not this workspace's stage, and is replaced as if it
+  // were not there: lte-pr-850 was stored as Merged from rancher/dashboard#850. See readFrom.
+  const stored = readFrom(cache[name], d.repo, DEFAULT_REPO) ? cache[name] : undefined;
 
   const accept = (manual: boolean, hard: boolean): StageRecord => {
     const rec = recordOf(d, manual, hard);
@@ -253,8 +262,11 @@ export async function reconcileStage(name: string, d: DerivedStage): Promise<Sta
   return stored;
 }
 
-/** The person sets the stage by hand. It holds until a hard fact overtakes it. */
-export async function setManualStage(name: string, stage: Stage): Promise<StageRecord> {
+/**
+ * The person sets the stage by hand. It holds until a hard fact overtakes it. `repo` is the
+ * workspace's, so a hold on another repository's workspace is not taken for a stray record.
+ */
+export async function setManualStage(name: string, stage: Stage, repo = DEFAULT_REPO): Promise<StageRecord> {
   await ensureLoaded();
   const prev = cache[name];
   const rec: StageRecord = {
@@ -265,6 +277,7 @@ export async function setManualStage(name: string, stage: Stage): Promise<StageR
     round:      prev?.round || 1,
     reviewed:   prev?.reviewed || false,
     pr:         prev?.pr || 0,
+    repo,
     at:         new Date().toISOString(),
   };
 
