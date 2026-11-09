@@ -1479,6 +1479,18 @@ export function useConversation(source: () => ConversationSource) {
     await send();
   }
 
+  /**
+   * Take a message the pane never recorded off the log, sending nothing.
+   *
+   * "Send again" was the only way out of a held copy, so one that was no longer wanted - overtaken
+   * by what was said since, or sent again by hand - sat at the foot of the conversation in red for
+   * good, and the log keeps it across reloads (`writePending`). Only for one claude has no record
+   * of: a message in claude's own input queue is not this log's to take back.
+   */
+  function discard(p: any): void {
+    pending.value = pending.value.filter((x) => x.key !== p.key);
+  }
+
   /** A slash command, sent as typed, with the terminal's answer shown if it only answers there. */
   async function sendCommand(text: string): Promise<void> {
     draft.value = text;
@@ -2385,6 +2397,7 @@ export function useConversation(source: () => ConversationSource) {
     send,
     ask,
     resend,
+    discard,
     sendCommand,
     pickCommand,
     mention,

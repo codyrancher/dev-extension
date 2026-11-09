@@ -43,6 +43,7 @@ function onCmdsToggle(event: Event) {
 
 const emit = defineEmits<{
   (e: 'resend', turn: ConversationTurn): void;
+  (e: 'discard', turn: ConversationTurn): void;
 }>();
 
 const who = computed(() => {
@@ -54,34 +55,37 @@ const who = computed(() => {
   }
 });
 
+/** Not in the transcript yet: sent and waiting, in claude's queue, or never recorded at all. */
+const held = computed(() => !!(props.turn.failed || props.turn.inQueue || props.turn.queued));
+
 /**
- * What the time column says, which is sometimes not a time at all.
+ * When it was written.
  *
  * How long ago rather than the wall clock. Reading a conversation, "5m ago" is the question
  * being asked - is this still warm, did the agent stop an hour back - and `05:55 AM` makes a
  * reader do the subtraction against a clock they have to find first. The exact moment is the
  * hover (`exact` below), so nothing is lost, and a timestamp that is only ever read when
  * something looks wrong is the right thing to put behind a hover.
+ *
+ * A held message has it too, times shown or not. Its state used to stand in this slot instead, so
+ * a message stuck at the foot of the log said nothing about whether it was a minute old or a day.
  */
-const stamp = computed(() => {
+const stamp = computed(() => ((props.times || held.value) && props.turn.at ? ago(props.turn.at) : ''));
+
+/** What it is waiting on, beside the time, for a message the transcript does not have yet. */
+const state = computed(() => {
   if (props.turn.failed) {
     return 'not recorded';
   }
   if (props.turn.inQueue) {
     return 'in claude’s queue';
   }
-  if (props.turn.queued) {
-    return 'sending';
-  }
-  if (!props.times || !props.turn.at) {
-    return '';
-  }
 
-  return ago(props.turn.at);
+  return props.turn.queued ? 'sending' : '';
 });
 
-/** The moment itself, for the hover. Empty for the states above, which are not times. */
-const exact = computed(() => (props.turn.failed || props.turn.inQueue || props.turn.queued ? '' : fullTime(props.turn.at)));
+/** The moment itself, for the hover. */
+const exact = computed(() => (props.turn.at ? fullTime(props.turn.at) : ''));
 
 /** A compact's summary is the conversation so far, folded: the first line until it is opened. */
 const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) => l.trim()) || '');
@@ -99,6 +103,7 @@ const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) =>
         class="turn__when"
         :title="exact"
       >{{ stamp }}</span>
+      <span v-if="state" class="turn__when turn__state">{{ state }}</span>
       <button
         v-if="turn.failed"
         type="button"
@@ -107,6 +112,16 @@ const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) =>
         @click="emit('resend', turn)"
       >
         send again
+      </button>
+      <!-- Off the log, sending nothing: one that is no longer wanted. See `discard`. -->
+      <button
+        v-if="turn.failed"
+        type="button"
+        class="turn__again turn__again--quiet"
+        title="Take it off the log, sending nothing"
+        @click="emit('discard', turn)"
+      >
+        remove
       </button>
     </header>
 
@@ -228,6 +243,13 @@ const firstLine = computed(() => (props.turn.text || '').split('\n').find((l) =>
 }
 
 .turn__again:hover { background: var(--danger-wash); }
+
+/* Taking it away is the quieter of the two: the red one is the fix, this is letting it go. */
+.turn__again--quiet { color: var(--text-muted); }
+.turn__again--quiet:hover { background: var(--surface-raised); color: var(--text); }
+
+/* The state beside the time: red only where nothing has the message at all. */
+.turn--failed .turn__state { color: var(--danger); }
 
 .turn__body {
   min-width: 0;

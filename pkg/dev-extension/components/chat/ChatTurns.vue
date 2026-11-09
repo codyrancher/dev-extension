@@ -40,6 +40,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'resend', turn: ConversationTurn): void;
+  (e: 'discard', turn: ConversationTurn): void;
   (e: 'path', path: string): void;
   (e: 'stop'): void;
 }>();
@@ -201,6 +202,7 @@ defineExpose({ scrollToEnd, atBottom });
         :thoughts="thoughts"
         :commands="commands"
         @resend="emit('resend', $event)"
+        @discard="emit('discard', $event)"
       />
 
       <!-- Working: said where the next message will appear, moving, so it reads as happening. -->

@@ -819,7 +819,16 @@ export default {
           >
         <div class="mc-chat__meta">
           <span class="mc-chat__who">{{ m.role === 'user' ? 'You' : m.role === 'summary' ? 'Summary' : m.role === 'note' ? `${ agentName } Code` : agentName }}</span>
-          <span class="mc-chat__when">{{ m.failed ? 'not recorded' : m.queued ? 'queued' : when(m.at) }}</span>
+          <!--
+            When it was sent, held or not. The state used to stand in this slot ("not recorded",
+            "queued"), so a message stuck at the foot of the log said nothing about whether it was
+            from a minute ago or yesterday; the state is the note beside it. A held message keeps
+            its time even with times hidden: the time is part of what is wrong with it.
+          -->
+          <span
+            class="mc-chat__when"
+            :class="{ 'mc-chat__when--held': m.failed || m.queued }"
+          >{{ when(m.at) }}</span>
           <!--
             Said, rather than shown as an ordinary message, because it is not in the
             conversation yet: claude is mid-turn and has this waiting in its input queue. It
@@ -829,12 +838,18 @@ export default {
             v-if="m.failed"
             class="mc-chat__queued-note mc-chat__queued-note--failed"
             :title="`Nothing ${ agentName } writes down mentions this message - not the transcript, not its input queue, not the submit hook. Usually the paste into the pane did not land.`"
-          >{{ agentName }} has no record of this ·
+          >not recorded: {{ agentName }} has no record of this ·
             <button
               type="button"
               class="mc-chat__link"
               @click="resend(m)"
-            >send again</button></span>
+            >send again</button> ·
+            <button
+              type="button"
+              class="mc-chat__link"
+              title="Take it off the log, sending nothing"
+              @click="discard(m)"
+            >remove</button></span>
           <span
             v-else-if="m.inQueue"
             class="mc-chat__queued-note"
@@ -1977,7 +1992,7 @@ export default {
   &--large { font-size: 14px; .mc-chat__body { font-size: 14px; } }
   &--compact { .mc-chat__msg { margin: 4px 0; } .mc-chat__meta { margin-bottom: 1px; } }
   &--flat { .mc-chat__msg--user .mc-chat__body { background: transparent; border: 0; padding-left: 0; } }
-  &--no-times { .mc-chat__when { display: none; } }
+  &--no-times { .mc-chat__when:not(.mc-chat__when--held) { display: none; } }
 
   &__option-desc {
     display:   block;
