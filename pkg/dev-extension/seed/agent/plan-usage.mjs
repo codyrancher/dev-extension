@@ -80,7 +80,10 @@ async function claude(home) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+// By real path, as rest-idle.mjs does: /seed is a ConfigMap, so this file is a symlink and
+// import.meta.url is where it points. Compared with the path as run, it never matched, and the
+// script ran, asked nothing and printed nothing - an empty bar with no error anywhere.
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   const home = process.env.HOME || '/workspace/.home';
 
   process.stdout.write(`${ JSON.stringify({ claude: await claude(home), at: new Date().toISOString() }) }\n`);
