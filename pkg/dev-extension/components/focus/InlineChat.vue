@@ -177,6 +177,7 @@ function onCode(text: string): void {
       :restarted="restarted"
       @resend="chat.resend($event)"
       @discard="chat.discard($event)"
+      :thumb="chat.thumbFor"
       @stop="chat.stop()"
     />
 

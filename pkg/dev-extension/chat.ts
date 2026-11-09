@@ -682,10 +682,46 @@ export function linkPaths(html: string): string {
   return html.replace(PATH_RE, (whole, before, path) => {
     const kind = mediaKind(path);
     const attr = escapeHtml(path);
+
+    /*
+     * A screenshot pasted into a conversation is its picture and nothing else.
+     *
+     * Its path is `/workspace/.images/<conversation>/<timestamp>.png`, which says nothing a reader
+     * wants - it is where the paste was put, not what it shows - and it ran to most of a line
+     * after the thumbnail of the same thing. So the thumbnail stands in for it, drawn larger than
+     * the one-line marks beside other paths, and opens the same way; the path is on the hover.
+     */
+    if (kind === 'image' && isPastedShot(path)) {
+      return `${ before }<span class="mc-chat__media mc-chat__media--shot" data-path="${ attr }" data-kind="image" role="button" tabindex="0" title="Open ${ attr }" aria-label="Screenshot: ${ attr }"></span>`;
+    }
     const thumb = kind ? `<span class="mc-chat__media" data-path="${ attr }" data-kind="${ kind }"></span>` : '';
 
     return `${ before }${ thumb }<a class="mc-chat__path" data-path="${ attr }" title="Open ${ attr }">${ escapeHtml(path) }</a>`;
   });
+}
+
+/** Where a chat puts what is pasted or dropped into it: `<pane home's parent>/.images/<pane>/`. */
+export function isPastedShot(path: string): boolean {
+  return /\/\.images\/[^/]+\/[^/]+$/.test(path);
+}
+
+/**
+ * What goes into a media placeholder once its thumbnail has been read, for every host that draws
+ * a log: the drawer's ChatPane and the bar's and the cards' ChatTurns. `data` is a data URL, or
+ * `missing` / `large` from `thumbFor`.
+ */
+export function thumbHtml(path: string, kind: string, data: string): string {
+  if (kind === 'video') {
+    return '<span class="mc-chat__chip" title="Open the recording">&#9654;</span>';
+  }
+  if (data === 'missing') {
+    return '<span class="mc-chat__chip mc-chat__chip--missing" title="Not in the workspace">&#10005;</span>';
+  }
+  if (data === 'large') {
+    return '<span class="mc-chat__chip" title="Open the image">&#128444;</span>';
+  }
+
+  return `<img class="mc-chat__thumb" src="${ escapeHtml(data) }" alt="" title="Open ${ escapeHtml(path) }">`;
 }
 
 /** A paste long enough that the input box folded it is worth folding here too. */

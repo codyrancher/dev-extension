@@ -379,6 +379,7 @@ defineExpose({ ask, focus: focusBox });
             :restarted="restarted"
             @resend="chat.resend($event)"
             @discard="chat.discard($event)"
+            :thumb="chat.thumbFor"
             @path="onPath"
             @stop="chat.stop()"
           />

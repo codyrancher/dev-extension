@@ -18,6 +18,7 @@
  */
 import { computed, nextTick, ref, watch } from 'vue';
 import ChatTurn from './ChatTurn.vue';
+import { thumbHtml } from '../../chat';
 import { isNarrow } from '../../design/narrow';
 import type { ConversationTurn } from '../../chat-conversation';
 
@@ -36,6 +37,12 @@ const props = defineProps<{
   /** Bumped by the conversation when a poll landed transcript, and when it landed a new one. */
   grew?: number;
   restarted?: number;
+  /**
+   * How a picture in the log is read, for its thumbnail: the conversation's `thumbFor`. Without
+   * it a placeholder stays empty - which a pasted screenshot, drawn as its thumbnail alone, cannot
+   * afford: it would be nothing at all (see linkPaths in chat.ts).
+   */
+  thumb?: (path: string) => Promise<string>;
 }>();
 
 const emit = defineEmits<{
@@ -154,7 +161,7 @@ function onScroll(): void {
 }
 
 /** A click anywhere in the log that landed on something with a path. */
-function onClick(event: MouseEvent): void {
+function onClick(event: Event): void {
   const hit = (event.target as HTMLElement | null)?.closest?.('[data-path]') as HTMLElement | null;
 
   if (!hit) {
@@ -163,6 +170,38 @@ function onClick(event: MouseEvent): void {
   event.preventDefault();
   emit('path', hit.dataset.path || '');
 }
+
+/*
+ * Thumbnails for the pictures the log names, one after another, as the drawer's ChatPane fills its
+ * own. Marked done before the read, so a log that redraws meanwhile does not ask twice; a turn
+ * whose HTML is redrawn brings its placeholders back unmarked, and they are filled again.
+ */
+let hydrating = false;
+
+async function hydrate(): Promise<void> {
+  const el = log.value;
+
+  if (hydrating || !el || !props.thumb) {
+    return;
+  }
+  hydrating = true;
+  try {
+    for (const box of [...el.querySelectorAll<HTMLElement>('.mc-chat__media:not([data-done])')]) {
+      const path = box.dataset.path || '';
+      const kind = box.dataset.kind || '';
+
+      box.dataset.done = '1';
+      box.innerHTML = thumbHtml(path, kind, kind === 'video' ? '' : await props.thumb(path).catch(() => 'missing'));
+    }
+  } finally {
+    hydrating = false;
+  }
+  if (el.querySelector('.mc-chat__media:not([data-done])')) {
+    void hydrate();
+  }
+}
+
+watch(() => props.turns, () => nextTick(hydrate), { immediate: true });
 
 watch(() => props.grew, () => nextTick(() => scrollToEnd()));
 watch(() => props.restarted, () => nextTick(() => scrollToEnd(true)));
@@ -189,6 +228,7 @@ defineExpose({ scrollToEnd, atBottom });
       ref="log"
       class="turns__log"
       @click="onClick"
+      @keydown.enter="onClick"
       @scroll.passive="onScroll"
     >
       <p v-if="!turns.length && empty" class="turns__empty">{{ empty }}</p>

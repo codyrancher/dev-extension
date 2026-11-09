@@ -25,7 +25,8 @@
 // This component is also three slots now - `transcript`, `message` and `composer` - each
 // defaulting to exactly the markup it drew before. A host that wants the same conversation in
 // a different shape overrides one of them rather than forking the file.
-import { useConversation, escapeText, customizeFor } from '../chat-conversation';
+import { useConversation, customizeFor } from '../chat-conversation';
+import { thumbHtml } from '../chat';
 import { readLook, writeLook } from '../look';
 import { toolGroup } from '../chat-state.mjs';
 import PodFileViewer from './PodFileViewer.vue';
@@ -638,11 +639,7 @@ export default {
           const kind = el.dataset.kind;
 
           el.dataset.done = '1';
-          if (kind === 'video') {
-            el.innerHTML = '<span class="mc-chat__chip" title="Open the recording">&#9654;</span>';
-            continue;
-          }
-          this.fill(el, path, await this.thumbFor(path));
+          el.innerHTML = thumbHtml(path, kind, kind === 'video' ? '' : await this.thumbFor(path));
         }
       } finally {
         this.hydrating = false;
@@ -651,16 +648,6 @@ export default {
       this.scrollToEnd();
       if (this.$refs.log?.querySelector('.mc-chat__media:not([data-done])')) {
         this.hydrate();
-      }
-    },
-
-    fill(el, path, data) {
-      if (data === 'missing') {
-        el.innerHTML = '<span class="mc-chat__chip mc-chat__chip--missing" title="Not in the workspace">&#10005;</span>';
-      } else if (data === 'large') {
-        el.innerHTML = '<span class="mc-chat__chip" title="Open the image">&#128444;</span>';
-      } else {
-        el.innerHTML = `<img class="mc-chat__thumb" src="${ data }" alt="" title="Open ${ escapeText(path) }">`;
       }
     },
 
@@ -769,6 +756,7 @@ export default {
       ref="log"
       class="mc-chat__log"
       @click="onLogClick"
+      @keydown.enter="onLogClick"
       @scroll.passive="onScroll"
     >
       <!--
@@ -2099,6 +2087,12 @@ export default {
   }
 
   :deep(.mc-chat__thumb:hover) { transform: scale(1.6); position: relative; z-index: 2; }
+
+  // A pasted screenshot is its thumbnail alone (chat.ts linkPaths), so it is drawn as a picture
+  // rather than a one-line mark in a sentence: big enough to tell one from the next.
+  :deep(.mc-chat__media--shot) { margin: 2px 6px 2px 0; }
+  :deep(.mc-chat__media--shot .mc-chat__thumb) { height: auto; max-height: 96px; max-width: 180px; }
+  :deep(.mc-chat__media--shot .mc-chat__thumb:hover) { transform: none; border-color: var(--link); }
 
   :deep(.mc-chat__chip) {
     display:         inline-flex;
