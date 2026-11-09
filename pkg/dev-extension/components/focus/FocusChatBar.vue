@@ -495,12 +495,17 @@ defineExpose({ ask, focus: focusBox });
  * own left and right padding - as tokens on `.dev-focus`, so the bar is inset by exactly those and
  * then centred inside what is left, which is how `.deck__top` places the card. Same box, one
  * spine. See `--pins-w` in pages/Focus.vue.
+ *
+ * And at least `--bar-side` in from both edges, which is what the corners need: the status badge
+ * on the left and the queue's button on the right sit on this line. Equal on both sides, so where
+ * the corners are what holds it in, it is still centred under the card - narrower than the card
+ * on a window too small for both, as wide as it once the card has stopped growing.
  */
 .bar {
   position: fixed;
   z-index: 50;
-  left: calc(var(--pins-w, 0px) + var(--deck-pad-l, var(--s4)));
-  right: var(--deck-pad-r, var(--s4));
+  left: max(calc(var(--pins-w, 0px) + var(--deck-pad-l, var(--s4))), var(--bar-side, 0px));
+  right: max(var(--deck-pad-r, var(--s4)), var(--bar-side, 0px));
   bottom: var(--bar-bottom, clamp(var(--s3), 2.4vh, var(--s5)));
   display: flex;
   /*

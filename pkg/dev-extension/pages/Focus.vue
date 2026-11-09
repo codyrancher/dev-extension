@@ -895,6 +895,35 @@ const all = computed<FocusTask[]>(() => {
   return focusDeck(items.value, { ...config.value, cards: cards.value }, state.value, agents.value);
 });
 const pinned = computed(() => all.value.filter((task) => task.pinned));
+
+/*
+ * Whether the pins have a column: only when something is pinned. While the queue is still being
+ * read it goes by the prefs instead, so a deck drawn before the pinned cards have arrived is not
+ * drawn wide and then pushed sideways when they land - the reason the column used to be there
+ * whether or not anything was in it.
+ */
+const pinLane = computed(() => pinned.value.length > 0 || (loading.value && state.value.pinned.length > 0));
+
+/*
+ * The status badge's width, so the chat bar keeps clear of it (`--bar-side`). Measured rather
+ * than assumed, because what it says - "28 running", "3 need you" - is what sets it.
+ */
+const statusMark = ref<{ $el?: Element } | null>(null);
+const statusW = ref(0);
+let statusSeen: ResizeObserver | null = null;
+
+onMounted(() => {
+  const el = statusMark.value?.$el;
+
+  if (!(el instanceof Element) || typeof ResizeObserver === 'undefined') {
+    return;
+  }
+  statusSeen = new ResizeObserver(() => {
+    statusW.value = Math.ceil(el.getBoundingClientRect().width);
+  });
+  statusSeen.observe(el);
+});
+onBeforeUnmount(() => statusSeen?.disconnect());
 const deck = computed(() => all.value.filter((task) => !task.pinned));
 const current = computed(() => deck.value[index.value] || null);
 
@@ -2564,7 +2593,7 @@ onBeforeUnmount(closeSettings);
 </script>
 
 <template>
-  <div class="dev-focus">
+  <div class="dev-focus" :class="{ 'dev-focus--pins': pinLane }" :style="{ '--status-w': `${ statusW }px` }">
     <header class="focus__top">
       <div class="focus__brand">
         <span class="focus__mark"><AppIcon name="sparkle" :size="16" /></span>
@@ -2585,11 +2614,16 @@ onBeforeUnmount(closeSettings);
 
       <!--
         What is running behind the one card on screen - the workspaces, and the Ranchers they are
-        pointed at - as one status badge at the header's right end. It was two badges fixed in the
-        bottom-left corner on the chat bar's line, where they crowded the bar's first words; one
-        dot here says whether anything wants a look, and the lists are behind it. See FocusDock.
+        pointed at - as one status badge: one dot says whether anything wants a look, and the lists
+        are behind it. See FocusDock.
+
+        In the markup here, in the header, and drawn in the bottom-left corner on the chat bar's
+        line (`.focus__status`): the other end of the row the queue's button ends. It was two
+        badges in that corner once, where they crowded the bar's first words; the bar keeps clear
+        of it now (`--bar-side`, from its measured width). On a phone it stays up here.
       -->
       <FocusDock
+        ref="statusMark"
         label="What is running"
         :sections="statusSections"
         class="focus__status"
@@ -2606,11 +2640,12 @@ onBeforeUnmount(closeSettings);
         hue and their title and nothing else: a pinned thing is a reminder, and a reminder that
         needs reading is a card, which is what the deck is for.
 
-        The lane is always here, empty or not. It used to appear with the first pin, which moved
-        the deck sideways - and, because nothing is pinned while the queue is still being read,
-        moved it again the moment the page finished loading.
+        Only while something is pinned: an empty lane was 196px of nothing that kept the card
+        off-centre. It once came and went with the first pin while the queue was still being read,
+        which moved the deck sideways the moment the page finished loading; `pinLane` decides it
+        from the prefs until the queue is in, so that does not come back.
       -->
-      <aside class="focus__pins">
+      <aside v-if="pinLane" class="focus__pins">
         <template v-if="pinned.length">
           <h2 class="focus__pins-head">Pinned</h2>
           <button
@@ -3113,7 +3148,13 @@ onBeforeUnmount(closeSettings);
  * branch at the bottom of this file, which zeroes the first when the column goes away.
  */
 .dev-focus {
-  --pins-w: 196px;
+  /*
+   * No column until something is pinned, and the deck's two gutters the same: the card is centred
+   * on the window and as wide as it goes. The column was always there, empty or not - 196px of
+   * nothing on the left that put the card off-centre and narrower than the screen had room for.
+   * See `pinLane` for why it is decided from the pins rather than drawn from the first one.
+   */
+  --pins-w: 0px;
   /*
    * The bar's own height and how far off the floor it sits, named here because three things in
    * two components have to agree on them: the bar, the marks in the corner beside it, and the
@@ -3122,14 +3163,26 @@ onBeforeUnmount(closeSettings);
    */
   --bar-h: 40px;
   --bar-bottom: clamp(var(--s3), 2.4vh, var(--s5));
-  --deck-pad-l: clamp(var(--s3), 2vw, var(--s6));
+  --deck-pad-l: 62px;
   --deck-pad-r: 62px;
+  /*
+   * How far in the bar keeps from both edges so the corners are clear: the status badge on the
+   * left (`--status-w`, measured, since what it says changes its width) and the queue's button on
+   * the right. Both sides alike, so the bar stays centred under the card. See `.bar`.
+   */
+  --bar-side: calc(var(--s3) + var(--status-w, 0px) + var(--s3));
+}
+
+/* Something pinned: its column, and the deck's own left gutter beside it. */
+.dev-focus--pins {
+  --pins-w: 196px;
+  --deck-pad-l: clamp(var(--s3), 2vw, var(--s6));
 }
 
 /* The deck, with whatever has been pinned beside it. */
 .focus__main {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   /*
    * One row, the height of this element, for the reason the deck's own grid has one: an implicit
    * `auto` row is sized to its tallest item, so a tall card grew the row past the bounded height
@@ -3139,6 +3192,8 @@ onBeforeUnmount(closeSettings);
   grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
+
+.dev-focus--pins .focus__main { grid-template-columns: auto minmax(0, 1fr); }
 
 .focus__deck { min-height: 0; min-width: 0; }
 
@@ -3206,6 +3261,22 @@ onBeforeUnmount(closeSettings);
 }
 
 .focus__status { flex: 0 0 auto; }
+
+/*
+ * The status badge, in the bottom-left corner on the chat bar's line: the other end of the row the
+ * queue's button ends on the right, the same height and the same distance off the floor. Fixed to
+ * the window, like that button, so the card between them is centred on the page. A phone has no
+ * room beside the bar, so there it stays in the header (see the phone branch).
+ */
+@media (min-width: 901px) {
+  /* Under `.dev-focus`, so it outranks the dock's own `position: relative` whichever loads last. */
+  .dev-focus .focus__status {
+    position: fixed;
+    left: var(--s3, 16px);
+    bottom: var(--bar-bottom);
+    z-index: 30;
+  }
+}
 
 /* ── What the page says to you ────────────────────────────────────────────────────────────── */
 .focus__notice,
@@ -3391,9 +3462,11 @@ onBeforeUnmount(closeSettings);
 }
 
 @media (max-width: 900px) {
-  /* No column, so nothing for the bar to be inset by. See `--pins-w`. */
-  .dev-focus { --pins-w: 0px; --deck-pad-l: var(--s3); --deck-pad-r: var(--s3); }
-  .focus__main { grid-template-columns: minmax(0, 1fr); }
+  /* No column, so nothing for the bar to be inset by, and no badge beside it. See `--pins-w`. */
+  .dev-focus,
+  .dev-focus--pins { --pins-w: 0px; --deck-pad-l: var(--s3); --deck-pad-r: var(--s3); --bar-side: 0px; }
+  .focus__main,
+  .dev-focus--pins .focus__main { grid-template-columns: minmax(0, 1fr); }
   .dev-focus { padding-bottom: 96px; }
   .focus__pins { display: none; }
   .focus__name { display: none; }

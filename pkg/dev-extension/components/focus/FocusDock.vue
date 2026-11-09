@@ -264,7 +264,10 @@ const summary = computed(() => shown.value.map((section) => `${ section.label }:
 </template>
 
 <style scoped>
-/* Positioned by the row it is in: the page's header, at its right end. See Focus.vue. */
+/*
+ * Placed by the page: the bottom-left corner on the chat bar's line, or the header on a phone.
+ * See `.focus__status` in Focus.vue. The card opens on whichever side has the room (`place`).
+ */
 .dock { position: relative; }
 
 .dock__mark {
