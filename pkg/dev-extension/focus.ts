@@ -28,6 +28,7 @@ import { RULES, weightOf } from './priority';
 import type { PriorityItem, Weights } from './priority';
 import type { Artifact } from './focus-artifacts';
 import type { ConversationSnapshot } from './conversations';
+import { SETTLED_STATES, stillWithAgent } from './agent-await.mjs';
 
 /** The five kinds of thing that can want you, each with a hue. See design/focus.css. */
 export type FocusKind = 'review' | 'issue' | 'agent' | 'question' | 'signal';
@@ -437,80 +438,16 @@ export function manualItem(task: ManualTask): PriorityItem {
 /** Long enough to cover a weekend: a card put aside on Friday is still waiting on Monday. */
 const AWAIT_HOURS = 72;
 
-/** The states that mean it has stopped and the work is yours again. `gone` counts: it is news. */
-const SETTLED_STATES = new Set(['input', 'idle', 'finished', 'gone']);
-
-/**
- * How long a card stays aside before the snapshot has to justify it.
- *
- * Between pressing the button and the agent actually picking the prompt up there are seconds -
- * sometimes a minute, if the workspace pod is still coming up - in which the conversation is still
- * exactly as it was. Without this the card comes straight back on top of somebody who has just
- * dealt with it. `POST /conversations/refresh` shortens the window; this closes it. The signal the
- * window is waiting for is the state going to `working`, which the disk tick sees within five
- * seconds of the prompt landing.
- */
-const HANDOVER_GRACE_MS = 45_000;
-
 /**
  * Whether this card is waiting on an agent rather than on a person.
  *
  * The deck's premise is that every card is something only you can move, and the moment you press
  * "Fix it" the card in front of you stops being one: nothing about it can move until the agent
- * stops. So pressing it records the conversation and its counters, and the card is held back until
- * one of those counters moves - which is exactly "the agent finished or has a question", because
- * entering idle/finished is the only thing that moves `stops` and entering input is the only thing
- * that moves `asks`.
- *
- * The counters and not a revision. A revision moves when the agent *starts*, which is the opposite
- * of what this predicate wants: a card hidden until "something changed" would come back five
- * seconds after the agent picked the work up. `stops` and `asks` move on the way out of a turn and
- * never on the way in, which is the whole reason they are what is stored.
- *
- * Six ways back out, and every one of them errs towards showing the card:
- *
- *   - either counter moved;
- *   - the conversation has settled whatever the counters say, because a prompt that was queued and
- *     never started never moves one, and a card held on that would be held for ever;
- *   - the loop has stopped (`stale`), because a watcher that has quietly died must not be able to
- *     hide work for a week. Note: NOT on a failed exec - that is a busy cluster, which is when the
- *     cards should stay hidden;
- *   - the epoch is not the one the counters came from, so a document somebody deleted releases
- *     every card instead of stranding them;
- *   - `bornAt` differs, because `sessions.sh new` reuses the lowest free ordinal and the id you
- *     handed work to may now be somebody else's conversation;
- *   - the snapshot has never heard of the conversation at all.
- *
- * What it cannot tell is which way the news went. Two transitions inside one tick are one change,
- * and a conversation that finished and was asked again looks like one that was only asked unless
- * the counters happen to disagree. It is paid where it is cheapest: the card comes back either way,
- * and what it is about is read off the conversation when the card is drawn.
+ * stops. What is recorded at the press, and every way the card comes back, is `stillWithAgent`
+ * in agent-await.mjs, where the tests can reach it.
  */
 export function awaitingAgent(key: string, state: FocusState, agents: ConversationSnapshot | null): boolean {
-  const held = state.awaiting?.[key];
-
-  if (!held) {
-    return false;
-  }
-  if (!agents || agents.stale || (held.epoch && agents.epoch && held.epoch !== agents.epoch)) {
-    return false;
-  }
-
-  const now = agents.conversations[held.conversation];
-
-  if (!now || SETTLED_STATES.has(now.state)) {
-    return false;
-  }
-  if (held.bornAt && now.bornAt && held.bornAt !== now.bornAt) {
-    return false;
-  }
-  if (now.stops !== held.stops || now.asks !== held.asks) {
-    return false;
-  }
-
-  // Inside the grace window nothing has to be true yet; after it, only a conversation that is
-  // actually working earns the card's absence.
-  return Date.now() - Date.parse(held.at) < HANDOVER_GRACE_MS || now.state === 'working';
+  return stillWithAgent(state.awaiting?.[key], agents);
 }
 
 /**

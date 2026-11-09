@@ -65,7 +65,8 @@ import type { RancherTarget } from '../ranchers';
 import {
   myWork, assignToMe, requestReviewers, describePr, markReadyForReview, setIssueStatus
 } from '../github';
-import { stageRow, stagePrompt, sayInWorkspace } from '../stage-actions';
+import { cardRow, stagePrompt, sayInWorkspace } from '../stage-actions';
+import { holdPlace } from '../deck-place.mjs';
 import type { StageRowItem } from '../stage-actions';
 import { numbersIn } from '../artifact-subjects.mjs';
 import { deleteWorkspace } from '../api';
@@ -887,8 +888,9 @@ const current = computed(() => deck.value[index.value] || null);
 
 /**
  * The top card's stage actions, where its work is a workspace at a stage: what the standard view
- * offers there, computed the same way (stage-actions.ts). Null for anything else - a card with no
- * workspace, or one whose kind has no stages - which keeps the card's own.
+ * offers there, computed the same way (stage-actions.ts), plus the one a card needs and the rail
+ * does not - "Request a change", see `cardRow`. Null for anything else - a card with no workspace,
+ * or one whose kind has no stages - which keeps the card's own.
  */
 const stageNow = computed<StageRowItem[] | null>(() => {
   const name = current.value?.workspace || '';
@@ -897,10 +899,36 @@ const stageNow = computed<StageRowItem[] | null>(() => {
   if (!status || !status.stage || (status.kind !== 'fix' && status.kind !== 'review')) {
     return null;
   }
-  const row = stageRow(status, status.stage, numbersIn(name).issue);
+  const row = cardRow(status, status.stage, numbersIn(name).issue);
 
   return row.length ? row : null;
 });
+
+/*
+ * The card being read stays the card being read when the deck changes under it.
+ *
+ * The place was only an index, so a card leaving or arriving above it moved the reader without a
+ * turn: a card handed to an agent that went after somebody had moved on took the next one with it,
+ * and an agent finishing put its card back above and stepped them back one. See `holdPlace`.
+ *
+ * `sync`, so the index is still the one into the deck as it was when the change lands. Not while
+ * loading: until the first draw the better ranking simply wins, as `reRank` has it, and `askedFor`
+ * puts the card the URL names on top. A card that leaves from under the reader is dealt forward,
+ * the way the deck turns, whichever way it was last turned.
+ */
+watch(deck, (now, before) => {
+  if (loading.value || !before?.length) {
+    return;
+  }
+  const place = holdPlace(before, now, index.value);
+
+  if (place.left) {
+    direction.value = 1;
+  }
+  if (place.index !== index.value) {
+    index.value = place.index;
+  }
+}, { flush: 'sync' });
 
 /** How many are behind the ones this column names. The row that says so opens the whole queue. */
 
@@ -1501,6 +1529,18 @@ async function runStage(task: FocusTask, action: CardAction) {
     await tell('', stagePrompt({ run: 'openPr' }, status, issue, name, repo, edited), true);
     say('Putting it up for review: the agent pushes the branch, uploads the recordings and opens a draft PR. The card is put aside until it stops; the draft comes back as a card of its own.');
     break;
+  case 'requestChange': {
+    // Typed on the card (FocusCard's request box) and sent as it was typed, to the conversation
+    // the rail would send it to: the one the work was done in, started again if it had stopped.
+    const request = String(action.prompt || '').trim();
+
+    if (!request) {
+      say('Say what should change first.');
+      break;
+    }
+    await tell('', request, true);
+    break;
+  }
   case 'answerFeedback':
     await tell(`Feedback on #${ pr }`, stagePrompt({ run: 'answerFeedback' }, status, issue, name, repo, edited), true);
     break;

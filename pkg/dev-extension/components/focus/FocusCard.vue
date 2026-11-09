@@ -17,11 +17,14 @@
  * comments to answer, or the issue's own words. A card with none of them is still a card; it just
  * says less, which is honest for work that has nothing to show yet.
  */
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
+import {
+  computed, nextTick, ref, watch, onMounted, onUnmounted,
+} from 'vue';
 import type { FocusTask, CardAction } from '../../focus';
 import { isAgentic, promptKeyOf, promptTemplate, actionPrompt } from '../../focus';
 import PromptEditor from '../PromptEditor.vue';
 import InlineChat from './InlineChat.vue';
+import ChatComposer from '../chat/ChatComposer.vue';
 import { startConversation, paneCommand } from '../../conversations';
 import { startAgentSession } from '../../agent';
 import type { ConversationOrigin } from '../../agent';
@@ -715,7 +718,41 @@ const issueOpen = ref(false);
  */
 const confirming = ref('');
 
-watch(() => props.task.key, () => { confirming.value = ''; navOpen.value = false; laterOpen.value = false; groupOpen.value = ''; });
+/*
+ * "Request a change", typed on the card.
+ *
+ * The rail's conversation has a box of its own on the page; a card has none, so pressing the
+ * button turns the footer into one - the chat's own composer: Enter sends, Shift+Enter is a new
+ * line, Escape puts the buttons back. The page sends it as typed to the workspace's conversation
+ * (`requestChange` in Focus.vue). What was typed outlives a send that fails, so pressing the button
+ * again has it back; one that works hands the card to the agent, and the card goes.
+ */
+const requesting = ref(false);
+const requestText = ref('');
+const requestBox = ref<{ focus:() => void } | null>(null);
+
+function openRequest() {
+  confirming.value = '';
+  requesting.value = true;
+  nextTick(() => requestBox.value?.focus());
+}
+
+function sendRequest() {
+  const text = requestText.value.trim();
+
+  if (!text || props.busy) {
+    return;
+  }
+  requesting.value = false;
+  emit('act', {
+    label: 'Request a change', verb: 'stage', run: 'requestChange', ai: true, prompt: text,
+  });
+}
+
+watch(() => props.task.key, () => {
+  confirming.value = ''; navOpen.value = false; laterOpen.value = false; groupOpen.value = '';
+  requesting.value = false; requestText.value = '';
+});
 
 /**
  * The prompt editor, opened by middle-clicking a button that sets an agent working.
@@ -734,7 +771,8 @@ const promptError = ref('');
  * working: the others send no prompt, and offering to edit one would be offering nothing.
  */
 function onAux(action: CardAction, event: MouseEvent) {
-  if (event.button !== 1 || !isAgentic(action, !String(art.value.body || '').trim())) {
+  // A request has no prompt behind it to edit: what it sends is what is typed each time.
+  if (event.button !== 1 || action.run === 'requestChange' || !isAgentic(action, !String(art.value.body || '').trim())) {
     return;
   }
   event.preventDefault();
@@ -851,6 +889,12 @@ async function askOnCard(action: CardAction) {
 }
 
 function press(action: CardAction) {
+  // Nothing to send until it is typed: the button opens the box. See `requesting`.
+  if (action.verb === 'stage' && action.run === 'requestChange') {
+    openRequest();
+
+    return;
+  }
   if (action.confirm && confirming.value !== action.label) {
     confirming.value = action.label;
 
@@ -1528,161 +1572,192 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
       30]) with the primary itself resolving to 48px on the deck's first eleven cards and 47px on
       the last fifteen.
     -->
-    <footer ref="footBox" class="card__foot">
+    <footer ref="footBox" class="card__foot" :class="{ 'card__foot--request': requesting }">
       <!--
-        `busy || reading`: not pressable on evidence that has not arrived.
-
-        `Post the review` was live over its own spinner - the card offers an irreversible act on
-        a list of findings it is still fetching, and `submitReview` can only throw until they are
-        there. See `reading`.
+        "Request a change", being typed: the footer is the box until it is sent or put away. See
+        `requesting`. Escape is caught here rather than in the composer, which keeps it for its
+        command menu.
       -->
-      <AppButton
-        v-if="primary"
-        variant="kind"
-        size="lg"
-        :icon="agenticPrimary ? 'sparkle' : undefined"
-        icon-after="arrow-right"
-        :busy="busy || reading"
-        :class="{ 'card__sure': confirming === primary.label }"
-        @click="press(primary)"
-        @mousedown="onAux(primary, $event)"
-        @auxclick="onAux(primary, $event)"
-      >{{ labelOf(primary) }}</AppButton>
-
-      <!--
-        The rest of the decisions, in the row rather than behind a chevron. See `decisions`.
-        Each carries its own confirm where the definition asked for one, which for anything that
-        reaches GitHub it does.
-      -->
-      <AppButton
-        v-for="action in decisions"
-        :key="action.label"
-        variant="ghost"
-        size="md"
-        :busy="busy"
-        :class="{ 'card__sure': confirming === action.label }"
-        @click="press(action)"
-        @mousedown="onAux(action, $event)"
-        @auxclick="onAux(action, $event)"
-      >{{ labelOf(action) }}</AppButton>
-
-      <!--
-        The questions this card offers, or the general one where it offers none.
-
-        The loop is inside a `template v-if` so the `v-else-if` below it still has a partner:
-        swapping this element's own `v-if` for a `v-for` left that one dangling, which the SFC
-        compiler reports as `Cannot read properties of null` and no line number.
-      -->
-      <template v-if="asks.length">
+      <div
+        v-if="requesting"
+        class="card__request"
+        @keydown.esc.stop.prevent="requesting = false"
+      >
+        <ChatComposer
+          ref="requestBox"
+          v-model="requestText"
+          placeholder="What should change? It goes to the workspace's conversation and the agent starts on it."
+          :can-send="!!requestText.trim() && !busy"
+          :sending="busy"
+          @send="sendRequest"
+        />
         <AppButton
-          v-for="action in asks"
+          variant="quiet"
+          size="md"
+          @click="requesting = false"
+        >Cancel</AppButton>
+      </div>
+      <template v-else>
+        <!--
+          `busy || reading`: not pressable on evidence that has not arrived.
+
+          `Post the review` was live over its own spinner - the card offers an irreversible act on
+          a list of findings it is still fetching, and `submitReview` can only throw until they are
+          there. See `reading`.
+        -->
+        <AppButton
+          v-if="primary"
+          variant="kind"
+          size="lg"
+          :icon="agenticPrimary ? 'sparkle' : undefined"
+          icon-after="arrow-right"
+          :busy="busy || reading"
+          :class="{ 'card__sure': confirming === primary.label }"
+          @click="press(primary)"
+          @mousedown="onAux(primary, $event)"
+          @auxclick="onAux(primary, $event)"
+        >{{ labelOf(primary) }}</AppButton>
+
+        <!--
+          The rest of the decisions, in the row rather than behind a chevron. See `decisions`.
+          Each carries its own confirm where the definition asked for one, which for anything that
+          reaches GitHub it does.
+        -->
+        <AppButton
+          v-for="action in decisions"
           :key="action.label"
           variant="ghost"
           size="md"
-          icon="sparkle"
+          :busy="busy"
           :class="{ 'card__sure': confirming === action.label }"
           @click="press(action)"
           @mousedown="onAux(action, $event)"
           @auxclick="onAux(action, $event)"
         >{{ labelOf(action) }}</AppButton>
-      </template>
-      <AppButton
-        v-else-if="!offersAsk"
-        variant="ghost"
-        size="md"
-        icon="sparkle"
-        @click="emit('ask')"
-      >
-        Ask about this
-      </AppButton>
 
-      <!--
-        What an agent can be set to, where that is one decision with several answers. See
-        `groups`. The control says the decision and the menu holds the answers; one that asks
-        before it goes says so in the row, and the menu waits for the second press.
-      -->
-      <div v-for="group in groups" :key="group.label" class="card__overflow card__group">
-        <AppButton
-          variant="ghost"
-          size="md"
-          :icon="group.agentic ? 'sparkle' : undefined"
-          icon-after="chevron-down"
-          :aria-expanded="groupOpen === group.label ? 'true' : 'false'"
-          @click="groupOpen = groupOpen === group.label ? '' : group.label"
-        >{{ group.label }}</AppButton>
+        <!--
+          The questions this card offers, or the general one where it offers none.
 
-        <div v-if="groupOpen === group.label" class="u-popover card__menu">
-          <button
-            v-for="action in group.actions"
+          The loop is inside a `template v-if` so the `v-else-if` below it still has a partner:
+          swapping this element's own `v-if` for a `v-for` left that one dangling, which the SFC
+          compiler reports as `Cannot read properties of null` and no line number.
+        -->
+        <!--
+          `busy` like the decisions beside them: each of these sends a prompt, and one pressed again
+          while the first is still on its way is the same prompt sent twice.
+        -->
+        <template v-if="asks.length">
+          <AppButton
+            v-for="action in asks"
             :key="action.label"
-            type="button"
-            class="card__menu-row"
+            variant="ghost"
+            size="md"
+            icon="sparkle"
+            :busy="busy"
             :class="{ 'card__sure': confirming === action.label }"
-            @click="pressGrouped(action)"
+            @click="press(action)"
             @mousedown="onAux(action, $event)"
             @auxclick="onAux(action, $event)"
-          >
-            <!-- Only where an agent is what answers: see `groups`. -->
-            <AppIcon v-if="group.agentic" name="sparkle" :size="12" />
-            {{ labelOf(action) }}
-          </button>
-        </div>
-      </div>
-
-      <!--
-        Everywhere else this work is. One control, so the row can never become two.
-
-        "Elsewhere", not "More". It was `More` over a list of whatever actions the definition had
-        left over, which across all sixteen shipped cards could only ever be a single `open` - and
-        that `open` was a prompt dressed as navigation. What is behind it now is only ever places:
-        the pull request, the review, the workspace, the build. A control that holds one kind of
-        thing should say which kind.
-      -->
-      <!--
-        One link is not a menu.
-
-        Measured on the top card, `Elsewhere` opened onto exactly one row - `Open the review` -
-        and across the ten live kinds it held one row on eight of them. A chevron, a popover and
-        a piece of component state to reach a single link is the same fault this control's own
-        comment says it fixed for `More`; where there is one place to go, the button is that
-        place and says its name.
-      -->
-      <AppButton
-        v-if="navs.length === 1"
-        variant="quiet"
-        size="md"
-        icon="expand"
-        @click="press(navs[0])"
-      >{{ navs[0].label }}</AppButton>
-
-      <div v-else-if="navs.length" ref="navBox" class="card__overflow">
+          >{{ labelOf(action) }}</AppButton>
+        </template>
         <AppButton
+          v-else-if="!offersAsk"
+          variant="ghost"
+          size="md"
+          icon="sparkle"
+          @click="emit('ask')"
+        >
+          Ask about this
+        </AppButton>
+
+        <!--
+          What an agent can be set to, where that is one decision with several answers. See
+          `groups`. The control says the decision and the menu holds the answers; one that asks
+          before it goes says so in the row, and the menu waits for the second press.
+        -->
+        <div v-for="group in groups" :key="group.label" class="card__overflow card__group">
+          <AppButton
+            variant="ghost"
+            size="md"
+            :icon="group.agentic ? 'sparkle' : undefined"
+            icon-after="chevron-down"
+            :aria-expanded="groupOpen === group.label ? 'true' : 'false'"
+            @click="groupOpen = groupOpen === group.label ? '' : group.label"
+          >{{ group.label }}</AppButton>
+
+          <div v-if="groupOpen === group.label" class="u-popover card__menu">
+            <button
+              v-for="action in group.actions"
+              :key="action.label"
+              type="button"
+              class="card__menu-row"
+              :class="{ 'card__sure': confirming === action.label }"
+              @click="pressGrouped(action)"
+              @mousedown="onAux(action, $event)"
+              @auxclick="onAux(action, $event)"
+            >
+              <!-- Only where an agent is what answers: see `groups`. -->
+              <AppIcon v-if="group.agentic" name="sparkle" :size="12" />
+              {{ labelOf(action) }}
+            </button>
+          </div>
+        </div>
+
+        <!--
+          Everywhere else this work is. One control, so the row can never become two.
+
+          "Elsewhere", not "More". It was `More` over a list of whatever actions the definition had
+          left over, which across all sixteen shipped cards could only ever be a single `open` - and
+          that `open` was a prompt dressed as navigation. What is behind it now is only ever places:
+          the pull request, the review, the workspace, the build. A control that holds one kind of
+          thing should say which kind.
+        -->
+        <!--
+          One link is not a menu.
+
+          Measured on the top card, `Elsewhere` opened onto exactly one row - `Open the review` -
+          and across the ten live kinds it held one row on eight of them. A chevron, a popover and
+          a piece of component state to reach a single link is the same fault this control's own
+          comment says it fixed for `More`; where there is one place to go, the button is that
+          place and says its name.
+        -->
+        <AppButton
+          v-if="navs.length === 1"
           variant="quiet"
           size="md"
           icon="expand"
-          icon-after="chevron-down"
-          :aria-expanded="navOpen ? 'true' : 'false'"
-          @click="navOpen = !navOpen"
-        >Elsewhere</AppButton>
+          @click="press(navs[0])"
+        >{{ navs[0].label }}</AppButton>
 
-        <div v-if="navOpen" class="u-popover card__menu">
-          <button
-            v-for="action in navs"
-            :key="action.label"
-            type="button"
-            class="card__menu-row"
-            @click="navOpen = false; press(action)"
-          >
-            <AppIcon name="expand" :size="12" />
-            {{ action.label }}
-          </button>
+        <div v-else-if="navs.length" ref="navBox" class="card__overflow">
+          <AppButton
+            variant="quiet"
+            size="md"
+            icon="expand"
+            icon-after="chevron-down"
+            :aria-expanded="navOpen ? 'true' : 'false'"
+            @click="navOpen = !navOpen"
+          >Elsewhere</AppButton>
+
+          <div v-if="navOpen" class="u-popover card__menu">
+            <button
+              v-for="action in navs"
+              :key="action.label"
+              type="button"
+              class="card__menu-row"
+              @click="navOpen = false; press(action)"
+            >
+              <AppIcon name="expand" :size="12" />
+              {{ action.label }}
+            </button>
+          </div>
         </div>
-      </div>
 
-      <!--
-        No `Later` here any more. It is the snooze control in the header, beside the pin: see
-        `.card__head-controls`. The footer is for things you do to the work.
-      -->
+        <!--
+          No `Later` here any more. It is the snooze control in the header, beside the pin: see
+          `.card__head-controls`. The footer is for things you do to the work.
+        -->
+      </template>
     </footer>
 
     <!--
@@ -1911,6 +1986,18 @@ const waitedOnLine = computed(() => (!overdue.value && props.task.waitingHours &
 
 /* The decision keeps its label: it is the one thing the card wants read. */
 .card__foot > :deep(.btn--lg) { flex: 0 0 auto; }
+
+/* A request being typed: the composer takes the row and Cancel keeps its width, level with Send. */
+.card__request {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s2);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.card__request > :deep(.box) { flex: 1 1 auto; }
+.card__request > :deep(.btn) { flex: 0 0 auto; }
 
 /*
  * Never squeezed.

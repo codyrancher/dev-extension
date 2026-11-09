@@ -275,6 +275,35 @@ export function stageRow(s: WorkspaceStatus | any, stage: string, issue = 0): St
   return [...all.filter((a) => a.isPrimary), ...all.filter((a) => !a.isPrimary)];
 }
 
+/** The stages of a fix where what the agent made is there to be changed: on the branch, or up. */
+const CHANGEABLE = new Set(['code', 'draft', 'review', 'feedback']);
+
+/**
+ * The row a Focus card draws: the rail's, and "Request a change" where a fix has work to change.
+ *
+ * The one difference between the two views, and on purpose. The rail has the workspace's
+ * conversation on the page with its own box to type in - which is why the draft stage above has no
+ * "Ask for a change" - and a card has no such box. So the card offers the request as a button, the
+ * text is typed on the card, and it goes to the conversation the rail would have sent it to
+ * (`sayInWorkspace`). Not while the agent is asking something: the answer comes first.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function cardRow(s: WorkspaceStatus | any, stage: string, issue = 0): StageRowItem[] {
+  const row = stageRow(s, stage, issue);
+
+  if (s?.kind !== 'fix' || !CHANGEABLE.has(stage) || s.agent === 'input') {
+    return row;
+  }
+
+  const request: StageRowItem = {
+    key: 'agent:Request a change', label: 'Request a change', run: 'requestChange', isPrimary: false, ai: true, title: 'Say what should change: it goes to the workspace\'s conversation and the agent starts on it',
+  };
+  // First of the agent's: the open-ended one, before the stage's named skills.
+  const at = row.findIndex((item) => item.ai && !item.isPrimary);
+
+  return at < 0 ? [...row, request] : [...row.slice(0, at), request, ...row.slice(at)];
+}
+
 /**
  * The prompt an agent's action sends, filled in: the person's edited template where there is one
  * (the rail's middle-click editor, keyed by skill or by run), the shipped one where not. '' for a
