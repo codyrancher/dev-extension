@@ -1,0 +1,83 @@
+/*
+ * Rancher's login page at phone width.
+ *
+ * The page is the shell's, not ours: two half-width columns, the form and a landscape picture,
+ * at every width. On a 390px phone that is a 195px form beside a picture of a hill, with the
+ * sign-in button running off into the picture. Its styles are scoped, so a global sheet is the
+ * only way an extension can change it, and this sheet is only there because the extension is
+ * served to people who have not signed in yet (`rancher.noAuth` in package.json).
+ *
+ * The markup has been the same from 2.10 to 2.15: `.login > .row.gutless`, the form in the
+ * first `.col.span-6`, the picture in the second. Everything below is under `.main-layout.login`
+ * and inside the query, so the desktop page is untouched and nothing reaches any other page.
+ *
+ * The same 760px breakpoint as mobile.css, plus a short viewport, which is a phone turned on its
+ * side: two columns 390px tall leave the form a column it has to scroll inside of, with the
+ * locale selector drawn on top of it.
+ */
+@media (max-width: 760px), (max-height: 500px) {
+  /* The picture goes, and the form takes the whole width. */
+  .main-layout.login .row .landscape {
+    display: none;
+  }
+
+  /*
+   * `dvh`, not the shell's `vh`: on a phone `100vh` is the height with the browser's toolbar
+   * hidden, so a page exactly that tall always starts scrolled a toolbar's height short.
+   */
+  .main-layout.login .row.gutless {
+    height: 100dvh;
+    margin-bottom: 0;
+  }
+
+  .main-layout.login .row.gutless > .span-6 {
+    width: 100%;
+    margin: 0;
+    padding: var(--dev-space-6) var(--dev-space-5);
+
+    /*
+     * `safe`, so a form taller than the screen (the first-login instructions, or the keyboard
+     * up) starts at its top rather than being centered off both ends. Where `safe` is not
+     * understood the declaration is dropped and the column starts at the top, which on a phone
+     * is the better of the two to fall back to.
+     */
+    justify-content: flex-start;
+    justify-content: safe center;
+  }
+
+  /*
+   * The local user's fields sit in a `span-6 offset-3` (2.15 and earlier): half of a column
+   * that is already the whole phone, so a 170px field a quarter of the way in.
+   */
+  .main-layout.login form .span-6.offset-3 {
+    width: 100%;
+    max-width: 362px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  /*
+   * Below the form rather than pinned to the bottom of the page: absolute, it lands on top of
+   * the form the moment the screen is shorter than the form is.
+   */
+  .main-layout.login .locale-selector {
+    position: static;
+    align-self: center;
+    margin-top: var(--dev-space-5);
+  }
+
+  /* Every control a thumb can hit: 44px, the size both phone platforms ask for. */
+  .main-layout.login .btn {
+    min-height: 44px;
+  }
+
+  .main-layout.login a[role="button"] {
+    display: inline-block;
+    padding: var(--dev-space-4) var(--dev-space-5);
+  }
+
+  /* 16px, or Safari on a phone zooms the page in on the field as soon as it is focused. */
+  .main-layout.login input {
+    font-size: 16px;
+  }
+}

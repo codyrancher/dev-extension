@@ -1,5 +1,6 @@
 import { IPlugin } from '@shell/core/types';
 import { installDevResources } from './api';
+import { whenLoggedIn } from './dashboard-app';
 import { BLANK_CLUSTER, DEV_PRODUCT, WORKSPACES_ROUTE } from './config/constants';
 
 // `store` is the raw Vuex store the extension manager hands to every product init, and
@@ -52,7 +53,12 @@ function devProduct($plugin: IPlugin, store: any) {
    * workspace API, the shared browser, and the default template. Three of them write into
    * `dev-system` and only one created it, so on a cluster that did not have it already the order
    * they happened to run in decided whether the other two worked. See installDevResources.
+   *
+   * Once somebody is signed in: products are initialized on the login page too now that the
+   * extension is served there, and a local login does not initialize them again.
    */
-  installDevResources(store).catch(() => {});
+  whenLoggedIn(() => {
+    installDevResources(store).catch(() => {});
+  });
 
 }
