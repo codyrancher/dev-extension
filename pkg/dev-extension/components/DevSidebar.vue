@@ -316,6 +316,9 @@ export default {
       stopStats:     null,
       /** `{ memTotal, memUsed, diskTotal, diskUsed, ok }`, or null until the first answer. */
       stats:         null,
+      stopUsage:     null,
+      /** dev-api's `/system/usage`: the Claude plan's windows, or null until the first answer. */
+      usage:         null,
       /**
        * The entries that are not workspaces, as an icon row at the foot.
        *
@@ -399,6 +402,41 @@ export default {
      * could not be read - no `/proc`, or a mount that is not there - and the bar is dropped
      * rather than drawn at 0%, which would say "empty" about something unknown.
      */
+    /**
+     * The plan's weekly allowance, as a bar above the machine's two.
+     *
+     * The week across models - what `/usage` calls "Current week (all models)" - and only that on
+     * the bar; the five-hour session and the per-model weeks, where the plan has them, are the
+     * hover. Numbers dev-api could not refresh stay, and the hover says how old they are.
+     */
+    usageBars() {
+      const claude = this.usage?.claude;
+      const week = claude?.week;
+
+      if (!week) {
+        return [];
+      }
+      const at = (iso, how) => {
+        const when = iso ? new Date(iso) : null;
+
+        return when && !Number.isNaN(when.getTime()) ? when.toLocaleString([], how) : '';
+      };
+      const resets = at(week.resetsAt, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+      const beside = [
+        claude.session && `five-hour session ${ claude.session.percent }%`,
+        claude.opus && `Opus week ${ claude.opus.percent }%`,
+        claude.sonnet && `Sonnet week ${ claude.sonnet.percent }%`,
+      ].filter(Boolean);
+      const old = claude.staleSince ? ` · as of ${ at(claude.staleSince, { weekday: 'short', hour: 'numeric', minute: '2-digit' }) }, since ${ claude.error || 'it could not be read' }` : '';
+
+      return [{
+        label:   'CLAUDE',
+        percent: week.percent,
+        value:   `${ week.percent }% wk`,
+        title:   `Claude${ claude.plan ? ` (${ claude.plan })` : '' }: ${ week.percent }% of this week's limit used${ resets ? `, resets ${ resets }` : '' }${ beside.length ? ` · ${ beside.join(' · ') }` : '' }${ old }`,
+      }];
+    },
+
     bars() {
       const of = (label, used, total) => (total > 0
         ? [{ label, used, total, percent: Math.round((used / total) * 100) }]
@@ -520,6 +558,11 @@ export default {
     this.stopStats = watch('/system/stats', (seen) => {
       this.stats = seen || null;
     }, { every: 10000 });
+    // The plan's usage, the same way. dev-api asks Anthropic at most every five minutes whatever
+    // this asks, so the minute here is only how soon a new number is seen.
+    this.stopUsage = watch('/system/usage', (seen) => {
+      this.usage = seen || null;
+    }, { every: 60000 });
     this.refreshTimer = setInterval(() => this.refresh(), SWEEP_MS);
     // Where the column was scrolled to, back where it was.
     if (cache.scroll && this.$refs.scroll) {
@@ -530,6 +573,7 @@ export default {
   beforeUnmount() {
     this.stopRegistrar?.();
     this.stopStats?.();
+    this.stopUsage?.();
     clearInterval(this.refreshTimer);
     cache.scroll = this.$refs.scroll?.scrollTop || 0;
   },
@@ -1482,11 +1526,39 @@ export default {
       first answer arrives rather than drawn empty, because an empty bar reads as "nothing left".
     -->
     <div
-      v-if="stats && stats.ok"
+      v-if="(stats && stats.ok) || usageBars.length"
       class="dev-sidebar__stats"
     >
+      <!--
+        The plan's weekly allowance first, above what the machine has left: the other thing that
+        runs out. A percentage rather than bytes, and the reset in the hover. See usageBars.
+      -->
       <div
-        v-for="bar in bars"
+        v-for="bar in usageBars"
+        :key="bar.label"
+        class="dev-sidebar__stat"
+        :title="bar.title"
+      >
+        <span class="dev-sidebar__stat-label">{{ bar.label }}</span>
+        <span
+          class="dev-sidebar__stat-bar"
+          role="progressbar"
+          :aria-label="`${ bar.label } weekly usage`"
+          :aria-valuenow="bar.percent"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-valuetext="bar.title"
+        >
+          <span
+            class="dev-sidebar__stat-fill"
+            :class="{ 'dev-sidebar__stat-fill--warn': bar.percent > 80 }"
+            :style="{ width: `${ Math.min(100, bar.percent) }%` }"
+          />
+        </span>
+        <span class="dev-sidebar__stat-value">{{ bar.value }}</span>
+      </div>
+      <div
+        v-for="bar in (stats && stats.ok ? bars : [])"
         :key="bar.label"
         class="dev-sidebar__stat"
         :title="`${ bar.label }: ${ bytes(bar.used) } of ${ bytes(bar.total) } used (${ bar.percent }%)`"
@@ -1541,7 +1613,8 @@ export default {
   font-size:      10px;
   letter-spacing: 0.06em;
   color:          var(--muted);
-  width:          30px;
+  // Wide enough for CLAUDE, and the same on every row so the bars start together.
+  width:          44px;
   flex-shrink:    0;
 }
 

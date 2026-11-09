@@ -2633,6 +2633,20 @@ const OPENAPI = {
         responses: { 200: { description: 'Totals and used bytes.' } },
       },
     },
+    '/system/usage': {
+      get: {
+        operationId: 'readPlanUsage',
+        summary:     'How much of the Claude plan\'s weekly allowance is used.',
+        description: [
+          'What the CLI\'s own `/usage` reports, read in the agent pod with the shared Claude login',
+          '(the token stays there) at most every five minutes: `claude.week` is the weekly limit',
+          'across models as `{ percent, resetsAt }`, with the five-hour session and the per-model',
+          'weekly limits beside it where the plan has them. A read that fails keeps the last numbers,',
+          'with `error` and `staleSince` saying so.',
+        ].join('\n'),
+        responses: { 200: { description: 'The plan\'s windows, and when they were read.' } },
+      },
+    },
     '/conversations': {
       get: {
         operationId: 'readConversations',
@@ -6139,6 +6153,28 @@ const routes = [
       memTotal, memUsed, diskTotal, diskUsed, ok: !!(memTotal || diskTotal),
     };
   }],
+  /*
+   * How much of the plan's weekly allowance is gone: the bar above the machine's two.
+   *
+   * Read in the agent pod (seed plan-usage.mjs), where the login is, so the token never leaves it;
+   * this keeps only the numbers. At most every five minutes - the number moves slowly and each read
+   * is a request to Anthropic - and shared, since the hub reads this once for every tab. A read that
+   * fails keeps the last numbers it had, marked with when they are from, rather than drawing an
+   * empty bar: an hour-old 40% is still more use than nothing.
+   */
+  ['GET', /^\/system\/usage$/, async() => {
+    if (Date.now() - planUsage.at > PLAN_USAGE_EVERY_MS && !planUsage.reading) {
+      planUsage.reading = readPlanUsage().finally(() => {
+        planUsage.at = Date.now();
+        planUsage.reading = null;
+      });
+    }
+    if (!planUsage.value && planUsage.reading) {
+      await planUsage.reading;
+    }
+
+    return planUsage.value || { claude: null, at: '', ok: false };
+  }],
   ['GET', /^\/conversations$/, async(m, url) => conversationsAnswer(url)],
   ['GET', /^\/conversations\/(agent(?:_[a-z0-9-]+)?-\d+|p-[a-z0-9-]+(?:_[a-z0-9-]+)?-\d+)$/, async(m) => {
     const held = (await conversationDoc()).items?.[m[1]];
@@ -8668,6 +8704,43 @@ async function askAgentSessions(...args) {
   const pod = await agentPod();
 
   return pod ? podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '/seed/sessions.sh', ...args], 30_000) : '';
+}
+
+/** How often the plan's usage is asked for, and what was last heard. See `/system/usage`. */
+const PLAN_USAGE_EVERY_MS = 5 * 60_000;
+const planUsage = { at: 0, value: null, reading: null };
+
+/**
+ * The plan's usage, read in the agent pod by its seed script, kept when it cannot be read again.
+ *
+ * As the pane user's HOME, since the login is that home's. The last line of stdout is the answer;
+ * a seed older than the script, or an exec cut off, gives none and changes nothing.
+ */
+async function readPlanUsage() {
+  const pod = await agentPod().catch(() => null);
+
+  if (!pod) {
+    return;
+  }
+  let fresh = null;
+
+  try {
+    const out = await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '-c', 'HOME=/workspace/.home exec node /seed/plan-usage.mjs'], 30_000);
+
+    fresh = JSON.parse(String(out || '').trim().split('\n').pop() || 'null');
+  } catch {
+    fresh = null;
+  }
+  if (!fresh?.claude) {
+    return;
+  }
+  const before = planUsage.value?.claude;
+  // Numbers that are no longer current beat no numbers: the bar stays, and says how old it is.
+  const claude = fresh.claude.week || !before?.week
+    ? fresh.claude
+    : { ...before, error: fresh.claude.error || 'could not be read', staleSince: planUsage.value.at };
+
+  planUsage.value = { claude, at: fresh.claude.week ? fresh.at : (planUsage.value?.at || ''), ok: !!claude.week };
 }
 
 /** Null without `@@END`: a seed older than the verb, or an exec that was cut off, knows nothing. */
