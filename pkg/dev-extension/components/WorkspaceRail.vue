@@ -2374,13 +2374,41 @@ export default {
       return item.paged && item.items.length > 1 ? [item.items[this.pageOf(section, item)]] : item.items;
     },
 
-    turn(section, item, by) {
-      this.goTo(section, Math.min(Math.max(0, this.pageOf(section, item) + by), item.items.length - 1));
+    turn(section, item, by, event) {
+      this.goTo(section, Math.min(Math.max(0, this.pageOf(section, item) + by), item.items.length - 1), event);
     },
 
-    // By id: several titles carry a count, and a count that changes would lose the page.
-    goTo(section, index) {
+    /*
+     * By id: several titles carry a count, and a count that changes would lose the page.
+     *
+     * From the pager itself (`event`), the new thread is brought up to start under it. The pager
+     * stays pinned at the top of the scroll now (see `__pager`), so a turn made from deep in one long
+     * thread opened the next that far down; only when the list's top is above the view, so a turn
+     * made from the top of the list moves nothing. The scroller's own offset rather than
+     * scrollIntoView, which also moves every scrollable ancestor.
+     */
+    goTo(section, index, event) {
       this.pages = { ...this.pages, [section.id || section.title]: index };
+      const list = event?.currentTarget?.closest?.('.workspace-rail__comments');
+
+      if (!list) {
+        return;
+      }
+      this.$nextTick(() => {
+        let box = list.parentElement;
+
+        while (box && !(/(auto|scroll)/.test(getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight)) {
+          box = box.parentElement;
+        }
+        if (!box) {
+          return;
+        }
+        const above = list.getBoundingClientRect().top - box.getBoundingClientRect().top - (parseFloat(getComputedStyle(box).paddingTop) || 0);
+
+        if (above < 0) {
+          box.scrollTop += above;
+        }
+      });
     },
 
     rowsAround(c) {
@@ -4016,7 +4044,7 @@ export default {
                   type="button"
                   class="workspace-rail__page-step"
                   :disabled="pageOf(shownSection, item) === 0"
-                  @click="turn(shownSection, item, -1)"
+                  @click="turn(shownSection, item, -1, $event)"
                 >‹ Previous</button>
                 <span class="workspace-rail__page-nums">
                   <button
@@ -4032,14 +4060,14 @@ export default {
                       'workspace-rail__page-num--new': c.fresh,
                     }"
                     :title="`${ c.where }${ c.fresh ? ' · replied since your review' : '' }${ c.pending || (c.drafts && c.drafts.length) ? ' · has an unsent reply' : '' }${ c.answered ? '' : c.status === 'approved' ? ' · approved' : ' · waiting' }`"
-                    @click="goTo(shownSection, n)"
+                    @click="goTo(shownSection, n, $event)"
                   >{{ n + 1 }}</button>
                 </span>
                 <button
                   type="button"
                   class="workspace-rail__page-step"
                   :disabled="pageOf(shownSection, item) >= item.items.length - 1"
-                  @click="turn(shownSection, item, 1)"
+                  @click="turn(shownSection, item, 1, $event)"
                 >Next ›</button>
                 <span class="workspace-rail__page-of">{{ pageOf(shownSection, item) + 1 }} of {{ item.items.length }}</span>
               </div>
@@ -5900,6 +5928,8 @@ export default {
   &__section--opened {
     gap:     var(--dev-space-5);
     padding: var(--dev-inset);
+    // DevModal's body padding, which a sticky pager would otherwise sit below. See `__pager`.
+    --pager-stick: -20px;
 
     /*
      * A file's header sticks to the top of whatever scrolls, and here that is the modal's body
@@ -6033,12 +6063,26 @@ export default {
     gap:            12px;
   }
 
+  /*
+   * Pinned to the top of whatever scrolls, so the next thread is one press away from anywhere in a
+   * long one. Opaque, and over what scrolls under it (no sticky element in a thread card competes).
+   * One row: the numbers scroll sideways rather than wrap, so it never grows over the thread.
+   *
+   * `--pager-stick`, because Chrome pins a sticky box inside its scroller's padding: at `top: 0` it
+   * sat that far below the edge with the thread showing above it. The modal's body has 20px; see
+   * `__section--opened`.
+   */
   &__pager {
-    display:     flex;
-    align-items: center;
-    gap:         10px;
-    flex-wrap:   wrap;
-    padding:     4px 0 2px;
+    position:      sticky;
+    top:           var(--pager-stick, 0px);
+    z-index:       3;
+    display:       flex;
+    align-items:   center;
+    gap:           10px;
+    flex-wrap:     nowrap;
+    padding:       8px 0;
+    background:    var(--dm-bg, var(--body-bg));
+    border-bottom: 1px solid var(--pr-border);
   }
 
   &__page-step {
@@ -6059,10 +6103,16 @@ export default {
   }
 
   &__page-nums {
-    display:   flex;
-    gap:       4px;
-    flex-wrap: wrap;
+    display:         flex;
+    gap:             4px;
+    flex:            0 1 auto;
+    min-width:       0;
+    overflow-x:      auto;
+    scrollbar-width: thin;
   }
+
+  &__page-step,
+  &__page-of { flex-shrink: 0; }
 
   &__page-num {
     display:         inline-flex;
