@@ -11,6 +11,7 @@ import { importTypes } from '@rancher/auto-import';
  */
 import './design/tokens.css';
 import './design/mobile.css';
+import './design/login.css';
 import { IPlugin, ActionLocation } from '@shell/core/types';
 import routes from './routing';
 import { stageResource } from './builder/state';
@@ -21,6 +22,7 @@ import { ensureAgent } from './agent';
 import { registerAgentOverlay } from './overlay';
 import { installBrowserApi } from './public-api';
 import { keepThemeLocal } from './theme-local';
+import { whenLoggedIn } from './dashboard-app';
 
 // Init the package
 export default function(plugin: IPlugin): void {
@@ -37,9 +39,12 @@ export default function(plugin: IPlugin): void {
   // installer that put the other extension there, or one bundle. This is one bundle.
   installBrowserApi(require('./package.json').version);
 
-  // The one agent pod, and what it needs to exist first. Caught, because this runs on the login
-  // page too, where nobody is authenticated and every call answers 401.
-  ensureAgent().catch(() => {});
+  // The one agent pod, and what it needs to exist first. Not until somebody is signed in: this
+  // bundle is served to the login page too (`rancher.noAuth`), and a local login does not load it
+  // again. Still caught, because not every person who signs in may create it.
+  whenLoggedIn(() => {
+    ensureAgent().catch(() => {});
+  });
 
   // And the chord that opens a terminal into it, from any page in Rancher.
   registerAgentOverlay();
@@ -97,8 +102,9 @@ export default function(plugin: IPlugin): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any);
 
-  // A drawer that was open when the page was left should be open when it comes back.
-  restoreBuilder();
+  // A drawer that was open when the page was left should be open when it comes back - to the
+  // dashboard, not to the login page in front of it.
+  whenLoggedIn(restoreBuilder);
 
   // The switches that appear on a staged resource's own edit page.
   initPageMarks();

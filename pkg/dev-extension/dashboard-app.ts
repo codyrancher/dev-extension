@@ -78,3 +78,30 @@ export function whenDashboardStore(then: (store: any) => void): () => void {
 
   return stop;
 }
+
+/**
+ * Run `then` once somebody is signed in: now if they already are, otherwise when they sign in.
+ *
+ * The extension is served to the login page as well (`rancher.noAuth` in package.json), and a
+ * UIPlugin is evaluated once per page load. Signing in with a local user does not reload the
+ * page, so anything that needs a session cannot run at load: on the login page it gets 401s,
+ * and it never gets the second chance an authenticated load would have given it.
+ */
+export function whenLoggedIn(then: () => void): void {
+  whenDashboardStore((store) => {
+    const loggedIn = (getters: any) => !!getters['auth/loggedIn'];
+
+    if (loggedIn(store.getters)) {
+      then();
+
+      return;
+    }
+
+    const stop = store.watch((_state: any, getters: any) => loggedIn(getters), (now: boolean) => {
+      if (now) {
+        stop();
+        then();
+      }
+    });
+  });
+}
