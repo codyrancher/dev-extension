@@ -1399,7 +1399,7 @@ export default {
         return;
       }
       try {
-        await setManualStage(this.workspace.name, key);
+        await setManualStage(this.workspace.name, key, this.repo);
         this.manual = true;
         await this.refreshStatus(true);
       } catch (e) {

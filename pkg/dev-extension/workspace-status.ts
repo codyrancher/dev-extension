@@ -13,7 +13,7 @@ import { jiraStageOf } from './jira-steps.mjs';
 import { passRunning } from './review-pass.mjs';
 import { linkedPullRequest, branchPullRequest, issueBody } from './github';
 import { conversationStates, agentConversations, ConversationState } from './conversations';
-import { setWorkspaceRunning } from './api';
+import { setWorkspaceRunning, installationRepos } from './api';
 import { isLte, LTE_PREFIX, DEFAULT_APP } from './config/constants';
 import { listApps } from './apps';
 import { reconcileStage } from './stages';
@@ -27,7 +27,7 @@ type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 import { activityState } from './agent';
 import { note } from './dev-log.mjs';
-import { noteRepo, notedRepo } from './workspace-repos.mjs';
+import { noteRepo, notedRepo, resolveRepo } from './workspace-repos.mjs';
 import { readPrefs, savePrefs } from './prefs';
 
 export type AgentState = 'working' | 'input' | 'idle' | 'finished' | 'none';
@@ -431,9 +431,17 @@ export function noteRole(name: string, role: string): void {
 // Who tells it, and why an empty value is ignored: see workspace-repos.mjs.
 export { noteRepo };
 
-/** The repository a workspace is for, falling back to this product's own. */
+/** The repository a workspace is for, as far as this tab has been told, falling back to this product's own. */
 export function repoOf(name: string): string {
   return notedRepo(name) || DEFAULT_REPO;
+}
+
+/**
+ * The repository a workspace is for, asking its Installation when this tab has not been told.
+ * Every read that goes to GitHub, or stores a stage, goes through this rather than repoOf.
+ */
+async function repoFor(name: string): Promise<string> {
+  return (await resolveRepo(name, installationRepos)) || DEFAULT_REPO;
 }
 
 /**
@@ -767,9 +775,9 @@ const STAGE_TONE: Record<Stage, Tone> = {
 };
 
 /** A derived work state, packaged for the store to reconcile against what it already holds. */
-function toDerived(kind: 'fix' | 'review', w: Work, pr: number): DerivedStage {
+function toDerived(kind: 'fix' | 'review', w: Work, pr: number, repo: string): DerivedStage {
   return {
-    kind, stage: (w.stage || (kind === 'review' ? 'agent' : 'assess')) as Stage, stageLabel: w.stageLabel, soft: !!w.soft, round: w.round || 1, reviewed: !!w.reviewed, pr,
+    kind, stage: (w.stage || (kind === 'review' ? 'agent' : 'assess')) as Stage, stageLabel: w.stageLabel, soft: !!w.soft, round: w.round || 1, reviewed: !!w.reviewed, pr, repo,
   };
 }
 
@@ -796,8 +804,8 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
   const { pr, issue, bug } = numbers(name);
   const agent = agents[name] || 'none';
   const links: WorkspaceStatus['links'] = [];
-  // The workspace's own, not this product's. See `repos`.
-  const repo = repoOf(name);
+  // The workspace's own, not this product's, known before anything is read. See workspace-repos.mjs.
+  const repo = await repoFor(name);
 
   if (issue) {
     links.push({ label: `Issue #${ issue }`, url: `https://github.com/${ repo }/issues/${ issue }` });
@@ -810,7 +818,7 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
 
     links.push({ label: `PR #${ pr }`, url: d.meta?.url || `https://github.com/${ repo }/pull/${ pr }` });
     const w = reviewWork(d, agent);
-    const rec = await reconcileStage(name, toDerived('review', w, pr));
+    const rec = await reconcileStage(name, toDerived('review', w, pr, repo));
 
     return {
       ...display(rec, w), title: d.meta?.title || '', links, kind: 'review', pr, ...activityTimes(d),
@@ -863,7 +871,7 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
       links.push({ label: `PR #${ n }`, url: d?.meta?.url || `https://github.com/${ repo }/pull/${ n }` });
     }
     const w = fixWork(d, agent, coded[name] || false);
-    const rec = await reconcileStage(name, toDerived('fix', w, n));
+    const rec = await reconcileStage(name, toDerived('fix', w, n, repo));
     // The PR's title once there is one; until then the issue's own title, so a fix reads as the work
     // it is rather than its `issue-<n>` name. Without this a fix with no PR yet had no title at all,
     // and the row fell back to the bare number.
@@ -933,8 +941,11 @@ export function provisionalStatus(name: string): WorkspaceStatus {
   const links: WorkspaceStatus['links'] = [];
   // Whatever has been noted for it, which before the first listing is this product's own. These
   // links are replaced by the real read a moment later; the point is that they are not wrong in
-  // the meantime for a workspace that is somebody else's repository.
+  // the meantime for a workspace that is somebody else's repository. Asked for now, so the next
+  // draw has it even if this one did not.
   const repo = repoOf(name);
+
+  void repoFor(name);
 
   if (issue) {
     links.push({ label: `Issue #${ issue }`, url: `https://github.com/${ repo }/issues/${ issue }` });
@@ -982,7 +993,7 @@ export async function readStatusNow(name: string, github = true): Promise<Worksp
   if (!github && before.readAt && isFix(name) && !before.pr) {
     const w = fixWork(null, agent, coded[name] || false);
 
-    rewrite = display(await reconcileStage(name, toDerived('fix', w, 0)), w);
+    rewrite = display(await reconcileStage(name, toDerived('fix', w, 0, await repoFor(name))), w);
   }
   const next = { ...before, ...work, ...rewrite, readAt: github ? Date.now() : before.readAt, agent };
 
@@ -1093,7 +1104,7 @@ export async function workspaceStatuses(workspaces: { name: string; cluster?: st
     if (known.readAt && isFix(name) && !known.links.some((l) => l.label.startsWith('PR'))) {
       const w = fixWork(null, agent, coded[name] || false);
 
-      rewrite = display(await reconcileStage(name, toDerived('fix', w, 0)), w);
+      rewrite = display(await reconcileStage(name, toDerived('fix', w, 0, await repoFor(name))), w);
     }
     out[name] = { ...known, ...rewrite, agent };
   }));
