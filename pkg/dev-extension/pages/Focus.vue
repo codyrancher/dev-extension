@@ -3163,6 +3163,12 @@ onBeforeUnmount(closeSettings);
    */
   --bar-h: 40px;
   --bar-bottom: clamp(var(--s3), 2.4vh, var(--s5));
+  /*
+   * The shut bar's real height: the composer's `--bar-h`, the line's `--s1` above and below it and
+   * the frame's hairline. Measured at 50px. What sits on the bar's line centres on this, not on
+   * `--bar-h`, which is the composer alone - the corners sat 4 and 5px under the bar's middle.
+   */
+  --bar-shut-h: calc(var(--bar-h) + 2 * var(--s1) + 2px);
   --deck-pad-l: 62px;
   --deck-pad-r: 62px;
   /*
@@ -3249,11 +3255,18 @@ onBeforeUnmount(closeSettings);
 
 .pin:hover { transform: translateX(2px) scale(1.015); }
 
-/* The other end of the chat bar's row: fixed to the window, not to the card's box. */
+/*
+ * The other end of the chat bar's row: fixed to the window, not to the card's box.
+ *
+ * Centred on the bar's middle, whatever its own height: its bottom at the bar's middle and then
+ * half itself back down. It sat on the bar's floor instead, and the bar is 50px against this
+ * button's 42, so it was 4px low. `translate` rather than `transform`, which the button animates.
+ */
 .focus__corner {
   position: fixed;
   right: var(--s3, 16px);
-  bottom: var(--bar-bottom);
+  bottom: calc(var(--bar-bottom) + var(--bar-shut-h) / 2);
+  translate: 0 50%;
   height: var(--bar-h);
   width: var(--bar-h);
   z-index: 30;
@@ -3264,16 +3277,17 @@ onBeforeUnmount(closeSettings);
 
 /*
  * The status badge, in the bottom-left corner on the chat bar's line: the other end of the row the
- * queue's button ends on the right, the same height and the same distance off the floor. Fixed to
- * the window, like that button, so the card between them is centred on the page. A phone has no
- * room beside the bar, so there it stays in the header (see the phone branch).
+ * queue's button ends on the right, centred on the bar's middle the same way. Fixed to the window,
+ * like that button, so the card between them is centred on the page. A phone has no room beside
+ * the bar, so there it stays in the header (see the phone branch).
  */
 @media (min-width: 901px) {
   /* Under `.dev-focus`, so it outranks the dock's own `position: relative` whichever loads last. */
   .dev-focus .focus__status {
     position: fixed;
     left: var(--s3, 16px);
-    bottom: var(--bar-bottom);
+    bottom: calc(var(--bar-bottom) + var(--bar-shut-h) / 2);
+    translate: 0 50%;
     z-index: 30;
   }
 }
@@ -3289,7 +3303,7 @@ onBeforeUnmount(closeSettings);
    * line and a layer below it, so every message this view sends - "Opened PR #n", every error - was
    * drawn behind the bar, and a press that worked or failed looked the same: like nothing.
    */
-  bottom: calc(var(--bar-bottom, var(--s5)) + var(--bar-h, 40px) + var(--s3));
+  bottom: calc(var(--bar-bottom, var(--s5)) + var(--bar-shut-h, 50px) + var(--s3));
   z-index: 55;
   max-width: min(720px, calc(100vw - 2 * var(--s4)));
   margin: 0;
