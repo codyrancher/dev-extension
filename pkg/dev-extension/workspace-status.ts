@@ -27,6 +27,7 @@ type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 import { activityState } from './agent';
 import { note } from './dev-log.mjs';
+import { noteRepo, notedRepo } from './workspace-repos.mjs';
 import { readPrefs, savePrefs } from './prefs';
 
 export type AgentState = 'working' | 'input' | 'idle' | 'finished' | 'none';
@@ -422,29 +423,17 @@ function numbers(name: string): { pr: number; issue: number; bug: string } {
  */
 const roles: Record<string, string> = {};
 const branches: Record<string, string> = {};
-/**
- * The repository each workspace is for.
- *
- * Not every workspace is a `rancher/dashboard` one - `lte-pr-1202` is a pull request in
- * `harvester/harvester-ui-extension` - and every GitHub read here used the constant, so that
- * workspace asked for `rancher/dashboard` PR 1202, was told 404, and fell through to "not named
- * for an issue or a PR, so it has no stages". No rail, no review, nothing to press, on a
- * workspace whose own record has said `repo: harvester/harvester-ui-extension` from the day it
- * was made. Noted the way the role is, from the list the sidebar already passes in.
- */
-const repos: Record<string, string> = {};
 
 export function noteRole(name: string, role: string): void {
   roles[name] = role || '';
 }
 
-export function noteRepo(name: string, repo: string): void {
-  repos[name] = repo || '';
-}
+// Who tells it, and why an empty value is ignored: see workspace-repos.mjs.
+export { noteRepo };
 
 /** The repository a workspace is for, falling back to this product's own. */
 export function repoOf(name: string): string {
-  return repos[name] || DEFAULT_REPO;
+  return notedRepo(name) || DEFAULT_REPO;
 }
 
 /**

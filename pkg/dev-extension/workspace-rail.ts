@@ -801,7 +801,7 @@ export async function gatherEvidence(workspace: string, status: WorkspaceStatus,
   await Promise.all([...reads, kindsRead]);
   // Which CI jobs fail, once the PR says some do: one more read, worth it only then.
   if (have.d?.meta?.ci?.failing && status.pr) {
-    have.ci = await ciFailures(status.pr).catch(() => null);
+    have.ci = await ciFailures(status.pr, repoOf(workspace)).catch(() => null);
   }
 
   if (out) {
@@ -1474,7 +1474,7 @@ export async function commitPatch(workspace: string, sha: string): Promise<strin
  */
 export async function commitFiles(workspace: string, pr: number, sha: string): Promise<{ path: string; rows: CodeRow[]; status: string }[]> {
   if (pr) {
-    const diff = await commitsDiff(pr, [sha]).catch(() => null);
+    const diff = await commitsDiff(pr, [sha], repoOf(workspace)).catch(() => null);
     const files: Json[] = diff?.files || [];
 
     if (files.length) {
@@ -1519,8 +1519,8 @@ export function contextRows(path: string, fileText: string, fromLine: number, to
 }
 
 /** Every commit of a list as one diff - what changed since a moment, read at once. */
-export async function combinedFiles(pr: number, shas: string[]): Promise<{ path: string; rows: CodeRow[]; status: string }[]> {
-  const diff = await commitsDiff(pr, shas.filter((s) => /^[0-9a-f]{7,40}$/i.test(s))).catch(() => null);
+export async function combinedFiles(pr: number, shas: string[], repo = DEFAULT_REPO): Promise<{ path: string; rows: CodeRow[]; status: string }[]> {
+  const diff = await commitsDiff(pr, shas.filter((s) => /^[0-9a-f]{7,40}$/i.test(s)), repo).catch(() => null);
   const files: Json[] = diff?.files || [];
   const out = files.slice(0, 60).map((f) => ({ path: f.path || f.filename || '', rows: fileRows(f.path || f.filename || '', f.patch || '', 400), status: f.status || '' }));
 
