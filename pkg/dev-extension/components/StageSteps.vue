@@ -76,8 +76,11 @@ export default {
       if (index === this.currentIndex) {
         return this.round > 1 ? `Now, round ${ this.round }` : 'Now';
       }
+      if (!this.interactive) {
+        return this.again(step, index) ? `Done in round ${ this.round - 1 }; ahead of you again` : 'Not yet';
+      }
 
-      return this.again(step, index) ? `Done in round ${ this.round - 1 }; ahead of you again` : 'Not yet';
+      return this.again(step, index) ? `Done in round ${ this.round - 1 }, ahead again: look at it` : `Look ahead at ${ step.label }`;
     },
   },
 };
@@ -94,7 +97,7 @@ export default {
       <button
         type="button"
         class="stage-steps__btn"
-        :disabled="!interactive || index > currentIndex"
+        :disabled="!interactive"
         :title="title(step, index)"
         @click="$emit('look', { step, index })"
       >
@@ -116,6 +119,11 @@ export default {
           class="stage-steps__round"
         >round {{ round }}</span>
       </button>
+      <!--
+        Every step can be pressed where the page navigates them, the ones ahead as well as the
+        ones behind: a review's own pass can be started before the agent has finished, and a stage
+        you can see coming is one you may want to read before it arrives.
+      -->
       <!-- Beside the step's button, never inside it: a button cannot hold another. -->
       <slot
         name="after"

@@ -504,6 +504,11 @@ export default {
       return !!this.viewing && this.viewing !== this.current;
     },
 
+    /** The stage being looked at is one that has not come yet: said as ahead, not back. */
+    lookingAhead() {
+      return this.lookingBack && this.steps.findIndex((s) => s.key === this.viewing) > this.currentIndex;
+    },
+
     /**
      * Everything there is to do at this stage, as one row.
      *
@@ -1356,10 +1361,12 @@ export default {
       }
     },
 
-    look(step, index) {
-      if (index > this.currentIndex) {
-        return;
-      }
+    /*
+     * Any stage, ahead as well as behind: the column shows what that stage would show, and its own
+     * buttons. Ahead was refused, so a review's pass could not be opened until the agent had
+     * moved the stage there itself.
+     */
+    look(step) {
       this.viewing = step.key === this.current ? '' : step.key;
       this.evidence = [];
       this.evidenceStage = '';
@@ -3372,7 +3379,7 @@ export default {
         :shown="shown"
         :repeated="repeatedSteps"
         interactive
-        @look="look($event.step, $event.index)"
+        @look="look($event.step)"
       >
         <template #after="{ index }">
           <button
@@ -3448,7 +3455,7 @@ export default {
           v-if="lookingBack"
           class="workspace-rail__action-text"
         >
-          <div class="workspace-rail__looking-back">Looking back at {{ shownLabel }} · <button
+          <div class="workspace-rail__looking-back">Looking {{ lookingAhead ? 'ahead to' : 'back at' }} {{ shownLabel }} · <button
             type="button"
             class="workspace-rail__back"
             @click="backToNow"
@@ -3561,7 +3568,7 @@ export default {
         line, and the conversation underneath takes everything left (see `--live`).
       -->
       <section class="workspace-rail__came-back">
-        <h3 class="workspace-rail__came-back-label">{{ lookingBack ? `From ${ shownLabel }` : current ? 'For review' : 'Reading…' }}</h3>
+        <h3 class="workspace-rail__came-back-label">{{ lookingAhead ? `Ahead: ${ shownLabel }` : lookingBack ? `From ${ shownLabel }` : current ? 'For review' : 'Reading…' }}</h3>
         <div
           v-if="!evidence.length"
           class="workspace-rail__came-back-empty"
