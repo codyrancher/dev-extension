@@ -34,7 +34,7 @@ import StageSteps from './StageSteps.vue';
 import CodeView from './code/CodeView.vue';
 import { fromRailRows } from './code/rows';
 import {
-  readStatusNow, knownStatus, provisionalStatus, agentLabel, displayTone, setManualStage, clearManualStage, isManual, workspaceTitle, markSeen
+  readStatusNow, knownStatus, provisionalStatus, agentLabel, displayTone, setManualStage, clearManualStage, isManual, workspaceTitle, markSeen, noteRepo
 } from '../workspace-status';
 import {
   stepsFor, gatherEvidence, forgetBranch, ago, commitFiles, combinedFiles, contextRows, skillsFor, skillPrompt, skillTemplate, promptVars, expandPrompt, ACTION_TEMPLATES
@@ -823,6 +823,11 @@ export default {
       this.loadConversations();
       this.refreshLive();
     },
+
+    /** A workspace whose record arrives with its repository later still reads from the right one. */
+    'workspace.repo'(repo) {
+      noteRepo(this.workspace.name, repo);
+    },
   },
 
   mounted() {
@@ -964,6 +969,9 @@ export default {
     displayTone,
 
     async load() {
+      // The repository first: every read below asks repoOf, and on a page loaded straight onto
+      // this workspace the sidebar has not told it anything yet, so it was rancher/dashboard.
+      noteRepo(this.workspace.name, this.workspace.repo);
       // What the sidebar last read is drawn now, or what the name alone says - the kind, the
       // steps, the links - and the fresh read lands behind it. The page is never blank for
       // GitHub's sake.
@@ -2190,7 +2198,7 @@ export default {
         return;
       }
       this.combined = { ...this.combined, [key]: 'reading' };
-      const files = await combinedFiles(item.pr, item.items.map((c) => c.sha)).catch(() => []);
+      const files = await combinedFiles(item.pr, item.items.map((c) => c.sha), this.repo).catch(() => []);
 
       this.combined = { ...this.combined, [key]: files.length ? files : 'none' };
     },
@@ -3100,14 +3108,14 @@ export default {
       const pr = this.status?.pr;
 
       if (pr) {
-        forgetPrDetail(pr);
+        forgetPrDetail(pr, this.repo);
       }
       await this.refreshStatus(true);
       await this.refreshEvidence();
       clearTimeout(this.settleTimer);
       this.settleTimer = setTimeout(() => {
         if (pr) {
-          forgetPrDetail(pr);
+          forgetPrDetail(pr, this.repo);
         }
         this.refreshStatus(true);
       }, 6000);
