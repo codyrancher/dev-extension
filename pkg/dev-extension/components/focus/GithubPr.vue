@@ -29,9 +29,12 @@ const props = withDefaults(defineProps<{
    * which box, counted in the order they are drawn, which is the order they are written in.
    */
   live?: boolean;
-  /** The box being written, drawn as waiting; -1 for none. */
-  ticking?: number;
-}>(), { live: false, ticking: -1 });
+  /**
+   * The boxes still being written, drawn as waiting. Every other box stays pressable: they were
+   * all disabled while one was written, so a second press in that time did nothing at all.
+   */
+  ticking?: number[];
+}>(), { live: false, ticking: () => [] });
 
 const emit = defineEmits<{ (e: 'tick', n: number): void }>();
 
@@ -52,8 +55,8 @@ function liven(): void {
     return;
   }
   boxes().forEach((box, n) => {
-    box.disabled = props.ticking >= 0;
-    box.classList.toggle('gh__box--waiting', n === props.ticking);
+    box.disabled = false;
+    box.classList.toggle('gh__box--waiting', props.ticking.includes(n));
   });
 }
 
@@ -63,9 +66,9 @@ function onBodyClick(event: MouseEvent): void {
   if (!props.live || !box) {
     return;
   }
-  // Drawn as it was until GitHub has agreed: a tick that undoes itself a second later is worse
-  // than one that waits for the write.
-  box.checked = !box.checked;
+  // The tick stays as the browser drew it: the host changes the description at once and writes it
+  // behind, and puts the box back only if GitHub refuses (PrSheet). Holding the box until GitHub
+  // had agreed is what made a tick take seconds to show.
   emit('tick', boxes().indexOf(box));
 }
 
@@ -272,7 +275,7 @@ const blocked = computed(() => {
 }
 
 .gh__body--live :deep(input[type="checkbox"]) { cursor: pointer; }
-.gh__body--live :deep(.gh__box--waiting) { opacity: 0.45; cursor: progress; }
+.gh__body--live :deep(.gh__box--waiting) { opacity: 0.6; }
 
 .gh__none {
   margin: 0;

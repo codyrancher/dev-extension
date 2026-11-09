@@ -21,9 +21,9 @@ import GithubPr from './GithubPr.vue';
 import AppButton from './AppButton.vue';
 import { readPrSummary } from '../../focus-artifacts';
 import type { PrSummary } from '../../focus-artifacts';
-import { describePr, githubLogin } from '../../github';
-import { reviewWithBody } from '../../reviews';
-import { toggleTask } from '../../pr-body.mjs';
+import { describePr, githubLogin, prBodyNow } from '../../github';
+import { reviewWithBody, amendPrBody } from '../../reviews';
+import { setTask, taskDone } from '../../pr-body.mjs';
 
 const props = defineProps<{ pr: number; repo: string }>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>();
@@ -32,7 +32,7 @@ const summary = ref<PrSummary | null>(null);
 const loading = ref(true);
 const error = ref('');
 const login = ref('');
-const ticking = ref(-1);
+const ticking = ref<number[]>([]);
 const review = ref('');
 const posting = ref('');
 const posted = ref('');
@@ -61,26 +61,46 @@ onMounted(async() => {
 /** Yours, when the login is known; until then the review offers the one verdict always allowed. */
 const mine = computed(() => !login.value || summary.value?.author === login.value);
 
-async function tick(n: number): Promise<void> {
-  if (ticking.value >= 0 || n < 0) {
+/*
+ * A box, ticked on the press and written behind it.
+ *
+ * It used to wait for three round trips before the box moved - a fresh read of the whole pull
+ * request, the write, and another whole read - and every box was disabled meanwhile, so a second
+ * press went nowhere. Now the description changes here at once, and the writes go one after
+ * another, each set against the description as GitHub has it at that moment (`prBodyNow`, one
+ * call) and as a state rather than a flip (`setTask`), so a box somebody else ticked in between
+ * stays ticked. A refused write puts its box back and says so.
+ */
+let writes: Promise<void> = Promise.resolve();
+
+function tick(n: number): void {
+  const now = summary.value;
+  const done = now ? taskDone(now.body, n) : null;
+
+  if (!now || done === null) {
     return;
   }
-  ticking.value = n;
   error.value = '';
-  try {
-    const now = await readPrSummary(props.pr, props.repo, true);
+  summary.value = { ...now, body: setTask(now.body, n, !done) };
+  ticking.value = [...ticking.value, n];
+  writes = writes.then(async() => {
+    try {
+      const body = setTask(await prBodyNow(props.repo, props.pr), n, !done);
 
-    if (!now) {
-      throw new Error('the pull request could not be read');
+      await describePr(props.repo, props.pr, { body });
+      amendPrBody(props.pr, body, props.repo);
+    } catch (e) {
+      if (summary.value) {
+        summary.value = { ...summary.value, body: setTask(summary.value.body, n, done) };
+      }
+      error.value = `The box was not ${ done ? 'unticked' : 'ticked' }: ${ (e as Error)?.message || e }`;
+    } finally {
+      ticking.value = ticking.value.filter((_, i) => i !== ticking.value.indexOf(n));
+      if (!ticking.value.length) {
+        emit('changed');
+      }
     }
-    await describePr(props.repo, props.pr, { body: toggleTask(now.body, n) });
-    await load(true);
-    emit('changed');
-  } catch (e) {
-    error.value = `The box was not ticked: ${ (e as Error)?.message || e }`;
-  } finally {
-    ticking.value = -1;
-  }
+  });
 }
 
 async function send(event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES'): Promise<void> {

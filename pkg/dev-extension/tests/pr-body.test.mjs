@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  taskPositions, toggleTask, numberTaskBoxes
+  taskPositions, toggleTask, numberTaskBoxes, setTask, taskDone
 } from '../pr-body.mjs';
 
 const BODY = [
@@ -91,4 +91,22 @@ test('numbering leaves other inputs and other html alone', () => {
 
   assert.match(html, /<input type="text">/);
   assert.equal((html.match(/data-task=/g) || []).length, 1);
+});
+
+test('a press is written as a state, so a box ticked elsewhere in between stays ticked', () => {
+  // Box 1 is "Docs updated", unticked here; somebody else ticks it before this press is written.
+  const elsewhere = toggleTask(BODY, 1);
+
+  assert.equal(taskDone(BODY, 1), false);
+  assert.equal(taskDone(elsewhere, 1), true);
+  // Flipping would have unticked it; setting it leaves it as both of them meant.
+  assert.equal(taskDone(toggleTask(elsewhere, 1), 1), false);
+  assert.equal(setTask(elsewhere, 1, true), elsewhere);
+  assert.equal(taskDone(setTask(BODY, 1, true), 1), true);
+  assert.equal(taskDone(setTask(BODY, 0, false), 0), false);
+});
+
+test('setting a box that is not there changes nothing', () => {
+  assert.equal(setTask(BODY, 99, true), BODY);
+  assert.equal(taskDone(BODY, 99), null);
 });

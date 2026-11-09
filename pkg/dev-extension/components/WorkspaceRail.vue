@@ -41,7 +41,7 @@ import {
 } from '../workspace-rail';
 import { prFile, openConversation } from '../reviews';
 import { stageAction, sayInWorkspace } from '../stage-actions';
-import { toggleTask } from '../pr-body.mjs';
+import { setTask } from '../pr-body.mjs';
 import { isProjectConversationId } from '../conversation-id.mjs';
 // Which conversation an action's prompt goes to, and what counts as a discussion rather than one
 // of the workspace's own. Pure and tested, because this has been wrong three times and each time
@@ -57,13 +57,15 @@ import { watchPopouts } from '../md-popout.mjs';
 import { isLte } from '../config/constants';
 import { openDiscussions, rememberDiscussion as rememberOpenDiscussion, forgetDiscussion } from '../recent';
 import {
-  startIssueFix, startPrReview, startJiraTriage, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers,
+  startIssueFix, startPrReview, startJiraTriage, approvePr, mergePr, attachToPr, submitReview, updateComment, deleteComment, forgetPrDetail, amendPrComment, amendPrReviewers, amendPrBody,
   replyToComment, sendReplyDraft, discardReplyDraft, updateReplyDraft, commentOnPr, quoted, commentsRevision, githubBrowserSession, editReviewComment, deleteReviewComment, amendPrReviewComment, DEFAULT_REPO
 } from '../reviews';
 import {
   readSkill, saveSkill, readPrompts, savePromptTemplate, resetPromptTemplate
 } from '../skills';
-import { markReadyForReview, describePr, setIssueStatus } from '../github';
+import {
+  markReadyForReview, describePr, setIssueStatus, prBodyNow
+} from '../github';
 import { TRIAGE_ACTIONS, JIRA_BASE } from '../jira';
 import { TRIAGE_MOVES, jiraStageOf, actionForStatus } from '../jira-steps.mjs';
 import { movedNote } from '../review-anchors.mjs';
@@ -223,7 +225,8 @@ export default {
       replySending: false,
       readying:      false,
       /** A box being written back, by its index, so it cannot be pressed twice. */
-      tickingTask:   -1,
+      // The task-box writes, one after another: see onBodyClick.
+      taskWrites:    null,
       /** The stage the column currently shows, so a refresh of it is not allowed to shrink it. */
       evidenceStage: '',
       /** The same for the status: one read at a time, and an older one landing cannot regress the stage. */
@@ -990,25 +993,42 @@ export default {
 
         return;
       }
-      // The browser has already drawn the tick. The write decides whether it stays, so the box
-      // is put back where it was until GitHub has agreed - a box that unticks itself a second
-      // later is worse than one that waits.
+      /*
+       * The tick the browser has drawn is the one meant, and it stays.
+       *
+       * This put the box back, wrote, and then re-read the whole column - the report, the branch,
+       * the recordings and the pull request - before the box could move; and the pull request was
+       * answered from a copy held for twenty-five seconds, taken before the write, so the box came
+       * back unticked and stayed so until that copy aged out. A press made meanwhile was dropped.
+       *
+       * Now the description changes here and in the held copy at once (`amendPrBody`, so a refresh
+       * draws it ticked too), and the writes go one after another behind it, each against the
+       * description as GitHub has it at that moment and as a state, not a flip (`setTask`): an edit
+       * made elsewhere is not put back, and a box somebody else ticked in between stays ticked. A
+       * refused write puts its box back and says so.
+       */
       const n = Number(box.getAttribute('data-task'));
+      const want = !!box.checked;
+      const settle = (body) => {
+        item.taskBody = body;
+        item.text = body;
+        amendPrBody(item.pr, body, item.repo);
+      };
 
-      box.checked = !box.checked;
-      if (this.tickingTask >= 0) {
-        return;
-      }
-      this.tickingTask = n;
+      settle(setTask(item.taskBody, n, want));
+      box.setAttribute('aria-busy', 'true');
       this.reviewerError = '';
-      try {
-        await describePr(item.repo, item.pr, { body: toggleTask(item.taskBody, n) });
-        await this.refreshEvidence();
-      } catch (e) {
-        this.reviewerError = `The box could not be ticked: ${ e.message || e }`;
-      } finally {
-        this.tickingTask = -1;
-      }
+      this.taskWrites = (this.taskWrites || Promise.resolve()).then(async() => {
+        try {
+          await describePr(item.repo, item.pr, { body: setTask(await prBodyNow(item.repo, item.pr), n, want) });
+        } catch (e) {
+          settle(setTask(item.taskBody, n, !want));
+          box.checked = !want;
+          this.reviewerError = `The box could not be ${ want ? 'ticked' : 'unticked' }: ${ e.message || e }`;
+        } finally {
+          box.removeAttribute('aria-busy');
+        }
+      });
     },
 
     /**
@@ -1086,9 +1106,14 @@ export default {
      * way to get it, and that is the commits, the diff and every comment thread for a one-field
      * change - which is why `amendPrReviewers` exists; the next real read replaces it with
      * GitHub's own answer. `refreshEvidence` then rebuilds the column from the amended copy.
+     *
+     * And the block itself is changed first, rather than when that rebuild lands: the rebuild
+     * re-reads the report, the branch and the recordings too, and draws only once enough of them
+     * are in, so the list waited seconds on reads that have nothing to do with it.
      */
     async reviewersChanged(item, asked) {
       this.reviewerError = '';
+      item.asked = asked;
       amendPrReviewers(item.pr, asked, item.repo);
       await this.refreshEvidence();
     },
@@ -6229,9 +6254,19 @@ export default {
   gap:         var(--dev-space-3);
 }
 
-/* A description whose boxes can be pressed says so by letting the pointer change over them. */
-.workspace-rail__md--live input[type="checkbox"] {
+/*
+ * A description whose boxes can be pressed says so by letting the pointer change over them.
+ *
+ * `:deep`, because the boxes are the description's own HTML (v-html) and carry no scope attribute:
+ * written plain, this was compiled to a selector that matched none of them.
+ */
+.workspace-rail__md--live :deep(input[type="checkbox"]) {
   cursor: pointer;
+}
+
+/* A box whose write is still on its way: drawn as pressed, a little faint until GitHub has it. */
+.workspace-rail__md--live :deep(input[type="checkbox"][aria-busy="true"]) {
+  opacity: 0.6;
 }
 
 /*

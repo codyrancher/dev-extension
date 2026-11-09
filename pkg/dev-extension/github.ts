@@ -1054,7 +1054,7 @@ export async function linkedPullRequest(repo: string, issue: number): Promise<nu
  * Straight to api.github.com with the person's own token, the way the rest of this file reaches
  * GitHub: it answers with `access-control-allow-origin: *`, so a browser can.
  */
-async function rest(method: string, path: string, body?: unknown): Promise<Json> {
+async function rest(method: string, path: string, body?: unknown, cache?: RequestCache): Promise<Json> {
   const token = await githubToken();
 
   if (!token) {
@@ -1068,6 +1068,7 @@ async function rest(method: string, path: string, body?: unknown): Promise<Json>
       ...(body ? { 'content-type': 'application/json' } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
+    ...(cache ? { cache } : {}),
   });
 
   if (!response.ok) {
@@ -1233,6 +1234,20 @@ export async function removeReviewers(repo: string, pr: number, logins: string[]
 /** Say what it does, after the fact. The title and the description, either or both. */
 export async function describePr(repo: string, pr: number, changes: { title?: string; body?: string }): Promise<void> {
   await rest('PATCH', `/repos/${ repo }/pulls/${ pr }`, changes);
+}
+
+/**
+ * A pull request's description as GitHub has it this moment.
+ *
+ * What a ticked box is written against, so an edit made elsewhere since the page read it - an agent
+ * working through the checklist, say - is not put back. One call, where the whole detail is half a
+ * dozen; and `no-cache`, because GitHub marks the answer good for sixty seconds and the browser
+ * would otherwise hand back its own copy from before the last write.
+ */
+export async function prBodyNow(repo: string, pr: number): Promise<string> {
+  const pull = await rest('GET', `/repos/${ repo }/pulls/${ pr }`, undefined, 'no-cache');
+
+  return String(pull?.body || '');
 }
 
 let loginSoon: Promise<string> | null = null;

@@ -245,6 +245,18 @@ export function amendPrReviewers(num: number, reviewers: string[], repo = DEFAUL
   }, num, repo);
 }
 
+/**
+ * The description, in the cached detail, as it was just written.
+ *
+ * For a ticked box, for the reason the two above exist: the detail is held for twenty-five seconds,
+ * so the re-read after a tick was answered from the copy taken before it, and the box was drawn
+ * unticked again until the copy aged out - a tick that took up to half a minute to show. The next
+ * real read replaces this with GitHub's own.
+ */
+export function amendPrBody(num: number, body: string, repo = DEFAULT_REPO): boolean {
+  return prDetail.amend((detail: Json) => (detail?.meta ? { ...detail, meta: { ...detail.meta, body } } : undefined), num, repo);
+}
+
 export function forgetPrDetail(num: number, repo = DEFAULT_REPO): void {
   prDetail.forget(num, repo);
 }

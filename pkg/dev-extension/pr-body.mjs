@@ -81,6 +81,38 @@ export function toggleTask(body, n) {
 }
 
 /**
+ * The Nth box set to a state, rather than flipped.
+ *
+ * What a press is written as, because the description it is written into is read fresh at the
+ * moment of writing and may not be the one the press was made on: somebody else - an agent
+ * working the checklist - may have ticked the same box in between, and flipping it then would
+ * untick what both of them meant ticked. Unchanged if there is no Nth box, or it is already so.
+ *
+ * @param {string} body
+ * @param {number} n
+ * @param {boolean} done
+ * @returns {string}
+ */
+export function setTask(body, n, done) {
+  const box = taskPositions(body)[n];
+
+  return box && box.done !== !!done ? toggleTask(body, n) : String(body || '');
+}
+
+/**
+ * Whether the Nth box is ticked, or null when there is no Nth box.
+ *
+ * @param {string} body
+ * @param {number} n
+ * @returns {boolean|null}
+ */
+export function taskDone(body, n) {
+  const box = taskPositions(body)[n];
+
+  return box ? !!box.done : null;
+}
+
+/**
  * The rendered task boxes, numbered and live.
  *
  * A markdown renderer writes `<input type="checkbox" disabled>` for a task item. They are
