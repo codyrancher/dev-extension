@@ -794,7 +794,7 @@ export function fixPrompt(num: number, repo = DEFAULT_REPO): string {
  * Only when it is not the default, so an ordinary dashboard workspace's values stay exactly as
  * they were rather than gaining a key that says what omission already said.
  */
-async function ensureWorkspace(store: Store, name: string, title = '', repo = DEFAULT_REPO): Promise<boolean> {
+export async function ensureWorkspace(store: Store, name: string, title = '', repo = DEFAULT_REPO): Promise<boolean> {
   const existing = (await listAllWorkspaces().catch(() => [])).some((workspace) => workspace.name === name);
 
   if (!existing) {

@@ -25,10 +25,10 @@ import {
 import {
   startPrReview, startIssueFix, startAlertFix, startDependabotReview, startCiTriage, startJiraTriage, mergePr, approveAndMerge,
   rerunFailedJobs, dependabotData, dependabotReviews, refreshDependabotReview, closeDependabotReview, listConversations,
-  DEFAULT_REPO
+  ensureWorkspace, DEFAULT_REPO
 } from '../reviews';
 import {
-  listAllWorkspaces, createWorkspace
+  listAllWorkspaces
 } from '../api';
 import { ago as agoOf } from '../chat-state.mjs';
 import { listApps } from '../apps';
@@ -46,7 +46,6 @@ import {
 } from '../issue-table';
 import { priorityQueue } from '../priority';
 import { workspaceStatuses, readStatusNow } from '../workspace-status';
-import { defaultRancherValues } from '../ranchers';
 import { readPrefs, shownApps } from '../prefs';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, SETTINGS_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE, DEFAULT_APP, LTE_APP, lteName, isLte
@@ -1019,13 +1018,18 @@ export default {
      * Review and Start fix, it queues no conversation - it is just the environment, for when you
      * want to work in it yourself. Asks which Rancher to run on with the default app, the same as
      * the two actions that do open a conversation.
+     *
+     * `row` is the pull request or issue the button is on, and the workspace clones its
+     * repository, through the same ensureWorkspace Review and Start fix use. It was made with the
+     * Rancher values alone, so a row from rancher/security-ui-exts got a rancher/dashboard
+     * checkout.
      */
-    async startWorkspace(name, done) {
+    async startWorkspace(name, row, done) {
       this.error = '';
 
       try {
         if (!this.workspaces.includes(name)) {
-          await createWorkspace(this.$store, name, this.appFor(name), undefined, await defaultRancherValues(this.$store));
+          await ensureWorkspace(this.$store, name, row.title || '', row.repo || this.repo);
         }
 
         this.started(name, 'Workspace ready');
@@ -1579,7 +1583,7 @@ export default {
                 waiting-label="Starting"
                 success-label="Started"
                 size="sm"
-                @click="(done) => startWorkspace(workspaceName(row), done)"
+                @click="(done) => startWorkspace(workspaceName(row), row, done)"
               />
             </template>
             <template #cell:actions="{ row }">
@@ -1701,7 +1705,7 @@ export default {
                 waiting-label="Starting"
                 success-label="Started"
                 size="sm"
-                @click="(done) => startWorkspace(workspaceName(row), done)"
+                @click="(done) => startWorkspace(workspaceName(row), row, done)"
               />
             </template>
             <!--
@@ -1885,7 +1889,7 @@ export default {
                 waiting-label="Starting"
                 success-label="Started"
                 size="sm"
-                @click="(done) => startWorkspace('issue-' + row.number, done)"
+                @click="(done) => startWorkspace('issue-' + row.number, row, done)"
               />
             </template>
             <template #cell:actions="{ row }">
@@ -2058,7 +2062,7 @@ export default {
             waiting-label="Starting"
             success-label="Started"
             size="sm"
-            @click="(done) => startWorkspace(row, done)"
+            @click="(done) => startWorkspace(nameFor('issue-' + row.number), row, done)"
           />
         </template>
 
