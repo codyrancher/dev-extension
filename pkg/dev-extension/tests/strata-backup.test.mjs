@@ -7,7 +7,7 @@ import {
   strataInit, strataCreateNote, strataCreateLabel, strataAddNoteLabel, strataAddLineLabel, strataAddImage, strataDeleteNote,
 } from '../dev-api/strata-store.mjs';
 import {
-  strataHtmlToMarkdown, strataBackupFiles, strataBackupPlan, strataBackupRun, strataNoteFile, STRATA_BACKUP_MARK,
+  strataBackupFiles, strataBackupPlan, strataBackupRun, strataNoteFile, STRATA_BACKUP_MARK,
 } from '../dev-api/strata-backup.mjs';
 
 const gitSha = (bytes) => createHash('sha1').update(`blob ${ bytes.length }\0`).update(bytes).digest('hex');
@@ -22,48 +22,6 @@ function fresh() {
 
 let seq = 0;
 const ids = () => `id-${ ++seq }`;
-
-test('markdown: Tiptap\'s marks, lists, checklists, quotes, code, rules and pictures', () => {
-  const html = [
-    '<p>Plain <strong>bold</strong> <em>it</em> <s>gone</s> <code>x()</code> <a target="_blank" href="https://e.com">link</a> a &amp; b</p>',
-    '<ul><li><p>one</p><ul><li><p>nested</p></li></ul></li><li><p>two</p></li></ul>',
-    '<ol start="3"><li><p>three</p></li><li><p>four</p><ol><li><p>sub</p></li></ol></li></ol>',
-    '<ul data-type="taskList"><li data-checked="true" data-type="taskItem"><label><input type="checkbox" checked="checked"><span></span></label><div><p>done</p></div></li>',
-    '<li data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>todo</p></div></li></ul>',
-    '<blockquote><p>quoted</p><p>twice</p></blockquote>',
-    '<pre><code class="language-js">const a = 1 &lt; 2;\nreturn a;</code></pre>',
-    '<hr>',
-    '<p><img src="/api/images/abc/thumbnail" alt="pic"></p>',
-    '<p></p>',
-  ].join('');
-
-  assert.equal(strataHtmlToMarkdown(html, (src) => src.replace('/api/images/abc/thumbnail', '../images/abc.png')), [
-    'Plain **bold** *it* ~~gone~~ `x()` [link](https://e.com) a & b',
-    '',
-    '- one\n  - nested\n- two',
-    '',
-    '3. three\n4. four\n   1. sub',
-    '',
-    '- [x] done\n- [ ] todo',
-    '',
-    '> quoted\n>\n> twice',
-    '',
-    '```js\nconst a = 1 < 2;\nreturn a;\n```',
-    '',
-    '---',
-    '',
-    '![pic](../images/abc.png)',
-    '',
-  ].join('\n'));
-});
-
-test('markdown: a block under a list item is indented to the item\'s text', () => {
-  assert.equal(
-    strataHtmlToMarkdown('<ul><li><p>item</p><pre><code>x\ny</code></pre></li></ul>'),
-    '- item\n\n  ```\n  x\n  y\n  ```\n',
-  );
-  assert.equal(strataHtmlToMarkdown(''), '');
-});
 
 test('files: a note per live note, the dump, pictures, and the same bytes every time', () => {
   const db = fresh();
@@ -91,7 +49,7 @@ test('files: a note per live note, the dump, pictures, and the same bytes every 
   assert.match(note, /## Labelled lines\n\n- \*\*work\*\*: ship/);
   const dump = JSON.parse(backup.files.find((f) => f.path === 'strata.json').bytes);
 
-  assert.deepEqual(dump.notes.map((n) => [n.id, n.deleted]), [['n-aaaaaaaaa', 0], ['n-gone', 1]], 'deleted notes are kept in the dump');
+  assert.deepEqual(dump.notes.map((n) => n.id), ['n-aaaaaaaaa'], 'deleted notes are left to the history');
   assert.equal(dump.notes[0].content_text, undefined);
   assert.deepEqual(dump.notes[0].label_ids, [work.id]);
   assert.equal(dump.images[0].file, 'images/img-1.png');

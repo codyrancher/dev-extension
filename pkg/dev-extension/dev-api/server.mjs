@@ -50,6 +50,7 @@ import {
 import {
   strataBackupFiles, strataBackupRun, STRATA_BACKUP_EVERY_MS, STRATA_BACKUP_RETRY_MS,
 } from './strata-backup.mjs';
+import { strataHtmlToMarkdown, strataMarkdownToHtml, strataNoteLines } from './strata-markdown.mjs';
 import { searchCql, searchLimit, searchResult, pageAnswer } from './confluence.mjs';
 import { STAGING_CHARTS, IMAGE_REGISTRIES, RANCHER_REPO, stagingVersions, releasedVersions, imageExists, registryTags } from './rancher-images.mjs';
 
@@ -3090,23 +3091,30 @@ const OPENAPI = {
     '/strata/notes': {
       get: {
         operationId: 'strataNotes',
-        summary:     'Every Strata note that is not deleted, newest first, each with its label ids.',
+        summary:     'Every Strata note that is not deleted, newest first, each with its label ids and its content as HTML; ?format=markdown adds markdown.',
         responses:   { 200: { description: '[note]' } },
       },
       post: {
         operationId: 'strataCreateNote',
-        summary:     'Make a note under the id the page chose ({ id, title, content, sort_order }), or overwrite the one with that id.',
+        summary:     'Make a note: { title, markdown } (or content as the editor\'s HTML), id optional - one that exists is overwritten. Each Markdown line is a paragraph; no headings or strikethrough.',
         responses:   { 200: { description: 'note' } },
       },
     },
     '/strata/notes/{noteId}': {
-      get: { operationId: 'strataNote', summary: 'One note, deleted or not.', responses: { 200: { description: 'note' } } },
+      get: { operationId: 'strataNote', summary: 'One note, deleted or not. ?format=markdown adds its markdown.', responses: { 200: { description: 'note' } } },
       put: {
         operationId: 'strataUpdateNote',
-        summary:     'Change a note\'s title, content (HTML), sort_order, pinned or pin_order.',
+        summary:     'Change a note\'s title, content (HTML) or markdown (replaces the whole text), sort_order, pinned or pin_order.',
         responses:   { 200: { description: 'note' } },
       },
       delete: { operationId: 'strataDeleteNote', summary: 'Delete a note; it keeps its labels and lines for a restore.', responses: { 200: { description: '{ id, deleted }' } } },
+    },
+    '/strata/notes/{noteId}/lines': {
+      get: {
+        operationId: 'strataNoteLines',
+        summary:     'A note\'s lines as a line label names them: line_key, line_number, text, kind (paragraph, item, task-open, task-done, quote, code), depth, and the labels on each.',
+        responses:   { 200: { description: '{ note_id, title, lines }' } },
+      },
     },
     '/strata/notes/{noteId}/restore': {
       post: { operationId: 'strataRestoreNote', summary: 'Bring a deleted note back.', responses: { 200: { description: 'note' } } },
@@ -3161,7 +3169,7 @@ const OPENAPI = {
       },
       post: {
         operationId: 'strataBackupNow',
-        summary:     'Back the notes up now: to <login>/strata (private, made if missing), committing only what changed.',
+        summary:     'Back the notes up now: to <login>/strata (private, made if missing), committing only what changed. Live notes only; the history holds the deleted ones.',
         responses:   { 200: { description: 'the same as GET, after the run' } },
       },
     },
@@ -6374,6 +6382,41 @@ function strataDb() {
 const withStrata = (fn) => async(m, url, body) => fn(await strataDb(), m, url, body);
 
 /*
+ * Notes in Markdown, for whatever is not the editor - the agents, mostly. A write may send
+ * `markdown` instead of `content` and it is turned into the editor's HTML; a read with
+ * `?format=markdown` gets each note's `markdown` beside its `content`. strata-markdown.mjs says
+ * what survives the trip.
+ */
+function strataWithMarkdown(url, notes) {
+  if (url.searchParams.get('format') !== 'markdown') {
+    return notes;
+  }
+  const add = (note) => ({ ...note, markdown: strataHtmlToMarkdown(note.content) });
+
+  return Array.isArray(notes) ? notes.map(add) : add(notes);
+}
+
+function strataFromMarkdown(body) {
+  return typeof body?.markdown === 'string' && body.content === undefined ? { ...body, content: strataMarkdownToHtml(body.markdown) } : body;
+}
+
+/** A note's lines as a label sees them: each with its `line_key`, its text, and the labels on it now. */
+function strataLinesOf(db, id) {
+  const note = strataNote(db, id);
+  const labels = new Map(strataLabels(db).map((l) => [l.id, l.name]));
+  const filed = strataLineLabels(db, id);
+
+  return {
+    note_id: id,
+    title:   note.title,
+    lines:   strataNoteLines(note.content).map((line) => ({
+      ...line,
+      labels: filed.filter((ll) => ll.line_key === line.line_key).map((ll) => ({ id: ll.id, label_id: ll.label_id, name: labels.get(ll.label_id) || '' })),
+    })),
+  };
+}
+
+/*
  * The daily backup, to a private GitHub repository: `<the token's login>/strata`, or
  * STRATA_BACKUP_REPO. What is written and how is in strata-backup.mjs; this is when, as whom, and
  * what is remembered about the last one (backup.json beside the database), which the page shows.
@@ -6501,7 +6544,9 @@ async function strataBackupTick() {
   }
   const state = strataBackupState();
   const last = Date.parse(state.checkedAt || '') || 0;
-  const wait = state.result === 'failed' ? STRATA_BACKUP_RETRY_MS : STRATA_BACKUP_EVERY_MS;
+  // Nothing to back up is looked at again every tick - it costs one local read - so the first
+  // note is backed up the day it is written rather than a day after an empty check.
+  const wait = state.result === 'empty' ? 0 : state.result === 'failed' ? STRATA_BACKUP_RETRY_MS : STRATA_BACKUP_EVERY_MS;
 
   if (Date.now() - last >= wait) {
     await strataBackupNow('scheduled');
@@ -6522,7 +6567,7 @@ async function strataBackupAnswer() {
     ...state,
     repo,
     running: !!strataBackingUp,
-    dueAt:   new Date((last || Date.now()) + (state.result === 'failed' ? STRATA_BACKUP_RETRY_MS : last ? STRATA_BACKUP_EVERY_MS : 0)).toISOString(),
+    dueAt:   new Date((last || Date.now()) + (state.result === 'failed' ? STRATA_BACKUP_RETRY_MS : last && state.result !== 'empty' ? STRATA_BACKUP_EVERY_MS : 0)).toISOString(),
   };
 }
 
@@ -7705,10 +7750,11 @@ const routes = [
   }],
 
   // Strata: the same paths and answers as Strata's own server, under /strata.
-  ['GET', /^\/strata\/notes$/, withStrata((db) => strataNotes(db))],
-  ['POST', /^\/strata\/notes$/, withStrata((db, m, url, body) => strataCreateNote(db, body))],
-  ['GET', /^\/strata\/notes\/([\w-]+)$/, withStrata((db, m) => strataNote(db, m[1]))],
-  ['PUT', /^\/strata\/notes\/([\w-]+)$/, withStrata((db, m, url, body) => strataUpdateNote(db, m[1], body))],
+  ['GET', /^\/strata\/notes$/, withStrata((db, m, url) => strataWithMarkdown(url, strataNotes(db)))],
+  ['POST', /^\/strata\/notes$/, withStrata((db, m, url, body) => strataCreateNote(db, strataFromMarkdown(body)))],
+  ['GET', /^\/strata\/notes\/([\w-]+)$/, withStrata((db, m, url) => strataWithMarkdown(url, strataNote(db, m[1])))],
+  ['PUT', /^\/strata\/notes\/([\w-]+)$/, withStrata((db, m, url, body) => strataUpdateNote(db, m[1], strataFromMarkdown(body)))],
+  ['GET', /^\/strata\/notes\/([\w-]+)\/lines$/, withStrata((db, m) => strataLinesOf(db, m[1]))],
   ['DELETE', /^\/strata\/notes\/([\w-]+)$/, withStrata((db, m) => strataDeleteNote(db, m[1]))],
   ['POST', /^\/strata\/notes\/([\w-]+)\/restore$/, withStrata((db, m) => strataRestoreNote(db, m[1]))],
   ['POST', /^\/strata\/notes\/([\w-]+)\/labels$/, withStrata((db, m, url, body) => strataAddNoteLabel(db, m[1], body.label_id))],
@@ -7729,7 +7775,7 @@ const routes = [
 
     return strataBackupAnswer();
   }],
-  ['GET', /^\/strata\/search$/, withStrata((db, m, url) => strataSearch(db, url.searchParams.get('q') || '', url.searchParams.get('labels') || ''))],
+  ['GET', /^\/strata\/search$/, withStrata((db, m, url) => strataWithMarkdown(url, strataSearch(db, url.searchParams.get('q') || '', url.searchParams.get('labels') || '')))],
 ];
 
 // ── Workspace teardown reconciler ────────────────────────────────────────────

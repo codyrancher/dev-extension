@@ -189,6 +189,44 @@ Anything else in Confluence's REST API is `$API/confluence/rest/...`, GET only. 
 there is no token means nobody has set one in Settings yet: say so rather than working around
 it. Cite the page's URL when you rely on what it says.
 
+### Strata, the person's notes
+
+The Strata page in the sidebar is a notes app: notes, labels on them, and labels on single lines
+inside them. dev-api keeps them, with no credential needed:
+
+```bash
+API=${CLAUDE_HARNESS_API:-http://dev-api.dev-system.svc.cluster.local:8080}
+curl -s "$API/strata/notes?format=markdown"                      # every live note: markdown, content (HTML), title, label_ids
+curl -s "$API/strata/notes/<id>?format=markdown"
+curl -s "$API/strata/search?q=deploy+plan&labels=work+-done&format=markdown"   # labels: + both, , either, -Name not, *none
+curl -s "$API/strata/labels"                                     # parent_id makes a tree
+curl -s "$API/strata/labels/<id>/line-labels"                    # the lines filed under a label, with note_title
+
+curl -s -X POST "$API/strata/notes" -H 'Content-Type: application/json' \
+  -d '{"title":"Release checklist","markdown":"- [ ] tag\n- [ ] notes"}'      # answers the note and its id
+curl -s -X PUT "$API/strata/notes/<id>" -H 'Content-Type: application/json' -d '{"markdown":"..."}'   # replaces the whole text
+curl -s -X POST "$API/strata/labels" -H 'Content-Type: application/json' -d '{"name":"release","color":"#60a5fa"}'
+curl -s -X POST "$API/strata/notes/<id>/labels" -H 'Content-Type: application/json' -d '{"label_id":"<label>"}'
+
+curl -s "$API/strata/notes/<id>/lines"                           # each line: line_key, line_number, text, kind, labels
+curl -s -X POST "$API/strata/notes/<id>/line-labels" -H 'Content-Type: application/json' \
+  -d '{"line_key":"p:1.0.0","label_id":"<label>","line_text":"tag","line_number":2}'
+```
+
+Notes are rich text, not Markdown, so what you send is converted. Every non-blank line becomes a
+paragraph of its own, as Enter makes one in the editor: write a line per thought, not wrapped
+prose. Checklists (`- [ ]`), nested lists, quotes, fenced code, `---`, bold, italic, code and links
+come through; headings become bold lines and strikethrough is dropped, because the editor has
+neither. A `line_key` is a position, not an id, so replacing a note's text moves the lines its
+labels point at: label lines once the text has settled, and add to a note with labelled lines
+rather than rewriting it.
+
+They are the person's own notes. Read freely; before changing or deleting a note or label you did
+not make, say what you are about to do, and never delete one to tidy up. A note's page on this
+Rancher is `/dashboard/dev/c/_/strata/note/<id>` (`?hl=<line_key>` lights a line). They are backed up
+once a day, when anything changed, to a private `<login>/strata` GitHub repository:
+`GET $API/strata/backup` says when, and `POST` to it runs one now. `$API/openapi.json` has every route.
+
 ### When there is no credential
 
 `~/.rancher/env` is missing if nobody has opened the panel since this pod was created, and the
