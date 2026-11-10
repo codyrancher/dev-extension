@@ -1,63 +1,78 @@
 <script>
-// The agents, one card each: what it does, how it is set off, what it is doing and has done.
+// The automations, one card each: what it does, what sets it off, what it is doing and has done,
+// and the events that reached it without running it - with the constraint that stopped each.
 //
-// Everything on a card is read from the agent's two ConfigMaps (agent-defs.ts) and refreshed
-// on a short poll, so a run started from another dashboard, or by the API, appears here as it
-// happens. Run starts a run now, whatever the trigger; the run's conversation is a link to the
-// workspace it is in.
+// Definitions are read from their ConfigMaps (agent-defs.ts); runs and attempts are dev-api's,
+// watched (`/automations/status`), so a run started by an event, a schedule or another dashboard
+// appears here as it happens. A run's line opens its log.
 import { Banner } from '@components/Banner';
 import AsyncButton from '@shell/components/AsyncButton';
 import DevDialog from './DevDialog.vue';
 import DevModal from './DevModal.vue';
 import AgentRunRow from './AgentRunRow.vue';
+import RunLog from './automations/RunLog.vue';
 import {
-  listAgents, listRuns, runAgent, deleteAgent, skillOf, triggersOf
+  listAgents, listRuns, runAutomation, deleteAgent, skillOf, triggersOf
 } from '../agent-defs';
 import { readSkill } from '../skills';
+import { watch } from '../events';
 import {
-  DEV_PRODUCT, BLANK_CLUSTER, AGENT_EDIT_ROUTE, DEV_API_IN_CLUSTER
+  STATUS_PATH, OUTCOME_WORDS, stamp
+} from '../automations';
+import {
+  DEV_PRODUCT, BLANK_CLUSTER, AGENT_EDIT_ROUTE, AGENTS_ROUTE, DEV_API_IN_CLUSTER
 } from '../config/constants';
 
 /** How many runs a card shows before the rest go behind its History link. */
-const INLINE_RUNS = 3;
+const INLINE_RUNS = 4;
 
-const REFRESH_MS = 10000;
+/** The definitions change by hand, so they are re-read now and then; runs are watched. */
+const DEFS_MS = 15000;
 
 export default {
   name: 'AgentCards',
 
   components: {
-    Banner, AsyncButton, DevDialog, DevModal, AgentRunRow
+    Banner, AsyncButton, DevDialog, DevModal, AgentRunRow, RunLog
   },
 
   data() {
     return {
-      agents:  [],
-      runs:    {},
-      error:   '',
-      timer:   null,
-      loaded:  false,
-      skill:   null,
-      /** The agent whose full history is open, or null. */
-      history: null,
+      agents:   [],
+      status:   { runs: {}, attempts: {} },
+      error:    '',
+      timer:    null,
+      unwatch:  null,
+      loaded:   false,
+      skill:    null,
+      /** The automation whose full history is open, and its runs, or null. */
+      history:  null,
+      /** The run whose log is open, or ''. */
+      runId:    '',
+      /** Cards whose blocked attempts are unfolded. */
+      unfolded: {},
       removing: null,
+      OUTCOME_WORDS,
     };
   },
 
   computed: {
     cards() {
       return this.agents.map((def) => {
-        const runs = [...(this.runs[def.name] || [])].reverse();
-        const running = runs.filter((r) => ['starting', 'running', 'requested'].includes(r.state));
+        const runs = this.status.runs?.[def.name] || [];
+        const running = runs.filter((r) => ['starting', 'running', 'waiting', 'requested'].includes(r.state));
+        const attempts = this.status.attempts?.[def.name] || [];
 
         return {
           def,
-          skill:   skillOf(def.prompt),
-          running: running.length,
-          runs,
-          recent:  runs.slice(0, INLINE_RUNS),
-          total:   runs.length,
-          trigger: this.triggerLabel(def),
+          kind:     def.action === 'script' ? 'script' : 'agent',
+          skill:    def.action === 'script' ? '' : skillOf(def.prompt),
+          running:  running.length,
+          recent:   runs.slice(0, INLINE_RUNS),
+          more:     runs.length > INLINE_RUNS,
+          attempts,
+          blocked:  attempts.filter((a) => a.outcome === 'blocked' || a.outcome === 'error').length,
+          triggers: this.triggerWords(def),
         };
       });
     },
@@ -72,24 +87,21 @@ export default {
   },
 
   mounted() {
-    this.timer = setInterval(() => this.refresh(), REFRESH_MS);
+    this.timer = setInterval(() => this.refresh(), DEFS_MS);
+    this.unwatch = watch(STATUS_PATH, (value) => {
+      this.status = value || { runs: {}, attempts: {} };
+    }, { every: 5000 });
   },
 
   beforeUnmount() {
     clearInterval(this.timer);
+    this.unwatch?.();
   },
 
   methods: {
     async refresh() {
       try {
-        const agents = await listAgents();
-        const runs = {};
-
-        await Promise.all(agents.map(async(def) => {
-          runs[def.name] = await listRuns(def.name).catch(() => []);
-        }));
-        this.agents = agents;
-        this.runs = runs;
+        this.agents = await listAgents();
         this.error = '';
       } catch (e) {
         this.error = e.message || String(e);
@@ -98,22 +110,27 @@ export default {
       }
     },
 
-    triggerLabel(def) {
-      const words = triggersOf(def).map((t) => {
+    /** Each trigger as a short phrase, by hand always first. */
+    triggerWords(def) {
+      const words = ['by hand'];
+
+      for (const t of triggersOf(def)) {
         if (t.type === 'cron') {
-          return `on a schedule: ${ t.cron }`;
-        }
-        if (t.type === 'api') {
-          return 'on an API call';
-        }
-        if (t.type === 'resource') {
-          return `when ${ t.resource?.type || 'a resource' } is ${ t.resource?.event === 'any' ? 'changed' : (t.resource?.event || 'changed') }`;
-        }
+          words.push(`on a schedule: ${ t.cron }${ def.tz ? ` (${ def.tz })` : ' (UTC)' }`);
+        } else if (t.type === 'api') {
+          words.push('on an API call');
+        } else if (t.type === 'resource') {
+          words.push(`when ${ t.resource?.type || 'a resource' } is ${ t.resource?.event === 'any' ? 'changed' : (t.resource?.event || 'changed') }`);
+        } else if (t.type === 'event') {
+          const names = t.event?.names?.length ? t.event.names.join(', ') : 'any event';
+          const from = t.event?.source ? ` from ${ t.event.source }` : '';
+          const n = (t.event?.condition || '').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('//')).length;
 
-        return 'by hand';
-      });
+          words.push(`on ${ names }${ from }${ n ? ` where ${ n } constraint${ n === 1 ? '' : 's' } hold` : '' }`);
+        }
+      }
 
-      return [...new Set(['by hand', ...words])].join(' · ');
+      return [...new Set(words)];
     },
 
     hasApiTrigger(def) {
@@ -124,8 +141,9 @@ export default {
       return { name: AGENT_EDIT_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, name: def.name } };
     },
 
-
-    /** The run's own conversation: what it said and did, with its artifacts. */
+    eventsTo() {
+      return { name: AGENTS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER }, hash: '#events' };
+    },
 
     apiUrl(def) {
       return `${ DEV_API_IN_CLUSTER }/agents/${ def.name }/trigger`;
@@ -133,13 +151,21 @@ export default {
 
     async run(def, done) {
       try {
-        await runAgent(this.$store, def, 'manual');
-        await this.refresh();
+        const run = await runAutomation(def.name, { trigger: 'manual' });
+
         done(true);
+        if (run?.id) {
+          this.runId = run.id;
+        }
       } catch (e) {
         this.error = e.message || String(e);
         done(false);
       }
+    },
+
+    async openHistory(card) {
+      this.history = { def: card.def, runs: null, attempts: card.attempts };
+      this.history.runs = await listRuns(card.def.name).catch(() => []);
     },
 
     remove(def) {
@@ -167,7 +193,13 @@ export default {
       this.skill = { name, text: text || `There is no skill called ${ name }; the workspace may still have one.` };
     },
 
+    firstLine(text) {
+      const line = String(text || '').split('\n').find((l) => l.trim() && !l.startsWith('#!')) || '';
 
+      return line.length > 90 ? `${ line.slice(0, 90) }…` : line;
+    },
+
+    stamp,
   },
 };
 </script>
@@ -175,20 +207,17 @@ export default {
 <template>
   <section class="agent-cards">
     <header class="agent-cards__head">
-      <div>
-        <h2 class="agent-cards__title">
-          Agents
-        </h2>
-        <p class="agent-cards__sub text-muted">
-          Conversations that start themselves, in the agents drawer: a prompt or a skill, and what sets it off.
-        </p>
-      </div>
+      <p class="agent-cards__sub text-muted">
+        An agent conversation or a script, and what sets it off: by hand, a schedule, an API call, a resource changing, or an <router-link :to="eventsTo()">
+          event
+        </router-link> - a workspace's stage moving, something happening on an issue or PR assigned to you.
+      </p>
       <router-link
         :to="newTo"
         class="btn role-primary btn-sm"
         data-testid="agents-new"
       >
-        New agent
+        New automation
       </router-link>
     </header>
 
@@ -203,7 +232,7 @@ export default {
       class="agent-cards__empty"
     >
       <p class="text-muted">
-        No agents yet. A review that runs every morning on every PR that asks for you, a fix that starts when an issue is filed, a check an API call sets off: each is one agent.
+        No automations yet. A review that starts when a PR assigned to you is pushed to, a script that posts to Slack when a workspace reaches Merged, a check every morning: each is one automation.
       </p>
     </div>
 
@@ -217,7 +246,13 @@ export default {
       >
         <header class="agent-card__head">
           <div class="agent-card__ident">
-            <span class="agent-card__name">{{ card.def.name }}</span>
+            <span class="agent-card__name">
+              {{ card.def.name }}
+              <span
+                class="agent-card__kind"
+                :class="`agent-card__kind--${ card.kind }`"
+              >{{ card.kind }}</span>
+            </span>
             <span class="agent-card__desc">{{ card.def.description || 'No description.' }}</span>
           </div>
           <span
@@ -236,8 +271,13 @@ export default {
           <div class="agent-card__fact">
             <dt>Runs</dt>
             <dd>
+              <code
+                v-if="card.kind === 'script'"
+                class="agent-card__prompt"
+                :title="card.def.script"
+              >{{ firstLine(card.def.script) || '(empty script)' }}</code>
               <button
-                v-if="card.skill"
+                v-else-if="card.skill"
                 type="button"
                 class="agent-card__skill"
                 :title="`Read the ${ card.skill } skill`"
@@ -251,9 +291,13 @@ export default {
             </dd>
           </div>
           <div class="agent-card__fact">
-            <dt>Trigger</dt>
+            <dt>When</dt>
             <dd>
-              <span class="agent-card__trigger">{{ card.trigger }}</span>
+              <span
+                v-for="w in card.triggers"
+                :key="w"
+                class="agent-card__trigger"
+              >{{ w }}</span>
               <code
                 v-if="hasApiTrigger(card.def)"
                 class="agent-card__code"
@@ -290,16 +334,14 @@ export default {
 
         <div class="agent-card__history">
           <div class="agent-card__history-head">
-            <span>History</span>
-            <span class="text-muted">{{ card.total }} run{{ card.total === 1 ? '' : 's' }}</span>
+            <span>Runs</span>
             <button
-              v-if="card.total > card.recent.length"
               type="button"
               class="agent-card__link"
               data-testid="agent-history-all"
-              @click="history = card"
+              @click="openHistory(card)"
             >
-              all {{ card.total }}
+              all runs
             </button>
           </div>
           <p
@@ -313,19 +355,53 @@ export default {
             class="agent-card__runs"
           >
             <AgentRunRow
-              v-for="run in card.recent"
-              :key="run.id"
-              :run="run"
+              v-for="r in card.recent"
+              :key="r.id"
+              :run="r"
+              @open="runId = r.id"
             />
           </ul>
+
+          <template v-if="card.attempts.length">
+            <button
+              type="button"
+              class="agent-card__attempts-head"
+              :aria-expanded="unfolded[card.def.name] ? 'true' : 'false'"
+              data-testid="agent-attempts"
+              @click="unfolded = { ...unfolded, [card.def.name]: !unfolded[card.def.name] }"
+            >
+              {{ unfolded[card.def.name] ? '▾' : '▸' }} Did not run on {{ card.attempts.length }} event{{ card.attempts.length === 1 ? '' : 's' }}<template v-if="card.blocked">
+                · {{ card.blocked }} stopped by a constraint
+              </template>
+            </button>
+            <ul
+              v-if="unfolded[card.def.name]"
+              class="agent-card__attempts"
+            >
+              <li
+                v-for="a in card.attempts.slice(0, 12)"
+                :key="a.event.id"
+                class="agent-attempt"
+                :class="`agent-attempt--${ a.outcome }`"
+              >
+                <span class="agent-attempt__when">{{ stamp(a.at) }}</span>
+                <span class="agent-attempt__event">{{ a.event.name }} · {{ a.event.subject }}</span>
+                <span class="agent-attempt__why">
+                  <strong>{{ OUTCOME_WORDS[a.outcome] || a.outcome }}</strong>
+                  <code v-if="a.condition">{{ a.condition }}</code>
+                  <template v-else>{{ a.reason }}</template>
+                </span>
+              </li>
+            </ul>
+          </template>
         </div>
       </article>
     </div>
 
     <DevDialog
       v-if="removing"
-      :title="`Delete the agent ${ removing.name }?`"
-      message="Its definition and run history go; the conversations it made stay in the drawer."
+      :title="`Delete the automation ${ removing.name }?`"
+      message="Its definition, its run history and the output of its runs go; the conversations it made stay in the drawer."
       confirm-label="Delete"
       danger
       @confirm="reallyRemove"
@@ -338,18 +414,52 @@ export default {
       @close="history = null"
     >
       <template #head>
-        <span class="text-muted agent-skill__note">{{ history.total }} run{{ history.total === 1 ? '' : 's' }}</span>
+        <span class="text-muted agent-skill__note">{{ history.runs ? `${ history.runs.length } run${ history.runs.length === 1 ? '' : 's' }` : 'reading…' }}</span>
       </template>
       <ul
         class="agent-card__runs agent-card__runs--all"
         data-testid="agent-history-modal"
       >
         <AgentRunRow
-          v-for="run in history.runs"
-          :key="run.id"
-          :run="run"
+          v-for="r in history.runs || []"
+          :key="r.id"
+          :run="r"
+          @open="runId = r.id"
         />
       </ul>
+      <div
+        v-if="history.attempts.length"
+        class="agent-card__history-attempts"
+      >
+        <span class="agent-card__history-head">Events that did not run it</span>
+        <ul class="agent-card__attempts">
+          <li
+            v-for="a in history.attempts"
+            :key="a.event.id"
+            class="agent-attempt"
+            :class="`agent-attempt--${ a.outcome }`"
+          >
+            <span class="agent-attempt__when">{{ stamp(a.at) }}</span>
+            <span class="agent-attempt__event">{{ a.event.name }} · {{ a.event.subject }}</span>
+            <span class="agent-attempt__why">
+              <strong>{{ OUTCOME_WORDS[a.outcome] || a.outcome }}</strong>
+              <code v-if="a.condition">{{ a.condition }}</code>
+              <template v-else>{{ a.reason }}</template>
+            </span>
+          </li>
+        </ul>
+      </div>
+    </DevModal>
+    <DevModal
+      v-if="runId"
+      size="wide"
+      title="Run"
+      @close="runId = ''"
+    >
+      <RunLog
+        :run-id="runId"
+        @event="$router.push(eventsTo())"
+      />
     </DevModal>
     <DevModal
       v-if="skill"
@@ -374,8 +484,7 @@ export default {
     margin-bottom:   var(--dev-space-4);
   }
 
-  &__title { margin: 0; font-size: 20px; font-weight: 600; }
-  &__sub { margin: 2px 0 0; font-size: 12px; }
+  &__sub { margin: 2px 0 0; font-size: 12px; max-width: 760px; }
 
   &__empty {
     padding:       var(--dev-space-5);
@@ -549,5 +658,58 @@ export default {
     &__facts dt { margin-top: var(--dev-space-3); }
     &__actions { flex-wrap: wrap; }
   }
+}
+
+.agent-card__kind {
+  margin-left:    6px;
+  padding:        1px 6px;
+  border-radius:  var(--r-sm);
+  font-family:    var(--body-font, sans-serif);
+  font-size:      10px;
+  font-weight:    600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  border:         1px solid var(--border);
+  color:          var(--muted);
+
+  &--agent { color: var(--dev-accent); border-color: color-mix(in srgb, var(--dev-accent) 50%, var(--border)); }
+}
+
+.agent-card__trigger { display: block; }
+
+.agent-card__attempts-head {
+  margin-top: 8px;
+  min-height: 0;
+  padding:    0;
+  border:     0;
+  background: none;
+  color:      var(--muted);
+  font-size:  12px;
+  cursor:     pointer;
+
+  &:hover { color: var(--body-text); }
+}
+
+.agent-card__attempts { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+
+.agent-card__history-attempts { padding: var(--dev-space-3) var(--dev-space-4); border-top: 1px solid var(--border); }
+
+.agent-attempt {
+  display:               grid;
+  grid-template-columns: 76px minmax(0, 1fr) minmax(0, 1.2fr);
+  gap:                   var(--dev-space-3);
+  font-size:             12px;
+  align-items:           baseline;
+
+  &__when { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  &__event { font-family: monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  &__why { color: var(--muted); overflow-wrap: anywhere; strong { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 4px; } code { color: var(--body-text); } }
+  &--blocked strong { color: var(--warning); }
+  &--error strong { color: var(--error); }
+}
+
+@media (max-width: 760px) {
+  .agent-attempt { grid-template-columns: 1fr; gap: 0; }
 }
 </style>

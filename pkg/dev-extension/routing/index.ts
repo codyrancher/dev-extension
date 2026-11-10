@@ -81,14 +81,15 @@ const devRoutes: PluginRouteRecordRaw[] = [
         {
           name: SETTINGS_ROUTE, path: SETTINGS_PAGE, component: Settings, meta: devMeta
         },
+        // Automations, which was Agents: the old address still opens it.
         {
-          name: AGENTS_ROUTE, path: AGENTS_PAGE, component: Agents, meta: devMeta
+          name: AGENTS_ROUTE, path: AGENTS_PAGE, alias: 'agents', component: Agents, meta: devMeta
         },
         {
           name: SKILLS_ROUTE, path: SKILLS_PAGE, component: Skills, meta: devMeta
         },
         {
-          name: AGENT_EDIT_ROUTE, path: `${ AGENT_EDIT_PAGE }/:name?`, component: AgentEdit, meta: devMeta
+          name: AGENT_EDIT_ROUTE, path: `${ AGENT_EDIT_PAGE }/:name?`, alias: 'agents/edit/:name?', component: AgentEdit, meta: devMeta
         },
       ],
     }

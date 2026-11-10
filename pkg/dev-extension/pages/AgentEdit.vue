@@ -1,6 +1,7 @@
 <script>
-// Making or changing an agent: what it runs, and what sets it off. Every run is a conversation
-// in the agents drawer, here on this cluster (agent-defs.ts, drive).
+// Making or changing an automation: what it does - an agent conversation or a script - and what
+// sets it off. dev-api runs it (agent-defs.ts says how); constraints on an event trigger are tried
+// here, in the browser, against the events already recorded, before anything is saved.
 import { Banner } from '@components/Banner';
 import AsyncButton from '@shell/components/AsyncButton';
 import LabeledSelect from '@shell/components/form/LabeledSelect';
@@ -13,9 +14,17 @@ import {
 } from '../agent-defs';
 import { devFetch, clusterBase } from '../api';
 import { listSkills, readSkill } from '../skills';
+import { EVENT_NAMES } from '../dev-api/automation-events.mjs';
+import { conditionLines, SCRIPT_TIMEOUT_S, SCRIPT_TIMEOUT_MAX_S } from '../dev-api/automation-rules.mjs';
+import { recentEvents, tryDefinition, OUTCOME_WORDS, stamp } from '../automations';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, AGENTS_ROUTE, DEV_API_IN_CLUSTER
 } from '../config/constants';
+
+const SCRIPT_EXAMPLE = `# The event is on stdin as JSON, and in $EVENT_FILE.
+# $EVENT_NAME, $EVENT_SUBJECT, $EVENT_URL, $EVENT_WORKSPACE and $EVENT_ACTOR are set.
+echo "$EVENT_NAME on $EVENT_SUBJECT"
+jq -r '.payload.comment.body // empty' < "$EVENT_FILE"`;
 
 const EVENTS = [
   { value: 'any', label: 'any change' }, { value: 'created', label: 'created' }, { value: 'updated', label: 'updated' }, { value: 'deleted', label: 'deleted' },
@@ -35,11 +44,25 @@ export default {
       def: {
         name:        '',
         description: '',
+        action:      'agent',
         prompt:      '',
+        script:      '',
+        timeoutSec:  SCRIPT_TIMEOUT_S,
         enabled:     true,
       },
       // The triggers, as a form: by hand is always there; the rest are ticked on.
-      on:       { cron: false, api: false, resource: false },
+      on:       {
+        cron: false, api: false, resource: false, event: false
+      },
+      /** The event trigger: names as typed, comma-separated, and the constraints. */
+      evt:      { source: 'github', names: 'pr.*', condition: '!p.self' },
+      /** What trying the constraints against recorded events found, or null. */
+      triedEvents: null,
+      trying:   false,
+      OUTCOME_WORDS,
+      SCRIPT_EXAMPLE,
+      SCRIPT_TIMEOUT_MAX_S,
+      tz:       Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       cron:     '0 9 * * 1-5',
       resource: {
         type: '', namespace: '', event: 'any', filter: '', edge: true,
@@ -98,8 +121,14 @@ export default {
       if (!validName(this.def.name)) {
         out.push('The name is lowercase letters, digits and dashes.');
       }
-      if (!this.def.prompt.trim()) {
+      if (this.def.action === 'script' && !this.def.script.trim()) {
+        out.push('Write the script it runs.');
+      }
+      if (this.def.action !== 'script' && !this.def.prompt.trim()) {
         out.push('Say what the conversation should open with.');
+      }
+      if (this.on.event && this.eventProblem) {
+        out.push(this.eventProblem);
       }
       if (this.on.cron && !cronValid(this.cron)) {
         out.push('The schedule is five cron fields: minute hour day month weekday.');
@@ -118,8 +147,64 @@ export default {
       return filterError(this.resource.filter);
     },
 
+    /** The event names as a list, from what was typed. */
+    eventNames() {
+      return this.evt.names.split(/[,\s]+/).map((n) => n.trim()).filter(Boolean);
+    },
+
+    /** The names this source has, for the chips under the input. */
+    knownNames() {
+      return this.evt.source ? (EVENT_NAMES[this.evt.source] || []) : [...EVENT_NAMES.github, ...EVENT_NAMES.workspace];
+    },
+
+    /** A constraint that will not even parse, said before it is saved. */
+    eventProblem() {
+      for (const line of conditionLines(this.evt.condition)) {
+        const problem = filterError(line);
+
+        if (problem) {
+          return `The constraint ${ line } does not parse: ${ problem }`;
+        }
+      }
+
+      return '';
+    },
+
+    /** The definition as the form has it now, for trying and for saving. */
+    draft() {
+      const triggers = [{ type: 'manual' }];
+
+      if (this.on.cron) {
+        triggers.push({ type: 'cron', cron: this.cron.trim() });
+      }
+      if (this.on.api) {
+        triggers.push({ type: 'api' });
+      }
+      if (this.on.resource) {
+        triggers.push({
+          type:     'resource',
+          resource: {
+            ...this.resource, type: this.resource.type.trim(), namespace: this.resource.namespace.trim(), filter: (this.resource.filter || '').trim(),
+          },
+        });
+      }
+      if (this.on.event) {
+        triggers.push({
+          type: 'event', event: { source: this.evt.source, names: this.eventNames, condition: this.evt.condition.trim() }
+        });
+      }
+
+      return {
+        ...JSON.parse(JSON.stringify(this.def)),
+        name:       this.def.name.trim().toLowerCase(),
+        timeoutSec: Math.max(5, Math.min(SCRIPT_TIMEOUT_MAX_S, Number(this.def.timeoutSec) || SCRIPT_TIMEOUT_S)),
+        tz:         this.tz,
+        triggers,
+      };
+    },
+
     backTo() {
-      return { name: AGENTS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } };
+      return { name: AGENTS_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER }, hash: '#automations' };
     },
   },
 
@@ -141,7 +226,13 @@ export default {
 
       if (found) {
         this.def = {
-          name: found.name, description: found.description || '', prompt: found.prompt || '', enabled: found.enabled !== false,
+          name:        found.name,
+          description: found.description || '',
+          action:      found.action === 'script' ? 'script' : 'agent',
+          prompt:      found.prompt || '',
+          script:      found.script || '',
+          timeoutSec:  found.timeoutSec || SCRIPT_TIMEOUT_S,
+          enabled:     found.enabled !== false,
         };
         for (const t of triggersOf(found)) {
           if (t.type === 'cron') {
@@ -152,6 +243,9 @@ export default {
           } else if (t.type === 'resource') {
             this.on.resource = true;
             this.resource = { ...this.resource, ...(t.resource || {}) };
+          } else if (t.type === 'event') {
+            this.on.event = true;
+            this.evt = { source: t.event?.source || '', names: (t.event?.names || []).join(', '), condition: t.event?.condition || '' };
           }
         }
         this.editing = true;
@@ -231,6 +325,39 @@ export default {
       }
     },
 
+    /** Add a known name to the list, or take it out if it is there. */
+    toggleName(name) {
+      const names = this.eventNames;
+
+      this.evt.names = (names.includes(name) ? names.filter((n) => n !== name) : [...names, name]).join(', ');
+    },
+
+    /**
+     * The trigger against what has been recorded: which events it listens to, and of those which
+     * would have run it and which a constraint would have stopped. In this browser, on the form as
+     * it stands - nothing is saved, and nothing runs.
+     */
+    async tryEvents() {
+      this.trying = true;
+      try {
+        const { events, me } = await recentEvents(300);
+        const found = tryDefinition({ ...this.draft, triggers: this.draft.triggers.filter((t) => t.type === 'event') }, events, me);
+
+        this.triedEvents = {
+          total:   events.length,
+          reached: found.length,
+          ran:     found.filter((f) => f.match.outcome === 'run').length,
+          rows:    found.slice(0, 12),
+        };
+      } catch (e) {
+        this.triedEvents = { error: e.message || String(e) };
+      } finally {
+        this.trying = false;
+      }
+    },
+
+    stamp,
+
     async save(done) {
       this.error = '';
       if (this.problems.length) {
@@ -240,25 +367,7 @@ export default {
         return;
       }
       try {
-        const triggers = [{ type: 'manual' }];
-
-        if (this.on.cron) {
-          triggers.push({ type: 'cron', cron: this.cron.trim() });
-        }
-        if (this.on.api) {
-          triggers.push({ type: 'api' });
-        }
-        if (this.on.resource) {
-          triggers.push({
-            type:     'resource',
-            resource: {
-              ...this.resource, type: this.resource.type.trim(), namespace: this.resource.namespace.trim(), filter: (this.resource.filter || '').trim(),
-            },
-          });
-        }
-        await saveAgent({
-          ...JSON.parse(JSON.stringify(this.def)), name: this.def.name.trim().toLowerCase(), triggers,
-        });
+        await saveAgent(this.draft);
         done(true);
         this.$router.push(this.backTo);
       } catch (e) {
@@ -273,9 +382,9 @@ export default {
 <template>
   <div class="agent-edit">
     <header class="agent-edit__head">
-      <h1>{{ editing ? `Edit ${ def.name }` : 'New agent' }}</h1>
+      <h1>{{ editing ? `Edit ${ def.name }` : 'New automation' }}</h1>
       <p class="text-muted">
-        A conversation that starts itself, in the agents drawer: what it opens with, and what sets it off.
+        An agent conversation or a script that runs by itself: what it does, and what sets it off.
       </p>
     </header>
 
@@ -302,50 +411,109 @@ export default {
     </section>
 
     <section class="agent-edit__section">
-      <h3>What it runs</h3>
-      <div class="agent-edit__prompt-head">
-        <label class="agent-edit__label">Prompt - what the conversation opens with; start with <code>/</code> for a skill</label>
-        <span
-          v-if="command"
-          class="agent-edit__command"
-          :class="{ 'agent-edit__command--known': known, 'agent-edit__command--unknown': !known && !typing }"
+      <h3>What it does</h3>
+      <div
+        class="agent-edit__kinds"
+        role="radiogroup"
+        aria-label="What it does"
+      >
+        <label
+          class="agent-edit__kind"
+          :class="{ 'agent-edit__kind--on': def.action !== 'script' }"
         >
-          <a
-            v-if="known"
-            href="#"
-            :title="`Read the ${ command } skill`"
-            data-testid="agent-skill-link"
-            @click.prevent="showSkill(command)"
-          >/{{ command }}</a>
-          <template v-else-if="!typing">/{{ command }} is not a skill the agents have</template>
-        </span>
-      </div>
-      <div class="agent-edit__prompt-wrap">
-        <textarea
-          ref="prompt"
-          v-model="def.prompt"
-          class="agent-edit__prompt"
-          :class="{ 'agent-edit__prompt--skill': known }"
-          rows="6"
-          placeholder="/my-pr-full-review Review rancher/dashboard PR #<n> - harness portal context, file through $CLAUDE_HARNESS_API/my-work/pr/<n>."
-          data-testid="agent-prompt"
-          @keydown="onKey"
-        />
-        <ul
-          v-if="suggestions.length"
-          class="agent-edit__suggest"
-          data-testid="agent-suggest"
-        >
-          <li
-            v-for="(name, i) in suggestions"
-            :key="name"
-            :class="{ 'agent-edit__suggest--on': i === cursor }"
-            @mousedown.prevent="complete(name)"
+          <input
+            v-model="def.action"
+            type="radio"
+            value="agent"
+            data-testid="automation-kind-agent"
           >
-            /{{ name }}
-          </li>
-        </ul>
+          <span><strong>An agent</strong> - a conversation in the agents drawer, opened with a prompt or a skill</span>
+        </label>
+        <label
+          class="agent-edit__kind"
+          :class="{ 'agent-edit__kind--on': def.action === 'script' }"
+        >
+          <input
+            v-model="def.action"
+            type="radio"
+            value="script"
+            data-testid="automation-kind-script"
+          >
+          <span><strong>A script</strong> - run in the agent pod, with gh, git, kubectl and claude to hand</span>
+        </label>
       </div>
+
+      <template v-if="def.action === 'script'">
+        <label class="agent-edit__label">Script - bash, unless it starts with <code>#!</code>. The event is on stdin as JSON; its output is the run's log.</label>
+        <textarea
+          v-model="def.script"
+          class="agent-edit__prompt agent-edit__script"
+          rows="10"
+          spellcheck="false"
+          :placeholder="SCRIPT_EXAMPLE"
+          data-testid="automation-script"
+        />
+        <div class="agent-edit__row agent-edit__timeout">
+          <LabeledInput
+            v-model:value="def.timeoutSec"
+            type="number"
+            label="Time limit (seconds)"
+            :min="5"
+            :max="SCRIPT_TIMEOUT_MAX_S"
+          />
+          <p class="text-muted agent-edit__hint">
+            Set for it: <code>EVENT_FILE</code>, <code>EVENT_ID</code>, <code>EVENT_SOURCE</code>, <code>EVENT_NAME</code>, <code>EVENT_SUBJECT</code>, <code>EVENT_TITLE</code>, <code>EVENT_URL</code>, <code>EVENT_ACTOR</code>, <code>EVENT_WORKSPACE</code>, <code>TRIGGER</code>, <code>RUN_ID</code>, <code>RUN_DIR</code> and <code>DEV_API</code>. It runs as the pane user, from <code>/workspace/conversations</code>.
+          </p>
+        </div>
+      </template>
+      <template v-else>
+        <div class="agent-edit__prompt-head">
+          <label class="agent-edit__label">Prompt - what the conversation opens with; start with <code>/</code> for a skill</label>
+          <span
+            v-if="command"
+            class="agent-edit__command"
+            :class="{ 'agent-edit__command--known': known, 'agent-edit__command--unknown': !known && !typing }"
+          >
+            <a
+              v-if="known"
+              href="#"
+              :title="`Read the ${ command } skill`"
+              data-testid="agent-skill-link"
+              @click.prevent="showSkill(command)"
+            >/{{ command }}</a>
+            <template v-else-if="!typing">/{{ command }} is not a skill the agents have</template>
+          </span>
+        </div>
+        <div class="agent-edit__prompt-wrap">
+          <textarea
+            ref="prompt"
+            v-model="def.prompt"
+            class="agent-edit__prompt"
+            :class="{ 'agent-edit__prompt--skill': known }"
+            rows="6"
+            placeholder="/my-pr-full-review Review rancher/dashboard PR #<n> - harness portal context, file through $CLAUDE_HARNESS_API/my-work/pr/<n>."
+            data-testid="agent-prompt"
+            @keydown="onKey"
+          />
+          <ul
+            v-if="suggestions.length"
+            class="agent-edit__suggest"
+            data-testid="agent-suggest"
+          >
+            <li
+              v-for="(name, i) in suggestions"
+              :key="name"
+              :class="{ 'agent-edit__suggest--on': i === cursor }"
+              @mousedown.prevent="complete(name)"
+            >
+              /{{ name }}
+            </li>
+          </ul>
+        </div>
+        <p class="text-muted agent-edit__hint">
+          On an event, the prompt can name it: <code>{{ placeholder('event.subject') }}</code>, <code>{{ placeholder('event.title') }}</code>, <code>{{ placeholder('event.url') }}</code>, <code>{{ placeholder('payload.comment.body') }}</code> - any path into the event - and <code>{{ placeholder('event.file') }}</code> is a file holding all of it.
+        </p>
+      </template>
     </section>
 
     <section class="agent-edit__section">
@@ -355,13 +523,109 @@ export default {
       </p>
       <div class="agent-edit__trigger">
         <Checkbox
+          v-model:value="on.event"
+          label="On an event - a workspace's stage moving, or something happening on an issue or PR assigned to you"
+          data-testid="automation-on-event"
+        />
+        <template v-if="on.event">
+          <div class="agent-edit__row">
+            <LabeledSelect
+              v-model:value="evt.source"
+              :options="[{ value: 'github', label: 'GitHub' }, { value: 'workspace', label: 'Workspaces' }, { value: '', label: 'Either' }]"
+              label="From"
+              class="agent-edit__source"
+            />
+            <LabeledInput
+              v-model:value="evt.names"
+              label="Events - comma-separated, * for any part; empty for all"
+              placeholder="pr.commented, pr.reviewed, *.closed"
+              data-testid="automation-event-names"
+            />
+          </div>
+          <div class="agent-edit__names">
+            <button
+              v-for="n in knownNames"
+              :key="n"
+              type="button"
+              class="agent-edit__name"
+              :class="{ 'agent-edit__name--on': eventNames.includes(n) }"
+              @click="toggleName(n)"
+            >
+              {{ n }}
+            </button>
+          </div>
+          <label class="agent-edit__label">Constraints - one JavaScript expression per line, and every one must hold. They read <code>event</code> (<code>e</code>), its <code>payload</code> (<code>p</code>) and <code>me</code>, your GitHub login.</label>
+          <textarea
+            v-model="evt.condition"
+            class="agent-edit__filter"
+            :class="{ 'agent-edit__filter--bad': eventProblem }"
+            rows="4"
+            spellcheck="false"
+            placeholder="!p.self
+p.comment.author !== 'dependabot[bot]'
+e.workspace !== ''
+p.labels.includes('QA/manual-test')"
+            data-testid="automation-constraints"
+          />
+          <p
+            v-if="eventProblem"
+            class="agent-edit__bad"
+          >
+            {{ eventProblem }}
+          </p>
+          <div class="agent-edit__row agent-edit__try">
+            <AsyncButton
+              mode="apply"
+              action-label="Try it on recent events"
+              waiting-label="Trying"
+              success-label="Tried"
+              size="sm"
+              data-testid="automation-try"
+              @click="async (done) => { await tryEvents(); done(!(triedEvents && triedEvents.error)); }"
+            />
+            <span
+              v-if="triedEvents && triedEvents.error"
+              class="agent-edit__bad"
+            >{{ triedEvents.error }}</span>
+            <span
+              v-else-if="triedEvents"
+              class="text-muted agent-edit__hint"
+              data-testid="automation-try-result"
+            >Of the last {{ triedEvents.total }} events, {{ triedEvents.reached }} {{ triedEvents.reached === 1 ? 'is' : 'are' }} ones it listens to, and {{ triedEvents.ran }} would have run it.</span>
+          </div>
+          <ul
+            v-if="triedEvents && triedEvents.rows && triedEvents.rows.length"
+            class="agent-edit__tried"
+          >
+            <li
+              v-for="row in triedEvents.rows"
+              :key="row.event.id"
+              :class="`agent-edit__tried--${ row.match.outcome }`"
+            >
+              <span class="agent-edit__tried-when">{{ stamp(row.event.at) }}</span>
+              <code>{{ row.event.name }}</code>
+              <span class="agent-edit__tried-subject">{{ row.event.subject }}</span>
+              <span class="agent-edit__tried-why">
+                <strong>{{ OUTCOME_WORDS[row.match.outcome] || row.match.outcome }}</strong>
+                <code v-if="row.match.condition">{{ row.match.condition }}</code>
+                <template v-else-if="row.match.outcome !== 'run'">{{ row.match.reason }}</template>
+              </span>
+            </li>
+          </ul>
+          <p class="text-muted agent-edit__hint">
+            Every event it listens to is put to it as it is recorded, and the Events tab shows what happened: that it ran, or which constraint stopped it. At most three runs start from one batch of events. A muted workspace's events start nothing.
+          </p>
+        </template>
+      </div>
+      <div class="agent-edit__trigger">
+        <Checkbox
           v-model:value="on.cron"
           label="On a schedule"
         />
         <template v-if="on.cron">
           <LabeledInput
             v-model:value="cron"
-            label="Schedule (cron, five fields, this browser's local time)"
+            :label="`Schedule (cron, five fields, in ${ tz })`"
             placeholder="0 9 * * 1-5"
           />
           <div class="agent-edit__presets">
@@ -376,7 +640,7 @@ export default {
             </button>
           </div>
           <p class="text-muted agent-edit__hint">
-            The clock is a dashboard with this product open. Nothing runs while none is; a run that was due then is not made up.
+            Kept by the in-cluster API, in the zone this browser is in, so it runs whether or not a dashboard is open.
           </p>
         </template>
       </div>
@@ -388,7 +652,7 @@ export default {
         <template v-if="on.api">
           <pre class="agent-edit__code">curl -s -X POST {{ apiUrl }} -H 'Content-Type: application/json' -d '{"note":"why"}'</pre>
           <p class="text-muted agent-edit__hint">
-            Anything in the cluster can call it. The run is recorded at once and started by the next dashboard tick.
+            Anything in the cluster can call it. The run starts at once.
           </p>
         </template>
       </div>
@@ -469,7 +733,7 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
       </div>
       <Checkbox
         v-model:value="def.enabled"
-        label="Enabled - a disabled agent keeps its definition and history and starts nothing"
+        label="Enabled - a disabled automation keeps its definition and history and starts nothing"
       />
     </section>
 
@@ -628,6 +892,66 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
   &__trigger { display: flex; flex-direction: column; gap: var(--dev-space-2); padding: var(--dev-space-2) 0 var(--dev-space-3); border-top: 1px solid var(--border); }
 
   &__modal-note { font-size: 12px; font-weight: 400; }
+
+  &__kinds { display: flex; gap: var(--dev-space-3); flex-wrap: wrap; }
+
+  &__kind {
+    flex:          1 1 260px;
+    display:       flex;
+    align-items:   flex-start;
+    gap:           var(--dev-space-2);
+    margin:        0;
+    padding:       var(--dev-space-3);
+    border:        1px solid var(--border);
+    border-radius: var(--r-sm);
+    font-size:     12px;
+    cursor:        pointer;
+
+    input { margin-top: 2px; }
+    strong { font-size: 13px; }
+    &--on { border-color: var(--dev-accent); background: color-mix(in srgb, var(--dev-accent) 6%, transparent); }
+  }
+
+  &__script { min-height: 200px; }
+  &__timeout { align-items: flex-start; > :first-child { flex: 0 0 180px; } }
+  &__source { flex: 0 0 180px !important; }
+
+  &__names { display: flex; flex-wrap: wrap; gap: 4px; }
+
+  &__name {
+    min-height:    0;
+    padding:       1px 8px;
+    border:        1px solid var(--border);
+    border-radius: var(--r-md);
+    background:    transparent;
+    color:         var(--muted);
+    font-family:   monospace;
+    font-size:     11px;
+    cursor:        pointer;
+
+    &:hover { color: var(--body-text); }
+    &--on { color: var(--dev-accent); border-color: var(--dev-accent); }
+  }
+
+  &__tried {
+    list-style: none;
+    margin:     0;
+    padding:    0;
+    display:    flex;
+    flex-direction: column;
+    gap:        3px;
+    font-size:  12px;
+
+    li { display: grid; grid-template-columns: 76px auto minmax(0, 1fr) minmax(0, 1.4fr); gap: var(--dev-space-2); align-items: baseline; }
+    strong { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 4px; }
+  }
+
+  &__tried-when { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  &__tried-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-family: monospace; font-size: 11px; }
+  &__tried-why { color: var(--muted); overflow-wrap: anywhere; code { color: var(--body-text); } }
+  &__tried--run strong { color: var(--success); }
+  &__tried--blocked strong { color: var(--warning); }
+  &__tried--error strong { color: var(--error); }
   &__modal-body { flex: 1 1 auto; margin: 0; padding: 14px 18px; border: 0; border-radius: 0; background: transparent; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 }
 
@@ -639,6 +963,7 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
     &__actions { flex-direction: column-reverse; }
     &__actions > * { width: 100%; }
     &__suggest { width: 100%; min-width: 0; }
+    &__tried li { grid-template-columns: 1fr; gap: 0; }
   }
 }
 </style>

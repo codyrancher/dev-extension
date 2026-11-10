@@ -341,7 +341,7 @@ export default {
           label: 'Tools', mark: 'ToolMark', route: TOOLS_ROUTE
         },
         {
-          label: 'Agents', logo: true, route: AGENTS_ROUTE
+          label: 'Automations', logo: true, route: AGENTS_ROUTE
         },
         /*
          * The terminal drawer's conversations, on a phone only.

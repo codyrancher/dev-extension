@@ -49,6 +49,9 @@ function routePatterns() {
 function asConcrete(spec) {
   return spec
     .replace(/\{num\}/g, '42')
+    // An event's id and a run's are shapes of their own: `gh-` and twelve hex, `r` and base36.
+    .replace(/\{eventId\}/g, 'gh-0123456789ab')
+    .replace(/\{runId\}/g, 'rabcdefghij12')
     .replace(/\{id\}/g, 'agent-1')
     // A check id is a number in the route, and substituting a word for it made the route look
     // missing. The placeholders are not interchangeable; each stands for a real shape.

@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
+import vm from 'node:vm';
 import { spawn } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { encodeFrame, closeFrame, decodeFrames, joinFrames, handshakeResponse, OP_TEXT, OP_PING, OP_PONG, OP_CLOSE } from './ws-frame.mjs';
@@ -25,6 +26,12 @@ import { sweepHousekeeping, singleFlight, sweepsAreWorking, firstSweepDelay, nex
 import { numbersIn } from '../artifact-subjects.mjs';
 import { branchState } from './branch-state.mjs';
 import { byteRange } from './ranges.mjs';
+import {
+  GITHUB_POLL_MS, EVENT_NAMES, GITHUB_ITEMS_QUERY, GITHUB_NODES_QUERY, assignedQueries, githubRound, missingItems, stageEvents, workspaceForItem,
+} from './automation-events.mjs';
+import {
+  AUTOMATION_BURST, SCRIPT_TIMEOUT_S, SCRIPT_TIMEOUT_MAX_S, triggersOfDef, actionOf, evaluateEvent, conditionScope, fillTemplate, cronDueAt, envFile, scriptWrapper, exitNote,
+} from './automation-rules.mjs';
 import { searchCql, searchLimit, searchResult, pageAnswer } from './confluence.mjs';
 import { STAGING_CHARTS, IMAGE_REGISTRIES, RANCHER_REPO, stagingVersions, releasedVersions, imageExists, registryTags } from './rancher-images.mjs';
 
@@ -2958,8 +2965,8 @@ const OPENAPI = {
       }],
       post: {
         operationId: 'triggerAgent',
-        summary:     'Ask for a run of an agent.',
-        description: 'Recorded as requested here and started by the next dashboard tick, which has the browser session the start needs. `note` rides along into the run\'s record.',
+        summary:     'Start a run of an automation.',
+        description: 'An automation\'s "On an API call" trigger. The run starts at once, here; `note` rides along into its record.',
         responses:   { 200: { description: 'The run as recorded.' } },
       },
     },
@@ -2971,6 +2978,91 @@ const OPENAPI = {
         operationId: 'agentRuns',
         summary:     "That agent's runs, newest first.",
         responses:   { 200: { description: '{ runs }' } },
+      },
+    },
+    '/automations/events': {
+      get: {
+        operationId: 'automationEvents',
+        summary:     'The events log, newest first: workspace stage changes and the assigned GitHub issues and PRs.',
+        description: 'Each event has source, name, at, subject, title, url, actor, workspace and `matches` - what every automation that listens to it did with it: `run` (with `runId`), `blocked` (with the constraint that was false), `error`, `disabled`, `muted` or `throttled`. `?limit=` (default 300), `?full=1` adds each payload. Also the mutes and how each source is doing.',
+        responses:   { 200: { description: '{ events, total, mutes, names, sources }' } },
+      },
+    },
+    '/automations/events/{eventId}': {
+      parameters: [{
+        name: 'eventId', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'automationEvent',
+        summary:     'One event, with its payload.',
+        responses:   { 200: { description: '{ event }' }, 404: { description: 'No longer in the log.' } },
+      },
+    },
+    '/automations/events/poll': {
+      post: {
+        operationId: 'pollAutomationEvents',
+        summary:     'Read the assigned GitHub issues and PRs now rather than at the end of the three minutes.',
+        responses:   { 200: { description: '{ polled, github }' } },
+      },
+    },
+    '/automations/mutes': {
+      put: {
+        operationId: 'setAutomationMutes',
+        summary:     'The workspaces whose events are muted: still recorded, hidden by default, and they start no automation.',
+        responses:   { 200: { description: '{ mutes }' } },
+      },
+    },
+    '/automations/status': {
+      get: {
+        operationId: 'automationStatus',
+        summary:     'Every automation\'s recent runs, and the recent events that reached it without running it, with the reason.',
+        responses:   { 200: { description: '{ runs, attempts }' } },
+      },
+    },
+    '/automations/runs/{runId}': {
+      parameters: [{
+        name: 'runId', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'automationRun',
+        summary:     'One run: its record, the tail of its output, and the prompt, script and event it was given.',
+        responses:   { 200: { description: '{ run, output, size, truncated, prompt, script, event }' } },
+      },
+    },
+    '/automations/runs/{runId}/stop': {
+      parameters: [{
+        name: 'runId', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      post: {
+        operationId: 'stopAutomationRun',
+        summary:     'Stop a script that is running.',
+        responses:   { 200: { description: '{ run }' }, 409: { description: 'Not a running script.' } },
+      },
+    },
+    '/automations/{name}/runs': {
+      parameters: [{
+        name: 'name', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      get: {
+        operationId: 'automationRuns',
+        summary:     'That automation\'s runs, newest first.',
+        responses:   { 200: { description: '{ runs }' } },
+      },
+      delete: {
+        operationId: 'deleteAutomationRuns',
+        summary:     'Forget that automation\'s runs and their output.',
+        responses:   { 200: { description: '{ ok }' } },
+      },
+    },
+    '/automations/{name}/run': {
+      parameters: [{
+        name: 'name', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      post: {
+        operationId: 'runAutomation',
+        summary:     'Run an automation now.',
+        description: 'Body: `{ trigger?, context?, note?, eventId? }`. With `eventId` it runs on that recorded event, as if it had just happened - constraints are not checked; this is by hand.',
+        responses:   { 200: { description: '{ run }' } },
       },
     },
     '/github/session': {
@@ -6357,22 +6449,78 @@ const routes = [
       href, cached, name: path.basename(file), kind: attachmentKind(file),
     };
   }],
-  // Ask for a run of an agent (the dashboard's Agents page; see agent-defs.ts). The run is
-  // recorded as requested here and started by the next dashboard tick, which has the browser
-  // session the start needs. `note` rides along into the run's record.
+  // Ask for a run of an automation from inside the cluster - the "On an API call" trigger
+  // (agent-defs.ts). The run starts here and now, as every automation's does; `note` rides along
+  // into its record. The path is the old one, kept for the scripts that already call it.
   ['POST', /^\/agents\/([a-z0-9-]+)\/trigger$/, async(m, url, body) => {
-    const name = m[1];
-    const runs = (await readDoc(`dev-agent-runs-${ name }`, 'runs.json')) || [];
-    const run = {
-      id: `${ Date.now().toString(36) }${ Math.random().toString(36).slice(2, 6) }`, agent: name, trigger: 'api', workspace: '', conversation: '', state: 'requested', startedAt: new Date().toISOString(), note: typeof body?.note === 'string' ? body.note.slice(0, 200) : '',
-    };
+    const answer = await requestAutoRun(m[1], { note: body?.note }, 'api');
 
-    runs.push(run);
-    await writeDoc(`dev-agent-runs-${ name }`, 'runs.json', runs.slice(-50), { 'dev.rancher.io/kind': 'agent-runs', 'dev.rancher.io/agent': name });
-
-    return { queued: true, run };
+    return { queued: true, run: answer.run };
   }],
-  ['GET', /^\/agents\/([a-z0-9-]+)\/runs$/, async(m) => ({ runs: (await readDoc(`dev-agent-runs-${ m[1] }`, 'runs.json')) || [] })],
+  ['GET', /^\/agents\/([a-z0-9-]+)\/runs$/, async(m) => ({ runs: autoRuns(m[1]) })],
+  /*
+   * The Automations page: the events log and the runs (see the Automations section below).
+   *
+   * Fixed paths first, so that no automation's name can be read as one of them; the editor
+   * refuses those names anyway.
+   */
+  ['GET', /^\/automations\/events$/, async(m, url) => automationEventsAnswer(url)],
+  ['GET', /^\/automations\/events\/([a-z]{2}-[0-9a-f]{12})$/, async(m) => {
+    autoFresh();
+    const event = auto.events.find((e) => e.id === m[1]);
+
+    if (!event) {
+      throw failure(404, 'That event is no longer in the log.');
+    }
+
+    return { event: { ...event, muted: autoMuted(event) } };
+  }],
+  // Read GitHub now rather than at the end of the three minutes. Recorded by whichever process
+  // holds the lease, so the answer may be "asked"; the log shows the result.
+  ['POST', /^\/automations\/events\/poll$/, async() => {
+    autoFresh();
+    if (auto.holder) {
+      await pollGithubEvents(true);
+
+      return { polled: true, github: auto.state.status.github };
+    }
+    auto.pollNext = 0;
+
+    return { polled: false };
+  }],
+  ['PUT', /^\/automations\/mutes$/, async(m, url, body) => {
+    const list = Array.isArray(body?.workspaces) ? body.workspaces : [];
+    const mutes = [...new Set(list.filter((w) => typeof w === 'string' && /^[a-z0-9][a-z0-9-]{0,120}$/.test(w)))].sort();
+    const state = autoReadJson(autoPath('state.json'), null) || freshAutoState();
+
+    state.mutes = mutes;
+    autoWriteJson(autoPath('state.json'), state);
+    if (auto.state) {
+      auto.state.mutes = mutes;
+    }
+
+    return { mutes };
+  }],
+  ['GET', /^\/automations\/status$/, async() => automationStatusAnswer()],
+  ['GET', /^\/automations\/runs\/(r[0-9a-z]{10,24})$/, async(m) => automationRunAnswer(m[1])],
+  ['POST', /^\/automations\/runs\/(r[0-9a-z]{10,24})\/stop$/, async(m) => stopAutoRun(m[1])],
+  ['GET', /^\/automations\/([a-z0-9-]+)\/runs$/, async(m) => {
+    const runs = autoRuns(m[1]);
+
+    // Runs from before the history moved to the disk were kept in a ConfigMap beside the definition.
+    return { runs: runs.length ? runs.slice().reverse() : ((await readDoc(`dev-agent-runs-${ m[1] }`, 'runs.json').catch(() => null)) || []).slice().reverse() };
+  }],
+  ['POST', /^\/automations\/([a-z0-9-]+)\/run$/, async(m, url, body) => requestAutoRun(m[1], body || {})],
+  ['DELETE', /^\/automations\/([a-z0-9-]+)\/runs$/, async(m) => {
+    for (const run of autoRuns(m[1])) {
+      if (RUN_ID_RE.test(run.id || '')) {
+        fs.rmSync(autoPath('runs', run.id), { recursive: true, force: true });
+      }
+    }
+    fs.rmSync(autoPath('runs', `${ m[1] }.json`), { force: true });
+
+    return { ok: true };
+  }],
   /*
    * The workspace projection this process writes, served rather than read from its ConfigMap.
    *
@@ -7997,6 +8145,10 @@ const WATCHABLE = [
   [/^\/my-work\/pr\/\d+\/comments\/revision$/, 2_500],
   [/^\/my-work\/pr\/\d+\/review-run$/, 5_000],
   [/^\/my-work\/jira\/changes$/, 30_000],
+  // The Automations page. In memory or a small file each, so a few seconds costs nothing.
+  [/^\/automations\/events$/, 3_000],
+  [/^\/automations\/status$/, 3_000],
+  [/^\/automations\/runs\/r[0-9a-z]{10,24}$/, 2_000],
 ];
 
 /** How often a page may ask for the same path, at most, whatever it says it wants. */
@@ -8383,6 +8535,990 @@ async function serveEvents(req, socket, head) {
   socket.on('error', shut);
   socket.on('close', shut);
   client.send(JSON.stringify({ hello: 1, every: PING_MS }));
+}
+
+// ── Automations: the events log, and what runs on it ───────────────────────────────────────
+//
+// The Automations page has two halves and this is both of their back ends.
+//
+// **Events.** Two sources, recorded here whether or not anybody has a page open: a workspace's
+// stage moving (a Kubernetes watch on the store the dashboards write it into) and the GitHub
+// issues and pull requests the token's owner is assigned (a poll every three minutes - GitHub has
+// no push channel for that; see automation-events.mjs). Each is a diff against what was kept
+// last time, written to `events.jsonl` on the workspaces disk, the newest AUTO_EVENTS_KEEP of them.
+//
+// **Automations.** The definitions agent-defs.ts writes (`dev-agent-<name>` ConfigMaps). Every
+// event is put to each of them as it is recorded (automation-rules.mjs), and what each said is
+// kept ON the event: ran, or which constraint stopped it. A run is an agent conversation in the
+// agent pod or a script run there as the pane user, started from here, so a closed dashboard
+// misses nothing; its record and its output are on the same disk, under `runs/`.
+//
+// One process does the recording. The Deployment rolls with a surge, so for a few seconds of
+// every publish there are two, and two pollers would record everything twice: a lease file on the
+// shared disk says which one it is, and the other serves what is on the disk. The disk is the
+// truth; a process that takes the lease reads it before doing anything.
+
+const AUTO_DIR = `${ WORKSPACES_ROOT }/.automations`;
+/** The same directory, as the agent pod mounts it: the paths a script and a prompt are given. */
+const AUTO_DIR_IN_AGENT = '/workspaces/.automations';
+const AUTO_EVENTS_KEEP = 2000;
+const AUTO_RUNS_KEEP = 100;
+const AUTO_LEASE_MS = 45_000;
+const AUTO_TICK_MS = 5_000;
+const AUTO_OUTPUT_MAX = 256 * 1024;
+const STAGES_MAP = 'dev-workspace-stages';
+const RUN_ID_RE = /^r[0-9a-z]{10,24}$/;
+const AUTOMATION_RE = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/;
+const AUTO_HOST = process.env.HOSTNAME || `dev-api-${ process.pid }`;
+const LIVE_RUN_STATES = new Set(['starting', 'running', 'waiting']);
+
+const auto = {
+  holder:    false,
+  loadedAt:  0,
+  diskMark:  '',
+  appended:  0,
+  events:    [],
+  ids:       new Set(),
+  state:     null,
+  defs:      { at: 0, list: [] },
+  cronSlot:  '',
+  stagesAt:  0,
+  polling:   false,
+  pollNext:  0,
+  stageFeed: {
+    live: false, error: '', pending: undefined, since: ''
+  },
+};
+
+function freshAutoState() {
+  return {
+    github: {
+      items: {}, baselined: false, polledAt: '', login: ''
+    },
+    stages: null,
+    mutes:  [],
+    cron:   {},
+    status: { github: {}, workspace: {} },
+  };
+}
+
+const autoPath = (...parts) => path.join(AUTO_DIR, ...parts);
+
+function autoReadJson(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+/** Write whole or not at all: a reader never sees half a file. */
+function autoWriteJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${ file }.${ process.pid }.tmp`;
+
+  fs.writeFileSync(tmp, JSON.stringify(value));
+  fs.renameSync(tmp, file);
+}
+
+/** What the disk holds, as one string that changes when it does: for a process that is not the writer. */
+function autoDiskMark() {
+  const stamp = (f) => {
+    try {
+      const s = fs.statSync(f);
+
+      return `${ s.size }:${ s.mtimeMs }`;
+    } catch {
+      return '-';
+    }
+  };
+
+  return `${ stamp(autoPath('events.jsonl')) }|${ stamp(autoPath('state.json')) }`;
+}
+
+function autoLoad() {
+  let lines = [];
+
+  try {
+    lines = fs.readFileSync(autoPath('events.jsonl'), 'utf8').split('\n');
+  } catch { /* no log yet */ }
+  const events = [];
+
+  for (const line of lines.slice(-(AUTO_EVENTS_KEEP + 1))) {
+    if (!line) {
+      continue;
+    }
+    try {
+      events.push(JSON.parse(line));
+    } catch { /* a line cut by a crash mid-append */ }
+  }
+  auto.events = events.slice(-AUTO_EVENTS_KEEP);
+  auto.ids = new Set(auto.events.map((e) => e.id));
+  const held = autoReadJson(autoPath('state.json'), {});
+  const blank = freshAutoState();
+
+  auto.state = {
+    ...blank,
+    ...held,
+    github: { ...blank.github, ...(held.github || {}) },
+    mutes:  Array.isArray(held.mutes) ? held.mutes.filter((m) => typeof m === 'string') : [],
+    cron:   held.cron && typeof held.cron === 'object' ? held.cron : {},
+    status: { ...blank.status, ...(held.status || {}) },
+  };
+  auto.loadedAt = Date.now();
+  auto.diskMark = autoDiskMark();
+}
+
+/** A process that is not recording reads the disk again when it has moved, at most every two seconds. */
+function autoFresh() {
+  if (!auto.state) {
+    autoLoad();
+
+    return;
+  }
+  if (auto.holder || Date.now() - auto.loadedAt < 2_000) {
+    return;
+  }
+  const mark = autoDiskMark();
+
+  if (mark !== auto.diskMark) {
+    autoLoad();
+  } else {
+    auto.loadedAt = Date.now();
+  }
+}
+
+function autoSaveState() {
+  autoWriteJson(autoPath('state.json'), auto.state);
+}
+
+/**
+ * Whether this process records. The lease is renewed every tick; one older than AUTO_LEASE_MS
+ * belonged to a process that stopped. Two writing at the same instant are settled by reading it
+ * back: whichever name is in the file has it.
+ */
+function autoLease() {
+  const file = autoPath('lease.json');
+  const held = autoReadJson(file, null);
+  const now = Date.now();
+
+  if (held && held.holder !== AUTO_HOST && now - (Date.parse(held.at) || 0) < AUTO_LEASE_MS) {
+    auto.holder = false;
+
+    return false;
+  }
+  try {
+    autoWriteJson(file, { holder: AUTO_HOST, at: new Date(now).toISOString() });
+  } catch (e) {
+    console.error('[dev-api] automations: the lease could not be written:', e.message || e);
+    auto.holder = false;
+
+    return false;
+  }
+  const mine = autoReadJson(file, null)?.holder === AUTO_HOST;
+
+  if (mine && !auto.holder) {
+    autoLoad();
+    console.log(`[dev-api] automations: recording events as ${ AUTO_HOST }`);
+  }
+  auto.holder = mine;
+
+  return mine;
+}
+
+function releaseAutoLease() {
+  const file = autoPath('lease.json');
+
+  if (autoReadJson(file, null)?.holder === AUTO_HOST) {
+    fs.rmSync(file, { force: true });
+  }
+}
+
+function autoAppend(events) {
+  const fresh = events.filter((e) => !auto.ids.has(e.id));
+
+  if (!fresh.length) {
+    return [];
+  }
+  fs.mkdirSync(AUTO_DIR, { recursive: true });
+  fs.appendFileSync(autoPath('events.jsonl'), `${ fresh.map((e) => JSON.stringify(e)).join('\n') }\n`);
+  for (const e of fresh) {
+    auto.events.push(e);
+    auto.ids.add(e.id);
+  }
+  if (auto.events.length > AUTO_EVENTS_KEEP) {
+    for (const gone of auto.events.splice(0, auto.events.length - AUTO_EVENTS_KEEP)) {
+      auto.ids.delete(gone.id);
+    }
+  }
+  // The file is appended to and cut back to what is in memory now and then, rather than
+  // rewritten on every event.
+  auto.appended += fresh.length;
+  if (auto.appended > AUTO_EVENTS_KEEP / 2) {
+    const tmp = autoPath(`events.jsonl.${ process.pid }.tmp`);
+
+    fs.writeFileSync(tmp, `${ auto.events.map((e) => JSON.stringify(e)).join('\n') }\n`);
+    fs.renameSync(tmp, autoPath('events.jsonl'));
+    auto.appended = 0;
+  }
+  auto.diskMark = autoDiskMark();
+
+  return fresh;
+}
+
+const autoMuted = (event) => !!event.workspace && auto.state.mutes.includes(event.workspace);
+
+/** The definitions, as agent-defs.ts writes them. Ten seconds old at most. */
+async function automationDefs(force = false) {
+  if (!force && Date.now() - auto.defs.at < 10_000) {
+    return auto.defs.list;
+  }
+  const list = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps?labelSelector=dev.rancher.io%2Fkind%3Dagent`);
+  const defs = (list.items || []).map((cm) => {
+    try {
+      const def = JSON.parse(cm.data?.['agent.json'] || '');
+
+      return def?.name && AUTOMATION_RE.test(def.name) ? def : null;
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+
+  auto.defs = { at: Date.now(), list: defs };
+
+  return defs;
+}
+
+/**
+ * One event's constraints, run in a context of their own with a time limit.
+ *
+ * A `vm` context is not a sandbox and is not used as one: the definitions are ConfigMaps in
+ * dev-system, which only somebody who could already replace this service's own code can write,
+ * and they hold the prompts and scripts that run with far more than this. What the context is for
+ * is mistakes - a loop that never ends, or a constraint that assigns to something - which must not
+ * stop the recording. Nothing that arrives over HTTP is ever run here; the editor tries
+ * constraints in the browser.
+ */
+function conditionChecker(event) {
+  const context = vm.createContext(conditionScope(event, auto.state.github.login));
+
+  return (line) => vm.runInContext(`(${ line }\n)`, context, { timeout: 50 });
+}
+
+// ── Runs ─────────────────────────────────────────────────────────────────────────────────
+
+function autoRuns(name) {
+  const runs = autoReadJson(autoPath('runs', `${ name }.json`), []);
+
+  return Array.isArray(runs) ? runs : [];
+}
+
+function autoSaveRuns(name, runs) {
+  const keep = runs.slice(-AUTO_RUNS_KEEP);
+
+  for (const old of runs.slice(0, Math.max(0, runs.length - AUTO_RUNS_KEEP))) {
+    if (RUN_ID_RE.test(old.id || '')) {
+      fs.rmSync(autoPath('runs', old.id), { recursive: true, force: true });
+    }
+  }
+  autoWriteJson(autoPath('runs', `${ name }.json`), keep);
+}
+
+function autoRunNames() {
+  try {
+    return fs.readdirSync(autoPath('runs')).map((f) => /^([a-z0-9-]+)\.json$/.exec(f)?.[1]).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function findAutoRun(id) {
+  for (const name of autoRunNames()) {
+    const run = autoRuns(name).find((r) => r.id === id);
+
+    if (run) {
+      return run;
+    }
+  }
+
+  return null;
+}
+
+function updateAutoRun(name, id, changes) {
+  const runs = autoRuns(name);
+  const at = runs.findIndex((r) => r.id === id);
+
+  if (at < 0) {
+    return null;
+  }
+  runs[at] = { ...runs[at], ...changes };
+  autoSaveRuns(name, runs);
+
+  return runs[at];
+}
+
+function eventBrief(event) {
+  return event ? {
+    id: event.id, source: event.source, name: event.name, subject: event.subject, title: event.title, url: event.url, workspace: event.workspace || '',
+  } : null;
+}
+
+function newAutoRun(def, trigger, event = null, context = null, note = '') {
+  const run = {
+    id:           `r${ Date.now().toString(36) }${ crypto.randomBytes(3).toString('hex') }`,
+    automation:   def.name,
+    kind:         actionOf(def),
+    trigger,
+    event:        eventBrief(event),
+    context:      context || null,
+    state:        'starting',
+    startedAt:    new Date().toISOString(),
+    endedAt:      '',
+    exitCode:     null,
+    conversation: '',
+    result:       '',
+    note,
+    ...(actionOf(def) === 'script' ? { timeoutSec: Math.max(5, Math.min(SCRIPT_TIMEOUT_MAX_S, Number(def.timeoutSec) || SCRIPT_TIMEOUT_S)) } : {}),
+  };
+
+  autoSaveRuns(def.name, [...autoRuns(def.name), run]);
+
+  return run;
+}
+
+function chownTree(dir, uid, gid) {
+  try {
+    fs.chownSync(dir, uid, gid);
+    for (const f of fs.readdirSync(dir)) {
+      fs.chownSync(path.join(dir, f), uid, gid);
+    }
+  } catch { /* not root: the files are already this user's */ }
+}
+
+/** The values a run is told about what started it, as the placeholders a prompt can use. */
+function runVars(def, run, event, context, there) {
+  return {
+    ...(context || {}),
+    automation: def.name,
+    run:        { id: run.id, dir: there, trigger: run.trigger },
+    event:      { ...(event || {}), file: `${ there }/event.json`, json: JSON.stringify(event || {}, null, 2) },
+    payload:    event?.payload || context || {},
+  };
+}
+
+/**
+ * Start a run: its directory on the shared disk, then the agent pod.
+ *
+ * A script is written beside a wrapper (scriptWrapper) and started detached as the pane user, so
+ * it does not die with the exec, and records its own exit; settleAutoRuns picks that up. An
+ * agent is a drawer conversation made the way the drawer makes one - `sessions.sh new`, a title,
+ * the prompt queued, the pane started detached - so it shows up in the drawer like any other.
+ */
+async function startAutoRun(def, run, event = null, context = null) {
+  const dir = autoPath('runs', run.id);
+  const there = `${ AUTO_DIR_IN_AGENT }/runs/${ run.id }`;
+
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'event.json'), JSON.stringify(event || {
+      source: 'manual', name: run.trigger, at: run.startedAt, payload: context || {},
+    }, null, 2));
+    const pod = await agentPod();
+
+    if (!pod) {
+      throw new Error('The agent pod is not running, so there is nowhere to run this.');
+    }
+    const ns = pod.metadata.namespace;
+    const name = pod.metadata.name;
+
+    if (actionOf(def) === 'script') {
+      fs.writeFileSync(path.join(dir, 'script'), String(def.script || '').replace(/\r\n/g, '\n'));
+      fs.writeFileSync(path.join(dir, 'env'), envFile({
+        AUTOMATION:      def.name,
+        RUN_ID:          run.id,
+        RUN_DIR:         there,
+        TRIGGER:         run.trigger,
+        EVENT_FILE:      `${ there }/event.json`,
+        EVENT_ID:        event?.id || '',
+        EVENT_SOURCE:    event?.source || '',
+        EVENT_NAME:      event?.name || '',
+        EVENT_SUBJECT:   event?.subject || '',
+        EVENT_TITLE:     event?.title || '',
+        EVENT_URL:       event?.url || '',
+        EVENT_ACTOR:     event?.actor || '',
+        EVENT_WORKSPACE: event?.workspace || '',
+        DEV_API:         `http://dev-api.${ NAMESPACE }.svc:${ PORT }`,
+      }));
+      fs.writeFileSync(path.join(dir, 'run.sh'), scriptWrapper(there, def.timeoutSec));
+      chownTree(dir, 1000, 1000);
+      const out = await podExec(ns, name, AGENT_CONTAINER, [
+        '/bin/sh', '-c', 'setsid nohup setpriv --reuid=1000 --regid=1000 --init-groups /bin/sh "$1/run.sh" </dev/null >/dev/null 2>&1 & echo STARTED', 'start', there,
+      ], 30_000);
+
+      if (!out.includes('STARTED')) {
+        throw new Error('The agent pod did not say it started the script.');
+      }
+      updateAutoRun(def.name, run.id, { state: 'running', note: '' });
+
+      return;
+    }
+
+    fs.writeFileSync(path.join(dir, 'prompt'), fillTemplate(def.prompt, runVars(def, run, event, context, there)));
+    chownTree(dir, 1000, 1000);
+    const id = String(await podExec(ns, name, AGENT_CONTAINER, ['/bin/sh', '/seed/sessions.sh', 'new', '', `auto-${ def.name }`], 30_000)).trim().split('\n').pop() || '';
+
+    if (!CONVERSATION_ID.test(id)) {
+      throw new Error(`The agent pod answered "${ id.slice(0, 80) }" when asked for a conversation.`);
+    }
+    updateAutoRun(def.name, run.id, { conversation: id, note: 'starting the conversation' });
+    const title = `${ def.name } · ${ event ? event.subject : run.trigger }`;
+    const queued = await podExec(ns, name, AGENT_CONTAINER, ['/bin/sh', '-c', [
+      'ID="$1"; D="$2"; T="$3"',
+      '/bin/sh /seed/sessions.sh rename "$ID" "$T" >/dev/null 2>&1',
+      'mkdir -p /workspace/.queue && cp "$D/prompt" "/workspace/.queue/$ID" && chown 1000:1000 /workspace/.queue "/workspace/.queue/$ID"',
+      'mkdir -p /workspace/sessions && printf api > "/workspace/sessions/$ID.by"',
+      'echo QUEUED',
+    ].join('\n'), 'queue', id, there, title], 30_000);
+
+    if (!queued.includes('QUEUED')) {
+      throw new Error('The prompt could not be queued in the agent pod.');
+    }
+    await podExec(ns, name, AGENT_CONTAINER, ['/bin/sh', '/seed/shell.sh', id, '/workspace/conversations', '/workspace/.home', 'start'], 60_000);
+    updateAutoRun(def.name, run.id, { state: 'running', note: '' });
+  } catch (e) {
+    updateAutoRun(def.name, run.id, { state: 'failed', note: String(e?.message || e).slice(0, 300), endedAt: new Date().toISOString() });
+  }
+}
+
+/** The last line a script printed, as the one-line result its row shows. */
+function lastLine(file) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const buf = Buffer.alloc(Math.min(size, 4096));
+
+    fs.readSync(fd, buf, 0, buf.length, Math.max(0, size - buf.length));
+    fs.closeSync(fd);
+
+    return buf.toString('utf8').split('\n').map((l) => l.trim()).filter(Boolean).pop()?.slice(0, 300) || '';
+  } catch {
+    return '';
+  }
+}
+
+/** Finished runs: a script's exit status on the disk, an agent's conversation settled. */
+async function settleAutoRuns() {
+  let doc = null;
+
+  for (const name of autoRunNames()) {
+    for (const run of autoRuns(name).filter((r) => LIVE_RUN_STATES.has(r.state))) {
+      const age = Date.now() - (Date.parse(run.startedAt) || Date.now());
+      const dir = autoPath('runs', run.id);
+
+      if (run.kind === 'script') {
+        let code = NaN;
+        let ended = '';
+
+        try {
+          code = parseInt(fs.readFileSync(path.join(dir, 'exit'), 'utf8').trim(), 10);
+          ended = fs.statSync(path.join(dir, 'exit')).mtime.toISOString();
+        } catch { /* still running */ }
+        if (Number.isFinite(code)) {
+          updateAutoRun(name, run.id, {
+            state: code === 0 ? 'done' : 'failed', exitCode: code, endedAt: ended || new Date().toISOString(), note: exitNote(code), result: lastLine(path.join(dir, 'output.log')),
+          });
+        } else if (run.state === 'starting' && age > 3 * 60_000) {
+          updateAutoRun(name, run.id, { state: 'failed', note: 'never started', endedAt: new Date().toISOString() });
+        } else if (age > (Math.min(SCRIPT_TIMEOUT_MAX_S, Number(run.timeoutSec) || SCRIPT_TIMEOUT_MAX_S) + 300) * 1000) {
+          updateAutoRun(name, run.id, { state: 'failed', note: 'no exit status: the run was lost', endedAt: new Date().toISOString() });
+        }
+        continue;
+      }
+
+      if (!run.conversation) {
+        if (age > 5 * 60_000) {
+          updateAutoRun(name, run.id, { state: 'failed', note: run.note || 'never started', endedAt: new Date().toISOString() });
+        }
+        continue;
+      }
+      doc = doc || await conversationDoc().catch(() => null);
+      const item = doc?.items?.[run.conversation];
+
+      if (!item) {
+        if (age > 10 * 60_000) {
+          updateAutoRun(name, run.id, { state: 'failed', note: 'the conversation never appeared', endedAt: new Date().toISOString() });
+        }
+        continue;
+      }
+      const said = () => detailOf({ transcript: String(item.transcript || '') }).said;
+
+      if (item.state === 'gone') {
+        updateAutoRun(name, run.id, { state: 'done', note: 'the conversation was ended', endedAt: new Date().toISOString() });
+      } else if (item.state === 'input') {
+        if (run.state !== 'waiting') {
+          updateAutoRun(name, run.id, { state: 'waiting', note: 'asking a question', result: said() });
+        }
+      } else if (['idle', 'finished'].includes(item.state) && (item.stops > 0 || age > 5 * 60_000)) {
+        updateAutoRun(name, run.id, { state: 'done', note: '', result: said(), endedAt: new Date().toISOString() });
+      } else if (item.state === 'working' && run.state === 'waiting') {
+        updateAutoRun(name, run.id, { state: 'running', note: '' });
+      }
+    }
+  }
+}
+
+// ── Recording ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Record events, and put each to every automation as it is: what each said is kept on the event,
+ * and the runs it calls for are recorded before the event is, so the event can name them.
+ */
+async function recordAutoEvents(events) {
+  if (!events.length) {
+    return;
+  }
+  const dirs = workspaceDirs() || [];
+
+  for (const e of events) {
+    if (e.source === 'github' && !e.workspace) {
+      e.workspace = workspaceForItem(e.payload?.kind, e.payload?.repo, e.payload?.number, dirs, auto.state.stages || {});
+    }
+  }
+  const fresh = events.filter((e) => !auto.ids.has(e.id));
+
+  if (!fresh.length) {
+    return;
+  }
+  const defs = await automationDefs().catch(() => []);
+  const starts = [];
+  const burst = new Map();
+
+  for (const event of fresh) {
+    const check = conditionChecker(event);
+
+    event.matches = [];
+    for (const def of defs) {
+      const verdict = evaluateEvent(def, event, { muted: autoMuted(event), check });
+
+      if (!verdict) {
+        continue;
+      }
+      if (verdict.outcome === 'run') {
+        const n = burst.get(def.name) || 0;
+
+        if (n >= AUTOMATION_BURST) {
+          verdict.outcome = 'throttled';
+          verdict.reason = `${ AUTOMATION_BURST } runs had already started from this batch of events.`;
+        } else {
+          burst.set(def.name, n + 1);
+          const run = newAutoRun(def, 'event', event);
+
+          verdict.runId = run.id;
+          starts.push([def, run, event]);
+        }
+      }
+      event.matches.push(verdict);
+    }
+  }
+  autoAppend(fresh);
+  for (const [def, run, event] of starts) {
+    startAutoRun(def, run, event).catch(() => {});
+  }
+}
+
+/** A reply that can be partly an error - an id that resolves to nothing - and still be the rest. */
+async function graphqlPartial(query, variables) {
+  const token = await githubToken('');
+
+  if (!token) {
+    throw new Error('No GitHub token is set. Add one in the Dev extension\'s Settings.');
+  }
+  const response = await fetch('https://api.github.com/graphql', {
+    method:  'POST',
+    headers: { authorization: `Bearer ${ token }`, 'content-type': 'application/json', 'user-agent': 'dev-extension' },
+    body:    JSON.stringify({ query, variables }),
+  });
+  const body = await response.json().catch(() => ({}));
+
+  if (!response.ok || (!body.data && body.errors?.length)) {
+    throw new Error(`GitHub ${ response.status }: ${ (body.errors || []).map((e) => e.message).join('; ') || body.message || 'no answer' }`);
+  }
+
+  return body;
+}
+
+/** The assigned issues and pull requests, read and diffed. Every three minutes, or now when asked. */
+async function pollGithubEvents(force = false) {
+  if (auto.polling || (!force && Date.now() < auto.pollNext)) {
+    return;
+  }
+  auto.polling = true;
+  const status = auto.state.status.github = { ...(auto.state.status.github || {}), polling: true };
+
+  try {
+    const me = await githubViewer();
+
+    if (!me) {
+      throw new Error('No GitHub token, or GitHub would not say whose it is.');
+    }
+    let held = auto.state.github;
+
+    if (held.login && held.login.toLowerCase() !== me.toLowerCase()) {
+      // Another person's token: their assignments are a new baseline, not a burst of changes.
+      held = freshAutoState().github;
+    }
+    const now = new Date().toISOString();
+    const since = new Date((Date.parse(held.polledAt) || Date.now()) - 60 * 60_000).toISOString();
+    const answer = await graphqlPartial(GITHUB_ITEMS_QUERY, assignedQueries(me, since));
+    const byId = new Map();
+
+    for (const node of [...(answer.data?.open?.nodes || []), ...(answer.data?.recent?.nodes || [])]) {
+      if (node?.id) {
+        byId.set(node.id, node);
+      }
+    }
+    const missing = missingItems(held.items, [...byId.values()]);
+    const gone = [];
+
+    if (missing.length) {
+      const found = (await graphqlPartial(GITHUB_NODES_QUERY, { ids: missing })).data?.nodes || [];
+
+      missing.forEach((id, i) => {
+        if (found[i]?.id) {
+          byId.set(found[i].id, found[i]);
+        } else {
+          gone.push(id);
+        }
+      });
+    }
+    const round = githubRound(held, [...byId.values()], { me, now, gone });
+
+    auto.state.github = {
+      items: round.items, baselined: round.baselined, polledAt: now, login: me,
+    };
+    await recordAutoEvents(round.events);
+    auto.state.status.github = {
+      ok: true, error: '', at: now, items: Object.keys(round.items).length, open: answer.data?.open?.issueCount ?? 0, found: round.events.length, login: me,
+    };
+  } catch (e) {
+    auto.state.status.github = {
+      ...status, polling: false, ok: false, error: String(e?.message || e).slice(0, 300), at: new Date().toISOString(),
+    };
+  } finally {
+    auto.polling = false;
+    auto.pollNext = Date.now() + GITHUB_POLL_MS;
+    auto.state.status.github.next = new Date(auto.pollNext).toISOString();
+    delete auto.state.status.github.polling;
+    autoSaveState();
+  }
+}
+
+/** What is kept of the stage store: the fields an event names, not everything a record holds. */
+function slimStages(stages) {
+  const out = {};
+
+  for (const [ws, rec] of Object.entries(stages || {})) {
+    if (rec && typeof rec === 'object' && rec.stage) {
+      out[ws] = {
+        stage: rec.stage, stageLabel: rec.stageLabel || '', manual: !!rec.manual, pr: Number(rec.pr) || 0, repo: rec.repo || '', round: Number(rec.round) || 0, at: rec.at || '',
+      };
+    }
+  }
+
+  return out;
+}
+
+async function takeStages(text) {
+  let after;
+
+  try {
+    after = JSON.parse(text || '{}') || {};
+  } catch {
+    return;
+  }
+  const events = stageEvents(auto.state.stages, after, new Date().toISOString());
+
+  auto.state.stages = slimStages(after);
+  auto.stagesAt = Date.now();
+  await recordAutoEvents(events);
+  autoSaveState();
+}
+
+async function readStagesMap() {
+  try {
+    return (await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ STAGES_MAP }`)).data?.['stages.json'] ?? '{}';
+  } catch (e) {
+    if (e.status === 404) {
+      return '{}';
+    }
+    throw e;
+  }
+}
+
+/**
+ * The stage store, watched. Every process watches - it is one long request - and the one
+ * recording takes what arrives on its next tick, which this brings forward. A watch the apiserver
+ * ends (it ends them all eventually) is reopened from a fresh read.
+ */
+async function watchStageStore() {
+  let wait = 1_000;
+
+  for (;;) {
+    try {
+      const cm = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ STAGES_MAP }`).catch((e) => (e.status === 404 ? null : Promise.reject(e)));
+      const rv = cm?.metadata?.resourceVersion || '';
+
+      auto.stageFeed.pending = cm?.data?.['stages.json'] ?? '{}';
+      setTimeout(() => automationTick().catch(() => {}), 0);
+      const response = await fetch(`${ ROOT }/api/v1/namespaces/${ NAMESPACE }/configmaps?watch=1&fieldSelector=metadata.name%3D${ STAGES_MAP }&timeoutSeconds=900${ rv ? `&resourceVersion=${ rv }` : '' }`, { headers: { authorization: `Bearer ${ TOKEN }` } });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`the watch answered ${ response.status }`);
+      }
+      auto.stageFeed = {
+        ...auto.stageFeed, live: true, error: '', since: new Date().toISOString()
+      };
+      wait = 1_000;
+      const decoder = new TextDecoder();
+      const reader = response.body.getReader();
+      let buffer = '';
+
+      for (;;) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let nl;
+
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, nl);
+
+          buffer = buffer.slice(nl + 1);
+          let change = null;
+
+          try {
+            change = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (change.type === 'ERROR') {
+            throw new Error(change.object?.message || 'the watch expired');
+          }
+          if (change.object?.kind === 'ConfigMap' && change.type !== 'DELETED') {
+            auto.stageFeed.pending = change.object.data?.['stages.json'] ?? '{}';
+            setTimeout(() => automationTick().catch(() => {}), 0);
+          }
+        }
+      }
+    } catch (e) {
+      auto.stageFeed.error = String(e?.message || e).slice(0, 200);
+      wait = Math.min(30_000, wait * 2);
+    }
+    auto.stageFeed.live = false;
+    await new Promise((resolve) => setTimeout(resolve, wait));
+  }
+}
+
+/** Schedules, in the zone each was written in (the editor saves it with the definition). */
+async function cronAutoTick(defs) {
+  const now = new Date();
+  const slot = now.toISOString().slice(0, 16);
+
+  if (auto.cronSlot === slot) {
+    return;
+  }
+  auto.cronSlot = slot;
+  for (const def of defs) {
+    if (def.enabled === false || auto.state.cron[def.name] === slot) {
+      continue;
+    }
+    const due = triggersOfDef(def).some((t) => t.type === 'cron' && t.cron && cronDueAt(t.cron, now, def.tz || 'UTC'));
+
+    if (!due) {
+      continue;
+    }
+    auto.state.cron[def.name] = slot;
+    autoSaveState();
+    startAutoRun(def, newAutoRun(def, 'cron')).catch(() => {});
+  }
+}
+
+const automationTick = singleFlight(async() => {
+  if (!autoLease()) {
+    return;
+  }
+  const feed = auto.stageFeed;
+  // Each step on its own: a stage store that cannot be read must not also stop the GitHub poll,
+  // the schedules and the runs being seen to finish.
+  const step = (what, work) => work().catch((e) => console.error(`[dev-api] automations: ${ what } failed:`, e.message || e));
+
+  await step('reading the stages', async() => {
+    if (feed.pending !== undefined) {
+      const text = feed.pending;
+
+      feed.pending = undefined;
+      await takeStages(text);
+    } else if (!feed.live && Date.now() - auto.stagesAt > 60_000) {
+      auto.stagesAt = Date.now(); // tried, so a failing read waits its minute like a good one
+      await takeStages(await readStagesMap());
+    }
+  });
+  auto.state.status.workspace = {
+    live: feed.live, error: feed.live ? '' : feed.error, since: feed.since, at: auto.stagesAt ? new Date(auto.stagesAt).toISOString() : '',
+  };
+  await step('the GitHub poll', () => pollGithubEvents());
+  await step('the schedules', async() => cronAutoTick(await automationDefs().catch(() => [])));
+  await step('settling runs', () => settleAutoRuns());
+});
+
+// ── What the page reads ────────────────────────────────────────────────────────────────
+
+function eventSummary(e) {
+  return {
+    id:        e.id,
+    source:    e.source,
+    name:      e.name,
+    at:        e.at,
+    subject:   e.subject,
+    title:     e.title,
+    url:       e.url,
+    actor:     e.actor,
+    workspace: e.workspace || '',
+    self:      !!e.payload?.self,
+    muted:     autoMuted(e),
+    matches:   e.matches || [],
+  };
+}
+
+function automationEventsAnswer(url) {
+  autoFresh();
+  const limit = Math.max(1, Math.min(AUTO_EVENTS_KEEP, Number(url.searchParams.get('limit')) || 300));
+  const full = url.searchParams.get('full') === '1';
+  const events = auto.events.slice(-limit).reverse().map((e) => (full ? { ...e, muted: autoMuted(e) } : eventSummary(e)));
+  const lease = autoReadJson(autoPath('lease.json'), null);
+
+  return {
+    events,
+    total:   auto.events.length,
+    mutes:   auto.state.mutes,
+    names:   EVENT_NAMES,
+    sources: {
+      github:    { every: GITHUB_POLL_MS, ...(auto.state.status.github || {}) },
+      workspace: auto.state.status.workspace || {},
+    },
+    recorder: lease?.holder || '',
+  };
+}
+
+/** Every automation's recent runs, and the events that reached it without running it. */
+function automationStatusAnswer() {
+  autoFresh();
+  const runs = {};
+
+  for (const name of autoRunNames()) {
+    runs[name] = autoRuns(name).slice(-12).reverse();
+  }
+  const attempts = {};
+
+  for (let i = auto.events.length - 1; i >= 0; i--) {
+    const e = auto.events[i];
+
+    for (const m of e.matches || []) {
+      if (m.outcome === 'run') {
+        continue;
+      }
+      const list = attempts[m.automation] = attempts[m.automation] || [];
+
+      if (list.length < 50) {
+        list.push({
+          at: e.at, event: eventSummary(e), outcome: m.outcome, reason: m.reason || '', condition: m.condition || '',
+        });
+      }
+    }
+  }
+
+  return { runs, attempts };
+}
+
+/** The tail of a run's output, and what it was given. */
+function automationRunAnswer(id) {
+  const run = findAutoRun(id);
+
+  if (!run) {
+    throw failure(404, `There is no run ${ id }.`);
+  }
+  const dir = autoPath('runs', id);
+  const read = (file, max) => {
+    try {
+      const fd = fs.openSync(path.join(dir, file), 'r');
+      const size = fs.fstatSync(fd).size;
+      const buf = Buffer.alloc(Math.min(size, max));
+
+      fs.readSync(fd, buf, 0, buf.length, Math.max(0, size - buf.length));
+      fs.closeSync(fd);
+
+      return { text: buf.toString('utf8'), size, cut: size > max };
+    } catch {
+      return { text: '', size: 0, cut: false };
+    }
+  };
+  const output = read('output.log', AUTO_OUTPUT_MAX);
+
+  return {
+    run,
+    output:    output.text,
+    size:      output.size,
+    truncated: output.cut,
+    prompt:    read('prompt', 32 * 1024).text,
+    script:    read('script', 64 * 1024).text,
+    event:     read('event.json', 64 * 1024).text,
+  };
+}
+
+/** A manual, API or resource run, or a replay of one recorded event. */
+async function requestAutoRun(name, body = {}, fallbackTrigger = 'manual') {
+  const def = (await automationDefs(true)).find((d) => d.name === name);
+
+  if (!def) {
+    throw failure(404, `There is no automation called ${ name }.`);
+  }
+  autoFresh();
+  const event = typeof body.eventId === 'string' ? auto.events.find((e) => e.id === body.eventId) || null : null;
+
+  if (body.eventId && !event) {
+    throw failure(404, 'That event is no longer in the log.');
+  }
+  const trigger = event ? 'event' : (['manual', 'api', 'resource'].includes(body.trigger) ? body.trigger : fallbackTrigger);
+  const context = body.context && typeof body.context === 'object' && !Array.isArray(body.context)
+    ? Object.fromEntries(Object.entries(body.context).slice(0, 20).map(([k, v]) => [String(k).slice(0, 40), String(v ?? '').slice(0, 500)]))
+    : null;
+  const note = typeof body.note === 'string' ? body.note.slice(0, 200) : '';
+  const run = newAutoRun(def, trigger, event, context, event ? 'replayed by hand' : note);
+
+  startAutoRun(def, run, event, context).catch(() => {});
+
+  return { run };
+}
+
+async function stopAutoRun(id) {
+  const run = findAutoRun(id);
+
+  if (!run || run.kind !== 'script' || !LIVE_RUN_STATES.has(run.state)) {
+    throw failure(409, 'That is not a script that is running.');
+  }
+  const pod = await agentPod();
+
+  if (pod) {
+    // The run's directory is built inside the shell from the id rather than passed whole, so this
+    // shell's own command line never contains the path pkill is looking for.
+    await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, [
+      '/bin/sh', '-c', 'P="/workspaces/.automations/runs/$1/"; pkill -TERM -f "$P"; sleep 2; pkill -KILL -f "$P"; echo ok', 'stop', id,
+    ], 20_000);
+  }
+
+  return { run: updateAutoRun(run.automation, id, { state: 'failed', note: 'stopped', endedAt: new Date().toISOString() }) };
 }
 
 const server = http.createServer(async(req, res) => {
@@ -8865,5 +10001,19 @@ server.listen(PORT, () => {
   const listing = () => listingTick().catch((e) => console.error('[dev-api] conversation listing tick failed:', e.message || e));
   setTimeout(listing, 5_000);
   setInterval(listing, LISTING_MS);
+
+  // Automations: the events log and its runs. Watched and ticked in every process; recorded by
+  // the one holding the lease, which it gives back on the way out so a rollout hands over in a
+  // tick rather than in AUTO_LEASE_MS.
+  watchStageStore();
+  setTimeout(() => automationTick().catch(() => {}), 8_000);
+  setInterval(() => automationTick().catch((e) => console.error('[dev-api] automations tick failed:', e.message || e)), AUTO_TICK_MS);
+  process.once('SIGTERM', () => {
+    try {
+      releaseAutoLease();
+    } finally {
+      process.exit(0);
+    }
+  });
 
 });

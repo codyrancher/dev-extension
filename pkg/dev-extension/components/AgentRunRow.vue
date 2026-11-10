@@ -1,47 +1,48 @@
 <script>
-// One run of an agent, as a line: how it went, when, what set it off, and the way in to what
-// it actually said. A component of its own because the card shows the last few and the history
-// modal shows all of them, and a row that is written twice is a row that stops matching itself.
-import {
-  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE
-} from '../config/constants';
+// One run of an automation, as a line: how it went, when, what set it off, what it came to, and
+// the way in to its log. A component of its own because the card shows the last few and the
+// history modal shows all of them, and a row that is written twice is a row that stops matching
+// itself.
+import { duration, stamp } from '../automations';
+import { exitNote } from '../dev-api/automation-rules.mjs';
 
 export default {
   name: 'AgentRunRow',
 
   props: { run: { type: Object, required: true } },
 
+  emits: ['open'],
+
   computed: {
-    /** Runs before 0.3.17 were conversations in a workspace; that workspace is still a link. */
-    workspaceTo() {
-      return this.run.workspace ? {
-        name: WORKSPACE_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: this.run.workspace }, hash: '#conversations',
-      } : null;
-    },
-
     when() {
-      const d = new Date(this.run.startedAt);
-
-      return !this.run.startedAt || Number.isNaN(d.getTime()) ? '' : d.toLocaleString([], {
-        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-      });
+      return stamp(this.run.startedAt);
     },
 
-    duration() {
-      if (!this.run.startedAt) {
-        return '';
-      }
-      const end = this.run.endedAt ? Date.parse(this.run.endedAt) : Date.now();
-      const s = Math.max(0, Math.round((end - Date.parse(this.run.startedAt)) / 1000));
-
-      return s < 60 ? `${ s }s` : s < 3600 ? `${ Math.round(s / 60) }m` : `${ (s / 3600).toFixed(1) }h`;
+    took() {
+      return duration(this.run);
     },
 
-    /** What set it off, and for a resource trigger which resource did. */
+    /** What set it off: the event's name and subject, a resource, or the trigger's word. */
     trigger() {
-      const c = this.run.context;
+      const r = this.run;
 
-      return c?.name ? `${ c.event || 'changed' } ${ c.name }` : this.run.trigger;
+      if (r.event) {
+        return `${ r.event.name } · ${ r.event.subject }`;
+      }
+
+      return r.context?.name ? `${ r.context.event || 'changed' } ${ r.context.name }` : r.trigger;
+    },
+
+    /** The one line it came to: the agent's last word, the script's last line, or why it failed. */
+    outcome() {
+      const r = this.run;
+      const exit = typeof r.exitCode === 'number' && r.exitCode !== 0 ? exitNote(r.exitCode) : '';
+
+      return [exit, r.result || r.note || ''].filter(Boolean).join(' · ');
+    },
+
+    state() {
+      return this.run.state === 'requested' ? 'queued' : this.run.state;
     },
   },
 };
@@ -51,65 +52,71 @@ export default {
   <li
     class="agent-run"
     :class="`agent-run--${ run.state }`"
-    :title="run.note || ''"
   >
-    <span class="agent-run__dot" />
-    <span class="agent-run__state">{{ run.state }}</span>
-    <span class="agent-run__when">{{ when }}</span>
-    <span
-      class="agent-run__trigger"
-      :title="run.context ? JSON.stringify(run.context) : ''"
-    >{{ trigger }}</span>
-    <router-link
-      v-if="workspaceTo"
-      :to="workspaceTo"
-      class="agent-run__where"
+    <button
+      type="button"
+      class="agent-run__line"
+      :title="outcome || run.note || ''"
+      data-testid="automation-run-row"
+      @click="$emit('open', run)"
     >
-      {{ run.workspace }}
-    </router-link>
-    <span
-      v-else
-      class="agent-run__where text-muted"
-      title="A conversation in the agents drawer"
-    >{{ run.conversation || '…' }}</span>
-    <span class="agent-run__dur">{{ duration }}</span>
-    <!--
-      There was an `output` link here, to the Conversations page, which is gone. It is not
-      re-pointed because the row already has the way in: the workspace link above opens that
-      workspace on its conversations, which is where this run's own conversation is. A run with
-      no workspace is a drawer conversation and the drawer is where it is read.
-    -->
+      <span class="agent-run__dot" />
+      <span class="agent-run__state">{{ state }}</span>
+      <span class="agent-run__when">{{ when }}</span>
+      <span
+        class="agent-run__trigger"
+        :title="run.event ? run.event.title : (run.context ? JSON.stringify(run.context) : '')"
+      >{{ trigger }}</span>
+      <span class="agent-run__outcome">{{ outcome }}</span>
+      <span class="agent-run__dur">{{ took }}</span>
+      <span class="agent-run__open">log</span>
+    </button>
   </li>
 </template>
 
 <style lang="scss" scoped>
 .agent-run {
-  display:               grid;
-  grid-template-columns: 8px 62px auto 1fr minmax(0, 1fr) 44px 46px;
-  align-items:           center;
-  gap:                   var(--dev-space-3);
-  padding:               5px var(--dev-space-4);
-  font-size:             12px;
-  border-top:            1px solid var(--border);
+  border-top: 1px solid var(--border);
 
   &:first-child { border-top: 0; }
 
+  &__line {
+    display:               grid;
+    grid-template-columns: 8px 58px auto minmax(0, 1fr) minmax(0, 1.2fr) 52px 24px;
+    align-items:           center;
+    gap:                   var(--dev-space-3);
+    width:                 100%;
+    min-height:            0;
+    padding:               5px var(--dev-space-4);
+    border:                0;
+    background:            none;
+    color:                 var(--body-text);
+    font-size:             12px;
+    text-align:            left;
+    cursor:                pointer;
+
+    &:hover { background: color-mix(in srgb, var(--body-text) 4%, transparent); }
+    &:focus-visible { outline: 2px solid var(--dev-accent); outline-offset: -2px; }
+  }
+
   &__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--status-idle); }
   &--running &__dot, &--starting &__dot { background: var(--status-working); animation: agent-run-pulse 1.4s infinite ease-in-out; }
+  &--waiting &__dot, &--requested &__dot { background: var(--status-input); }
   &--done &__dot { background: var(--status-done); }
   &--failed &__dot { background: var(--status-error); }
-  &--requested &__dot { background: var(--status-input); }
 
   &__state { text-transform: uppercase; font-weight: 600; letter-spacing: 0.04em; font-size: 10px; }
   &--running &__state, &--starting &__state { color: var(--status-working); }
+  &--waiting &__state, &--requested &__state { color: var(--status-input); }
   &--done &__state { color: var(--status-done); }
   &--failed &__state { color: var(--status-error); }
-  &--requested &__state { color: var(--status-input); }
 
   &__when, &__trigger, &__dur { color: var(--muted); }
-  &__trigger, &__where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  &__dur { text-align: right; }
-  &__where { font-family: monospace; }
+  &__when { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  &__trigger, &__outcome { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  &__trigger { font-family: monospace; font-size: 11px; }
+  &--failed &__outcome { color: var(--error); }
+  &__dur { text-align: right; font-variant-numeric: tabular-nums; }
   &__open { text-align: right; color: var(--link); font-size: 11px; }
 }
 
@@ -118,14 +125,13 @@ export default {
   50% { opacity: 0.35; }
 }
 
-/* ── Phones: state, when and the way in. The trigger and the duration go: they are the two
-   the line can be read without, and eight columns at 390px is a column of ellipses. ── */
+/* ── Phones: state, when, what it came to and the way in. ── */
 @media (max-width: 760px) {
-  .agent-run {
-    grid-template-columns: 8px 58px 1fr 46px;
+  .agent-run__line {
+    grid-template-columns: 8px 54px auto minmax(0, 1fr) 24px;
     gap: var(--dev-space-2);
-
-    &__trigger, &__dur { display: none; }
   }
+
+  .agent-run__trigger, .agent-run__dur { display: none; }
 }
 </style>
