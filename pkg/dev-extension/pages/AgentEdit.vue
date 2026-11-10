@@ -881,6 +881,8 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
   &__row { display: flex; gap: var(--dev-space-3); align-items: flex-end; flex-wrap: wrap; > * { flex: 1 1 220px; } }
   &__skill { flex: 0 1 320px; }
   &__hint { font-size: 12px; margin: 0; flex: 1 1 100%; }
+  /* Rancher boxes every <code>; inside a sentence of help it is a word, not a field. */
+  &__hint code, &__label code { border: 0; padding: 0 2px; }
   &__label { font-size: 12px; color: var(--muted); }
 
   &__prompt {

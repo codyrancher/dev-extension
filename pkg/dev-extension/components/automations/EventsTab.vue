@@ -391,14 +391,16 @@ export default {
               {{ w.name }} ({{ w.n }})
             </option>
           </select>
-          <Checkbox
-            v-model:value="onlyMatched"
-            label="With automations"
-          />
-          <Checkbox
-            v-model:value="showMuted"
-            :label="mutedCount ? `Show muted (${ mutedCount })` : 'Show muted'"
-          />
+          <span class="events__toggles">
+            <Checkbox
+              v-model:value="onlyMatched"
+              label="With automations"
+            />
+            <Checkbox
+              v-model:value="showMuted"
+              :label="mutedCount ? `Show muted (${ mutedCount })` : 'Show muted'"
+            />
+          </span>
         </div>
       </template>
 
@@ -709,6 +711,15 @@ export default {
     flex-wrap:   wrap;
     align-items: center;
     gap:         var(--dev-space-2) var(--dev-space-4);
+  }
+
+  &__toggles {
+    display:     inline-flex;
+    flex-wrap:   wrap;
+    align-items: center;
+    gap:         0 var(--dev-space-4);
+
+    :deep(.checkbox-outer-container) { width: auto; margin: 0; }
   }
 
   &__empty { margin: var(--dev-space-3) 0; white-space: normal; }

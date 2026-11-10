@@ -140,6 +140,9 @@ export default {
 
   /* Pickers and toggles share lines on a phone instead of taking one each. */
   .dev-automations :deep(.sortable-table-header .bulk),
-  .dev-automations :deep(.sortable-table-header .search) { flex: 1 1 100%; }
+  .dev-automations :deep(.sortable-table-header .search) { flex: 1 1 100%; min-width: 0; }
+
+  /* The table's own filter box keeps a desktop width and ran off the card's edge. */
+  .dev-automations :deep(.sortable-table-header .search input) { width: 100%; min-width: 0; }
 }
 </style>
