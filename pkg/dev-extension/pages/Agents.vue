@@ -133,5 +133,13 @@ export default {
   }
 
   .dev-automations :deep(.sortable-table-header) { flex-wrap: wrap; }
+
+  /* The second cell is the event's name or the automation's: it says what it is by being it, as
+     the first does, so it goes unlabelled beside it rather than under the word EVENT or NAME. */
+  .dev-automations :deep(table.sortable-table tbody td:nth-child(2))::before { content: none !important; }
+
+  /* Pickers and toggles share lines on a phone instead of taking one each. */
+  .dev-automations :deep(.sortable-table-header .bulk),
+  .dev-automations :deep(.sortable-table-header .search) { flex: 1 1 100%; }
 }
 </style>

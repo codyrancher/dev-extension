@@ -155,14 +155,12 @@ export default {
       return sets.map(([n, word]) => `${ n } ${ word }`).join(' · ');
     },
 
-    githubWhen() {
+    /** The GitHub line, as one string so it wraps like a sentence rather than in pieces. */
+    githubLine() {
       const g = this.github;
+      const when = !g.at ? 'not read yet' : [g.ok === false ? `failed ${ near(g.at, this.now) }` : `read ${ near(g.at, this.now) }`, g.next ? `next ${ near(g.next, this.now) }` : ''].filter(Boolean).join(', ');
 
-      if (!g.at) {
-        return 'not read yet';
-      }
-
-      return [g.ok === false ? `failed ${ near(g.at, this.now) }` : `read ${ near(g.at, this.now) }`, g.next ? `next ${ near(g.next, this.now) }` : ''].filter(Boolean).join(', ');
+      return [g.login ? `@${ g.login }` : '', this.githubSets, when].filter(Boolean).join(' · ');
     },
 
     /** The automations a person might run on the open event, for trying one out on it. */
@@ -299,9 +297,7 @@ export default {
       >
         <span class="events__dot" />
         <strong>GitHub</strong>
-        <span v-if="github.login">@{{ github.login }}</span>
-        <span v-if="githubSets">{{ githubSets }}</span>
-        <span>{{ githubWhen }}</span>
+        <span>{{ githubLine }}</span>
       </span>
       <span
         class="events__source"
@@ -327,12 +323,11 @@ export default {
       @close="error = ''"
     />
 
-    <div class="events__mutes">
+    <div
+      v-if="mutes.length"
+      class="events__mutes"
+    >
       <span class="events__label">Muted</span>
-      <span
-        v-if="!mutes.length"
-        class="text-muted"
-      >no workspaces</span>
       <span
         v-for="m in mutes"
         :key="m"
@@ -347,25 +342,6 @@ export default {
           @click.prevent="unmute(m)"
         >&times;</a>
       </span>
-      <select
-        v-if="knownWorkspaces.length"
-        v-model="muteDraft"
-        class="events__select"
-        aria-label="Mute a workspace"
-        data-testid="automation-mute-pick"
-        @change="mute(muteDraft)"
-      >
-        <option value="">
-          Mute a workspace&hellip;
-        </option>
-        <option
-          v-for="w in knownWorkspaces"
-          :key="w.name"
-          :value="w.name"
-        >
-          {{ w.name }} ({{ w.n }})
-        </option>
-      </select>
     </div>
 
     <SortableTable
@@ -396,9 +372,28 @@ export default {
               {{ s.label }}
             </option>
           </select>
+          <select
+            v-if="knownWorkspaces.length"
+            v-model="muteDraft"
+            class="events__select"
+            aria-label="Mute a workspace"
+            data-testid="automation-mute-pick"
+            @change="mute(muteDraft)"
+          >
+            <option value="">
+              Mute a workspace&hellip;
+            </option>
+            <option
+              v-for="w in knownWorkspaces"
+              :key="w.name"
+              :value="w.name"
+            >
+              {{ w.name }} ({{ w.n }})
+            </option>
+          </select>
           <Checkbox
             v-model:value="onlyMatched"
-            label="Reached an automation"
+            label="With automations"
           />
           <Checkbox
             v-model:value="showMuted"
@@ -651,16 +646,15 @@ export default {
 
   &__source {
     display:     inline-flex;
-    flex-wrap:   wrap;
-    align-items: center;
-    gap:         0 var(--dev-space-2);
+    align-items: baseline;
+    gap:         var(--dev-space-2);
     min-width:   0;
 
     strong { color: var(--body-text); font-weight: 600; }
-    > span:not(.events__dot) + span:not(.events__dot)::before { content: '·'; margin-right: var(--dev-space-2); }
   }
 
   &__dot {
+    flex:          0 0 auto;
     width:         8px;
     height:        8px;
     border-radius: 50%;

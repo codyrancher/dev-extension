@@ -475,7 +475,7 @@ export default {
       >
         <label
           class="agent-edit__kind"
-          :class="{ 'agent-edit__kind--on': def.action !== 'script' }"
+          :class="{ 'agent-edit__kind--on': def.action === 'agent' }"
         >
           <input
             v-model="def.action"
@@ -594,12 +594,16 @@ export default {
     <section class="agent-edit__section">
       <h3>What sets it off</h3>
       <p class="agent-edit__always">
-        <i class="icon icon-checkmark" /> By hand - Run now on its card, always.
+        <i class="icon icon-checkmark" /> By hand, always: <template v-if="def.action === 'review'">
+          on any pull request's event in the log, with Run an automation on this
+        </template><template v-else>
+          Run now, on the Automations tab
+        </template>
       </p>
       <div class="agent-edit__trigger">
         <Checkbox
           v-model:value="on.event"
-          label="On an event - a workspace's stage moving, or something happening on an issue or PR assigned to you"
+          label="On an event - a workspace's stage moving, or something happening on an issue or PR you are part of"
           data-testid="automation-on-event"
         />
         <template v-if="on.event">
