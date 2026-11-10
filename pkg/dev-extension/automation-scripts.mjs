@@ -16,6 +16,10 @@ field() { node -p "String(require(process.env.EVENT_FILE).payload.$1 ?? '')"; }
 REPO=$(field repo)
 PR=$(field number)
 HEAD=$(field head)
+if [ -z "$PR" ] || [ -z "$REPO" ]; then
+  echo "No pull request to review: this runs on a review request or a push. To try it by hand, open one of those on Events and use 'Run an automation on this'." >&2
+  exit 2
+fi
 echo "Reviewing the new commits on $REPO#$PR up to \${HEAD:-its head}: $(field commitsSince) since my last review."
 curl -sS --fail-with-body --max-time 1700 -X POST "$DEV_API/my-work/pr/$PR/review-again?repo=$REPO&head=$HEAD"
 echo
