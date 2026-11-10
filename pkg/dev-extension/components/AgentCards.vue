@@ -686,6 +686,7 @@ export default {
   background: none;
   color:      var(--muted);
   font-size:  12px;
+  line-height: 1.4;
   cursor:     pointer;
 
   &:hover { color: var(--body-text); }

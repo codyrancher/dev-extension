@@ -8136,6 +8136,9 @@ const WATCHABLE = [
   // and `df` is a syscall per mount. Ten seconds is well under the rate either number changes
   // meaningfully, and the hub only pushes when it actually has.
   [/^\/system\/stats$/, 10_000],
+  // The plan's usage: dev-api reads it at most every five minutes whoever asks, so this is only
+  // how soon a new number reaches the sidebar.
+  [/^\/system\/usage$/, 60_000],
   [/^\/workspaces$/, 5_000],
   [/^\/conversations$/, 5_000],
   [/^\/tools\/[a-z0-9-]+$/, 10_000],

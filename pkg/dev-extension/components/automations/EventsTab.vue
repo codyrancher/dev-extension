@@ -502,7 +502,7 @@ const SOURCES = [
     min-width:     0;
     flex-wrap:     wrap;
 
-    .btn { min-height: 0; padding: 2px 10px; font-size: 12px; }
+    .btn { min-height: 0; padding: 3px 10px; font-size: 12px; line-height: 1.4; }
   }
 
   &__dot {
@@ -529,6 +529,7 @@ const SOURCES = [
     background:    none;
     color:         var(--muted);
     font-size:     12px;
+    line-height:   1.5;
     cursor:        pointer;
 
     &--on { background: var(--dev-accent); color: #fff; }
@@ -560,7 +561,7 @@ const SOURCES = [
     border-radius: var(--r-md);
     font-family:   monospace;
 
-    button { min-height: 0; padding: 0 4px; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; }
+    button { min-height: 0; padding: 0 4px; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1.2; }
     button:hover { color: var(--error); }
   }
 
@@ -601,6 +602,7 @@ const SOURCES = [
     color:                 var(--body-text);
     text-align:            left;
     font-size:             12px;
+    line-height:           1.4;
     cursor:                pointer;
 
     &:hover { background: color-mix(in srgb, var(--body-text) 4%, transparent); }
@@ -624,7 +626,7 @@ const SOURCES = [
     &--workspace { color: var(--dev-accent); border-color: color-mix(in srgb, var(--dev-accent) 50%, var(--border)); }
   }
 
-  &__name { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: none; padding: 0; }
+  &__name { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: none; padding: 0; border: 0; }
 
   &__what { display: flex; gap: var(--dev-space-2); min-width: 0; overflow: hidden; }
   &__subject { font-family: monospace; white-space: nowrap; color: var(--muted); }
@@ -665,6 +667,7 @@ const SOURCES = [
     background: none;
     color:      var(--link);
     font-size:  12px;
+    line-height: 1.4;
     cursor:     pointer;
 
     &:hover { text-decoration: underline; }

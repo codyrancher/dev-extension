@@ -92,6 +92,7 @@ export default {
     background:            none;
     color:                 var(--body-text);
     font-size:             12px;
+    line-height:           1.4;
     text-align:            left;
     cursor:                pointer;
 

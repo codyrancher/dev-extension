@@ -277,6 +277,7 @@ async function stopIt() {
     background: none;
     color:      var(--link);
     font-size:  12px;
+    line-height: 1.4;
     text-align: left;
     cursor:     pointer;
 
@@ -295,11 +296,12 @@ async function stopIt() {
   &__label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
 
   &__bar { display: flex; align-items: center; gap: var(--dev-space-3); font-size: 12px; }
-  &__stop { margin-left: auto; }
+  &__stop { margin-left: auto; line-height: 1.4; }
 
   &__output {
     flex:          0 0 auto;
-    height:        min(52vh, 460px);
+    min-height:    80px;
+    max-height:    min(52vh, 460px);
     margin:        0;
     padding:       var(--dev-space-3);
     overflow:      auto;
@@ -320,6 +322,7 @@ async function stopIt() {
     background: none;
     color:      var(--link);
     font-size:  12px;
+    line-height: 1.4;
     cursor:     pointer;
   }
 

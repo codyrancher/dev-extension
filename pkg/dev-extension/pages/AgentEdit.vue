@@ -927,6 +927,7 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
     color:         var(--muted);
     font-family:   monospace;
     font-size:     11px;
+    line-height:   1.5;
     cursor:        pointer;
 
     &:hover { color: var(--body-text); }
