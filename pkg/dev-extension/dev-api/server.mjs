@@ -9966,29 +9966,37 @@ function workspaceMoved(name) {
   i.retryAt = 0;
 }
 
-/** Every workspace there is, with what its status needs: its repository and its role. */
+/**
+ * Every workspace there is, with what its status needs: its repository and its role - the same
+ * set the sidebar lists (reconcileRegistrar): Installations labelled as a workspace, and trees.
+ * A share, a preview or a Rancher of one's own is an Installation too, and named for an issue as
+ * often as not (`share-issue-19351-colors`), which is not the same thing as being the work on it;
+ * those come back as `others`, so a stage stored under one of their names can be taken away.
+ */
 async function workspacesForStatus() {
   const list = new Map();
+  const others = new Set();
   const instances = await installations('workspaceStatuses');
 
   for (const inst of instances?.items || []) {
-    if (inst.spec?.app === PREVIEW_APP) {
+    const name = inst.metadata?.labels?.[LABEL_WORKSPACE];
+
+    if (!name || inst.spec?.app === PREVIEW_APP) {
+      others.add(inst.metadata?.name || '');
       continue;
     }
     const ws = workspaceFromInstance(inst);
 
-    if (ws.name) {
-      list.set(ws.name, { name: ws.name, repo: ws.repo || DEFAULT_REPO, role: String(inst.metadata?.labels?.[LABEL_ROLE] || '') });
-    }
+    list.set(name, { name, repo: ws.repo || DEFAULT_REPO, role: String(inst.metadata?.labels?.[LABEL_ROLE] || '') });
   }
   // A workspace that is only its tree - its cluster objects gone or not there yet - is still work.
   for (const name of workspaceDirs() || []) {
-    if (!list.has(name)) {
+    if (!list.has(name) && !others.has(name)) {
       list.set(name, { name, repo: DEFAULT_REPO, role: '' });
     }
   }
 
-  return [...list.values()];
+  return { list: [...list.values()], others };
 }
 
 /** The busiest of each workspace's conversations, as the watcher last saw them. */
@@ -10138,7 +10146,11 @@ async function writeDerivedStages(changes, seen) {
       if (now && seen?.[name] && now.at !== seen[name].at) {
         continue;
       }
-      merged[name] = rec;
+      if (rec === null) {
+        delete merged[name];
+      } else {
+        merged[name] = rec;
+      }
     }
     const data = { ...(cm?.data || {}), 'stages.json': JSON.stringify(merged) };
 
@@ -10170,7 +10182,8 @@ const workspaceStatusTick = singleFlight(async() => {
     return;
   }
   // The ones somebody is waiting on first, so a refresh is not queued behind a fresh start's reads.
-  const list = (await workspacesForStatus()).sort((a, b) => Number(!!wsStatus.inputs[b.name]?.fresh) - Number(!!wsStatus.inputs[a.name]?.fresh));
+  const { list: found, others } = await workspacesForStatus();
+  const list = found.sort((a, b) => Number(!!wsStatus.inputs[b.name]?.fresh) - Number(!!wsStatus.inputs[a.name]?.fresh));
   const agents = await agentsByWorkspace();
   let stored = wsStatus.stored;
 
@@ -10226,6 +10239,13 @@ const workspaceStatusTick = singleFlight(async() => {
     next[w.name] = derived.status;
     if (derived.write) {
       changes[w.name] = derived.write;
+    }
+  }
+  // A stage under the name of something that is not a workspace - 0.3.687 wrote four, for shares
+  // named for an issue - is taken away. Only those names: a workspace that has gone keeps its stage.
+  for (const name of others) {
+    if (name && stored[name]) {
+      changes[name] = null;
     }
   }
   // Inputs of workspaces that are gone go with them.
