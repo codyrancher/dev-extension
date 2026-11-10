@@ -15,7 +15,9 @@ import {
 import { devFetch, clusterBase } from '../api';
 import { listSkills, readSkill } from '../skills';
 import { EVENT_NAMES } from '../dev-api/automation-events.mjs';
-import { conditionLines, SCRIPT_TIMEOUT_S, SCRIPT_TIMEOUT_MAX_S } from '../dev-api/automation-rules.mjs';
+import {
+  conditionLines, nameMatches, SCRIPT_TIMEOUT_S, SCRIPT_TIMEOUT_MAX_S
+} from '../dev-api/automation-rules.mjs';
 import { recentEvents, tryDefinition, OUTCOME_WORDS, stamp } from '../automations';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, AGENTS_ROUTE, DEV_API_IN_CLUSTER
@@ -325,6 +327,11 @@ export default {
       }
     },
 
+    /** Whether a known name is already covered by a wildcard in the list, without being in it. */
+    covered(name) {
+      return !this.eventNames.includes(name) && this.eventNames.some((p) => p.includes('*')) && nameMatches(this.eventNames.filter((p) => p.includes('*')), name);
+    },
+
     /** Add a known name to the list, or take it out if it is there. */
     toggleName(name) {
       const names = this.eventNames;
@@ -548,7 +555,8 @@ export default {
               :key="n"
               type="button"
               class="agent-edit__name"
-              :class="{ 'agent-edit__name--on': eventNames.includes(n) }"
+              :class="{ 'agent-edit__name--on': eventNames.includes(n), 'agent-edit__name--covered': covered(n) }"
+              :title="covered(n) ? 'Already covered by a wildcard' : ''"
               @click="toggleName(n)"
             >
               {{ n }}
@@ -932,6 +940,7 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
 
     &:hover { color: var(--body-text); }
     &--on { color: var(--dev-accent); border-color: var(--dev-accent); }
+    &--covered { color: var(--dev-accent); border-style: dashed; border-color: color-mix(in srgb, var(--dev-accent) 60%, var(--border)); }
   }
 
   &__tried {

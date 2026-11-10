@@ -591,7 +591,7 @@ const SOURCES = [
 
   &__row {
     display:               grid;
-    grid-template-columns: 76px 74px minmax(150px, 190px) minmax(0, 1fr) auto auto;
+    grid-template-columns: 76px 86px minmax(150px, 190px) minmax(0, 1fr) auto auto;
     align-items:           center;
     gap:                   var(--dev-space-3);
     width:                 100%;
@@ -653,7 +653,7 @@ const SOURCES = [
     display:        flex;
     flex-direction: column;
     gap:            var(--dev-space-3);
-    padding:        4px 12px 14px 98px;
+    padding:        4px 12px 14px 100px;
     font-size:      12px;
   }
 
