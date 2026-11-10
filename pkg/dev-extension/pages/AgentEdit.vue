@@ -24,7 +24,9 @@ import {
   DEV_PRODUCT, BLANK_CLUSTER, AGENTS_ROUTE, DEV_API_IN_CLUSTER
 } from '../config/constants';
 
-import { REVIEW_NEW_COMMITS_SCRIPT, REVIEW_NEW_COMMITS_CONDITION } from '../automation-scripts.mjs';
+import {
+  REVIEW_NEW_COMMITS_SCRIPT, REVIEW_NEW_COMMITS_CONDITION, REVIEW_PR_SCRIPT, REVIEW_PR_CONDITION
+} from '../automation-scripts.mjs';
 
 const SCRIPT_EXAMPLE_STAGE = `# $EVENT_WORKSPACE reached $(jq -r .payload.toLabel "$EVENT_FILE").
 echo "$EVENT_WORKSPACE: $EVENT_TITLE"`;
@@ -36,16 +38,16 @@ jq -r '.payload.comment.body // empty' < "$EVENT_FILE"`;
 
 /**
  * Ready-made starts, from the Automations tab. The review one is the one asked for: every pull
- * request you are asked to review, reviewed the way the Review button does it, narrowed to the
- * repositories and the people you name.
+ * request you are asked to review, reviewed the way the Review button does it (a script asking
+ * dev-api, REVIEW_PR_SCRIPT), narrowed to the repositories and the people you name.
  */
 const TEMPLATES = {
   'review-requests': {
     def: {
-      name: 'review-requests', description: 'Reviews each pull request I am asked to review, the way My Work\'s Review button does.', action: 'review',
+      name: 'review-requests', description: 'Reviews each pull request I am asked to review, the first time and once it is ready - what My Work\'s Review button does.', action: 'script', script: REVIEW_PR_SCRIPT, timeoutSec: 1800,
     },
     evt: {
-      source: 'github', names: 'pr.review-requested', repos: 'rancher/dashboard', authors: '', condition: '!p.draft',
+      source: 'github', names: 'pr.review-requested, pr.ready-for-review', repos: 'rancher/dashboard', authors: '', condition: REVIEW_PR_CONDITION,
     },
   },
   // A second pass: the commits pushed since my review, when I am asked to review again.
@@ -167,9 +169,6 @@ export default {
       if (this.def.action === 'script' && !this.def.script.trim()) {
         out.push('Write the script it runs.');
       }
-      if (this.def.action === 'review' && !this.on.event) {
-        out.push('A review runs on an event about a pull request: tick On an event.');
-      }
       if (this.def.action === 'agent' && !this.def.prompt.trim()) {
         out.push('Say what the conversation should open with.');
       }
@@ -285,7 +284,7 @@ export default {
         this.def = {
           name:        found.name,
           description: found.description || '',
-          action:      ['script', 'review'].includes(found.action) ? found.action : 'agent',
+          action:      found.action === 'script' ? 'script' : 'agent',
           prompt:      found.prompt || '',
           script:      found.script || '',
           timeoutSec:  found.timeoutSec || SCRIPT_TIMEOUT_S,
@@ -508,26 +507,7 @@ export default {
           >
           <span><strong>A script</strong> - run in the agent pod, with gh, git, kubectl and claude to hand</span>
         </label>
-        <label
-          class="agent-edit__kind"
-          :class="{ 'agent-edit__kind--on': def.action === 'review' }"
-        >
-          <input
-            v-model="def.action"
-            type="radio"
-            value="review"
-            data-testid="automation-kind-review"
-          >
-          <span><strong>Review the pull request</strong> - what My Work's Review button does, on the PR the event is about</span>
-        </label>
       </div>
-
-      <p
-        v-if="def.action === 'review'"
-        class="text-muted agent-edit__hint"
-      >
-        A <code>pr-&lt;number&gt;</code> workspace, made on the Rancher your latest workspace uses if it is not there yet, and the my-pr-full-review skill in a conversation in it - the review panel fills in as it goes. Started by the in-cluster API as soon as the event is recorded, whether or not a dashboard is open. One review per pull request at a time: an event for a PR already being reviewed is skipped, and says so. A new workspace is given a Rancher token of yours that already works; if none does, it waits for an open dashboard to mint one.
-      </p>
 
       <template v-if="def.action === 'script'">
         <label class="agent-edit__label">Script - bash, unless it starts with <code>#!</code>. The event is on stdin as JSON; its output is the run's log.</label>
@@ -605,11 +585,7 @@ export default {
     <section class="agent-edit__section">
       <h3>What sets it off</h3>
       <p class="agent-edit__always">
-        <i class="icon icon-checkmark" /> By hand, always: <template v-if="def.action === 'review'">
-          on any pull request's event in the log, with Run an automation on this
-        </template><template v-else>
-          Run now, on the Automations tab
-        </template>
+        <i class="icon icon-checkmark" /> By hand, always: Run now on the Automations tab, or Run an automation on this on any event in the log
       </p>
       <div class="agent-edit__trigger">
         <Checkbox

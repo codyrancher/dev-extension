@@ -127,7 +127,7 @@ export default {
 
     /** The automations a person might run on the open event, for trying one out on it. */
     runnable() {
-      return this.defs.filter((d) => d.action !== 'review' || this.open?.event?.payload?.kind === 'pr');
+      return this.defs;
     },
   },
 

@@ -30,7 +30,7 @@ import {
   GITHUB_POLL_MS, FULL_EVERY, EVENT_NAMES, makeEvent, GITHUB_LIGHT_FIELDS, GITHUB_LIGHT_QUERY, GITHUB_LIGHT_PAGE_QUERY, GITHUB_NODES_QUERY, DETAIL_BATCH, watchQueries, itemsToRead, githubRound, stageEvents, workspaceForItem,
 } from './automation-events.mjs';
 import {
-  AUTOMATION_BURST, SCRIPT_TIMEOUT_S, SCRIPT_TIMEOUT_MAX_S, triggersOfDef, actionOf, pullRequestOf, evaluateEvent, conditionScope, fillTemplate, cronDueAt, envFile, scriptWrapper, exitNote,
+  AUTOMATION_BURST, SCRIPT_TIMEOUT_S, SCRIPT_TIMEOUT_MAX_S, triggersOfDef, actionOf, evaluateEvent, conditionScope, fillTemplate, cronDueAt, envFile, scriptWrapper, exitNote,
 } from './automation-rules.mjs';
 import {
   AGENT_RANK, workspaceNumbers, isFixWorkspace, reviewWork, fixWork, toDerived, reconcileRecord, displayOf, activityTimes, stageInputs,
@@ -41,6 +41,7 @@ import {
   rancherTokenScript, firstWorkingTokenScript, environmentScript, checkoutScript,
 } from '../workspace-provision.mjs';
 import { reviewPrompt, reviewAgainPrompt } from '../review-prompt.mjs';
+import { withoutReviewAction } from '../automation-scripts.mjs';
 import {
   strataInit, strataNotes, strataNote, strataCreateNote, strataUpdateNote, strataDeleteNote, strataRestoreNote,
   strataLabels, strataCreateLabel, strataUpdateLabel, strataDeleteLabel, strataAddNoteLabel, strataRemoveNoteLabel,
@@ -3086,6 +3087,14 @@ const OPENAPI = {
         summary:     'Review runs waiting for a dashboard to start them, oldest first.',
         description: 'A review is what My Work\'s Review button does, and that needs the person\'s Rancher session to make and prepare the workspace, so an open dashboard claims each one and starts it.',
         responses:   { 200: { description: '{ runs }' } },
+      },
+    },
+    '/my-work/pr/{num}/review': {
+      post: {
+        operationId: 'reviewPullRequest',
+        summary:     'Review a pull request: My Work\'s Review button, for scripts (the review automation is one). ?repo=owner/name; body { title } names a new workspace.',
+        description: 'Makes the pr-<number> workspace if it is not there, prepares it, and starts the my-pr-full-review skill in its "Review #N" conversation. A review conversation that is open is left alone ({ already: true }). When only a dashboard can start it - a new workspace needs a Rancher token and none of yours works from here - it is queued for the next open dashboard ({ waiting: true }) rather than failed. note is one sentence on what happened.',
+        responses:   { 200: { description: '{ pr, repo, workspace, conversation, created, already, waiting, note }' } },
       },
     },
     '/my-work/pr/{num}/review-again': {
@@ -7755,6 +7764,13 @@ const routes = [
 
     return { run };
   }],
+  ['POST', /^\/my-work\/pr\/(\d+)\/review$/, async(m, url, body) => {
+    try {
+      return await reviewOnce(Number(m[1]), await repoOf(url), String(body?.title || url.searchParams.get('title') || '').slice(0, 300));
+    } catch (e) {
+      throw failure(e.status || 500, e.message || String(e));
+    }
+  }],
   ['POST', /^\/my-work\/pr\/(\d+)\/review-again$/, async(m, url) => {
     try {
       return await reviewAgainOnce(Number(m[1]), await repoOf(url), url.searchParams.get('head') || '');
@@ -9250,7 +9266,7 @@ async function automationDefs(force = false) {
     try {
       const def = JSON.parse(cm.data?.['agent.json'] || '');
 
-      return def?.name && AUTOMATION_RE.test(def.name) ? def : null;
+      return def?.name && AUTOMATION_RE.test(def.name) ? withoutReviewAction(def) : null;
     } catch {
       return null;
     }
@@ -9336,7 +9352,6 @@ function eventBrief(event) {
 }
 
 function newAutoRun(def, trigger, event = null, context = null, note = '') {
-  const review = actionOf(def) === 'review';
   const run = {
     id:           `r${ Date.now().toString(36) }${ crypto.randomBytes(3).toString('hex') }`,
     automation:   def.name,
@@ -9344,15 +9359,13 @@ function newAutoRun(def, trigger, event = null, context = null, note = '') {
     trigger,
     event:        eventBrief(event),
     context:      context || null,
-    // A review is started by a dashboard - see claimAutoRun - so it waits to be picked up.
-    state:        review ? 'requested' : 'starting',
+    state:        'starting',
     startedAt:    new Date().toISOString(),
     endedAt:      '',
     exitCode:     null,
     conversation: '',
     result:       '',
-    note:         review && !note ? 'waiting to start' : note,
-    ...(review ? { pr: pullRequestOf(event) } : {}),
+    note,
     ...(actionOf(def) === 'script' ? { timeoutSec: Math.max(5, Math.min(SCRIPT_TIMEOUT_MAX_S, Number(def.timeoutSec) || SCRIPT_TIMEOUT_S)) } : {}),
   };
 
@@ -9390,11 +9403,6 @@ function runVars(def, run, event, context, there) {
  * the prompt queued, the pane started detached - so it shows up in the drawer like any other.
  */
 async function startAutoRun(def, run, event = null, context = null) {
-  // A review is started where the Review button runs - in a dashboard, with the person's session,
-  // which is what makes and prepares a workspace. It waits as `requested` until one claims it.
-  if (actionOf(def) === 'review') {
-    return;
-  }
   const dir = autoPath('runs', run.id);
   const there = `${ AUTO_DIR_IN_AGENT }/runs/${ run.id }`;
 
@@ -9654,18 +9662,6 @@ async function recordAutoEvents(events) {
 
       if (!verdict) {
         continue;
-      }
-      if (verdict.outcome === 'run' && actionOf(def) === 'review') {
-        const pr = pullRequestOf(event);
-        const busy = pr && liveReviewOf(pr);
-
-        if (!pr) {
-          verdict.outcome = 'blocked';
-          verdict.reason = 'A review needs a pull request, and this event is not about one.';
-        } else if (busy) {
-          verdict.outcome = 'throttled';
-          verdict.reason = `A review of ${ pr.repo }#${ pr.number } is already under way (${ busy.automation }, ${ busy.state }).`;
-        }
       }
       if (verdict.outcome === 'run') {
         const n = burst.get(def.name) || 0;
@@ -10171,19 +10167,7 @@ async function requestAutoRun(name, body = {}, fallbackTrigger = 'manual') {
     : null;
   const note = typeof body.note === 'string' ? body.note.slice(0, 200) : '';
 
-  if (actionOf(def) === 'review') {
-    const pr = pullRequestOf(event);
-
-    if (!pr) {
-      throw failure(400, 'A review automation runs on a pull request: run it on one of the events in the log.');
-    }
-    const busy = liveReviewOf(pr);
-
-    if (busy) {
-      throw failure(409, `A review of ${ pr.repo }#${ pr.number } is already under way.`);
-    }
-  }
-  const run = newAutoRun(def, trigger, event, context, event && actionOf(def) !== 'review' ? 'replayed by hand' : note);
+  const run = newAutoRun(def, trigger, event, context, event ? 'replayed by hand' : note);
 
   startAutoRun(def, run, event, context).catch(() => {});
 
@@ -11541,7 +11525,85 @@ async function reviewAgainHere(number, repo, asked = '') {
 
   await writeReview(number, 'again.json', record).catch(() => {});
 
-  return { ...record, already: false, steps: notes };
+  return {
+    ...record,
+    already: false,
+    steps:   notes,
+    note:    `${ conversation.resumed ? 'Resumed' : 'Started' } ${ record.title } in ${ where.name }${ record.created ? ', made for it' : '' }.`,
+  };
+}
+
+/**
+ * Reviews asked for over HTTP that only a dashboard can start, as runs of their own under a name no
+ * automation can have (AUTOMATION_RE): the claim and report routes, and the agent-defs.ts tick that
+ * uses them, work on any run of kind `review`, so a dashboard starts these the way it starts any.
+ */
+const REVIEW_QUEUE = '-reviews';
+const reviewFlights = new Map();
+
+/**
+ * One review, what My Work's Review button does, for a script to ask for: the workspace made if it
+ * is not there, prepared, and the review's conversation started - or left alone if it is open.
+ * What needs a dashboard is queued for the next one rather than failed.
+ */
+async function reviewHere(number, repo, title = '') {
+  const pr = { repo, number, title: title || `Review #${ number }` };
+  const waiting = liveReviewOf(pr);
+
+  if (waiting) {
+    return { pr: number, repo, waiting: true, run: waiting.id, note: `A review of ${ repo }#${ number } is already waiting to start: ${ waiting.note || waiting.state }.` };
+  }
+  const notes = [];
+
+  try {
+    const started = await startReviewHere(pr, (what) => notes.push(what));
+
+    return {
+      pr:      number,
+      repo,
+      ...started,
+      steps:   notes,
+      note:    started.already
+        ? `Review #${ number } is already open in ${ started.workspace }; it was left as it is.`
+        : `Started Review #${ number } in ${ started.workspace }${ started.created ? ', made for it' : '' }.`,
+    };
+  } catch (e) {
+    if (!(e instanceof NeedsDashboard)) {
+      throw e;
+    }
+    const message = String(e.message || e).slice(0, 240);
+    const run = {
+      id:           `r${ Date.now().toString(36) }${ crypto.randomBytes(3).toString('hex') }`,
+      automation:   REVIEW_QUEUE,
+      kind:         'review',
+      trigger:      'api',
+      event:        null,
+      context:      null,
+      state:        'requested',
+      needsDashboard: true,
+      startedAt:    new Date().toISOString(),
+      endedAt:      '',
+      exitCode:     null,
+      conversation: '',
+      result:       '',
+      note:         `${ message } Waiting for an open dashboard to start it.`,
+      pr,
+    };
+
+    autoSaveRuns(REVIEW_QUEUE, [...autoRuns(REVIEW_QUEUE), run]);
+
+    return { pr: number, repo, waiting: true, run: run.id, steps: notes, note: run.note };
+  }
+}
+
+function reviewOnce(number, repo, title) {
+  const key = `${ repo }#${ number }`;
+
+  if (!reviewFlights.has(key)) {
+    reviewFlights.set(key, reviewHere(number, repo, title).finally(() => reviewFlights.delete(key)));
+  }
+
+  return reviewFlights.get(key);
 }
 
 function reviewAgainOnce(number, repo, head) {

@@ -14,6 +14,7 @@
 
 import { devFetch, clusterBase, DEV_SYSTEM_NAMESPACE } from './api';
 import { devApi, startPrReview } from './reviews';
+import { withoutReviewAction } from './automation-scripts.mjs';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -62,8 +63,8 @@ export interface ResourceTrigger {
 export interface AgentDef {
   name: string;
   description: string;
-  /** What it does: an agent conversation (the default), a script, or a review of the event's PR. */
-  action?: 'agent' | 'script' | 'review';
+  /** What it does: an agent conversation (the default) or a script. */
+  action?: 'agent' | 'script';
   /** What the conversation opens with; a skill invocation (`/my-pr-full-review ...`) or prose. */
   prompt: string;
   /** The script, for a script automation: bash unless it starts with `#!`. */
@@ -200,7 +201,8 @@ function parseDef(cm: Json): AgentDef | null {
     }
     def.triggers = triggersOf(def);
 
-    return def;
+    // One saved when a review was an action of its own reads as the script that does it now.
+    return withoutReviewAction(def);
   } catch {
     return null;
   }

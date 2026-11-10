@@ -30,11 +30,12 @@ export function triggersOfDef(def) {
 }
 
 /**
- * What an automation does: an agent conversation unless it says otherwise. A script runs in the
- * agent pod; a review is what My Work's Review button does with the event's pull request.
+ * What an automation does: an agent conversation unless it says otherwise, or a script run in the
+ * agent pod. (A review is a script now - REVIEW_PR_SCRIPT, and withoutReviewAction for a definition
+ * saved when it was an action of its own.)
  */
 export function actionOf(def) {
-  return def?.action === 'script' || def?.action === 'review' ? def.action : 'agent';
+  return def?.action === 'script' ? 'script' : 'agent';
 }
 
 /** The pull request an event is about, or null: what a review automation needs to have one. */

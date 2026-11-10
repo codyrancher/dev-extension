@@ -190,8 +190,8 @@ test('the lists are checked before any constraint, which never runs', () => {
   assert.equal(ran, 0);
 });
 
-test('a review needs a pull request', () => {
-  assert.equal(actionOf({ action: 'review' }), 'review');
+test('a pull request off an event; review is no longer an action of its own', () => {
+  assert.equal(actionOf({ action: 'review' }), 'agent', 'withoutReviewAction turns those into scripts first');
   assert.deepEqual(pullRequestOf(EVENT), { repo: 'rancher/dashboard', number: 1, title: 'T' });
   assert.equal(pullRequestOf({ payload: { kind: 'issue', repo: 'rancher/dashboard', number: 3 } }), null);
   assert.equal(pullRequestOf({ payload: { kind: 'pr', repo: 'not a repo', number: 3 } }), null);

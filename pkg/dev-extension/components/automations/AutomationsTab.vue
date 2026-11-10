@@ -89,7 +89,7 @@ export default {
         const runs = this.status.runs?.[def.name] || [];
         const live = runs.filter((r) => ['requested', 'starting', 'running', 'waiting'].includes(r.state)).length;
         const last = runs[0] || null;
-        const kind = ['script', 'review'].includes(def.action) ? def.action : 'agent';
+        const kind = def.action === 'script' ? 'script' : 'agent';
 
         return {
           key:       def.name,
@@ -139,11 +139,8 @@ export default {
       }
     },
 
-    /** What it does, in a phrase: the skill or the start of the prompt, the script's first line, or the review. */
+    /** What it does, in a phrase: the skill or the start of the prompt, or the script's first line. */
     doesWords(def, kind) {
-      if (kind === 'review') {
-        return 'Reviews the pull request';
-      }
       if (kind === 'script') {
         const line = String(def.script || '').split('\n').find((l) => l.trim() && !l.startsWith('#')) || 'a script';
 
@@ -356,7 +353,6 @@ export default {
       <template #cell:actions="{ row }">
         <div class="autos__actions">
           <RcButton
-            v-if="row.kind !== 'review'"
             variant="secondary"
             size="small"
             :disabled="starting === row.name"
