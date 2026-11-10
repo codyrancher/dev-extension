@@ -24,6 +24,8 @@ import {
   DEV_PRODUCT, BLANK_CLUSTER, AGENTS_ROUTE, DEV_API_IN_CLUSTER
 } from '../config/constants';
 
+import { REVIEW_NEW_COMMITS_SCRIPT, REVIEW_NEW_COMMITS_CONDITION } from '../automation-scripts.mjs';
+
 const SCRIPT_EXAMPLE_STAGE = `# $EVENT_WORKSPACE reached $(jq -r .payload.toLabel "$EVENT_FILE").
 echo "$EVENT_WORKSPACE: $EVENT_TITLE"`;
 
@@ -44,6 +46,15 @@ const TEMPLATES = {
     },
     evt: {
       source: 'github', names: 'pr.review-requested', repos: 'rancher/dashboard', authors: '', condition: '!p.draft',
+    },
+  },
+  // A second pass: the commits pushed since my review, when I am asked to review again.
+  'review-new-commits': {
+    def: {
+      name: 'review-new-commits', description: 'Reviews the new commits on a pull request I reviewed before, when I am asked to review it again - the workspace\'s "Review the new commits" button.', action: 'script', script: REVIEW_NEW_COMMITS_SCRIPT, timeoutSec: 1800,
+    },
+    evt: {
+      source: 'github', names: 'pr.review-requested, pr.pushed', repos: '', authors: '', condition: REVIEW_NEW_COMMITS_CONDITION,
     },
   },
   'stage-script': {

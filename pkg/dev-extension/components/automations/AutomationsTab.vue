@@ -268,6 +268,13 @@ export default {
         Review PRs I'm asked to review
       </router-link>
       <router-link
+        :to="editTo('', 'review-new-commits')"
+        class="autos__template"
+        data-testid="automation-template-review-again"
+      >
+        Review new commits when I'm asked again
+      </router-link>
+      <router-link
         :to="editTo('', 'stage-script')"
         class="autos__template"
       >

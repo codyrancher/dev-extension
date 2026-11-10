@@ -65,7 +65,7 @@ const ITEM_FIELDS = `
     ${ ITEM_COMMON }
     isDraft merged mergedAt mergedBy { login } headRefOid headRefName baseRefName
     reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
-    reviews(last: 20) { nodes { id url state body submittedAt author { login } } }
+    reviews(last: 20) { nodes { id url state body submittedAt author { login } commit { oid } } }
     reviewThreads(last: 30) { nodes { path comments(last: 10) { nodes { ${ COMMENT } path } } } }
     commits(last: 30) { nodes { commit { oid messageHeadline committedDate author { name user { login } } statusCheckRollup { state } } } }
   }`;
@@ -289,8 +289,34 @@ export function involved(s) {
   return !!(r.assignee || r.requested || r.reviewer || r.author || r.workspace);
 }
 
+/**
+ * The person's own latest review of a pull request, and whether commits have landed since: the
+ * commit it was submitted against, and how far behind the head that is. `commitsSince` is null when
+ * that commit is older than the thirty that are read. A pending (unsubmitted) review is not one.
+ */
+export function myReviewOf(node, me, head) {
+  const meLower = String(me || '').toLowerCase();
+  const mine = nodesOf(node.reviews)
+    .filter((r) => meLower && String(r.author?.login || '').toLowerCase() === meLower && r.state !== 'PENDING' && r.submittedAt)
+    .sort((a, b) => String(a.submittedAt).localeCompare(String(b.submittedAt)))
+    .pop();
+
+  if (!mine) {
+    return { myReview: null, newCommits: false, commitsSince: 0 };
+  }
+  const commit = String(mine.commit?.oid || '');
+  const oids = nodesOf(node.commits).map((c) => c.commit?.oid).filter(Boolean);
+  const at = commit ? oids.lastIndexOf(commit) : -1;
+
+  return {
+    myReview:     { state: String(mine.state || ''), at: String(mine.submittedAt || ''), commit, url: String(mine.url || '') },
+    newCommits:   !!(commit && head && commit !== head),
+    commitsSince: !commit || commit === head ? 0 : at >= 0 ? oids.length - 1 - at : null,
+  };
+}
+
 /** What every event about an item says about it, so a condition can look at it without a lookup. */
-function itemFacts(node, s) {
+function itemFacts(node, s, me = '') {
   return {
     kind:      s.kind,
     repo:      s.repo,
@@ -303,7 +329,9 @@ function itemFacts(node, s) {
     labels:    s.labels,
     assignees: s.assignees,
     roles:     s.roles,
-    ...(s.kind === 'pr' ? { branch: String(node.headRefName || ''), base: String(node.baseRefName || ''), head: s.head } : {}),
+    ...(s.kind === 'pr' ? {
+      branch: String(node.headRefName || ''), base: String(node.baseRefName || ''), head: s.head, ...myReviewOf(node, me, s.head)
+    } : {}),
   };
 }
 
@@ -322,7 +350,7 @@ export function itemEvents(before, node, {
   me = '', now, quiet = false, hint = {}
 } = {}) {
   const s = itemSnapshot(node, me, now, before, hint);
-  const facts = itemFacts(node, s);
+  const facts = itemFacts(node, s, me);
   const subject = `${ s.repo }#${ s.number }`;
   const events = [];
   const add = (what, { actor = '', at = now, payload = {}, key = '', title = '' } = {}) => {

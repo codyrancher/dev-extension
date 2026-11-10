@@ -285,3 +285,29 @@ test('an event without a key still gets a stable id', () => {
 
   assert.match(a.id, /^wo-[0-9a-f]{12}$/);
 });
+
+test('a pull request event says whether there are commits since the person\'s own last review', async() => {
+  const { myReviewOf } = await import('../dev-api/automation-events.mjs');
+  const node = {
+    reviews: {
+      nodes: [
+        { author: { login: 'Me' }, state: 'COMMENTED', submittedAt: '2026-01-01T00:00:00Z', commit: { oid: 'a1' } },
+        { author: { login: 'me' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-01-02T00:00:00Z', commit: { oid: 'b2' }, url: 'u' },
+        { author: { login: 'me' }, state: 'PENDING', submittedAt: null, commit: { oid: 'c3' } },
+        { author: { login: 'them' }, state: 'APPROVED', submittedAt: '2026-01-03T00:00:00Z', commit: { oid: 'c3' } },
+      ],
+    },
+    commits: { nodes: ['a1', 'b2', 'c3', 'd4'].map((oid) => ({ commit: { oid } })) },
+  };
+
+  assert.deepEqual(myReviewOf(node, 'me', 'd4'), {
+    myReview: {
+      state: 'CHANGES_REQUESTED', at: '2026-01-02T00:00:00Z', commit: 'b2', url: 'u'
+    },
+    newCommits:   true,
+    commitsSince: 2,
+  });
+  assert.equal(myReviewOf(node, 'me', 'b2').newCommits, false, 'reviewed at the head');
+  assert.equal(myReviewOf({ ...node, commits: { nodes: [{ commit: { oid: 'd4' } }] } }, 'me', 'd4').commitsSince, null, 'older than the commits read');
+  assert.deepEqual(myReviewOf(node, 'someone', 'd4'), { myReview: null, newCommits: false, commitsSince: 0 });
+});

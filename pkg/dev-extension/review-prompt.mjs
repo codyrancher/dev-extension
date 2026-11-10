@@ -9,3 +9,11 @@
 export function reviewPrompt(pr, repo = 'rancher/dashboard') {
   return `Use the my-pr-full-review skill to review ${ repo } PR #${ pr } — harness portal context, file through $CLAUDE_HARNESS_API/my-work/pr/${ pr }.`;
 }
+
+/**
+ * What a second pass opens with: the workspace's "Review the new commits" button's words
+ * (workspace-rail.ts, `reviewAgain`), and dev-api's when an automation asks for one.
+ */
+export function reviewAgainPrompt(pr, repo = 'rancher/dashboard') {
+  return `Use the my-pr-review-new-commits skill on ${ repo } PR #${ pr } - the developer pushed new commits or replied since your review was submitted. File through $CLAUDE_HARNESS_API/my-work/pr/${ pr }.`;
+}

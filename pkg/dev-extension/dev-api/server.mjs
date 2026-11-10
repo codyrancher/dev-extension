@@ -40,7 +40,7 @@ import {
   seedMark, workspaceTree, rootScript, nodeScript, rootCommand, nodeCommand, baseScript, seedCheckScript, seedCurrent, seedScript, toolsCheckScript, toolsMissing, toolsScript,
   rancherTokenScript, firstWorkingTokenScript, environmentScript, checkoutScript,
 } from '../workspace-provision.mjs';
-import { reviewPrompt } from '../review-prompt.mjs';
+import { reviewPrompt, reviewAgainPrompt } from '../review-prompt.mjs';
 import {
   strataInit, strataNotes, strataNote, strataCreateNote, strataUpdateNote, strataDeleteNote, strataRestoreNote,
   strataLabels, strataCreateLabel, strataUpdateLabel, strataDeleteLabel, strataAddNoteLabel, strataRemoveNoteLabel,
@@ -3086,6 +3086,14 @@ const OPENAPI = {
         summary:     'Review runs waiting for a dashboard to start them, oldest first.',
         description: 'A review is what My Work\'s Review button does, and that needs the person\'s Rancher session to make and prepare the workspace, so an open dashboard claims each one and starts it.',
         responses:   { 200: { description: '{ runs }' } },
+      },
+    },
+    '/my-work/pr/{num}/review-again': {
+      post: {
+        operationId: 'reviewNewCommits',
+        summary:     'Review the new commits on a pull request reviewed before: the workspace\'s "Review the new commits" button, for scripts. ?repo=owner/name&head=<sha>.',
+        description: 'Sends the my-pr-review-new-commits prompt to the PR\'s review conversation if it is not open (resuming it), or to a new "Review #N: new commits" conversation beside an open one - never into an open one. Makes the review workspace if it has gone. Once per head commit: asking again for the same head answers { already: true } and where it went.',
+        responses:   { 200: { description: '{ pr, repo, head, workspace, conversation, title, resumed, created, already }' } },
       },
     },
     '/strata/notes': {
@@ -7747,6 +7755,13 @@ const routes = [
 
     return { run };
   }],
+  ['POST', /^\/my-work\/pr\/(\d+)\/review-again$/, async(m, url) => {
+    try {
+      return await reviewAgainOnce(Number(m[1]), await repoOf(url), url.searchParams.get('head') || '');
+    } catch (e) {
+      throw failure(e instanceof NeedsDashboard ? 409 : e.status || 500, e.message || String(e));
+    }
+  }],
   ['GET', /^\/my-work\/pr\/(\d+)\/ci$/, async(m, url) => ciFailures(await repoOf(url), Number(m[1]))],
   ['GET', /^\/my-work\/pr\/(\d+)\/ci\/(\d+)$/, async(m, url) => ciFailureDetail(await repoOf(url), Number(m[1]), Number(m[2]))],
   ['GET', /^\/my-work\/pr\/(\d+)\/ci\/(\d+)\/log$/, async(m, url) => ciFailureLog(await repoOf(url), Number(m[1]), Number(m[2]))],
@@ -11413,6 +11428,130 @@ async function startReviewHere(pr, say) {
   rememberReviewWorkspace(pr.number, { project: where.name });
 
   return { workspace: where.name, conversation: conversation.id, already: conversation.already, created: !where.exists };
+}
+
+/*
+ * "Review the new commits", from here: what the workspace's button does (WorkspaceRail's
+ * `reviewAgain`), for an automation script to call when a pull request somebody reviewed has new
+ * commits and asks for their review again.
+ *
+ * The button sends the my-pr-review-new-commits prompt into the review's conversation. Here that
+ * is done only to a conversation that is not open: one whose pane is gone is started again with
+ * the prompt queued, so it reviews with everything it already knows. An open one is somebody's,
+ * and is left exactly as it is (see startReviewConversation), so the second pass gets a
+ * conversation of its own beside it. A workspace that has gone since the first review is made
+ * again, as a first review makes one.
+ *
+ * Once per head commit: the same commits asked for twice - a push and a re-request arriving in one
+ * poll, an automation run again - start one pass, and the second call says where it went.
+ */
+const reviewAgainFlights = new Map();
+
+async function reviewAgainConversation(workspace, number, repo, say) {
+  const title = `Review #${ number }`;
+  const again = `${ title }: new commits`;
+  const listed = (await agentSessions('list', workspace)).out.split('\n').map((line) => line.split('\t')).filter(([id]) => CONVERSATION_ID.test(id || ''));
+  // The review itself first, then the latest second pass: whichever is not open is resumed.
+  const candidates = [
+    ...listed.filter(([, t]) => t === title),
+    ...listed.filter(([, t]) => t === again).reverse(),
+  ].map(([id]) => id);
+  const { pod } = await agentSessions('ids');
+  const ns = pod.metadata.namespace;
+  const podName = pod.metadata.name;
+  let id = '';
+
+  for (const candidate of candidates) {
+    const alive = String(await podExec(ns, podName, AGENT_CONTAINER, [
+      '/bin/sh', '-c', 'su node -c "tmux has-session -t mc-$1" >/dev/null 2>&1 && echo ALIVE || echo GONE', 'alive', candidate,
+    ], 20_000));
+
+    if (alive.includes('GONE')) {
+      id = candidate;
+      break;
+    }
+  }
+  const resumed = !!id;
+
+  if (!id) {
+    say('starting a conversation beside the open review');
+    id = (await agentSessions('new', workspace, `pr-${ number }-again`)).out.trim().split('\n').pop() || '';
+    if (!CONVERSATION_ID.test(id)) {
+      throw new Error(`The agent pod answered "${ id.slice(0, 80) }" when asked for a conversation.`);
+    }
+    await agentSessions('rename', id, again);
+  } else {
+    say('resuming the review conversation');
+  }
+  const prompt = Buffer.from(reviewAgainPrompt(number, repo), 'utf8').toString('base64');
+  const queued = String(await podExec(ns, podName, AGENT_CONTAINER, ['/bin/sh', '-c',
+    'mkdir -p /workspace/.queue && echo "$2" | base64 -d > "/workspace/.queue/$1" && chown 1000:1000 /workspace/.queue "/workspace/.queue/$1" 2>/dev/null; echo QUEUED', 'queue', id, prompt], 30_000));
+
+  if (!queued.includes('QUEUED')) {
+    throw new Error('The prompt could not be queued in the agent pod.');
+  }
+  await podExec(ns, podName, AGENT_CONTAINER, ['/bin/sh', '/seed/shell.sh', id, `/workspaces/${ workspace }/dashboard`, '/workspace/.home', 'start', `/workspaces/${ workspace }/bin/dev-shell`], 60_000);
+
+  return { id, resumed };
+}
+
+async function reviewAgainHere(number, repo, asked = '') {
+  const notes = [];
+  const say = (what) => notes.push(what);
+  let head = asked;
+
+  if (!head) {
+    head = String((await ghRest('GET', `/repos/${ repo }/pulls/${ number }`))?.head?.sha || '');
+  }
+  const before = await readReview(number, 'again.json').catch(() => null);
+
+  if (head && before?.head === head) {
+    return {
+      ...before, already: true, note: `The commits up to ${ head.slice(0, 7) } were already sent for review, to ${ before.title || before.conversation } in ${ before.workspace }.`
+    };
+  }
+  const where = await reviewWorkspaceName(number);
+  let host = '';
+
+  if (!where.exists) {
+    say(`making ${ where.name }`);
+    host = (await makeReviewWorkspace(where.name, repo, `Review #${ number }`, where.instances, say)).rancherUrl;
+    await finishReviewWorkspace(where.name, `Review #${ number }`, say);
+  } else {
+    host = String((await k8s(`${ INSTANCES }/${ where.name }`).catch(() => null))?.spec?.values?.rancherUrl || '');
+  }
+  const target = await reviewWorkspacePod(where.name, REVIEW_POD_WAIT_MS, say);
+
+  if (!target) {
+    throw new Error(`The workspace ${ where.name }'s pod did not start within ${ REVIEW_POD_WAIT_MS / 60_000 } minutes.`);
+  }
+  await prepareReviewWorkspace(target, where.name, number, host, say);
+  const conversation = await reviewAgainConversation(where.name, number, repo, say);
+  const record = {
+    pr:           number,
+    repo,
+    head,
+    workspace:    where.name,
+    conversation: conversation.id,
+    title:        conversation.resumed ? `Review #${ number }` : `Review #${ number }: new commits`,
+    resumed:      conversation.resumed,
+    created:      !where.exists,
+    at:           new Date().toISOString(),
+  };
+
+  await writeReview(number, 'again.json', record).catch(() => {});
+
+  return { ...record, already: false, steps: notes };
+}
+
+function reviewAgainOnce(number, repo, head) {
+  const key = `${ repo }#${ number }`;
+
+  if (!reviewAgainFlights.has(key)) {
+    reviewAgainFlights.set(key, reviewAgainHere(number, repo, head).finally(() => reviewAgainFlights.delete(key)));
+  }
+
+  return reviewAgainFlights.get(key);
 }
 
 /** Reviews waiting to start, started here one at a time; what needs a dashboard is left for one. */
