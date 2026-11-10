@@ -14,6 +14,7 @@ import { useLabelsStore } from '../../strata/stores';
 import { IMAGE_PATH, imageSrc } from '../../strata/api';
 import type { Note } from '../../strata/api';
 import { relativeStamp } from '../../strata/dates';
+import { parseNoteHtml } from '../../strata/parseHtml';
 
 const lowlight = createLowlight(common);
 
@@ -37,9 +38,8 @@ const preview = computed(() => {
   if (!html) {
     return '';
   }
-  const div = document.createElement('div');
+  const div = parseNoteHtml(html);
 
-  div.innerHTML = html;
   let kept = 0;
 
   for (const child of Array.from(div.children)) {

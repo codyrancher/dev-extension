@@ -1,7 +1,9 @@
 // Convert the editor's HTML into Markdown for clipboard export
+
+import { parseNoteHtml } from '../parseHtml';
+
 export function htmlToMarkdown(html: string): string {
-  const div = document.createElement('div');
-  div.innerHTML = html;
+  const div = parseNoteHtml(html);
 
   function convert(node: Node, listDepth = 0): string {
     if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';

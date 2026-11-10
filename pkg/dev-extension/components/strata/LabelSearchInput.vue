@@ -14,7 +14,8 @@ import ColorDot from './ColorDot.vue';
 const props = defineProps<{
   selectedIds: string[];
   placeholder?: string;
-  direction?: 'up' | 'down';
+  /** Where the menu opens; `inline` puts it in the flow, for a sheet that grows to hold it. */
+  direction?: 'up' | 'down' | 'inline';
   /** Open with the box showing, for a picker that is nothing else (the line popover). */
   autofocus?: boolean;
 }>();
@@ -146,7 +147,7 @@ function handleBlur() {
       <div
         v-if="focused && (filteredLabels.length > 0 || !exactMatch)"
         class="strata-labels__menu"
-        :class="{ 'strata-labels__menu--up': direction === 'up' }"
+        :class="{ 'strata-labels__menu--up': direction === 'up', 'strata-labels__menu--inline': direction === 'inline' }"
         role="listbox"
         data-testid="strata-label-menu"
       >
@@ -245,6 +246,11 @@ function handleBlur() {
       bottom:        100%;
       margin-top:    0;
       margin-bottom: var(--dev-space-2);
+    }
+
+    &--inline {
+      position:   static;
+      box-shadow: none;
     }
   }
 

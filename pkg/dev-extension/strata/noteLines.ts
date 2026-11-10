@@ -1,10 +1,11 @@
 // Pure helpers that locate a labeled line inside a note's HTML content and
 // extract display text for it. Line keys are child-index paths ("p:0.2.1").
 
+import { parseNoteHtml } from './parseHtml';
+
 export function resolveLineElement(content: string, lineKey: string, lineNumber: number): Element | null {
   if (!content) return null;
-  const div = document.createElement('div');
-  div.innerHTML = content;
+  const div = parseNoteHtml(content);
 
   const indices = lineKey.replace(/^(p|pos|line):/, '').split('.').map(Number);
   let el: Element | null = div;

@@ -43,6 +43,7 @@ import { useLabelsStore, useLineLabelsStore, strataProblem } from '../../strata/
 import {
   api, imagePath, imageSrc, storedHtml
 } from '../../strata/api';
+import { parseNoteHtml } from '../../strata/parseHtml';
 import { prepareImage } from '../../strata/images';
 import '../../strata/style';
 
@@ -263,7 +264,7 @@ const editor = useEditor({
       const target = event.target as HTMLElement;
 
       if (target.tagName === 'IMG') {
-        viewingImage.value = (target.getAttribute('src') || '').replace(/\/thumbnail$/, '');
+        viewingImage.value = (target.getAttribute('src') || '').replace(/\/thumbnail(?=\?|$)/, '');
 
         return true;
       }
@@ -360,7 +361,16 @@ async function insertImage(file: File) {
   try {
     await props.ensureCreated();
     const result = await api.uploadImage(props.noteId, await prepareImage(file));
-    const html = noteHtml().split(placeholder).join(imagePath(result.id, true));
+    // The stored picture gets its file's name for alt, not the placeholder's "Uploading...".
+    const body = parseNoteHtml(noteHtml());
+
+    body.querySelectorAll('img').forEach((img) => {
+      if (img.getAttribute('src') === placeholder) {
+        img.setAttribute('src', imagePath(result.id, true));
+        img.setAttribute('alt', file.name.replace(/\.[^.]+$/, ''));
+      }
+    });
+    const html = body.innerHTML;
 
     e.commands.setContent(html, false);
     lastKnownImageIds = getImageIds(html);

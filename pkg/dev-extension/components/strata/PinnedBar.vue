@@ -288,6 +288,13 @@ function isGhost(item: PinnedItem): boolean {
     touch-action:  none;
 
     &:hover, &:focus-visible { border-color: var(--dev-accent); outline: none; }
+
+    /*
+     * The product gives everything with role=button a 44px touch height on a phone
+     * (design/mobile.css), which takes the label chips here; a note is a link, so it stayed
+     * 28px and the bar had two heights in one row.
+     */
+    @media (max-width: 760px) { height: 44px; }
   }
 
   &__icon { color: var(--muted); font-size: 12px; }

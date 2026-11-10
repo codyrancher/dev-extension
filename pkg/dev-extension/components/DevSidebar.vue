@@ -2055,11 +2055,13 @@ export default {
         &:hover {
           background: var(--nav-hover, var(--accent-btn));
         }
-      }
 
-      &--current {
-        background:  var(--nav-hover, var(--accent-btn));
-        font-weight: 600;
+        // Here rather than as &--current beside the block: that compiles to one class and loses
+        // to `.dev-sidebar__globals a`'s transparent background, so no entry ever looked current.
+        &.dev-sidebar__globals--current {
+          background:  var(--nav-hover, var(--accent-btn));
+          font-weight: 600;
+        }
       }
     }
   }

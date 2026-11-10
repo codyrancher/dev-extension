@@ -1,5 +1,6 @@
 import { htmlToMarkdown } from './markdown';
 import { extractImageId, imagePath, imageSrc } from '../api';
+import { parseNoteHtml } from '../parseHtml';
 
 const MIME_EXTENSIONS: Record<string, string> = { 'image/jpeg': 'jpg', 'image/svg+xml': 'svg' };
 
@@ -56,9 +57,7 @@ function triggerDownload(blob: Blob, filename: string) {
 // a media/ folder, with images referenced by relative path.
 export async function downloadNoteMarkdown(title: string, html: string) {
   const baseName = (title.trim() || 'Untitled').replace(/[\\/:*?"<>|]+/g, '-').slice(0, 100);
-  const div = document.createElement('div');
-
-  div.innerHTML = html;
+  const div = parseNoteHtml(html);
 
   const media: Record<string, Uint8Array> = {};
   const pathsBySrc = new Map<string, string | null>();

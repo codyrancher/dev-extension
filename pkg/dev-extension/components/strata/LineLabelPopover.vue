@@ -52,7 +52,7 @@ function place() {
       <LabelSearchInput
         :selected-ids="selectedIds"
         placeholder="Search or create label..."
-        :direction="isMobile ? 'up' : 'down'"
+        :direction="isMobile ? 'inline' : 'down'"
         autofocus
         @toggle="emit('toggle', $event)"
       />

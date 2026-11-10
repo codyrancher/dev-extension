@@ -15,7 +15,7 @@
 
   /* Code colours, GitHub's in each theme: they read on these grounds. */
   --hl-text:    var(--body-text);
-  --hl-comment: #6e7781;
+  --hl-comment: #59636e;
   --hl-keyword: #cf222e;
   --hl-string:  #0a3069;
   --hl-number:  #0550ae;
@@ -28,7 +28,7 @@
 }
 
 body.theme-dark .strata-rich {
-  --hl-comment: #8b949e;
+  --hl-comment: #9ea7b3;
   --hl-keyword: #ff7b72;
   --hl-string:  #a5d6ff;
   --hl-number:  #79c0ff;
@@ -156,6 +156,32 @@ body.theme-dark .strata-rich {
 .strata-rich ul[data-type="taskList"] li[data-checked="true"] > div > p {
   color:           var(--muted);
   text-decoration: line-through;
+}
+
+/*
+ * On a phone the product's touch rules (design/mobile.css) give every checkbox a 22px minimum and
+ * the label around one a 44px height with its box centred - the box sat 13px below its line and
+ * every item was twice as tall. The box keeps its size and the line; the reach is the label's
+ * padding, taken back with a margin, so the target is 36px without moving anything.
+ */
+@media (max-width: 760px) {
+  .dev-root .strata-rich:not(.strata-rich--preview) ul[data-type="taskList"] li > label {
+    display:     flex;
+    align-items: flex-start;
+    min-height:  0;
+    padding:     10px;
+    margin:      calc(0.3em - 10px) -10px -10px;
+  }
+
+  .dev-root .strata-rich ul[data-type="taskList"] li > label input[type="checkbox"] {
+    min-width:  0 !important;
+    min-height: 0 !important;
+  }
+
+  .dev-root .strata-rich--preview ul[data-type="taskList"] li > label {
+    min-height:  0;
+    align-items: flex-start;
+  }
 }
 
 /* Pictures sit in the text as small thumbnails; a click opens them. */
