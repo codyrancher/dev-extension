@@ -26,6 +26,9 @@ export const FOCUS_PAGE = 'focus';
 export const SETTINGS_PAGE = 'settings';
 export const AGENTS_PAGE = 'automations';
 export const SKILLS_PAGE = 'skills';
+export const STRATA_PAGE = 'strata';
+export const STRATA_NOTE_PAGE = 'strata/note';
+export const STRATA_LABEL_PAGE = 'strata/label';
 
 /** The product's own page template, which every page below is a child of. */
 export const DEV_SHELL_ROUTE = `${ DEV_PRODUCT }-c-cluster`;
@@ -39,6 +42,11 @@ export const FOCUS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ FOCUS_PAGE }`;
 export const SETTINGS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ SETTINGS_PAGE }`;
 export const AGENTS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ AGENTS_PAGE }`;
 export const SKILLS_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ SKILLS_PAGE }`;
+// Strata's three pages. The note and label routes are named under the list's, which is what
+// lights the sidebar's Strata entry on all three (DevSidebar.isGlobalActive).
+export const STRATA_ROUTE = `${ DEV_PRODUCT }-c-cluster-${ STRATA_PAGE }`;
+export const STRATA_NOTE_ROUTE = `${ STRATA_ROUTE }-note`;
+export const STRATA_LABEL_ROUTE = `${ STRATA_ROUTE }-label`;
 export const AGENT_EDIT_PAGE = 'automations/edit';
 export const AGENT_EDIT_ROUTE = `${ DEV_PRODUCT }-c-cluster-agent-edit`;
 

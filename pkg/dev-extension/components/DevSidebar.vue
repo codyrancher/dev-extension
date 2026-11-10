@@ -33,6 +33,7 @@ import { seedVersion, refreshSkillsEverywhere } from '../skills';
 import { ensureCertControllers } from '../certs';
 import DevList from './DevList.vue';
 import ToolMark from './ToolMark.vue';
+import StrataMark from './StrataMark.vue';
 import DevDialog from './DevDialog.vue';
 import DevModal from './DevModal.vue';
 import { DEFAULT_RANCHER_VERSION } from '../apps-rancher';
@@ -51,7 +52,7 @@ import { note } from '../dev-log.mjs';
 import { watch } from '../events';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE, CREATE_ROUTE, WORKSPACES_ROUTE,
-  MY_WORK_ROUTE, TOOLS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE
+  MY_WORK_ROUTE, TOOLS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, STRATA_ROUTE
 } from '../config/constants';
 
 const REFRESH_MS = 5000;
@@ -265,7 +266,7 @@ export default {
   name: 'DevSidebar',
 
   components: {
-    DevList, Stack, Row, ClaudeLogo, ToolMark, DevDialog, DevModal, RancherPicker, NavRow, NavHead, HoverCard
+    DevList, Stack, Row, ClaudeLogo, ToolMark, StrataMark, DevDialog, DevModal, RancherPicker, NavRow, NavHead, HoverCard
   },
 
   mixins: [hoverCard, NarrowMixin],
@@ -342,6 +343,10 @@ export default {
         },
         {
           label: 'Automations', logo: true, route: AGENTS_ROUTE
+        },
+        // Notes, and the labels on them and on their lines: Strata, brought in as a page.
+        {
+          label: 'Strata', mark: 'StrataMark', route: STRATA_ROUTE
         },
         /*
          * The terminal drawer's conversations, on a phone only.
@@ -1048,8 +1053,11 @@ export default {
       return { name: route, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } };
     },
 
+    /** This entry's page, or one under it: Strata's note and label pages light Strata. */
     isGlobalActive(route) {
-      return this.$route.name === route;
+      const name = String(this.$route.name || '');
+
+      return name === route || name.startsWith(`${ route }-`);
     },
 
     /**

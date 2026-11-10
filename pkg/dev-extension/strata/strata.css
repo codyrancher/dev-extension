@@ -1,0 +1,243 @@
+/*
+ * A note's text, in the editor and in a card's preview: Strata's rich-content rules in Rancher's
+ * colours.
+ *
+ * Plain CSS, imported from style.ts, because the editor's DOM is ProseMirror's and the preview's
+ * is v-html: neither carries a component's scope attribute, so scoped styles do not reach them.
+ * Everything is under `.strata-rich`, and states what it needs outright, because Rancher's own
+ * globals reach in otherwise: `code` gets a border and padding, lists lose their markers, and
+ * paragraphs keep a bottom margin the editor does not want.
+ */
+
+.strata-rich {
+  --strata-code-bg:  color-mix(in srgb, var(--body-text) 6%, var(--body-bg));
+  --strata-quote-bg: color-mix(in srgb, var(--body-text) 4%, var(--body-bg));
+
+  /* Code colours, GitHub's in each theme: they read on these grounds. */
+  --hl-text:    var(--body-text);
+  --hl-comment: #6e7781;
+  --hl-keyword: #cf222e;
+  --hl-string:  #0a3069;
+  --hl-number:  #0550ae;
+  --hl-title:   #8250df;
+  --hl-attr:    #953800;
+  --hl-meta:    #116329;
+
+  color:         var(--body-text);
+  overflow-wrap: anywhere;
+}
+
+body.theme-dark .strata-rich {
+  --hl-comment: #8b949e;
+  --hl-keyword: #ff7b72;
+  --hl-string:  #a5d6ff;
+  --hl-number:  #79c0ff;
+  --hl-title:   #d2a8ff;
+  --hl-attr:    #ffa657;
+  --hl-meta:    #7ee787;
+}
+
+.strata-rich p { margin: 0; }
+.strata-rich strong { font-weight: 600; }
+.strata-rich em { font-style: italic; }
+.strata-rich u { text-decoration: underline; }
+
+.strata-rich code {
+  padding:       1px 5px;
+  border:        1px solid var(--border);
+  border-radius: var(--r-sm);
+  background:    var(--strata-code-bg);
+  color:         inherit;
+  font-family:   var(--font-family-mono, monospace);
+  font-size:     0.88em;
+}
+
+.strata-rich pre {
+  margin:        4px 0;
+  padding:       8px 12px;
+  overflow-x:    auto;
+  border:        1px solid var(--border);
+  border-radius: var(--r-sm);
+  background:    var(--strata-code-bg);
+  color:         var(--hl-text);
+  line-height:   1.4;
+  white-space:   pre;
+}
+
+.strata-rich pre code {
+  padding:    0;
+  border:     0;
+  background: none;
+  font-size:  0.88em;
+}
+
+.strata-rich blockquote {
+  position:      relative;
+  margin:        4px 0;
+  padding:       6px 10px 6px 28px;
+  border:        1px solid var(--border);
+  border-left:   3px solid var(--dev-accent);
+  border-radius: var(--r-sm);
+  background:    var(--strata-quote-bg);
+  color:         color-mix(in srgb, var(--body-text) 80%, var(--muted));
+  line-height:   1.4;
+}
+
+.strata-rich blockquote::before {
+  content:     '\201C';
+  position:    absolute;
+  top:         2px;
+  left:        8px;
+  color:       var(--muted);
+  font-size:   26px;
+  line-height: 1;
+  opacity:     0.6;
+}
+
+.strata-rich hr {
+  margin:     1em 0;
+  border:     none;
+  border-top: 1px solid var(--border);
+}
+
+.strata-rich ul, .strata-rich ol { margin: 0; padding-left: 24px; }
+.strata-rich ul { list-style: disc; }
+.strata-rich ul ul { list-style: circle; }
+.strata-rich ol { list-style: decimal; }
+.strata-rich li { margin: 2px 0; }
+.strata-rich li::marker { color: var(--dev-accent); }
+.strata-rich li > pre, .strata-rich li > blockquote { margin-top: 4px; }
+
+.strata-rich a {
+  color:                 var(--link);
+  text-decoration:       underline;
+  text-decoration-color: color-mix(in srgb, var(--link) 45%, transparent);
+  cursor:                pointer;
+}
+
+/* Checklists */
+.strata-rich ul[data-type="taskList"] { padding-left: 0; list-style: none; }
+
+.strata-rich ul[data-type="taskList"] li {
+  display:     flex;
+  align-items: flex-start;
+  gap:         8px;
+}
+
+.strata-rich ul[data-type="taskList"] li::marker { content: none; }
+
+.strata-rich ul[data-type="taskList"] li > label {
+  display:     flex;
+  flex-shrink: 0;
+  margin:      0.3em 0 0;
+}
+
+.strata-rich ul[data-type="taskList"] li > div { flex: 1; min-width: 0; min-height: 1.5em; }
+.strata-rich ul[data-type="taskList"] li > div > p:empty::before { content: '\200B'; }
+
+.strata-rich ul[data-type="taskList"] li > label input[type="checkbox"] {
+  appearance:    none;
+  width:         16px;
+  height:        16px;
+  min-width:     16px;
+  margin:        0;
+  padding:       0;
+  border:        2px solid var(--dev-accent);
+  border-radius: 3px;
+  background:    transparent no-repeat center / 72%;
+  cursor:        pointer;
+}
+
+.strata-rich ul[data-type="taskList"] li > label input[type="checkbox"]:checked {
+  background-color: var(--dev-accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+
+.strata-rich ul[data-type="taskList"] li[data-checked="true"] > div > p {
+  color:           var(--muted);
+  text-decoration: line-through;
+}
+
+/* Pictures sit in the text as small thumbnails; a click opens them. */
+.strata-rich img {
+  width:          32px;
+  height:         32px;
+  border:         1px solid var(--border);
+  border-radius:  var(--r-sm);
+  object-fit:     cover;
+  vertical-align: middle;
+}
+
+/* Highlighted code */
+.strata-rich .hljs-comment, .strata-rich .hljs-quote { color: var(--hl-comment); font-style: italic; }
+.strata-rich .hljs-keyword, .strata-rich .hljs-selector-tag, .strata-rich .hljs-literal, .strata-rich .hljs-doctag { color: var(--hl-keyword); }
+.strata-rich .hljs-string, .strata-rich .hljs-regexp, .strata-rich .hljs-addition { color: var(--hl-string); }
+.strata-rich .hljs-number, .strata-rich .hljs-symbol, .strata-rich .hljs-bullet, .strata-rich .hljs-variable, .strata-rich .hljs-template-variable { color: var(--hl-number); }
+.strata-rich .hljs-title, .strata-rich .hljs-section, .strata-rich .hljs-title\.function_, .strata-rich .hljs-title\.class_ { color: var(--hl-title); }
+.strata-rich .hljs-attr, .strata-rich .hljs-attribute, .strata-rich .hljs-built_in, .strata-rich .hljs-type, .strata-rich .hljs-params { color: var(--hl-attr); }
+.strata-rich .hljs-meta, .strata-rich .hljs-name, .strata-rich .hljs-tag, .strata-rich .hljs-selector-class, .strata-rich .hljs-selector-id { color: var(--hl-meta); }
+.strata-rich .hljs-deletion { color: var(--error); }
+.strata-rich .hljs-emphasis { font-style: italic; }
+.strata-rich .hljs-strong { font-weight: 600; }
+
+/* The editor */
+.strata-rich.tiptap {
+  min-height:  200px;
+  padding:     var(--dev-space-4) 28px var(--dev-space-5) 2px;
+  outline:     none;
+  font-size:   15px;
+  line-height: 1.65;
+}
+
+.strata-rich.tiptap > * + * { margin-top: 0.45em; }
+
+.strata-rich.tiptap p.is-editor-empty:first-child::before {
+  content:        attr(data-placeholder);
+  float:          left;
+  height:         0;
+  color:          var(--muted);
+  pointer-events: none;
+}
+
+.strata-rich.tiptap img { cursor: pointer; }
+.strata-rich.tiptap img:hover { border-color: var(--dev-accent); }
+
+.strata-rich.tiptap img.ProseMirror-selectednode {
+  border-color: var(--dev-accent);
+  box-shadow:   0 0 0 3px color-mix(in srgb, var(--dev-accent) 25%, transparent);
+}
+
+/* A line jumped to from a label: tinted until the next click. */
+.strata-rich .highlighted-line {
+  border-radius: var(--r-sm);
+  background:    color-mix(in srgb, var(--dev-accent) 18%, transparent);
+  transition:    background 0.3s ease;
+}
+
+/* Labelled lines: up to three dots in the right margin, stacked up and to the right. */
+.strata-rich .has-line-labels { position: relative; }
+
+.strata-rich .has-line-labels::after {
+  content:        '';
+  position:       absolute;
+  top:            calc(0.82em - 3.5px);
+  right:          -16px;
+  width:          7px;
+  height:         7px;
+  border-radius:  50%;
+  background:     var(--ll-bg);
+  box-shadow:     var(--ll-shadow);
+  pointer-events: none;
+}
+
+/* The preview in a card: tighter, and every box a picture of one. */
+.strata-rich--preview { font-size: 13px; line-height: 1.45; }
+.strata-rich--preview > * + * { margin-top: 2px; }
+.strata-rich--preview ul, .strata-rich--preview ol { padding-left: 18px; }
+.strata-rich--preview pre { padding: 4px 8px; overflow: hidden; }
+.strata-rich--preview blockquote { padding: 4px 8px 4px 24px; }
+.strata-rich--preview hr { margin: 4px 0; }
+.strata-rich--preview ul[data-type="taskList"] li { gap: 6px; }
+.strata-rich--preview ul[data-type="taskList"] li > label { margin-top: 0.2em; }
+.strata-rich--preview ul[data-type="taskList"] li > label input[type="checkbox"] { width: 14px; height: 14px; min-width: 14px; }
+.strata-rich--preview img { width: 18px; height: 18px; }

@@ -4,7 +4,8 @@ import {
   DEV_PRODUCT, WORKSPACES_PAGE, CREATE_PAGE, MY_WORK_PAGE, FOCUS_PAGE, SETTINGS_PAGE, AGENTS_PAGE,
   DEV_SHELL_ROUTE, WORKSPACES_ROUTE, WORKSPACE_ROUTE, CREATE_ROUTE,
   MY_WORK_ROUTE, TOOLS_ROUTE, TOOLS_PAGE, FOCUS_ROUTE, SETTINGS_ROUTE, AGENTS_ROUTE, AGENT_EDIT_PAGE, AGENT_EDIT_ROUTE,
-  SKILLS_PAGE, SKILLS_ROUTE
+  SKILLS_PAGE, SKILLS_ROUTE, STRATA_PAGE, STRATA_ROUTE, STRATA_NOTE_PAGE, STRATA_NOTE_ROUTE,
+  STRATA_LABEL_PAGE, STRATA_LABEL_ROUTE
 } from '../config/constants';
 import Skills from '../pages/Skills.vue';
 import AgentEdit from '../pages/AgentEdit.vue';
@@ -19,6 +20,14 @@ import Settings from '../pages/Settings.vue';
 import Agents from '../pages/Agents.vue';
 
 const devMeta = { product: DEV_PRODUCT, cluster: BLANK_CLUSTER };
+
+/*
+ * Strata's pages load on first visit, as one chunk: the editor is Tiptap, ProseMirror and a code
+ * highlighter, several hundred kilobytes that no other page uses.
+ */
+const Strata = () => import(/* webpackChunkName: "strata" */ '../pages/Strata.vue');
+const StrataNote = () => import(/* webpackChunkName: "strata" */ '../pages/StrataNote.vue');
+const StrataLabel = () => import(/* webpackChunkName: "strata" */ '../pages/StrataLabel.vue');
 
 /**
  * The Dev product's pages, inside a page template of this product's own.
@@ -90,6 +99,16 @@ const devRoutes: PluginRouteRecordRaw[] = [
         },
         {
           name: AGENT_EDIT_ROUTE, path: `${ AGENT_EDIT_PAGE }/:name?`, alias: 'agents/edit/:name?', component: AgentEdit, meta: devMeta
+        },
+        // Strata: the notes list, one note, one label.
+        {
+          name: STRATA_ROUTE, path: STRATA_PAGE, component: Strata, meta: devMeta
+        },
+        {
+          name: STRATA_NOTE_ROUTE, path: `${ STRATA_NOTE_PAGE }/:id`, component: StrataNote, meta: devMeta
+        },
+        {
+          name: STRATA_LABEL_ROUTE, path: `${ STRATA_LABEL_PAGE }/:id`, component: StrataLabel, meta: devMeta
         },
       ],
     }

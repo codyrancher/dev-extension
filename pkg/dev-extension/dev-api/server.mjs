@@ -41,6 +41,12 @@ import {
   rancherTokenScript, firstWorkingTokenScript, environmentScript, checkoutScript,
 } from '../workspace-provision.mjs';
 import { reviewPrompt } from '../review-prompt.mjs';
+import {
+  strataInit, strataNotes, strataNote, strataCreateNote, strataUpdateNote, strataDeleteNote, strataRestoreNote,
+  strataLabels, strataCreateLabel, strataUpdateLabel, strataDeleteLabel, strataAddNoteLabel, strataRemoveNoteLabel,
+  strataLineLabels, strataAddLineLabel, strataLabelLines, strataRemoveLineLabel, strataAddImage, strataImage,
+  strataDeleteImage, strataSearch,
+} from './strata-store.mjs';
 import { searchCql, searchLimit, searchResult, pageAnswer } from './confluence.mjs';
 import { STAGING_CHARTS, IMAGE_REGISTRIES, RANCHER_REPO, stagingVersions, releasedVersions, imageExists, registryTags } from './rancher-images.mjs';
 
@@ -3076,6 +3082,79 @@ const OPENAPI = {
         summary:     'Review runs waiting for a dashboard to start them, oldest first.',
         description: 'A review is what My Work\'s Review button does, and that needs the person\'s Rancher session to make and prepare the workspace, so an open dashboard claims each one and starts it.',
         responses:   { 200: { description: '{ runs }' } },
+      },
+    },
+    '/strata/notes': {
+      get: {
+        operationId: 'strataNotes',
+        summary:     'Every Strata note that is not deleted, newest first, each with its label ids.',
+        responses:   { 200: { description: '[note]' } },
+      },
+      post: {
+        operationId: 'strataCreateNote',
+        summary:     'Make a note under the id the page chose ({ id, title, content, sort_order }), or overwrite the one with that id.',
+        responses:   { 200: { description: 'note' } },
+      },
+    },
+    '/strata/notes/{noteId}': {
+      get: { operationId: 'strataNote', summary: 'One note, deleted or not.', responses: { 200: { description: 'note' } } },
+      put: {
+        operationId: 'strataUpdateNote',
+        summary:     'Change a note\'s title, content (HTML), sort_order, pinned or pin_order.',
+        responses:   { 200: { description: 'note' } },
+      },
+      delete: { operationId: 'strataDeleteNote', summary: 'Delete a note; it keeps its labels and lines for a restore.', responses: { 200: { description: '{ id, deleted }' } } },
+    },
+    '/strata/notes/{noteId}/restore': {
+      post: { operationId: 'strataRestoreNote', summary: 'Bring a deleted note back.', responses: { 200: { description: 'note' } } },
+    },
+    '/strata/notes/{noteId}/labels': {
+      post: { operationId: 'strataAddNoteLabel', summary: 'Put a label ({ label_id }) on a note.', responses: { 200: { description: '{ note_id, label_id }' } } },
+    },
+    '/strata/notes/{noteId}/labels/{labelId}': {
+      delete: { operationId: 'strataRemoveNoteLabel', summary: 'Take a label off a note.', responses: { 200: { description: '{ removed }' } } },
+    },
+    '/strata/notes/{noteId}/line-labels': {
+      get: { operationId: 'strataLineLabels', summary: 'The labelled lines of one note.', responses: { 200: { description: '[lineLabel]' } } },
+      post: {
+        operationId: 'strataAddLineLabel',
+        summary:     'Label one line of a note: { line_key (a child-index path such as p:0.2.1), label_id, line_text, line_number }.',
+        responses:   { 200: { description: 'lineLabel' } },
+      },
+    },
+    '/strata/notes/{noteId}/images': {
+      post: {
+        operationId: 'strataAddImage',
+        summary:     'Keep a picture for a note: { filename, mimetype, data, thumbnail, width, height }, the bytes as base64. SVG is refused.',
+        responses:   { 200: { description: '{ id, filename, width, height }' } },
+      },
+    },
+    '/strata/labels': {
+      get: { operationId: 'strataLabels', summary: 'Every label, by name.', responses: { 200: { description: '[label]' } } },
+      post: { operationId: 'strataCreateLabel', summary: 'Make a label: { id?, name, color, parent_id }.', responses: { 200: { description: 'label' } } },
+    },
+    '/strata/labels/{labelId}': {
+      put: { operationId: 'strataUpdateLabel', summary: 'Change a label\'s name, color, parent_id, pinned or pin_order.', responses: { 200: { description: 'label' } } },
+      delete: { operationId: 'strataDeleteLabel', summary: 'Delete a label, its uses on notes and lines; its children lose their parent.', responses: { 200: { description: '{ id, deleted }' } } },
+    },
+    '/strata/labels/{labelId}/line-labels': {
+      get: { operationId: 'strataLabelLines', summary: 'Every line given this label, on notes that are not deleted, with note_title.', responses: { 200: { description: '[lineLabel]' } } },
+    },
+    '/strata/line-labels/{lineLabelId}': {
+      delete: { operationId: 'strataRemoveLineLabel', summary: 'Take a label off a line.', responses: { 200: { description: '{ removed }' } } },
+    },
+    '/strata/images/{imageId}': {
+      get: { operationId: 'strataImage', summary: 'A picture\'s bytes.', responses: { 200: { description: 'the picture' } } },
+      delete: { operationId: 'strataDeleteImage', summary: 'Delete a picture.', responses: { 200: { description: '{ id, deleted }' } } },
+    },
+    '/strata/images/{imageId}/thumbnail': {
+      get: { operationId: 'strataThumbnail', summary: 'A picture\'s 200px thumbnail.', responses: { 200: { description: 'the thumbnail' } } },
+    },
+    '/strata/search': {
+      get: {
+        operationId: 'strataSearch',
+        summary:     'Notes with every word of q in the title, text or a label name; labels filters with + (and), , (or), -Name (not), *none (unlabelled).',
+        responses:   { 200: { description: '[note]' } },
       },
     },
     '/automations/runs/{runId}/claim': {
@@ -6249,6 +6328,36 @@ function df(path) {
   });
 }
 
+// -- Strata ----------------------------------------------------------------------------------
+//
+// The notes the Strata page keeps: notes, labels, labelled lines and pictures, in one SQLite file
+// on the workspaces disk. The queries are in strata-store.mjs; this is where the file lives and
+// how a request reaches it. Opened on the first call rather than at start, so a dev-api nobody
+// takes notes on never loads `node:sqlite`, which Node still calls experimental.
+const STRATA_DIR = `${ WORKSPACES_ROOT }/.strata`;
+let strataOpening = null;
+
+function strataDb() {
+  strataOpening ||= (async() => {
+    const { DatabaseSync } = await import('node:sqlite');
+
+    fs.mkdirSync(STRATA_DIR, { recursive: true });
+    const db = new DatabaseSync(path.join(STRATA_DIR, 'strata.db'));
+
+    strataInit(db);
+
+    return db;
+  })().catch((e) => {
+    strataOpening = null;
+    throw e;
+  });
+
+  return strataOpening;
+}
+
+/** A route handler with the database open: `fn(db, match, url, body)`. */
+const withStrata = (fn) => async(m, url, body) => fn(await strataDb(), m, url, body);
+
 const routes = [
   /*
    * The health check, and nothing else.
@@ -7426,6 +7535,27 @@ const routes = [
 
     return { ok: true };
   }],
+
+  // Strata: the same paths and answers as Strata's own server, under /strata.
+  ['GET', /^\/strata\/notes$/, withStrata((db) => strataNotes(db))],
+  ['POST', /^\/strata\/notes$/, withStrata((db, m, url, body) => strataCreateNote(db, body))],
+  ['GET', /^\/strata\/notes\/([\w-]+)$/, withStrata((db, m) => strataNote(db, m[1]))],
+  ['PUT', /^\/strata\/notes\/([\w-]+)$/, withStrata((db, m, url, body) => strataUpdateNote(db, m[1], body))],
+  ['DELETE', /^\/strata\/notes\/([\w-]+)$/, withStrata((db, m) => strataDeleteNote(db, m[1]))],
+  ['POST', /^\/strata\/notes\/([\w-]+)\/restore$/, withStrata((db, m) => strataRestoreNote(db, m[1]))],
+  ['POST', /^\/strata\/notes\/([\w-]+)\/labels$/, withStrata((db, m, url, body) => strataAddNoteLabel(db, m[1], body.label_id))],
+  ['DELETE', /^\/strata\/notes\/([\w-]+)\/labels\/([\w-]+)$/, withStrata((db, m) => strataRemoveNoteLabel(db, m[1], m[2]))],
+  ['GET', /^\/strata\/notes\/([\w-]+)\/line-labels$/, withStrata((db, m) => strataLineLabels(db, m[1]))],
+  ['POST', /^\/strata\/notes\/([\w-]+)\/line-labels$/, withStrata((db, m, url, body) => strataAddLineLabel(db, m[1], body))],
+  ['POST', /^\/strata\/notes\/([\w-]+)\/images$/, withStrata((db, m, url, body) => strataAddImage(db, m[1], body))],
+  ['GET', /^\/strata\/labels$/, withStrata((db) => strataLabels(db))],
+  ['POST', /^\/strata\/labels$/, withStrata((db, m, url, body) => strataCreateLabel(db, body))],
+  ['PUT', /^\/strata\/labels\/([\w-]+)$/, withStrata((db, m, url, body) => strataUpdateLabel(db, m[1], body))],
+  ['DELETE', /^\/strata\/labels\/([\w-]+)$/, withStrata((db, m) => strataDeleteLabel(db, m[1]))],
+  ['GET', /^\/strata\/labels\/([\w-]+)\/line-labels$/, withStrata((db, m) => strataLabelLines(db, m[1]))],
+  ['DELETE', /^\/strata\/line-labels\/([\w-]+)$/, withStrata((db, m) => strataRemoveLineLabel(db, m[1]))],
+  ['DELETE', /^\/strata\/images\/([\w-]+)$/, withStrata((db, m) => strataDeleteImage(db, m[1]))],
+  ['GET', /^\/strata\/search$/, withStrata((db, m, url) => strataSearch(db, url.searchParams.get('q') || '', url.searchParams.get('labels') || ''))],
 ];
 
 // ── Workspace teardown reconciler ────────────────────────────────────────────
@@ -11246,6 +11376,32 @@ const server = http.createServer(async(req, res) => {
     } catch (e) {
       return send(res, e.status || 502, { error: e.message || String(e) });
     }
+  }
+
+  // A Strata picture's bytes, for an <img>. An id names one picture for good, so it is cached for a
+  // year; the sandbox is because this answers on the dashboard's own origin.
+  const strataPicture = /^\/strata\/images\/([\w-]+)(\/thumbnail)?$/.exec(url.pathname);
+
+  if (strataPicture && req.method === 'GET') {
+    try {
+      const picture = strataImage(await strataDb(), strataPicture[1], !!strataPicture[2]);
+
+      if (!picture) {
+        return send(res, 404, { error: 'No such picture.' });
+      }
+      res.writeHead(200, {
+        'content-type':            picture.type,
+        'content-length':          picture.bytes.length,
+        'cache-control':           'private, max-age=31536000, immutable',
+        'content-security-policy': "default-src 'none'; sandbox",
+        'x-content-type-options':  'nosniff',
+      });
+      res.end(picture.bytes);
+    } catch (e) {
+      send(res, 500, { error: e.message || String(e) });
+    }
+
+    return;
   }
 
   const jiraAsset = /^\/jira-attachment\/(\d+)(?:\/.*)?$/.exec(url.pathname);

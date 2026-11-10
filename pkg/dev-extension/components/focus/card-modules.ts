@@ -48,8 +48,13 @@ import BrandImage from '@shell/components/BrandImage';
  *   - `.d.ts`. A declaration file matches `\.ts$` and has no output to generate: the build died
  *     with `error in ./js-yaml.d.ts - Debug Failure. Output generation failed`, which names the
  *     file but not the reason.
+ *
+ * And Strata's pages and what only they use (`strata/`, `components/strata/`, `pages/Strata*`).
+ * A sync context puts every module it matches into this bundle, which made the lazy chunk the
+ * routes ask for (routing/index.ts) empty and loaded the whole editor - Tiptap, ProseMirror, a
+ * code highlighter - on every page for a card that will never want it.
  */
-const own = (require as any).context('../../', true, /^\.\/(?!node_modules\/)(?!.*\.d\.ts$).*\.(vue|ts)$/);
+const own = (require as any).context('../../', true, /^\.\/(?!node_modules\/)(?!strata\/|components\/strata\/|pages\/Strata)(?!.*\.d\.ts$).*\.(vue|ts)$/);
 
 const HOST: Record<string, any> = {
   '@components/Banner':            Banner,
