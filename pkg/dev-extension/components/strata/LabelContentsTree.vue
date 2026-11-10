@@ -81,9 +81,9 @@ const unifiedTree = computed(() => {
   }
 
   /*
-   * `path` is the rest of the way down to the current label. An ancestor goes on down that path
-   * alone: walking all its children took the current label's whole subtree with it, and then
-   * the loop that followed added it all again, in bold.
+   * `path` is the rest of the way down to the current label: the tree is walked once from the
+   * top ancestor, and the label on the path is marked where it sits among its siblings. Walking
+   * each ancestor separately listed the current label's subtree under its parent and then again.
    */
   function addLabelContents(labelId: string, depth: number, isCurrent: boolean, path: string[] = []) {
     rows.push({ type: 'label', id: labelId, depth, isCurrent });
@@ -115,13 +115,12 @@ const unifiedTree = computed(() => {
       }
     }
 
-    if (path.length) {
-      addLabelContents(path[0], depth + 1, path.length === 1, path.slice(1));
-
-      return;
-    }
     for (const child of labelsStore.getChildren(labelId)) {
-      addLabelContents(child.id, depth + 1, false);
+      if (child.id === path[0]) {
+        addLabelContents(child.id, depth + 1, path.length === 1, path.slice(1));
+      } else {
+        addLabelContents(child.id, depth + 1, false);
+      }
     }
   }
 

@@ -72,9 +72,36 @@ export const TaskCheckboxNoScroll = Extension.create({
             }
           };
 
-          editorView.dom.addEventListener('change', onChange, true);
+          /*
+           * A tap on the label around a box rather than on the box: on a phone the label is padded
+           * to give the box a bigger reach, and a label's own click focuses its checkbox before it
+           * clicks it - which took focus out of the editor and dropped the keyboard. Cancel that and
+           * click the box directly, which toggles it (and runs onChange) without moving focus.
+           */
+          const onLabelClick = (event: MouseEvent) => {
+            const label = event.target;
 
-          return { destroy: () => editorView.dom.removeEventListener('change', onChange, true) };
+            if (!(label instanceof HTMLLabelElement) || !label.matches('ul[data-type="taskList"] > li > label')) {
+              return;
+            }
+            const box = label.querySelector('input[type="checkbox"]');
+
+            if (box instanceof HTMLInputElement) {
+              event.preventDefault();
+              event.stopPropagation();
+              box.click();
+            }
+          };
+
+          editorView.dom.addEventListener('change', onChange, true);
+          editorView.dom.addEventListener('click', onLabelClick, true);
+
+          return {
+            destroy: () => {
+              editorView.dom.removeEventListener('change', onChange, true);
+              editorView.dom.removeEventListener('click', onLabelClick, true);
+            }
+          };
         },
       }),
     ];

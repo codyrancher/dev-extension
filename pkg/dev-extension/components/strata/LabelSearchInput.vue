@@ -104,6 +104,7 @@ function handleBlur() {
 <template>
   <div
     class="strata-labels"
+    :class="{ 'strata-labels--inline': direction === 'inline' }"
     data-testid="strata-label-search"
   >
     <LabelChip
@@ -218,6 +219,12 @@ function handleBlur() {
     flex:      1;
     min-width: 140px;
     max-width: 320px;
+  }
+
+  /* In a sheet the menu is in the box's flow: the chips get a row of their own above it. */
+  &--inline &__box {
+    flex-basis: 100%;
+    max-width:  none;
   }
 
   &__input {
