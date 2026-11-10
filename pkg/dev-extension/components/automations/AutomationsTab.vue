@@ -272,6 +272,13 @@ export default {
         Review new commits when I'm asked again
       </router-link>
       <router-link
+        :to="editTo('', 'address-feedback')"
+        class="autos__template"
+        data-testid="automation-template-address-feedback"
+      >
+        Address feedback when a review asks for changes
+      </router-link>
+      <router-link
         :to="editTo('', 'stage-script')"
         class="autos__template"
       >

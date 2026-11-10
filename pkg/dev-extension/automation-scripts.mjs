@@ -74,3 +74,29 @@ printf '%s' "$OUT" | ${ SAY_NOTE }
 
 /** The conditions that go with it: asked by name, not my own, not a draft, and commits since my review. */
 export const REVIEW_NEW_COMMITS_CONDITION = '!p.draft\n!p.roles.author\np.roles.requested\np.newCommits';
+
+/**
+ * "Address the feedback", for a review asking for changes on a pull request of mine: the developer
+ * workspace's button, through dev-api (POST /workspaces/{ws}/address-feedback). The event's
+ * workspace is the one whose stage holds the PR. The prompt goes into the workspace's own
+ * conversation - typed in, or resumed with it - and never into one waiting on my answer.
+ */
+export const ADDRESS_FEEDBACK_SCRIPT = `#!/bin/sh
+# Address the review feedback on a pull request of mine: the developer workspace's "Address the
+# feedback" button, through dev-api.
+set -eu
+field() { node -p "String(require(process.env.EVENT_FILE).payload.$1 ?? '')"; }
+REPO=$(field repo)
+PR=$(field number)
+WS=\${EVENT_WORKSPACE:-}
+if [ -z "$PR" ] || [ -z "$REPO" ] || [ -z "$WS" ]; then
+  echo "No developer workspace to address feedback in: this runs on a review of a pull request that has one. To try it by hand, open one on Events and use 'Run an automation on this'." >&2
+  exit 2
+fi
+echo "Addressing $(field review.author)'s review of $REPO#$PR in $WS."
+OUT=$(curl -sS --fail-with-body --max-time 1700 -X POST "$DEV_API/workspaces/$WS/address-feedback?pr=$PR&repo=$REPO") || { echo "$OUT" >&2; exit 1; }
+printf '%s' "$OUT" | ${ SAY_NOTE }
+`;
+
+/** My pull request, a review asking for changes, and a workspace that holds the work. */
+export const ADDRESS_FEEDBACK_CONDITION = "p.roles.author\np.review.state === 'changes_requested'\nworkspace";

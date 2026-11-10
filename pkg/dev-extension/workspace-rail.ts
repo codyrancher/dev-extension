@@ -30,6 +30,7 @@ import { numberTaskBoxes } from './pr-body.mjs';
 import { ago as agoOf } from './chat-state.mjs';
 import type { ArtifactKind } from './artifact-kind';
 import { threadsTitle } from './rail-titles.mjs';
+import { ANSWER_FEEDBACK_TEMPLATE } from './review-prompt.mjs';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -1541,7 +1542,8 @@ export async function combinedFiles(pr: number, shas: string[], repo = DEFAULT_R
 export const ACTION_TEMPLATES: Record<string, string> = {
   startFix:       'Use the my-issue-fix skill to fix {{ repo }} issue {{ issue }} - this project was created for it.',
   startReview:    'Use the my-pr-full-review skill to review {{ repo }} PR {{ pr }} - harness portal context, file through {{ context }}.',
-  answerFeedback: 'Use the my-pr-address-feedback skill to address the review feedback on {{ repo }} PR {{ pr }}: read every comment left since the last push, answer each one or change the code, re-verify, and push. Report what you changed and what you answered.',
+  // Shared with dev-api, which sends it when an automation asks (review-prompt.mjs).
+  answerFeedback: ANSWER_FEEDBACK_TEMPLATE,
   reverify:       'Use the my-fix-demonstrate skill to re-verify the fix on this branch (PR {{ pr }}) and record a fresh video of the same walk.',
   /*
    * Putting a branch up for review: the my-pr-create skill, which pushes the branch, uploads the

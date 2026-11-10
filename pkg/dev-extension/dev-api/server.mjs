@@ -40,7 +40,11 @@ import {
   seedMark, workspaceTree, rootScript, nodeScript, rootCommand, nodeCommand, baseScript, seedCheckScript, seedCurrent, seedScript, toolsCheckScript, toolsMissing, toolsScript,
   rancherTokenScript, firstWorkingTokenScript, environmentScript, checkoutScript,
 } from '../workspace-provision.mjs';
-import { reviewPrompt, reviewAgainPrompt } from '../review-prompt.mjs';
+import {
+  reviewPrompt, reviewAgainPrompt, ANSWER_FEEDBACK_TEMPLATE, expandTemplate
+} from '../review-prompt.mjs';
+import { pickConversation, isDiscussion } from '../conversation-pick.mjs';
+import { paneSendScript } from '../pane-send.mjs';
 import { withoutReviewAction } from '../automation-scripts.mjs';
 import {
   strataInit, strataNotes, strataNote, strataCreateNote, strataUpdateNote, strataDeleteNote, strataRestoreNote,
@@ -3087,6 +3091,14 @@ const OPENAPI = {
         summary:     'Review runs waiting for a dashboard to start them, oldest first.',
         description: 'A review is what My Work\'s Review button does, and that needs the person\'s Rancher session to make and prepare the workspace, so an open dashboard claims each one and starts it.',
         responses:   { 200: { description: '{ runs }' } },
+      },
+    },
+    '/workspaces/{workspace}/address-feedback': {
+      post: {
+        operationId: 'addressFeedback',
+        summary:     'Address the review feedback in a developer workspace: its "Address the feedback" button, for scripts. ?pr=<number>&repo=owner/name.',
+        description: 'Sends the my-pr-address-feedback prompt (the edited one, if the prompt was edited) into the workspace\'s own conversation - the fix\'s, or the one named for the PR: typed in if its pane is up, queued and resumed if it stopped, or a new "Feedback on #N" when it has none. A conversation waiting on the person\'s answer is not typed into ({ skipped: true }). Refreshes the workspace\'s tokens first; its branch and skills are left as they are. note is one sentence on what happened.',
+        responses:   { 200: { description: '{ workspace, pr, repo, conversation, started, resumed, skipped, note }' } },
       },
     },
     '/my-work/pr/{num}/review': {
@@ -7764,6 +7776,15 @@ const routes = [
 
     return { run };
   }],
+  ['POST', /^\/workspaces\/([a-z0-9][a-z0-9-]{0,120})\/address-feedback$/, async(m, url, body) => {
+    const number = Number(body?.pr || url.searchParams.get('pr') || 0);
+
+    if (!(number > 0)) {
+      throw failure(400, 'Say which pull request: ?pr=<number>.');
+    }
+
+    return addressFeedbackOnce(m[1], await repoOf(url), number);
+  }],
   ['POST', /^\/my-work\/pr\/(\d+)\/review$/, async(m, url, body) => {
     try {
       return await reviewOnce(Number(m[1]), await repoOf(url), String(body?.title || url.searchParams.get('title') || '').slice(0, 300));
@@ -11271,7 +11292,7 @@ async function reviewRancherToken(target, workspace, host) {
 }
 
 /** The five steps workspace-tools.ts runs, here. */
-async function prepareReviewWorkspace(target, workspace, number, host, say) {
+async function prepareReviewWorkspace(target, workspace, number, host, say, { checkout = true, seed = true } = {}) {
   const ctx = { issue: null, pr: number };
   const step = async(what, script, marker, asNode = false) => {
     const out = String(await inReviewWorkspace(target, workspace, script, asNode));
@@ -11287,7 +11308,8 @@ async function prepareReviewWorkspace(target, workspace, number, host, say) {
   await step('Preparing the pod', baseScript(), 'BASE-OK');
   const version = seedMark(await seedVersion(), ctx, workspace);
 
-  if (!seedCurrent(String(await inReviewWorkspace(target, workspace, seedCheckScript(), true)), version)) {
+  // A developer workspace keeps the skills it was laid out with for its issue: `seed` false.
+  if (seed && !seedCurrent(String(await inReviewWorkspace(target, workspace, seedCheckScript(), true)), version)) {
     await step('Laying out the skills', seedScript({
       workspace, issue: '', pr: String(number), cluster: 'local', version, devApi: DEV_API_FOR_PODS,
     }), 'SEED-OK', true);
@@ -11308,6 +11330,10 @@ async function prepareReviewWorkspace(target, workspace, number, host, say) {
   await step('Writing the environment', environmentScript({
     workspace, rancher, github, login, browser: host, browserCdp: `${ await cdpBase() }`, githubCdp: GITHUB_BROWSER_CDP, devApi: DEV_API_FOR_PODS,
   }), 'ENV-OK');
+  // A developer workspace's checkout is its branch, with its work on it: `checkout` false.
+  if (!checkout) {
+    return;
+  }
   const name = await secretFromStores('GIT_NAME').catch(() => '');
   const email = await secretFromStores('GIT_EMAIL').catch(() => '');
   const out = String(await inReviewWorkspace(target, workspace, checkoutScript({
@@ -11604,6 +11630,136 @@ function reviewOnce(number, repo, title) {
   }
 
   return reviewFlights.get(key);
+}
+
+// ── Addressing review feedback ─────────────────────────────────────────────────────────
+
+/** What each end of pane-send.mjs's script means, said for the run's row. */
+const FEEDBACK_SEND_FAILURE = {
+  NOBUFFER: 'tmux refused the buffer the message is pasted from',
+  NOPANE:   'its pane went away while the message was being typed',
+  STUCK:    'the message is sitting in its prompt box unsent',
+  NOTTYPED: 'it never took the message; it may have been compacting',
+};
+const feedbackFlights = new Map();
+
+/** A workspace's own conversations, oldest first, the discussions under lines left out. */
+async function workspaceOwnConversations(workspace) {
+  const own = new RegExp(`^p-${ workspace }(_[a-z0-9-]+)?-\\d+$`);
+
+  return (await agentSessions('list', workspace)).out.split('\n')
+    .map((line) => line.split('\t'))
+    .filter(([id]) => CONVERSATION_ID.test(id || '') && own.test(id))
+    .map(([id, title]) => ({ id, title: String(title || '') }))
+    .filter((c) => !isDiscussion(c.title));
+}
+
+/** A prompt into a conversation that has stopped: queued, and its pane started, which resumes it and reads the queue. */
+async function queueAndStart(pod, workspace, id, text) {
+  const queued = String(await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '-c',
+    'mkdir -p /workspace/.queue && echo "$2" | base64 -d > "/workspace/.queue/$1" && chown 1000:1000 /workspace/.queue "/workspace/.queue/$1" 2>/dev/null; echo QUEUED', 'queue', id, Buffer.from(text, 'utf8').toString('base64')], 30_000));
+
+  if (!queued.includes('QUEUED')) {
+    throw new Error(`The prompt could not be queued for ${ id } in the agent pod.`);
+  }
+  await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '/seed/shell.sh', id, `/workspaces/${ workspace }/dashboard`, '/workspace/.home', 'start', `/workspaces/${ workspace }/bin/dev-shell`], 60_000);
+}
+
+/**
+ * "Address the feedback", the developer workspace's button, for a script to ask for: the
+ * my-pr-address-feedback prompt (the person's edit of it, if there is one) into the workspace's own
+ * conversation - the fix's, which has every round's context - the way the button sends it:
+ * typed into it if its pane is up, queued and resumed if it stopped, or a new "Feedback on #N" when
+ * there is none. Except that nobody pressed anything, so a conversation waiting on the person's
+ * answer is not typed into: the prompt would land as the answer.
+ */
+async function addressFeedbackHere(workspace, repo, number) {
+  if (!/^[a-z0-9][a-z0-9-]{0,120}$/.test(workspace) || !fs.existsSync(path.join(WORKSPACES_ROOT, workspace))) {
+    throw failure(404, `There is no workspace called ${ workspace }.`);
+  }
+  const notes = [];
+  const say = (what) => notes.push(what);
+  const host = String((await k8s(`${ INSTANCES }/${ workspace }`).catch(() => null))?.spec?.values?.rancherUrl || '');
+  const target = await reviewWorkspacePod(workspace, REVIEW_POD_WAIT_MS, say);
+
+  if (!target) {
+    throw new Error(`The workspace ${ workspace }'s pod did not start within ${ REVIEW_POD_WAIT_MS / 60_000 } minutes.`);
+  }
+  // Fresh tokens and tools, as the button's ensureWorkspaceReady gives it; its branch and skills as they are.
+  try {
+    await prepareReviewWorkspace(target, workspace, number, host, say, { checkout: false, seed: false });
+  } catch (e) {
+    if (!(e instanceof NeedsDashboard)) {
+      throw e;
+    }
+    say(`kept its environment as it was: ${ e.message }`);
+  }
+  const template = (await promptOverrides().catch(() => ({})))?.answerFeedback || ANSWER_FEEDBACK_TEMPLATE;
+  const text = expandTemplate(template, {
+    repo, pr: `#${ number }`, prNumber: String(number), subject: `${ repo } PR #${ number }`, workspace,
+  });
+  const chosen = pickConversation(await workspaceOwnConversations(workspace), { pr: number });
+  const { pod } = await agentSessions('ids');
+  const base = { workspace, pr: number, repo, steps: notes };
+
+  if (!chosen) {
+    const id = (await agentSessions('new', workspace, `pr-${ number }-feedback`)).out.trim().split('\n').pop() || '';
+
+    if (!CONVERSATION_ID.test(id)) {
+      throw new Error(`The agent pod answered "${ id.slice(0, 80) }" when asked for a conversation.`);
+    }
+    await agentSessions('rename', id, `Feedback on #${ number }`);
+    await queueAndStart(pod, workspace, id, text);
+
+    return { ...base, conversation: id, started: true, note: `Started Feedback on #${ number } in ${ workspace }: it had no conversation of its own.` };
+  }
+  const title = chosen.title || chosen.id;
+  const alive = String(await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, [
+    '/bin/sh', '-c', 'su node -c "tmux has-session -t mc-$1" >/dev/null 2>&1 && echo ALIVE || echo GONE', 'alive', chosen.id,
+  ], 20_000));
+
+  if (alive.includes('GONE')) {
+    await queueAndStart(pod, workspace, chosen.id, text);
+
+    return { ...base, conversation: chosen.id, resumed: true, note: `${ title } in ${ workspace } had stopped; it is starting again with the feedback.` };
+  }
+  const state = (await conversationDoc(true).catch(() => null))?.items?.[chosen.id]?.state || '';
+
+  if (state === 'input') {
+    return {
+      ...base, conversation: chosen.id, skipped: true, note: `${ title } in ${ workspace } is waiting on your answer, so the feedback was not typed into it; answer it, then press Address the feedback.`,
+    };
+  }
+  const file = `/tmp/.say-${ Date.now().toString(36) }`;
+  const probe = (text.split('\n').find((l) => l.trim()) || text).trim().slice(0, 48);
+  const sent = String(await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '-c', [
+    'export PATH=/workspace/.home/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH',
+    `echo ${ Buffer.from(text, 'utf8').toString('base64') } | base64 -d > ${ file }`,
+    `echo ${ Buffer.from(probe, 'utf8').toString('base64') } | base64 -d > ${ file }.frag`,
+    `chmod 666 ${ file } ${ file }.frag 2>/dev/null || true`,
+    'as_user() { if [ "$(id -u)" = 0 ]; then setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/workspace/.home "$@"; else env HOME=/workspace/.home "$@"; fi; }',
+    ...paneSendScript({
+      pane: `mc-${ chosen.id }`, file, frag: `${ file }.frag`, events: `/workspace/sessions/${ chosen.id }.events.jsonl`, as: 'as_user ',
+    }),
+  ].join('\n')], 120_000)).trim().split('\n').pop() || '';
+
+  if (sent === 'SENT') {
+    return { ...base, conversation: chosen.id, note: `Sent to ${ title } in ${ workspace }.` };
+  }
+  if (sent === 'NOPANE') {
+    await queueAndStart(pod, workspace, chosen.id, text);
+
+    return { ...base, conversation: chosen.id, resumed: true, note: `${ title } in ${ workspace } stopped as it was sent to; it is starting again with the feedback.` };
+  }
+  throw new Error(`The feedback could not be typed into ${ title }: ${ FEEDBACK_SEND_FAILURE[sent] || sent || 'the pane did not answer' }.`);
+}
+
+function addressFeedbackOnce(workspace, repo, number) {
+  if (!feedbackFlights.has(workspace)) {
+    feedbackFlights.set(workspace, addressFeedbackHere(workspace, repo, number).finally(() => feedbackFlights.delete(workspace)));
+  }
+
+  return feedbackFlights.get(workspace);
 }
 
 function reviewAgainOnce(number, repo, head) {

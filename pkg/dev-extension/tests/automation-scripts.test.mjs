@@ -7,14 +7,14 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  REVIEW_PR_SCRIPT, REVIEW_PR_CONDITION, REVIEW_NEW_COMMITS_SCRIPT, withoutReviewAction,
+  REVIEW_PR_SCRIPT, REVIEW_PR_CONDITION, REVIEW_NEW_COMMITS_SCRIPT, ADDRESS_FEEDBACK_SCRIPT, ADDRESS_FEEDBACK_CONDITION, withoutReviewAction,
 } from '../automation-scripts.mjs';
 import { actionOf } from '../dev-api/automation-rules.mjs';
 
 const hasShell = spawnSync('sh', ['-c', 'command -v curl']).status === 0;
 
 /** Runs `script` on `payload` against a server answering `answer`; what it printed, exited with, and was asked. */
-async function run(script, payload, answer = { status: 200, body: { note: 'Started Review #7 in lte-pr-7.' } }) {
+async function run(script, payload, answer = { status: 200, body: { note: 'Started Review #7 in lte-pr-7.' } }, extraEnv = {}) {
   const asked = [];
   const server = http.createServer((req, res) => {
     let body = '';
@@ -34,7 +34,9 @@ async function run(script, payload, answer = { status: 200, body: { note: 'Start
   fs.writeFileSync(path.join(dir, 'script'), script);
   const out = await new Promise((resolve) => {
     const child = spawn('sh', [path.join(dir, 'script')], {
-      env: { ...process.env, EVENT_FILE: file, DEV_API: `http://127.0.0.1:${ server.address().port }` },
+      env: {
+        ...process.env, EVENT_WORKSPACE: '', ...extraEnv, EVENT_FILE: file, DEV_API: `http://127.0.0.1:${ server.address().port }`,
+      },
     });
     let stdout = '';
     let stderr = '';
@@ -108,4 +110,27 @@ test('new-commits script: posts the head and prints the note', { skip: !hasShell
   assert.equal(r.code, 0, r.stderr);
   assert.equal(r.asked[0].url, '/my-work/pr/9/review-again?repo=rancher/dashboard&head=abc123');
   assert.equal(r.stdout.trim().split('\n').pop(), 'Resumed Review #9 in lte-pr-9.');
+});
+
+test('address-feedback script: into the event\'s workspace, for that PR, and prints the note', { skip: !hasShell && 'no sh/curl' }, async() => {
+  const r = await run(ADDRESS_FEEDBACK_SCRIPT, {
+    kind: 'pr', repo: 'rancher/dashboard', number: 12, review: { state: 'changes_requested', author: 'someone' },
+  }, { status: 200, body: { note: 'Sent to Fix #11 in issue-11.' } }, { EVENT_WORKSPACE: 'issue-11' });
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.asked[0].method, 'POST');
+  assert.equal(r.asked[0].url, '/workspaces/issue-11/address-feedback?pr=12&repo=rancher/dashboard');
+  assert.match(r.stdout, /someone's review of rancher\/dashboard#12 in issue-11/);
+  assert.equal(r.stdout.trim().split('\n').pop(), 'Sent to Fix #11 in issue-11.');
+});
+
+test('address-feedback script: no workspace is nothing to do, and says so', { skip: !hasShell && 'no sh/curl' }, async() => {
+  const r = await run(ADDRESS_FEEDBACK_SCRIPT, { kind: 'pr', repo: 'rancher/dashboard', number: 12 });
+
+  assert.equal(r.code, 2);
+  assert.equal(r.asked.length, 0);
+});
+
+test('address-feedback condition: my PR, changes asked for, a workspace that holds it', () => {
+  assert.deepEqual(ADDRESS_FEEDBACK_CONDITION.split('\n'), ['p.roles.author', "p.review.state === 'changes_requested'", 'workspace']);
 });

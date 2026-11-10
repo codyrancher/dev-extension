@@ -25,7 +25,7 @@ import {
 } from '../config/constants';
 
 import {
-  REVIEW_NEW_COMMITS_SCRIPT, REVIEW_NEW_COMMITS_CONDITION, REVIEW_PR_SCRIPT, REVIEW_PR_CONDITION
+  REVIEW_NEW_COMMITS_SCRIPT, REVIEW_NEW_COMMITS_CONDITION, REVIEW_PR_SCRIPT, REVIEW_PR_CONDITION, ADDRESS_FEEDBACK_SCRIPT, ADDRESS_FEEDBACK_CONDITION
 } from '../automation-scripts.mjs';
 
 const SCRIPT_EXAMPLE_STAGE = `# $EVENT_WORKSPACE reached $(jq -r .payload.toLabel "$EVENT_FILE").
@@ -57,6 +57,15 @@ const TEMPLATES = {
     },
     evt: {
       source: 'github', names: 'pr.review-requested, pr.pushed', repos: '', authors: '', condition: REVIEW_NEW_COMMITS_CONDITION,
+    },
+  },
+  // My side of a review: the changes asked for, addressed in the workspace the PR came from.
+  'address-feedback': {
+    def: {
+      name: 'address-feedback', description: 'Addresses the feedback when a review asks for changes on a pull request of mine - the developer workspace\'s "Address the feedback" button.', action: 'script', script: ADDRESS_FEEDBACK_SCRIPT, timeoutSec: 1800,
+    },
+    evt: {
+      source: 'github', names: 'pr.reviewed', repos: '', authors: '', condition: ADDRESS_FEEDBACK_CONDITION,
     },
   },
   'stage-script': {
