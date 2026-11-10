@@ -10787,6 +10787,9 @@ async function makeReviewWorkspace(name, repo, title, instances, say) {
   // this Installation, in the Fleet workspace of the cluster it targets, owned by the Installation.
   const fleet = (await k8s(FLEET_CLUSTERS).catch(() => null))?.items?.find((c) => c.metadata?.name === 'local')?.metadata?.namespace || 'fleet-local';
 
+  // A dev-api whose role predates this cannot write a Bundle; a dashboard can, and its Apps Plus
+  // model renders an Installation that has none the next time it loads it. So that is handed over
+  // rather than failed - the workspace is half made and a dashboard finishes it.
   await create(`/apis/fleet.cattle.io/v1alpha1/namespaces/${ fleet }/bundles`, {
     apiVersion: 'fleet.cattle.io/v1alpha1',
     kind:       'Bundle',
@@ -10799,6 +10802,11 @@ async function makeReviewWorkspace(name, repo, title, instances, say) {
       }],
     },
     spec: { resources: renderAppTemplates(app, instance), targets: [{ clusterName: 'local' }], defaultNamespace: `dev-${ name }` },
+  }).catch((e) => {
+    if (e.status === 403) {
+      throw new NeedsDashboard(`This service may not write the workspace's Fleet Bundle yet (${ e.message.slice(0, 120) }); a dashboard renders it.`);
+    }
+    throw e;
   });
 
   return { rancherUrl, owner };
@@ -10959,15 +10967,27 @@ async function agentSessions(...args) {
 async function startReviewConversation(workspace, number, repo, say) {
   const title = `Review #${ number }`;
   const listed = (await agentSessions('list', workspace)).out.split('\n').map((line) => line.split('\t')).filter(([id]) => CONVERSATION_ID.test(id || ''));
-  const doc = await conversationDoc().catch(() => null);
   const existing = listed.find(([, t]) => t === title)?.[0] || '';
+  const { pod } = await agentSessions('ids');
 
-  if (existing && doc?.items?.[existing]?.state === 'working') {
-    return { id: existing, already: true };
+  /*
+   * A review conversation that is open - its pane alive, whatever it is doing - is somebody's, and
+   * is left exactly as it is: nothing queued into it, nothing typed. 0.3.689 only stepped round one
+   * that was busy, and queued the prompt into a review a person was in the middle of answering. The
+   * pane is the test because a tmux session is what a person is attached to; the watcher's state
+   * can be missing, and an idle pane is still somebody's conversation.
+   */
+  if (existing) {
+    const alive = String(await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, [
+      '/bin/sh', '-c', 'su node -c "tmux has-session -t mc-$1" >/dev/null 2>&1 && echo ALIVE || echo GONE', 'alive', existing,
+    ], 20_000));
+
+    if (!alive.includes('GONE')) {
+      return { id: existing, already: true };
+    }
   }
   say('starting the conversation');
   let id = existing;
-  const { pod } = await agentSessions('ids');
 
   if (!id) {
     id = (await agentSessions('new', workspace, `pr-${ number }-review`)).out.trim().split('\n').pop() || '';
@@ -11009,6 +11029,11 @@ async function startReviewHere(pr, say) {
   }
   await prepareReviewWorkspace(target, where.name, pr.number, host, say);
   const conversation = await startReviewConversation(where.name, pr.number, pr.repo, say);
+
+  if (conversation.already) {
+    // The review's own record is that conversation's, and stays as it says.
+    return { workspace: where.name, conversation: conversation.id, already: true, created: false };
+  }
   const previous = (await readReview(pr.number, 'run.json').catch(() => null)) || {};
 
   await writeReview(pr.number, 'run.json', {
@@ -11031,11 +11056,13 @@ const startWaitingReviews = singleFlight(async() => {
       try {
         const started = await startReviewHere(run.pr, say);
 
-        updateAutoRun(name, run.id, {
+        updateAutoRun(name, run.id, started.already ? {
+          state: 'done', workspace: started.workspace, conversation: started.conversation, endedAt: new Date().toISOString(), note: `Review #${ run.pr.number } is already open in ${ started.workspace }; it was left as it is.`,
+        } : {
           state:        'running',
           workspace:    started.workspace,
           conversation: started.conversation,
-          note:         started.already ? `a review was already running in ${ started.workspace }` : `${ started.created ? 'made' : 'started in' } ${ started.workspace }`,
+          note:         `${ started.created ? 'made' : 'started in' } ${ started.workspace }`,
         });
       } catch (e) {
         const message = String(e?.message || e).slice(0, 300);

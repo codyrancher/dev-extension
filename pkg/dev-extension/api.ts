@@ -3120,9 +3120,11 @@ export async function ensureWorkspaceApi(cluster = ''): Promise<void> {
       },
       // The Fleet layer under a workspace. The teardown reconciler reads Bundles to tell a live
       // workspace from a torn-down one, and deletes a BundleDeployment orphaned by a UI delete -
-      // the one that otherwise keeps reinstalling a workspace so it can never be deleted.
+      // the one that otherwise keeps reinstalling a workspace so it can never be deleted. And it
+      // writes one: a review an automation starts makes its workspace with nobody's dashboard open,
+      // so the Bundle the Apps Plus model would render on save is rendered by this API instead.
       {
-        apiGroups: ['fleet.cattle.io'], resources: ['bundles'], verbs: ['get', 'list']
+        apiGroups: ['fleet.cattle.io'], resources: ['bundles'], verbs: ['get', 'list', 'create', 'update', 'patch']
       },
       {
         apiGroups: ['fleet.cattle.io'], resources: ['bundledeployments'], verbs: ['get', 'list', 'delete']
