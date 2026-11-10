@@ -6358,28 +6358,48 @@ function df(path) {
 // how a request reaches it. Opened on the first call rather than at start, so a dev-api nobody
 // takes notes on never loads `node:sqlite`, which Node still calls experimental.
 const STRATA_DIR = `${ WORKSPACES_ROOT }/.strata`;
-let strataOpening = null;
+const strataOpening = new Map();
 
-function strataDb() {
-  strataOpening ||= (async() => {
-    const { DatabaseSync } = await import('node:sqlite');
+/*
+ * Two stores: the person's, and `test`, a file of its own that a tester's browser asks for with
+ * `?store=test` (the page adds it when that browser's localStorage says `strata.store=test`). Test
+ * notes then never appear on the person's page and are never backed up; the backup reads the
+ * person's store alone.
+ */
+const STRATA_STORES = { '': 'strata.db', test: 'strata-test.db' };
 
-    fs.mkdirSync(STRATA_DIR, { recursive: true });
-    const db = new DatabaseSync(path.join(STRATA_DIR, 'strata.db'));
+function strataStoreOf(url) {
+  const asked = url?.searchParams?.get('store') || '';
 
-    strataInit(db);
+  if (!(asked in STRATA_STORES)) {
+    throw failure(400, `There is no "${ asked }" store; there is the person's, and test.`);
+  }
 
-    return db;
-  })().catch((e) => {
-    strataOpening = null;
-    throw e;
-  });
+  return asked;
+}
 
-  return strataOpening;
+function strataDb(store = '') {
+  if (!strataOpening.has(store)) {
+    strataOpening.set(store, (async() => {
+      const { DatabaseSync } = await import('node:sqlite');
+
+      fs.mkdirSync(STRATA_DIR, { recursive: true });
+      const db = new DatabaseSync(path.join(STRATA_DIR, STRATA_STORES[store]));
+
+      strataInit(db);
+
+      return db;
+    })().catch((e) => {
+      strataOpening.delete(store);
+      throw e;
+    }));
+  }
+
+  return strataOpening.get(store);
 }
 
 /** A route handler with the database open: `fn(db, match, url, body)`. */
-const withStrata = (fn) => async(m, url, body) => fn(await strataDb(), m, url, body);
+const withStrata = (fn) => async(m, url, body) => fn(await strataDb(strataStoreOf(url)), m, url, body);
 
 /*
  * Notes in Markdown, for whatever is not the editor - the agents, mostly. A write may send
@@ -6485,7 +6505,8 @@ function strataBackupNow(reason = 'scheduled') {
     try {
       const backup = strataBackupFiles(await strataDb());
 
-      if (!backup.live) {
+      // Nothing to back up, unless there was before: then emptying it is a change to commit.
+      if (!backup.live && !before.backedUpAt) {
         next = {
           ...before, checkedAt: at, result: 'empty', error: ''
         };
@@ -11604,7 +11625,7 @@ const server = http.createServer(async(req, res) => {
 
   if (strataPicture && req.method === 'GET') {
     try {
-      const picture = strataImage(await strataDb(), strataPicture[1], !!strataPicture[2]);
+      const picture = strataImage(await strataDb(strataStoreOf(url)), strataPicture[1], !!strataPicture[2]);
 
       if (!picture) {
         return send(res, 404, { error: 'No such picture.' });

@@ -18,6 +18,7 @@ import StrataBackup from '../components/strata/StrataBackup.vue';
 import {
   useNotesStore, useLabelsStore, loadStrata, strataProblem
 } from '../strata/stores';
+import { STRATA_STORE } from '../strata/api';
 import '../strata/style';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, STRATA_NOTE_ROUTE
@@ -57,7 +58,7 @@ function handleLabelClick(labelId: string) {
 
 <template>
   <DevPage
-    title="Strata"
+    :title="STRATA_STORE ? `Strata (${ STRATA_STORE } store)` : 'Strata'"
     lede="Notes, the labels on them, and the lines you label inside them."
     class="strata-page"
   >
@@ -131,7 +132,7 @@ function handleLabelClick(labelId: string) {
           @label-click="handleLabelClick"
         />
       </div>
-      <StrataBackup />
+      <StrataBackup v-if="!STRATA_STORE" />
     </div>
     <UndoToast />
   </DevPage>

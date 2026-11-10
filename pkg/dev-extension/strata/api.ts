@@ -65,8 +65,30 @@ export interface UploadedImage {
  */
 export const IMAGE_PATH = '/api/images/';
 
+/**
+ * Which of dev-api's stores this browser uses: the person's, or `test` when localStorage says
+ * `strata.store=test` - which is how a tester's browser keeps its notes off the person's page and
+ * out of their backup. Read once per page load.
+ */
+export const STRATA_STORE = (() => {
+  try {
+    return window.localStorage.getItem('strata.store') === 'test' ? 'test' : '';
+  } catch {
+    return '';
+  }
+})();
+
+/** A dev-api path for this browser's store. */
+function strataPath(path: string): string {
+  if (!STRATA_STORE) {
+    return devApiUrl(`/strata${ path }`);
+  }
+
+  return devApiUrl(`/strata${ path }${ path.includes('?') ? '&' : '?' }store=${ STRATA_STORE }`);
+}
+
 function call<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
-  return devFetch(devApiUrl(`/strata${ path }`), {
+  return devFetch(strataPath(path), {
     method,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     timeoutMs: 60_000,
@@ -128,7 +150,7 @@ export const api = {
   deleteImage: (id: string) => call<void>(`/images/${ enc(id) }`, 'DELETE'),
 
   getBackup: () => call<BackupState>('/backup'),
-  backupNow: () => devFetch(devApiUrl('/strata/backup'), { method: 'POST', body: '{}', timeoutMs: 300_000 }) as Promise<BackupState>,
+  backupNow: () => devFetch(strataPath('/backup'), { method: 'POST', body: '{}', timeoutMs: 300_000 }) as Promise<BackupState>,
 
   search: (q?: string, labels?: string) => {
     const params = new URLSearchParams();
@@ -162,7 +184,7 @@ export function imageSrc(src: string): string {
     return src;
   }
 
-  return devApiUrl(`/strata/images/${ src.slice(IMAGE_PATH.length) }`);
+  return strataPath(`/images/${ src.slice(IMAGE_PATH.length) }`);
 }
 
 /**
@@ -170,5 +192,7 @@ export function imageSrc(src: string): string {
  * into Strata's own path, so the stored note does not depend on where dev-api is reached.
  */
 export function storedHtml(html: string): string {
-  return html.split(devApiUrl('/strata/images/')).join(IMAGE_PATH);
+  const kept = html.split(devApiUrl('/strata/images/')).join(IMAGE_PATH);
+
+  return STRATA_STORE ? kept.replace(new RegExp(`(${ IMAGE_PATH }[^"?]+)\\?store=${ STRATA_STORE }`, 'g'), '$1') : kept;
 }
