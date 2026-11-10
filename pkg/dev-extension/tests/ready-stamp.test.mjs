@@ -360,6 +360,8 @@ process.on('exit', () => fs.rmSync(moduleDir, { recursive: true, force: true }))
 
 fs.chmodSync(moduleDir, 0o755);
 fs.copyFileSync(path.join(PKG, 'agent-reads.mjs'), path.join(moduleDir, 'agent-reads.mjs'));
+// The scripts themselves, shared with dev-api: real, not stubbed, since they are what is under test.
+fs.copyFileSync(path.join(PKG, 'workspace-provision.mjs'), path.join(moduleDir, 'workspace-provision.mjs'));
 fs.writeFileSync(path.join(moduleDir, 'api-stub.mjs'), `
 const s = () => globalThis.stub;
 export const WORKSPACE_CONTAINER = 'workspace';
@@ -832,8 +834,9 @@ test('tools apt has not installed do not hold the stamp back', async() => {
 });
 
 test('an install that died cannot stop the next one, and the next one outlives its exec', () => {
-  const source = fs.readFileSync(new URL('../workspace-tools.ts', import.meta.url), 'utf8');
-  const base = source.slice(source.indexOf('async function ensureBase'), source.indexOf("'echo BASE-OK'"));
+  // The step is workspace-provision.mjs's now, shared with dev-api.
+  const source = fs.readFileSync(new URL('../workspace-provision.mjs', import.meta.url), 'utf8');
+  const base = source.slice(source.indexOf('export function baseScript'), source.indexOf("'echo BASE-OK'"));
 
   assert.ok(base.indexOf('find /tmp/.dev-apt -mmin +15 -delete') > -1, 'a dead install\'s marker expires');
   assert.ok(base.indexOf('find /tmp/.dev-apt') < base.indexOf('[ ! -f /tmp/.dev-apt ]'), 'and it expires before it is read');

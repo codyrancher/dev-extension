@@ -297,10 +297,10 @@ let lastTick = 0;
 const TAB = `tab-${ Math.random().toString(36).slice(2, 8) }`;
 
 /**
- * Start the reviews dev-api has waiting: what My Work's Review button does, pressed for an
- * automation. A review makes and prepares a workspace through this person's Rancher session, which
- * only a dashboard has, so dev-api records the run and the first dashboard to claim it starts it.
- * One at a time per tick: each is a workspace, and a burst of them is a burst of pods.
+ * Start the reviews dev-api could not: it starts every review itself now (the Starting a review
+ * section of dev-api/server.mjs), and hands one back only when a new workspace needs a Rancher
+ * token and none of the person's works - minting one takes this session. The first dashboard to
+ * claim it starts it, as My Work's Review button would. One at a time per tick.
  */
 async function claimReviews(store: Store): Promise<void> {
   const waiting = await devApi('/automations/claims').catch(() => null);

@@ -7,6 +7,7 @@
 // the YAML configures - a script in a ConfigMap, an nginx config - survives being rendered.
 
 import { DEFAULT_CLUSTER_VALUES } from './config/cluster-template';
+import { substituteValues, mergeAppValues, renderAppTemplates } from './render-core.mjs';
 
 export interface Template {
   name: string;
@@ -181,11 +182,8 @@ export function missingValues(app: any, instance: any): string[] {
  * entrypoint script's `${SA}` is not in the bag, so it survives rendering exactly as written.
  */
 export function substitute(source: string, values: Record<string, unknown>): string {
-  return (source || '').replace(VARIABLE, (match, key) => {
-    const value = values[key];
-
-    return value === undefined || value === null ? match : String(value);
-  });
+  // render-core.mjs, which dev-api renders with too: one substitution for both, see there.
+  return substituteValues(source, values);
 }
 
 /**
@@ -194,32 +192,10 @@ export function substitute(source: string, values: Record<string, unknown>): str
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mergeValues(app: any, instance: any): Record<string, unknown> {
-  const namespace = instance?.spec?.namespace || 'default';
-
-  return {
-    ...(app?.spec?.values || {}),
-    ...(instance?.spec?.values || {}),
-    app:      app?.metadata?.name || instance?.spec?.app || '',
-    install:  instance?.metadata?.name || '',
-    // The name this had before installations were called installations. Kept because the
-    // substitution leaves an unmatched `${...}` exactly as written rather than blanking it, so
-    // dropping it would not fail an app that still uses it - it would deploy a resource
-    // literally named `${instance}-hello`. It costs one line and it is in BUILT_IN_VALUES, so
-    // nothing asks anybody to supply it.
-    instance: instance?.metadata?.name || '',
-    // The cluster an instance provisions, so one app's resource templates and its cluster
-    // template can both refer to it by the same name.
-    cluster:  instance?.clusterName || instance?.spec?.provisionCluster?.name || instance?.metadata?.name || '',
-    namespace,
-  };
+  return mergeAppValues(app, instance);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function renderTemplates(app: any, instance: any): Template[] {
-  const values = mergeValues(app, instance);
-
-  return (app?.spec?.templates || []).map((template: Template, i: number) => ({
-    name:    substitute(template?.name || `resource-${ i }.yaml`, values),
-    content: substitute(template?.content || '', values),
-  }));
+  return renderAppTemplates(app, instance) as Template[];
 }

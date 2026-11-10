@@ -515,7 +515,7 @@ export default {
         v-if="def.action === 'review'"
         class="text-muted agent-edit__hint"
       >
-        A <code>pr-&lt;number&gt;</code> workspace, made on the Rancher you last chose if it is not there yet, and the my-pr-full-review skill in a conversation in it - the review panel fills in as it goes. One review per pull request at a time: an event for a PR already being reviewed is skipped, and says so. It is started by an open dashboard, since making and preparing a workspace takes your Rancher session; with none open it waits.
+        A <code>pr-&lt;number&gt;</code> workspace, made on the Rancher your latest workspace uses if it is not there yet, and the my-pr-full-review skill in a conversation in it - the review panel fills in as it goes. Started by the in-cluster API as soon as the event is recorded, whether or not a dashboard is open. One review per pull request at a time: an event for a PR already being reviewed is skipped, and says so. A new workspace is given a Rancher token of yours that already works; if none does, it waits for an open dashboard to mint one.
       </p>
 
       <template v-if="def.action === 'script'">

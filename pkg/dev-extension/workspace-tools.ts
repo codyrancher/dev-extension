@@ -19,6 +19,10 @@ import {
 } from './api';
 import { agentPod } from './agent';
 import { readyFields, readyStampCurrent } from './agent-reads.mjs';
+import {
+  TOOLS_WANTED, READY_STAMP, seedMark as seedMarkOf, rootScript, nodeScript, rootCommand, nodeCommand,
+  baseScript, seedCheckScript, seedCurrent, seedScript, toolsCheckScript, toolsMissing, toolsScript, rancherTokenScript, environmentScript, checkoutScript,
+} from './workspace-provision.mjs';
 import { podStateText } from './pod-state';
 import { AGENT_SEED } from './agent-seed.generated';
 import { UNREWRITE_B64 } from './apps';
@@ -28,31 +32,8 @@ import {
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-const GH_VERSION = '2.76.1';
-const JQ_VERSION = '1.7.1';
-const TOOLS_WANTED = `gh-${ GH_VERSION },jq-${ JQ_VERSION }`;
-// Paths inside the workspace, as the pod's shell sees them.
-//
-// `$WS` rather than a directory: a workspace's tree is at /workspaces/<name>, which asRoot and
-// asNode below put in the shell's WS before anything here runs. Every script in this file goes
-// through one of those two, so writing the tree's own name into thirty scripts would be thirty
-// chances to write the wrong one.
-const BIN = '$WS/bin';
-/*
- * One copy of a downloaded tool for the whole node.
- *
- * `gh` is a 54 MiB static binary and every workspace used to hold its own: seven of them, 380
- * MiB of a disk whose whole point is to hold checkouts. Nothing about it is per-workspace - it
- * is the same bytes at the same version - so it lives here once and each `bin` holds a symlink
- * to it.
- *
- * The name carries the version, so a bump installs beside the old one and every workspace's
- * link is repointed as it is next seeded, instead of one download racing seven readers.
- */
-const SHARED_TOOLS = '/workspaces/.shared/tools';
-const ENV_FILE = '$WS/.env';
-const SEED_MARKER = '$WS/.dev-seed';
-const READY_STAMP = '$WS/.dev-ready';
+// The scripts, the versions and the paths are workspace-provision.mjs's, shared with dev-api,
+// which prepares a workspace itself when a review starts with no dashboard open.
 
 /** Where the pod is: everything below execs into it. */
 export interface WorkspaceTarget {
@@ -127,7 +108,7 @@ async function servedSeedVersion(): Promise<string> {
 
 /** What `.dev-seed` holds once this seed is laid out for this workspace. */
 function seedMark(version: string, ctx: WorkspaceContext, workspace: string): string {
-  return `${ version }:${ ctx.issue || '' }:${ ctx.pr || '' }:${ workspace }`;
+  return seedMarkOf(version, ctx, workspace);
 }
 
 /**
@@ -138,11 +119,8 @@ function seedMark(version: string, ctx: WorkspaceContext, workspace: string): st
  */
 async function asRoot(target: WorkspaceTarget, script: string): Promise<string> {
   const file = `/tmp/.dev-${ Date.now().toString(36) }${ Math.random().toString(36).slice(2, 8) }.sh`;
-  const wrapped = `WS=${ workspaceRoot(target.workspace) }\n${ script }`;
 
-  return ran(target, [
-    '/bin/sh', '-c', `echo ${ b64(wrapped) } | base64 -d > ${ file } && /bin/bash ${ file } 2>&1; rc=$?; rm -f ${ file }; exit $rc`,
-  ]);
+  return ran(target, rootCommand(b64(rootScript(workspaceRoot(target.workspace), script)), file));
 }
 
 /**
@@ -171,16 +149,8 @@ async function ran(target: WorkspaceTarget, command: string[]): Promise<string> 
 /** The same, as the pane's user, with its home: the user the checkout and the tmux server belong to. */
 async function asNode(target: WorkspaceTarget, script: string): Promise<string> {
   const file = `/tmp/.dev-${ Date.now().toString(36) }${ Math.random().toString(36).slice(2, 8) }.sh`;
-  const wrapped = [
-    `WS=${ workspaceRoot(target.workspace) }`,
-    `export HOME=$WS/.home; export PATH=${ BIN }:$WS/.home/.local/bin:$PATH`,
-    `set -a; [ -f ${ ENV_FILE } ] && . ${ ENV_FILE }; set +a`,
-    script,
-  ].join('\n');
 
-  return ran(target, [
-    '/bin/sh', '-c', `echo ${ b64(wrapped) } | base64 -d > ${ file } && chmod 755 ${ file } && if [ "$(id -u)" = 0 ]; then su node -s /bin/bash -c "/bin/bash ${ file }" 2>&1; else /bin/bash ${ file } 2>&1; fi; rc=$?; rm -f ${ file }; exit $rc`,
-  ]);
+  return ran(target, nodeCommand(b64(nodeScript(workspaceRoot(target.workspace), script)), file));
 }
 
 /** Read something out of the checkout, as its owner. What the Review tab is drawn from. */
@@ -261,25 +231,7 @@ export function contextFromName(workspace: string): WorkspaceContext {
 
 /** Directories, ownership, and the system packages a recording needs (ffmpeg), as root. */
 async function ensureBase(target: WorkspaceTarget): Promise<void> {
-  const out = await asRoot(target, [
-    'set -e',
-    // From here until the last step succeeds, nothing vouches for this workspace: a run that fails
-    // partway must not leave an older stamp saying everything is in place.
-    `rm -f ${ READY_STAMP } 2>/dev/null || true`,
-    `mkdir -p ${ BIN } $WS/.claude $WS/artifacts/a11y $WS/.kube $WS/.queue $WS/.home/.local/bin $WS/.home/.config/gh`,
-    // The apt path is root's and the rootfs is the pod's, so this repeats after a restart; it is
-    // in the background because a review should not wait a minute for ffmpeg it may never use.
-    // setsid because the install must outlive this exec's socket, and an install that dies anyway
-    // leaves its marker behind: older than any real run, the marker is not stopping anything, and
-    // honouring it would leave the pod without these tools until it restarts.
-    'if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v lsof >/dev/null 2>&1; then',
-    '  find /tmp/.dev-apt -mmin +15 -delete 2>/dev/null || true',
-    `  if [ ! -f /tmp/.dev-apt ]; then touch /tmp/.dev-apt; setsid sh -c 'apt-get -o DPkg::Lock::Timeout=300 update -qq && DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq ffmpeg jq lsof iproute2 >/dev/null 2>&1; rm -f /tmp/.dev-apt' >$WS/.apt.log 2>&1 </dev/null & fi`,
-    'fi',
-    `git config --global --add safe.directory $WS/dashboard 2>/dev/null || true`,
-    `chown -R node:node ${ BIN } $WS/.claude $WS/artifacts $WS/.kube $WS/.queue $WS/.home/.local $WS/.home/.config 2>/dev/null || true`,
-    'echo BASE-OK',
-  ].join('\n'));
+  const out = await asRoot(target, baseScript());
 
   if (!out.includes('BASE-OK')) {
     throw new Error(`The workspace pod could not be prepared: ${ out.trim().slice(-300) }`);
@@ -318,28 +270,18 @@ async function ensureSeed(target: WorkspaceTarget, ctx: WorkspaceContext): Promi
   // `bin/dev-shell` - which is the tunnel, so nothing worked at all. The wrapper is what the
   // seed exists to write; if it is not there, the seed has not run here whatever the marker
   // says.
-  const current = await asNode(target, `cat ${ SEED_MARKER } 2>/dev/null || true; [ -x $WS/bin/dev-shell ] && echo TUNNEL-OK`);
+  const current = await asNode(target, seedCheckScript());
 
-  if (current.includes('TUNNEL-OK') && current.split('\n')[0].trim() === version) {
+  if (seedCurrent(current, version)) {
     return;
   }
 
   // The script that lays the files out rides in the seed itself (its `layout.mjs`), so
   // what travels here is a few lines: an exec command is URL arguments, and a script of any
   // size in it is a request something between here and the pod refuses.
-  const out = await asNode(target, [
-    'set -e',
-    'S=/tmp/dev-seed.$$.json; L=/tmp/dev-layout.$$.mjs',
-    `curl -fsS ${ DEV_API_IN_CLUSTER }/agent-seed -o $S`,
-    `node -e "const s=require(process.argv[1]);require('fs').writeFileSync(process.argv[2],s['layout.mjs'])" $S $L`,
-    // DEV_CLUSTER lets layout.mjs write a dev-shell that reaches this workspace's pod on its own
-    // cluster: the active cluster is this workspace's, since every call reaching its pod is (see
-    // setCluster). Local is the empty/`local` case dev-shell already handles.
-    `DEV_PROJECT=${ target.workspace } DEV_ISSUE=${ ctx.issue || '' } DEV_PR=${ ctx.pr || '' } DEV_CLUSTER=${ activeCluster() } DEV_SEED_FILE=$S DEV_ROOT=$WS DEV_WORKDIR=$WS/dashboard DEV_HOME=$WS/.home node $L`,
-    `echo '${ version }' > ${ SEED_MARKER }`,
-    'rm -f $S $L',
-    'echo SEED-OK',
-  ].join('\n'));
+  const out = await asNode(target, seedScript({
+    workspace: target.workspace, issue: String(ctx.issue || ''), pr: String(ctx.pr || ''), cluster: activeCluster(), version, devApi: DEV_API_IN_CLUSTER,
+  }));
 
   if (!out.includes('SEED-OK')) {
     throw new Error(`The skills could not be written into the workspace: ${ out.trim().slice(-300) }`);
@@ -359,37 +301,13 @@ async function ensureSeed(target: WorkspaceTarget, ctx: WorkspaceContext): Promi
  * discarded rather than written over a file the winner may already be executing.
  */
 async function ensureTools(target: WorkspaceTarget): Promise<void> {
-  const wanted = [
-    { tool: 'gh', version: GH_VERSION },
-    { tool: 'jq', version: JQ_VERSION },
-  ];
-  const linked = await asNode(target, wanted.map(({ tool, version }) => (
-    `[ "$(readlink ${ BIN }/${ tool } 2>/dev/null)" = "${ SHARED_TOOLS }/${ tool }-${ version }" ] && printf '%s ' ${ tool }`
-  )).concat('true').join('\n'));
-  const missing = wanted.filter(({ tool }) => !linked.includes(tool));
+  const missing = toolsMissing(await asNode(target, toolsCheckScript()));
 
   if (!missing.length) {
     return;
   }
 
-  const steps = ['set -e', `mkdir -p ${ SHARED_TOOLS }`];
-
-  for (const { tool, version } of missing) {
-    const shared = `${ SHARED_TOOLS }/${ tool }-${ version }`;
-    const temp = `${ shared }.$$`;
-    const fetch = tool === 'jq'
-      ? `curl -fsSL -o ${ temp } https://github.com/jqlang/jq/releases/download/jq-${ version }/jq-linux-amd64`
-      : `curl -fsSL https://github.com/cli/cli/releases/download/v${ version }/gh_${ version }_linux_amd64.tar.gz | tar -xz -C /tmp && mv /tmp/gh_${ version }_linux_amd64/bin/gh ${ temp } && rm -rf /tmp/gh_${ version }_linux_amd64`;
-
-    steps.push(
-      `if [ ! -x ${ shared } ]; then ${ fetch } && chmod +x ${ temp } && mv -n ${ temp } ${ shared }; rm -f ${ temp }; fi`,
-      `ln -sf ${ shared } ${ BIN }/${ tool }`,
-      `ln -sf ${ shared } $WS/.home/.local/bin/${ tool }`,
-    );
-  }
-  steps.push('echo TOOLS-OK');
-
-  const out = await asNode(target, steps.join('\n'));
+  const out = await asNode(target, toolsScript(missing));
 
   if (!out.includes('TOOLS-OK')) {
     throw new Error(`gh and jq could not be installed in the workspace: ${ out.trim().slice(-300) }`);
@@ -407,25 +325,7 @@ async function ensureTools(target: WorkspaceTarget): Promise<void> {
  */
 async function rancherToken(target: WorkspaceTarget, browserRancher = ''): Promise<string> {
   const browser = /^https?:\/\/[^'\s]+$/.test(browserRancher) ? browserRancher.replace(/\/+$/, '') : '';
-  const existing = (await asRoot(target, [
-    `T=$(grep '^RANCHER_TOKEN=' ${ ENV_FILE } 2>/dev/null | cut -d= -f2-)`,
-    'U="${API:-$RANCHER_URL}"',
-    `BR='${ browser }'`,
-    `PREV=$(grep '^RANCHER_URL=' ${ ENV_FILE } 2>/dev/null | cut -d= -f2-)`,
-    // Reused when it still answers on any host it might be for - its target, the one .env
-    // records, or the browser's Rancher - not only on $U. A token that is good against the
-    // parent must not be thrown away and re-minted on every call just because the workspace's
-    // own target is a downstream it does not match; ensureEnvironment writes the host it is for.
-    '[ -n "$T" ] || exit 0',
-    'for C in "$U" "$PREV" "$BR"; do',
-    '  [ -n "$C" ] || continue',
-    // `--max-time`, because this runs inside an exec that gives up at 120s and answers with
-    // whatever reached it - nothing, here, since every line of this script redirects. Three
-    // candidates times an untimed TCP connect to a Rancher that has gone is well over the
-    // budget, and the failure it produces is a blank error with no reason in it.
-    '  if [ "$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $T" "$C/v3/users?me=true")" = 200 ]; then echo "$T"; exit 0; fi',
-    'done',
-  ].join('\n'))).trim();
+  const existing = (await asRoot(target, rancherTokenScript(browser))).trim();
 
   if (existing) {
     return existing;
@@ -461,105 +361,16 @@ async function ensureEnvironment(target: WorkspaceTarget, github: string, browse
   const browser = /^https?:\/\/[^'\s]+$/.test(browserRancher) ? browserRancher.replace(/\/+$/, '') : '';
   const browserCdp = await workspaceBrowserCdp(target.workspace);
 
-  const out = await asRoot(target, [
-    'set -e',
-    'U="${API:-$RANCHER_URL}"',
-    `BR='${ browser }'`,
-    `T='${ rancher }'`,
-    // The host the token authenticates against, not the one the pod was built with: the
-    // workspace's own target first (its dev server runs against it), then the .env host already
-    // there, then the browser's Rancher (which is what a freshly-minted token is for). Whichever
-    // answers 200 is the one that is written; if none do the token is genuinely spent, and the
-    // intended target is kept so the file still names the right Rancher for when it is renewed.
-    `PREV=$(grep '^RANCHER_URL=' ${ ENV_FILE } 2>/dev/null | cut -d= -f2-)`,
-    'PICK=""',
-    'for C in "$U" "$PREV" "$BR"; do',
-    '  [ -n "$C" ] || continue',
-    '  if [ -n "$T" ] && [ "$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $T" "$C/v3/users?me=true")" = 200 ]; then PICK="$C"; break; fi',
-    'done',
-    'if [ -n "$PICK" ]; then U="$PICK"; fi',
-    'H=$(echo "$U" | sed -e "s|^https\\?://||" -e "s|/.*$||")',
-    // Keep the GitHub token already in .env, so a page-load where the token read came back empty
-    // (a transient secret-read failure) does not wipe a working one and leave every git push and gh
-    // call unauthenticated. The line below is written unconditionally, so without this a blank read
-    // overwrote it every time. When the read succeeds, `github` is used and this is ignored.
-    `GH_KEEP="$(grep -m1 '^GH_TOKEN=' ${ ENV_FILE } 2>/dev/null | cut -d= -f2-)"`,
-    'umask 077',
-    `cat > ${ ENV_FILE } <<EOF`,
-    'API=$U',
-    'RANCHER_URL=$U',
-    'RANCHER_HOST_NAME=$H',
-    `RANCHER_TOKEN=${ rancher }`,
-    `HARNESS_API=${ DEV_API_IN_CLUSTER }`,
-    `CLAUDE_HARNESS_API=${ DEV_API_IN_CLUSTER }`,
-    `HARNESS_PROJECT=${ target.workspace }`,
-    `PROJECT_NAME=${ target.workspace }`,
-    // The browser an agent here drives.
-    //
-    // An all-in-one workspace has Chromium as a second container in its own pod, so localhost is
-    // right. A leased workspace has no browser of its own and uses the shared one - and this line
-    // was `localhost:9222` for both, which is the whole of the browser trouble an agent in a
-    // leased workspace ran into: `.env` is sourced *after* the container's env, so the correct
-    // value the App sets was overwritten with an address where nothing listens. Every CDP call
-    // then failed with ECONNREFUSED on ::1:9222, and the agent had to work the endpoint out for
-    // itself.
-    //
-    // By IP, not by name: see sharedBrowserCdp. Chromium answers 500 to a request whose Host is a
-    // service name, so the name is not a value any client can use.
-    `CLAUDE_BROWSER_CDP=${ browserCdp }`,
-    // The shared github-browser every agent uses for GitHub - it holds the one GitHub login, so
-    // media uploads go through it rather than a workspace's own signed-out browser. A local
-    // workspace reaches it by service name; a downstream one cannot (different cluster), so it gets
-    // the agent pod's tunnel of it into this pod's localhost. See browser-control and tunnel-browser.sh.
-    `GITHUB_BROWSER_CDP=${ activeCluster() === 'local' ? GITHUB_BROWSER_CDP : GITHUB_BROWSER_CDP_DOWNSTREAM }`,
-    `GH_TOKEN=${ github || '$GH_KEEP' }`,
-    `GITHUB_TOKEN=${ github || '$GH_KEEP' }`,
-    'KUBECONFIG=$WS/.kube/config',
-    // The shared package stores, so a shell gets them whether or not its pod was started with
-    // them in its environment: the App sets these too, but a workspace that has been running
-    // since before it did would otherwise keep filling a cache of its own.
-    'YARN_CACHE_FOLDER=/workspaces/.shared/yarn',
-    'npm_config_cache=/workspaces/.shared/npm',
-    'CYPRESS_CACHE_FOLDER=/workspaces/.shared/cypress',
-    'PLAYWRIGHT_BROWSERS_PATH=/workspaces/.shared/playwright',
-    'EOF',
-    `chown node:node ${ ENV_FILE } && chmod 600 ${ ENV_FILE }`,
-    // bashrc: the same three lines init.sh appended, once.
-    `touch $WS/.home/.bashrc`,
-    `grep -q 'source $WS/.env' $WS/.home/.bashrc || printf '%s\\n' '# dev extension (the harness put the same in init.sh)' 'set -a; source $WS/.env; set +a' 'export PATH=$WS/bin:$PATH' >> $WS/.home/.bashrc`,
-    `chown node:node $WS/.home/.bashrc`,
-    // gh and git, the way init.sh did them.
-    github ? `cat > $WS/.home/.config/gh/hosts.yml <<EOF
-github.com:
-    oauth_token: ${ github }
-    user: ${ login || 'codyrancher' }
-    git_protocol: https
-EOF
-chown -R node:node $WS/.home/.config/gh && chmod 600 $WS/.home/.config/gh/hosts.yml
-echo "https://${ login || 'codyrancher' }:${ github }@github.com" > $WS/.git-credentials && chown node:node $WS/.git-credentials && chmod 600 $WS/.git-credentials` : 'true',
-    // kubectl, at the Rancher's local cluster, as the token's user.
-    rancher ? `cat > $WS/.kube/config <<EOF
-apiVersion: v1
-kind: Config
-clusters:
-- name: local
-  cluster:
-    server: $U/k8s/clusters/local
-    insecure-skip-tls-verify: true
-users:
-- name: local
-  user:
-    token: ${ rancher }
-contexts:
-- name: local
-  context:
-    cluster: local
-    user: local
-current-context: local
-EOF
-chown -R node:node $WS/.kube && chmod 600 $WS/.kube/config` : 'true',
-    'echo ENV-OK',
-  ].join('\n'));
+  const out = await asRoot(target, environmentScript({
+    workspace:  target.workspace,
+    rancher,
+    github,
+    login,
+    browser,
+    browserCdp,
+    githubCdp: activeCluster() === 'local' ? GITHUB_BROWSER_CDP : GITHUB_BROWSER_CDP_DOWNSTREAM,
+    devApi:    DEV_API_IN_CLUSTER,
+  }));
 
   if (!out.includes('ENV-OK')) {
     throw new Error(`The workspace's environment could not be written: ${ out.trim().slice(-300) || 'the script ran and printed nothing, which should not happen' }`);
@@ -593,32 +404,9 @@ async function ensureCheckout(target: WorkspaceTarget, ctx: WorkspaceContext, gi
   const name = (await secretValue('GIT_NAME').catch(() => '')) || who.name;
   const email = (await secretValue('GIT_EMAIL').catch(() => '')) || who.email;
   const fork = who.login || 'codyrancher';
-  const out = await asNode(target, [
-    `cd $WS/dashboard 2>/dev/null || { echo NO-CHECKOUT; exit 0; }`,
-    name ? `git config user.name ${ JSON.stringify(name) }` : 'true',
-    email ? `git config user.email ${ JSON.stringify(email) }` : 'true',
-    github ? 'git config credential.helper "store --file=$WS/.git-credentials"' : 'true',
-    `if git remote get-url origin 2>/dev/null | grep -q 'github.com/rancher/dashboard'; then git remote rename origin upstream; git remote add origin https://github.com/${ fork }/dashboard.git; fi`,
-    'git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/rancher/dashboard.git',
-    'mkdir -p .git/info',
-    // The harness's three, plus what this environment leaves in the tree: the App's install
-    // marker and the file claude keeps beside a checkout it was started in.
-    "for P in '.mcp.json' '.claude/' '.vscode/' '.install-done' '.claude.json' 'vue.config.orig.js'; do grep -qxF \"$P\" .git/info/exclude 2>/dev/null || echo \"$P\" >> .git/info/exclude; done",
-    // An earlier version marked the checkout's vue.config.js skip-worktree; the App no longer
-    // touches that file (see apps.ts, WORKSPACE_SERVE), and the mark broke its boot. Undone.
-    'git update-index --no-skip-worktree vue.config.js 2>/dev/null || true',
-    'git checkout -- vue.config.js 2>/dev/null || true',
-    // The PR's head, once, and only onto a clean default branch: a workspace somebody has
-    // already worked in is theirs.
-    ctx.pr ? `if [ ! -f $WS/.pr-checkout ] && [ -z "$(git status --porcelain --untracked-files=no)" ] && git rev-parse --abbrev-ref HEAD | grep -qE '^(master|main)$'; then git fetch --depth 200 upstream pull/${ ctx.pr }/head:pr-${ ctx.pr } && git checkout pr-${ ctx.pr } && echo ${ ctx.pr } > $WS/.pr-checkout; fi` : 'true',
-    '[ -d $WS/node_modules/playwright-core ] || (cd $WS && npm install --no-save --silent playwright-core >/dev/null 2>&1 || echo "playwright-core install failed")',
-    // The App's boot makes the repository and only then fetches, so a clone still running has a
-    // .git and no commit. And nothing above stops at a failed PR fetch, which leaves a PR's
-    // workspace on the default branch with nothing to say it was meant to be elsewhere.
-    'git rev-parse -q --verify HEAD >/dev/null 2>&1 || echo CHECKOUT-PENDING',
-    ctx.pr ? `[ -f $WS/.pr-checkout ] || ! git rev-parse --abbrev-ref HEAD 2>/dev/null | grep -qE '^(master|main)$' || echo CHECKOUT-PENDING` : 'true',
-    'echo CHECKOUT-OK',
-  ].join('\n'));
+  const out = await asNode(target, checkoutScript({
+    name, email, fork, github, pr: ctx.pr || 0,
+  }));
 
   if (!out.includes('CHECKOUT-OK') && !out.includes('NO-CHECKOUT')) {
     throw new Error(`The checkout could not be set up: ${ out.trim().slice(-300) }`);

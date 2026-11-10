@@ -173,7 +173,7 @@ async function stopIt() {
             >
               {{ run.workspace }}
             </router-link>
-            <span v-else>{{ run.state === 'requested' ? 'waiting for an open dashboard to make it' : '…' }}</span>
+            <span v-else>{{ run.state === 'requested' ? (run.needsDashboard ? 'waiting for an open dashboard to make it' : 'waiting to start') : '…' }}</span>
           </dd>
         </div>
       </dl>
@@ -223,7 +223,7 @@ async function stopIt() {
         v-else-if="run.kind === 'review'"
         class="text-muted run-log__review"
       >
-        What My Work's Review button does: the <code>pr-{{ run.pr ? run.pr.number : '' }}</code> workspace, and the my-pr-full-review skill in a conversation there.
+        What My Work's Review button does, started by the in-cluster API: the <code>pr-{{ run.pr ? run.pr.number : '' }}</code> workspace, and the my-pr-full-review skill in a conversation there.
         <template v-if="workspaceTo">
           The review's own panel and its conversation are in
           <router-link :to="workspaceTo">

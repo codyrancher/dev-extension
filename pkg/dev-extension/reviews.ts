@@ -37,6 +37,7 @@ import {
   DEFAULT_APP, DEV_API_IN_CLUSTER, LTE_APP, isLte
 } from './config/constants';
 import { defaultRancherValues, lastRancherValues } from './ranchers';
+import { reviewPrompt as sharedReviewPrompt } from './review-prompt.mjs';
 import { TRIAGE_ACTIONS, jiraWorkspaceName, roleForStep } from './jira-steps.mjs';
 import { diffAnchors, resolveAnchors, lostMessage } from './review-anchors.mjs';
 import { note } from './dev-log.mjs';
@@ -769,10 +770,8 @@ export async function rerunFailedJobs(pr: { repo: string; runs: Json[] }): Promi
 const API_HINT = '$CLAUDE_HARNESS_API/my-work/pr';
 
 export function reviewPrompt(pr: number, repo = DEFAULT_REPO): string {
-  // Prose, not `/my-pr-full-review`: this works both when it is claude's launch prompt (a new
-  // conversation) and if it is ever typed into a running pane, where a leading `/` is swallowed as
-  // an unknown CLI command. See workspace-rail's skillTemplate.
-  return `Use the my-pr-full-review skill to review ${ repo } PR #${ pr } — harness portal context, file through ${ API_HINT }/${ pr }.`;
+  // review-prompt.mjs, which dev-api starts automated reviews with too.
+  return sharedReviewPrompt(pr, repo);
 }
 
 export function fixPrompt(num: number, repo = DEFAULT_REPO): string {

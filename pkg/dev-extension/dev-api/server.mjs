@@ -35,6 +35,12 @@ import {
 import {
   AGENT_RANK, workspaceNumbers, isFixWorkspace, reviewWork, fixWork, toDerived, reconcileRecord, displayOf, activityTimes, stageInputs,
 } from '../stage-derive.mjs';
+import { renderAppTemplates } from '../render-core.mjs';
+import {
+  seedMark, workspaceTree, rootScript, nodeScript, rootCommand, nodeCommand, baseScript, seedCheckScript, seedCurrent, seedScript, toolsCheckScript, toolsMissing, toolsScript,
+  rancherTokenScript, firstWorkingTokenScript, environmentScript, checkoutScript,
+} from '../workspace-provision.mjs';
+import { reviewPrompt } from '../review-prompt.mjs';
 import { searchCql, searchLimit, searchResult, pageAnswer } from './confluence.mjs';
 import { STAGING_CHARTS, IMAGE_REGISTRIES, RANCHER_REPO, stagingVersions, releasedVersions, imageExists, registryTags } from './rancher-images.mjs';
 
@@ -8642,8 +8648,11 @@ const AUTO_HOST = process.env.HOSTNAME || `dev-api-${ process.pid }`;
 const LIVE_RUN_STATES = new Set(['requested', 'starting', 'running', 'waiting']);
 /** A review nobody has picked up in this long is given up on: no dashboard was open to start it. */
 const REVIEW_CLAIM_WAIT_MS = 24 * 3600_000;
-/** A claim that has not reported back in this long is taken to have died with its tab. */
-const REVIEW_CLAIM_STALE_MS = 10 * 60_000;
+/**
+ * A claim that has not reported back in this long is taken to have died with its tab - or with
+ * the dev-api that was starting it, whose start can take a pod's whole wait and a preparation.
+ */
+const REVIEW_CLAIM_STALE_MS = 30 * 60_000;
 
 const auto = {
   holder:    false,
@@ -8956,7 +8965,7 @@ function newAutoRun(def, trigger, event = null, context = null, note = '') {
     exitCode:     null,
     conversation: '',
     result:       '',
-    note:         review && !note ? 'waiting for an open dashboard to start it' : note,
+    note:         review && !note ? 'waiting to start' : note,
     ...(review ? { pr: pullRequestOf(event) } : {}),
     ...(actionOf(def) === 'script' ? { timeoutSec: Math.max(5, Math.min(SCRIPT_TIMEOUT_MAX_S, Number(def.timeoutSec) || SCRIPT_TIMEOUT_S)) } : {}),
   };
@@ -9093,7 +9102,7 @@ function claimableReviews() {
   const out = [];
 
   for (const name of autoRunNames()) {
-    out.push(...autoRuns(name).filter((r) => r.kind === 'review' && r.state === 'requested' && r.pr));
+    out.push(...autoRuns(name).filter((r) => r.kind === 'review' && r.state === 'requested' && r.pr && r.needsDashboard));
   }
 
   return out.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
@@ -9188,7 +9197,7 @@ async function settleAutoRuns() {
       if (run.kind === 'review' && !run.conversation) {
         // Claimed and not heard from: the tab that took it went away. Back in the queue.
         if (Date.now() - (Date.parse(run.claimedAt || '') || 0) > REVIEW_CLAIM_STALE_MS) {
-          updateAutoRun(name, run.id, { state: 'requested', claimedBy: '', note: 'the dashboard starting it went away; waiting for another' });
+          updateAutoRun(name, run.id, { state: 'requested', claimedBy: '', note: 'whatever was starting it went away; trying again' });
         }
         continue;
       }
@@ -9647,6 +9656,8 @@ const automationTick = singleFlight(async() => {
   await step('the GitHub poll', () => pollGithubEvents());
   await step('the schedules', async() => cronAutoTick(await automationDefs().catch(() => [])));
   await step('the resource watches', async() => resourceTick(await automationDefs().catch(() => [])));
+  // Not awaited: a start can wait minutes for a pod, and the poll and the schedules must not.
+  startWaitingReviews().catch((e) => console.error('[dev-api] automations: starting a review failed:', e.message || e));
   await step('settling runs', () => settleAutoRuns());
 });
 
@@ -10689,6 +10700,357 @@ function stopResourceWatches() {
   resourceWatch.loops.clear();
   resourceWatch.seen = null;
 }
+
+// ── Starting a review, here ─────────────────────────────────────────────────────────────────
+//
+// What My Work's Review button does, done by this service so a review an automation asks for
+// starts whether or not a dashboard is open: the pull request's workspace made if it is not there,
+// its pod prepared, and a `Review #<n>` conversation started in it with the button's own prompt.
+//
+// Every part is the dashboard's own, shared rather than copied: the Installation is rendered into
+// its Fleet Bundle with ../render-core.mjs (what the Apps Plus model renders with on save), the pod
+// is prepared with ../workspace-provision.mjs's scripts (what workspace-tools.ts runs), and the
+// prompt is ../review-prompt.mjs. The conversation is the agent pod's `sessions.sh` and `shell.sh`,
+// as for any other.
+//
+// The one thing only a dashboard has is a session to mint a Rancher token with. A workspace that
+// already has a working token keeps it; a new one is given one of the person's own that already
+// works, from another of their workspaces. If there is none, the review waits for a dashboard, as
+// it did before (`needsDashboard`).
+
+const REVIEW_TERMINAL_MAP = 'dev-terminal';
+const REVIEW_TERMINAL_FILES = ['shell.sh', 'terminal-tools.sh', 'claude-session.sh', 'claude-credentials.mjs', 'claude-defaults.mjs', 'tmux.conf', 'session-claude.md'];
+const REVIEW_POD_WAIT_MS = 15 * 60_000;
+const REVIEW_EXEC_MS = 180_000;
+const FLEET_CLUSTERS = '/apis/fleet.cattle.io/v1alpha1/clusters';
+const DEV_API_FOR_PODS = `http://dev-api.${ NAMESPACE }.svc:${ PORT }`;
+
+/** A reason the review cannot be started here, and is left for a dashboard. */
+class NeedsDashboard extends Error {}
+
+/** The workspace a pull request's review is in: `pr-<n>` if that exists, else the leased `lte-pr-<n>`. */
+async function reviewWorkspaceName(number) {
+  const instances = await installations('reviews');
+  const names = new Set((instances?.items || []).map((i) => i.metadata?.labels?.[LABEL_WORKSPACE]).filter(Boolean));
+  const dirs = new Set(workspaceDirs() || []);
+  const plain = `pr-${ number }`;
+
+  if (names.has(plain) || dirs.has(plain)) {
+    return { name: plain, exists: true };
+  }
+  const leased = `${ LTE_PREFIX }pr-${ number }`;
+
+  return { name: leased, exists: names.has(leased), instances: instances?.items || [] };
+}
+
+/**
+ * The person's own workspace Installations, newest first: where the Rancher they last chose and
+ * who they are (the owner label) are read from, in place of the dashboard's picker and session.
+ */
+function ownWorkspaces(instances) {
+  return (instances || [])
+    .filter((i) => i.metadata?.labels?.[LABEL_WORKSPACE] && i.spec?.app === LTE_APP)
+    .sort((a, b) => String(b.metadata?.creationTimestamp || '').localeCompare(String(a.metadata?.creationTimestamp || '')));
+}
+
+/** Make the leased workspace: its Installation, its Bundle, and what the product adds beside them. */
+async function makeReviewWorkspace(name, repo, title, instances, say) {
+  const recent = ownWorkspaces(instances)[0];
+  const rancherUrl = String(recent?.spec?.values?.rancherUrl || '');
+  const owner = String(recent?.metadata?.labels?.['dev.rancher.io/owner'] || '');
+  const app = await k8s(`${ APPS }/${ LTE_APP }`).catch(() => null);
+
+  if (!app) {
+    throw new NeedsDashboard(`There is no ${ LTE_APP } App to make the workspace from.`);
+  }
+  say('making the workspace');
+  await create(INSTANCES, {
+    apiVersion: 'appsplus.io/v1alpha1',
+    kind:       'AppInstance',
+    metadata:   {
+      name,
+      labels: {
+        [LABEL_WORKSPACE]: name, [LABEL_APP]: LTE_APP, [LABEL_CLUSTER]: 'local', ...(owner ? { 'dev.rancher.io/owner': owner } : {}),
+      },
+      finalizers: [CLEANUP_FINALIZER],
+    },
+    spec: {
+      app:              LTE_APP,
+      namespace:        `dev-${ name }`,
+      targets:          [{ clusterName: 'local' }],
+      values:           { ...(rancherUrl ? { rancherUrl } : {}), ...(repo && repo !== DEFAULT_REPO ? { repo } : {}), hostCluster: 'local' },
+      provisionCluster: { enabled: false },
+    },
+  });
+  const instance = await k8s(`${ INSTANCES }/${ name }`);
+  // The Bundle the dashboard's Apps Plus model writes on save: the App's templates rendered for
+  // this Installation, in the Fleet workspace of the cluster it targets, owned by the Installation.
+  const fleet = (await k8s(FLEET_CLUSTERS).catch(() => null))?.items?.find((c) => c.metadata?.name === 'local')?.metadata?.namespace || 'fleet-local';
+
+  await create(`/apis/fleet.cattle.io/v1alpha1/namespaces/${ fleet }/bundles`, {
+    apiVersion: 'fleet.cattle.io/v1alpha1',
+    kind:       'Bundle',
+    metadata:   {
+      name:            `${ APPS_PLUS_PREFIX }${ name }`,
+      namespace:       fleet,
+      labels:          { 'appsplus.io/instance': name },
+      ownerReferences: [{
+        apiVersion: 'appsplus.io/v1alpha1', kind: 'AppInstance', name, uid: instance.metadata.uid, blockOwnerDeletion: true,
+      }],
+    },
+    spec: { resources: renderAppTemplates(app, instance), targets: [{ clusterName: 'local' }], defaultNamespace: `dev-${ name }` },
+  });
+
+  return { rancherUrl, owner };
+}
+
+/** What the dashboard adds once Fleet has made the namespace: the terminal scripts, the credentials binding, the title. */
+async function finishReviewWorkspace(name, title, say) {
+  const namespace = `dev-${ name }`;
+
+  say('waiting for its namespace');
+  for (let i = 0; i < 90 && !(await k8s(`/api/v1/namespaces/${ namespace }`).catch(() => null)); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  await create(`/api/v1/namespaces/${ namespace }/serviceaccounts`, { apiVersion: 'v1', kind: 'ServiceAccount', metadata: { namespace, name: WS_SA } });
+  await create(`/apis/rbac.authorization.k8s.io/v1/namespaces/${ NAMESPACE }/rolebindings`, {
+    apiVersion: 'rbac.authorization.k8s.io/v1',
+    kind:       'RoleBinding',
+    metadata:   { namespace: NAMESPACE, name: `creds-${ WS_SA }-${ namespace }` },
+    roleRef:    { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: 'claude-credentials' },
+    subjects:   [{ kind: 'ServiceAccount', name: WS_SA, namespace }],
+  });
+  // The agent pod's own copy of the terminal scripts, which is the one the agents extension keeps.
+  const seed = (await k8s(`/api/v1/namespaces/${ AGENT_NAMESPACE }/configmaps/agent`).catch(() => null))?.data || {};
+  const data = Object.fromEntries(REVIEW_TERMINAL_FILES.filter((f) => seed[f]).map((f) => [f, seed[f]]));
+
+  if (Object.keys(data).length) {
+    await create(`/api/v1/namespaces/${ namespace }/configmaps`, {
+      apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace, name: REVIEW_TERMINAL_MAP }, data,
+    });
+  }
+  const trimmed = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+
+  if (trimmed) {
+    await k8s(`/api/v1/namespaces/${ namespace }`, { method: 'PATCH', body: JSON.stringify({ metadata: { annotations: { [TITLE_ANNOTATION]: trimmed } } }) }).catch(() => {});
+  }
+}
+
+/** The workspace's own pod, running, or null after waiting for it. */
+async function reviewWorkspacePod(name, waitMs, say) {
+  const namespace = `dev-${ name }`;
+  const until = Date.now() + waitMs;
+
+  say('waiting for its pod');
+  while (Date.now() < until) {
+    const pods = await k8s(`/api/v1/namespaces/${ namespace }/pods?labelSelector=${ encodeURIComponent(`${ LABEL_WORKSPACE }=${ name }`) }`).catch(() => null);
+    const pod = (pods?.items || []).find((p) => p.status?.phase === 'Running' && !p.metadata?.deletionTimestamp && (p.spec?.containers || []).some((c) => c.name === 'workspace'));
+
+    if (pod) {
+      return { namespace, pod: pod.metadata.name };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+
+  return null;
+}
+
+/** One preparation script in the workspace's pod, as root or as the pane's user. */
+function inReviewWorkspace(target, workspace, script, asNode = false) {
+  const file = `/tmp/.dev-${ Date.now().toString(36) }${ crypto.randomBytes(3).toString('hex') }.sh`;
+  const tree = workspaceTree(workspace);
+  const encoded = Buffer.from(asNode ? nodeScript(tree, script) : rootScript(tree, script), 'utf8').toString('base64');
+
+  return podExec(target.namespace, target.pod, 'workspace', asNode ? nodeCommand(encoded, file) : rootCommand(encoded, file), REVIEW_EXEC_MS);
+}
+
+/** A Rancher token that works: the workspace's own, else one of the person's other workspaces'. */
+async function reviewRancherToken(target, workspace, host) {
+  const own = String(await inReviewWorkspace(target, workspace, rancherTokenScript(host))).trim();
+
+  if (own) {
+    return own;
+  }
+  const found = [];
+
+  for (const dir of workspaceDirs() || []) {
+    try {
+      const file = path.join(WORKSPACES_ROOT, dir, '.env');
+      const token = /^RANCHER_TOKEN=(\S+)$/m.exec(fs.readFileSync(file, 'utf8'))?.[1] || '';
+
+      if (/^[A-Za-z0-9_-]+:[A-Za-z0-9]+$/.test(token)) {
+        found.push({ token, at: fs.statSync(file).mtimeMs });
+      }
+    } catch { /* no .env in that tree */ }
+  }
+  const tokens = [...new Set(found.sort((a, b) => b.at - a.at).map((t) => t.token))].slice(0, 8);
+
+  if (!tokens.length || !host) {
+    return '';
+  }
+
+  return String(await inReviewWorkspace(target, workspace, firstWorkingTokenScript(tokens, host))).trim().split('\n').pop() || '';
+}
+
+/** The five steps workspace-tools.ts runs, here. */
+async function prepareReviewWorkspace(target, workspace, number, host, say) {
+  const ctx = { issue: null, pr: number };
+  const step = async(what, script, marker, asNode = false) => {
+    const out = String(await inReviewWorkspace(target, workspace, script, asNode));
+
+    if (!out.includes(marker)) {
+      throw new Error(`${ what } failed: ${ out.trim().slice(-200) || 'no answer from the pod' }`);
+    }
+
+    return out;
+  };
+
+  say('preparing the workspace');
+  await step('Preparing the pod', baseScript(), 'BASE-OK');
+  const version = seedMark(await seedVersion(), ctx, workspace);
+
+  if (!seedCurrent(String(await inReviewWorkspace(target, workspace, seedCheckScript(), true)), version)) {
+    await step('Laying out the skills', seedScript({
+      workspace, issue: '', pr: String(number), cluster: 'local', version, devApi: DEV_API_FOR_PODS,
+    }), 'SEED-OK', true);
+  }
+  const missing = toolsMissing(String(await inReviewWorkspace(target, workspace, toolsCheckScript(), true)));
+
+  if (missing.length) {
+    await step('Installing gh and jq', toolsScript(missing), 'TOOLS-OK', true);
+  }
+  const rancher = await reviewRancherToken(target, workspace, host);
+
+  if (!rancher) {
+    throw new NeedsDashboard('No Rancher token of yours works from here, and minting one takes a dashboard.');
+  }
+  const github = await githubToken('');
+  const login = await githubViewer();
+
+  await step('Writing the environment', environmentScript({
+    workspace, rancher, github, login, browser: host, browserCdp: `${ await cdpBase() }`, githubCdp: GITHUB_BROWSER_CDP, devApi: DEV_API_FOR_PODS,
+  }), 'ENV-OK');
+  const name = await secretFromStores('GIT_NAME').catch(() => '');
+  const email = await secretFromStores('GIT_EMAIL').catch(() => '');
+  const out = String(await inReviewWorkspace(target, workspace, checkoutScript({
+    name, email, fork: login || 'codyrancher', github, pr: number,
+  }), true));
+
+  if (!out.includes('CHECKOUT-OK') && !out.includes('NO-CHECKOUT')) {
+    throw new Error(`Setting up the checkout failed: ${ out.trim().slice(-200) }`);
+  }
+}
+
+/** A sessions.sh verb in the agent pod. */
+async function agentSessions(...args) {
+  const pod = await agentPod();
+
+  if (!pod) {
+    throw new Error('The agent pod is not running, so there is nowhere to hold the conversation.');
+  }
+
+  return { pod, out: String(await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '/seed/sessions.sh', ...args], 30_000)) };
+}
+
+/**
+ * The review's conversation, started: the workspace's `Review #<n>` if it has one that is not
+ * running, else a new one; the prompt queued; the pane started detached in the workspace's checkout.
+ */
+async function startReviewConversation(workspace, number, repo, say) {
+  const title = `Review #${ number }`;
+  const listed = (await agentSessions('list', workspace)).out.split('\n').map((line) => line.split('\t')).filter(([id]) => CONVERSATION_ID.test(id || ''));
+  const doc = await conversationDoc().catch(() => null);
+  const existing = listed.find(([, t]) => t === title)?.[0] || '';
+
+  if (existing && doc?.items?.[existing]?.state === 'working') {
+    return { id: existing, already: true };
+  }
+  say('starting the conversation');
+  let id = existing;
+  const { pod } = await agentSessions('ids');
+
+  if (!id) {
+    id = (await agentSessions('new', workspace, `pr-${ number }-review`)).out.trim().split('\n').pop() || '';
+    if (!CONVERSATION_ID.test(id)) {
+      throw new Error(`The agent pod answered "${ id.slice(0, 80) }" when asked for a conversation.`);
+    }
+    await agentSessions('rename', id, title);
+  }
+  const prompt = Buffer.from(reviewPrompt(number, repo), 'utf8').toString('base64');
+  const queued = String(await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '-c',
+    'mkdir -p /workspace/.queue && echo "$2" | base64 -d > "/workspace/.queue/$1" && chown 1000:1000 /workspace/.queue "/workspace/.queue/$1" 2>/dev/null; echo QUEUED', 'queue', id, prompt], 30_000));
+
+  if (!queued.includes('QUEUED')) {
+    throw new Error('The review\'s prompt could not be queued in the agent pod.');
+  }
+  await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '/seed/shell.sh', id, `/workspaces/${ workspace }/dashboard`, '/workspace/.home', 'start', `/workspaces/${ workspace }/bin/dev-shell`], 60_000);
+
+  return { id, already: false };
+}
+
+/**
+ * Start one review: the workspace, its preparation, the conversation. `say` reports progress onto
+ * the run. Throws NeedsDashboard for what only a dashboard can do.
+ */
+async function startReviewHere(pr, say) {
+  const where = await reviewWorkspaceName(pr.number);
+  let host = '';
+
+  if (!where.exists) {
+    host = (await makeReviewWorkspace(where.name, pr.repo, pr.title, where.instances, say)).rancherUrl;
+    await finishReviewWorkspace(where.name, pr.title, say);
+  } else {
+    host = String((await k8s(`${ INSTANCES }/${ where.name }`).catch(() => null))?.spec?.values?.rancherUrl || '');
+  }
+  const target = await reviewWorkspacePod(where.name, REVIEW_POD_WAIT_MS, say);
+
+  if (!target) {
+    throw new Error(`The workspace ${ where.name }'s pod did not start within ${ REVIEW_POD_WAIT_MS / 60_000 } minutes.`);
+  }
+  await prepareReviewWorkspace(target, where.name, pr.number, host, say);
+  const conversation = await startReviewConversation(where.name, pr.number, pr.repo, say);
+  const previous = (await readReview(pr.number, 'run.json').catch(() => null)) || {};
+
+  await writeReview(pr.number, 'run.json', {
+    pr: pr.number, project: where.name, state: 'starting', note: 'started by an automation', startedAt: previous.startedAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+  }).catch(() => {});
+  rememberReviewWorkspace(pr.number, { project: where.name });
+
+  return { workspace: where.name, conversation: conversation.id, already: conversation.already, created: !where.exists };
+}
+
+/** Reviews waiting to start, started here one at a time; what needs a dashboard is left for one. */
+const startWaitingReviews = singleFlight(async() => {
+  for (const name of autoRunNames()) {
+    for (const run of autoRuns(name).filter((r) => r.kind === 'review' && r.state === 'requested' && r.pr && !r.needsDashboard)) {
+      updateAutoRun(name, run.id, {
+        state: 'starting', claimedBy: AUTO_HOST, claimedAt: new Date().toISOString(), note: 'starting the review',
+      });
+      const say = (note) => updateAutoRun(name, run.id, { note });
+
+      try {
+        const started = await startReviewHere(run.pr, say);
+
+        updateAutoRun(name, run.id, {
+          state:        'running',
+          workspace:    started.workspace,
+          conversation: started.conversation,
+          note:         started.already ? `a review was already running in ${ started.workspace }` : `${ started.created ? 'made' : 'started in' } ${ started.workspace }`,
+        });
+      } catch (e) {
+        const message = String(e?.message || e).slice(0, 300);
+
+        updateAutoRun(name, run.id, e instanceof NeedsDashboard ? {
+          state: 'requested', needsDashboard: true, claimedBy: '', note: `${ message } Waiting for an open dashboard to start it.`,
+        } : {
+          state: 'failed', note: message, endedAt: new Date().toISOString(),
+        });
+      }
+
+      return; // one per tick: each is a workspace and a pod
+    }
+  }
+});
 
 const server = http.createServer(async(req, res) => {
   const url = new URL(req.url, 'http://dev-api');
