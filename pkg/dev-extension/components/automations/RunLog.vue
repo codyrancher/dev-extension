@@ -13,6 +13,9 @@ import { runPath, stopRun, duration, stamp } from '../../automations';
 import type { RunAnswer } from '../../automations';
 import InlineChat from '../focus/InlineChat.vue';
 import { exitNote } from '../../dev-api/automation-rules.mjs';
+import {
+  DEV_PRODUCT, BLANK_CLUSTER, WORKSPACE_ROUTE
+} from '../../config/constants';
 
 const props = defineProps<{ runId: string }>();
 const emit = defineEmits<{ (e: 'event', id: string): void }>();
@@ -50,7 +53,12 @@ vueWatch(() => props.runId, (id) => subscribe(id), { immediate: true });
 onBeforeUnmount(() => stop?.());
 
 const run = computed(() => answer.value?.run || null);
-const live = computed(() => !!run.value && ['starting', 'running', 'waiting'].includes(run.value.state));
+const live = computed(() => !!run.value && ['requested', 'starting', 'running', 'waiting'].includes(run.value.state));
+
+/** A review's workspace, on its conversations: where the review is read. */
+const workspaceTo = computed(() => (run.value?.workspace ? {
+  name: WORKSPACE_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER, workspace: run.value.workspace }, hash: '#conversations',
+} : null));
 const took = computed(() => (run.value ? duration(run.value) : ''));
 
 const verdict = computed(() => {
@@ -146,6 +154,28 @@ async function stopIt() {
           <dt>Conversation</dt>
           <dd><code>{{ run.conversation || '…' }}</code></dd>
         </div>
+        <div v-if="run.kind === 'review' && run.pr">
+          <dt>Pull request</dt>
+          <dd>
+            <a
+              :href="`https://github.com/${ run.pr.repo }/pull/${ run.pr.number }`"
+              target="_blank"
+              rel="noopener noreferrer"
+            >{{ run.pr.repo }}#{{ run.pr.number }}</a>
+          </dd>
+        </div>
+        <div v-if="run.kind === 'review'">
+          <dt>Workspace</dt>
+          <dd>
+            <router-link
+              v-if="workspaceTo"
+              :to="workspaceTo"
+            >
+              {{ run.workspace }}
+            </router-link>
+            <span v-else>{{ run.state === 'requested' ? 'waiting for an open dashboard to make it' : '…' }}</span>
+          </dd>
+        </div>
       </dl>
 
       <div
@@ -188,6 +218,19 @@ async function stopIt() {
           class="run-log__code"
         >{{ answer.script }}</pre>
       </template>
+
+      <p
+        v-else-if="run.kind === 'review'"
+        class="text-muted run-log__review"
+      >
+        What My Work's Review button does: the <code>pr-{{ run.pr ? run.pr.number : '' }}</code> workspace, and the my-pr-full-review skill in a conversation there.
+        <template v-if="workspaceTo">
+          The review's own panel and its conversation are in
+          <router-link :to="workspaceTo">
+            {{ run.workspace }}
+          </router-link>.
+        </template>
+      </p>
 
       <template v-else>
         <button
@@ -244,6 +287,7 @@ async function stopIt() {
 
   &__error { color: var(--error); margin: 0; }
   &__wait { margin: 0; }
+  &__review { margin: 0; code { border: 0; padding: 0 2px; } }
 
   &__facts {
     display:               grid;

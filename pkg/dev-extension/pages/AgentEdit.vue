@@ -9,6 +9,7 @@ import { LabeledInput } from '@components/Form/LabeledInput';
 import { Checkbox } from '@components/Form/Checkbox';
 import { RcButton } from '@components/RcButton';
 import DevModal from '../components/DevModal.vue';
+import DevPage from '../components/DevPage.vue';
 import {
   getAgent, saveAgent, validName, cronValid, CRON_PRESETS, triggersOf, compileFilter, filterError, PROMPT_KEYS
 } from '../agent-defs';
@@ -23,10 +24,37 @@ import {
   DEV_PRODUCT, BLANK_CLUSTER, AGENTS_ROUTE, DEV_API_IN_CLUSTER
 } from '../config/constants';
 
+const SCRIPT_EXAMPLE_STAGE = `# $EVENT_WORKSPACE reached $(jq -r .payload.toLabel "$EVENT_FILE").
+echo "$EVENT_WORKSPACE: $EVENT_TITLE"`;
+
 const SCRIPT_EXAMPLE = `# The event is on stdin as JSON, and in $EVENT_FILE.
 # $EVENT_NAME, $EVENT_SUBJECT, $EVENT_URL, $EVENT_WORKSPACE and $EVENT_ACTOR are set.
 echo "$EVENT_NAME on $EVENT_SUBJECT"
 jq -r '.payload.comment.body // empty' < "$EVENT_FILE"`;
+
+/**
+ * Ready-made starts, from the Automations tab. The review one is the one asked for: every pull
+ * request you are asked to review, reviewed the way the Review button does it, narrowed to the
+ * repositories and the people you name.
+ */
+const TEMPLATES = {
+  'review-requests': {
+    def: {
+      name: 'review-requests', description: 'Reviews each pull request I am asked to review, the way My Work\'s Review button does.', action: 'review',
+    },
+    evt: {
+      source: 'github', names: 'pr.review-requested', repos: 'rancher/dashboard', authors: '', condition: '!p.draft',
+    },
+  },
+  'stage-script': {
+    def: {
+      name: 'stage-merged', description: 'Runs a script when a workspace reaches Merged.', action: 'script', script: SCRIPT_EXAMPLE_STAGE,
+    },
+    evt: {
+      source: 'workspace', names: 'stage.changed', repos: '', authors: '', condition: "p.to === 'merged'",
+    },
+  },
+};
 
 const EVENTS = [
   { value: 'any', label: 'any change' }, { value: 'created', label: 'created' }, { value: 'updated', label: 'updated' }, { value: 'deleted', label: 'deleted' },
@@ -36,7 +64,7 @@ export default {
   name: 'AgentEdit',
 
   components: {
-    Banner, AsyncButton, LabeledSelect, LabeledInput, Checkbox, RcButton, DevModal
+    Banner, AsyncButton, LabeledSelect, LabeledInput, Checkbox, RcButton, DevModal, DevPage
   },
 
   data() {
@@ -57,7 +85,9 @@ export default {
         cron: false, api: false, resource: false, event: false
       },
       /** The event trigger: names as typed, comma-separated, and the constraints. */
-      evt:      { source: 'github', names: 'pr.*', condition: '!p.self' },
+      evt:      {
+        source: 'github', names: 'pr.*', repos: '', authors: '', condition: '!p.self'
+      },
       /** What trying the constraints against recorded events found, or null. */
       triedEvents: null,
       trying:   false,
@@ -126,7 +156,10 @@ export default {
       if (this.def.action === 'script' && !this.def.script.trim()) {
         out.push('Write the script it runs.');
       }
-      if (this.def.action !== 'script' && !this.def.prompt.trim()) {
+      if (this.def.action === 'review' && !this.on.event) {
+        out.push('A review runs on an event about a pull request: tick On an event.');
+      }
+      if (this.def.action === 'agent' && !this.def.prompt.trim()) {
         out.push('Say what the conversation should open with.');
       }
       if (this.on.event && this.eventProblem) {
@@ -192,7 +225,10 @@ export default {
       }
       if (this.on.event) {
         triggers.push({
-          type: 'event', event: { source: this.evt.source, names: this.eventNames, condition: this.evt.condition.trim() }
+          type:  'event',
+          event: {
+            source: this.evt.source, names: this.eventNames, repos: this.listOf(this.evt.repos), authors: this.listOf(this.evt.authors).map((a) => a.replace(/^@/, '')), condition: this.evt.condition.trim(),
+          },
         });
       }
 
@@ -223,6 +259,14 @@ export default {
       this.skillNames = skills.map((s) => s.name).sort();
     }).catch(() => {});
 
+    const template = !name && TEMPLATES[this.$route.query?.template];
+
+    if (template) {
+      this.def = { ...this.def, ...template.def };
+      this.evt = { ...this.evt, ...template.evt };
+      this.on.event = true;
+    }
+
     if (name) {
       const found = await getAgent(name).catch(() => null);
 
@@ -230,7 +274,7 @@ export default {
         this.def = {
           name:        found.name,
           description: found.description || '',
-          action:      found.action === 'script' ? 'script' : 'agent',
+          action:      ['script', 'review'].includes(found.action) ? found.action : 'agent',
           prompt:      found.prompt || '',
           script:      found.script || '',
           timeoutSec:  found.timeoutSec || SCRIPT_TIMEOUT_S,
@@ -247,7 +291,9 @@ export default {
             this.resource = { ...this.resource, ...(t.resource || {}) };
           } else if (t.type === 'event') {
             this.on.event = true;
-            this.evt = { source: t.event?.source || '', names: (t.event?.names || []).join(', '), condition: t.event?.condition || '' };
+            this.evt = {
+              source: t.event?.source || '', names: (t.event?.names || []).join(', '), repos: (t.event?.repos || []).join(', '), authors: (t.event?.authors || []).join(', '), condition: t.event?.condition || '',
+            };
           }
         }
         this.editing = true;
@@ -327,6 +373,11 @@ export default {
       }
     },
 
+    /** A comma- or space-separated field as a list. */
+    listOf(text) {
+      return String(text || '').split(/[,\s]+/).map((x) => x.trim()).filter(Boolean);
+    },
+
     /** Whether a known name is already covered by a wildcard in the list, without being in it. */
     covered(name) {
       return !this.eventNames.includes(name) && this.eventNames.some((p) => p.includes('*')) && nameMatches(this.eventNames.filter((p) => p.includes('*')), name);
@@ -387,13 +438,11 @@ export default {
 </script>
 
 <template>
-  <div class="agent-edit">
-    <header class="agent-edit__head">
-      <h1>{{ editing ? `Edit ${ def.name }` : 'New automation' }}</h1>
-      <p class="text-muted">
-        An agent conversation or a script that runs by itself: what it does, and what sets it off.
-      </p>
-    </header>
+  <DevPage
+    :title="editing ? `Edit ${ def.name }` : 'New automation'"
+    lede="Something that runs by itself: what it does, and what sets it off."
+    class="agent-edit"
+  >
 
     <Banner
       v-if="error"
@@ -448,7 +497,26 @@ export default {
           >
           <span><strong>A script</strong> - run in the agent pod, with gh, git, kubectl and claude to hand</span>
         </label>
+        <label
+          class="agent-edit__kind"
+          :class="{ 'agent-edit__kind--on': def.action === 'review' }"
+        >
+          <input
+            v-model="def.action"
+            type="radio"
+            value="review"
+            data-testid="automation-kind-review"
+          >
+          <span><strong>Review the pull request</strong> - what My Work's Review button does, on the PR the event is about</span>
+        </label>
       </div>
+
+      <p
+        v-if="def.action === 'review'"
+        class="text-muted agent-edit__hint"
+      >
+        A <code>pr-&lt;number&gt;</code> workspace, made on the Rancher you last chose if it is not there yet, and the my-pr-full-review skill in a conversation in it - the review panel fills in as it goes. One review per pull request at a time: an event for a PR already being reviewed is skipped, and says so. It is started by an open dashboard, since making and preparing a workspace takes your Rancher session; with none open it waits.
+      </p>
 
       <template v-if="def.action === 'script'">
         <label class="agent-edit__label">Script - bash, unless it starts with <code>#!</code>. The event is on stdin as JSON; its output is the run's log.</label>
@@ -473,7 +541,7 @@ export default {
           </p>
         </div>
       </template>
-      <template v-else>
+      <template v-else-if="def.action === 'agent'">
         <div class="agent-edit__prompt-head">
           <label class="agent-edit__label">Prompt - what the conversation opens with; start with <code>/</code> for a skill</label>
           <span
@@ -561,6 +629,20 @@ export default {
             >
               {{ n }}
             </button>
+          </div>
+          <div class="agent-edit__row">
+            <LabeledInput
+              v-model:value="evt.repos"
+              label="Repositories - only these; empty for all"
+              placeholder="rancher/dashboard, rancher/ui-*"
+              data-testid="automation-event-repos"
+            />
+            <LabeledInput
+              v-model:value="evt.authors"
+              label="Authors - only work by these people; empty for anyone"
+              placeholder="nwmac, @codyrancher"
+              data-testid="automation-event-authors"
+            />
           </div>
           <label class="agent-edit__label">Constraints - one JavaScript expression per line, and every one must hold. They read <code>event</code> (<code>e</code>), its <code>payload</code> (<code>p</code>) and <code>me</code>, your GitHub login.</label>
           <textarea
@@ -772,18 +854,15 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
       </template>
       <pre class="agent-edit__modal-body">{{ doc.text }}</pre>
     </DevModal>
-  </div>
+  </DevPage>
 </template>
 
 <style lang="scss" scoped>
 .agent-edit {
-  max-width: 860px;
-  padding:   var(--dev-space-4) var(--dev-inset) var(--dev-space-6);
+  max-width: 900px;
 
-  h1 { margin: 0 0 4px; font-size: 20px; }
   h3 { margin: 0 0 var(--dev-space-3); font-size: 14px; }
 
-  &__head { margin-bottom: var(--dev-space-4); }
 
   &__section {
     display:        flex;

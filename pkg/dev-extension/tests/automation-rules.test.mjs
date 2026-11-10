@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  evaluateEvent, nameMatches, conditionLines, conditionScope, fillTemplate, cronDueAt, cronFields, shellQuote, envFile, scriptWrapper, actionOf, exitNote,
+  evaluateEvent, nameMatches, conditionLines, conditionScope, fillTemplate, cronDueAt, cronFields, shellQuote, envFile, scriptWrapper, actionOf, exitNote, pullRequestOf, listFailure,
 } from '../dev-api/automation-rules.mjs';
 
 const EVENT = {
@@ -12,7 +12,9 @@ const EVENT = {
   name:      'pr.commented',
   subject:   'rancher/dashboard#1',
   workspace: 'issue-5',
-  payload:   { comment: { author: 'rev', body: 'please fix' }, self: false },
+  payload:   {
+    comment: { author: 'rev', body: 'please fix' }, self: false, kind: 'pr', repo: 'rancher/dashboard', number: 1, author: 'Friend', title: 'T'
+  },
 };
 
 /** What dev-api's vm does, near enough for a test: the line as an expression over the scope. */
@@ -150,4 +152,47 @@ test('action and exit words', () => {
   assert.equal(exitNote(0), '');
   assert.equal(exitNote(124), 'timed out');
   assert.equal(exitNote(2), 'exited 2');
+});
+
+test('repositories and authors: the lists a review automation is narrowed by', () => {
+  const d = def();
+
+  d.triggers[1].event.repos = ['rancher/dashboard', 'rancher/ui-*'];
+  d.triggers[1].event.authors = ['@friend', 'other'];
+  assert.equal(evaluateEvent(d, EVENT, { check: checker(EVENT) }).outcome, 'run');
+
+  const elsewhere = { ...EVENT, payload: { ...EVENT.payload, repo: 'harvester/harvester-ui' } };
+  const blocked = evaluateEvent(d, elsewhere, { check: checker(elsewhere) });
+
+  assert.equal(blocked.outcome, 'blocked');
+  assert.equal(blocked.list, 'repos');
+  assert.match(blocked.reason, /harvester\/harvester-ui is not one of its repositories/);
+  assert.equal(listFailure({ repos: 'rancher/*' }, { payload: { repo: 'Rancher/UI-Plugin-Charts' } }), null);
+
+  const stranger = { ...EVENT, payload: { ...EVENT.payload, author: 'stranger' } };
+
+  assert.match(evaluateEvent(d, stranger, { check: checker(stranger) }).reason, /@stranger is not one of its authors \(@friend, @other\)/);
+});
+
+test('the lists are checked before any constraint, which never runs', () => {
+  const d = def();
+  let ran = 0;
+
+  d.triggers[1].event.repos = ['other/repo'];
+  d.triggers[1].event.condition = 'true';
+  evaluateEvent(d, EVENT, {
+    check: () => {
+      ran++;
+
+      return true;
+    }
+  });
+  assert.equal(ran, 0);
+});
+
+test('a review needs a pull request', () => {
+  assert.equal(actionOf({ action: 'review' }), 'review');
+  assert.deepEqual(pullRequestOf(EVENT), { repo: 'rancher/dashboard', number: 1, title: 'T' });
+  assert.equal(pullRequestOf({ payload: { kind: 'issue', repo: 'rancher/dashboard', number: 3 } }), null);
+  assert.equal(pullRequestOf({ payload: { kind: 'pr', repo: 'not a repo', number: 3 } }), null);
 });

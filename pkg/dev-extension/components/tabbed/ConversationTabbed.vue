@@ -78,9 +78,16 @@ export default {
       default: false
     },
 
+    /*
+     * Off unless asked for. Rancher's Tabbed, which this was lifted from, defaults it on, and that
+     * default came along: the drawer and the workspace rail both left it unset, so the drawer
+     * wrote `#agent-1` into the address of whatever page it was open over - landing conversation
+     * ids in Rancher's history and overwriting the hash a page keeps its own tab in (Automations
+     * opened on Events whatever was asked for). Neither wants it; AgentPanel says so.
+     */
     useHash: {
       type:    Boolean,
-      default: true,
+      default: false,
     },
 
     noContent: {

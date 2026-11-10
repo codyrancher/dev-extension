@@ -29,6 +29,9 @@ export default {
       if (r.event) {
         return `${ r.event.name } · ${ r.event.subject }`;
       }
+      if (r.pr) {
+        return `${ r.pr.repo }#${ r.pr.number }`;
+      }
 
       return r.context?.name ? `${ r.context.event || 'changed' } ${ r.context.name }` : r.trigger;
     },
@@ -38,7 +41,7 @@ export default {
       const r = this.run;
       const exit = typeof r.exitCode === 'number' && r.exitCode !== 0 ? exitNote(r.exitCode) : '';
 
-      return [exit, r.result || r.note || ''].filter(Boolean).join(' · ');
+      return [exit, r.result || r.note || (r.workspace ? `in ${ r.workspace }` : '')].filter(Boolean).join(' · ');
     },
 
     state() {

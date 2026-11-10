@@ -794,6 +794,17 @@ export async function pickRancher(store: Store, current: string): Promise<string
 }
 
 /**
+ * The same, with nobody to ask: the Rancher last picked, or the App's own default. For a workspace
+ * an automation makes - a review that starts by itself must not open a picker over whatever page
+ * happens to be on screen, and cannot wait for an answer from somebody who is not there.
+ */
+export async function lastRancherValues(): Promise<Record<string, string>> {
+  const previous = await defaultRancher().catch(() => '');
+
+  return previous ? { rancherUrl: previous } : {};
+}
+
+/**
  * What a new workspace is made with: the Rancher the person picks as its `rancherUrl`, or nothing,
  * which leaves the App's own default - the Rancher this cluster belongs to, by node address. The
  * pick defaults to the last one and is remembered as the next default. Throws RancherPickCancelled

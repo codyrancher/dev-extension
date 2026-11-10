@@ -36,7 +36,7 @@ import { source } from './source-cache.mjs';
 import {
   DEFAULT_APP, DEV_API_IN_CLUSTER, LTE_APP, isLte
 } from './config/constants';
-import { defaultRancherValues } from './ranchers';
+import { defaultRancherValues, lastRancherValues } from './ranchers';
 import { TRIAGE_ACTIONS, jiraWorkspaceName, roleForStep } from './jira-steps.mjs';
 import { diffAnchors, resolveAnchors, lostMessage } from './review-anchors.mjs';
 import { note } from './dev-log.mjs';
@@ -794,7 +794,7 @@ export function fixPrompt(num: number, repo = DEFAULT_REPO): string {
  * Only when it is not the default, so an ordinary dashboard workspace's values stay exactly as
  * they were rather than gaining a key that says what omission already said.
  */
-export async function ensureWorkspace(store: Store, name: string, title = '', repo = DEFAULT_REPO): Promise<boolean> {
+export async function ensureWorkspace(store: Store, name: string, title = '', repo = DEFAULT_REPO, ask = true): Promise<boolean> {
   const existing = (await listAllWorkspaces().catch(() => [])).some((workspace) => workspace.name === name);
 
   if (!existing) {
@@ -804,7 +804,8 @@ export async function ensureWorkspace(store: Store, name: string, title = '', re
     // it beside the `pr-<n>` / `issue-<n>` name.
     // Which kind of workspace the name says it is. `workspaceFor` decides that above: work that
     // already has a workspace keeps whichever kind it is, and new work is leased.
-    const values = { ...(await defaultRancherValues(store)), ...(repo && repo !== DEFAULT_REPO ? { repo } : {}) };
+    // `ask` false is an automation: the Rancher last chosen, with no picker (lastRancherValues).
+    const values = { ...(ask ? await defaultRancherValues(store) : await lastRancherValues()), ...(repo && repo !== DEFAULT_REPO ? { repo } : {}) };
 
     await createWorkspace(store, name, isLte(name) ? LTE_APP : DEFAULT_APP, undefined, values, title);
   }
@@ -1061,10 +1062,15 @@ export function prWorkspaceName(pr: { number: number; issue?: { number: number }
   return `pr-${ pr.number }`;
 }
 
-/** Review a PR: the harness's "Review" button. Reattaches to a review already running. */
-export async function startPrReview(store: Store, pr: { number: number; title?: string; issue?: { number: number } | null }, repo = DEFAULT_REPO, inWorkspace = ''): Promise<Started> {
+/**
+ * Review a PR: the harness's "Review" button. Reattaches to a review already running.
+ *
+ * `ask` false is the same button pressed by an automation (agent-defs.ts, claimReviews): no Rancher
+ * picker for a new workspace, since nobody is there to answer it.
+ */
+export async function startPrReview(store: Store, pr: { number: number; title?: string; issue?: { number: number } | null }, repo = DEFAULT_REPO, inWorkspace = '', ask = true): Promise<Started> {
   const workspace = inWorkspace || await workspaceFor(prWorkspaceName(pr));
-  const created = await ensureWorkspace(store, workspace, pr.title || '', repo);
+  const created = await ensureWorkspace(store, workspace, pr.title || '', repo, ask);
   const title = `Review #${ pr.number }`;
   const existing = (await listConversations(workspace).catch(() => [])).find((c) => c.title === title);
 

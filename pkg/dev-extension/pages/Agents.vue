@@ -1,49 +1,63 @@
 <script>
 // Automations: what happened, and what runs when it does.
 //
-// Two tabs. Events is the log dev-api keeps - workspace stages moving, and what happens on the
-// GitHub issues and pull requests assigned to you - with what each event did to every automation
-// that listens to it. Automations is the definitions (agent-defs.ts): an agent or a script, what
-// sets it off, and its runs. The tab is the hash, so each can be linked to and a reload stays put.
-import AgentCards from '../components/AgentCards.vue';
+// The frame every page here has (DevPage) and the tabs My Work and a workspace have (Rancher's
+// Tabbed, which keeps the tab in the address - `#events`, `#automations`). Events is the log dev-api
+// keeps - workspace stages moving, and what happens on the GitHub issues and pull requests you are
+// part of - with what each did to every automation that listens to it. Automations is the
+// definitions (agent-defs.ts): an agent, a script or a review, what sets it off, and its runs.
+import Tabbed from '@shell/components/Tabbed';
+import Tab from '@shell/components/Tabbed/Tab';
+import { RcButton } from '@components/RcButton';
+import DevPage from '../components/DevPage.vue';
 import EventsTab from '../components/automations/EventsTab.vue';
+import AutomationsTab from '../components/automations/AutomationsTab.vue';
+import { pollNow } from '../automations';
+import {
+  DEV_PRODUCT, BLANK_CLUSTER, AGENT_EDIT_ROUTE
+} from '../config/constants';
 
-const TABS = [
-  { id: 'events', label: 'Events' },
-  { id: 'automations', label: 'Automations' },
-];
+const TABS = ['events', 'automations'];
 
 export default {
   name: 'Automations',
 
-  components: { AgentCards, EventsTab },
+  components: {
+    Tabbed, Tab, RcButton, DevPage, EventsTab, AutomationsTab
+  },
 
   data() {
-    return { TABS };
+    const asked = String(this.$route?.hash || '').replace(/^#/, '');
+
+    return {
+      tab:     TABS.includes(asked) ? asked : 'events',
+      reading: false,
+    };
   },
 
   computed: {
-    tab() {
-      const wanted = (this.$route.hash || '').replace('#', '');
-
-      return TABS.some((t) => t.id === wanted) ? wanted : 'events';
+    newTo() {
+      return { name: AGENT_EDIT_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } };
     },
   },
 
   methods: {
-    show(id) {
-      if (id !== this.tab) {
-        this.$router.replace({ ...this.$route, hash: `#${ id }` });
+    onTab(tab) {
+      const name = tab?.selectedName || tab;
+
+      if (TABS.includes(name)) {
+        this.tab = name;
       }
     },
 
-    onKey(event) {
-      const at = TABS.findIndex((t) => t.id === this.tab);
-      const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
-
-      if (step) {
-        event.preventDefault();
-        this.show(TABS[(at + step + TABS.length) % TABS.length].id);
+    async readNow() {
+      this.reading = true;
+      try {
+        await pollNow();
+      } catch {
+        // The log says how the read went, in its GitHub line.
+      } finally {
+        this.reading = false;
       }
     },
   },
@@ -51,94 +65,73 @@ export default {
 </script>
 
 <template>
-  <div class="dev-automations-page">
-    <header class="automations__head">
-      <h1 class="automations__title">
-        Automations
-      </h1>
-      <div
-        class="automations__tabs"
-        role="tablist"
-        @keydown="onKey"
+  <DevPage
+    title="Automations"
+    lede="What happened on your work, and what runs when it does."
+    class="dev-automations"
+  >
+    <template #actions>
+      <RcButton
+        v-if="tab === 'events'"
+        variant="tertiary"
+        size="small"
+        :left-icon="reading ? 'spinner' : 'refresh'"
+        :disabled="reading"
+        data-testid="automation-poll"
+        @click="readNow"
       >
-        <button
-          v-for="t in TABS"
-          :id="`automations-tab-${ t.id }`"
-          :key="t.id"
-          type="button"
-          role="tab"
-          class="automations__tab"
-          :class="{ 'automations__tab--on': t.id === tab }"
-          :aria-selected="t.id === tab ? 'true' : 'false'"
-          :tabindex="t.id === tab ? 0 : -1"
-          :data-testid="`automations-tab-${ t.id }`"
-          @click="show(t.id)"
-        >
-          {{ t.label }}
-        </button>
-      </div>
-    </header>
+        {{ reading ? 'Reading GitHub' : 'Read GitHub now' }}
+      </RcButton>
+      <RcButton
+        v-else
+        variant="primary"
+        size="small"
+        data-testid="agents-new"
+        @click="$router.push(newTo)"
+      >
+        New automation
+      </RcButton>
+    </template>
 
-    <div
-      class="automations__pane"
-      role="tabpanel"
-      :aria-labelledby="`automations-tab-${ tab }`"
+    <Tabbed
+      :default-tab="tab"
+      class="dev-automations__tabs"
+      @changed="onTab"
     >
-      <EventsTab v-if="tab === 'events'" />
-      <AgentCards v-else />
-    </div>
-  </div>
+      <Tab
+        name="events"
+        label="Events"
+        :weight="2"
+      >
+        <EventsTab />
+      </Tab>
+      <Tab
+        name="automations"
+        label="Automations"
+        :weight="1"
+      >
+        <AutomationsTab />
+      </Tab>
+    </Tabbed>
+  </DevPage>
 </template>
 
 <style lang="scss" scoped>
-  .dev-automations-page {
-    display:        flex;
-    flex-direction: column;
-    height:         100%;
-    min-height:     0;
+.dev-automations {
+  height:     100%;
+  min-height: 0;
+}
+
+@media (max-width: 760px) {
+  /* The same narrowing My Work gives its tables: the 640px floor mobile.css puts under every
+     table is the only reason these would scroll sideways, and their columns already drop. */
+  .dev-automations :deep(table.sortable-table) { min-width: 0; }
+
+  .dev-automations :deep(table.sortable-table td) {
+    overflow-wrap: anywhere;
+    white-space:   normal;
   }
 
-  .automations {
-    &__head {
-      display:     flex;
-      align-items: flex-end;
-      gap:         var(--dev-space-5);
-      padding:     var(--dev-space-4) var(--dev-inset) 0;
-      border-bottom: 1px solid var(--border);
-      flex:        0 0 auto;
-    }
-
-    &__title { margin: 0 0 10px; font-size: 20px; font-weight: 600; }
-
-    &__tabs { display: flex; gap: var(--dev-space-1); }
-
-    &__tab {
-      min-height:    0;
-      padding:       8px 14px;
-      margin-bottom: -1px;
-      border:        0;
-      border-bottom: 2px solid transparent;
-      background:    none;
-      color:         var(--muted);
-      font-size:     13px;
-      font-weight:   600;
-      cursor:        pointer;
-
-      &:hover { color: var(--body-text); }
-      &:focus-visible { outline: 2px solid var(--dev-accent); outline-offset: -2px; }
-
-      &--on { color: var(--body-text); border-bottom-color: var(--dev-accent); }
-    }
-
-    &__pane {
-      flex:           1 1 auto;
-      min-height:     0;
-      overflow:       auto;
-      padding-bottom: var(--dev-space-5);
-    }
-  }
-
-  @media (max-width: 760px) {
-    .automations__head { gap: var(--dev-space-3); flex-wrap: wrap; }
-  }
+  .dev-automations :deep(.sortable-table-header) { flex-wrap: wrap; }
+}
 </style>

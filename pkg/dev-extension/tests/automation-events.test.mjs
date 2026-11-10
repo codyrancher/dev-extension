@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  itemEvents, githubRound, missingItems, stageEvents, workspaceForItem, assignedQueries, makeEvent,
+  itemEvents, githubRound, stageEvents, workspaceForItem, watchQueries, makeEvent, itemsToRead, lightClock, involved, WATCH_SETS,
 } from '../dev-api/automation-events.mjs';
 
 const ME = 'cody';
@@ -60,7 +60,7 @@ test('the first poll is the baseline and says nothing', () => {
 });
 
 test('an item that appears after the baseline is an assignment', () => {
-  const round = githubRound({ items: {}, baselined: true }, [issue()], { me: ME, now: T1 });
+  const round = githubRound({ items: {}, baselined: true, sets: WATCH_SETS }, [issue()], { me: ME, now: T1 });
 
   assert.deepEqual(names(round.events), ['issue.assigned']);
   assert.equal(round.events[0].source, 'github');
@@ -156,9 +156,10 @@ test('the same change has the same id, so two readers record it once', () => {
 });
 
 test('unassigned is reported and forgotten; closed is kept; a dropped item is read by id', () => {
-  const held = { items: { I_1: base(issue()), PR_1: base(pr()) }, baselined: true };
+  const held = { items: { I_1: base(issue()), PR_1: base(pr()) }, baselined: true, sets: WATCH_SETS };
 
-  assert.deepEqual(missingItems(held.items, [pr()]), ['I_1']);
+  // In no set this time: read whole, to learn why.
+  assert.deepEqual(itemsToRead(held.items, [{ id: 'PR_1', updatedAt: T0, headRefOid: 'aaa', commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING' } } }] } }]), ['I_1']);
 
   const round = githubRound(held, [issue({ assignees: { nodes: [] } }), pr({ state: 'CLOSED' })], { me: ME, now: T1 });
 
@@ -202,11 +203,79 @@ test('the workspace an item belongs to', () => {
   assert.equal(workspaceForItem('issue', 'rancher/dashboard', 999, dirs), '');
 });
 
-test('the searches', () => {
-  const q = assignedQueries('cody', '2026-11-09T10:00:00.123Z');
+test('the four sets, with review requests counted the way My Work counts them', () => {
+  const q = watchQueries('cody');
 
-  assert.equal(q.open, 'assignee:cody is:open archived:false sort:updated-desc');
-  assert.equal(q.recent, 'assignee:cody is:closed updated:>=2026-11-09T10:00:00Z sort:updated-desc');
+  assert.equal(q.assigned, 'assignee:cody is:open archived:false');
+  assert.equal(q.requested, 'user-review-requested:cody -author:cody is:open is:pr archived:false');
+  assert.equal(q.reviewed, 'reviewed-by:cody -author:cody is:open is:pr archived:false');
+  assert.equal(q.authored, 'author:cody is:open is:pr archived:false');
+});
+
+test('only items whose clock moved are read whole, unless it is a full poll', () => {
+  const held = { PR_1: base(pr()), I_1: base(issue()) };
+  const same = { id: 'PR_1', updatedAt: T0, headRefOid: 'aaa', commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING' } } }] } };
+  const issueSame = { id: 'I_1', updatedAt: T0 };
+
+  assert.equal(lightClock(same), `${ T0 }|aaa|PENDING`);
+  assert.deepEqual(itemsToRead(held, [same, issueSame]), []);
+  // Checks finishing moves no updatedAt, and is still read.
+  assert.deepEqual(itemsToRead(held, [{ ...same, commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] } }, issueSame]), ['PR_1']);
+  assert.deepEqual(itemsToRead(held, [same, { id: 'I_1', updatedAt: T1 }, { id: 'NEW', updatedAt: T1 }]).sort(), ['I_1', 'NEW']);
+  assert.deepEqual(itemsToRead(held, [same, issueSame], { full: true }).sort(), ['I_1', 'PR_1']);
+});
+
+test('asked to review: a new request, and asked again after a push', () => {
+  const asked = pr({
+    assignees: { nodes: [] }, author: { login: 'friend' }, reviewRequests: { nodes: [{ requestedReviewer: { __typename: 'User', login: ME } }] },
+  });
+  const round = githubRound({ items: {}, baselined: true, sets: WATCH_SETS }, [asked], { me: ME, now: T1 });
+
+  assert.deepEqual(names(round.events), ['pr.review-requested']);
+  assert.equal(round.events[0].payload.author, 'friend');
+  assert.equal(round.events[0].payload.roles.requested, true);
+
+  // Reviewed: the request is answered and drops off, and the PR is still watched as reviewed.
+  const reviewed = { ...asked, reviewRequests: { nodes: [] }, reviews: { nodes: [{ id: 'R9', state: 'COMMENTED', body: 'hm', submittedAt: T1, author: { login: ME } }] } };
+  const after = githubRound(round, [reviewed], { me: ME, now: T1 });
+
+  assert.equal(involved(after.items.PR_1), true);
+  // Re-requested later: its own event, not the same one again.
+  const again = githubRound(after, [{ ...asked, updatedAt: '2026-11-09T11:00:00Z' }], { me: ME, now: '2026-11-09T11:00:00Z' });
+
+  assert.deepEqual(names(again.events), ['pr.review-requested']);
+  assert.notEqual(again.events[0].id, round.events[0].id);
+});
+
+test('a request found through the requested set counts even before the item says so', () => {
+  const round = githubRound({ items: {}, baselined: true, sets: WATCH_SETS }, [pr({ assignees: { nodes: [] }, author: { login: 'friend' } })], {
+    me: ME, now: T1, hints: { PR_1: { requested: true } }
+  });
+
+  assert.deepEqual(names(round.events), ['pr.review-requested']);
+});
+
+test('my own new pull request is opened; one I only reviewed arrives quietly', () => {
+  const mine = pr({ assignees: { nodes: [] }, author: { login: ME } });
+  const theirs = pr({
+    id: 'PR_2', number: 303, assignees: { nodes: [] }, author: { login: 'friend' }
+  });
+  const round = githubRound({ items: {}, baselined: true, sets: WATCH_SETS }, [mine, theirs], {
+    me: ME, now: T1, hints: { PR_2: { reviewed: true } }
+  });
+
+  assert.deepEqual(names(round.events), ['pr.opened']);
+  assert.deepEqual(Object.keys(round.items).sort(), ['PR_1', 'PR_2']);
+});
+
+test('when the watched sets change, what they newly bring in is a baseline', () => {
+  const asked = pr({ assignees: { nodes: [] }, reviewRequests: { nodes: [{ requestedReviewer: { login: ME } }] } });
+  const old = { items: { I_1: { ...base(issue()), roles: undefined, mine: true } }, baselined: true };
+  const round = githubRound(old, [asked, issue({ state: 'CLOSED' })], { me: ME, now: T1 });
+
+  // The nine requests already waiting are not nine new ones; the old item still diffs.
+  assert.deepEqual(names(round.events), ['issue.closed']);
+  assert.equal(round.sets, WATCH_SETS);
 });
 
 test('an event without a key still gets a stable id', () => {

@@ -7,10 +7,12 @@
  *   - **workspace**: a workspace's stage moved. Read from the `dev-workspace-stages` ConfigMap,
  *     which every dashboard writes the stage into (stages.ts), over a Kubernetes watch, so a
  *     change is an event within a second of being stored.
- *   - **github**: the issues and pull requests the token's owner is assigned to. GitHub has no
- *     push channel for that short of a webhook on every repository, which needs admin on each and
- *     a public address this cluster does not have, so it is a poll: one GraphQL query every three
- *     minutes, compared with what the last one said.
+ *   - **github**: the open issues and pull requests the token's owner is part of - assigned, asked
+ *     to review (directly, as My Work counts it), has reviewed, or wrote. GitHub has no push channel
+ *     for that short of a webhook on every repository, which needs admin on each and a public
+ *     address this cluster does not have, so it is a poll every three minutes, in two halves: a
+ *     cheap search that says what each item's clock reads, then the whole of only the items whose
+ *     clock moved (and of every item, every FULL_EVERY polls, for edits that move no clock).
  *
  * A poll can only report differences, so everything is a diff of two snapshots, and the snapshot
  * holds exactly what a diff needs and no more: hashes for bodies, a stamp per comment, the commit
@@ -24,6 +26,9 @@ export const GITHUB_POLL_MS = 3 * 60_000;
 /** A closed item is remembered this long, so reopening it is a reopen and not a new assignment. */
 export const CLOSED_KEEP_MS = 14 * 24 * 3600_000;
 
+/** Every this many polls, every item is read whole, for the edits that do not move `updatedAt`. */
+export const FULL_EVERY = 5;
+
 /** One item's events in one poll, at most. A flood is a sign of a bad read, not of a busy item. */
 const ITEM_EVENT_CAP = 30;
 
@@ -35,7 +40,7 @@ export const EVENT_NAMES = {
   github: [
     'issue.assigned', 'issue.unassigned', 'issue.commented', 'issue.comment-edited', 'issue.closed', 'issue.reopened',
     'issue.title-edited', 'issue.body-edited', 'issue.labeled', 'issue.unlabeled',
-    'pr.assigned', 'pr.unassigned', 'pr.commented', 'pr.comment-edited', 'pr.reviewed', 'pr.review-commented',
+    'pr.review-requested', 'pr.opened', 'pr.assigned', 'pr.unassigned', 'pr.commented', 'pr.comment-edited', 'pr.reviewed', 'pr.review-commented',
     'pr.pushed', 'pr.checks-passed', 'pr.checks-failed', 'pr.merged', 'pr.closed', 'pr.reopened',
     'pr.ready-for-review', 'pr.converted-to-draft', 'pr.title-edited', 'pr.body-edited', 'pr.labeled', 'pr.unlabeled',
   ],
@@ -59,29 +64,93 @@ const ITEM_FIELDS = `
   ... on PullRequest {
     ${ ITEM_COMMON }
     isDraft merged mergedAt mergedBy { login } headRefOid headRefName baseRefName
+    reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
     reviews(last: 20) { nodes { id url state body submittedAt author { login } } }
     reviewThreads(last: 30) { nodes { path comments(last: 10) { nodes { ${ COMMENT } path } } } }
     commits(last: 30) { nodes { commit { oid messageHeadline committedDate author { name user { login } } statusCheckRollup { state } } } }
   }`;
 
-/**
- * The open items the person is assigned, and the closed ones that moved since the last poll - a
- * close is a change to an item that has just left the open list, so it has to be asked for.
- */
-export const GITHUB_ITEMS_QUERY = `query($open: String!, $recent: String!) {
-  open: search(query: $open, type: ISSUE, first: 50) { issueCount nodes { ${ ITEM_FIELDS } } }
-  recent: search(query: $recent, type: ISSUE, first: 30) { nodes { ${ ITEM_FIELDS } } }
+/** Just enough of an item to tell whether it moved: its clock, and a pull request's head and checks. */
+const LIGHT_FIELDS = `
+  __typename
+  ... on Issue { id updatedAt }
+  ... on PullRequest { id updatedAt headRefOid commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }`;
+
+const PAGE = 'issueCount pageInfo { hasNextPage endCursor }';
+
+/** The four sets, first page of each, in one query. */
+export const GITHUB_LIGHT_QUERY = `query($assigned: String!, $requested: String!, $reviewed: String!, $authored: String!) {
+  assigned: search(query: $assigned, type: ISSUE, first: 100) { ${ PAGE } nodes { ${ LIGHT_FIELDS } } }
+  requested: search(query: $requested, type: ISSUE, first: 100) { ${ PAGE } nodes { ${ LIGHT_FIELDS } } }
+  reviewed: search(query: $reviewed, type: ISSUE, first: 100) { ${ PAGE } nodes { ${ LIGHT_FIELDS } } }
+  authored: search(query: $authored, type: ISSUE, first: 100) { ${ PAGE } nodes { ${ LIGHT_FIELDS } } }
 }`;
 
-/** Items that dropped out of both lists, read by id: unassigned, transferred, or a lagging search. */
+/** One set's next page, for a set longer than a hundred. */
+export const GITHUB_LIGHT_PAGE_QUERY = `query($q: String!, $after: String!) {
+  page: search(query: $q, type: ISSUE, first: 100, after: $after) { ${ PAGE } nodes { ${ LIGHT_FIELDS } } }
+}`;
+
+/** Items read whole, by id: the ones that moved, and any that dropped out of every set. */
 export const GITHUB_NODES_QUERY = `query($ids: [ID!]!) { nodes(ids: $ids) { ${ ITEM_FIELDS } } }`;
 
-/** The two searches, for a login and the time the closed list reaches back to. */
-export function assignedQueries(login, since) {
+/**
+ * Which sets are watched, as a number that moves when they change. A poll that finds the number
+ * moved takes the items it has not seen before as a baseline, as the first poll ever does: when
+ * the review requests were added, the nine already waiting were not nine new requests.
+ */
+export const WATCH_SETS = 2;
+
+/** How many items one whole read asks for. */
+export const DETAIL_BATCH = 25;
+
+/**
+ * The four sets, for a login. Asked to review is `user-review-requested` - you, not a team you are
+ * in - which is what My Work's Reviewing tab counts, so the two agree on what "asked" means.
+ */
+export function watchQueries(login) {
   return {
-    open:   `assignee:${ login } is:open archived:false sort:updated-desc`,
-    recent: `assignee:${ login } is:closed updated:>=${ String(since).replace(/\.\d+Z$/, 'Z') } sort:updated-desc`,
+    assigned:  `assignee:${ login } is:open archived:false`,
+    requested: `user-review-requested:${ login } -author:${ login } is:open is:pr archived:false`,
+    reviewed:  `reviewed-by:${ login } -author:${ login } is:open is:pr archived:false`,
+    authored:  `author:${ login } is:open is:pr archived:false`,
   };
+}
+
+/** The clock a light read gives an item: what has to differ from the snapshot for it to be read whole. */
+export function lightClock(node) {
+  const head = String(node?.headRefOid || '');
+  const checks = String(node?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state || '');
+
+  return `${ node?.updatedAt || '' }|${ head }|${ checks }`;
+}
+
+/**
+ * Which items to read whole this poll: new ones, ones whose clock moved, ones that were open and
+ * are in no set now (to learn why), and on a full poll every one of them.
+ */
+export function itemsToRead(items, light, { full = false } = {}) {
+  const ids = new Set();
+  const seen = new Set();
+
+  for (const node of light) {
+    if (!node?.id) {
+      continue;
+    }
+    seen.add(node.id);
+    const held = items?.[node.id];
+
+    if (full || !held || `${ held.updatedAt }|${ held.head }|${ held.checks }` !== lightClock(node)) {
+      ids.add(node.id);
+    }
+  }
+  for (const held of Object.values(items || {})) {
+    if (held.state === 'open' && !seen.has(held.id)) {
+      ids.add(held.id);
+    }
+  }
+
+  return [...ids];
 }
 
 /** FNV-1a, 32 bits, as hex: a body is compared by this rather than kept. */
@@ -149,8 +218,10 @@ function commentsOf(node) {
  * is an old one coming back into a window of the last thirty because a newer one was deleted - not
  * something somebody just said.
  */
-export function itemSnapshot(node, me, now, before = null) {
+export function itemSnapshot(node, me, now, before = null, hint = {}) {
   const pr = node.__typename === 'PullRequest';
+  const meLower = String(me || '').toLowerCase();
+  const isMe = (login) => !!meLower && String(login || '').toLowerCase() === meLower;
   const { talk, threads } = commentsOf(node);
   const reviews = nodesOf(node.reviews);
   const commits = nodesOf(node.commits).map((c) => c.commit).filter(Boolean);
@@ -170,7 +241,7 @@ export function itemSnapshot(node, me, now, before = null) {
     body:       eventHash(node.body || ''),
     labels:     nodesOf(node.labels).map((l) => String(l.name || '')).filter(Boolean).sort(),
     assignees,
-    mine:       !!me && assignees.some((a) => a.toLowerCase() === String(me).toLowerCase()),
+    roles:      rolesOf(),
     talk:       Object.fromEntries(talk.map((c) => [c.id, c.lastEditedAt || c.createdAt || ''])),
     talkFloor:  floorOf(talk.map((c) => c.createdAt || ''), 30),
     threads:    Object.fromEntries(threads.map((c) => [c.id, c.lastEditedAt || c.createdAt || ''])),
@@ -184,6 +255,34 @@ export function itemSnapshot(node, me, now, before = null) {
     closedAt:   state === 'open' ? '' : (before?.closedAt || now),
     seenAt:     now,
   };
+
+  /*
+   * How the person is part of it. Read off the item, with the set it was found in as a second
+   * witness: a review request is in `reviewRequests` until it is answered, and a review is in the
+   * last twenty only while it is recent.
+   */
+  function rolesOf() {
+    return {
+      assignee:  assignees.some(isMe),
+      requested: !!hint.requested || nodesOf(node.reviewRequests).some((r) => isMe(r.requestedReviewer?.login)),
+      reviewer:  !!hint.reviewed || nodesOf(node.reviews).some((r) => isMe(r.author?.login)),
+      author:    isMe(node.author?.login),
+    };
+  }
+}
+
+/** A snapshot's roles; one from before roles were kept only knew whether it was assigned. */
+function rolesWas(s) {
+  return s?.roles || {
+    assignee: !!s?.mine, requested: false, reviewer: false, author: false
+  };
+}
+
+/** Whether the person is part of an item at all, from a snapshot old or new. */
+export function involved(s) {
+  const r = rolesWas(s);
+
+  return !!(r.assignee || r.requested || r.reviewer || r.author);
 }
 
 /** What every event about an item says about it, so a condition can look at it without a lookup. */
@@ -199,6 +298,7 @@ function itemFacts(node, s) {
     author:    loginOf(node.author),
     labels:    s.labels,
     assignees: s.assignees,
+    roles:     s.roles,
     ...(s.kind === 'pr' ? { branch: String(node.headRefName || ''), base: String(node.baseRefName || ''), head: s.head } : {}),
   };
 }
@@ -214,8 +314,10 @@ const REVIEW_SAYS = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
  * first poll is the baseline, and announcing every open issue as just assigned would start an
  * automation per issue the moment the page was installed.
  */
-export function itemEvents(before, node, { me = '', now, quiet = false } = {}) {
-  const s = itemSnapshot(node, me, now, before);
+export function itemEvents(before, node, {
+  me = '', now, quiet = false, hint = {}
+} = {}) {
+  const s = itemSnapshot(node, me, now, before, hint);
   const facts = itemFacts(node, s);
   const subject = `${ s.repo }#${ s.number }`;
   const events = [];
@@ -233,18 +335,34 @@ export function itemEvents(before, node, { me = '', now, quiet = false } = {}) {
     }));
   };
 
+  const was = rolesWas(before);
+  const role = s.roles;
+
   if (!before) {
-    if (!quiet && s.mine && s.state === 'open') {
-      add('assigned', { key: `assigned|${ s.updatedAt }` });
+    // Why it is new to us is what it is: asked to review, assigned, or a pull request just opened.
+    // One that is only here because it was reviewed is history arriving, not news.
+    if (!quiet && s.state === 'open') {
+      if (role.requested) {
+        add('review-requested', { key: `rr|${ s.updatedAt }` });
+      } else if (role.assignee) {
+        add('assigned', { key: `assigned|${ s.updatedAt }` });
+      } else if (role.author && s.kind === 'pr') {
+        add('opened', { actor: me, key: 'opened' });
+      }
     }
 
     return { snapshot: s, events };
   }
 
-  if (before.mine && !s.mine) {
+  if (was.assignee && !role.assignee) {
     add('unassigned', { key: `unassigned|${ s.updatedAt }` });
-  } else if (!before.mine && s.mine) {
+  } else if (!was.assignee && role.assignee) {
     add('assigned', { key: `assigned|${ s.updatedAt }` });
+  }
+  // Asked (again): a request answered by a review drops off, and comes back when it is re-requested
+  // after a push - which is the moment a second look is wanted, so each one is its own event.
+  if (!was.requested && role.requested && s.state === 'open') {
+    add('review-requested', { key: `rr|${ s.updatedAt }` });
   }
 
   if (before.state !== s.state) {
@@ -358,12 +476,15 @@ export function itemEvents(before, node, { me = '', now, quiet = false } = {}) {
  * item read by id because it dropped out of them. `gone` is the ids of items that read back as
  * nothing at all - deleted, or moved somewhere the token cannot see - which are forgotten quietly.
  *
- * An item that read back no longer assigned is reported and forgotten; a closed one is kept for
- * CLOSED_KEEP_MS so a reopen is a reopen. Everything else is kept as read.
+ * An item the person is no longer part of is forgotten (an assignment ending says so on the way
+ * out); a closed one is kept for CLOSED_KEEP_MS so a reopen is a reopen. Everything else is kept
+ * as read.
  */
-export function githubRound(held, nodes, { me, now, gone = [] }) {
+export function githubRound(held, nodes, {
+  me, now, gone = [], hints = {}
+}) {
   const items = { ...(held?.items || {}) };
-  const quiet = !held?.baselined;
+  const quiet = !held?.baselined || held.sets !== WATCH_SETS;
   const events = [];
   const nowMs = Date.parse(now) || Date.now();
 
@@ -372,10 +493,12 @@ export function githubRound(held, nodes, { me, now, gone = [] }) {
       continue;
     }
     const before = items[node.id] || null;
-    const { snapshot, events: found } = itemEvents(before, node, { me, now, quiet });
+    const { snapshot, events: found } = itemEvents(before, node, {
+      me, now, quiet, hint: hints[node.id] || {}
+    });
 
     events.push(...found);
-    if (!snapshot.mine) {
+    if (!involved(snapshot)) {
       delete items[node.id];
     } else {
       items[node.id] = snapshot;
@@ -395,17 +518,9 @@ export function githubRound(held, nodes, { me, now, gone = [] }) {
   // Oldest first, so the log reads in the order things happened within one poll.
   events.sort((a, b) => String(a.at).localeCompare(String(b.at)));
 
-  return { items, events, baselined: true };
-}
-
-/**
- * The open items a poll expected and did not get: assigned and open last time, in neither list
- * this time. Read by id next, rather than taken for unassigned, because a search can lag.
- */
-export function missingItems(items, nodes) {
-  const seen = new Set(nodes.filter(Boolean).map((n) => n.id));
-
-  return Object.values(items || {}).filter((s) => s.state === 'open' && !seen.has(s.id)).map((s) => s.id).slice(0, 50);
+  return {
+    items, events, baselined: true, sets: WATCH_SETS
+  };
 }
 
 /**

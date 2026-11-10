@@ -27,10 +27,10 @@ import { numbersIn } from '../artifact-subjects.mjs';
 import { branchState } from './branch-state.mjs';
 import { byteRange } from './ranges.mjs';
 import {
-  GITHUB_POLL_MS, EVENT_NAMES, GITHUB_ITEMS_QUERY, GITHUB_NODES_QUERY, assignedQueries, githubRound, missingItems, stageEvents, workspaceForItem,
+  GITHUB_POLL_MS, FULL_EVERY, EVENT_NAMES, GITHUB_LIGHT_QUERY, GITHUB_LIGHT_PAGE_QUERY, GITHUB_NODES_QUERY, DETAIL_BATCH, watchQueries, itemsToRead, githubRound, stageEvents, workspaceForItem,
 } from './automation-events.mjs';
 import {
-  AUTOMATION_BURST, SCRIPT_TIMEOUT_S, SCRIPT_TIMEOUT_MAX_S, triggersOfDef, actionOf, evaluateEvent, conditionScope, fillTemplate, cronDueAt, envFile, scriptWrapper, exitNote,
+  AUTOMATION_BURST, SCRIPT_TIMEOUT_S, SCRIPT_TIMEOUT_MAX_S, triggersOfDef, actionOf, pullRequestOf, evaluateEvent, conditionScope, fillTemplate, cronDueAt, envFile, scriptWrapper, exitNote,
 } from './automation-rules.mjs';
 import { searchCql, searchLimit, searchResult, pageAnswer } from './confluence.mjs';
 import { STAGING_CHARTS, IMAGE_REGISTRIES, RANCHER_REPO, stagingVersions, releasedVersions, imageExists, registryTags } from './rancher-images.mjs';
@@ -3037,6 +3037,34 @@ const OPENAPI = {
         operationId: 'stopAutomationRun',
         summary:     'Stop a script that is running.',
         responses:   { 200: { description: '{ run }' }, 409: { description: 'Not a running script.' } },
+      },
+    },
+    '/automations/claims': {
+      get: {
+        operationId: 'automationClaims',
+        summary:     'Review runs waiting for a dashboard to start them, oldest first.',
+        description: 'A review is what My Work\'s Review button does, and that needs the person\'s Rancher session to make and prepare the workspace, so an open dashboard claims each one and starts it.',
+        responses:   { 200: { description: '{ runs }' } },
+      },
+    },
+    '/automations/runs/{runId}/claim': {
+      parameters: [{
+        name: 'runId', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      post: {
+        operationId: 'claimAutomationRun',
+        summary:     'Take a waiting review to start. One caller gets it; the rest are told 409.',
+        responses:   { 200: { description: '{ run }' }, 409: { description: 'Not waiting, or already taken.' } },
+      },
+    },
+    '/automations/runs/{runId}/report': {
+      parameters: [{
+        name: 'runId', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      post: {
+        operationId: 'reportAutomationRun',
+        summary:     'Say how starting a claimed review went: `{ state: running|failed, workspace, conversation, note }`.',
+        responses:   { 200: { description: '{ run }' } },
       },
     },
     '/automations/{name}/runs': {
@@ -6504,6 +6532,10 @@ const routes = [
   ['GET', /^\/automations\/status$/, async() => automationStatusAnswer()],
   ['GET', /^\/automations\/runs\/(r[0-9a-z]{10,24})$/, async(m) => automationRunAnswer(m[1])],
   ['POST', /^\/automations\/runs\/(r[0-9a-z]{10,24})\/stop$/, async(m) => stopAutoRun(m[1])],
+  // Reviews wait for a dashboard: it asks for them, takes one, and says how starting it went.
+  ['GET', /^\/automations\/claims$/, async() => ({ runs: claimableReviews() })],
+  ['POST', /^\/automations\/runs\/(r[0-9a-z]{10,24})\/claim$/, async(m, url, body) => ({ run: claimAutoRun(m[1], body?.by) })],
+  ['POST', /^\/automations\/runs\/(r[0-9a-z]{10,24})\/report$/, async(m, url, body) => ({ run: reportAutoRun(m[1], body || {}) })],
   ['GET', /^\/automations\/([a-z0-9-]+)\/runs$/, async(m) => {
     const runs = autoRuns(m[1]);
 
@@ -8573,7 +8605,11 @@ const STAGES_MAP = 'dev-workspace-stages';
 const RUN_ID_RE = /^r[0-9a-z]{10,24}$/;
 const AUTOMATION_RE = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/;
 const AUTO_HOST = process.env.HOSTNAME || `dev-api-${ process.pid }`;
-const LIVE_RUN_STATES = new Set(['starting', 'running', 'waiting']);
+const LIVE_RUN_STATES = new Set(['requested', 'starting', 'running', 'waiting']);
+/** A review nobody has picked up in this long is given up on: no dashboard was open to start it. */
+const REVIEW_CLAIM_WAIT_MS = 24 * 3600_000;
+/** A claim that has not reported back in this long is taken to have died with its tab. */
+const REVIEW_CLAIM_STALE_MS = 10 * 60_000;
 
 const auto = {
   holder:    false,
@@ -8588,6 +8624,7 @@ const auto = {
   stagesAt:  0,
   polling:   false,
   pollNext:  0,
+  polls:     0,
   stageFeed: {
     live: false, error: '', pending: undefined, since: ''
   },
@@ -8867,6 +8904,7 @@ function eventBrief(event) {
 }
 
 function newAutoRun(def, trigger, event = null, context = null, note = '') {
+  const review = actionOf(def) === 'review';
   const run = {
     id:           `r${ Date.now().toString(36) }${ crypto.randomBytes(3).toString('hex') }`,
     automation:   def.name,
@@ -8874,13 +8912,15 @@ function newAutoRun(def, trigger, event = null, context = null, note = '') {
     trigger,
     event:        eventBrief(event),
     context:      context || null,
-    state:        'starting',
+    // A review is started by a dashboard - see claimAutoRun - so it waits to be picked up.
+    state:        review ? 'requested' : 'starting',
     startedAt:    new Date().toISOString(),
     endedAt:      '',
     exitCode:     null,
     conversation: '',
     result:       '',
-    note,
+    note:         review && !note ? 'waiting for an open dashboard to start it' : note,
+    ...(review ? { pr: pullRequestOf(event) } : {}),
     ...(actionOf(def) === 'script' ? { timeoutSec: Math.max(5, Math.min(SCRIPT_TIMEOUT_MAX_S, Number(def.timeoutSec) || SCRIPT_TIMEOUT_S)) } : {}),
   };
 
@@ -8918,6 +8958,11 @@ function runVars(def, run, event, context, there) {
  * the prompt queued, the pane started detached - so it shows up in the drawer like any other.
  */
 async function startAutoRun(def, run, event = null, context = null) {
+  // A review is started where the Review button runs - in a dashboard, with the person's session,
+  // which is what makes and prepares a workspace. It waits as `requested` until one claims it.
+  if (actionOf(def) === 'review') {
+    return;
+  }
   const dir = autoPath('runs', run.id);
   const there = `${ AUTO_DIR_IN_AGENT }/runs/${ run.id }`;
 
@@ -8993,6 +9038,65 @@ async function startAutoRun(def, run, event = null, context = null) {
   }
 }
 
+/** A review run still going for this pull request, from any automation, or null. */
+function liveReviewOf(pr) {
+  for (const name of autoRunNames()) {
+    const run = autoRuns(name).find((r) => r.kind === 'review' && LIVE_RUN_STATES.has(r.state) && r.pr?.repo === pr.repo && r.pr?.number === pr.number);
+
+    if (run) {
+      return run;
+    }
+  }
+
+  return null;
+}
+
+/** Reviews waiting for a dashboard, oldest first: what a dashboard's tick asks for. */
+function claimableReviews() {
+  const out = [];
+
+  for (const name of autoRunNames()) {
+    out.push(...autoRuns(name).filter((r) => r.kind === 'review' && r.state === 'requested' && r.pr));
+  }
+
+  return out.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+}
+
+/**
+ * One dashboard takes a review to start. Read and written with nothing awaited between, so of two
+ * tabs asking at once one gets it and the other is told no.
+ */
+function claimAutoRun(id, by) {
+  const run = findAutoRun(id);
+
+  if (!run || run.kind !== 'review' || run.state !== 'requested') {
+    throw failure(409, 'That review is not waiting to be started.');
+  }
+
+  return updateAutoRun(run.automation, id, {
+    state: 'starting', claimedBy: String(by || '').slice(0, 80), claimedAt: new Date().toISOString(), note: 'a dashboard is starting the review',
+  });
+}
+
+/** What the dashboard that claimed a review says about it: started, with its workspace, or failed. */
+function reportAutoRun(id, body = {}) {
+  const run = findAutoRun(id);
+
+  if (!run || run.kind !== 'review') {
+    throw failure(404, `There is no review run ${ id }.`);
+  }
+  const state = ['running', 'failed'].includes(body.state) ? body.state : run.state;
+  const changes = {
+    state,
+    note:         typeof body.note === 'string' ? body.note.slice(0, 300) : run.note,
+    workspace:    typeof body.workspace === 'string' && /^[a-z0-9][a-z0-9-]{0,120}$/.test(body.workspace) ? body.workspace : run.workspace || '',
+    conversation: typeof body.conversation === 'string' && CONVERSATION_ID.test(body.conversation) ? body.conversation : run.conversation,
+    ...(state === 'failed' ? { endedAt: new Date().toISOString() } : {}),
+  };
+
+  return updateAutoRun(run.automation, id, changes);
+}
+
 /** The last line a script printed, as the one-line result its row shows. */
 function lastLine(file) {
   try {
@@ -9038,6 +9142,19 @@ async function settleAutoRuns() {
         continue;
       }
 
+      if (run.kind === 'review' && run.state === 'requested') {
+        if (age > REVIEW_CLAIM_WAIT_MS) {
+          updateAutoRun(name, run.id, { state: 'failed', note: 'no dashboard was open to start it within a day', endedAt: new Date().toISOString() });
+        }
+        continue;
+      }
+      if (run.kind === 'review' && !run.conversation) {
+        // Claimed and not heard from: the tab that took it went away. Back in the queue.
+        if (Date.now() - (Date.parse(run.claimedAt || '') || 0) > REVIEW_CLAIM_STALE_MS) {
+          updateAutoRun(name, run.id, { state: 'requested', claimedBy: '', note: 'the dashboard starting it went away; waiting for another' });
+        }
+        continue;
+      }
       if (!run.conversation) {
         if (age > 5 * 60_000) {
           updateAutoRun(name, run.id, { state: 'failed', note: run.note || 'never started', endedAt: new Date().toISOString() });
@@ -9106,6 +9223,18 @@ async function recordAutoEvents(events) {
       if (!verdict) {
         continue;
       }
+      if (verdict.outcome === 'run' && actionOf(def) === 'review') {
+        const pr = pullRequestOf(event);
+        const busy = pr && liveReviewOf(pr);
+
+        if (!pr) {
+          verdict.outcome = 'blocked';
+          verdict.reason = 'A review needs a pull request, and this event is not about one.';
+        } else if (busy) {
+          verdict.outcome = 'throttled';
+          verdict.reason = `A review of ${ pr.repo }#${ pr.number } is already under way (${ busy.automation }, ${ busy.state }).`;
+        }
+      }
       if (verdict.outcome === 'run') {
         const n = burst.get(def.name) || 0;
 
@@ -9150,7 +9279,49 @@ async function graphqlPartial(query, variables) {
   return body;
 }
 
-/** The assigned issues and pull requests, read and diffed. Every three minutes, or now when asked. */
+/**
+ * The four sets' light reads: every item each holds, a hundred a page. Which sets an item is in is
+ * kept beside it, because that is how a review request or a review is known before the item's
+ * whole is read.
+ */
+async function lightGithubRead(me) {
+  const queries = watchQueries(me);
+  const first = (await graphqlPartial(GITHUB_LIGHT_QUERY, queries)).data || {};
+  const nodes = new Map();
+  const hints = {};
+  const counts = {};
+
+  for (const set of Object.keys(queries)) {
+    let page = first[set];
+    let pages = 1;
+
+    counts[set] = page?.issueCount ?? 0;
+    for (;;) {
+      for (const node of page?.nodes || []) {
+        if (!node?.id) {
+          continue;
+        }
+        nodes.set(node.id, node);
+        hints[node.id] = { ...(hints[node.id] || {}), [set]: true };
+      }
+      // Five pages is five hundred items in one set, which is past anything one person is part of
+      // and short of the search API's own thousand.
+      if (!page?.pageInfo?.hasNextPage || pages >= 5) {
+        break;
+      }
+      page = (await graphqlPartial(GITHUB_LIGHT_PAGE_QUERY, { q: queries[set], after: page.pageInfo.endCursor })).data?.page;
+      pages++;
+    }
+  }
+
+  return { nodes: [...nodes.values()], hints, counts };
+}
+
+/**
+ * The issues and pull requests the person is part of, read and diffed. Every three minutes, or now
+ * when asked. The light read says which items moved; only those are read whole, in batches, and
+ * every FULL_EVERY polls all of them are, for comment edits and the like that move no clock.
+ */
 async function pollGithubEvents(force = false) {
   if (auto.polling || (!force && Date.now() < auto.pollNext)) {
     return;
@@ -9167,41 +9338,40 @@ async function pollGithubEvents(force = false) {
     let held = auto.state.github;
 
     if (held.login && held.login.toLowerCase() !== me.toLowerCase()) {
-      // Another person's token: their assignments are a new baseline, not a burst of changes.
+      // Another person's token: their work is a new baseline, not a burst of changes.
       held = freshAutoState().github;
     }
     const now = new Date().toISOString();
-    const since = new Date((Date.parse(held.polledAt) || Date.now()) - 60 * 60_000).toISOString();
-    const answer = await graphqlPartial(GITHUB_ITEMS_QUERY, assignedQueries(me, since));
-    const byId = new Map();
-
-    for (const node of [...(answer.data?.open?.nodes || []), ...(answer.data?.recent?.nodes || [])]) {
-      if (node?.id) {
-        byId.set(node.id, node);
-      }
-    }
-    const missing = missingItems(held.items, [...byId.values()]);
+    const light = await lightGithubRead(me);
+    const full = auto.polls % FULL_EVERY === 0;
+    const ids = itemsToRead(held.items, light.nodes, { full });
+    const nodes = [];
     const gone = [];
 
-    if (missing.length) {
-      const found = (await graphqlPartial(GITHUB_NODES_QUERY, { ids: missing })).data?.nodes || [];
+    auto.polls++;
+    for (let i = 0; i < ids.length; i += DETAIL_BATCH) {
+      const batch = ids.slice(i, i + DETAIL_BATCH);
+      const found = (await graphqlPartial(GITHUB_NODES_QUERY, { ids: batch })).data?.nodes || [];
 
-      missing.forEach((id, i) => {
-        if (found[i]?.id) {
-          byId.set(found[i].id, found[i]);
+      batch.forEach((id, at) => {
+        if (found[at]?.id) {
+          nodes.push(found[at]);
         } else {
           gone.push(id);
         }
       });
     }
-    const round = githubRound(held, [...byId.values()], { me, now, gone });
+    const hints = Object.fromEntries(Object.entries(light.hints).map(([id, h]) => [id, { requested: !!h.requested, reviewed: !!h.reviewed }]));
+    const round = githubRound(held, nodes, {
+      me, now, gone, hints
+    });
 
     auto.state.github = {
-      items: round.items, baselined: round.baselined, polledAt: now, login: me,
+      items: round.items, baselined: round.baselined, sets: round.sets, polledAt: now, login: me,
     };
     await recordAutoEvents(round.events);
     auto.state.status.github = {
-      ok: true, error: '', at: now, items: Object.keys(round.items).length, open: answer.data?.open?.issueCount ?? 0, found: round.events.length, login: me,
+      ok: true, error: '', at: now, items: Object.keys(round.items).length, counts: light.counts, read: ids.length, full, found: round.events.length, login: me,
     };
   } catch (e) {
     auto.state.status.github = {
@@ -9268,8 +9438,13 @@ async function watchStageStore() {
 
   for (;;) {
     try {
-      const cm = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ STAGES_MAP }`).catch((e) => (e.status === 404 ? null : Promise.reject(e)));
-      const rv = cm?.metadata?.resourceVersion || '';
+      // The LIST's version, not the ConfigMap's own. A ConfigMap nobody has written for a while has
+      // a version older than the apiserver's watch window, and a watch from it fails at once with
+      // "too old resource version" - which is how this sat at once a minute instead of live. The
+      // list's version is now, whatever the item's is.
+      const list = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps?fieldSelector=metadata.name%3D${ STAGES_MAP }`);
+      const cm = (list.items || [])[0] || null;
+      const rv = list.metadata?.resourceVersion || '';
 
       auto.stageFeed.pending = cm?.data?.['stages.json'] ?? '{}';
       setTimeout(() => automationTick().catch(() => {}), 0);
@@ -9498,7 +9673,20 @@ async function requestAutoRun(name, body = {}, fallbackTrigger = 'manual') {
     ? Object.fromEntries(Object.entries(body.context).slice(0, 20).map(([k, v]) => [String(k).slice(0, 40), String(v ?? '').slice(0, 500)]))
     : null;
   const note = typeof body.note === 'string' ? body.note.slice(0, 200) : '';
-  const run = newAutoRun(def, trigger, event, context, event ? 'replayed by hand' : note);
+
+  if (actionOf(def) === 'review') {
+    const pr = pullRequestOf(event);
+
+    if (!pr) {
+      throw failure(400, 'A review automation runs on a pull request: run it on one of the events in the log.');
+    }
+    const busy = liveReviewOf(pr);
+
+    if (busy) {
+      throw failure(409, `A review of ${ pr.repo }#${ pr.number } is already under way.`);
+    }
+  }
+  const run = newAutoRun(def, trigger, event, context, event && actionOf(def) !== 'review' ? 'replayed by hand' : note);
 
   startAutoRun(def, run, event, context).catch(() => {});
 

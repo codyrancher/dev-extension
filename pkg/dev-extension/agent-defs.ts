@@ -1,7 +1,7 @@
 // Automations: what runs by itself, and what sets it off.
 //
-// An automation is an action - an agent conversation (a prompt, usually a skill) or a script -
-// and what starts it: a person pressing Run, a schedule, a call to the in-cluster API, a resource
+// An automation is an action - an agent conversation (a prompt, usually a skill), a script, or a
+// review of a pull request as My Work's Review button does it - and what starts it: a person pressing Run, a schedule, a call to the in-cluster API, a resource
 // changing, or an event from the Automations page's log (a workspace's stage moving, something
 // happening on an assigned GitHub issue or PR). An agent run is an ordinary conversation in the
 // agents drawer; a script runs in the agent pod as the pane user, with the event on stdin.
@@ -14,7 +14,7 @@
 // which is read through the person's own Rancher session: DevSidebar's poll calls tickAgents.
 
 import { devFetch, clusterBase, DEV_SYSTEM_NAMESPACE } from './api';
-import { devApi } from './reviews';
+import { devApi, startPrReview } from './reviews';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -37,6 +37,10 @@ export interface EventTrigger {
   source: string;
   /** Event names, `*` a wildcard: `pr.commented`, `pr.*`, `*.closed`. None is every name. */
   names: string[];
+  /** Only these repositories (`rancher/dashboard`, `rancher/*`). None is all of them. */
+  repos?: string[];
+  /** Only work by these people: the issue's or pull request's author. None is everybody. */
+  authors?: string[];
   /** One JavaScript expression per line, over `event`/`e`, `payload`/`p` and `me`; all must hold. */
   condition?: string;
 }
@@ -59,8 +63,8 @@ export interface ResourceTrigger {
 export interface AgentDef {
   name: string;
   description: string;
-  /** What it does: an agent conversation (the default) or a script. */
-  action?: 'agent' | 'script';
+  /** What it does: an agent conversation (the default), a script, or a review of the event's PR. */
+  action?: 'agent' | 'script' | 'review';
   /** What the conversation opens with; a skill invocation (`/my-pr-full-review ...`) or prose. */
   prompt: string;
   /** The script, for a script automation: bash unless it starts with `#!`. */
@@ -85,14 +89,16 @@ export interface AgentRun {
   automation?: string;
   /** From before the history moved to dev-api. */
   agent?: string;
-  kind?: 'agent' | 'script';
+  kind?: 'agent' | 'script' | 'review';
+  /** A review's pull request. */
+  pr?: { repo: string; number: number; title: string } | null;
+  /** A review's workspace, once a dashboard has started it. */
+  workspace?: string;
   trigger: string;
   /** The event that started it, when one did. */
   event?: { id: string; source: string; name: string; subject: string; title: string; url: string; workspace: string } | null;
   /** What a resource trigger or an API call said about why. */
   context?: Record<string, string> | null;
-  /** Runs before 0.3.17 were conversations in a workspace. */
-  workspace?: string;
   /** The drawer conversation an agent run is. */
   conversation: string;
   state: 'requested' | 'starting' | 'running' | 'waiting' | 'done' | 'failed';
@@ -466,11 +472,45 @@ async function watchResources(store: Store, def: AgentDef, spec: ResourceTrigger
 let ticking = false;
 let lastTick = 0;
 
+/** Which tab this is, for a claim: so dev-api can say who is starting a review. */
+const TAB = `tab-${ Math.random().toString(36).slice(2, 8) }`;
+
+/**
+ * Start the reviews dev-api has waiting: what My Work's Review button does, pressed for an
+ * automation. A review makes and prepares a workspace through this person's Rancher session, which
+ * only a dashboard has, so dev-api records the run and the first dashboard to claim it starts it.
+ * One at a time per tick: each is a workspace, and a burst of them is a burst of pods.
+ */
+async function claimReviews(store: Store): Promise<void> {
+  const waiting = await devApi('/automations/claims').catch(() => null);
+  const run = (waiting?.runs || [])[0];
+
+  if (!run?.pr) {
+    return;
+  }
+  const claimed = await devApi(`/automations/runs/${ run.id }/claim`, { method: 'POST', body: JSON.stringify({ by: TAB }) }).catch(() => null);
+
+  if (!claimed?.run) {
+    return; // another tab got it
+  }
+  const report = (body: Record<string, string>) => devApi(`/automations/runs/${ run.id }/report`, { method: 'POST', body: JSON.stringify(body) }).catch(() => null);
+
+  try {
+    const started = await startPrReview(store, { number: run.pr.number, title: run.pr.title }, run.pr.repo, '', false);
+
+    await report({
+      state: 'running', workspace: started.workspace, conversation: started.conversation.id, note: started.created ? `made ${ started.workspace } and started the review` : `started the review in ${ started.workspace }`,
+    });
+  } catch (e: Json) {
+    await report({ state: 'failed', note: e?.message || String(e) });
+  }
+}
+
 /**
  * The browser's part of the clock: resource triggers, which are read through the person's own
- * Rancher session and so cannot be watched from dev-api. Everything else - schedules, events, API
- * calls, seeing a run finish - is dev-api's. Called from the sidebar's poll; cheap when no
- * automation watches a resource.
+ * Rancher session and so cannot be watched from dev-api, and the reviews waiting for a dashboard to
+ * start them. Everything else - schedules, events, API calls, seeing a run finish - is dev-api's.
+ * Called from the sidebar's poll; cheap when there is nothing to do.
  */
 export async function tickAgents(store: Store): Promise<void> {
   if (ticking || Date.now() - lastTick < 20_000) {
@@ -486,6 +526,7 @@ export async function tickAgents(store: Store): Promise<void> {
         }
       }
     }
+    await claimReviews(store).catch(() => {});
   } finally {
     ticking = false;
   }

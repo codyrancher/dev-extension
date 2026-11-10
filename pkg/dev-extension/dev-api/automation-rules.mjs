@@ -29,9 +29,44 @@ export function triggersOfDef(def) {
   return def?.trigger ? [def.trigger] : [{ type: 'manual' }];
 }
 
-/** What an automation does: an agent conversation unless it says it is a script. */
+/**
+ * What an automation does: an agent conversation unless it says otherwise. A script runs in the
+ * agent pod; a review is what My Work's Review button does with the event's pull request.
+ */
 export function actionOf(def) {
-  return def?.action === 'script' ? 'script' : 'agent';
+  return def?.action === 'script' || def?.action === 'review' ? def.action : 'agent';
+}
+
+/** The pull request an event is about, or null: what a review automation needs to have one. */
+export function pullRequestOf(event) {
+  const p = event?.payload || {};
+
+  return p.kind === 'pr' && Number(p.number) > 0 && /^[\w.-]+\/[\w.-]+$/.test(String(p.repo || ''))
+    ? { repo: String(p.repo), number: Number(p.number), title: String(p.title || event.title || '') }
+    : null;
+}
+
+const listOf = (value) => (Array.isArray(value) ? value : String(value || '').split(/[,\s]+/)).map((x) => String(x || '').trim()).filter(Boolean);
+
+/**
+ * The two lists a trigger can narrow GitHub events by, before any constraint: which repositories,
+ * and whose work (the issue's or pull request's author). Each empty is all of them. Wildcards as
+ * in names - `rancher/*` - and case does not matter, since GitHub's does not.
+ */
+export function listFailure(spec, event) {
+  const p = event?.payload || {};
+  const repos = listOf(spec?.repos);
+  const authors = listOf(spec?.authors).map((a) => a.replace(/^@/, ''));
+  const lower = (xs) => xs.map((x) => x.toLowerCase());
+
+  if (repos.length && !nameMatches(lower(repos), String(p.repo || '').toLowerCase())) {
+    return { outcome: 'blocked', list: 'repos', reason: `${ p.repo || 'It has no repository, and so' } is not one of its repositories (${ repos.join(', ') }).` };
+  }
+  if (authors.length && !nameMatches(lower(authors), String(p.author || '').toLowerCase())) {
+    return { outcome: 'blocked', list: 'authors', reason: `${ p.author ? `@${ p.author }` : 'It has no author, and so' } is not one of its authors (${ authors.map((a) => `@${ a }`).join(', ') }).` };
+  }
+
+  return null;
 }
 
 /**
@@ -67,7 +102,8 @@ export function triggerSelects(trigger, event) {
  * `{ outcome, reason, condition }` with outcome one of:
  *
  *   - `run`      every constraint of a listening trigger held;
- *   - `blocked`  a constraint was false - `condition` is the line, `reason` says so;
+ *   - `blocked`  a repository or author list left it out (`list` says which), or a constraint
+ *                was false (`condition` is the line); `reason` says which, either way;
  *   - `error`    a constraint threw - a typo, or a field this event does not have;
  *   - `disabled` the automation is switched off;
  *   - `muted`    the event is from a muted workspace.
@@ -79,7 +115,7 @@ export function triggerSelects(trigger, event) {
  * @param {any} def
  * @param {any} event
  * @param {{ muted?: boolean, check?: (line: string) => unknown }} [opts]
- * @returns {{ automation: string, outcome: string, reason: string, condition?: string } | null}
+ * @returns {{ automation: string, outcome: string, reason: string, condition?: string, list?: string } | null}
  */
 export function evaluateEvent(def, event, { muted = false, check } = {}) {
   const listening = triggersOfDef(def).filter((t) => triggerSelects(t, event));
@@ -99,7 +135,7 @@ export function evaluateEvent(def, event, { muted = false, check } = {}) {
   let first = null;
 
   for (const trigger of listening) {
-    const failed = firstFailure(conditionLines(trigger.event?.condition), check);
+    const failed = listFailure(trigger.event, event) || firstFailure(conditionLines(trigger.event?.condition), check);
 
     if (!failed) {
       return { ...base, outcome: 'run', reason: '' };
