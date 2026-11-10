@@ -77,19 +77,19 @@ const commitUrl = computed(() => (repoUrl.value && state.value?.commit ? `${ rep
       data-testid="strata-backup-error"
     >The last backup, {{ ago(state.checkedAt) }}, failed: {{ state.error }}</span>
     <span v-else-if="state?.backedUpAt">
-      Backed up to
+      Backed up daily, when anything changed, to
       <a
         :href="repoUrl"
         target="_blank"
         rel="noopener noreferrer"
-      >{{ state.repo }}</a>{{ ' ' }}<a
+      >{{ state.repo }}</a>.
+      Last <a
         v-if="commitUrl"
         :href="commitUrl"
         target="_blank"
         rel="noopener noreferrer"
         :title="state.commit"
-      >{{ ago(state.backedUpAt) }}</a><template v-if="state.result === 'unchanged'">, nothing changed by {{ ago(state.checkedAt) }}</template>.
-      Daily, when anything changed.
+      >backup {{ ago(state.backedUpAt) }}</a><template v-else>backup {{ ago(state.backedUpAt) }}</template><template v-if="state.result === 'unchanged'">; checked {{ ago(state.checkedAt) }}, nothing new</template>.
     </span>
     <span v-else-if="state?.result === 'empty'">
       Backed up daily to <code>{{ state.repo || 'your-login/strata' }}</code>, a private GitHub repository, once there is a note.
