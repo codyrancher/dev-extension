@@ -12,9 +12,32 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
+    appVersion: 0.3.699
+    created: "2026-11-10T22:32:35.396987822Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
+    digest: 971489d7e10062a2736bedc49e11534ec576f4509d4a28c1080864a8a1967623
+    icon: https://codyrancher.github.io/dev-extension/icon.svg
+    name: dev-extension
+    type: application
+    urls:
+    - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.699/dev-extension-0.3.699.tgz
+    version: 0.3.699
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/display-name: Dev Extension
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
+    apiVersion: v2
     appVersion: 0.3.698
-    created: '2026-11-10T21:52:28.200265812Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T21:52:28.200265812Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: eb27c36e9eab44c96d56cc5c716a7ecc1355e73d9d47e8dbb500900a7f284c32
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -34,8 +57,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.697
-    created: '2026-11-10T21:31:45.211971666Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T21:31:45.211971666Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: df37934eeae1315988e93f0939f71fe1939a8486ecbfc65be2c169638534a905
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -55,8 +79,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.696
-    created: '2026-11-10T18:36:19.750984747Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T18:36:19.750984747Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: 85de2f994a797aba16d48a63d99152927546fc7cf3aaa69caffd0e738c29a154
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -76,8 +101,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.694
-    created: '2026-11-10T18:01:15.215096867Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T18:01:15.215096867Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: fad15fc48a3fa8aae6361f91f9c6c75d7a30e34559ec3cce4bcb158fd9fb2254
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -97,8 +123,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.692
-    created: '2026-11-10T17:29:20.331294386Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T17:29:20.331294386Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: 0f8738676357d5f72da2c0f4ee7711f057d3019274a286a3ff97776041f53dde
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -118,8 +145,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.691
-    created: '2026-11-10T17:07:42.784589413Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T17:07:42.784589413Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: a7f651673a43b896018dddd5ad0621f68fbd27ae3f7a257cff05afcddebf8bf4
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -139,8 +167,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.690
-    created: '2026-11-10T16:24:58.583512594Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T16:24:58.583512594Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: a2d097ca85846384f73c897580fbdf3fd98a45b0871518328015acdd0177d6aa
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -160,8 +189,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.689
-    created: '2026-11-10T10:39:40.155765978Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T10:39:40.155765978Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: b61a24349a93becb29a4a0ac85253b4c67f3c3766aaef8c3cfdbbd6462a11cf6
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -181,8 +211,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.688
-    created: '2026-11-10T09:41:23.792303203Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T09:41:23.792303203Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: 017060d0333165620a77dc1af23d0c9a8f2794ed787d2e5cd59bc59beadce82a
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -202,8 +233,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.687
-    created: '2026-11-10T09:28:09.129620688Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T09:28:09.129620688Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: 6b86ba21ddff3c9aa820739ba7666234a456f4ee61e7d1e90265996a01221058
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -223,8 +255,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.686
-    created: '2026-11-10T02:09:42.744923001Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T02:09:42.744923001Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: eceaa04e552b6284fb2eba803c8705ea57c7fdf3419af3b78236734732acfc07
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -244,8 +277,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.685
-    created: '2026-11-10T01:59:21.841822691Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T01:59:21.841822691Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: 50c77bab8363d2079efb3af14fa8a8fca5c439688f92b90e9eeb2c4062d581b2
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -265,8 +299,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.684
-    created: '2026-11-10T01:46:31.262373096Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T01:46:31.262373096Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: b4f8638a90d30d5c5a4f568e670364bae2d7208fc0ff389c3927d0907a219404
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -286,8 +321,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.683
-    created: '2026-11-10T00:39:25.484989532Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T00:39:25.484989532Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: ca028483f57a23e790b1d0b1f8272a8ba7db672022c4ec97705371a6ccca548d
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -307,8 +343,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.682
-    created: '2026-11-10T00:27:51.235947962Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T00:27:51.235947962Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: ede29411f866a09230dbf4f2c5b8fcfe64926af37bc836ed89751a488b099c55
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -328,8 +365,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.681
-    created: '2026-11-10T00:14:25.862286448Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-10T00:14:25.862286448Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: deac2a39bad495672272f1b852f5065a313701a4499b9c29736653ca3d4638e9
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -349,8 +387,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.680
-    created: '2026-11-09T21:52:35.149326877Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-09T21:52:35.149326877Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: 29d1827ea727fce2689aa3a2a332febbae80cc8f2bf7c56ccf5f8a6bb991ad18
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -370,8 +409,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.679
-    created: '2026-11-09T21:41:52.44230248Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-09T21:41:52.44230248Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: 1217fb21658546dce91ea5296777b1450e8731fe5e31b42f471b4ffeabc14d89
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -391,8 +431,9 @@ entries:
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
     appVersion: 0.3.678
-    created: '2026-11-09T21:27:02.9012511Z'
-    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews, fixes, shares and agents
+    created: "2026-11-09T21:27:02.9012511Z"
+    description: Workspaces for rancher/dashboard pointed at any Rancher, with reviews,
+      fixes, shares and agents
     digest: cd992ad4ae559de6ff6ee436cc242102cf2d27a9ac7925553fd950d977a9255d
     icon: https://codyrancher.github.io/dev-extension/icon.svg
     name: dev-extension
@@ -400,4 +441,4 @@ entries:
     urls:
     - https://github.com/codyrancher/dev-extension/releases/download/dev-extension-0.3.678/dev-extension-0.3.678.tgz
     version: 0.3.678
-generated: '2026-11-10T21:52:28.200385492Z'
+generated: "2026-11-10T22:32:35.397072268Z"
