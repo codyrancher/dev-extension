@@ -78,13 +78,11 @@ export const TaskCheckboxNoScroll = Extension.create({
            * clicks it - which took focus out of the editor and dropped the keyboard. Cancel that and
            * click the box directly, which toggles it (and runs onChange) without moving focus.
            */
+          const taskLabel = (target: EventTarget | null) => (
+            target instanceof HTMLLabelElement && target.matches('ul[data-type="taskList"] > li > label') ? target : null
+          );
           const onLabelClick = (event: MouseEvent) => {
-            const label = event.target;
-
-            if (!(label instanceof HTMLLabelElement) || !label.matches('ul[data-type="taskList"] > li > label')) {
-              return;
-            }
-            const box = label.querySelector('input[type="checkbox"]');
+            const box = taskLabel(event.target)?.querySelector('input[type="checkbox"]');
 
             if (box instanceof HTMLInputElement) {
               event.preventDefault();
@@ -92,14 +90,23 @@ export const TaskCheckboxNoScroll = Extension.create({
               box.click();
             }
           };
+          // The press on that label is what focuses the editor (it sits in the editable area), so
+          // with nothing focused a tap beside a box brought the keyboard up; it moves no focus now.
+          const onLabelPress = (event: MouseEvent) => {
+            if (taskLabel(event.target)) {
+              event.preventDefault();
+            }
+          };
 
           editorView.dom.addEventListener('change', onChange, true);
           editorView.dom.addEventListener('click', onLabelClick, true);
+          editorView.dom.addEventListener('mousedown', onLabelPress, true);
 
           return {
             destroy: () => {
               editorView.dom.removeEventListener('change', onChange, true);
               editorView.dom.removeEventListener('click', onLabelClick, true);
+              editorView.dom.removeEventListener('mousedown', onLabelPress, true);
             }
           };
         },
