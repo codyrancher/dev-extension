@@ -41,6 +41,17 @@ export interface LineLabel {
   note_title?: string;
 }
 
+export interface BackupState {
+  repo?: string;
+  checkedAt?: string;
+  backedUpAt?: string;
+  commit?: string;
+  result?: 'committed' | 'unchanged' | 'empty' | 'failed';
+  error?: string;
+  running?: boolean;
+  dueAt?: string;
+}
+
 export interface UploadedImage {
   id: string;
   filename: string;
@@ -64,15 +75,40 @@ function call<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
 
 const enc = encodeURIComponent;
 
+/** dev-api's answer for a note that is not there, as opposed to a path an older dev-api does not have. */
+export const NO_SUCH_NOTE = 'No such note.';
+
+const PAUSES_MS = [1000, 2000, 4000, 8000, 15000];
+
+/**
+ * A read, tried again while dev-api comes back.
+ *
+ * The first page load of a new release is what rolls dev-api, so for its first few seconds the
+ * old pod answers - and it has no /strata paths at all. Half a minute of patience covers the
+ * roll; an answer `final` recognises (a note that really is not there) is not retried.
+ */
+async function read<T>(get: () => Promise<T>, final: (e: Error) => boolean = () => false): Promise<T> {
+  for (let k = 0; ; k++) {
+    try {
+      return await get();
+    } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
+      if (k >= PAUSES_MS.length || final(e)) {
+        throw e;
+      }
+      await new Promise((resolve) => setTimeout(resolve, PAUSES_MS[k]));
+    }
+  }
+}
+
 export const api = {
-  getNotes:   () => call<Note[]>('/notes'),
-  getNote:    (id: string) => call<Note>(`/notes/${ enc(id) }`),
+  getNotes:   () => read(() => call<Note[]>('/notes')),
+  getNote:    (id: string) => read(() => call<Note>(`/notes/${ enc(id) }`), (e) => e?.message === NO_SUCH_NOTE),
   createNote: (data: Partial<Note>) => call<Note>('/notes', 'POST', data),
   updateNote: (id: string, data: Partial<Note>) => call<Note>(`/notes/${ enc(id) }`, 'PUT', data),
   deleteNote: (id: string) => call<void>(`/notes/${ enc(id) }`, 'DELETE'),
   restoreNote: (id: string) => call<Note>(`/notes/${ enc(id) }/restore`, 'POST', {}),
 
-  getLabels:   () => call<Label[]>('/labels'),
+  getLabels:   () => read(() => call<Label[]>('/labels')),
   createLabel: (data: Partial<Label>) => call<Label>('/labels', 'POST', data),
   updateLabel: (id: string, data: Partial<Label>) => call<Label>(`/labels/${ enc(id) }`, 'PUT', data),
   deleteLabel: (id: string) => call<void>(`/labels/${ enc(id) }`, 'DELETE'),
@@ -80,16 +116,19 @@ export const api = {
   addNoteLabel:    (noteId: string, labelId: string) => call<unknown>(`/notes/${ enc(noteId) }/labels`, 'POST', { label_id: labelId }),
   removeNoteLabel: (noteId: string, labelId: string) => call<void>(`/notes/${ enc(noteId) }/labels/${ enc(labelId) }`, 'DELETE'),
 
-  getLineLabels: (noteId: string) => call<LineLabel[]>(`/notes/${ enc(noteId) }/line-labels`),
+  getLineLabels: (noteId: string) => read(() => call<LineLabel[]>(`/notes/${ enc(noteId) }/line-labels`)),
   addLineLabel:  (noteId: string, lineKey: string, labelId: string, lineText = '', lineNumber = 0) => call<LineLabel>(
     `/notes/${ enc(noteId) }/line-labels`, 'POST', {
       line_key: lineKey, label_id: labelId, line_text: lineText, line_number: lineNumber
     }),
   removeLineLabel:      (id: string) => call<void>(`/line-labels/${ enc(id) }`, 'DELETE'),
-  getLineLabelsByLabel: (labelId: string) => call<LineLabel[]>(`/labels/${ enc(labelId) }/line-labels`),
+  getLineLabelsByLabel: (labelId: string) => read(() => call<LineLabel[]>(`/labels/${ enc(labelId) }/line-labels`)),
 
   uploadImage: (noteId: string, image: { filename: string; mimetype: string; data: string; thumbnail: string; width: number; height: number }) => call<UploadedImage>(`/notes/${ enc(noteId) }/images`, 'POST', image),
   deleteImage: (id: string) => call<void>(`/images/${ enc(id) }`, 'DELETE'),
+
+  getBackup: () => call<BackupState>('/backup'),
+  backupNow: () => devFetch(devApiUrl('/strata/backup'), { method: 'POST', body: '{}', timeoutMs: 300_000 }) as Promise<BackupState>,
 
   search: (q?: string, labels?: string) => {
     const params = new URLSearchParams();
@@ -101,7 +140,7 @@ export const api = {
       params.set('labels', labels);
     }
 
-    return call<Note[]>(`/search?${ params }`);
+    return read(() => call<Note[]>(`/search?${ params }`));
   },
 };
 

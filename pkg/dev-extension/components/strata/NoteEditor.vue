@@ -641,9 +641,9 @@ function uncheckAllItems() {
 <style lang="scss" scoped>
 .strata-editor {
   display:        flex;
+  flex:           1;
   flex-direction: column;
   gap:            var(--dev-space-3);
-  height:         100%;
   min-height:     0;
 
   &__title {

@@ -1,12 +1,12 @@
 <script setup lang="ts">
 /** One Strata label. The view is keyed by the id, so moving down the tree to another label starts fresh. */
 import { computed } from 'vue';
-import { useRoute } from 'vue-router';
+import { useHostRoute } from '../strata/router';
 import LabelView from '../components/strata/LabelView.vue';
 import { DEV_PRODUCT, BLANK_CLUSTER, STRATA_ROUTE } from '../config/constants';
 
-const route = useRoute();
-const labelId = computed(() => String(route.params.id || ''));
+const route = useHostRoute();
+const labelId = computed(() => String(route.value.params.id || ''));
 const listTo = { name: STRATA_ROUTE, params: { product: DEV_PRODUCT, cluster: BLANK_CLUSTER } };
 </script>
 

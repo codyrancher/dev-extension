@@ -7,7 +7,7 @@
  * shows on hover takes the label off a note or a line.
  */
 import { computed, watch } from 'vue';
-import { useRouter } from 'vue-router';
+import { useHostRouter } from '../../strata/router';
 import { useLabelsStore, useNotesStore, useLineLabelsStore } from '../../strata/stores';
 import ColorDot from './ColorDot.vue';
 import type { Note, Label, LineLabel } from '../../strata/api';
@@ -18,7 +18,7 @@ import {
 
 const props = defineProps<{ labelId: string }>();
 
-const router = useRouter();
+const router = useHostRouter();
 const labelsStore = useLabelsStore();
 const notesStore = useNotesStore();
 const lineLabelsStore = useLineLabelsStore();

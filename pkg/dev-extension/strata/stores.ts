@@ -156,6 +156,7 @@ function notesSetup() {
         notes.value = fresh;
       }
       loaded.value = true;
+      strataProblem.value = '';
     } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
       strataProblem.value = e?.message || String(e);
     } finally {

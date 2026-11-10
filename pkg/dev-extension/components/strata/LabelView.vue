@@ -7,7 +7,7 @@
  * and there is no undo for that.
  */
 import { ref, onMounted, computed, watch } from 'vue';
-import { useRouter } from 'vue-router';
+import { useHostRouter } from '../../strata/router';
 import { useLabelsStore, loadStrata, strataProblem } from '../../strata/stores';
 import LabelSearchInput from './LabelSearchInput.vue';
 import ColorPicker from './ColorPicker.vue';
@@ -18,7 +18,7 @@ import DevDialog from '../DevDialog.vue';
 import { DEV_PRODUCT, BLANK_CLUSTER, STRATA_ROUTE } from '../../config/constants';
 
 const props = defineProps<{ labelId: string }>();
-const router = useRouter();
+const router = useHostRouter();
 const labelsStore = useLabelsStore();
 
 const editName = ref('');
@@ -82,6 +82,20 @@ async function deleteLabel() {
   >
     Opening the label…
   </p>
+  <div
+    v-else-if="!labelsStore.loaded"
+    class="strata-label__unreadable"
+    data-testid="strata-label-unreadable"
+  >
+    <p>The labels could not be read.</p>
+    <button
+      type="button"
+      class="btn role-secondary btn-sm"
+      @click="loadStrata(true)"
+    >
+      Try again
+    </button>
+  </div>
   <p
     v-else-if="!label"
     class="text-muted"
@@ -162,6 +176,8 @@ async function deleteLabel() {
 </template>
 
 <style lang="scss" scoped>
+.strata-label__unreadable .btn { line-height: 1.4; }
+
 .strata-label {
   display:        flex;
   flex-direction: column;

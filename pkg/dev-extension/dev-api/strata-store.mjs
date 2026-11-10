@@ -93,23 +93,26 @@ const STRATA_ENTITIES = {
   amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'"
 };
 
+/** HTML's character references as the characters they stand for. */
+export function strataDecodeEntities(text) {
+  return String(text || '').replace(/&(#\d+|#x[\da-f]+|[a-z]+);/gi, (whole, name) => {
+    if (STRATA_ENTITIES[name] !== undefined) {
+      return STRATA_ENTITIES[name];
+    }
+    if (/^#x/i.test(name)) {
+      return String.fromCodePoint(parseInt(name.slice(2), 16));
+    }
+    if (name.startsWith('#')) {
+      return String.fromCodePoint(Number(name.slice(1)));
+    }
+
+    return whole;
+  });
+}
+
 /** A note's HTML as the words in it: what search reads. */
 export function strataPlainText(html) {
-  return String(html || '')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&(#\d+|#x[\da-f]+|[a-z]+);/gi, (whole, name) => {
-      if (STRATA_ENTITIES[name] !== undefined) {
-        return STRATA_ENTITIES[name];
-      }
-      if (/^#x/i.test(name)) {
-        return String.fromCodePoint(parseInt(name.slice(2), 16));
-      }
-      if (name.startsWith('#')) {
-        return String.fromCodePoint(Number(name.slice(1)));
-      }
-
-      return whole;
-    })
+  return strataDecodeEntities(String(html || '').replace(/<[^>]*>/g, ' '))
     .replace(/\s+/g, ' ')
     .trim();
 }

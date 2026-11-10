@@ -10,17 +10,17 @@
 import {
   ref, onMounted, onBeforeUnmount, watch, nextTick
 } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useHostRouter, useHostRoute } from '../../strata/router';
 import NoteEditor from './NoteEditor.vue';
 import {
   useNotesStore, loadStrata, strataProblem
 } from '../../strata/stores';
-import { api } from '../../strata/api';
+import { api, NO_SUCH_NOTE } from '../../strata/api';
 import { DEV_PRODUCT, BLANK_CLUSTER, STRATA_ROUTE } from '../../config/constants';
 
 const props = defineProps<{ noteId: string }>();
-const route = useRoute();
-const router = useRouter();
+const route = useHostRoute();
+const router = useHostRouter();
 const notesStore = useNotesStore();
 
 const title = ref('');
@@ -31,6 +31,7 @@ const loaded = ref(false);
 const isNew = ref(false);
 const wasDeleted = ref(false);
 const highlightLineKey = ref<string | null>(null);
+const unreadable = ref('');
 let created = false;
 let creating: Promise<void> | null = null;
 
@@ -55,7 +56,8 @@ function take(note: { title: string; content: string; label_ids: string[]; pinne
   });
 }
 
-onMounted(async() => {
+async function load() {
+  unreadable.value = '';
   await loadStrata();
   try {
     // Read on its own, fresh: the list may be minutes old.
@@ -64,18 +66,21 @@ onMounted(async() => {
     take(note);
     notesStore.upsert(note);
     wasDeleted.value = !!note.deleted;
-  } catch {
-    const known = notesStore.getNoteById(props.noteId);
+  } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (e?.message !== NO_SUCH_NOTE) {
+      // Not "there is no such note" but "dev-api did not answer": an empty editor here would
+      // save over the real note with whatever was typed, so there is no editor until it does.
+      unreadable.value = e?.message || String(e);
 
-    if (known) {
-      take(known);
-    } else {
-      isNew.value = true;
+      return;
     }
+    isNew.value = true;
   }
-  highlightLineKey.value = (route.query.hl as string) || null;
+  highlightLineKey.value = (route.value.query.hl as string) || null;
   loaded.value = true;
-});
+}
+
+onMounted(load);
 
 function ensureCreated(): Promise<void> {
   if (!isNew.value || created) {
@@ -118,7 +123,7 @@ function scheduleAutoSave() {
 
 watch(title, scheduleAutoSave);
 watch(content, scheduleAutoSave);
-watch(() => route.query.hl, (hl) => {
+watch(() => route.value.query.hl, (hl) => {
   highlightLineKey.value = (hl as string) || null;
 });
 
@@ -213,6 +218,20 @@ async function restore() {
       @clear-highlight="highlightLineKey = null"
     />
   </div>
+  <div
+    v-else-if="unreadable"
+    class="strata-note__unreadable"
+    data-testid="strata-note-unreadable"
+  >
+    <p>The note could not be read: {{ unreadable }}</p>
+    <button
+      type="button"
+      class="btn role-secondary btn-sm"
+      @click="load"
+    >
+      Try again
+    </button>
+  </div>
   <p
     v-else
     class="text-muted"
@@ -222,6 +241,8 @@ async function restore() {
 </template>
 
 <style lang="scss" scoped>
+.strata-note__unreadable .btn { line-height: 1.4; }
+
 .strata-note {
   display:        flex;
   flex:           1;

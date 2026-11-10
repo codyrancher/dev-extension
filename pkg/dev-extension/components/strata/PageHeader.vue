@@ -43,7 +43,7 @@ const emit = defineEmits<{ (e: 'toggle-pin'): void; (e: 'delete'): void }>();
         data-testid="strata-delete"
         @click="emit('delete')"
       >
-        <i class="icon icon-delete" />
+        <i class="icon icon-trash" />
       </button>
     </div>
   </div>

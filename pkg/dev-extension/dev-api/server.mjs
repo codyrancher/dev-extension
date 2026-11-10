@@ -47,6 +47,9 @@ import {
   strataLineLabels, strataAddLineLabel, strataLabelLines, strataRemoveLineLabel, strataAddImage, strataImage,
   strataDeleteImage, strataSearch,
 } from './strata-store.mjs';
+import {
+  strataBackupFiles, strataBackupRun, STRATA_BACKUP_EVERY_MS, STRATA_BACKUP_RETRY_MS,
+} from './strata-backup.mjs';
 import { searchCql, searchLimit, searchResult, pageAnswer } from './confluence.mjs';
 import { STAGING_CHARTS, IMAGE_REGISTRIES, RANCHER_REPO, stagingVersions, releasedVersions, imageExists, registryTags } from './rancher-images.mjs';
 
@@ -3149,6 +3152,18 @@ const OPENAPI = {
     },
     '/strata/images/{imageId}/thumbnail': {
       get: { operationId: 'strataThumbnail', summary: 'A picture\'s 200px thumbnail.', responses: { 200: { description: 'the thumbnail' } } },
+    },
+    '/strata/backup': {
+      get: {
+        operationId: 'strataBackup',
+        summary:     'The last backup of the notes to GitHub: repo, checkedAt, backedUpAt, commit, result (committed, unchanged, empty, failed), error, dueAt.',
+        responses:   { 200: { description: '{ repo, checkedAt, backedUpAt, commit, result, error, running, dueAt }' } },
+      },
+      post: {
+        operationId: 'strataBackupNow',
+        summary:     'Back the notes up now: to <login>/strata (private, made if missing), committing only what changed.',
+        responses:   { 200: { description: 'the same as GET, after the run' } },
+      },
     },
     '/strata/search': {
       get: {
@@ -6358,6 +6373,159 @@ function strataDb() {
 /** A route handler with the database open: `fn(db, match, url, body)`. */
 const withStrata = (fn) => async(m, url, body) => fn(await strataDb(), m, url, body);
 
+/*
+ * The daily backup, to a private GitHub repository: `<the token's login>/strata`, or
+ * STRATA_BACKUP_REPO. What is written and how is in strata-backup.mjs; this is when, as whom, and
+ * what is remembered about the last one (backup.json beside the database), which the page shows.
+ *
+ * Checked every quarter of an hour by the process holding the automations lease, so two pods in a
+ * rollout do not both commit; run when a day has passed since the last check, or an hour since
+ * one that failed. Nothing happens until somebody has a note or a label, so nobody gets an empty
+ * repository for opening the page once.
+ */
+const STRATA_BACKUP_FILE = path.join(STRATA_DIR, 'backup.json');
+const STRATA_BACKUP_TICK_MS = 15 * 60_000;
+let strataBackingUp = null;
+
+function strataBackupState() {
+  try {
+    return JSON.parse(fs.readFileSync(STRATA_BACKUP_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/** A git blob id, as GitHub would name the same bytes. */
+function gitBlobSha(bytes) {
+  return crypto.createHash('sha1').update(`blob ${ bytes.length }\0`).update(bytes).digest('hex');
+}
+
+/** One GitHub REST call that answers with its status rather than throwing on one. */
+async function ghAnswer(method, apiPath, body) {
+  const token = await githubToken('');
+
+  if (!token) {
+    throw failure(503, 'No GitHub token is set. Add one in the Dev extension\'s Settings.');
+  }
+  const response = await fetch(`https://api.github.com${ apiPath }`, {
+    method,
+    signal:  AbortSignal.timeout(120_000),
+    headers: {
+      authorization: `Bearer ${ token }`,
+      accept:        'application/vnd.github+json',
+      'user-agent':  'dev-extension',
+      ...(body ? { 'content-type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await response.text();
+  let parsed = text;
+
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch { /* left as text */ }
+
+  return { status: response.status, body: parsed };
+}
+
+function strataBackupRepo(login) {
+  return (process.env.STRATA_BACKUP_REPO || '').trim() || (login ? `${ login }/strata` : '');
+}
+
+/** Back up now, or join the backup already running. Resolves with what backup.json says after. */
+function strataBackupNow(reason = 'scheduled') {
+  strataBackingUp ||= (async() => {
+    const before = strataBackupState();
+    const at = new Date().toISOString();
+    let next;
+
+    try {
+      const backup = strataBackupFiles(await strataDb());
+
+      if (!backup.live) {
+        next = {
+          ...before, checkedAt: at, result: 'empty', error: ''
+        };
+      } else {
+        const login = await githubViewer();
+        const repo = strataBackupRepo(login);
+
+        if (!repo) {
+          throw failure(503, 'The GitHub token could not be read, so there is no repository to back up to.');
+        }
+        const result = await strataBackupRun({
+          files:   backup.files,
+          gh:      ghAnswer,
+          hash:    gitBlobSha,
+          repo,
+          login,
+          message: `Back up ${ backup.notes } note${ backup.notes === 1 ? '' : 's' }, ${ backup.labels } label${ backup.labels === 1 ? '' : 's' } and ${ backup.images } picture${ backup.images === 1 ? '' : 's' }`,
+        });
+
+        next = {
+          ...before,
+          repo,
+          checkedAt: at,
+          error:     '',
+          result:    result.changed ? 'committed' : 'unchanged',
+          ...(result.changed ? {
+            backedUpAt: at, commit: result.commit, changedFiles: result.uploaded.length + result.removed.length
+          } : {}),
+          notes:  backup.notes,
+          labels: backup.labels,
+          images: backup.images,
+        };
+        console.log(`[dev-api] strata backup (${ reason }): ${ next.result }${ result.changed ? ` ${ result.commit.slice(0, 7) } to ${ repo }` : '' }`);
+      }
+    } catch (e) {
+      next = {
+        ...before, checkedAt: at, result: 'failed', error: e.message || String(e)
+      };
+      console.error(`[dev-api] strata backup (${ reason }) failed:`, next.error);
+    }
+    fs.mkdirSync(STRATA_DIR, { recursive: true });
+    fs.writeFileSync(STRATA_BACKUP_FILE, `${ JSON.stringify(next, null, 2) }\n`);
+
+    return next;
+  })().finally(() => {
+    strataBackingUp = null;
+  });
+
+  return strataBackingUp;
+}
+
+/** The quarter-hourly check: whether today's backup is due, on the one process that may make it. */
+async function strataBackupTick() {
+  if (!auto.holder || strataBackingUp || !fs.existsSync(path.join(STRATA_DIR, 'strata.db'))) {
+    return;
+  }
+  const state = strataBackupState();
+  const last = Date.parse(state.checkedAt || '') || 0;
+  const wait = state.result === 'failed' ? STRATA_BACKUP_RETRY_MS : STRATA_BACKUP_EVERY_MS;
+
+  if (Date.now() - last >= wait) {
+    await strataBackupNow('scheduled');
+  }
+}
+
+/** What the page shows about backups: the last one, where to, when the next is due. */
+async function strataBackupAnswer() {
+  const state = strataBackupState();
+  const last = Date.parse(state.checkedAt || '') || 0;
+  let repo = state.repo || '';
+
+  if (!repo) {
+    repo = strataBackupRepo(await githubViewer().catch(() => ''));
+  }
+
+  return {
+    ...state,
+    repo,
+    running: !!strataBackingUp,
+    dueAt:   new Date((last || Date.now()) + (state.result === 'failed' ? STRATA_BACKUP_RETRY_MS : last ? STRATA_BACKUP_EVERY_MS : 0)).toISOString(),
+  };
+}
+
 const routes = [
   /*
    * The health check, and nothing else.
@@ -7555,6 +7723,12 @@ const routes = [
   ['GET', /^\/strata\/labels\/([\w-]+)\/line-labels$/, withStrata((db, m) => strataLabelLines(db, m[1]))],
   ['DELETE', /^\/strata\/line-labels\/([\w-]+)$/, withStrata((db, m) => strataRemoveLineLabel(db, m[1]))],
   ['DELETE', /^\/strata\/images\/([\w-]+)$/, withStrata((db, m) => strataDeleteImage(db, m[1]))],
+  ['GET', /^\/strata\/backup$/, () => strataBackupAnswer()],
+  ['POST', /^\/strata\/backup$/, async() => {
+    await strataBackupNow('asked');
+
+    return strataBackupAnswer();
+  }],
   ['GET', /^\/strata\/search$/, withStrata((db, m, url) => strataSearch(db, url.searchParams.get('q') || '', url.searchParams.get('labels') || ''))],
 ];
 
@@ -11725,6 +11899,9 @@ server.listen(PORT, () => {
   setTimeout(() => workspaceStatusTick().catch(() => {}), 12_000);
   setInterval(() => workspaceStatusTick().catch((e) => console.error('[dev-api] workspace statuses tick failed:', e.message || e)), STATUS_TICK_MS);
   setInterval(() => automationTick().catch((e) => console.error('[dev-api] automations tick failed:', e.message || e)), AUTO_TICK_MS);
+  // Strata's daily backup, checked by the same process that holds the lease. See strataBackupTick.
+  setTimeout(() => strataBackupTick().catch(() => {}), 5 * 60_000);
+  setInterval(() => strataBackupTick().catch((e) => console.error('[dev-api] strata backup tick failed:', e.message || e)), STRATA_BACKUP_TICK_MS);
   process.once('SIGTERM', () => {
     try {
       releaseAutoLease();

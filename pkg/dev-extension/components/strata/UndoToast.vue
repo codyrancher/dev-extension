@@ -1,11 +1,11 @@
 <script setup lang="ts">
 /** "Note deleted · Undo" for five seconds after a delete; Undo brings the note back and opens it. */
 import { ref, watch, onBeforeUnmount } from 'vue';
-import { useRouter } from 'vue-router';
+import { useHostRouter } from '../../strata/router';
 import { useNotesStore } from '../../strata/stores';
 import { DEV_PRODUCT, BLANK_CLUSTER, STRATA_NOTE_ROUTE } from '../../config/constants';
 
-const router = useRouter();
+const router = useHostRouter();
 const notesStore = useNotesStore();
 const show = ref(false);
 let timer: ReturnType<typeof setTimeout>;

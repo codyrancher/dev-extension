@@ -7,13 +7,14 @@
  * sign-in and app install are not here; dev-api keeps the notes (strata-store.mjs).
  */
 import { computed, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
+import { useHostRouter } from '../strata/router';
 import { RcButton } from '@components/RcButton';
 import DevPage from '../components/DevPage.vue';
 import PinnedBar from '../components/strata/PinnedBar.vue';
 import SearchBar from '../components/strata/SearchBar.vue';
 import NoteCard from '../components/strata/NoteCard.vue';
 import UndoToast from '../components/strata/UndoToast.vue';
+import StrataBackup from '../components/strata/StrataBackup.vue';
 import {
   useNotesStore, useLabelsStore, loadStrata, strataProblem
 } from '../strata/stores';
@@ -22,7 +23,7 @@ import {
   DEV_PRODUCT, BLANK_CLUSTER, STRATA_NOTE_ROUTE
 } from '../config/constants';
 
-const router = useRouter();
+const router = useHostRouter();
 const notesStore = useNotesStore();
 const labelsStore = useLabelsStore();
 
@@ -82,11 +83,25 @@ function handleLabelClick(labelId: string) {
       <PinnedBar />
       <SearchBar />
       <p
-        v-if="empty && (notesStore.loading || notesStore.searchPending || !notesStore.loaded)"
+        v-if="empty && (notesStore.loading || notesStore.searchPending)"
         class="text-muted strata-page__empty"
       >
         Loading…
       </p>
+      <div
+        v-else-if="empty && !notesStore.loaded"
+        class="strata-page__empty"
+        data-testid="strata-unreadable"
+      >
+        <p>The notes could not be read.</p>
+        <button
+          type="button"
+          class="btn role-secondary btn-sm"
+          @click="loadStrata(true)"
+        >
+          Try again
+        </button>
+      </div>
       <div
         v-else-if="empty"
         class="strata-page__empty"
@@ -116,6 +131,7 @@ function handleLabelClick(labelId: string) {
           @label-click="handleLabelClick"
         />
       </div>
+      <StrataBackup />
     </div>
     <UndoToast />
   </DevPage>
@@ -132,6 +148,8 @@ function handleLabelClick(labelId: string) {
     gap:            var(--dev-space-5);
     margin-top:     var(--dev-space-5);
   }
+
+  .btn { line-height: 1.4; }
 
   &__problem {
     margin:        0;

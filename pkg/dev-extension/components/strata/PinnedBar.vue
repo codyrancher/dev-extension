@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { useRouter } from 'vue-router';
+import { useHostRouter } from '../../strata/router';
 import { useNotesStore, useLabelsStore } from '../../strata/stores';
 import LabelChip from './LabelChip.vue';
 import { LONG_PRESS_MS } from '../../strata/colors';
@@ -17,7 +17,7 @@ interface PinnedItem {
   pin_order: number;
 }
 
-const router = useRouter();
+const router = useHostRouter();
 const notesStore = useNotesStore();
 const labelsStore = useLabelsStore();
 
