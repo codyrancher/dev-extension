@@ -82,8 +82,7 @@ const commitUrl = computed(() => (repoUrl.value && state.value?.commit ? `${ rep
         :href="repoUrl"
         target="_blank"
         rel="noopener noreferrer"
-      >{{ state.repo }}</a>
-      <a
+      >{{ state.repo }}</a>{{ ' ' }}<a
         v-if="commitUrl"
         :href="commitUrl"
         target="_blank"

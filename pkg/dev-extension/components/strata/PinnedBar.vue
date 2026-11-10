@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onBeforeUnmount } from 'vue';
 import { useHostRouter } from '../../strata/router';
 import { useNotesStore, useLabelsStore } from '../../strata/stores';
 import LabelChip from './LabelChip.vue';
@@ -102,7 +102,17 @@ function onPointerDown(e: PointerEvent, idx: number) {
   grabOffsetX.value = e.clientX - rect.left - rect.width / 2;
   grabOffsetY.value = e.clientY - rect.top - rect.height / 2;
 
+  clearHold();
+  // A press let go of before it counts as a hold is a click: the timer must not outlive it, or
+  // it fires later, picks the item up with nobody holding it, and the next click anywhere -
+  // on the page the click opened - drops it at the front.
+  window.addEventListener('pointerup', clearHold, { once: true });
+  window.addEventListener('pointercancel', clearHold, { once: true });
   holdTimer = setTimeout(() => {
+    holdTimer = null;
+    if (!itemsEl.value) {
+      return;
+    }
     snapshotRects();
     held.value = true;
     dragFrom.value = idx;
@@ -110,8 +120,32 @@ function onPointerDown(e: PointerEvent, idx: number) {
     didDrag = true;
     window.addEventListener('pointermove', onWindowMove);
     window.addEventListener('pointerup', onWindowUp);
+    window.addEventListener('pointercancel', onWindowCancel);
   }, LONG_PRESS_MS);
 }
+
+function clearHold() {
+  if (holdTimer) {
+    clearTimeout(holdTimer);
+    holdTimer = null;
+  }
+}
+
+/** A drag the browser took away (a scroll, a system gesture) ends where it started. */
+function onWindowCancel() {
+  dragFrom.value = -1;
+  onWindowUp();
+}
+
+onBeforeUnmount(() => {
+  clearHold();
+  window.removeEventListener('pointerup', clearHold);
+  window.removeEventListener('pointercancel', clearHold);
+  window.removeEventListener('pointermove', onWindowMove);
+  window.removeEventListener('pointerup', onWindowUp);
+  window.removeEventListener('pointercancel', onWindowCancel);
+  held.value = false;
+});
 
 function onPointerLeave() {
   if (holdTimer && !held.value) { clearTimeout(holdTimer); holdTimer = null; }
@@ -127,6 +161,7 @@ function onWindowMove(e: PointerEvent) {
 function onWindowUp() {
   window.removeEventListener('pointermove', onWindowMove);
   window.removeEventListener('pointerup', onWindowUp);
+  window.removeEventListener('pointercancel', onWindowCancel);
   if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
   if (held.value && dragFrom.value >= 0 && dropTo.value >= 0 && dragFrom.value !== dropTo.value) {
     commitReorder(dragFrom.value, dropTo.value);

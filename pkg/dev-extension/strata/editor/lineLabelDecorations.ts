@@ -22,7 +22,9 @@ export function refreshDecorations(editor: Editor | undefined) {
 
 function buildDecorations(doc: any, sources: LineLabelDecorationSources): DecorationSet {
   const lineLabels = sources.getLineLabels();
-  if (lineLabels.length === 0) return DecorationSet.empty;
+  // Not an early return when there are no labels: a `?hl=` highlight is drawn below, and a note
+  // whose labelled line was since unlabelled still has a line to light.
+  if (lineLabels.length === 0 && !sources.getHighlightKey()) return DecorationSet.empty;
 
   const pathMap = buildPathMap(doc);
   const byLine = new Map<string, LineLabel[]>();

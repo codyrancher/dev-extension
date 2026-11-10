@@ -210,7 +210,7 @@ async function makeLabel() {
         :name="name"
         variant="include"
         removable
-        @remove="notesStore.toggleLabelFilter(name)"
+        @remove="notesStore.removeLabelFilter(name)"
       />
       <LabelChip
         v-for="name in [...notesStore.excludeLabels]"
@@ -218,7 +218,7 @@ async function makeLabel() {
         :name="name"
         variant="exclude"
         removable
-        @remove="notesStore.toggleLabelFilter(name)"
+        @remove="notesStore.removeLabelFilter(name)"
       />
     </div>
   </div>

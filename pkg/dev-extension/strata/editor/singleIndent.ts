@@ -81,10 +81,17 @@ export const SingleIndent = Extension.create({
   name: 'singleIndent',
   addKeyboardShortcuts() {
     return {
+      // Tab is kept in the editor even where it cannot indent: let through, it moved focus to the
+      // quick tools, whose first button is Delete line, so a Space or Enter after it took the line.
       Tab: ({ editor }) => {
-        if (editor.isActive('listItem')) return sinkListItemSingle('listItem', editor);
-        if (editor.isActive('taskItem')) return sinkListItemSingle('taskItem', editor);
-        return false;
+        if (editor.isActive('listItem')) sinkListItemSingle('listItem', editor);
+        else if (editor.isActive('taskItem')) sinkListItemSingle('taskItem', editor);
+        return true;
+      },
+      'Shift-Tab': ({ editor }) => {
+        if (editor.isActive('listItem')) editor.commands.liftListItem('listItem');
+        else if (editor.isActive('taskItem')) editor.commands.liftListItem('taskItem');
+        return true;
       },
     };
   },

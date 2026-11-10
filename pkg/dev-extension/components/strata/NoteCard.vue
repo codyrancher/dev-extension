@@ -81,7 +81,8 @@ const labels = computed(() => props.note.label_ids.map((id) => labelsStore.getLa
     @click="emit('open')"
     @keydown.enter="emit('open')"
   >
-    <header class="strata-card__head">
+    <!-- A div, not a <header>: Rancher styles every header as a 48px grid. -->
+    <div class="strata-card__head">
       <h3
         v-if="note.title"
         class="strata-card__title"
@@ -92,7 +93,7 @@ const labels = computed(() => props.note.label_ids.map((id) => labelsStore.getLa
         class="strata-card__date"
         :title="note.updated_at + ' UTC'"
       >{{ relativeStamp(note.updated_at) }}</span>
-    </header>
+    </div>
     <div
       v-if="note.content"
       v-overflow

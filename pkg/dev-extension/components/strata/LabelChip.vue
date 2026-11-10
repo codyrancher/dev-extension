@@ -53,13 +53,13 @@ function confirmRemove() {
 
 <template>
   <span
-    v-bind="$attrs"
     class="strata-chip"
     :class="`strata-chip--${ variant || 'default' }`"
     :style="tint"
     role="button"
     tabindex="0"
     data-testid="strata-chip"
+    v-bind="$attrs"
     @click.stop="emit('click')"
     @keydown.enter.prevent="emit('click')"
     @touchstart.passive="onTouchStart"

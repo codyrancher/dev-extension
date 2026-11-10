@@ -116,6 +116,14 @@ function notesSetup() {
     search();
   }
 
+  /** Stop filtering on a label, whichever way it was filtering: the Filtering row's ×. */
+  function removeLabelFilter(name: string) {
+    includeLabels.value.delete(name);
+    excludeLabels.value.delete(name);
+    rebuildSearchLabels();
+    search();
+  }
+
   function toggleUnlabeled() {
     filterUnlabeled.value = !filterUnlabeled.value;
     rebuildSearchLabels();
@@ -328,6 +336,7 @@ function notesSetup() {
     getNoteById,
     addLabelFilter,
     toggleLabelFilter,
+    removeLabelFilter,
     toggleUnlabeled,
     clearFilters,
     getLabelFilterState,
