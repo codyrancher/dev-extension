@@ -10,8 +10,7 @@
 // from when these were only agents), so every dashboard sees the same ones. dev-api runs them:
 // it records the events, puts each to every automation, keeps the schedules and starts the runs,
 // so nothing waits for a dashboard to be open (dev-api/automation-rules.mjs and the Automations
-// section of dev-api/server.mjs). The one trigger still watched from here is a resource change,
-// which is read through the person's own Rancher session: DevSidebar's poll calls tickAgents.
+// and Resource triggers sections of dev-api/server.mjs).
 
 import { devFetch, clusterBase, DEV_SYSTEM_NAMESPACE } from './api';
 import { devApi, startPrReview } from './reviews';
@@ -291,184 +290,6 @@ export const CRON_PRESETS = [
   { label: 'Every Monday at 09:00', cron: '0 9 * * 1' },
 ];
 
-// ── Watching resources ────────────────────────────────────────────────────────────────────
-//
-// The clock is a dashboard (see the note at the top), so the watch is a poll on the same tick:
-// list the type, compare it with what was there last time, and start a run for each change the
-// filter accepts. What was there last time is a ConfigMap beside the agent - shared, so two
-// open dashboards agree on what has already been seen, and written *before* anything is
-// started, with the resourceVersion it was read at: the dashboard whose write is refused lost
-// the race and starts nothing, which is what keeps one change from becoming two conversations.
-
-const watchName = (name: string) => `dev-agent-watch-${ name }`;
-
-/** One resource, as last seen: its version, whether the filter matched it, and what it is. */
-interface Seen {
-  rv: string;
-  m?: boolean;
-  n?: string;
-  ns?: string;
-}
-
-/** How many resources of a type are watched. A list longer than this is watched to here and no further. */
-const WATCH_LIMIT = 4000;
-/** How many conversations one change of heart may start at once. */
-const BURST = 3;
-
-function watchKey(spec: ResourceTrigger): string {
-  return `${ spec.type }/${ spec.namespace || '' }`;
-}
-
-async function readWatch(name: string): Promise<{ cm: Json; state: Record<string, Record<string, Seen>> }> {
-  const cm = await devFetch(`${ BASE }/v1/configmaps/${ DEV_SYSTEM_NAMESPACE }/${ watchName(name) }`).catch(() => null);
-
-  try {
-    return { cm, state: JSON.parse(cm?.data?.['seen.json'] || '{}') };
-  } catch {
-    return { cm, state: {} };
-  }
-}
-
-/**
- * Write the baseline back, and say whether this dashboard is the one that got to. A create
- * that collides, or a put against a version somebody else has already replaced, both mean
- * another dashboard has recorded these same changes and is starting the runs for them.
- */
-async function writeWatch(name: string, cm: Json, state: Record<string, Record<string, Seen>>): Promise<boolean> {
-  const data = { 'seen.json': JSON.stringify(state) };
-
-  try {
-    if (cm) {
-      await devFetch(`${ BASE }/v1/configmaps/${ DEV_SYSTEM_NAMESPACE }/${ watchName(name) }`, { method: 'PUT', body: JSON.stringify({ ...cm, data }) });
-    } else {
-      await devFetch(`${ BASE }/v1/configmaps`, {
-        method: 'POST',
-        body:   JSON.stringify({
-          apiVersion: 'v1',
-          kind:       'ConfigMap',
-          metadata:   {
-            namespace: DEV_SYSTEM_NAMESPACE, name: watchName(name), labels: { [KIND_LABEL]: 'agent-watch', [AGENT_LABEL]: name },
-          },
-          data,
-        }),
-      });
-    }
-
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Everything a fired run is told about what fired it: the prompt's placeholders and the note. */
-function contextOf(spec: ResourceTrigger, event: string, id: string, seen: Seen | undefined, resource: Json): Record<string, string> {
-  return {
-    type:      spec.type,
-    event,
-    name:      resource?.metadata?.name || seen?.n || id.split('/').pop() || '',
-    namespace: resource?.metadata?.namespace || seen?.ns || (id.includes('/') ? id.split('/')[0] : ''),
-  };
-}
-
-/**
- * One resource trigger, once. Nothing is started the first time an agent looks at a type: a
- * watch that fired for everything already there would open a conversation per cluster the
- * moment it was saved. That first pass records the baseline, and changes from then on fire.
- */
-async function watchResources(store: Store, def: AgentDef, spec: ResourceTrigger): Promise<void> {
-  if (!spec.type) {
-    return;
-  }
-  const url = `${ BASE }/v1/${ spec.type }${ spec.namespace ? `/${ spec.namespace }` : '' }`;
-  const list = await devFetch(url).catch(() => null);
-
-  // A type this Rancher does not have, or one this person may not list: nothing to say about
-  // it, and nothing to write down either.
-  if (!Array.isArray(list?.data)) {
-    return;
-  }
-  const key = watchKey(spec);
-  const { cm, state } = await readWatch(def.name);
-  const before = state[key];
-  const first = !before;
-  const seen = before || {};
-  const filter = compileFilter(spec.filter);
-  const next: Record<string, Seen> = {};
-  const fire: { event: string; id: string; resource: Json; seen?: Seen }[] = [];
-
-  for (const resource of list.data.slice(0, WATCH_LIMIT)) {
-    const id = resource.id || resource.metadata?.uid || `${ resource.metadata?.namespace || '' }/${ resource.metadata?.name }`;
-    const rv = String(resource.metadata?.resourceVersion || '');
-    const was = seen[id];
-    const matches = filter(resource, was ? 'updated' : 'created');
-
-    next[id] = {
-      rv, m: matches, n: resource.metadata?.name, ns: resource.metadata?.namespace,
-    };
-
-    if (first) {
-      continue;
-    }
-    const event = was ? 'updated' : 'created';
-
-    if (was && was.rv === rv) {
-      continue;
-    }
-    if (spec.event !== 'any' && spec.event !== event) {
-      continue;
-    }
-    // `edge` is the difference between "while it is unhealthy" and "when it becomes
-    // unhealthy": a resource that already matched last time is not fired for again.
-    if (matches && !(spec.edge && was?.m)) {
-      fire.push({ event, id, resource });
-    }
-  }
-
-  if (!first && ['any', 'deleted'].includes(spec.event)) {
-    for (const [id, was] of Object.entries(seen)) {
-      if (next[id]) {
-        continue;
-      }
-      // What is gone cannot be read, so the filter sees the shape of it: its name and
-      // namespace, and whether it matched when it was last there.
-      const gone = { id, metadata: { name: was.n, namespace: was.ns } };
-
-      if (filter(gone, 'deleted')) {
-        fire.push({
-          event: 'deleted', id, resource: gone, seen: was,
-        });
-      }
-    }
-  }
-
-  if (!first && !fire.length) {
-    // Versions still move on; recording them is what keeps the next tick from re-reporting.
-    if (JSON.stringify(before) !== JSON.stringify(next)) {
-      state[key] = next;
-      await writeWatch(def.name, cm, state);
-    }
-
-    return;
-  }
-
-  state[key] = next;
-  if (!await writeWatch(def.name, cm, state)) {
-    return;
-  }
-  if (first || !def.enabled) {
-    return;
-  }
-
-  for (const [i, change] of fire.slice(0, BURST).entries()) {
-    const context = contextOf(spec, change.event, change.id, change.seen, change.resource);
-    // Said on the last run rather than swallowed: a filter that matches forty things at once is
-    // a filter to narrow, and the person has to be able to see that it did.
-    const note = i === BURST - 1 && fire.length > BURST ? `${ fire.length } resources changed at once; ${ BURST } runs started` : '';
-
-    await runAutomation(def.name, { trigger: 'resource', context, note }).catch(() => {});
-  }
-}
-
 let ticking = false;
 let lastTick = 0;
 
@@ -507,10 +328,9 @@ async function claimReviews(store: Store): Promise<void> {
 }
 
 /**
- * The browser's part of the clock: resource triggers, which are read through the person's own
- * Rancher session and so cannot be watched from dev-api, and the reviews waiting for a dashboard to
- * start them. Everything else - schedules, events, API calls, seeing a run finish - is dev-api's.
- * Called from the sidebar's poll; cheap when there is nothing to do.
+ * The browser's part of the clock, which is now only the reviews waiting for a dashboard to start
+ * them. Everything else - events, schedules, resource changes, API calls, seeing a run finish - is
+ * dev-api's. Called from the sidebar's poll; one GET when there is nothing to do.
  */
 export async function tickAgents(store: Store): Promise<void> {
   if (ticking || Date.now() - lastTick < 20_000) {
@@ -519,13 +339,6 @@ export async function tickAgents(store: Store): Promise<void> {
   ticking = true;
   lastTick = Date.now();
   try {
-    for (const def of await listAgents()) {
-      for (const t of triggersOf(def)) {
-        if (t.type === 'resource' && t.resource?.type) {
-          await watchResources(store, def, t.resource).catch(() => {});
-        }
-      }
-    }
     await claimReviews(store).catch(() => {});
   } finally {
     ticking = false;

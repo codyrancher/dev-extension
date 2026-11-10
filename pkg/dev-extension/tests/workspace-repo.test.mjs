@@ -95,12 +95,14 @@ test('a stored stage counts only for the repository it was read from', () => {
 });
 
 test('the stage store keeps the repository and ignores a record from another', () => {
+  // The rules are stage-derive.mjs's now, shared with dev-api; stages.ts hands them the default.
+  const derive = source('stage-derive.mjs');
   const stages = source('stages.ts');
   const reconcile = stages.slice(stages.indexOf('export async function reconcileStage('), stages.indexOf('/** The person sets the stage'));
 
-  assert.match(stages, /function recordOf\([^)]*\): StageRecord \{\s+return \{[^}]*repo: d\.repo \|\| DEFAULT_REPO/);
-  assert.match(reconcile, /const stored = readFrom\(cache\[name\], d\.repo, DEFAULT_REPO\) \? cache\[name\] : undefined;/);
-  assert.doesNotMatch(reconcile, /const stored = cache\[name\];/);
+  assert.match(derive, /export function recordOf\([^)]*\) \{\s+return \{[^}]*repo: d\.repo \|\| fallbackRepo/);
+  assert.match(derive, /const stored = stored0 && readFrom\(stored0, d\.repo, fallbackRepo\) \? stored0 : undefined;/);
+  assert.match(reconcile, /reconcileRecord\(cache\[name\], d, \{ now: [^}]*fallbackRepo: DEFAULT_REPO \}\)/);
   assert.match(stages, /export async function setManualStage\(name: string, stage: Stage, repo = DEFAULT_REPO\)/);
   assert.match(source('components/WorkspaceRail.vue'), /setManualStage\(this\.workspace\.name, key, this\.repo\)/);
 });

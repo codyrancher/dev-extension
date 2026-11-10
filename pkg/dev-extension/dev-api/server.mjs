@@ -27,11 +27,14 @@ import { numbersIn } from '../artifact-subjects.mjs';
 import { branchState } from './branch-state.mjs';
 import { byteRange } from './ranges.mjs';
 import {
-  GITHUB_POLL_MS, FULL_EVERY, EVENT_NAMES, GITHUB_LIGHT_QUERY, GITHUB_LIGHT_PAGE_QUERY, GITHUB_NODES_QUERY, DETAIL_BATCH, watchQueries, itemsToRead, githubRound, stageEvents, workspaceForItem,
+  GITHUB_POLL_MS, FULL_EVERY, EVENT_NAMES, makeEvent, GITHUB_LIGHT_FIELDS, GITHUB_LIGHT_QUERY, GITHUB_LIGHT_PAGE_QUERY, GITHUB_NODES_QUERY, DETAIL_BATCH, watchQueries, itemsToRead, githubRound, stageEvents, workspaceForItem,
 } from './automation-events.mjs';
 import {
   AUTOMATION_BURST, SCRIPT_TIMEOUT_S, SCRIPT_TIMEOUT_MAX_S, triggersOfDef, actionOf, pullRequestOf, evaluateEvent, conditionScope, fillTemplate, cronDueAt, envFile, scriptWrapper, exitNote,
 } from './automation-rules.mjs';
+import {
+  AGENT_RANK, workspaceNumbers, isFixWorkspace, reviewWork, fixWork, toDerived, reconcileRecord, displayOf, activityTimes, stageInputs,
+} from '../stage-derive.mjs';
 import { searchCql, searchLimit, searchResult, pageAnswer } from './confluence.mjs';
 import { STAGING_CHARTS, IMAGE_REGISTRIES, RANCHER_REPO, stagingVersions, releasedVersions, imageExists, registryTags } from './rancher-images.mjs';
 
@@ -1184,6 +1187,8 @@ async function ghRest(method, apiPath, body) {
 
   const response = await fetch(`https://api.github.com${ apiPath }`, {
     method,
+    // A GitHub call that never answers must not hold whatever is waiting on it for good.
+    signal:  AbortSignal.timeout(60_000),
     headers: {
       authorization: `Bearer ${ token }`,
       accept:        'application/vnd.github+json',
@@ -1256,6 +1261,7 @@ async function ghRevalidate(cache, apiPath) {
   }
   const held = cache[apiPath];
   const response = await fetch(`https://api.github.com${ apiPath }`, {
+    signal:  AbortSignal.timeout(60_000),
     headers: {
       authorization: `Bearer ${ token }`,
       accept:        'application/vnd.github+json',
@@ -1301,6 +1307,7 @@ async function graphql(query, variables) {
     method:  'POST',
     headers: { authorization: `Bearer ${ token }`, 'content-type': 'application/json', 'user-agent': 'dev-extension' },
     body:    JSON.stringify({ query, variables }),
+    signal:  AbortSignal.timeout(60_000),
   });
   const body = await response.json();
 
@@ -3037,6 +3044,24 @@ const OPENAPI = {
         operationId: 'stopAutomationRun',
         summary:     'Stop a script that is running.',
         responses:   { 200: { description: '{ run }' }, 409: { description: 'Not a running script.' } },
+      },
+    },
+    '/workspaces/status': {
+      get: {
+        operationId: 'workspaceStatuses',
+        summary:     'Every workspace\'s status as dev-api derives it: stage, what it needs, title, links, the agent\'s state.',
+        description: 'Derived here, with the same code the dashboard used (stage-derive.mjs), from the pull request - read from GitHub only when the events poll says it moved - the agent\'s state, the review\'s own comments and the checkout. Writing the stage store when a stage changes is this service\'s too.',
+        responses:   { 200: { description: '{ statuses }' } },
+      },
+    },
+    '/workspaces/{workspace}/status/refresh': {
+      parameters: [{
+        name: 'workspace', in: 'path', required: true, schema: { type: 'string' },
+      }],
+      post: {
+        operationId: 'refreshWorkspaceStatus',
+        summary:     'Read one workspace\'s pull request again now, for a page that has just changed it.',
+        responses:   { 200: { description: '{ status, refreshed }' } },
       },
     },
     '/automations/claims': {
@@ -6530,6 +6555,14 @@ const routes = [
     return { mutes };
   }],
   ['GET', /^\/automations\/status$/, async() => automationStatusAnswer()],
+  // Every workspace's status - stage, what it needs, title, links, the agent - as dev-api derives
+  // it (the Workspace statuses section). The dashboard reads this instead of GitHub.
+  ['GET', /^\/workspaces\/status$/, async() => {
+    freshWorkspaceStatuses();
+
+    return { statuses: wsStatus.statuses };
+  }],
+  ['POST', /^\/workspaces\/([a-z0-9][a-z0-9-]{0,120})\/status\/refresh$/, async(m) => refreshWorkspaceStatus(m[1])],
   ['GET', /^\/automations\/runs\/(r[0-9a-z]{10,24})$/, async(m) => automationRunAnswer(m[1])],
   ['POST', /^\/automations\/runs\/(r[0-9a-z]{10,24})\/stop$/, async(m) => stopAutoRun(m[1])],
   // Reviews wait for a dashboard: it asks for them, takes one, and says how starting it went.
@@ -8183,6 +8216,7 @@ const WATCHABLE = [
   // The Automations page. In memory or a small file each, so a few seconds costs nothing.
   [/^\/automations\/events$/, 3_000],
   [/^\/automations\/status$/, 3_000],
+  [/^\/workspaces\/status$/, 3_000],
   [/^\/automations\/runs\/r[0-9a-z]{10,24}$/, 2_000],
 ];
 
@@ -8624,7 +8658,9 @@ const auto = {
   stagesAt:  0,
   polling:   false,
   pollNext:  0,
-  polls:     0,
+  pollFrom:  0,
+  // From one, so a restart - every publish is one - reads what moved rather than everything.
+  polls:     1,
   stageFeed: {
     live: false, error: '', pending: undefined, since: ''
   },
@@ -8759,6 +8795,7 @@ function autoLease() {
 
   if (mine && !auto.holder) {
     autoLoad();
+    loadWorkspaceStatuses();
     console.log(`[dev-api] automations: recording events as ${ AUTO_HOST }`);
   }
   auto.holder = mine;
@@ -9269,7 +9306,15 @@ async function graphqlPartial(query, variables) {
     method:  'POST',
     headers: { authorization: `Bearer ${ token }`, 'content-type': 'application/json', 'user-agent': 'dev-extension' },
     body:    JSON.stringify({ query, variables }),
+    // A request that never answers would hold the poll for good; see pollGithubEvents.
+    signal:  AbortSignal.timeout(60_000),
   });
+  const remaining = Number(response.headers.get('x-ratelimit-remaining'));
+  const reset = Number(response.headers.get('x-ratelimit-reset'));
+
+  if (Number.isFinite(remaining) && reset) {
+    auto.rate = { remaining, resetAt: new Date(reset * 1000).toISOString() };
+  }
   const body = await response.json().catch(() => ({}));
 
   if (!response.ok || (!body.data && body.errors?.length)) {
@@ -9314,6 +9359,30 @@ async function lightGithubRead(me) {
     }
   }
 
+  // The workspaces' own pull requests and issues, whatever the person's part in them: a review
+  // workspace for a PR nobody asked them about is still one whose stage has to move.
+  const seen = new Set([...nodes.values()].map((n) => `${ n.repository?.nameWithOwner }#${ n.number }`));
+  const extra = workspaceItems().filter((x) => !seen.has(`${ x.repo }#${ x.number }`));
+
+  if (extra.length) {
+    const query = `query { ${ extra.map((x, i) => {
+      const [owner, name] = x.repo.split('/');
+
+      return `w${ i }: repository(owner: ${ JSON.stringify(owner) }, name: ${ JSON.stringify(name) }) { issueOrPullRequest(number: ${ Number(x.number) }) { ${ GITHUB_LIGHT_FIELDS } } }`;
+    }).join('\n') } }`;
+    const data = (await graphqlPartial(query, {}).catch(() => null))?.data || {};
+
+    for (const key of Object.keys(data)) {
+      const node = data[key]?.issueOrPullRequest;
+
+      if (node?.id) {
+        nodes.set(node.id, node);
+        hints[node.id] = { ...(hints[node.id] || {}), workspace: true };
+      }
+    }
+  }
+  counts.workspaces = extra.length;
+
   return { nodes: [...nodes.values()], hints, counts };
 }
 
@@ -9323,10 +9392,16 @@ async function lightGithubRead(me) {
  * every FULL_EVERY polls all of them are, for comment edits and the like that move no clock.
  */
 async function pollGithubEvents(force = false) {
+  // A poll that has been going for ten minutes is one whose request never came back; the timeouts
+  // below should make that impossible, and this makes sure it cannot stop polling for good.
+  if (auto.polling && Date.now() - auto.pollFrom > 10 * 60_000) {
+    auto.polling = false;
+  }
   if (auto.polling || (!force && Date.now() < auto.pollNext)) {
     return;
   }
   auto.polling = true;
+  auto.pollFrom = Date.now();
   const status = auto.state.status.github = { ...(auto.state.status.github || {}), polling: true };
 
   try {
@@ -9345,23 +9420,37 @@ async function pollGithubEvents(force = false) {
     const light = await lightGithubRead(me);
     const full = auto.polls % FULL_EVERY === 0;
     const ids = itemsToRead(held.items, light.nodes, { full });
+    // What actually moved, as opposed to what a full poll reads anyway: those workspaces' pull
+    // requests are read again for their stage. A full poll is not a reason to.
+    const moved = new Set(full ? itemsToRead(held.items, light.nodes) : ids);
     const nodes = [];
     const gone = [];
 
     auto.polls++;
     for (let i = 0; i < ids.length; i += DETAIL_BATCH) {
       const batch = ids.slice(i, i + DETAIL_BATCH);
-      const found = (await graphqlPartial(GITHUB_NODES_QUERY, { ids: batch })).data?.nodes || [];
+      const answer = await graphqlPartial(GITHUB_NODES_QUERY, { ids: batch });
+      const found = answer.data?.nodes || [];
+      // Gone only when GitHub says so. An item that errored for any other reason - a timeout on
+      // one node, a field it would not resolve - is left as it was and read again next time.
+      const notFound = new Set((answer.errors || []).filter((e) => e.type === 'NOT_FOUND' && e.path?.[0] === 'nodes').map((e) => e.path[1]));
 
       batch.forEach((id, at) => {
         if (found[at]?.id) {
           nodes.push(found[at]);
-        } else {
+        } else if (notFound.has(at)) {
           gone.push(id);
         }
       });
     }
-    const hints = Object.fromEntries(Object.entries(light.hints).map(([id, h]) => [id, { requested: !!h.requested, reviewed: !!h.reviewed }]));
+    for (const node of nodes) {
+      if (moved.has(node.id)) {
+        for (const name of workspacesAbout(node.repository?.nameWithOwner, node.__typename === 'PullRequest' ? 'pr' : 'issue', node.number, node.headRefName || '')) {
+          workspaceMoved(name);
+        }
+      }
+    }
+    const hints = Object.fromEntries(Object.entries(light.hints).map(([id, h]) => [id, { requested: !!h.requested, reviewed: !!h.reviewed, workspace: !!h.workspace }]));
     const round = githubRound(held, nodes, {
       me, now, gone, hints
     });
@@ -9371,7 +9460,7 @@ async function pollGithubEvents(force = false) {
     };
     await recordAutoEvents(round.events);
     auto.state.status.github = {
-      ok: true, error: '', at: now, items: Object.keys(round.items).length, counts: light.counts, read: ids.length, full, found: round.events.length, login: me,
+      ok: true, error: '', at: now, items: Object.keys(round.items).length, counts: light.counts, read: ids.length, full, found: round.events.length, login: me, rate: auto.rate,
     };
   } catch (e) {
     auto.state.status.github = {
@@ -9379,7 +9468,11 @@ async function pollGithubEvents(force = false) {
     };
   } finally {
     auto.polling = false;
-    auto.pollNext = Date.now() + GITHUB_POLL_MS;
+    // Short of requests: wait for the window to reset rather than spend the last of them here,
+    // where the dashboard's own reads would find the token empty.
+    const resetAt = auto.rate?.remaining < 200 ? Date.parse(auto.rate.resetAt) || 0 : 0;
+
+    auto.pollNext = Math.max(Date.now() + GITHUB_POLL_MS, resetAt);
     auto.state.status.github.next = new Date(auto.pollNext).toISOString();
     delete auto.state.status.github.polling;
     autoSaveState();
@@ -9411,6 +9504,7 @@ async function takeStages(text) {
   }
   const events = stageEvents(auto.state.stages, after, new Date().toISOString());
 
+  wsStatus.stored = after;
   auto.state.stages = slimStages(after);
   auto.stagesAt = Date.now();
   await recordAutoEvents(events);
@@ -9525,6 +9619,10 @@ async function cronAutoTick(defs) {
 
 const automationTick = singleFlight(async() => {
   if (!autoLease()) {
+    if (resourceWatch.loops.size) {
+      stopResourceWatches();
+    }
+
     return;
   }
   const feed = auto.stageFeed;
@@ -9548,6 +9646,7 @@ const automationTick = singleFlight(async() => {
   };
   await step('the GitHub poll', () => pollGithubEvents());
   await step('the schedules', async() => cronAutoTick(await automationDefs().catch(() => [])));
+  await step('the resource watches', async() => resourceTick(await automationDefs().catch(() => [])));
   await step('settling runs', () => settleAutoRuns());
 });
 
@@ -9583,8 +9682,9 @@ function automationEventsAnswer(url) {
     mutes:   auto.state.mutes,
     names:   EVENT_NAMES,
     sources: {
-      github:    { every: GITHUB_POLL_MS, ...(auto.state.status.github || {}) },
-      workspace: auto.state.status.workspace || {},
+      github:     { every: GITHUB_POLL_MS, ...(auto.state.status.github || {}) },
+      workspace:  auto.state.status.workspace || {},
+      kubernetes: auto.state.status.resources || { watches: [], unresolved: [] },
     },
     recorder: lease?.holder || '',
   };
@@ -9710,6 +9810,864 @@ async function stopAutoRun(id) {
   }
 
   return { run: updateAutoRun(run.automation, id, { state: 'failed', note: 'stopped', endedAt: new Date().toISOString() }) };
+}
+
+// ── Workspace statuses: every workspace's stage, worked out here ───────────────────────────
+//
+// What stage a workspace is at - Agent review, Your pass, In review, Merged - used to be worked
+// out by whichever dashboard happened to be open: each read every workspace's pull request from
+// GitHub on a timer of its own, derived the stage and wrote it to the stage store. So a stage only
+// moved while somebody was looking, and every open tab was another set of GitHub reads.
+//
+// It is worked out here now, with the same code (../stage-derive.mjs), and the dashboard reads
+// the answer (`/workspaces/status`). The inputs are things this service has anyway:
+//
+//   - the pull request, read from GitHub only when it has moved - which the events poll already
+//     knows, from the light read it makes every three minutes (pollGithubEvents marks the
+//     workspace) - or when a page has just changed it and asks, or on a slow fallback;
+//   - the agent's state, from the conversation watcher;
+//   - the review's own comments and run record, on this disk;
+//   - whether a fix's branch has commits, from its checkout on this disk.
+//
+// Everything but the first is free, so a status is re-derived every STATUS_TICK_MS and the stage
+// store is written only when a stage changes. The watch on that store then records the
+// `stage.changed` event like any other.
+
+const STATUS_TICK_MS = 15_000;
+/** A pull request nothing has said moved is still read again this often, in case something was missed. */
+const STATUS_GITHUB_EVERY_MS = 15 * 60_000;
+/** Pull requests read from GitHub per tick at most, so a fresh start spreads its reads out. */
+const STATUS_READS_PER_TICK = 4;
+/** After a read fails, how long before that workspace is tried again. */
+const STATUS_RETRY_MS = 2 * 60_000;
+
+const LINKED_PR_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      title
+      timelineItems(itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT], last: 50) {
+        nodes {
+          ... on CrossReferencedEvent { source { ... on PullRequest { number state headRefName } } }
+          ... on ConnectedEvent { subject { ... on PullRequest { number state headRefName } } }
+        }
+      }
+    }
+  }
+}`;
+
+const BRANCH_PR_QUERY = `query($owner: String!, $name: String!, $branch: String!) {
+  repository(owner: $owner, name: $name) { pullRequests(headRefName: $branch, last: 20) { nodes { number state author { login } } } }
+}`;
+
+const wsStatus = {
+  /** name -> the status the dashboard is served. */
+  statuses: {},
+  /** name -> what the status is derived from: the PR's stage inputs, when read, and the rest. */
+  inputs:   {},
+  /** The stage store as last read, whole, for the reconciliation. */
+  stored:   null,
+  loadedAt: 0,
+  diskMark: '',
+};
+
+const statusPath = () => autoPath('statuses.json');
+const statusInputsPath = () => autoPath('status-inputs.json');
+
+function loadWorkspaceStatuses() {
+  wsStatus.statuses = autoReadJson(statusPath(), {}) || {};
+  wsStatus.inputs = autoReadJson(statusInputsPath(), {}) || {};
+  wsStatus.loadedAt = Date.now();
+  try {
+    wsStatus.diskMark = String(fs.statSync(statusPath()).mtimeMs);
+  } catch {
+    wsStatus.diskMark = '';
+  }
+}
+
+/** A process that is not deriving reads what the one that is wrote, when it has moved. */
+function freshWorkspaceStatuses() {
+  if (auto.holder && wsStatus.loadedAt) {
+    return;
+  }
+  if (Date.now() - wsStatus.loadedAt < 2_000) {
+    return;
+  }
+  let mark = '';
+
+  try {
+    mark = String(fs.statSync(statusPath()).mtimeMs);
+  } catch { /* none yet */ }
+  if (mark !== wsStatus.diskMark || !wsStatus.loadedAt) {
+    loadWorkspaceStatuses();
+  } else {
+    wsStatus.loadedAt = Date.now();
+  }
+}
+
+/** `repo#number` of every item the events poll is watching. */
+function watchedGithubItems() {
+  return new Set(Object.values(auto.state?.github?.items || {}).map((s) => `${ s.repo }#${ s.number }`));
+}
+
+/**
+ * The workspaces an issue or pull request is the work of: a review workspace named for the PR, a
+ * fix named for the issue, a fix whose PR it is, and a fix whose branch a new PR comes from.
+ */
+function workspacesAbout(repo, kind, number, branch = '') {
+  const out = [];
+
+  for (const [name, i] of Object.entries(wsStatus.inputs)) {
+    if (i.repo && repo && i.repo !== repo) {
+      continue;
+    }
+    const n = workspaceNumbers(name);
+
+    if ((kind === 'pr' && (n.pr === number || i.pr === number)) || (kind === 'issue' && n.issue === number) ||
+      (kind === 'pr' && n.issue && new RegExp(`^issue-${ n.issue }(-|$)`).test(branch))) {
+      out.push(name);
+    }
+  }
+
+  return out;
+}
+
+/** The pull requests and issues workspaces are about, for the events poll to watch whatever role the person has. */
+function workspaceItems() {
+  const out = [];
+
+  for (const [name, i] of Object.entries(wsStatus.inputs)) {
+    const n = workspaceNumbers(name);
+    const repo = i.repo || DEFAULT_REPO;
+
+    if (!REPO_NAME.test(repo)) {
+      continue;
+    }
+    if (n.pr) {
+      out.push({ repo, number: n.pr });
+    } else if (i.pr) {
+      out.push({ repo, number: i.pr });
+    }
+    if (n.issue) {
+      out.push({ repo, number: n.issue });
+    }
+  }
+
+  return out.slice(0, 60);
+}
+
+/** Say a workspace's pull request has moved, so the next tick reads it again. */
+function workspaceMoved(name) {
+  if (!name) {
+    return;
+  }
+  const i = wsStatus.inputs[name] = wsStatus.inputs[name] || {};
+
+  i.fresh = true;
+  i.retryAt = 0;
+}
+
+/** Every workspace there is, with what its status needs: its repository and its role. */
+async function workspacesForStatus() {
+  const list = new Map();
+  const instances = await installations('workspaceStatuses');
+
+  for (const inst of instances?.items || []) {
+    if (inst.spec?.app === PREVIEW_APP) {
+      continue;
+    }
+    const ws = workspaceFromInstance(inst);
+
+    if (ws.name) {
+      list.set(ws.name, { name: ws.name, repo: ws.repo || DEFAULT_REPO, role: String(inst.metadata?.labels?.[LABEL_ROLE] || '') });
+    }
+  }
+  // A workspace that is only its tree - its cluster objects gone or not there yet - is still work.
+  for (const name of workspaceDirs() || []) {
+    if (!list.has(name)) {
+      list.set(name, { name, repo: DEFAULT_REPO, role: '' });
+    }
+  }
+
+  return [...list.values()];
+}
+
+/** The busiest of each workspace's conversations, as the watcher last saw them. */
+async function agentsByWorkspace() {
+  const doc = await conversationDoc().catch(() => null);
+  const out = {};
+
+  for (const item of Object.values(doc?.items || {})) {
+    const state = item?.state;
+
+    if (!item?.workspace || !(state in AGENT_RANK)) {
+      continue;
+    }
+    if (AGENT_RANK[state] > (AGENT_RANK[out[item.workspace]] ?? 0)) {
+      out[item.workspace] = state;
+    }
+  }
+
+  return out;
+}
+
+/** A fix's pull request: the one from its `issue-<n>` branch, else none yet. Also the issue's title. */
+async function linkedPullRequestOf(repo, issue) {
+  const [owner, name] = repo.split('/');
+  const data = (await graphqlPartial(LINKED_PR_QUERY, { owner, name, number: issue })).data;
+  const nodes = data?.repository?.issue?.timelineItems?.nodes || [];
+  const branch = `issue-${ issue }`;
+  const mine = nodes
+    .map((node) => node?.source || node?.subject)
+    .filter((pr) => pr?.number && (pr.headRefName === branch || String(pr.headRefName || '').startsWith(`${ branch }-`)));
+
+  return { pr: ((mine.find((pr) => pr.state === 'OPEN') || mine[mine.length - 1])?.number) || 0, title: String(data?.repository?.issue?.title || '') };
+}
+
+/** A developer workspace with no issue: the person's own pull request from its checkout's branch. */
+async function branchPullRequestOf(repo, branch) {
+  if (!branch || ['HEAD', 'master', 'main'].includes(branch)) {
+    return 0;
+  }
+  const [owner, name] = repo.split('/');
+  const me = await githubViewer();
+  const nodes = (await graphqlPartial(BRANCH_PR_QUERY, { owner, name, branch })).data?.repository?.pullRequests?.nodes || [];
+  const mine = nodes.filter((pr) => pr?.number && pr.author?.login === me);
+
+  return ((mine.find((pr) => pr.state === 'OPEN') || mine[mine.length - 1])?.number) || 0;
+}
+
+/** Read a workspace's GitHub inputs: which pull request is its, and that pull request's detail. */
+async function readWorkspaceGithub(w, i) {
+  const { pr, issue } = workspaceNumbers(w.name);
+
+  if (pr) {
+    i.pr = pr;
+  } else if (issue) {
+    const linked = await linkedPullRequestOf(w.repo, issue);
+
+    i.pr = linked.pr;
+    i.issueTitle = linked.title || i.issueTitle || '';
+  } else {
+    i.pr = await branchPullRequestOf(w.repo, i.branch || '');
+  }
+  i.detail = i.pr ? stageInputs(await prDetail(w.repo, i.pr)) : null;
+  i.detailAt = Date.now();
+  i.fresh = false;
+  i.error = '';
+}
+
+/** The review's own comments and run record, which are on this disk and move without GitHub. */
+async function refreshLocalInputs(i) {
+  if (!i.detail || !i.pr) {
+    return;
+  }
+  i.detail.localComments = (await localComments(i.pr).catch(() => [])).map((c) => ({ submitted_at: c.submitted_at || null }));
+  i.detail.run = await readReview(i.pr, 'run.json').catch(() => i.detail.run);
+}
+
+/** One workspace's status from its inputs; the record to store when its stage has to change. */
+function deriveWorkspaceStatus(w, i, agent, stored, now) {
+  const { pr: named, issue, bug } = workspaceNumbers(w.name);
+  const links = [];
+
+  if (issue) {
+    links.push({ label: `Issue #${ issue }`, url: `https://github.com/${ w.repo }/issues/${ issue }` });
+  }
+  // A SURE bug's stage is the Jira ticket's status, read where Jira is read: not here.
+  if (bug) {
+    return null;
+  }
+  const isReview = named > 0;
+  const isFix = isFixWorkspace(w.name, w.role);
+
+  if (!isReview && !isFix) {
+    return { status: { kind: 'other', links, agent }, write: null };
+  }
+  // A pull request workspace with no read yet has nothing to say; the last status stands.
+  if (isReview && !i.detail) {
+    return null;
+  }
+  const pr = isReview ? named : (i.pr || 0);
+
+  if (pr) {
+    links.push({ label: `PR #${ pr }`, url: i.detail?.meta?.url || `https://github.com/${ w.repo }/pull/${ pr }` });
+  }
+  const kind = isReview ? 'review' : 'fix';
+  const work = isReview ? reviewWork(i.detail, agent) : fixWork(pr ? i.detail : null, agent, !!i.coded);
+  const { record, write } = reconcileRecord(stored?.[w.name], toDerived(kind, work, pr, w.repo), { now, fallbackRepo: DEFAULT_REPO });
+
+  return {
+    status: {
+      ...displayOf(record, work),
+      kind,
+      pr,
+      title:       i.detail?.meta?.title || i.issueTitle || '',
+      links,
+      agent,
+      manual:      !!record.manual,
+      pushedSince: !!work.pushedSince,
+      ...activityTimes(i.detail),
+      readAt:      i.detailAt || 0,
+      error:       i.error || '',
+    },
+    write: write ? record : null,
+  };
+}
+
+/**
+ * Write the stages that changed, onto whatever the store holds now. A record somebody else wrote
+ * since this tick read the store - a stage set by hand - is left as they wrote it, and the next
+ * tick reconciles against theirs. The write carries the version it read, so of two writers at once
+ * one is refused and tries again.
+ */
+async function writeDerivedStages(changes, seen) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const cm = await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ STAGES_MAP }`).catch((e) => (e.status === 404 ? null : Promise.reject(e)));
+    let current = {};
+
+    try {
+      current = JSON.parse(cm?.data?.['stages.json'] || '{}') || {};
+    } catch {
+      return; // A store that does not parse is not one to write over.
+    }
+    const merged = { ...current };
+
+    for (const [name, rec] of Object.entries(changes)) {
+      const now = current[name];
+
+      if (now && seen?.[name] && now.at !== seen[name].at) {
+        continue;
+      }
+      merged[name] = rec;
+    }
+    const data = { ...(cm?.data || {}), 'stages.json': JSON.stringify(merged) };
+
+    try {
+      if (cm) {
+        await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps/${ STAGES_MAP }`, { method: 'PUT', body: JSON.stringify({ ...cm, data }) });
+      } else {
+        await k8s(`/api/v1/namespaces/${ NAMESPACE }/configmaps`, {
+          method: 'POST',
+          body:   JSON.stringify({
+            apiVersion: 'v1', kind: 'ConfigMap', metadata: { namespace: NAMESPACE, name: STAGES_MAP, labels: { 'dev.rancher.io/kind': 'workspace-stages' } }, data,
+          }),
+        });
+      }
+      wsStatus.stored = merged;
+
+      return;
+    } catch (e) {
+      if (e.status !== 409) {
+        throw e;
+      }
+    }
+  }
+}
+
+/** Every workspace's status, re-derived; GitHub read only for the pull requests that need it. */
+const workspaceStatusTick = singleFlight(async() => {
+  if (!auto.holder) {
+    return;
+  }
+  // The ones somebody is waiting on first, so a refresh is not queued behind a fresh start's reads.
+  const list = (await workspacesForStatus()).sort((a, b) => Number(!!wsStatus.inputs[b.name]?.fresh) - Number(!!wsStatus.inputs[a.name]?.fresh));
+  const agents = await agentsByWorkspace();
+  let stored = wsStatus.stored;
+
+  if (!stored) {
+    try {
+      stored = JSON.parse(await readStagesMap() || '{}') || {};
+    } catch {
+      return; // The store cannot be read; nothing is derived against a store this cannot see.
+    }
+  }
+  const watched = watchedGithubItems();
+  const now = new Date().toISOString();
+  const nowMs = Date.now();
+  const next = {};
+  const changes = {};
+  let reads = 0;
+
+  wsStatus.stored = stored;
+  for (const w of list) {
+    const i = wsStatus.inputs[w.name] = wsStatus.inputs[w.name] || { fresh: true };
+    const state = branchState(WORKSPACES_ROOT, w.name, { fs, path });
+    const { pr, bug } = workspaceNumbers(w.name);
+    const hasGithub = !bug && (pr > 0 || isFixWorkspace(w.name, w.role));
+
+    i.repo = w.repo;
+    i.branch = state.branch || i.branch || '';
+    if (typeof state.coded === 'boolean') {
+      i.coded = state.coded;
+    }
+    // A pull request the events poll watches is read when that poll says it moved; one it does not
+    // is read on the fallback, four times as often.
+    const every = i.pr && watched.has(`${ w.repo }#${ i.pr }`) ? STATUS_GITHUB_EVERY_MS * 4 : STATUS_GITHUB_EVERY_MS;
+    const due = hasGithub && (i.fresh || !i.detailAt || nowMs - i.detailAt > every) && nowMs >= (i.retryAt || 0);
+
+    if (due && reads < STATUS_READS_PER_TICK) {
+      reads++;
+      try {
+        await readWorkspaceGithub(w, i);
+      } catch (e) {
+        i.error = String(e?.message || e).slice(0, 200);
+        i.retryAt = nowMs + STATUS_RETRY_MS;
+      }
+    }
+    await refreshLocalInputs(i);
+    const derived = deriveWorkspaceStatus(w, i, agents[w.name] || 'none', stored, now);
+
+    if (!derived) {
+      if (wsStatus.statuses[w.name]) {
+        next[w.name] = { ...wsStatus.statuses[w.name], agent: agents[w.name] || 'none' };
+      }
+      continue;
+    }
+    next[w.name] = derived.status;
+    if (derived.write) {
+      changes[w.name] = derived.write;
+    }
+  }
+  // Inputs of workspaces that are gone go with them.
+  for (const name of Object.keys(wsStatus.inputs)) {
+    if (!list.some((w) => w.name === name)) {
+      delete wsStatus.inputs[name];
+    }
+  }
+  if (Object.keys(changes).length) {
+    await writeDerivedStages(changes, stored).catch((e) => console.error('[dev-api] statuses: the stages could not be written:', e.message || e));
+  }
+  const before = JSON.stringify(wsStatus.statuses);
+
+  wsStatus.statuses = next;
+  if (JSON.stringify(next) !== before) {
+    autoWriteJson(statusPath(), next);
+  }
+  autoWriteJson(statusInputsPath(), wsStatus.inputs);
+});
+
+/** One workspace now: its pull request read again, for a page that has just changed something. */
+async function refreshWorkspaceStatus(name) {
+  workspaceMoved(name);
+  if (!auto.holder) {
+    return { status: wsStatus.statuses[name] || null, refreshed: false };
+  }
+  // A tick already running took its list before this was asked: wait it out and run one more.
+  for (let tries = 0; tries < 20; tries++) {
+    if (await workspaceStatusTick() !== false) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  return { status: wsStatus.statuses[name] || null, refreshed: !wsStatus.inputs[name]?.fresh };
+}
+
+// ── Resource triggers: watched here, not in a dashboard ────────────────────────────────────
+//
+// An automation can start when a Kubernetes resource changes: `management.cattle.io.cluster`,
+// `pod`, `catalog.cattle.io.app`, with a filter over the resource and an event (created, updated,
+// deleted). That used to be a dashboard's poll, through the person's own Rancher session, so it
+// stopped when the last page closed. It is a watch here: the type is resolved through the
+// apiserver's discovery, listed once, then watched; what was seen is kept on the disk, so a
+// restart compares against it and fires for what changed while nothing was looking, rather than
+// silently taking the new state as its baseline.
+//
+// Each change that fires an automation is recorded in the events log (source `kubernetes`), with
+// the run it started, so the Events tab shows it like any other.
+//
+// The first time a trigger looks at a type nothing fires: that look is the baseline, or saving an
+// automation that watches pods would open a conversation per pod.
+
+const RESOURCE_WATCH_LIMIT = 4000;
+/** How many runs one automation may start from resource changes in RESOURCE_BURST_MS. */
+const RESOURCE_BURST = 3;
+const RESOURCE_BURST_MS = 20_000;
+
+const resourceWatch = {
+  /** pathKey -> { abort, live, error, since } */
+  loops:     new Map(),
+  /** steve type -> { at, path, namespaced } | { at, error } */
+  types:     new Map(),
+  /** Kept on the disk: pathKey -> { id -> { rv, n, ns } }, and triggerKey -> { id -> matched }. */
+  seen:      null,
+  dirty:     false,
+  /** automation -> start times, for the burst limit. */
+  starts:    new Map(),
+};
+
+const resourceSeenPath = () => autoPath('resource-watch.json');
+
+function resourceSeen() {
+  if (!resourceWatch.seen) {
+    const held = autoReadJson(resourceSeenPath(), {}) || {};
+
+    resourceWatch.seen = { paths: held.paths || {}, triggers: held.triggers || {} };
+  }
+
+  return resourceWatch.seen;
+}
+
+/**
+ * A steve type's API path, from the apiserver's discovery: `pod` is core v1's pods,
+ * `management.cattle.io.cluster` is that group's preferred version's clusters. Remembered for ten
+ * minutes, and a type that does not resolve is remembered as not resolving for as long.
+ */
+async function resolveResourceType(type) {
+  const held = resourceWatch.types.get(type);
+
+  if (held && Date.now() - held.at < 10 * 60_000) {
+    return held;
+  }
+  const answer = await (async() => {
+    const dot = type.lastIndexOf('.');
+    const group = dot > 0 ? type.slice(0, dot) : '';
+    const singular = (dot > 0 ? type.slice(dot + 1) : type).toLowerCase();
+    const base = group ? await k8s(`/apis/${ group }`).then((g) => `/apis/${ g.preferredVersion?.groupVersion || g.versions?.[0]?.groupVersion }`) : '/api/v1';
+    const list = await k8s(base);
+    const found = (list.resources || []).find((r) => !r.name.includes('/') && ((r.singularName || '').toLowerCase() === singular || String(r.kind || '').toLowerCase() === singular));
+
+    if (!found) {
+      return { at: Date.now(), error: `${ type } is not a resource this cluster has.` };
+    }
+
+    return { at: Date.now(), path: `${ base }/${ found.name }`, base, resource: found.name, namespaced: !!found.namespaced };
+  })().catch((e) => ({ at: Date.now(), error: String(e?.message || e) }));
+
+  resourceWatch.types.set(type, answer);
+
+  return answer;
+}
+
+/** Where one trigger's resources are listed: cluster-wide, or in its namespace. */
+function resourceListPath(t, namespace) {
+  return namespace && t.namespaced ? `${ t.base }/namespaces/${ namespace }/${ t.resource }` : t.path;
+}
+
+/**
+ * A filter, as a function of the resource and the event. The person's own JavaScript from the
+ * definition - an expression, or a body when it says `return` - run in a context of its own with
+ * a time limit, the way event constraints are (see conditionChecker). A filter that throws
+ * matches nothing: a mistake in it should start no runs, not all of them.
+ */
+function resourceFilter(src) {
+  const text = String(src || '').trim();
+
+  if (!text) {
+    return () => true;
+  }
+  const body = /\breturn\b/.test(text) ? text : `return (${ text });`;
+  let script;
+
+  try {
+    script = new vm.Script(`(function(resource, event, r) {\n${ body }\n})(resource, event, resource)`);
+  } catch {
+    return () => false;
+  }
+
+  return (resource, event) => {
+    try {
+      return !!script.runInNewContext({ resource: JSON.parse(JSON.stringify(resource)), event }, { timeout: 50 });
+    } catch {
+      return false;
+    }
+  };
+}
+
+const resourceId = (o) => (o?.metadata?.namespace ? `${ o.metadata.namespace }/${ o.metadata.name }` : String(o?.metadata?.name || ''));
+
+/** The resource triggers of every definition, with what each listens to resolved. */
+async function resourceTriggers(defs) {
+  const out = [];
+
+  for (const def of defs) {
+    for (const [index, t] of triggersOfDef(def).entries()) {
+      const spec = t.type === 'resource' ? t.resource : null;
+
+      if (!spec?.type) {
+        continue;
+      }
+      const resolved = await resolveResourceType(spec.type);
+
+      out.push({
+        def, spec, key: `${ def.name }#${ index }`, resolved, filter: resourceFilter(spec.filter), pathKey: resolved.path ? resourceListPath(resolved, (spec.namespace || '').trim()) : '',
+      });
+    }
+  }
+
+  return out;
+}
+
+/** Start the runs a change calls for, and record it as an event with what it started. */
+function fireResourceChange(trigger, change, resource) {
+  const { def, spec } = trigger;
+  const id = resourceId(resource) || change.id;
+  const now = new Date().toISOString();
+  const event = makeEvent({
+    source:  'kubernetes',
+    name:    `${ spec.type }.${ change.event }`,
+    at:      now,
+    subject: id,
+    title:   `${ spec.type } ${ id } ${ change.event }`,
+    payload: {
+      type: spec.type, event: change.event, name: resource?.metadata?.name || '', namespace: resource?.metadata?.namespace || '', resource: trimResource(resource),
+    },
+    key: `${ spec.type }|${ id }|${ resource?.metadata?.resourceVersion || now }|${ change.event }|${ def.name }`,
+  });
+  const recent = (resourceWatch.starts.get(def.name) || []).filter((at) => Date.now() - at < RESOURCE_BURST_MS);
+  const match = { automation: def.name, outcome: 'run', reason: '' };
+
+  if (def.enabled === false) {
+    match.outcome = 'disabled';
+    match.reason = 'The automation is disabled.';
+  } else if (recent.length >= RESOURCE_BURST) {
+    // Said rather than swallowed: a filter that matches forty things at once is one to narrow.
+    match.outcome = 'throttled';
+    match.reason = `${ RESOURCE_BURST } runs had already started from changes in the last ${ RESOURCE_BURST_MS / 1000 } seconds.`;
+  }
+  event.matches = [match];
+  const context = {
+    type: spec.type, event: change.event, name: event.payload.name, namespace: event.payload.namespace,
+  };
+  let run = null;
+
+  if (match.outcome === 'run') {
+    run = newAutoRun(def, 'resource', event, context);
+    match.runId = run.id;
+    recent.push(Date.now());
+    resourceWatch.starts.set(def.name, recent);
+  }
+  autoAppend([event]);
+  if (run) {
+    startAutoRun(def, run, event, context).catch(() => {});
+  }
+}
+
+/** What of a resource an event carries: enough to read, not a whole Secret or a huge status. */
+function trimResource(o) {
+  if (!o) {
+    return null;
+  }
+  const text = JSON.stringify({
+    apiVersion: o.apiVersion, kind: o.kind, metadata: { name: o.metadata?.name, namespace: o.metadata?.namespace, labels: o.metadata?.labels, uid: o.metadata?.uid }, spec: o.spec, status: o.status,
+  });
+
+  return text.length > 16_000 ? { kind: o.kind, metadata: { name: o.metadata?.name, namespace: o.metadata?.namespace }, truncated: true } : JSON.parse(text);
+}
+
+/**
+ * One change to one resource, put to every trigger watching its path. `edge` is the difference
+ * between "while it matches" and "when it starts matching": a resource that already matched is
+ * not fired for again until it has stopped.
+ */
+function resourceChanged(pathKey, change, resource) {
+  const seen = resourceSeen();
+
+  for (const trigger of resourceWatch.loops.get(pathKey)?.triggers || []) {
+    const matched = seen.triggers[trigger.key] = seen.triggers[trigger.key] || {};
+    const was = matched[change.id];
+    const filter = trigger.filter;
+    const now = change.event !== 'deleted' && filter(resource, change.event);
+    const listens = trigger.spec.event === 'any' || !trigger.spec.event || trigger.spec.event === change.event;
+
+    if (change.event === 'deleted') {
+      delete matched[change.id];
+      if (listens && filter(resource, 'deleted')) {
+        fireResourceChange(trigger, change, resource);
+      }
+      continue;
+    }
+    matched[change.id] = now;
+    if (listens && now && !(trigger.spec.edge && was)) {
+      fireResourceChange(trigger, change, resource);
+    }
+  }
+  resourceWatch.dirty = true;
+}
+
+/** A trigger that has never looked at its path takes what is there as its baseline, quietly. */
+function baselineTriggers(pathKey, objects) {
+  const seen = resourceSeen();
+
+  for (const trigger of resourceWatch.loops.get(pathKey)?.triggers || []) {
+    if (seen.triggers[trigger.key]) {
+      continue;
+    }
+    const filter = trigger.filter;
+
+    seen.triggers[trigger.key] = Object.fromEntries([...objects.entries()].map(([id, o]) => [id, filter(o, 'updated')]));
+    resourceWatch.dirty = true;
+  }
+}
+
+/**
+ * One path, listed then watched, for as long as a trigger wants it. A list is compared with what
+ * was seen before it - the last list, or the disk's after a restart - so what changed while the
+ * watch was down still fires; the first list of a path is its baseline.
+ */
+async function watchResourcePath(pathKey, loop) {
+  let wait = 1_000;
+
+  while (!loop.abort.signal.aborted) {
+    try {
+      const list = await k8s(`${ pathKey }?limit=${ RESOURCE_WATCH_LIMIT }`);
+      const objects = new Map((list.items || []).map((o) => [resourceId(o), o]));
+      const seen = resourceSeen();
+      const before = seen.paths[pathKey];
+      const now = Object.fromEntries([...objects.entries()].map(([id, o]) => [id, { rv: o.metadata?.resourceVersion || '', n: o.metadata?.name, ns: o.metadata?.namespace }]));
+
+      if (before) {
+        for (const [id, o] of objects) {
+          if (!before[id]) {
+            resourceChanged(pathKey, { id, event: 'created' }, o);
+          } else if (before[id].rv !== now[id].rv) {
+            resourceChanged(pathKey, { id, event: 'updated' }, o);
+          }
+        }
+        for (const [id, was] of Object.entries(before)) {
+          if (!objects.has(id)) {
+            resourceChanged(pathKey, { id, event: 'deleted' }, { metadata: { name: was.n, namespace: was.ns } });
+          }
+        }
+      }
+      baselineTriggers(pathKey, objects);
+      seen.paths[pathKey] = now;
+      resourceWatch.dirty = true;
+      loop.live = true;
+      loop.error = '';
+      loop.since = new Date().toISOString();
+      wait = 1_000;
+
+      const response = await fetch(`${ ROOT }${ pathKey }?watch=1&timeoutSeconds=900&resourceVersion=${ list.metadata?.resourceVersion || '' }`, {
+        headers: { authorization: `Bearer ${ TOKEN }` }, signal: loop.abort.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`the watch answered ${ response.status }`);
+      }
+      const decoder = new TextDecoder();
+      const reader = response.body.getReader();
+      let buffer = '';
+
+      for (;;) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let nl;
+
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, nl);
+
+          buffer = buffer.slice(nl + 1);
+          let change;
+
+          try {
+            change = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (change.type === 'ERROR') {
+            throw new Error(change.object?.message || 'the watch expired');
+          }
+          const o = change.object;
+          const id = resourceId(o);
+
+          if (!id || change.type === 'BOOKMARK') {
+            continue;
+          }
+          const paths = seen.paths[pathKey] = seen.paths[pathKey] || {};
+          const event = change.type === 'ADDED' ? 'created' : change.type === 'DELETED' ? 'deleted' : 'updated';
+
+          // An ADDED for something already seen at this version is the watch restating it.
+          if (event === 'created' && paths[id]?.rv === o.metadata?.resourceVersion) {
+            continue;
+          }
+          if (event === 'deleted') {
+            delete paths[id];
+          } else {
+            paths[id] = { rv: o.metadata?.resourceVersion || '', n: o.metadata?.name, ns: o.metadata?.namespace };
+          }
+          resourceChanged(pathKey, { id, event }, o);
+        }
+      }
+    } catch (e) {
+      if (loop.abort.signal.aborted) {
+        break;
+      }
+      loop.error = String(e?.message || e).slice(0, 200);
+      wait = Math.min(60_000, wait * 2);
+    }
+    loop.live = false;
+    await new Promise((resolve) => setTimeout(resolve, wait));
+  }
+}
+
+/** The watches every resource trigger wants: started, kept, and stopped when nothing wants them. */
+async function resourceTick(defs) {
+  const triggers = await resourceTriggers(defs);
+  const wanted = new Map();
+
+  for (const t of triggers.filter((x) => x.pathKey)) {
+    wanted.set(t.pathKey, [...(wanted.get(t.pathKey) || []), t]);
+  }
+  for (const [pathKey, loop] of resourceWatch.loops) {
+    if (!wanted.has(pathKey)) {
+      loop.abort.abort();
+      resourceWatch.loops.delete(pathKey);
+    }
+  }
+  for (const [pathKey, list] of wanted) {
+    const loop = resourceWatch.loops.get(pathKey);
+
+    if (loop) {
+      loop.triggers = list;
+      continue;
+    }
+    const fresh = {
+      abort: new AbortController(), triggers: list, live: false, error: '', since: '',
+    };
+
+    resourceWatch.loops.set(pathKey, fresh);
+    watchResourcePath(pathKey, fresh).catch(() => {});
+  }
+  // A trigger whose automation is gone, or that watches something else now, forgets what it saw.
+  const seen = resourceSeen();
+  const keys = new Set(triggers.map((t) => t.key));
+
+  for (const key of Object.keys(seen.triggers)) {
+    if (!keys.has(key)) {
+      delete seen.triggers[key];
+      resourceWatch.dirty = true;
+    }
+  }
+  for (const key of Object.keys(seen.paths)) {
+    if (!wanted.has(key)) {
+      delete seen.paths[key];
+      resourceWatch.dirty = true;
+    }
+  }
+  if (resourceWatch.dirty) {
+    resourceWatch.dirty = false;
+    autoWriteJson(resourceSeenPath(), seen);
+  }
+  auto.state.status.resources = {
+    watches: [...resourceWatch.loops.entries()].map(([path, l]) => ({
+      path, live: l.live, error: l.error, since: l.since, automations: [...new Set(l.triggers.map((t) => t.def.name))],
+    })),
+    unresolved: triggers.filter((t) => !t.pathKey).map((t) => ({ automation: t.def.name, type: t.spec.type, error: t.resolved.error })),
+  };
+}
+
+/** A process giving up the lease stops its watches; the next holder starts its own. */
+function stopResourceWatches() {
+  for (const loop of resourceWatch.loops.values()) {
+    loop.abort.abort();
+  }
+  resourceWatch.loops.clear();
+  resourceWatch.seen = null;
 }
 
 const server = http.createServer(async(req, res) => {
@@ -10198,6 +11156,9 @@ server.listen(PORT, () => {
   // tick rather than in AUTO_LEASE_MS.
   watchStageStore();
   setTimeout(() => automationTick().catch(() => {}), 8_000);
+  // Workspace statuses: derived by the same process, after the automations tick has taken the lease.
+  setTimeout(() => workspaceStatusTick().catch(() => {}), 12_000);
+  setInterval(() => workspaceStatusTick().catch((e) => console.error('[dev-api] workspace statuses tick failed:', e.message || e)), STATUS_TICK_MS);
   setInterval(() => automationTick().catch((e) => console.error('[dev-api] automations tick failed:', e.message || e)), AUTO_TICK_MS);
   process.once('SIGTERM', () => {
     try {

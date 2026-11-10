@@ -71,10 +71,12 @@ const ITEM_FIELDS = `
   }`;
 
 /** Just enough of an item to tell whether it moved: its clock, and a pull request's head and checks. */
-const LIGHT_FIELDS = `
+export const GITHUB_LIGHT_FIELDS = `
   __typename
-  ... on Issue { id updatedAt }
-  ... on PullRequest { id updatedAt headRefOid commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }`;
+  ... on Issue { id number updatedAt repository { nameWithOwner } }
+  ... on PullRequest { id number updatedAt headRefOid headRefName repository { nameWithOwner } commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }`;
+
+const LIGHT_FIELDS = GITHUB_LIGHT_FIELDS;
 
 const PAGE = 'issueCount pageInfo { hasNextPage endCursor }';
 
@@ -267,6 +269,8 @@ export function itemSnapshot(node, me, now, before = null, hint = {}) {
       requested: !!hint.requested || nodesOf(node.reviewRequests).some((r) => isMe(r.requestedReviewer?.login)),
       reviewer:  !!hint.reviewed || nodesOf(node.reviews).some((r) => isMe(r.author?.login)),
       author:    isMe(node.author?.login),
+      // A workspace is about it, whoever the person is to it: watched for that workspace's stage.
+      workspace: !!hint.workspace,
     };
   }
 }
@@ -274,7 +278,7 @@ export function itemSnapshot(node, me, now, before = null, hint = {}) {
 /** A snapshot's roles; one from before roles were kept only knew whether it was assigned. */
 function rolesWas(s) {
   return s?.roles || {
-    assignee: !!s?.mine, requested: false, reviewer: false, author: false
+    assignee: !!s?.mine, requested: false, reviewer: false, author: false, workspace: false
   };
 }
 
@@ -282,7 +286,7 @@ function rolesWas(s) {
 export function involved(s) {
   const r = rolesWas(s);
 
-  return !!(r.assignee || r.requested || r.reviewer || r.author);
+  return !!(r.assignee || r.requested || r.reviewer || r.author || r.workspace);
 }
 
 /** What every event about an item says about it, so a condition can look at it without a lookup. */

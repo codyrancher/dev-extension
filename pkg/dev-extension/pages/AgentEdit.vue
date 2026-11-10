@@ -817,11 +817,11 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
             label="Only when it starts matching, rather than on every change while it matches"
           />
           <p class="text-muted agent-edit__hint">
-            Nothing fires the first time an agent looks at a type: that pass records what is already there. The prompt can carry <code
+            Watched by the in-cluster API, live, whether or not a dashboard is open; the filter reads the resource as Kubernetes returns it. Nothing fires the first time a type is looked at: that pass records what is already there, and after a restart what changed in between still fires. Each change that fires is in the Events log. The prompt can carry <code
               v-for="k in PROMPT_KEYS"
               :key="k"
               class="agent-edit__key"
-            >{{ placeholder(k) }}</code>, filled with what changed. At most three runs start from one tick.
+            >{{ placeholder(k) }}</code>, filled with what changed. At most three runs start in any twenty seconds.
           </p>
         </template>
       </div>

@@ -7,17 +7,15 @@
 // calls per workspace, so each workspace is read every five minutes, one at a time, in the
 // background; the sidebar shows whatever was last read and never waits on it.
 import { prDetail, DEFAULT_REPO, devApi } from './reviews';
-import { afterSubmission } from './review-stage.mjs';
 import { jiraDetail, JIRA_BASE } from './jira';
 import { jiraStageOf } from './jira-steps.mjs';
-import { passRunning } from './review-pass.mjs';
 import { linkedPullRequest, branchPullRequest, issueBody } from './github';
 import { conversationStates, agentConversations, ConversationState } from './conversations';
 import { setWorkspaceRunning, installationRepos } from './api';
 import { isLte, LTE_PREFIX, DEFAULT_APP } from './config/constants';
 import { listApps } from './apps';
 import { reconcileStage } from './stages';
-import type { DerivedStage, StageRecord } from './stages';
+import type { StageRecord } from './stages';
 
 // The stage a workspace shows is stored and guarded, not re-guessed each read: see stages.ts. These
 // re-exports let the rail and the PR panel set or release a manual stage without knowing where it lives.
@@ -29,6 +27,10 @@ import { activityState } from './agent';
 import { note } from './dev-log.mjs';
 import { noteRepo, notedRepo, resolveRepo } from './workspace-repos.mjs';
 import { readPrefs, savePrefs } from './prefs';
+import { watch as watchPath } from './events';
+import {
+  reviewWork, fixWork, toDerived, displayOf, activityTimes as activityTimesOf, isBot as isBotOf, STAGE_LABELS as SHARED_STAGE_LABELS, STAGE_TONE, workspaceNumbers,
+} from './stage-derive.mjs';
 
 export type AgentState = 'working' | 'input' | 'idle' | 'finished' | 'none';
 /**
@@ -64,52 +66,7 @@ export type Stage = FixStage | ReviewStage | BugStage;
  * sidebar's second line all name the stage the same way: a workspace that reads "In review"
  * on its rail reads "In review" in the list beside it.
  */
-export const STAGE_LABELS: Record<Stage, string> = {
-  assess:    'Assess',
-  code:      'Code',
-  draft:     'Draft PR',
-  review:    'In review',
-  feedback:  'Feedback',
-  merged:    'Merged',
-  agent:     'Agent review',
-  findings:  'Your pass',
-  submitted: 'Submitted',
-  response:  'Developer responded',
-  approved:  'Approved',
-  /*
-   * The document's own words for each position, which is what the stepper's nodes read.
-   *
-   * Not the ticket's status verbatim, because the stepper names a place in a process and a
-   * status names where one ticket is: "To Prioritize", "Prioritized", "In Development" and
-   * five more all arrive at Reproduced. The ticket's own word is on the nav row beside it -
-   * `stageLabel` - where it says which of those it actually is.
-   */
-  'bug-new':         'New',
-  'bug-triage':      'In Triage',
-  'bug-waiting':     'Waiting for Reporter',
-  'bug-prioritized': 'Reproduced',
-  'bug-done':        'Done',
-};
-
-/**
- * A work state with its stage's name already on it. `soft` marks a stage taken from the agent's
- * busy/idle state alone rather than a hard GitHub fact - a guess the stored stage must not be undone
- * by (see stages.ts). Everything not soft is backed by the PR, the reviews, or the comments.
- */
-type Work = Pick<WorkspaceStatus, 'label' | 'tone' | 'stage'> & {
-  stageLabel?: string;
-  reviewed?: boolean;
-  round?: number;
-  soft?: boolean;
-  /**
-   * Commits landed since your review, while you are still waiting on an answer.
-   *
-   * Carried separately from the stage on purpose. A push does not move the review on - only a
-   * reply or a re-request does - but it is still something you may want to look at while you
-   * wait, so the rail can offer it without the stage pretending the developer has responded.
-   */
-  pushedSince?: boolean;
-};
+export const STAGE_LABELS: Record<Stage, string> = SHARED_STAGE_LABELS;
 
 /** What to call the stage a workspace is at: the rail's own word for it. */
 export function stageName(status: Pick<WorkspaceStatus, 'stageLabel' | 'stage'>): string {
@@ -183,25 +140,7 @@ export interface WorkspaceStatus {
  * Bots do not count; an unsent draft of yours is not you speaking.
  */
 export function activityTimes(d: Json): { othersAt: number; spokeAt: number } {
-  const viewer = d?.viewer || '';
-
-  if (!d || !viewer) {
-    return { othersAt: 0, spokeAt: 0 };
-  }
-  const said = [
-    ...(d.reviewComments || []).filter((c: Json) => !c.pending).map((c: Json) => ({ who: c.author, at: c.createdAt })),
-    ...(d.discussion || []).map((c: Json) => ({ who: c.author, at: c.createdAt })),
-    ...(d.reviews || []).map((r: Json) => ({ who: r.author, at: r.submittedAt })),
-  ].filter((s) => s.who && !isBot(s.who));
-  // By login: a commit's `author` is the name in it, which never equals a login. A commit GitHub
-  // could not match to an account is left out rather than guessed at - on your own pull request
-  // that guess would be your own push marking the workspace new.
-  const theirCommits = (d.commits || []).filter((c: Json) => c.login && c.login !== viewer && !isBot(c.login)).map((c: Json) => c.date);
-
-  return {
-    othersAt: latest([...said.filter((s) => s.who !== viewer).map((s) => s.at), ...theirCommits]),
-    spokeAt:  latest([...said.filter((s) => s.who === viewer).map((s) => s.at), ...(d.localComments || []).map((c: Json) => c.submitted_at)]),
-  };
+  return activityTimesOf(d);
 }
 
 /*
@@ -409,11 +348,7 @@ function empty(): WorkspaceStatus {
  * the difference between finding the bug workspaces and claiming every pull request is one.
  */
 function numbers(name: string): { pr: number; issue: number; bug: string } {
-  return {
-    pr:    Number(/(?:^|-)pr-(\d+)(?:-|$)/.exec(name)?.[1]) || 0,
-    issue: Number(/(?:^|-)issue-(\d+)(?:-|$)/.exec(name)?.[1]) || 0,
-    bug:   (/(?:^|-)(sure-\d+)(?:-|$)/.exec(name)?.[1] || '').toUpperCase(),
-  };
+  return workspaceNumbers(name);
 }
 
 /**
@@ -562,246 +497,91 @@ async function refreshAgents(): Promise<void> {
   await agentsInFlight;
 }
 
+// ── The statuses dev-api derives ──────────────────────────────────────────────────────────
+//
+// Every review and fix workspace's stage, what it needs, its title and links, as dev-api works them
+// out (see stage-derive.mjs): from GitHub only when its events poll says a pull request moved, so
+// a tab - however many are open - asks GitHub nothing for them. Watched, so a stage that moves is
+// here within a few seconds of dev-api seeing it. `null` until dev-api has answered once; `false`
+// for a dev-api from before the route, which this tab then reads the old way, below.
+
+let server: boolean | null = null;
+let serverAsked: Promise<void> | null = null;
+
+/** What of dev-api's status this tab shows; the agent's state stays this tab's own, read more often. */
+function fromServer(s: Json): Partial<WorkspaceStatus> {
+  return {
+    label:      s.label || '',
+    tone:       s.tone || 'muted',
+    title:      s.title || '',
+    links:      Array.isArray(s.links) ? s.links : [],
+    kind:       s.kind || 'other',
+    stage:      s.stage || '',
+    stageLabel: s.stageLabel || '',
+    reviewed:   !!s.reviewed,
+    round:      s.round || 1,
+    pr:         s.pr || 0,
+    othersAt:   s.othersAt || 0,
+    spokeAt:    s.spokeAt || 0,
+    readAt:     s.readAt || Date.now(),
+  };
+}
+
+function takeServer(answer: Json): void {
+  for (const [name, s] of Object.entries(answer?.statuses || {}) as [string, Json][]) {
+    if (s && s.kind !== 'other') {
+      statuses.set(name, { ...(statuses.get(name) || empty()), ...fromServer(s) });
+    }
+  }
+  persist();
+}
+
+/** Ask dev-api once whether it derives statuses, and from then on hear them as they change. */
+function serverStatuses(): Promise<void> {
+  if (!serverAsked) {
+    serverAsked = (async() => {
+      const answer = await devApi('/workspaces/status').catch(() => null);
+
+      server = !!answer?.statuses;
+      if (server) {
+        takeServer(answer);
+        watchPath('/workspaces/status', takeServer, { every: 15000 });
+      }
+    })();
+  }
+
+  return serverAsked;
+}
+
+/** One workspace's pull request read again by dev-api now: after an action, a page wants the result. */
+async function serverRefresh(name: string): Promise<Partial<WorkspaceStatus> | null> {
+  const answer = await devApi(`/workspaces/${ name }/status/refresh`, { method: 'POST', body: '{}' }).catch(() => null);
+
+  return answer?.status && answer.status.kind !== 'other' ? fromServer(answer.status) : null;
+}
+
 // ── The work ────────────────────────────────────────────────────────────────────────────────
+//
+// How a review or a fix workspace reads - reviewWork, fixWork, and the store's trust rules - is
+// stage-derive.mjs, shared with dev-api, which works every workspace's status out itself and serves
+// it (`/workspaces/status`). This tab takes those; what is below is for a dev-api from before that.
 
-const latest = (dates: (string | null | undefined)[]) => Math.max(0, ...dates.map((d) => Date.parse(d || '') || 0));
-
-/**
- * A review workspace (`pr-<n>`): the person reviews someone else's PR with an agent's help.
- *
- * Read from the PR and the review's own comments (which ride in prDetail): the agent's
- * findings not yet submitted are the person's to go through; a submitted review is waiting
- * on the developer until they push or answer; an approval, theirs or anyone's, is done.
- */
-function reviewWork(d: Json, agent: AgentState): Work {
-  const m = d.meta || {};
-  const local: Json[] = d.localComments || [];
-  const submitted = local.filter((c) => c.submitted_at);
-  const pending = local.filter((c) => !c.submitted_at);
-  // A review YOU left on GitHub itself counts as submitted too - but only yours. Counting
-  // anyone's put the stage back to "waiting for the developer" the moment a bot approved the
-  // PR, days after the developer had answered.
-  const viewer = d.viewer || '';
-  const reviews: Json[] = (d.reviews || []).filter((r: Json) => r.submittedAt && (viewer ? r.author === viewer : r.author && r.author !== m.author && !isBot(r.author)));
-  // Your own latest opinionated review. GitHub's PR-wide `approved` (m.approved) is true only when
-  // every required reviewer has approved and none is requesting changes - so another reviewer's
-  // "changes requested" from rounds ago keeps it false even after you approve today. This is your
-  // reviewer workspace and the stage is about your review: if the last opinion you left is an
-  // approval, your review is done, whatever the rest of the PR is still waiting on.
-  const myLatestOpinion = (d.reviews || [])
-    .filter((r: Json) => r.author === viewer && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state))
-    .sort((a: Json, b: Json) => (Date.parse(a.submittedAt || '') || 0) - (Date.parse(b.submittedAt || '') || 0))
-    .pop();
-  const iApproved = !!viewer && myLatestOpinion?.state === 'APPROVED';
-  // How many times you have already sent this PR a review. The same review is often recorded
-  // twice - once as the comments submitted here, once as GitHub's own review - so they are
-  // counted by the minute they went out rather than one by one.
-  const rounds = new Set([...submitted.map((c) => c.submitted_at), ...reviews.map((r: Json) => r.submittedAt)]
-    .map((at) => String(at || '').slice(0, 16))
-    .filter(Boolean)).size;
-
-  if (m.merged) {
-    return {
-      label: '', tone: 'green', stage: 'approved', stageLabel: 'Merged',
-    };
-  }
-  if (m.approved || iApproved) {
-    return { label: '', tone: 'green', stage: 'approved' };
-  }
-  /*
-   * The agent is still making its pass.
-   *
-   * Above the findings, and that is the whole of the fix: a pass writes its findings one at a
-   * time over an hour, so the first one used to move the rail to Your pass and the step stayed
-   * there for the rest of the run - with the conversation directly beneath it saying eleven
-   * subagents, two still working. "There are findings" never meant "the agent has finished
-   * finding things".
-   *
-   * What says so is the agent's own report rather than a guess about it - see review-pass.mjs,
-   * which has the reasoning and the one thing the busy/idle bucket cannot carry alone.
-   *
-   * Hard, not soft: a stage already latched on the first finding is exactly what has to be
-   * corrected, and a soft signal by definition cannot undo a stored one.
-   */
-  if (passRunning(d.run, agent)) {
-    return {
-      label:    pending.length ? `${ pending.length } finding${ pending.length === 1 ? '' : 's' } so far` : '',
-      tone:     'working',
-      stage:    'agent',
-      reviewed: rounds > 0,
-      round:    rounds + 1,
-    };
-  }
-  if (submitted.length || reviews.length) {
-    const submittedAt = Math.max(latest(submitted.map((c) => c.submitted_at)), latest(reviews.map((r: Json) => r.submittedAt)));
-    const pushed = latest((d.commits || []).map((c: Json) => c.date)) > submittedAt;
-    const replied = latest([...(d.discussion || []), ...(d.reviewComments || [])].filter((c: Json) => c.author === m.author).map((c: Json) => c.createdAt)) > submittedAt;
-
-    // Findings of the agent's that have not gone anywhere are a pass waiting to be made,
-    // whichever round this is: the rail goes back to Your pass and carries the round with it.
-    // A review is a loop, not a line, and the step that says what you have to do is this one.
-    if (pending.length) {
-      return {
-        label: 'go through the new findings', tone: 'attention', stage: 'findings', reviewed: true, round: rounds + 1,
-      };
-    }
-
-    // Whether this is a reply or still waiting turns on who you are (your review, your comments). If
-    // the viewer's identity came back blank - a degraded read - that distinction is not trustworthy,
-    // so it is marked soft and the store keeps whatever it already had rather than dropping, say, a
-    // stored Approved to Submitted for one bad read.
-    /*
-     * Only two things end your wait: they answered you, or they asked you to look again.
-     *
-     * A push is neither, and used to be treated as one whenever a change request of yours was
-     * still standing. That is how a pull request with thirteen threads waiting on the developer
-     * and none of them answered came to read "Developer responded, round 3": the developer had
-     * pushed, and nothing else. A commit is work, not a reply - it can be a rebase, a merge of
-     * main, or a change to something nobody asked about - and a timestamp cannot tell those
-     * apart from an answer. Treating it as one moves the stage off the person who is actually
-     * being waited on, and the review's own count sitting beside it said so.
-     *
-     * `reRequested` is the second thing, and it is a real signal rather than an inferred one:
-     * GitHub drops you from `requested_reviewers` the moment you submit a review, and the only
-     * way back onto that list is the author asking for you again. So your name being there,
-     * after you have already reviewed, is the author saying "another look, please" in the one
-     * place that cannot be confused with a push.
-     *
-     * `pushed` survives as a label: when they have answered AND pushed, "replied and pushed" is
-     * more use than either half. A push on its own falls through to `submitted` below, which is
-     * where it belongs - and `REVIEW_NEEDS` has no `submitted` key, so it makes no card, which
-     * is the point.
-     */
-    const reRequested = !!viewer && (m.reviewers || []).some((login: string) => login === viewer);
-    const since = afterSubmission({ replied, reRequested, pushed });
-
-    return {
-      label:       since.label,
-      tone:        since.stage === 'response' ? 'attention' : 'waiting',
-      stage:       since.stage,
-      reviewed:    true,
-      round:       rounds,
-      soft:        !viewer,
-      pushedSince: since.pushedSince,
-    };
-  }
-  if (agent === 'working') {
-    return { label: '', tone: 'working', stage: 'agent', soft: true };
-  }
-  if (pending.length) {
-    return { label: 'read the agent\'s findings', tone: 'attention', stage: 'findings' };
-  }
-  // The agent's pass finished and what it found is gone - read and deleted, every one of them.
-  // That is a pass made, not a review still to run: falling back to Agent review offered to
-  // review the PR again, which is the opposite of what emptying the list said. The run record
-  // is what remembers, because the findings themselves no longer exist to say so.
-  // Soft, unlike the pending-findings case above where findings actually exist: this is inferred
-  // from the run record with an empty list, which a degraded read can also produce. It still carries
-  // a soft 'agent' stage forward to findings (higher rank), but must not knock back a stored Approved.
-  if (d.run?.state === 'complete') {
-    return { label: 'nothing left to go through', tone: 'muted', stage: 'findings', soft: true };
-  }
-  if (agent === 'input') {
-    return { label: '', tone: 'attention', stage: 'agent', soft: true };
-  }
-
-  return { label: 'not started', tone: 'muted', stage: 'agent', soft: true };
-}
-
-/**
- * A fix workspace (`issue-<n>`): the agent writes the code and opens a PR the person owns.
- *
- * Without a PR the agent is the story. With one: a draft is the person's to read and mark
- * ready (the skills never do), a review from someone else after the last push is theirs to
- * answer, and otherwise the PR waits for a reviewer.
- */
-function fixWork(d: Json | null, agent: AgentState, coded = false): Work {
-  if (!d) {
-    // Before a PR the branch says which of the first two stages this is: commits on it mean the
-    // code is being written (or is written); none, and the agent is still assessing.
-    const stage: FixStage = coded ? 'code' : 'assess';
-
-    if (agent === 'working') {
-      return { label: '', tone: 'working', stage, soft: true };
-    }
-    if (agent === 'input') {
-      return { label: '', tone: 'attention', stage, soft: true };
-    }
-
-    return { label: 'no PR yet', tone: 'muted', stage, soft: true };
-  }
-  const m = d.meta || {};
-
-  if (m.merged) {
-    return { label: '', tone: 'green', stage: 'merged' };
-  }
-  if (m.approved) {
-    return {
-      label: 'ready to merge', tone: 'green', stage: 'merged', stageLabel: 'Approved',
-    };
-  }
-  const comments: Json[] = [...(d.discussion || []), ...(d.reviewComments || [])];
-  const others = latest(comments.filter((c) => c.author && c.author !== m.author && !isBot(c.author)).map((c) => c.createdAt));
-  const mine = Math.max(latest(comments.filter((c) => c.author === m.author).map((c) => c.createdAt)), latest((d.commits || []).map((c: Json) => c.date)));
-
-  if (others > mine) {
-    return { label: 'respond to the review', tone: 'attention', stage: 'feedback' };
-  }
-  if (agent === 'working') {
-    return { label: '', tone: 'working', stage: m.draft ? 'draft' : 'review' };
-  }
-  if (m.draft) {
-    return { label: 'read it and mark it ready', tone: 'attention', stage: 'draft' };
-  }
-  if (m.state === 'CLOSED') {
-    return {
-      label: '', tone: 'muted', stage: 'merged', stageLabel: 'Closed',
-    };
-  }
-
-  return { label: 'waiting for a reviewer', tone: 'waiting', stage: 'review' };
-}
-
-/** A stage's own tone, for when the stored stage is not the one just derived and has no note of its own. */
-const STAGE_TONE: Record<Stage, Tone> = {
-  assess: 'muted', code: 'muted', draft: 'attention', review: 'waiting', feedback: 'attention', merged: 'green',
-  agent: 'muted', findings: 'attention', submitted: 'waiting', response: 'attention', approved: 'green',
-  /*
-   * A new bug and one in triage are both yours, with a clock on each; one parked on the
-   * reporter is somebody else's turn, which is what `waiting` is for; past triage it has left
-   * this team. These were a map of their own while a bug had one stage and five positions.
-   */
-  'bug-new': 'attention', 'bug-triage': 'attention', 'bug-waiting': 'waiting', 'bug-prioritized': 'green', 'bug-done': 'green',
-};
-
-/** A derived work state, packaged for the store to reconcile against what it already holds. */
-function toDerived(kind: 'fix' | 'review', w: Work, pr: number, repo: string): DerivedStage {
-  return {
-    kind, stage: (w.stage || (kind === 'review' ? 'agent' : 'assess')) as Stage, stageLabel: w.stageLabel, soft: !!w.soft, round: w.round || 1, reviewed: !!w.reviewed, pr, repo,
-  };
-}
-
-/**
- * Turn the stored stage into what the row shows. When the stored stage is the one just derived, the
- * derived state's own words and tone are used - they say the most. When they differ - a manual hold,
- * or a soft guess the store would not follow - the stage's name stands alone in the stage's own tone,
- * rather than a note that describes a different stage than the one on the rail.
- */
-function display(rec: StageRecord, w: Work): Pick<WorkspaceStatus, 'label' | 'tone' | 'stage' | 'stageLabel' | 'reviewed' | 'round'> {
-  const match = rec.stage === w.stage;
-
-  return {
-    stage:      rec.stage,
-    stageLabel: rec.stageLabel || STAGE_LABELS[rec.stage] || '',
-    reviewed:   rec.reviewed,
-    round:      rec.round || 1,
-    label:      match ? (w.label || '') : '',
-    tone:       match ? w.tone : (STAGE_TONE[rec.stage] || 'muted'),
-  };
+/** The stored record, as the row shows it. */
+function display(rec: StageRecord, w: Json): Pick<WorkspaceStatus, 'label' | 'tone' | 'stage' | 'stageLabel' | 'reviewed' | 'round'> {
+  return displayOf(rec, w) as Pick<WorkspaceStatus, 'label' | 'tone' | 'stage' | 'stageLabel' | 'reviewed' | 'round'>;
 }
 
 async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
   const { pr, issue, bug } = numbers(name);
+
+  await serverStatuses();
+  if (server && !bug && (pr || isFix(name))) {
+    const fresh = await serverRefresh(name);
+
+    if (fresh) {
+      return fresh;
+    }
+  }
   const agent = agents[name] || 'none';
   const links: WorkspaceStatus['links'] = [];
   // The workspace's own, not this product's, known before anything is read. See workspace-repos.mjs.
@@ -860,7 +640,7 @@ async function readWork(name: string): Promise<Partial<WorkspaceStatus>> {
       // Overdue is the deadline the process puts on this status, not an opinion, so it is said
       // rather than left to the colour.
       label:      overdue ? 'past its deadline' : '',
-      tone:       overdue ? 'attention' : (STAGE_TONE[position] || 'muted'),
+      tone:       overdue ? 'attention' : ((STAGE_TONE as Record<string, Tone>)[position] || 'muted'),
     };
   }
   if (isFix(name)) {
@@ -990,7 +770,7 @@ export async function readStatusNow(name: string, github = true): Promise<Worksp
   // ever goes forward and never undoes a stored stage.
   let rewrite: Partial<WorkspaceStatus> = {};
 
-  if (!github && before.readAt && isFix(name) && !before.pr) {
+  if (!server && !github && before.readAt && isFix(name) && !before.pr) {
     const w = fixWork(null, agent, coded[name] || false);
 
     rewrite = display(await reconcileStage(name, toDerived('fix', w, 0, await repoFor(name))), w);
@@ -1004,7 +784,7 @@ export async function readStatusNow(name: string, github = true): Promise<Worksp
 }
 
 /** GitHub's own bots, which are not reviewers. */
-export const isBot = (login: string) => /\[bot\]$/i.test(login || '') || /^(github-actions|dependabot|codecov|renovate)/i.test(login || '');
+export const isBot = (login: string): boolean => isBotOf(login);
 
 /**
  * How many workspaces one pass reads. The reason it is not one, and not all of them.
@@ -1023,6 +803,11 @@ const READ_AT_ONCE = 3;
 
 /** GitHub, the stalest few first; never two passes at once. */
 async function readStale(names: string[]): Promise<void> {
+  await serverStatuses();
+  // dev-api reads these and pushes what it finds; only a Jira bug's workspace is read from here.
+  if (server) {
+    names = names.filter((name) => numbers(name).bug);
+  }
   if (reading) {
     return;
   }
@@ -1101,7 +886,7 @@ export async function workspaceStatuses(workspaces: { name: string; cluster?: st
     // so this soft move only carries Assess to Code and never undoes a stored stage.
     let rewrite: Partial<WorkspaceStatus> = {};
 
-    if (known.readAt && isFix(name) && !known.links.some((l) => l.label.startsWith('PR'))) {
+    if (!server && known.readAt && isFix(name) && !known.links.some((l) => l.label.startsWith('PR'))) {
       const w = fixWork(null, agent, coded[name] || false);
 
       rewrite = display(await reconcileStage(name, toDerived('fix', w, 0, await repoFor(name))), w);

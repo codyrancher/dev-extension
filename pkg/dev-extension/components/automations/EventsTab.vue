@@ -9,8 +9,8 @@
  * automation that listens to it with what happened there - it ran, or the list or the constraint
  * that stopped it.
  *
- * Muting a workspace hides its events here and keeps them from starting anything; they are still
- * recorded, and Show muted brings them back.
+ * How each source is doing, and which workspaces are muted, is the Sources tab. A muted workspace's
+ * events are still recorded here, hidden until Show muted.
  */
 import SortableTable from '@shell/components/SortableTable';
 import { Banner } from '@components/Banner';
@@ -22,7 +22,7 @@ import { watch } from '../../events';
 import { NarrowMixin } from '../../design/narrow';
 import { narrowed } from '../../issue-table';
 import {
-  EVENTS_PATH, readEvent, setMutes, near, stamp, OUTCOME_WORDS
+  EVENTS_PATH, readEvent, setMutes, stamp, OUTCOME_WORDS
 } from '../../automations';
 import { listAgents, runAutomation } from '../../agent-defs';
 import {
@@ -60,7 +60,10 @@ const SOURCES = [
   { value: '', label: 'Every source' },
   { value: 'github', label: 'GitHub' },
   { value: 'workspace', label: 'Workspaces' },
+  { value: 'kubernetes', label: 'Kubernetes' },
 ];
+
+const BADGES = { github: 'GitHub', workspace: 'Stage', kubernetes: 'K8s' };
 
 export default {
   name: 'EventsTab',
@@ -76,7 +79,6 @@ export default {
   data() {
     return {
       data:        null,
-      now:         Date.now(),
       source:      '',
       showMuted:   false,
       onlyMatched: false,
@@ -84,13 +86,12 @@ export default {
       open:        null,
       runId:       '',
       error:       '',
-      muteDraft:   '',
       defs:        [],
       runOn:       '',
       starting:    false,
       unwatch:     null,
-      clock:       null,
       SOURCES,
+      BADGES,
       OUTCOME_WORDS,
     };
   },
@@ -124,45 +125,6 @@ export default {
         }));
     },
 
-    /** Workspaces the log has seen, for the mute picker, the noisiest first. */
-    knownWorkspaces() {
-      const counts = new Map();
-
-      for (const e of this.events) {
-        if (e.workspace && !this.mutes.includes(e.workspace)) {
-          counts.set(e.workspace, (counts.get(e.workspace) || 0) + 1);
-        }
-      }
-
-      return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name, n]) => ({ name, n }));
-    },
-
-    github() {
-      return this.data?.sources?.github || {};
-    },
-
-    stages() {
-      return this.data?.sources?.workspace || {};
-    },
-
-    /** What GitHub is being read for, in the words My Work uses for the same sets. */
-    githubSets() {
-      const c = this.github.counts || {};
-      const sets = [
-        [c.assigned, 'assigned'], [c.requested, 'asked to review'], [c.reviewed, 'reviewed'], [c.authored, 'yours'],
-      ].filter(([n]) => typeof n === 'number');
-
-      return sets.map(([n, word]) => `${ n } ${ word }`).join(' · ');
-    },
-
-    /** The GitHub line, as one string so it wraps like a sentence rather than in pieces. */
-    githubLine() {
-      const g = this.github;
-      const when = !g.at ? 'not read yet' : [g.ok === false ? `failed ${ near(g.at, this.now) }` : `read ${ near(g.at, this.now) }`, g.next ? `next ${ near(g.next, this.now) }` : ''].filter(Boolean).join(', ');
-
-      return [g.login ? `@${ g.login }` : '', this.githubSets, when].filter(Boolean).join(' · ');
-    },
-
     /** The automations a person might run on the open event, for trying one out on it. */
     runnable() {
       return this.defs.filter((d) => d.action !== 'review' || this.open?.event?.payload?.kind === 'pr');
@@ -174,14 +136,10 @@ export default {
       this.data = value;
       this.$emit('status', value);
     }, { every: 5000 });
-    this.clock = setInterval(() => {
-      this.now = Date.now();
-    }, 15000);
   },
 
   beforeUnmount() {
     this.unwatch?.();
-    clearInterval(this.clock);
   },
 
   methods: {
@@ -231,7 +189,6 @@ export default {
       if (name && !this.mutes.includes(name)) {
         this.changeMutes([...this.mutes, name]);
       }
-      this.muteDraft = '';
     },
 
     unmute(name) {
@@ -288,33 +245,6 @@ export default {
     class="events"
     data-testid="automation-events"
   >
-    <!-- What each source is doing, the way My Work's header says whose work it is reading. -->
-    <div class="events__sources">
-      <span
-        class="events__source"
-        :class="{ 'events__source--bad': github.ok === false }"
-        :title="github.error || 'Read every three minutes: GitHub has no push channel for this short of a webhook on every repository.'"
-      >
-        <span class="events__dot" />
-        <strong>GitHub</strong>
-        <span>{{ githubLine }}</span>
-      </span>
-      <span
-        class="events__source"
-        :class="{ 'events__source--live': stages.live, 'events__source--bad': !stages.live && stages.error }"
-        :title="stages.live ? 'Watched: a stage change is recorded the moment it is stored.' : (stages.error || '')"
-      >
-        <span class="events__dot" />
-        <strong>Stages</strong>
-        <span>{{ stages.live ? 'live' : 'read every minute' }}</span>
-      </span>
-    </div>
-
-    <Banner
-      v-if="github.ok === false"
-      color="warning"
-      :label="`GitHub could not be read: ${ github.error }`"
-    />
     <Banner
       v-if="error"
       color="error"
@@ -322,27 +252,6 @@ export default {
       :closable="true"
       @close="error = ''"
     />
-
-    <div
-      v-if="mutes.length"
-      class="events__mutes"
-    >
-      <span class="events__label">Muted</span>
-      <span
-        v-for="m in mutes"
-        :key="m"
-        class="events__muted"
-      >
-        {{ m }}
-        <a
-          href="#"
-          class="events__unmute"
-          :aria-label="`Unmute ${ m }`"
-          title="Unmute"
-          @click.prevent="unmute(m)"
-        >&times;</a>
-      </span>
-    </div>
 
     <SortableTable
       class="events__table"
@@ -372,25 +281,6 @@ export default {
               {{ s.label }}
             </option>
           </select>
-          <select
-            v-if="knownWorkspaces.length"
-            v-model="muteDraft"
-            class="events__select"
-            aria-label="Mute a workspace"
-            data-testid="automation-mute-pick"
-            @change="mute(muteDraft)"
-          >
-            <option value="">
-              Mute a workspace&hellip;
-            </option>
-            <option
-              v-for="w in knownWorkspaces"
-              :key="w.name"
-              :value="w.name"
-            >
-              {{ w.name }} ({{ w.n }})
-            </option>
-          </select>
           <span class="events__toggles">
             <Checkbox
               v-model:value="onlyMatched"
@@ -418,7 +308,7 @@ export default {
         <span
           class="events__badge"
           :class="`events__badge--${ row.source }`"
-        >{{ row.source === 'workspace' ? 'Stage' : 'GitHub' }}</span>
+        >{{ BADGES[row.source] || row.source }}</span>
       </template>
       <template #cell:event="{ row }">
         <span class="events__name">{{ row.name }}</span>
@@ -506,7 +396,7 @@ export default {
           </div>
           <div>
             <dt>Source</dt>
-            <dd>{{ open.summary.source === 'workspace' ? 'Workspace stage' : 'GitHub' }}</dd>
+            <dd>{{ { workspace: 'Workspace stage', github: 'GitHub', kubernetes: 'Kubernetes' }[open.summary.source] || open.summary.source }}</dd>
           </div>
           <div v-if="open.summary.actor">
             <dt>By</dt>
@@ -638,61 +528,13 @@ export default {
   flex-direction: column;
   gap:            var(--dev-space-3);
 
-  &__sources {
-    display:   flex;
-    flex-wrap: wrap;
-    gap:       var(--dev-space-2) var(--dev-space-5);
-    color:     var(--muted);
-    font-size: 13px;
-  }
 
-  &__source {
-    display:     inline-flex;
-    align-items: baseline;
-    gap:         var(--dev-space-2);
-    min-width:   0;
 
-    strong { color: var(--body-text); font-weight: 600; }
-  }
 
-  &__dot {
-    flex:          0 0 auto;
-    width:         8px;
-    height:        8px;
-    border-radius: 50%;
-    background:    var(--success);
-  }
 
-  &__source--live &__dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 25%, transparent); }
-  &__source--bad &__dot { background: var(--error); }
 
-  &__mutes {
-    display:     flex;
-    flex-wrap:   wrap;
-    align-items: center;
-    gap:         var(--dev-space-2);
-    font-size:   13px;
-  }
 
-  &__label {
-    color:          var(--muted);
-    font-size:      11px;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
 
-  &__muted {
-    display:       inline-flex;
-    align-items:   center;
-    gap:           var(--dev-space-1);
-    padding:       0 var(--dev-space-1) 0 var(--dev-space-2);
-    border:        1px solid var(--border);
-    border-radius: var(--r-md, 12px);
-    font-family:   monospace;
-    font-size:     12px;
-  }
-
-  &__unmute { padding: 0 4px; color: var(--muted); text-decoration: none; &:hover { color: var(--error); } }
 
   &__select {
     width:         auto;
@@ -737,6 +579,7 @@ export default {
     color:          var(--muted);
 
     &--workspace { color: var(--dev-accent); border-color: color-mix(in srgb, var(--dev-accent) 50%, var(--border)); }
+    &--kubernetes { color: var(--info, var(--link)); border-color: color-mix(in srgb, var(--info, var(--link)) 50%, var(--border)); }
   }
 
   &__name { font-family: monospace; font-size: 12px; }

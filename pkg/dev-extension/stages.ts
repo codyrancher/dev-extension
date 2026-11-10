@@ -23,10 +23,10 @@
 // Durable and shared: one ConfigMap in dev-system, so every viewer and device sees the same stage and
 // it survives a reload. Written only when the stage actually changes, so it is not churned each poll.
 import { devFetch, DEV_SYSTEM_NAMESPACE, clusterBase } from './api';
-import type { Stage, FixStage, ReviewStage } from './workspace-status';
+import type { Stage } from './workspace-status';
 import { STAGE_LABELS } from './workspace-status';
 import { DEFAULT_REPO } from './reviews';
-import { readFrom } from './workspace-repos.mjs';
+import { reconcileRecord } from './stage-derive.mjs';
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -58,19 +58,6 @@ export interface DerivedStage {
   pr: number;
   /** The repository the work was read from. */
   repo?: string;
-}
-
-// How advanced each stage is within its kind, so a soft signal can carry a workspace forward but not
-// back. A hard signal ignores this - a review dropping from Approved back to Your pass on a new round
-// is real progress, not a regression - so ranking only ever gates soft moves.
-const FIX_ORDER: FixStage[] = ['assess', 'code', 'draft', 'review', 'feedback', 'merged'];
-const REVIEW_ORDER: ReviewStage[] = ['agent', 'findings', 'submitted', 'response', 'approved'];
-
-function rank(kind: 'fix' | 'review', stage: Stage): number {
-  const order: string[] = kind === 'review' ? REVIEW_ORDER : FIX_ORDER;
-  const i = order.indexOf(stage);
-
-  return i < 0 ? 0 : i;
 }
 
 const CONFIGMAP = 'dev-workspace-stages';
@@ -209,17 +196,6 @@ async function flush(): Promise<void> {
   }
 }
 
-function recordOf(d: DerivedStage, manual: boolean, hard: boolean): StageRecord {
-  return {
-    stage: d.stage, stageLabel: d.stageLabel, manual, hard, round: d.round, reviewed: d.reviewed, pr: d.pr, repo: d.repo || DEFAULT_REPO, at: new Date().toISOString(),
-  };
-}
-
-function same(a: StageRecord, b: StageRecord): boolean {
-  return a.stage === b.stage && a.stageLabel === b.stageLabel && a.manual === b.manual && a.hard === b.hard && a.round === b.round && a.reviewed === b.reviewed &&
-    readFrom(a, b.repo, DEFAULT_REPO);
-}
-
 /**
  * The stored stage for a workspace, reconciled with what was just derived. This is where the trust
  * rules live: a hard fact wins (and releases a manual hold), a soft guess never undoes a stored
@@ -227,39 +203,17 @@ function same(a: StageRecord, b: StageRecord): boolean {
  */
 export async function reconcileStage(name: string, d: DerivedStage): Promise<StageRecord> {
   await ensureLoaded();
-  // A record read from another repository is not this workspace's stage, and is replaced as if it
-  // were not there: lte-pr-850 was stored as Merged from rancher/dashboard#850. See readFrom.
-  const stored = readFrom(cache[name], d.repo, DEFAULT_REPO) ? cache[name] : undefined;
+  // The rules are stage-derive.mjs's, shared with dev-api, which reconciles every workspace the
+  // same way on its own clock.
+  const { record, write } = reconcileRecord(cache[name], d, { now: new Date().toISOString(), fallbackRepo: DEFAULT_REPO }) as { record: StageRecord; write: boolean };
 
-  const accept = (manual: boolean, hard: boolean): StageRecord => {
-    const rec = recordOf(d, manual, hard);
-
-    if (!stored || !same(stored, rec)) {
-      void save(name, rec);
-    } else {
-      cache[name] = rec; // keep `at`/pr fresh in memory without a write
-    }
-
-    return rec;
-  };
-
-  if (!stored) {
-    return accept(false, !d.soft);
-  }
-  if (stored.manual) {
-    // Held by the person: only a hard fact overtakes it. A soft guess leaves the manual stage be.
-    return d.soft ? stored : accept(false, true);
-  }
-  if (!d.soft) {
-    return accept(false, true); // a hard fact always wins over an auto stage
-  }
-  // A soft guess: never undo a stored stage. Carry a still-soft workspace forward within its kind
-  // (Assess -> Code), and otherwise keep exactly what is stored.
-  if (!stored.hard && rank(d.kind, d.stage) > rank(d.kind, stored.stage)) {
-    return accept(false, false);
+  if (write) {
+    void save(name, record);
+  } else if (record !== cache[name]) {
+    cache[name] = record; // keep `at`/pr fresh in memory without a write
   }
 
-  return stored;
+  return record;
 }
 
 /**

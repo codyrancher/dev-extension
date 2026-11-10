@@ -2,7 +2,7 @@
 // Automations: what happened, and what runs when it does.
 //
 // The frame every page here has (DevPage) and the tabs My Work and a workspace have (Rancher's
-// Tabbed, which keeps the tab in the address - `#events`, `#automations`). Events is the log dev-api
+// Tabbed, which keeps the tab in the address - `#automations`, `#events`, `#sources`). Events is the log dev-api
 // keeps - workspace stages moving, and what happens on the GitHub issues and pull requests you are
 // part of - with what each did to every automation that listens to it. Automations is the
 // definitions (agent-defs.ts): an agent, a script or a review, what sets it off, and its runs.
@@ -12,27 +12,24 @@ import { RcButton } from '@components/RcButton';
 import DevPage from '../components/DevPage.vue';
 import EventsTab from '../components/automations/EventsTab.vue';
 import AutomationsTab from '../components/automations/AutomationsTab.vue';
-import { pollNow } from '../automations';
+import SourcesTab from '../components/automations/SourcesTab.vue';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, AGENT_EDIT_ROUTE
 } from '../config/constants';
 
-const TABS = ['events', 'automations'];
+const TABS = ['automations', 'events', 'sources'];
 
 export default {
   name: 'Automations',
 
   components: {
-    Tabbed, Tab, RcButton, DevPage, EventsTab, AutomationsTab
+    Tabbed, Tab, RcButton, DevPage, EventsTab, AutomationsTab, SourcesTab
   },
 
   data() {
     const asked = String(this.$route?.hash || '').replace(/^#/, '');
 
-    return {
-      tab:     TABS.includes(asked) ? asked : 'events',
-      reading: false,
-    };
+    return { tab: TABS.includes(asked) ? asked : 'automations' };
   },
 
   computed: {
@@ -49,17 +46,6 @@ export default {
         this.tab = name;
       }
     },
-
-    async readNow() {
-      this.reading = true;
-      try {
-        await pollNow();
-      } catch {
-        // The log says how the read went, in its GitHub line.
-      } finally {
-        this.reading = false;
-      }
-    },
   },
 };
 </script>
@@ -72,18 +58,7 @@ export default {
   >
     <template #actions>
       <RcButton
-        v-if="tab === 'events'"
-        variant="tertiary"
-        size="small"
-        :left-icon="reading ? 'spinner' : 'refresh'"
-        :disabled="reading"
-        data-testid="automation-poll"
-        @click="readNow"
-      >
-        {{ reading ? 'Reading GitHub' : 'Read GitHub now' }}
-      </RcButton>
-      <RcButton
-        v-else
+        v-if="tab === 'automations'"
         variant="primary"
         size="small"
         data-testid="agents-new"
@@ -99,6 +74,13 @@ export default {
       @changed="onTab"
     >
       <Tab
+        name="automations"
+        label="Automations"
+        :weight="3"
+      >
+        <AutomationsTab />
+      </Tab>
+      <Tab
         name="events"
         label="Events"
         :weight="2"
@@ -106,11 +88,11 @@ export default {
         <EventsTab />
       </Tab>
       <Tab
-        name="automations"
-        label="Automations"
+        name="sources"
+        label="Sources"
         :weight="1"
       >
-        <AutomationsTab />
+        <SourcesTab />
       </Tab>
     </Tabbed>
   </DevPage>
