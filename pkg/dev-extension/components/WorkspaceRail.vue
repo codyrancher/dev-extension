@@ -2682,7 +2682,16 @@ export default {
       }
       this.resuming = conversation.id;
       try {
-        await startPaneDetached(conversation.workspace || this.workspace.name, conversation.id);
+        const workspace = conversation.workspace || this.workspace.name;
+
+        /*
+         * Prepared first, as every other start is. A conversation can be waiting here with its
+         * opening prompt queued while dev-api is still preparing the workspace (an automation's
+         * review registers itself first); starting it bare would run that prompt against a
+         * checkout and skills that are not there yet. A prepared workspace answers from its stamp.
+         */
+        await ensureWorkspaceReady(workspace);
+        await startPaneDetached(workspace, conversation.id);
         this.liveShown = conversation.id;
         await this.refreshLive();
       } catch (e) {

@@ -7796,6 +7796,15 @@ const routes = [
     try {
       return await reviewAgainOnce(Number(m[1]), await repoOf(url), url.searchParams.get('head') || '');
     } catch (e) {
+      if (e?.registered) {
+        // Queued in the workspace already: a dashboard's sweep prepares it and starts it.
+        const later = `${ e.registered.title } is in ${ e.registered.workspace }, waiting to start: ${ String(e.message || e).slice(0, 240) } It starts once the workspace is up and a dashboard is open.`;
+
+        if (e instanceof NeedsDashboard) {
+          return { pr: Number(m[1]), waiting: true, ...e.registered, note: later };
+        }
+        throw failure(500, later);
+      }
       throw failure(e instanceof NeedsDashboard ? 409 : e.status || 500, e.message || String(e));
     }
   }],
@@ -11357,10 +11366,12 @@ async function agentSessions(...args) {
 }
 
 /**
- * The review's conversation, started: the workspace's `Review #<n>` if it has one that is not
- * running, else a new one; the prompt queued; the pane started detached in the workspace's checkout.
+ * The review's conversation, registered: the workspace's `Review #<n>` if it has one that is not
+ * running, else a new one, with the prompt queued. Not started - startReviewPane does that once the
+ * workspace is prepared; until then the conversation is in the workspace, saying what it will do,
+ * and an open dashboard's sweep (startPendingConversations) starts one that is left queued.
  */
-async function startReviewConversation(workspace, number, repo, say) {
+async function registerReviewConversation(workspace, number, repo, say) {
   const title = `Review #${ number }`;
   const listed = (await agentSessions('list', workspace)).out.split('\n').map((line) => line.split('\t')).filter(([id]) => CONVERSATION_ID.test(id || ''));
   const existing = listed.find(([, t]) => t === title)?.[0] || '';
@@ -11382,7 +11393,7 @@ async function startReviewConversation(workspace, number, repo, say) {
       return { id: existing, already: true };
     }
   }
-  say('starting the conversation');
+  say('registering the conversation');
   let id = existing;
 
   if (!id) {
@@ -11399,14 +11410,29 @@ async function startReviewConversation(workspace, number, repo, say) {
   if (!queued.includes('QUEUED')) {
     throw new Error('The review\'s prompt could not be queued in the agent pod.');
   }
-  await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '/seed/shell.sh', id, `/workspaces/${ workspace }/dashboard`, '/workspace/.home', 'start', `/workspaces/${ workspace }/bin/dev-shell`], 60_000);
 
   return { id, already: false };
 }
 
+/** A registered conversation's pane, started detached in the workspace's checkout: claude reads the queued prompt. */
+async function startReviewPane(workspace, id) {
+  const { pod } = await agentSessions('ids');
+
+  await podExec(pod.metadata.namespace, pod.metadata.name, AGENT_CONTAINER, ['/bin/sh', '/seed/shell.sh', id, `/workspaces/${ workspace }/dashboard`, '/workspace/.home', 'start', `/workspaces/${ workspace }/bin/dev-shell`], 60_000);
+}
+
 /**
- * Start one review: the workspace, its preparation, the conversation. `say` reports progress onto
- * the run. Throws NeedsDashboard for what only a dashboard can do.
+ * Start one review: the workspace, the conversation, the preparation, the pane. `say` reports
+ * progress onto the run. Throws NeedsDashboard for what only a dashboard can do.
+ *
+ * The conversation is registered, its prompt queued, as soon as the workspace exists - before the
+ * minutes of waiting for its pod and preparing it, and before anything there can fail. It used to
+ * come last, so a workspace an automation made sat empty all that while, inviting a New
+ * conversation, and stayed empty for good when a step failed. Now the review is in it from the
+ * start, the way the Review button's openWith does it, and an error thrown after that carries
+ * `registered`: the review is waiting in the workspace, and an open dashboard's sweep
+ * (startPendingConversations) prepares the workspace and starts it - nothing is handed over, which
+ * would send the prompt a second time.
  */
 async function startReviewHere(pr, say) {
   const where = await reviewWorkspaceName(pr.number);
@@ -11414,17 +11440,10 @@ async function startReviewHere(pr, say) {
 
   if (!where.exists) {
     host = (await makeReviewWorkspace(where.name, pr.repo, pr.title, where.instances, say)).rancherUrl;
-    await finishReviewWorkspace(where.name, pr.title, say);
   } else {
     host = String((await k8s(`${ INSTANCES }/${ where.name }`).catch(() => null))?.spec?.values?.rancherUrl || '');
   }
-  const target = await reviewWorkspacePod(where.name, REVIEW_POD_WAIT_MS, say);
-
-  if (!target) {
-    throw new Error(`The workspace ${ where.name }'s pod did not start within ${ REVIEW_POD_WAIT_MS / 60_000 } minutes.`);
-  }
-  await prepareReviewWorkspace(target, where.name, pr.number, host, say);
-  const conversation = await startReviewConversation(where.name, pr.number, pr.repo, say);
+  const conversation = await registerReviewConversation(where.name, pr.number, pr.repo, say);
 
   if (conversation.already) {
     // The review's own record is that conversation's, and stays as it says.
@@ -11433,11 +11452,28 @@ async function startReviewHere(pr, say) {
   const previous = (await readReview(pr.number, 'run.json').catch(() => null)) || {};
 
   await writeReview(pr.number, 'run.json', {
-    pr: pr.number, project: where.name, state: 'starting', note: 'started by an automation', startedAt: previous.startedAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+    pr: pr.number, project: where.name, state: 'starting', note: 'started by an automation; preparing the workspace', startedAt: previous.startedAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
   }).catch(() => {});
   rememberReviewWorkspace(pr.number, { project: where.name });
 
-  return { workspace: where.name, conversation: conversation.id, already: conversation.already, created: !where.exists };
+  try {
+    if (!where.exists) {
+      await finishReviewWorkspace(where.name, pr.title, say);
+    }
+    const target = await reviewWorkspacePod(where.name, REVIEW_POD_WAIT_MS, say);
+
+    if (!target) {
+      throw new Error(`The workspace ${ where.name }'s pod did not start within ${ REVIEW_POD_WAIT_MS / 60_000 } minutes.`);
+    }
+    await prepareReviewWorkspace(target, where.name, pr.number, host, say);
+    say('starting the conversation');
+    await startReviewPane(where.name, conversation.id);
+  } catch (e) {
+    e.registered = { workspace: where.name, conversation: conversation.id };
+    throw e;
+  }
+
+  return { workspace: where.name, conversation: conversation.id, already: false, created: !where.exists };
 }
 
 /*
@@ -11448,7 +11484,7 @@ async function startReviewHere(pr, say) {
  * The button sends the my-pr-review-new-commits prompt into the review's conversation. Here that
  * is done only to a conversation that is not open: one whose pane is gone is started again with
  * the prompt queued, so it reviews with everything it already knows. An open one is somebody's,
- * and is left exactly as it is (see startReviewConversation), so the second pass gets a
+ * and is left exactly as it is (see registerReviewConversation), so the second pass gets a
  * conversation of its own beside it. A workspace that has gone since the first review is made
  * again, as a first review makes one.
  *
@@ -11500,8 +11536,8 @@ async function reviewAgainConversation(workspace, number, repo, say) {
   if (!queued.includes('QUEUED')) {
     throw new Error('The prompt could not be queued in the agent pod.');
   }
-  await podExec(ns, podName, AGENT_CONTAINER, ['/bin/sh', '/seed/shell.sh', id, `/workspaces/${ workspace }/dashboard`, '/workspace/.home', 'start', `/workspaces/${ workspace }/bin/dev-shell`], 60_000);
 
+  // Registered, not started: startReviewPane does that once the workspace is prepared.
   return { id, resumed };
 }
 
@@ -11526,16 +11562,10 @@ async function reviewAgainHere(number, repo, asked = '') {
   if (!where.exists) {
     say(`making ${ where.name }`);
     host = (await makeReviewWorkspace(where.name, repo, `Review #${ number }`, where.instances, say)).rancherUrl;
-    await finishReviewWorkspace(where.name, `Review #${ number }`, say);
   } else {
     host = String((await k8s(`${ INSTANCES }/${ where.name }`).catch(() => null))?.spec?.values?.rancherUrl || '');
   }
-  const target = await reviewWorkspacePod(where.name, REVIEW_POD_WAIT_MS, say);
-
-  if (!target) {
-    throw new Error(`The workspace ${ where.name }'s pod did not start within ${ REVIEW_POD_WAIT_MS / 60_000 } minutes.`);
-  }
-  await prepareReviewWorkspace(target, where.name, number, host, say);
+  // In the workspace, prompt queued, before the waiting - as startReviewHere does, and for the same reason.
   const conversation = await reviewAgainConversation(where.name, number, repo, say);
   const record = {
     pr:           number,
@@ -11550,6 +11580,22 @@ async function reviewAgainHere(number, repo, asked = '') {
   };
 
   await writeReview(number, 'again.json', record).catch(() => {});
+
+  try {
+    if (!where.exists) {
+      await finishReviewWorkspace(where.name, `Review #${ number }`, say);
+    }
+    const target = await reviewWorkspacePod(where.name, REVIEW_POD_WAIT_MS, say);
+
+    if (!target) {
+      throw new Error(`The workspace ${ where.name }'s pod did not start within ${ REVIEW_POD_WAIT_MS / 60_000 } minutes.`);
+    }
+    await prepareReviewWorkspace(target, where.name, number, host, say);
+    await startReviewPane(where.name, conversation.id);
+  } catch (e) {
+    e.registered = { workspace: where.name, conversation: conversation.id, title: record.title };
+    throw e;
+  }
 
   return {
     ...record,
@@ -11594,10 +11640,22 @@ async function reviewHere(number, repo, title = '') {
         : `Started Review #${ number } in ${ started.workspace }${ started.created ? ', made for it' : '' }.`,
     };
   } catch (e) {
+    const message = String(e?.message || e).slice(0, 240);
+
+    if (e?.registered) {
+      // In the workspace already, prompt queued: a dashboard's sweep prepares and starts it.
+      const later = `Review #${ number } is in ${ e.registered.workspace }, waiting to start: ${ message } It starts once the workspace is up and a dashboard is open.`;
+
+      if (e instanceof NeedsDashboard) {
+        return {
+          pr: number, repo, waiting: true, ...e.registered, steps: notes, note: later,
+        };
+      }
+      throw failure(500, later);
+    }
     if (!(e instanceof NeedsDashboard)) {
       throw e;
     }
-    const message = String(e.message || e).slice(0, 240);
     const run = {
       id:           `r${ Date.now().toString(36) }${ crypto.randomBytes(3).toString('hex') }`,
       automation:   REVIEW_QUEUE,
@@ -11795,6 +11853,14 @@ const startWaitingReviews = singleFlight(async() => {
       } catch (e) {
         const message = String(e?.message || e).slice(0, 300);
 
+        if (e?.registered) {
+          // Waiting in the workspace with its prompt queued; watched as a conversation from here.
+          updateAutoRun(name, run.id, {
+            state: 'running', workspace: e.registered.workspace, conversation: e.registered.conversation, note: `${ message } It starts once the workspace is up and a dashboard is open.`,
+          });
+
+          return;
+        }
         updateAutoRun(name, run.id, e instanceof NeedsDashboard ? {
           state: 'requested', needsDashboard: true, claimedBy: '', note: `${ message } Waiting for an open dashboard to start it.`,
         } : {
