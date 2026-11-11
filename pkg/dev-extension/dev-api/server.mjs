@@ -13,6 +13,7 @@
 // in dev-system - and the review state lives on the disk, under /workspaces/.artifacts, beside
 // the recordings and reports of the same pull request (see reviewPaths).
 import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -11840,6 +11841,27 @@ const VPN_SECRETS = {
 let vpnTokenHeld = '';
 let vpnAppliedAt = 0;
 
+/**
+ * A lab machine to knock on: whether the lab answers from here, by whatever route. The node's
+ * egress is every pod's, so another way in (the person's desktop VPN, while the cluster's node runs
+ * on that desktop) reaches it too - and then nobody needs to be asked to log in to this one.
+ */
+const VPN_LAB_PROBE = { host: '10.115.252.105', port: 443 };
+
+function labAnswers(timeoutMs = 3_000) {
+  return new Promise((resolve) => {
+    const socket = net.connect(VPN_LAB_PROBE.port, VPN_LAB_PROBE.host);
+    const done = (ok) => {
+      socket.destroy();
+      resolve(ok);
+    };
+
+    socket.setTimeout(timeoutMs, () => done(false));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
 /** dev-api's token for the pod's controller: in its Secret, or made now. */
 async function vpnToken() {
   if (!vpnTokenHeld) {
@@ -11942,6 +11964,9 @@ async function vpnRequest(req, body = {}, waitSeconds = 0) {
 
   if (status.phase === 'connected') {
     return { connected: true, since: status.since, note: `The VPN is up (since ${ status.since }): the lab (10.115.0.0/16) is reachable from every pod.` };
+  }
+  if (await labAnswers()) {
+    return { connected: true, via: 'another route', note: 'The lab already answers from here (another VPN is up), so nobody was asked to log in.' };
   }
   await ensureVpnPod().catch(() => {});
   const doc = await vpnDoc();
