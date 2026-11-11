@@ -312,6 +312,9 @@ export default {
 .s-menu__item > .s-icon {
   flex:            0 0 14px;
   width:           14px;
+  // The shell puts 6px after an icon in a button, which reached the font glyphs and not the
+  // drawings: Run now, Edit and Delete sat 6px right of Disable.
+  margin:          0;
   justify-content: center;
 }
 
