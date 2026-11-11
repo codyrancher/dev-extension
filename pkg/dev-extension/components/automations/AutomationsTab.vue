@@ -16,10 +16,12 @@ import DevDialog from '../DevDialog.vue';
 import DevModal from '../DevModal.vue';
 import AgentRunRow from '../AgentRunRow.vue';
 import RunLog from './RunLog.vue';
+import SMenu from '../ui/SMenu.vue';
+import '../../design/studio';
 import { NarrowMixin } from '../../design/narrow';
 import { narrowed } from '../../issue-table';
 import {
-  listAgents, listRuns, runAutomation, deleteAgent, skillOf, triggersOf
+  listAgents, listRuns, runAutomation, deleteAgent, saveAgent, skillOf, triggersOf
 } from '../../agent-defs';
 import { watch } from '../../events';
 import {
@@ -41,7 +43,7 @@ const HEADERS = [
     name: 'last', label: 'Last run', value: 'lastMs', sort: ['lastMs:desc'], width: 260
   },
   {
-    name: 'actions', label: '', align: 'right', width: 170
+    name: 'actions', label: '', align: 'right', width: 60
   },
 ];
 
@@ -56,7 +58,7 @@ export default {
   name: 'AutomationsTab',
 
   components: {
-    SortableTable, Banner, RcButton, DevDialog, DevModal, AgentRunRow, RunLog
+    SortableTable, Banner, RcButton, DevDialog, DevModal, AgentRunRow, RunLog, SMenu
   },
 
   mixins: [NarrowMixin],
@@ -74,6 +76,8 @@ export default {
       runId:    '',
       removing: null,
       starting: '',
+      /** The automation being switched on or off, while that is saved. */
+      toggling: '',
       OUTCOME_WORDS,
       KIND_WORDS,
     };
@@ -204,6 +208,51 @@ export default {
         this.error = e.message || String(e);
       } finally {
         this.starting = '';
+      }
+    },
+
+    /** A row's menu: what can be done to one automation, the delete set apart at the end. */
+    rowMenu(row) {
+      const on = row.def.enabled !== false;
+
+      return [
+        {
+          id: 'run', label: this.starting === row.name ? 'Starting…' : 'Run now', icon: 'play', disabled: this.starting === row.name,
+        },
+        { id: 'edit', label: 'Edit', icon: 'edit' },
+        {
+          id: 'toggle', label: on ? 'Disable' : 'Enable', icon: on ? 'stop' : 'check', disabled: this.toggling === row.name,
+        },
+        { divider: true },
+        {
+          id: 'delete', label: 'Delete', icon: 'trash', danger: true,
+        },
+      ];
+    },
+
+    onRowMenu(row, id) {
+      if (id === 'run') {
+        this.run(row);
+      } else if (id === 'edit') {
+        this.$router.push(this.editTo(row.name));
+      } else if (id === 'toggle') {
+        this.setEnabled(row, row.def.enabled === false);
+      } else if (id === 'delete') {
+        this.removing = row.def;
+      }
+    },
+
+    /** On or off, saved back as it is otherwise; an automation that is off listens to nothing. */
+    async setEnabled(row, enabled) {
+      this.toggling = row.name;
+      this.error = '';
+      try {
+        await saveAgent({ ...row.def, enabled });
+        await this.refresh();
+      } catch (e) {
+        this.error = e.message || String(e);
+      } finally {
+        this.toggling = '';
       }
     },
 
@@ -359,22 +408,16 @@ export default {
       </template>
       <template #cell:actions="{ row }">
         <div class="autos__actions">
-          <RcButton
-            variant="secondary"
-            size="small"
-            :disabled="starting === row.name"
-            @click="run(row)"
+          <SMenu
+            :items="rowMenu(row)"
+            :aria-label="`Actions for ${ row.name }`"
+            data-testid="automation-actions"
+            @select="onRowMenu(row, $event)"
           >
-            {{ starting === row.name ? 'Starting' : 'Run now' }}
-          </RcButton>
-          <RcButton
-            variant="tertiary"
-            size="small"
-            data-testid="agent-edit"
-            @click="$router.push(editTo(row.name))"
-          >
-            Edit
-          </RcButton>
+            <template #trigger>
+              <i class="icon icon-actions" />
+            </template>
+          </SMenu>
         </div>
       </template>
     </SortableTable>
@@ -589,7 +632,23 @@ export default {
   &__last--running &__last-state, &__last--starting &__last-state { color: var(--dev-accent); }
   &__last--waiting &__last-state, &__last--requested &__last-state { color: var(--warning); }
 
-  &__actions { display: flex; justify-content: flex-end; gap: var(--dev-space-2); }
+  &__actions {
+    display:         flex;
+    justify-content: flex-end;
+
+    // Rancher's row action button: a bordered square holding the three dots.
+    :deep(.s-menu__trigger) {
+      justify-content: center;
+      width:           32px;
+      height:          32px;
+      padding:         0;
+      border:          1px solid var(--border);
+      border-radius:   var(--border-radius);
+      color:           var(--body-text);
+
+      &:hover, &.s-menu__trigger--open { border-color: var(--primary); color: var(--primary); }
+    }
+  }
 
   &__modal-note { font-size: 12px; font-weight: 400; }
 
