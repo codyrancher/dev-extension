@@ -39,6 +39,31 @@ if [ -n "$QUEUE" ] && [ -f "$QUEUE" ]; then
   rm -f "$QUEUE"
 fi
 
+# claude's "Is this a project you trust?", answered for the folder this pane was started in.
+#
+# claude-defaults.mjs trusts the folder in advance - shell.sh runs it, and the loop runs it again
+# just before each start - but every claude already running rewrites ~/.claude.json from its own
+# copy, and one of those writes can drop a new folder's entry between that write and this claude's
+# read. The pane then sat on "No, exit" with the opening prompt behind it, and an automation's
+# review never began (Review #1233, 2026-11-11). The folder is one this product made and seeded, so
+# the answer is the one claude-defaults gives: yes - Down to it, then Enter. Watched for a minute
+# after a start, on this pane only, and only that question: anything else on the screen is left.
+answer_trust() {
+  [ -n "${TMUX_PANE:-}" ] || return 0
+  for _ in $(seq 1 30); do
+    sleep 2
+    screen=$(tmux capture-pane -p -t "$TMUX_PANE" 2>/dev/null) || return 0
+    if printf '%s' "$screen" | grep -q 'Yes, I trust this folder' && printf '%s' "$screen" | grep -q 'Quick safety check'; then
+      tmux send-keys -t "$TMUX_PANE" Down
+      sleep 0.4
+      tmux send-keys -t "$TMUX_PANE" Enter
+      return 0
+    fi
+    # Past it: claude is at its prompt, or at work.
+    printf '%s' "$screen" | grep -q 'bypass permissions' && return 0
+  done
+}
+
 # The opening prompt is not run here, in a claude of its own, any more: that made a transcript
 # beside the one the loop below then started and recorded, so a reopened pane resumed the empty
 # loop conversation and the work the prompt began was stranded. It is handed instead to the
@@ -126,6 +151,11 @@ while true; do
   # again.
   OPEN=()
   [ -n "$PROMPT" ] && OPEN=("$PROMPT")
+
+  # Trusted again right before claude reads its config, which leaves the race above a moment
+  # wide; answer_trust covers what is left of it.
+  TRUST_DIRS="$PWD" node /seed/claude-defaults.mjs >/dev/null 2>&1 || true
+  answer_trust &
 
   if [ -n "$CONVERSATION" ]; then
     # This pane's own, by name. Falls through to a fresh one when it has been removed, which is
