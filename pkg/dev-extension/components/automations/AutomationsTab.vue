@@ -25,7 +25,7 @@ import {
 } from '../../agent-defs';
 import { watch } from '../../events';
 import {
-  STATUS_PATH, OUTCOME_WORDS, stamp
+  STATUS_PATH, OUTCOME_WORDS, stamp, setTeam
 } from '../../automations';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, AGENT_EDIT_ROUTE, DEV_API_IN_CLUSTER
@@ -78,12 +78,19 @@ export default {
       starting: '',
       /** The automation being switched on or off, while that is saved. */
       toggling: '',
+      /** The team's dialog is open. */
+      editingTeam: false,
       OUTCOME_WORDS,
       KIND_WORDS,
     };
   },
 
   computed: {
+    /** Whose work the review and feedback scripts start the agent for: dev-api's list, $TEAM to a script. */
+    team() {
+      return this.status?.team || [];
+    },
+
     headers() {
       return this.narrow ? narrowed(HEADERS, NARROW) : HEADERS;
     },
@@ -211,6 +218,18 @@ export default {
       }
     },
 
+    async saveTeam(text) {
+      this.editingTeam = false;
+      this.error = '';
+      try {
+        const team = await setTeam(String(text || '').split(/[\s,]+/).map((l) => l.replace(/^@/, '')).filter(Boolean));
+
+        this.status = { ...this.status, team };
+      } catch (e) {
+        this.error = e.message || String(e);
+      }
+    },
+
     /** A row's menu: what can be done to one automation, the delete set apart at the end. */
     rowMenu(row) {
       const on = row.def.enabled !== false;
@@ -333,6 +352,25 @@ export default {
       >
         Run a script when a workspace changes stage
       </router-link>
+    </div>
+
+    <!-- Whose work starts an agent: the review and feedback scripts read this as $TEAM. -->
+    <div
+      class="autos__templates"
+      data-testid="automation-team"
+    >
+      <span class="autos__label">Team</span>
+      <span v-if="team.length">{{ team.map((login) => `@${ login }`).join(', ') }}</span>
+      <span
+        v-else
+        class="text-muted"
+      >None set: the review and feedback automations start the agent for everyone.</span>
+      <a
+        href="#"
+        class="autos__template"
+        data-testid="automation-team-edit"
+        @click.prevent="editingTeam = true"
+      >{{ team.length ? 'Edit' : 'Set your team' }}</a>
     </div>
 
     <SortableTable
@@ -525,6 +563,18 @@ export default {
       <RunLog :run-id="runId" />
     </DevModal>
 
+    <DevDialog
+      v-if="editingTeam"
+      title="Your team"
+      message="GitHub logins, separated by spaces or commas. The review and feedback automations start the agent only for work one of these people asked for: their pull request to review, or their review asking for changes. For anyone else the review workspace is still made and prepared, and nothing is sent to an agent. Empty is everyone."
+      input
+      optional
+      placeholder="marcelofukumoto rak-phillip aalves08"
+      :value="team.join(' ')"
+      confirm-label="Save"
+      @confirm="saveTeam"
+      @cancel="editingTeam = false"
+    />
     <DevDialog
       v-if="removing"
       :title="`Delete the automation ${ removing.name }?`"

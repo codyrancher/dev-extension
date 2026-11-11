@@ -3033,6 +3033,18 @@ const OPENAPI = {
         responses:   { 200: { description: '{ polled, github }' } },
       },
     },
+    '/automations/team': {
+      get: {
+        operationId: 'automationTeam',
+        summary:     'The GitHub logins of the person\'s team. Every script run has them in $TEAM, space-separated: the review and feedback scripts start the agent only for these, and otherwise make the workspace and leave the rest.',
+        responses:   { 200: { description: '{ team }' } },
+      },
+      put: {
+        operationId: 'setAutomationTeam',
+        summary:     'Replace the team: { team: [login] }. Empty is nobody set, which the scripts read as everyone.',
+        responses:   { 200: { description: '{ team }' } },
+      },
+    },
     '/automations/mutes': {
       put: {
         operationId: 'setAutomationMutes',
@@ -6932,6 +6944,24 @@ const routes = [
 
     return { mutes };
   }],
+  ['GET', /^\/automations\/team$/, async() => {
+    autoFresh();
+
+    return { team: auto.state.team || [] };
+  }],
+  ['PUT', /^\/automations\/team$/, async(m, url, body) => {
+    const list = Array.isArray(body?.team) ? body.team : [];
+    const team = [...new Set(list.map((w) => String(w || '').trim().replace(/^@/, '')).filter((w) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(w)))].sort((a, b) => a.localeCompare(b));
+    const state = autoReadJson(autoPath('state.json'), null) || freshAutoState();
+
+    state.team = team;
+    autoWriteJson(autoPath('state.json'), state);
+    if (auto.state) {
+      auto.state.team = team;
+    }
+
+    return { team };
+  }],
   ['GET', /^\/automations\/status$/, async() => automationStatusAnswer()],
   // Every workspace's status - stage, what it needs, title, links, the agent - as dev-api derives
   // it (the Workspace statuses section). The dashboard reads this instead of GitHub.
@@ -7787,14 +7817,14 @@ const routes = [
   }],
   ['POST', /^\/my-work\/pr\/(\d+)\/review$/, async(m, url, body) => {
     try {
-      return await reviewOnce(Number(m[1]), await repoOf(url), String(body?.title || url.searchParams.get('title') || '').slice(0, 300));
+      return await reviewOnce(Number(m[1]), await repoOf(url), String(body?.title || url.searchParams.get('title') || '').slice(0, 300), url.searchParams.get('start') !== '0');
     } catch (e) {
       throw failure(e.status || 500, e.message || String(e));
     }
   }],
   ['POST', /^\/my-work\/pr\/(\d+)\/review-again$/, async(m, url) => {
     try {
-      return await reviewAgainOnce(Number(m[1]), await repoOf(url), url.searchParams.get('head') || '');
+      return await reviewAgainOnce(Number(m[1]), await repoOf(url), url.searchParams.get('head') || '', url.searchParams.get('start') !== '0');
     } catch (e) {
       if (e?.registered) {
         // Queued in the workspace already: a dashboard's sweep prepares it and starts it.
@@ -9114,6 +9144,7 @@ function freshAutoState() {
     },
     stages: null,
     mutes:  [],
+    team:   [],
     cron:   {},
     status: { github: {}, workspace: {} },
   };
@@ -9179,6 +9210,7 @@ function autoLoad() {
     ...held,
     github: { ...blank.github, ...(held.github || {}) },
     mutes:  Array.isArray(held.mutes) ? held.mutes.filter((m) => typeof m === 'string') : [],
+    team:   Array.isArray(held.team) ? held.team.filter((m) => typeof m === 'string') : [],
     cron:   held.cron && typeof held.cron === 'object' ? held.cron : {},
     status: { ...blank.status, ...(held.status || {}) },
   };
@@ -9465,6 +9497,8 @@ async function startAutoRun(def, run, event = null, context = null) {
         EVENT_URL:       event?.url || '',
         EVENT_ACTOR:     event?.actor || '',
         EVENT_WORKSPACE: event?.workspace || '',
+        // The person's team (PUT /automations/team), space-separated logins.
+        TEAM:            (auto.state.team || []).join(' '),
         DEV_API:         `http://dev-api.${ NAMESPACE }.svc:${ PORT }`,
       }));
       fs.writeFileSync(path.join(dir, 'run.sh'), scriptWrapper(there, def.timeoutSec));
@@ -10140,7 +10174,7 @@ function automationStatusAnswer() {
     }
   }
 
-  return { runs, attempts };
+  return { runs, attempts, team: auto.state.team || [] };
 }
 
 /** The tail of a run's output, and what it was given. */
@@ -11414,6 +11448,19 @@ async function registerReviewConversation(workspace, number, repo, say) {
   return { id, already: false };
 }
 
+/** A review workspace finished, up and prepared - its checkout, skills and tokens - with no conversation in it. */
+async function readyReviewWorkspace(where, number, title, host, say) {
+  if (!where.exists) {
+    await finishReviewWorkspace(where.name, title, say);
+  }
+  const target = await reviewWorkspacePod(where.name, REVIEW_POD_WAIT_MS, say);
+
+  if (!target) {
+    throw new Error(`The workspace ${ where.name }'s pod did not start within ${ REVIEW_POD_WAIT_MS / 60_000 } minutes.`);
+  }
+  await prepareReviewWorkspace(target, where.name, number, host, say);
+}
+
 /** A registered conversation's pane, started detached in the workspace's checkout: claude reads the queued prompt. */
 async function startReviewPane(workspace, id) {
   const { pod } = await agentSessions('ids');
@@ -11434,7 +11481,7 @@ async function startReviewPane(workspace, id) {
  * (startPendingConversations) prepares the workspace and starts it - nothing is handed over, which
  * would send the prompt a second time.
  */
-async function startReviewHere(pr, say) {
+async function startReviewHere(pr, say, { start = true } = {}) {
   const where = await reviewWorkspaceName(pr.number);
   let host = '';
 
@@ -11442,6 +11489,12 @@ async function startReviewHere(pr, say) {
     host = (await makeReviewWorkspace(where.name, pr.repo, pr.title, where.instances, say)).rancherUrl;
   } else {
     host = String((await k8s(`${ INSTANCES }/${ where.name }`).catch(() => null))?.spec?.values?.rancherUrl || '');
+  }
+  if (!start) {
+    // The workspace, made and prepared, and nothing said to an agent: the person starts the review.
+    await readyReviewWorkspace(where, pr.number, pr.title, host, say);
+
+    return { workspace: where.name, conversation: '', already: false, created: !where.exists, started: false };
   }
   const conversation = await registerReviewConversation(where.name, pr.number, pr.repo, say);
 
@@ -11541,10 +11594,32 @@ async function reviewAgainConversation(workspace, number, repo, say) {
   return { id, resumed };
 }
 
-async function reviewAgainHere(number, repo, asked = '') {
+async function reviewAgainHere(number, repo, asked = '', start = true) {
   const notes = [];
   const say = (what) => notes.push(what);
   let head = asked;
+
+  if (!start) {
+    // The workspace there and prepared at the new head, and no second pass started in it.
+    const where = await reviewWorkspaceName(number);
+    const host = where.exists
+      ? String((await k8s(`${ INSTANCES }/${ where.name }`).catch(() => null))?.spec?.values?.rancherUrl || '')
+      : (await makeReviewWorkspace(where.name, repo, `Review #${ number }`, where.instances, say)).rancherUrl;
+
+    try {
+      await readyReviewWorkspace(where, number, `Review #${ number }`, host, say);
+    } catch (e) {
+      if (!(e instanceof NeedsDashboard)) {
+        throw e;
+      }
+
+      return { pr: number, repo, waiting: true, steps: notes, note: `${ String(e.message || e).slice(0, 240) } No review was started.` };
+    }
+
+    return {
+      pr: number, repo, workspace: where.name, created: !where.exists, started: false, steps: notes, note: `${ where.exists ? 'Prepared' : 'Made' } ${ where.name } for the new commits on ${ repo }#${ number }; no review was started in it.`,
+    };
+  }
 
   if (!head) {
     head = String((await ghRest('GET', `/repos/${ repo }/pulls/${ number }`))?.head?.sha || '');
@@ -11618,9 +11693,9 @@ const reviewFlights = new Map();
  * is not there, prepared, and the review's conversation started - or left alone if it is open.
  * What needs a dashboard is queued for the next one rather than failed.
  */
-async function reviewHere(number, repo, title = '') {
+async function reviewHere(number, repo, title = '', start = true) {
   const pr = { repo, number, title: title || `Review #${ number }` };
-  const waiting = liveReviewOf(pr);
+  const waiting = start && liveReviewOf(pr);
 
   if (waiting) {
     return { pr: number, repo, waiting: true, run: waiting.id, note: `A review of ${ repo }#${ number } is already waiting to start: ${ waiting.note || waiting.state }.` };
@@ -11628,19 +11703,29 @@ async function reviewHere(number, repo, title = '') {
   const notes = [];
 
   try {
-    const started = await startReviewHere(pr, (what) => notes.push(what));
+    const started = await startReviewHere(pr, (what) => notes.push(what), { start });
 
     return {
       pr:      number,
       repo,
       ...started,
       steps:   notes,
-      note:    started.already
-        ? `Review #${ number } is already open in ${ started.workspace }; it was left as it is.`
-        : `Started Review #${ number } in ${ started.workspace }${ started.created ? ', made for it' : '' }.`,
+      note:    !start
+        ? `${ started.created ? 'Made' : 'Prepared' } ${ started.workspace } for ${ repo }#${ number }; no review was started in it.`
+        : started.already
+          ? `Review #${ number } is already open in ${ started.workspace }; it was left as it is.`
+          : `Started Review #${ number } in ${ started.workspace }${ started.created ? ', made for it' : '' }.`,
     };
   } catch (e) {
     const message = String(e?.message || e).slice(0, 240);
+
+    if (!start) {
+      // Nothing to hand over without a review to start: what a dashboard does, it does on its next visit.
+      if (e instanceof NeedsDashboard) {
+        return { pr: number, repo, waiting: true, steps: notes, note: `${ message } No review was started.` };
+      }
+      throw e;
+    }
 
     if (e?.registered) {
       // In the workspace already, prompt queued: a dashboard's sweep prepares and starts it.
@@ -11680,11 +11765,11 @@ async function reviewHere(number, repo, title = '') {
   }
 }
 
-function reviewOnce(number, repo, title) {
+function reviewOnce(number, repo, title, start = true) {
   const key = `${ repo }#${ number }`;
 
   if (!reviewFlights.has(key)) {
-    reviewFlights.set(key, reviewHere(number, repo, title).finally(() => reviewFlights.delete(key)));
+    reviewFlights.set(key, reviewHere(number, repo, title, start).finally(() => reviewFlights.delete(key)));
   }
 
   return reviewFlights.get(key);
@@ -11820,11 +11905,11 @@ function addressFeedbackOnce(workspace, repo, number) {
   return feedbackFlights.get(workspace);
 }
 
-function reviewAgainOnce(number, repo, head) {
+function reviewAgainOnce(number, repo, head, start = true) {
   const key = `${ repo }#${ number }`;
 
   if (!reviewAgainFlights.has(key)) {
-    reviewAgainFlights.set(key, reviewAgainHere(number, repo, head).finally(() => reviewAgainFlights.delete(key)));
+    reviewAgainFlights.set(key, reviewAgainHere(number, repo, head, start).finally(() => reviewAgainFlights.delete(key)));
   }
 
   return reviewAgainFlights.get(key);

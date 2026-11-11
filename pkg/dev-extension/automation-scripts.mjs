@@ -10,6 +10,18 @@
 const SAY_NOTE = `node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{const r=JSON.parse(s);console.log(r.note||s.trim())}catch{console.log(s.trim())}})'`;
 
 /**
+ * Whether a GitHub login is on the person's team: $TEAM, which dev-api gives every script run from
+ * the list on the Automations page (PUT /automations/team). The agent is started only for work a
+ * teammate asked for; for anyone else the workspace is made and the rest is left to the person.
+ * No team set is everyone, which is what these did before there was one.
+ */
+const ON_TEAM = `on_team() {
+  [ -z "\${TEAM:-}" ] && return 0
+  case " $(printf '%s' "$TEAM" | tr 'A-Z' 'a-z') " in *" $(printf '%s' "$1" | tr 'A-Z' 'a-z') "*) return 0 ;; esac
+  return 1
+}`;
+
+/**
  * "Review the pull request", for one I am asked to review: My Work's Review button, through dev-api
  * (POST /my-work/pr/{n}/review). The pr-<number> workspace is made if it is not there, on the
  * Rancher the latest workspace uses, prepared, and the my-pr-full-review skill started in a
@@ -19,17 +31,26 @@ const SAY_NOTE = `node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",
  */
 export const REVIEW_PR_SCRIPT = `#!/bin/sh
 # Review a pull request I am asked to review: what My Work's Review button does, through dev-api.
+# Started only when its author is on my team ($TEAM); otherwise the workspace is made and left.
 set -eu
-field() { node -p "String(require(process.env.EVENT_FILE).payload.$1 ?? '')"; }
+field() { node -p "String(process.argv[1].split('.').reduce((o, k) => o?.[k], require(process.env.EVENT_FILE).payload) ?? '')" "$1"; }
+${ ON_TEAM }
 REPO=$(field repo)
 PR=$(field number)
+WHO=$(field author)
 if [ -z "$PR" ] || [ -z "$REPO" ]; then
   echo "No pull request to review: this runs on a pull request's event. To try it by hand, open one on Events and use 'Run an automation on this'." >&2
   exit 2
 fi
-echo "Reviewing $REPO#$PR."
+if on_team "$WHO"; then
+  START=1
+  echo "Reviewing $REPO#$PR, @$WHO's."
+else
+  START=0
+  echo "Making the workspace for $REPO#$PR and starting no review: @$WHO is not on my team."
+fi
 BODY=$(node -p "JSON.stringify({ title: require(process.env.EVENT_FILE).payload.title || '' })")
-OUT=$(curl -sS --fail-with-body --max-time 1700 -X POST -H 'Content-Type: application/json' -d "$BODY" "$DEV_API/my-work/pr/$PR/review?repo=$REPO") || { echo "$OUT" >&2; exit 1; }
+OUT=$(curl -sS --fail-with-body --max-time 1700 -X POST -H 'Content-Type: application/json' -d "$BODY" "$DEV_API/my-work/pr/$PR/review?repo=$REPO&start=$START") || { echo "$OUT" >&2; exit 1; }
 printf '%s' "$OUT" | ${ SAY_NOTE }
 `;
 
@@ -58,17 +79,26 @@ export function withoutReviewAction(def) {
 export const REVIEW_NEW_COMMITS_SCRIPT = `#!/bin/sh
 # Review the new commits on a pull request I reviewed before and am asked to review again:
 # what the workspace's "Review the new commits" button does, through dev-api.
+# Started only when the PR's author is on my team ($TEAM); otherwise the workspace is made and left.
 set -eu
-field() { node -p "String(require(process.env.EVENT_FILE).payload.$1 ?? '')"; }
+field() { node -p "String(process.argv[1].split('.').reduce((o, k) => o?.[k], require(process.env.EVENT_FILE).payload) ?? '')" "$1"; }
+${ ON_TEAM }
 REPO=$(field repo)
 PR=$(field number)
 HEAD=$(field head)
+WHO=$(field author)
 if [ -z "$PR" ] || [ -z "$REPO" ]; then
   echo "No pull request to review: this runs on a review request or a push. To try it by hand, open one of those on Events and use 'Run an automation on this'." >&2
   exit 2
 fi
-echo "Reviewing the new commits on $REPO#$PR up to \${HEAD:-its head}: $(field commitsSince) since my last review."
-OUT=$(curl -sS --fail-with-body --max-time 1700 -X POST "$DEV_API/my-work/pr/$PR/review-again?repo=$REPO&head=$HEAD") || { echo "$OUT" >&2; exit 1; }
+if on_team "$WHO"; then
+  START=1
+  echo "Reviewing the new commits on $REPO#$PR up to \${HEAD:-its head}: $(field commitsSince) since my last review."
+else
+  START=0
+  echo "Making sure $REPO#$PR has its workspace and starting no review: @$WHO is not on my team."
+fi
+OUT=$(curl -sS --fail-with-body --max-time 1700 -X POST "$DEV_API/my-work/pr/$PR/review-again?repo=$REPO&head=$HEAD&start=$START") || { echo "$OUT" >&2; exit 1; }
 printf '%s' "$OUT" | ${ SAY_NOTE }
 `;
 
@@ -87,17 +117,24 @@ export const REVIEW_NEW_COMMITS_CONDITION = "!p.draft\n!p.roles.author\np.roles.
  */
 export const ADDRESS_FEEDBACK_SCRIPT = `#!/bin/sh
 # Address the review feedback on a pull request of mine: the developer workspace's "Address the
-# feedback" button, through dev-api.
+# feedback" button, through dev-api. Only for a reviewer on my team ($TEAM); anyone else's
+# review is left for me.
 set -eu
-field() { node -p "String(require(process.env.EVENT_FILE).payload.$1 ?? '')"; }
+field() { node -p "String(process.argv[1].split('.').reduce((o, k) => o?.[k], require(process.env.EVENT_FILE).payload) ?? '')" "$1"; }
+${ ON_TEAM }
 REPO=$(field repo)
 PR=$(field number)
+WHO=$(field review.author)
 WS=\${EVENT_WORKSPACE:-}
 if [ -z "$PR" ] || [ -z "$REPO" ] || [ -z "$WS" ]; then
   echo "No developer workspace to address feedback in: this runs on a review of a pull request that has one. To try it by hand, open one on Events and use 'Run an automation on this'." >&2
   exit 2
 fi
-echo "Addressing $(field review.author)'s review of $REPO#$PR in $WS."
+if ! on_team "$WHO"; then
+  echo "@$WHO is not on my team, so their review of $REPO#$PR is left for me in $WS; nothing was sent to the agent."
+  exit 0
+fi
+echo "Addressing @$WHO's review of $REPO#$PR in $WS."
 OUT=$(curl -sS --fail-with-body --max-time 1700 -X POST "$DEV_API/workspaces/$WS/address-feedback?pr=$PR&repo=$REPO") || { echo "$OUT" >&2; exit 1; }
 printf '%s' "$OUT" | ${ SAY_NOTE }
 `;

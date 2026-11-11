@@ -102,6 +102,11 @@ export function setMutes(workspaces: string[]): Promise<string[]> {
   return devApi('/automations/mutes', { method: 'PUT', body: JSON.stringify({ workspaces }) }).then((a: Json) => a.mutes || []);
 }
 
+/** The person's team: the GitHub logins the review and feedback scripts start the agent for ($TEAM). */
+export function setTeam(team: string[]): Promise<string[]> {
+  return devApi('/automations/team', { method: 'PUT', body: JSON.stringify({ team }) }).then((a: Json) => a.team || []);
+}
+
 export function readRun(id: string): Promise<RunAnswer> {
   return devApi(runPath(id));
 }

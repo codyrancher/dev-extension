@@ -32,7 +32,8 @@ const SCRIPT_EXAMPLE_STAGE = `# $EVENT_WORKSPACE reached $(jq -r .payload.toLabe
 echo "$EVENT_WORKSPACE: $EVENT_TITLE"`;
 
 const SCRIPT_EXAMPLE = `# The event is on stdin as JSON, and in $EVENT_FILE.
-# $EVENT_NAME, $EVENT_SUBJECT, $EVENT_URL, $EVENT_WORKSPACE and $EVENT_ACTOR are set.
+# $EVENT_NAME, $EVENT_SUBJECT, $EVENT_URL, $EVENT_WORKSPACE and $EVENT_ACTOR are set,
+# and $TEAM is your team's GitHub logins (the Automations page's Team), space-separated.
 echo "$EVENT_NAME on $EVENT_SUBJECT"
 jq -r '.payload.comment.body // empty' < "$EVENT_FILE"`;
 

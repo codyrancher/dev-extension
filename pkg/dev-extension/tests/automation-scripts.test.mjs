@@ -81,7 +81,7 @@ test('review script: asks dev-api for the review, with the title, and prints its
   assert.equal(r.code, 0, r.stderr);
   assert.equal(r.asked.length, 1);
   assert.equal(r.asked[0].method, 'POST');
-  assert.equal(r.asked[0].url, '/my-work/pr/7/review?repo=rancher/dashboard');
+  assert.equal(r.asked[0].url, '/my-work/pr/7/review?repo=rancher/dashboard&start=1', 'no team set is everyone');
   assert.equal(r.asked[0].type, 'application/json');
   assert.deepEqual(JSON.parse(r.asked[0].body), { title: 'Fix "quotes" & things' });
   assert.equal(r.stdout.trim().split('\n').pop(), 'Started Review #7 in lte-pr-7.', 'the last line is what the run shows');
@@ -108,7 +108,7 @@ test('new-commits script: posts the head and prints the note', { skip: !hasShell
   }, { status: 200, body: { note: 'Resumed Review #9 in lte-pr-9.' } });
 
   assert.equal(r.code, 0, r.stderr);
-  assert.equal(r.asked[0].url, '/my-work/pr/9/review-again?repo=rancher/dashboard&head=abc123');
+  assert.equal(r.asked[0].url, '/my-work/pr/9/review-again?repo=rancher/dashboard&head=abc123&start=1');
   assert.equal(r.stdout.trim().split('\n').pop(), 'Resumed Review #9 in lte-pr-9.');
 });
 
@@ -148,4 +148,48 @@ test('new-commits condition: asked again by name, or my review dismissed by the 
   assert.equal(holds({ ...base, myReview: { state: 'DISMISSED' } }), true, 'the push dismissed my review (rancher/dashboard#19811)');
   assert.equal(holds({ ...base, myReview: { state: 'DISMISSED' }, newCommits: false }), false, 'nothing new to review');
   assert.equal(holds({ ...base, myReview: null }), false, 'never reviewed it');
+});
+
+const TEAM = 'marcelofukumoto rak-phillip aalves08 nwmac';
+
+test('review script: a teammate\'s PR is reviewed, anyone else\'s only gets its workspace', { skip: !hasShell && 'no sh/curl' }, async() => {
+  const pr = (author) => ({
+    kind: 'pr', repo: 'rancher/dashboard', number: 7, title: 'T', author,
+  });
+  const mate = await run(REVIEW_PR_SCRIPT, pr('AAlves08'), undefined, { TEAM });
+
+  assert.equal(mate.code, 0, mate.stderr);
+  assert.match(mate.asked[0].url, /&start=1$/, 'case does not matter: GitHub logins are not case-sensitive');
+  const other = await run(REVIEW_PR_SCRIPT, pr('someone-else'), { status: 200, body: { note: 'Made lte-pr-7 for rancher/dashboard#7; no review was started in it.' } }, { TEAM });
+
+  assert.equal(other.code, 0, other.stderr);
+  assert.match(other.asked[0].url, /&start=0$/);
+  assert.match(other.stdout, /@someone-else is not on my team/);
+  const prefix = await run(REVIEW_PR_SCRIPT, pr('nwma'), undefined, { TEAM });
+
+  assert.match(prefix.asked[0].url, /&start=0$/, 'a login that is only part of a teammate\'s is not on the team');
+});
+
+test('new-commits script: the same rule, on the PR\'s author', { skip: !hasShell && 'no sh/curl' }, async() => {
+  const payload = (author) => ({
+    kind: 'pr', repo: 'rancher/dashboard', number: 9, head: 'abc', commitsSince: 1, author,
+  });
+
+  assert.match((await run(REVIEW_NEW_COMMITS_SCRIPT, payload('rak-phillip'), undefined, { TEAM })).asked[0].url, /&start=1$/);
+  assert.match((await run(REVIEW_NEW_COMMITS_SCRIPT, payload('dependabot[bot]'), undefined, { TEAM })).asked[0].url, /&start=0$/);
+});
+
+test('address-feedback script: a reviewer off the team is left for me, and nothing is asked', { skip: !hasShell && 'no sh/curl' }, async() => {
+  const review = (author) => ({
+    kind: 'pr', repo: 'rancher/dashboard', number: 12, review: { state: 'changes_requested', author },
+  });
+  const other = await run(ADDRESS_FEEDBACK_SCRIPT, review('copilot-pull-request-reviewer'), undefined, { TEAM, EVENT_WORKSPACE: 'issue-11' });
+
+  assert.equal(other.code, 0, other.stderr);
+  assert.equal(other.asked.length, 0);
+  assert.match(other.stdout, /not on my team.*nothing was sent to the agent/);
+  const mate = await run(ADDRESS_FEEDBACK_SCRIPT, review('nwmac'), { status: 200, body: { note: 'Sent to Fix #11 in issue-11.' } }, { TEAM, EVENT_WORKSPACE: 'issue-11' });
+
+  assert.equal(mate.asked.length, 1);
+  assert.equal(mate.stdout.trim().split('\n').pop(), 'Sent to Fix #11 in issue-11.');
 });
