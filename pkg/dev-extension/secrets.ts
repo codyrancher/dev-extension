@@ -19,6 +19,8 @@ export interface DevSecret {
   generated?: boolean;
   /** Which group of the Tokens card it belongs to; the first group when absent. */
   group?: string;
+  /** A file's worth, pasted whole: a PEM certificate or key. */
+  multiline?: boolean;
 }
 
 export interface SecretGroup {
@@ -37,6 +39,11 @@ export const SECRET_GROUPS: SecretGroup[] = [
     id:    'rancher',
     title: 'Rancher',
     help:  'What a Rancher instance signs in and pulls with: the local admin password a workspace\'s fresh login and the Verify tools use, and a SUSE Customer Center login for stgregistry.suse.com and registry.rancher.com. Prime images pull from both anonymously, so the login is optional: when both halves are set, an instance pulls with it instead.',
+  },
+  {
+    id:    'vpn',
+    title: 'VPN',
+    help:  'The ECM lab\'s VPN, which every workspace reaches Harvester through. Your username and password as you log in to it, and the profile\'s two files pasted whole: the CA (~/.cert/nm-openvpn/ecm-ca.pem) and the TLS key (ecm-tls-auth.pem). The one-time code is asked for each time you log in, and never kept.',
   },
   {
     id:    'letsencrypt',
@@ -75,6 +82,32 @@ export const GLOBAL_SECRETS: DevSecret[] = [
     label:    'Figma personal access token',
     required: false,
     group:    'services',
+  },
+  {
+    key:      'VPN_USERNAME',
+    label:    'VPN username',
+    required: false,
+    group:    'vpn',
+  },
+  {
+    key:      'VPN_PASSWORD',
+    label:    'VPN password',
+    required: false,
+    group:    'vpn',
+  },
+  {
+    key:       'VPN_CA',
+    label:     'VPN CA certificate (PEM)',
+    required:  false,
+    group:     'vpn',
+    multiline: true,
+  },
+  {
+    key:       'VPN_TLS_AUTH',
+    label:     'VPN TLS key (PEM)',
+    required:  false,
+    group:     'vpn',
+    multiline: true,
   },
   {
     key:      'PRIME_REGISTRY_USER',

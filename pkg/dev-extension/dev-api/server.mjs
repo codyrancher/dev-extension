@@ -46,6 +46,7 @@ import {
 import { pickConversation, isDiscussion } from '../conversation-pick.mjs';
 import { paneSendScript } from '../pane-send.mjs';
 import { withoutReviewAction } from '../automation-scripts.mjs';
+import { VPN_NAME, VPN_CONTROL_PORT, vpnObjects } from '../vpn-pod.mjs';
 import {
   strataInit, strataNotes, strataNote, strataCreateNote, strataUpdateNote, strataDeleteNote, strataRestoreNote,
   strataLabels, strataCreateLabel, strataUpdateLabel, strataDeleteLabel, strataAddNoteLabel, strataRemoveNoteLabel,
@@ -377,7 +378,9 @@ const callerByIp = new Map();
  * that is not a workspace's pod.
  */
 async function callerOf(req) {
-  const nobody = { owner: '', repo: '' };
+  const nobody = {
+    owner: '', repo: '', workspace: '', rancherUrl: '',
+  };
   const ip = String(req?.socket?.remoteAddress || '').replace(/^::ffff:/, '');
 
   if (!ip || ip === '127.0.0.1' || ip === '::1') {
@@ -403,8 +406,10 @@ async function callerOf(req) {
     const instance = await k8s(`${ INSTANCES }/${ encodeURIComponent(workspace) }`).catch(() => null);
 
     return {
-      owner: String(instance?.metadata?.labels?.['dev.rancher.io/owner'] || ''),
-      repo:  String(instance?.spec?.values?.repo || '').trim(),
+      owner:      String(instance?.metadata?.labels?.['dev.rancher.io/owner'] || ''),
+      repo:       String(instance?.spec?.values?.repo || '').trim(),
+      workspace,
+      rancherUrl: String(instance?.spec?.values?.rancherUrl || '').trim(),
     };
   })().catch(() => nobody);
 
@@ -3032,6 +3037,33 @@ const OPENAPI = {
         summary:     'Read the assigned GitHub issues and PRs now rather than at the end of the three minutes.',
         responses:   { 200: { description: '{ polled, github }' } },
       },
+    },
+    '/vpn': {
+      get: {
+        operationId: 'vpnStatus',
+        summary:     'The shared VPN into the ECM lab (Harvester, 10.115.0.0/16), on the node\'s routes so every pod reaches the lab while it is up: phase (connected, connecting, need-login, failed, down, starting, off), since, the asks waiting for a login, and whether the secret store holds what a login needs.',
+        responses:   { 200: { description: '{ phase, note, since, configured, missing, asks }' } },
+      },
+    },
+    '/vpn/request': {
+      post: {
+        operationId: 'vpnRequest',
+        summary:     'Ask for the VPN: { reason }. Up: { connected: true } - the lab is reachable from every pod, nothing to configure. Down: the person is asked to log in on the dashboard and this answers { connected: false, waiting: true }; ?wait=<seconds, up to 600> holds the answer until they have.',
+        responses:   { 200: { description: '{ connected, waiting, note }' } },
+      },
+    },
+    '/vpn/login': {
+      post: {
+        operationId: 'vpnLogin',
+        summary:     'The person\'s login: { otp }. The username, password and profile come from their secret store (VPN_USERNAME, VPN_PASSWORD, VPN_CA, VPN_TLS_AUTH). Answers the VPN\'s state once it settles.',
+        responses:   { 200: { description: '{ phase, note, since }' } },
+      },
+    },
+    '/vpn/logout': {
+      post: { operationId: 'vpnLogout', summary: 'End the VPN session now.', responses: { 200: { description: '{ phase }' } } },
+    },
+    '/vpn/dismiss': {
+      post: { operationId: 'vpnDismiss', summary: 'Not now: the login prompt stays down until something asks again.', responses: { 200: { description: '{ dismissed }' } } },
     },
     '/automations/team': {
       get: {
@@ -6944,6 +6976,17 @@ const routes = [
 
     return { mutes };
   }],
+  ['GET', /^\/vpn$/, async() => vpnStatus()],
+  ['POST', /^\/vpn\/request$/, async(m, url, body, req) => vpnRequest(req, body || {}, url.searchParams.get('wait'))],
+  ['POST', /^\/vpn\/login$/, async(m, url, body, req) => vpnLogin(req, body || {})],
+  ['POST', /^\/vpn\/logout$/, async() => vpnControl('POST', '/logout')],
+  ['POST', /^\/vpn\/dismiss$/, async() => {
+    const doc = await vpnDoc();
+
+    await writeDoc(VPN_DOC, VPN_DOC_KEY, { ...doc, dismissedAt: new Date().toISOString() });
+
+    return { dismissed: true };
+  }],
   ['GET', /^\/automations\/team$/, async() => {
     autoFresh();
 
@@ -8684,6 +8727,8 @@ const WATCHABLE = [
   // The Automations page. In memory or a small file each, so a few seconds costs nothing.
   [/^\/automations\/events$/, 3_000],
   [/^\/automations\/status$/, 3_000],
+  // The VPN: whether it is up, and whether something is waiting for the person to log in.
+  [/^\/vpn$/, 5_000],
   [/^\/workspaces\/status$/, 3_000],
   [/^\/automations\/runs\/r[0-9a-z]{10,24}$/, 2_000],
 ];
@@ -11773,6 +11818,189 @@ function reviewOnce(number, repo, title, start = true) {
   }
 
   return reviewFlights.get(key);
+}
+
+// ── The shared VPN ───────────────────────────────────────────────────────────────────────
+//
+// One OpenVPN pod in dev-system (vpn-pod.mjs) on the node's network, which puts the ECM lab's range on
+// the node's routes: every pod reaches it with nothing configured. The lab wants a password and a
+// one-time code and ends each session after a day, so a
+// login is the person's: a workspace or an agent *asks* (POST /vpn/request), the ask is kept here,
+// and every Dev page shows a login prompt while one is waiting and the tunnel is down. The person's
+// username, password and the profile's CA and TLS key are in their secret store (Settings → VPN);
+// a login sends them, with the code, to the pod's controller for that one session.
+
+const VPN_DOC = 'dev-vpn-state';
+const VPN_DOC_KEY = 'vpn.json';
+/** An ask waits this long for a login before it lapses and stops prompting. */
+const VPN_ASK_MS = 60 * 60_000;
+const VPN_SECRETS = {
+  username: 'VPN_USERNAME', password: 'VPN_PASSWORD', ca: 'VPN_CA', ta: 'VPN_TLS_AUTH',
+};
+let vpnTokenHeld = '';
+let vpnAppliedAt = 0;
+
+/** dev-api's token for the pod's controller: in its Secret, or made now. */
+async function vpnToken() {
+  if (!vpnTokenHeld) {
+    const secret = await k8s(`/api/v1/namespaces/${ NAMESPACE }/secrets/${ VPN_NAME }-token`).catch(() => null);
+
+    vpnTokenHeld = secret?.data?.token ? Buffer.from(secret.data.token, 'base64').toString('utf8') : crypto.randomBytes(24).toString('hex');
+  }
+
+  return vpnTokenHeld;
+}
+
+/** The pod, its files, its token and its Service, made or brought up to date; at most every ten minutes. */
+async function ensureVpnPod(force = false) {
+  if (!force && Date.now() - vpnAppliedAt < 10 * 60_000) {
+    return;
+  }
+  const token = await vpnToken();
+
+  for (const object of vpnObjects({ namespace: NAMESPACE, token })) {
+    await applyObject(object);
+  }
+  vpnAppliedAt = Date.now();
+}
+
+/** A call to the pod's controller, which only dev-api's token opens. */
+async function vpnControl(method, route, body = null, timeoutMs = 8_000) {
+  const response = await fetch(`http://${ VPN_NAME }.${ NAMESPACE }.svc:${ VPN_CONTROL_PORT }${ route }`, {
+    method,
+    headers: { authorization: `Bearer ${ await vpnToken() }`, 'content-type': 'application/json' },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    signal:  AbortSignal.timeout(timeoutMs),
+  });
+  const answer = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw failure(response.status === 400 ? 400 : 502, answer.error || `The VPN pod answered ${ response.status }.`);
+  }
+
+  return answer;
+}
+
+/** Which of the four the secret store holds: the login needs all of them. Held 30s for the watch. */
+const vpnSecretsHeld = new Map();
+
+async function vpnSecrets(caller = '', fresh = false) {
+  const held = vpnSecretsHeld.get(caller);
+
+  if (!fresh && held && Date.now() - held.at < 30_000) {
+    return held.value;
+  }
+  const out = {};
+
+  for (const [name, key] of Object.entries(VPN_SECRETS)) {
+    out[name] = await secretFromStores(key, caller).catch(() => '');
+  }
+  vpnSecretsHeld.set(caller, { at: Date.now(), value: out });
+
+  return out;
+}
+
+async function vpnDoc() {
+  const doc = (await readDoc(VPN_DOC, VPN_DOC_KEY).catch(() => null)) || {};
+  const asks = (Array.isArray(doc.asks) ? doc.asks : []).filter((a) => Date.now() - (Date.parse(a.at) || 0) < VPN_ASK_MS);
+
+  return { ...doc, asks };
+}
+
+/**
+ * Where the VPN is: the controller's state when the pod answers, `starting` while it is being made,
+ * `off` when there is none; the asks still waiting, and whether a login could be made at all.
+ */
+async function vpnStatus() {
+  const [doc, secrets] = await Promise.all([vpnDoc(), vpnSecrets()]);
+  const live = await vpnControl('GET', '/status', null, 3_000).catch(() => null);
+  const deployment = live ? null : await k8s(`/apis/apps/v1/namespaces/${ NAMESPACE }/deployments/${ VPN_NAME }`).catch(() => null);
+  const phase = live?.phase || (deployment ? 'starting' : 'off');
+  const connected = phase === 'connected';
+  const missing = Object.entries(VPN_SECRETS).filter(([name]) => !secrets[name]).map(([, key]) => key);
+
+  return {
+    phase,
+    note:       live?.note || (deployment ? 'The VPN pod is starting.' : 'Not started: the first ask or login starts it.'),
+    since:      live?.since || '',
+    address:    live?.address || '',
+    server:     live?.server || '',
+    configured: !missing.length,
+    missing,
+    // An ask is news only while the tunnel is down, and only if it came after the last "not now".
+    asks:       connected ? [] : doc.asks.filter((a) => !doc.dismissedAt || a.at > doc.dismissedAt),
+    lastLogin:  doc.lastLogin || null,
+    log:        (live?.log || []).slice(-12),
+  };
+}
+
+/** Something wants the lab: remembered, so the person is asked to log in, unless it is already up. */
+async function vpnRequest(req, body = {}, waitSeconds = 0) {
+  const caller = await callerOf(req);
+  const who = caller.workspace || String(body.from || '').slice(0, 80) || 'something on the cluster';
+  let status = await vpnStatus();
+
+  if (status.phase === 'connected') {
+    return { connected: true, since: status.since, note: `The VPN is up (since ${ status.since }): the lab (10.115.0.0/16) is reachable from every pod.` };
+  }
+  await ensureVpnPod().catch(() => {});
+  const doc = await vpnDoc();
+  const ask = { who, reason: String(body.reason || '').slice(0, 200), at: new Date().toISOString() };
+
+  await writeDoc(VPN_DOC, VPN_DOC_KEY, { ...doc, asks: [...doc.asks.filter((a) => a.who !== who), ask] });
+  const until = Date.now() + Math.min(Math.max(Number(waitSeconds) || 0, 0), 600) * 1000;
+
+  while (Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+    status = await vpnStatus();
+    if (status.phase === 'connected') {
+      return { connected: true, since: status.since, note: 'The person logged in: the VPN is up, and the lab is reachable from every pod.' };
+    }
+  }
+
+  return {
+    connected: false,
+    waiting:   true,
+    note:      status.configured
+      ? 'The VPN is down. The person has been asked to log in on the dashboard; ask again (or pass ?wait=) once they have.'
+      : `The VPN is down and cannot be logged in to yet: ${ status.missing.join(', ') } ${ status.missing.length === 1 ? 'is' : 'are' } not in the secret store (Settings → VPN). The person has been asked.`,
+  };
+}
+
+/** The person's login: their stored username, password and profile, and the code they typed now. */
+async function vpnLogin(req, body = {}) {
+  const otp = String(body.otp || '').trim();
+
+  if (!/^[0-9A-Za-z]{4,12}$/.test(otp)) {
+    throw failure(400, 'Send the one-time code: {otp}.');
+  }
+  const secrets = await vpnSecrets(await ownerOfCaller(req), true);
+  const missing = Object.entries(VPN_SECRETS).filter(([name]) => !secrets[name]).map(([, key]) => key);
+
+  if (missing.length) {
+    throw failure(409, `Set ${ missing.join(', ') } in Settings → VPN first.`);
+  }
+  await ensureVpnPod(true);
+  // The pod may be new: openvpn and tinyproxy are installed as it starts.
+  for (let i = 0; i < 45; i++) {
+    if (await vpnControl('GET', '/status', null, 2_000).then(() => true, () => false)) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  const state = await vpnControl('POST', '/login', {
+    username: secrets.username, password: secrets.password, ca: secrets.ca, ta: secrets.ta, otp, waitMs: 45_000,
+  }, 60_000);
+
+  if (state.phase === 'connected') {
+    const doc = await vpnDoc();
+
+    await writeDoc(VPN_DOC, VPN_DOC_KEY, {
+      ...doc, asks: [], dismissedAt: '', lastLogin: { at: new Date().toISOString(), since: state.since },
+    });
+  }
+
+  return state;
 }
 
 // ── Addressing review feedback ─────────────────────────────────────────────────────────

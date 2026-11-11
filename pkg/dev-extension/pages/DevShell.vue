@@ -22,6 +22,9 @@ import DevSidebar from '../components/DevSidebar.vue';
 import GlobalConversations from '../components/GlobalConversations.vue';
 import ClaudeLogo from '../components/ClaudeLogo.vue';
 import FocusMark from '../components/FocusMark.vue';
+import VpnLogin from '../components/VpnLogin.vue';
+import { watch as watchApi } from '../events';
+import { VPN_PATH } from '../vpn';
 import { socketsWork, rancherOwnAddress } from '../sockets';
 import {
   DEV_PRODUCT, BLANK_CLUSTER, WORKSPACES_ROUTE, FOCUS_ROUTE
@@ -31,7 +34,7 @@ export default {
   name: 'DevShell',
 
   components: {
-    WindowManager, ActionMenu, PromptRemove, ModalManager, GrowlManager, DevSidebar, GlobalConversations, ClaudeLogo, FocusMark
+    WindowManager, ActionMenu, PromptRemove, ModalManager, GrowlManager, DevSidebar, GlobalConversations, ClaudeLogo, FocusMark, VpnLogin
   },
 
   data() {
@@ -45,10 +48,27 @@ export default {
        * the conversation that was open over it.
        */
       conversations: false,
+      /** dev-api's /vpn, watched on every page: whether something is waiting for a VPN login. */
+      vpn:           null,
+      /** The newest ask the prompt was closed on: it stays down until a newer one comes. */
+      vpnClosedOn:   '',
+      stopVpn:       null,
     };
   },
 
   computed: {
+    /** The newest thing waiting for a VPN login, if the tunnel is down. */
+    vpnLatestAsk() {
+      const asks = this.vpn && this.vpn.phase !== 'connected' ? this.vpn.asks || [] : [];
+
+      return asks.length ? asks[asks.length - 1].at : '';
+    },
+
+    /** The login prompt: something asked for the VPN while it was down, and it was not closed on that ask. */
+    vpnPrompt() {
+      return !!this.vpnLatestAsk && this.vpnLatestAsk > this.vpnClosedOn;
+    },
+
     /**
      * Whether the page in this shell wants the whole window.
      *
@@ -103,6 +123,9 @@ export default {
   },
 
   async mounted() {
+    this.stopVpn = watchApi(VPN_PATH, (value) => {
+      this.vpn = value || null;
+    }, { every: 5000 });
     document.addEventListener('keydown', this.onKey);
     document.addEventListener('click', this.onDocClick, true);
     // One probe, so a page whose websockets cannot connect says so once instead of leaving
@@ -114,6 +137,7 @@ export default {
   },
 
   beforeUnmount() {
+    this.stopVpn?.();
     document.removeEventListener('keydown', this.onKey);
     document.removeEventListener('click', this.onDocClick, true);
   },
@@ -299,6 +323,12 @@ export default {
       <GlobalConversations
         v-if="conversations"
         @close="conversations = false"
+      />
+      <!-- A workspace or an agent asked for the VPN and it is down: the person's login, on any page. -->
+      <VpnLogin
+        v-if="vpnPrompt"
+        :status="vpn"
+        @close="vpnClosedOn = vpnLatestAsk"
       />
     </div>
   </div>
