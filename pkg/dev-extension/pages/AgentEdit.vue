@@ -9,6 +9,7 @@ import { LabeledInput } from '@components/Form/LabeledInput';
 import { Checkbox } from '@components/Form/Checkbox';
 import { RcButton } from '@components/RcButton';
 import DevModal from '../components/DevModal.vue';
+import ScriptEditor from '../components/ScriptEditor.vue';
 import DevPage from '../components/DevPage.vue';
 import {
   getAgent, saveAgent, validName, cronValid, CRON_PRESETS, triggersOf, compileFilter, filterError, PROMPT_KEYS
@@ -87,7 +88,7 @@ export default {
   name: 'AgentEdit',
 
   components: {
-    Banner, AsyncButton, LabeledSelect, LabeledInput, Checkbox, RcButton, DevModal, DevPage
+    Banner, AsyncButton, LabeledSelect, LabeledInput, Checkbox, RcButton, DevModal, DevPage, ScriptEditor
   },
 
   data() {
@@ -521,14 +522,20 @@ export default {
 
       <template v-if="def.action === 'script'">
         <label class="agent-edit__label">Script - bash, unless it starts with <code>#!</code>. The event is on stdin as JSON; its output is the run's log.</label>
-        <textarea
-          v-model="def.script"
-          class="agent-edit__prompt agent-edit__script"
-          rows="10"
-          spellcheck="false"
-          :placeholder="SCRIPT_EXAMPLE"
+        <ScriptEditor
+          v-model:value="def.script"
           data-testid="automation-script"
         />
+        <p
+          v-if="!def.script.trim()"
+          class="text-muted agent-edit__hint"
+        >
+          For example:
+        </p>
+        <pre
+          v-if="!def.script.trim()"
+          class="agent-edit__example"
+        >{{ SCRIPT_EXAMPLE }}</pre>
         <div class="agent-edit__row agent-edit__timeout">
           <LabeledInput
             v-model:value="def.timeoutSec"
@@ -1002,7 +1009,11 @@ r.status.conditions.some(c => c.type === 'Ready' && c.status !== 'True')"
     &--on { border-color: var(--dev-accent); background: color-mix(in srgb, var(--dev-accent) 6%, transparent); }
   }
 
-  &__script { min-height: 200px; }
+  &__example {
+    margin:    0;
+    font-size: 12px;
+    color:     var(--muted);
+  }
   &__timeout { align-items: flex-start; > :first-child { flex: 0 0 180px; } }
   &__source { flex: 0 0 180px !important; }
 
