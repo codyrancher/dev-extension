@@ -35,6 +35,7 @@ import { listApps } from '../apps';
 import { readPrefs, savePrefs } from '../prefs';
 import { log } from '../dev-log.mjs';
 import { CLI_CHOICES } from '../agent-clis.mjs';
+import { readTeam, setTeam } from '../automations';
 import { DEV_PRODUCT, BLANK_CLUSTER, SKILLS_ROUTE } from '../config/constants';
 import DevModal from '../components/DevModal';
 import FileExplorer from '../components/FileExplorer';
@@ -84,6 +85,11 @@ export default {
       activity:     [],
       /** Which CLI new conversations are held with. '' reads as claude. */
       cli:          '',
+      /** The team, as typed (logins separated by spaces or commas), and as dev-api has it. */
+      teamText:     '',
+      teamSaved:    [],
+      /** dev-api could not be asked, so the card says that rather than showing nobody. */
+      teamUnread:   false,
       showActivity: false,
       /** The filesystem explorer, which is a dialog rather than a section: it wants the room. */
       showFiles:    false,
@@ -203,6 +209,30 @@ export default {
       return [...this.hiddenApps].sort().join(',') !== [...this.hiddenSaved].sort().join(',');
     },
 
+    /** The logins typed, the way dev-api keeps them: no @, no repeats, in order. */
+    teamList() {
+      return [...new Set(String(this.teamText || '').split(/[\s,]+/).map((l) => l.replace(/^@/, '')).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b));
+    },
+
+    teamChanged() {
+      return this.teamList().join(' ').toLowerCase() !== this.teamSaved.join(' ').toLowerCase();
+    },
+
+    async saveTeam(done) {
+      this.error = '';
+
+      try {
+        this.teamSaved = await setTeam(this.teamList());
+        this.teamText = this.teamSaved.join(' ');
+        this.teamUnread = false;
+        done(true);
+      } catch (e) {
+        this.error = e.message || String(e);
+        done(false);
+      }
+    },
+
     async saveApps(done) {
       this.error = '';
 
@@ -225,12 +255,17 @@ export default {
     },
 
     async refresh() {
-      const [keys, apps, prefs, credentials] = await Promise.all([
+      const [keys, apps, prefs, credentials, team] = await Promise.all([
         setSecretKeys().catch(() => []),
         listApps(this.$store).catch(() => []),
         readPrefs().catch(() => ({ hiddenApps: [] })),
         listCloudCredentials().catch(() => []),
+        readTeam().catch(() => null),
       ]);
+
+      this.teamUnread = !team;
+      this.teamSaved = team || [];
+      this.teamText = this.teamSaved.join(' ');
 
       this.keys = keys;
       this.apps = apps.filter((app) => app.workspace);
@@ -747,6 +782,50 @@ export default {
           action-label="Save apps"
           :disabled="!appsChanged()"
           @click="saveApps"
+        />
+      </div>
+    </section>
+
+    <!--
+      Whose work an automation starts an agent for. dev-api keeps it (PUT /automations/team) and
+      hands it to every script run as $TEAM; the review and feedback scripts read it.
+    -->
+    <section
+      id="team"
+      class="dev-settings__card"
+      data-testid="settings-team"
+    >
+      <div class="dev-settings__card-head">
+        <i class="dev-settings__card-icon icon icon-user" />
+        <div class="dev-settings__card-title">
+          <h3>Team</h3>
+          <p>The people you work with. The review and feedback automations start an agent only for work one of them asked for: their pull request to review, or their review asking for changes on yours. For anyone else the review workspace is still made and prepared, and nothing is sent to an agent. Scripts get the list as <code>$TEAM</code>.</p>
+          <p class="dev-settings__card-meta">
+            <template v-if="teamUnread">
+              The in-cluster API could not be asked for the team.
+            </template>
+            <template v-else-if="teamSaved.length">
+              {{ teamSaved.length }} {{ teamSaved.length === 1 ? 'person' : 'people' }} &middot; for every automation
+            </template>
+            <template v-else>
+              None set: the automations start an agent for everyone
+            </template>
+          </p>
+        </div>
+      </div>
+      <LabeledInput
+        v-model:value="teamText"
+        label="GitHub logins"
+        placeholder="marcelofukumoto rak-phillip aalves08"
+        sub-label="Separated by spaces or commas; an @ in front is fine."
+        data-testid="settings-team-input"
+      />
+      <div class="dev-settings__actions">
+        <AsyncButton
+          mode="apply"
+          action-label="Save team"
+          :disabled="!teamChanged()"
+          @click="saveTeam"
         />
       </div>
     </section>
