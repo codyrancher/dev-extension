@@ -53,7 +53,7 @@ const TEMPLATES = {
   // A second pass: the commits pushed since my review, when I am asked to review again.
   'review-new-commits': {
     def: {
-      name: 'review-new-commits', description: 'Reviews the new commits on a pull request I reviewed before, when I am asked to review it again - the workspace\'s "Review the new commits" button.', action: 'script', script: REVIEW_NEW_COMMITS_SCRIPT, timeoutSec: 1800,
+      name: 'review-new-commits', description: 'Reviews the new commits on a pull request I reviewed before, when I am asked to review it again or the push dismissed my review - the workspace\'s "Review the new commits" button.', action: 'script', script: REVIEW_NEW_COMMITS_SCRIPT, timeoutSec: 1800,
     },
     evt: {
       source: 'github', names: 'pr.review-requested, pr.pushed', repos: '', authors: '', condition: REVIEW_NEW_COMMITS_CONDITION,

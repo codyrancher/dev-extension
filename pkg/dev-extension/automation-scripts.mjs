@@ -72,8 +72,12 @@ OUT=$(curl -sS --fail-with-body --max-time 1700 -X POST "$DEV_API/my-work/pr/$PR
 printf '%s' "$OUT" | ${ SAY_NOTE }
 `;
 
-/** The conditions that go with it: asked by name, not my own, not a draft, and commits since my review. */
-export const REVIEW_NEW_COMMITS_CONDITION = '!p.draft\n!p.roles.author\np.roles.requested\np.newCommits';
+/**
+ * The conditions that go with it: not my own, not a draft, commits since my review, and my review
+ * wanted again - asked for by name, or dismissed (a repository that dismisses stale approvals does
+ * that on the push itself, and nobody asks: the approval no longer counts, which is the same thing).
+ */
+export const REVIEW_NEW_COMMITS_CONDITION = "!p.draft\n!p.roles.author\np.roles.requested || p.myReview?.state === 'DISMISSED'\np.newCommits";
 
 /**
  * "Address the feedback", for a review asking for changes on a pull request of mine: the developer

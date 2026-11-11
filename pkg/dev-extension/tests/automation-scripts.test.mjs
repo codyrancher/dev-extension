@@ -7,7 +7,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  REVIEW_PR_SCRIPT, REVIEW_PR_CONDITION, REVIEW_NEW_COMMITS_SCRIPT, ADDRESS_FEEDBACK_SCRIPT, ADDRESS_FEEDBACK_CONDITION, withoutReviewAction,
+  REVIEW_PR_SCRIPT, REVIEW_PR_CONDITION, REVIEW_NEW_COMMITS_SCRIPT, REVIEW_NEW_COMMITS_CONDITION, ADDRESS_FEEDBACK_SCRIPT, ADDRESS_FEEDBACK_CONDITION, withoutReviewAction,
 } from '../automation-scripts.mjs';
 import { actionOf } from '../dev-api/automation-rules.mjs';
 
@@ -133,4 +133,19 @@ test('address-feedback script: no workspace is nothing to do, and says so', { sk
 
 test('address-feedback condition: my PR, changes asked for, a workspace that holds it', () => {
   assert.deepEqual(ADDRESS_FEEDBACK_CONDITION.split('\n'), ['p.roles.author', "p.review.state === 'changes_requested'", 'workspace']);
+});
+
+test('new-commits condition: asked again by name, or my review dismissed by the push', async() => {
+  const vm = await import('node:vm');
+  const { conditionScope } = await import('../dev-api/automation-rules.mjs');
+  const holds = (payload) => REVIEW_NEW_COMMITS_CONDITION.split('\n').every((line) => vm.runInContext(`(${ line }\n)`, vm.createContext(conditionScope({ payload }, 'me'))));
+  const base = {
+    draft: false, roles: { author: false, requested: false }, newCommits: true, myReview: { state: 'APPROVED' },
+  };
+
+  assert.equal(holds(base), false, 'new commits alone: nobody asked, and my approval stands');
+  assert.equal(holds({ ...base, roles: { author: false, requested: true } }), true, 'asked again by name');
+  assert.equal(holds({ ...base, myReview: { state: 'DISMISSED' } }), true, 'the push dismissed my review (rancher/dashboard#19811)');
+  assert.equal(holds({ ...base, myReview: { state: 'DISMISSED' }, newCommits: false }), false, 'nothing new to review');
+  assert.equal(holds({ ...base, myReview: null }), false, 'never reviewed it');
 });
