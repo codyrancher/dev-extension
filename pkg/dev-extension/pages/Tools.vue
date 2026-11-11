@@ -26,6 +26,12 @@ import { APP, PRODUCT_NAME, BLANK_CLUSTER } from '../config/types';
 import { toolDefinitions } from '../lte';
 import { ago } from '../workspace-rail';
 import { listRanchers } from '../ranchers';
+import { globalBrowserUrl } from '../api';
+import VpnLogin from '../components/VpnLogin.vue';
+import { watch as watchApi } from '../events';
+import {
+  VPN_PATH, vpnLogout, vpnPhaseWord
+} from '../vpn';
 import {
   readRancherMaster, installRancherMaster, removeRancherMaster, moveRancherMaster, controlRancherMaster, masterCommitUrl, RANCHER_MASTER_OPENAPI
 } from '../rancher-master';
@@ -34,7 +40,7 @@ export default {
   name: 'DevTools',
 
   components: {
-    Banner, RcButton, DevPage
+    Banner, RcButton, DevPage, VpnLogin
   },
 
   /**
@@ -51,6 +57,10 @@ export default {
 
   data() {
     return {
+      /** The shared VPN, watched: dev-api's /vpn. */
+      vpn:          null,
+      vpnLoginOpen: false,
+      stopVpn:      null,
       running:  [],
       loading:  true,
       error:    '',
@@ -157,15 +167,57 @@ export default {
 
   mounted() {
     this.refresh();
+    this.stopVpn = watchApi(VPN_PATH, (value) => {
+      this.vpn = value || null;
+    }, { every: 5000 });
   },
 
   beforeUnmount() {
     clearTimeout(this.masterTimer);
+    this.stopVpn?.();
   },
 
   methods: {
     ago,
     toolHref,
+    vpnPhaseWord,
+
+    /** One line on where the VPN stands: since when it is up, or who is waiting, or what it last said. */
+    vpnFacts() {
+      const v = this.vpn;
+
+      if (!v) {
+        return 'Reading where it stands…';
+      }
+      if (v.phase === 'connected') {
+        return `Up since ${ ago(v.since) }${ v.address ? `, at ${ v.address }` : '' }. Workspaces reach the lab through it.`;
+      }
+      if (v.asks?.length) {
+        return `Waiting for a login: ${ v.asks.map((a) => `${ a.who } asked ${ ago(a.at) }`).join('; ') }.`;
+      }
+      if (!v.configured) {
+        return `Not set up: ${ (v.missing || []).join(', ') } go in Settings → VPN.`;
+      }
+
+      return v.note || '';
+    },
+
+    /**
+     * The shared Chromium, in a tab of its own: it holds a real GitHub session, and signing in is
+     * something a person does in a browser chrome they recognise.
+     */
+    openGithubBrowser() {
+      window.open(globalBrowserUrl(), '_blank', 'noopener');
+    },
+
+    async logoutVpn() {
+      this.error = '';
+      try {
+        await vpnLogout();
+      } catch (e) {
+        this.error = e?.message || String(e);
+      }
+    },
 
     /**
      * The Apps Plus App behind a tool, where its templates are edited.
@@ -356,6 +408,63 @@ export default {
       <span>Reading what is running&hellip;</span>
     </div>
 
+    <!--
+      The shared VPN into the ECM lab. Not one of the leased tools: one connection for everybody,
+      logged into by the person once a day, and asked for by a workspace with `tools vpn`.
+    -->
+    <div
+      class="dev-tools__tool"
+      data-testid="tools-vpn"
+    >
+      <header class="dev-tools__head">
+        <i class="icon dev-tools__icon icon-lock" />
+        <strong class="dev-tools__name">VPN</strong>
+        <span
+          class="dev-tools__tenancy"
+          title="One connection, and one login a day, for every workspace"
+        >shared</span>
+        <span
+          v-if="vpn"
+          class="dev-tools__state"
+          :class="{ 'dev-tools__state--ok': vpn.phase === 'connected', 'dev-tools__state--held': vpn.phase !== 'connected' && (vpn.asks || []).length }"
+          data-testid="tools-vpn-state"
+        >{{ vpnPhaseWord(vpn.phase) }}</span>
+        <span class="dev-tools__links">
+          <RcButton
+            v-if="vpn && vpn.phase === 'connected'"
+            variant="link"
+            size="small"
+            @click="logoutVpn"
+          >
+            Log out
+          </RcButton>
+          <RcButton
+            v-else
+            variant="link"
+            size="small"
+            data-testid="tools-vpn-login"
+            @click="vpnLoginOpen = true"
+          >
+            Log in
+          </RcButton>
+        </span>
+      </header>
+      <p class="dev-tools__what">
+        The ECM lab, for Harvester: one OpenVPN connection on the node's network, with the lab's range (10.115.0.0/16) on its routes, so every pod - workspaces, the browsers, dev servers - reaches it with nothing to set up. The lab ends a session after a day; something asking for it while it is down puts a login prompt on every page. From a workspace: <code>tools vpn</code>.
+      </p>
+      <p
+        class="dev-tools__what"
+        data-testid="tools-vpn-facts"
+      >
+        {{ vpnFacts() }}
+      </p>
+    </div>
+    <VpnLogin
+      v-if="vpnLoginOpen"
+      :status="vpn || {}"
+      @close="vpnLoginOpen = false"
+    />
+
     <div
       v-for="tool in tools"
       :key="tool.kind"
@@ -402,6 +511,28 @@ export default {
       </header>
 
       <p class="dev-tools__what">{{ tool.what }}</p>
+
+      <!--
+        The one thing a person does to the shared browser. It holds the github.com session evidence
+        is uploaded through, so a review that will not submit because GitHub's uploader never
+        appeared is where this is needed. On Settings until 0.3.710; a tool's card is where it is.
+      -->
+      <div
+        v-if="tool.kind === 'browser'"
+        class="dev-tools__browser"
+      >
+        <p class="dev-tools__what">
+          Signed in to GitHub as you: evidence attached to a review - a screenshot, a recording - is uploaded through its session, so a review that will not submit because GitHub's uploader never appeared is usually this being signed out. Open it and sign in; nothing else needs doing.
+        </p>
+        <RcButton
+          variant="secondary"
+          size="small"
+          data-testid="tools-open-github-browser"
+          @click="openGithubBrowser"
+        >
+          Open the GitHub browser
+        </RcButton>
+      </div>
 
       <!-- The OpenAPI, as written on the App. See toolMeta in lte.ts. -->
       <pre
@@ -878,6 +1009,13 @@ export default {
 }
 
 /* Where it stands, as a pill: green while it follows master, amber while somebody holds it. */
+.dev-tools__browser {
+  display:        flex;
+  flex-direction: column;
+  align-items:    flex-start;
+  gap:            var(--dev-space-3);
+}
+
 .dev-tools__state {
   display:       inline-flex;
   align-items:   center;
