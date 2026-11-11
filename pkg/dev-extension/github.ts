@@ -1126,6 +1126,47 @@ export async function reviewerPool(repo: string): Promise<string[]> {
   return rows.map((r: Json) => String(r?.login || '')).filter(Boolean).sort((a, b) => a.localeCompare(b));
 }
 
+/** A GitHub account, as the login pickers show one. */
+export interface GithubIdentity {
+  login: string;
+  avatar: string;
+  /** Where it came from: one of the repository's collaborators, or a search of all of GitHub. */
+  from: 'collaborator' | 'search';
+}
+
+const identityOf = (row: Json, from: GithubIdentity['from']): GithubIdentity => ({ login: String(row?.login || ''), avatar: String(row?.avatar_url || ''), from });
+let collaboratorCache: { repo: string; at: number; list: Promise<GithubIdentity[]> } | null = null;
+
+/**
+ * The people a team is most likely made of: the repository's collaborators with push, read once
+ * per page for ten minutes. The login pickers offer these first, as you type.
+ */
+export function collaboratorIdentities(repo = POOL_REPO): Promise<GithubIdentity[]> {
+  if (!collaboratorCache || collaboratorCache.repo !== repo || Date.now() - collaboratorCache.at > 10 * 60_000) {
+    collaboratorCache = {
+      repo,
+      at:   Date.now(),
+      list: rest('GET', `/repos/${ repo }/collaborators?permission=push&per_page=100`)
+        .then((rows: Json) => (Array.isArray(rows) ? rows.map((r: Json) => identityOf(r, 'collaborator')).filter((i) => i.login) : []))
+        .catch(() => []),
+    };
+  }
+
+  return collaboratorCache.list;
+}
+
+/** Anyone on GitHub whose login has `query` in it, for a name the collaborators do not cover. */
+export async function searchGithubUsers(query: string, limit = 8): Promise<GithubIdentity[]> {
+  const q = query.trim().replace(/^@/, '');
+
+  if (q.length < 2 || !/^[A-Za-z0-9-]+$/.test(q)) {
+    return [];
+  }
+  const found = await rest('GET', `/search/users?q=${ encodeURIComponent(`${ q } in:login`) }&per_page=${ limit }`).catch(() => null);
+
+  return Array.isArray(found?.items) ? found.items.map((r: Json) => identityOf(r, 'search')).filter((i: GithubIdentity) => i.login) : [];
+}
+
 export async function requestReviewers(repo: string, pr: number, logins: string[]): Promise<{ asked: string[]; refused: Record<string, string> }> {
   const asked: string[] = [];
   const refused: Record<string, string> = {};

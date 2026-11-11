@@ -36,6 +36,8 @@ import { readPrefs, savePrefs } from '../prefs';
 import { log } from '../dev-log.mjs';
 import { CLI_CHOICES } from '../agent-clis.mjs';
 import { readTeam, setTeam } from '../automations';
+import ArrayList from '@shell/components/form/ArrayList';
+import GithubLoginInput from '../components/GithubLoginInput.vue';
 import { DEV_PRODUCT, BLANK_CLUSTER, SKILLS_ROUTE } from '../config/constants';
 import DevModal from '../components/DevModal';
 import FileExplorer from '../components/FileExplorer';
@@ -44,7 +46,7 @@ export default {
   name: 'DevSettings',
 
   components: {
-    Loading, AsyncButton, Banner, RcButton, LabeledInput, BrandImage, DevModal, FileExplorer
+    Loading, AsyncButton, Banner, RcButton, LabeledInput, BrandImage, DevModal, FileExplorer, ArrayList, GithubLoginInput
   },
 
   async fetch() {
@@ -85,8 +87,8 @@ export default {
       activity:     [],
       /** Which CLI new conversations are held with. '' reads as claude. */
       cli:          '',
-      /** The team, as typed (logins separated by spaces or commas), and as dev-api has it. */
-      teamText:     '',
+      /** The team, one login a row as edited, and as dev-api has it. */
+      teamRows:     [],
       teamSaved:    [],
       /** dev-api could not be asked, so the card says that rather than showing nobody. */
       teamUnread:   false,
@@ -209,10 +211,20 @@ export default {
       return [...this.hiddenApps].sort().join(',') !== [...this.hiddenSaved].sort().join(',');
     },
 
-    /** The logins typed, the way dev-api keeps them: no @, no repeats, in order. */
+    /** The rows, the way dev-api keeps them: no blanks, no @, no repeats whatever the case, in order. */
     teamList() {
-      return [...new Set(String(this.teamText || '').split(/[\s,]+/).map((l) => l.replace(/^@/, '')).filter(Boolean))]
-        .sort((a, b) => a.localeCompare(b));
+      const seen = new Set();
+
+      return this.teamRows.map((l) => String(l || '').trim().replace(/^@/, '')).filter((l) => {
+        const key = l.toLowerCase();
+
+        if (!l || seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+
+        return true;
+      }).sort((a, b) => a.localeCompare(b));
     },
 
     teamChanged() {
@@ -224,7 +236,7 @@ export default {
 
       try {
         this.teamSaved = await setTeam(this.teamList());
-        this.teamText = this.teamSaved.join(' ');
+        this.teamRows = [...this.teamSaved];
         this.teamUnread = false;
         done(true);
       } catch (e) {
@@ -265,7 +277,7 @@ export default {
 
       this.teamUnread = !team;
       this.teamSaved = team || [];
-      this.teamText = this.teamSaved.join(' ');
+      this.teamRows = [...this.teamSaved];
 
       this.keys = keys;
       this.apps = apps.filter((app) => app.workspace);
@@ -813,16 +825,22 @@ export default {
           </p>
         </div>
       </div>
-      <LabeledInput
-        v-model:value="teamText"
-        label="GitHub logins"
-        placeholder="marcelofukumoto rak-phillip aalves08"
-        data-testid="settings-team-input"
-      />
-      <!-- Not the input's sub-label: Rancher draws that outside the field's box, under the button. -->
-      <p class="dev-settings__help">
-        Separated by spaces or commas; an @ in front is fine.
-      </p>
+      <!-- One person a row; each row suggests the dashboard's collaborators, then all of GitHub. -->
+      <ArrayList
+        v-model:value="teamRows"
+        :protip="false"
+        add-label="Add someone"
+        remove-label="Remove"
+        data-testid="settings-team-list"
+      >
+        <template #value="{ row }">
+          <GithubLoginInput
+            v-model:value="row.value"
+            :exclude="teamRows"
+            aria-label="Teammate's GitHub login"
+          />
+        </template>
+      </ArrayList>
       <div class="dev-settings__actions">
         <AsyncButton
           mode="apply"
