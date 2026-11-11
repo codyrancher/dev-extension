@@ -817,9 +817,12 @@ export default {
         v-model:value="teamText"
         label="GitHub logins"
         placeholder="marcelofukumoto rak-phillip aalves08"
-        sub-label="Separated by spaces or commas; an @ in front is fine."
         data-testid="settings-team-input"
       />
+      <!-- Not the input's sub-label: Rancher draws that outside the field's box, under the button. -->
+      <p class="dev-settings__help">
+        Separated by spaces or commas; an @ in front is fine.
+      </p>
       <div class="dev-settings__actions">
         <AsyncButton
           mode="apply"
