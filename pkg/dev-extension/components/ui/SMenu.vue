@@ -307,6 +307,14 @@ export default {
   }
 }
 
+/* One slot for every item's icon: some are font glyphs and some are drawings, each its own width,
+   and without this each label started wherever its icon happened to end. */
+.s-menu__item > .s-icon {
+  flex:            0 0 14px;
+  width:           14px;
+  justify-content: center;
+}
+
 .s-menu__item-label { flex: 1 1 auto; }
 
 .s-menu__item-note {
