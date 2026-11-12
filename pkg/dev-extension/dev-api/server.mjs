@@ -48,6 +48,7 @@ import { pickConversation, isDiscussion } from '../conversation-pick.mjs';
 import { paneSendScript } from '../pane-send.mjs';
 import { withoutReviewAction } from '../automation-scripts.mjs';
 import { VPN_NAME, VPN_CONTROL_PORT, vpnObjects } from '../vpn-pod.mjs';
+import { TOOL_LIMITS, toolLimit, toolSlotRefusal } from '../tool-limits.mjs';
 import {
   strataInit, strataNotes, strataNote, strataCreateNote, strataUpdateNote, strataDeleteNote, strataRestoreNote,
   strataLabels, strataCreateLabel, strataUpdateLabel, strataDeleteLabel, strataAddNoteLabel, strataRemoveNoteLabel,
@@ -5292,6 +5293,30 @@ async function toolState(workspace, kind) {
   return kind === 'browser' ? browserTool(workspace) : podTool(workspace, kind);
 }
 
+/**
+ * Starts of a kind with a ceiling run one after another, so two asks that arrive together cannot
+ * both count two holders and both take the third place. dev-api is one process, so a chain of
+ * promises per kind is the whole of the lock.
+ */
+const toolStartTurns = new Map();
+
+function inToolTurn(kind, fn) {
+  const run = (toolStartTurns.get(kind) || Promise.resolve()).then(fn, fn);
+
+  toolStartTurns.set(kind, run.catch(() => null));
+
+  return run;
+}
+
+/** Who holds a kind now: its namespaces that exist and are not already on their way out. */
+async function toolHolders(kind) {
+  const list = await k8s(`/api/v1/namespaces?labelSelector=${ encodeURIComponent(`${ LABEL_TOOL }=${ kind }`) }`);
+
+  return (list.items || [])
+    .filter((ns) => !ns.metadata?.deletionTimestamp)
+    .map((ns) => ({ workspace: ns.metadata?.labels?.[LABEL_TOOL_OF] || '', expires: ns.metadata?.annotations?.[LEASE_ANNOTATION] || '' }));
+}
+
 async function toolsOf(workspace) {
   return Promise.all(TOOL_KINDS.map((kind) => toolState(workspace, kind).catch((e) => ({ kind, workspace, error: e.message }))));
 }
@@ -5360,6 +5385,24 @@ async function startTool(workspace, kind, body = {}) {
     blockOwnerDeletion: false,
   };
 
+  if (toolLimit(kind)) {
+    return inToolTurn(kind, async() => {
+      const refusal = toolSlotRefusal(kind, workspace, await toolHolders(kind));
+
+      if (refusal) {
+        throw failure(409, refusal);
+      }
+
+      return renderTool(workspace, kind, app, owner, body);
+    });
+  }
+
+  return renderTool(workspace, kind, app, owner, body);
+}
+
+/** Apply a tool's templates for one workspace, with its lease and its owner on the namespace. */
+async function renderTool(workspace, kind, app, owner, body) {
+  const appId = TOOL_APPS[kind];
   const namespace = toolNs(workspace, kind);
   const lease = leaseUntil(body.minutes);
   const values = {
@@ -7157,7 +7200,7 @@ const routes = [
 
     // The shared browser belongs to every workspace at once, so it is not listed here: there is
     // nothing per-workspace about it to report. `GET /tools/<workspace>` includes it.
-    return { tools };
+    return { tools, limits: TOOL_LIMITS };
   }],
   ['GET', /^\/tools\/([a-z0-9-]+)$/, async(m) => ({ workspace: m[1], tools: await toolsOf(m[1]) })],
   ['GET', /^\/rancher-master$/, async() => rancherMaster()],

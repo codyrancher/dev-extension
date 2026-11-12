@@ -24,6 +24,7 @@ import { DEV_SOURCES, restSources } from '../ioc';
 import { TOOL_APPS } from '../config/constants';
 import { APP, PRODUCT_NAME, BLANK_CLUSTER } from '../config/types';
 import { toolDefinitions } from '../lte';
+import { toolLimit } from '../tool-limits.mjs';
 import { ago } from '../workspace-rail';
 import { listRanchers } from '../ranchers';
 import { globalBrowserUrl } from '../api';
@@ -160,6 +161,10 @@ export default {
           app:         TOOL_APPS[kind] || '',
           openapi:     defs[kind]?.openapi || (kind === 'rancher-master' ? RANCHER_MASTER_OPENAPI : ''),
           instances,
+          // The ceiling dev-api holds starts to, and how much of it is taken: a stop in progress
+          // has already given its place back.
+          limit:       toolLimit(kind),
+          inUse:       instances.filter((inst) => !inst.removing).length,
         };
       });
     },
@@ -486,6 +491,13 @@ export default {
           class="dev-tools__tenancy"
           :title="tool.sharing"
         >shared</span>
+        <span
+          v-if="tool.limit"
+          class="dev-tools__tenancy dev-tools__limit"
+          :class="{ 'dev-tools__limit--full': tool.inUse >= tool.limit }"
+          :title="`At most ${ tool.limit } workspaces can hold one at a time. Another start is refused until one is stopped or its lease ends.`"
+          data-testid="dev-tools-limit"
+        >{{ tool.inUse }} of {{ tool.limit }} in use</span>
         <span
           v-if="tool.kind === 'rancher-master' && masterState.label"
           class="dev-tools__state"
@@ -945,6 +957,11 @@ export default {
   font-size:     11px;
   line-height:   18px;
   cursor:        help;
+}
+
+.dev-tools__limit--full {
+  border-color: var(--warning);
+  color:        var(--warning);
 }
 
 .dev-tools__links {
