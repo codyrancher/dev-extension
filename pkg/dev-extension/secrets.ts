@@ -33,22 +33,22 @@ export const SECRET_GROUPS: SecretGroup[] = [
   {
     id:    'services',
     title: 'Services',
-    help:  'Tokens used as you. GitHub needs repo, read:user and read:project.',
+    help:  'GitHub needs repo, read:user and read:project.',
   },
   {
     id:    'rancher',
     title: 'Rancher',
-    help:  'The admin password new instances sign in with, and an optional SUSE registry login (stgregistry.suse.com, registry.rancher.com).',
+    help:  '',
   },
   {
     id:    'vpn',
     title: 'VPN',
-    help:  'The ECM lab VPN: your login, and the profile\'s CA (ecm-ca.pem) and TLS key (ecm-tls-auth.pem) pasted whole. The one-time code is asked at login.',
+    help:  'Paste ecm-ca.pem and ecm-tls-auth.pem whole. The one-time code is asked at login.',
   },
   {
     id:    'letsencrypt',
     title: 'Let\'s Encrypt',
-    help:  'An address you own, so shares get real certificates. Empty: none.',
+    help:  '',
   },
 ];
 

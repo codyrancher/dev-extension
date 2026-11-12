@@ -455,9 +455,6 @@ export default {
   >
     <div class="dev-settings__intro">
       <h1>Settings</h1>
-      <p class="dev-settings__intro-sub">
-        Your tokens and preferences. A stored value stays hidden until you press the eye.
-      </p>
     </div>
 
     <!--
@@ -554,10 +551,6 @@ export default {
       </div>
 
       <template v-if="open[section.id]">
-        <p class="dev-settings__card-help">
-          {{ section.help }}
-        </p>
-
         <p
           v-if="!section.secrets.length"
           class="dev-settings__none"
@@ -578,7 +571,10 @@ export default {
           <h4 class="dev-settings__group-title">
             {{ group.title }}
           </h4>
-          <p class="dev-settings__group-help">
+          <p
+            v-if="group.help"
+            class="dev-settings__group-help"
+          >
             {{ group.help }}
           </p>
 
@@ -666,9 +662,8 @@ export default {
         <i class="dev-settings__card-icon icon icon-globe" />
         <div class="dev-settings__card-title">
           <h3>Cloud credentials</h3>
-          <p>The cloud credentials new Rancher instances get.</p>
           <p class="dev-settings__card-meta">
-            {{ credentials.filter((c) => c.propagate).length }} of {{ credentials.length }} propagated &middot; shared
+            {{ credentials.filter((c) => c.propagate).length }} of {{ credentials.length }} propagated
           </p>
         </div>
       </div>
@@ -694,7 +689,6 @@ export default {
           >
           <span class="dev-settings__app-name">{{ cred.name }}</span>
           <span class="dev-settings__app-desc">{{ cred.driver }}</span>
-          <span class="dev-settings__card-meta">{{ cred.id }}</span>
         </label>
       </div>
       <div
@@ -719,7 +713,6 @@ export default {
         <i class="dev-settings__card-icon icon icon-terminal" />
         <div class="dev-settings__card-title">
           <h3>Agent CLI</h3>
-          <p>What new conversations run with.</p>
         </div>
       </div>
 
@@ -736,7 +729,6 @@ export default {
             @change="setCli(choice.id)"
           >
           <span class="dev-settings__app-name">{{ choice.label }}</span>
-          <span class="dev-settings__app-desc">{{ choice.what }}</span>
         </label>
       </div>
     </section>
@@ -751,9 +743,8 @@ export default {
         <i class="dev-settings__card-icon icon icon-apps" />
         <div class="dev-settings__card-title">
           <h3>Apps</h3>
-          <p>The apps offered as workspace templates.</p>
           <p class="dev-settings__card-meta">
-            {{ apps.length - hiddenApps.length }} of {{ apps.length }} shown &middot; yours alone
+            {{ apps.length - hiddenApps.length }} of {{ apps.length }} shown
           </p>
         </div>
       </div>
@@ -778,7 +769,6 @@ export default {
             @change="(event) => setAppShown(app, event.target.checked)"
           >
           <span class="dev-settings__app-name">{{ app.label }}</span>
-          <span class="dev-settings__app-desc">{{ app.description }}</span>
           <span class="dev-settings__card-meta">{{ app.installations }} workspace{{ app.installations === 1 ? '' : 's' }}</span>
         </label>
       </div>
@@ -814,16 +804,15 @@ export default {
         <i class="dev-settings__card-icon icon icon-user" />
         <div class="dev-settings__card-title">
           <h3>Team</h3>
-          <p>Automations start an agent only for these people's work; for anyone else they make the workspace and stop. Scripts read the list as <code>$TEAM</code>.</p>
           <p class="dev-settings__card-meta">
             <template v-if="teamUnread">
               The in-cluster API could not be asked for the team.
             </template>
             <template v-else-if="teamSaved.length">
-              {{ teamSaved.length }} {{ teamSaved.length === 1 ? 'person' : 'people' }} &middot; for every automation
+              {{ teamSaved.length }} {{ teamSaved.length === 1 ? 'person' : 'people' }}
             </template>
             <template v-else>
-              None set: the automations start an agent for everyone
+              None set: everyone
             </template>
           </p>
         </div>
@@ -867,7 +856,6 @@ export default {
         <i class="dev-settings__card-icon icon icon-file" />
         <div class="dev-settings__card-title">
           <h3>Skills</h3>
-          <p>The skills your agents run.</p>
         </div>
       </div>
 
@@ -895,7 +883,6 @@ export default {
         <i class="dev-settings__card-icon icon icon-folder" />
         <div class="dev-settings__card-title">
           <h3>Filesystem</h3>
-          <p>The node's disk, as the agent pod sees it.</p>
         </div>
       </div>
 
@@ -926,7 +913,6 @@ export default {
         <i class="dev-settings__card-icon icon icon-list-flat" />
         <div class="dev-settings__card-title">
           <h3>Activity</h3>
-          <p>What this page read, and what failed.</p>
           <p class="dev-settings__card-meta">
             {{ activity.length }} line{{ activity.length === 1 ? '' : 's' }}
           </p>
