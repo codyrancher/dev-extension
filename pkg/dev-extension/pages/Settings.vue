@@ -96,7 +96,8 @@ export default {
        * The Team card, open. Shut like the other cards that hold a list, and open when this page
        * was reached for it - the Automations page's "Edit in Settings" links to #team.
        */
-      showTeam:     this.$route?.hash === '#team',
+      // The route's hash on a link from inside the dashboard; the window's on a page loaded at #team.
+      showTeam:     this.$route?.hash === '#team' || (typeof window !== 'undefined' && window.location.hash === '#team'),
       showActivity: false,
       /** The filesystem explorer, which is a dialog rather than a section: it wants the room. */
       showFiles:    false,
