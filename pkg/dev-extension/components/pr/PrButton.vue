@@ -25,6 +25,11 @@ export default {
       type:    Boolean,
       default: false,
     },
+    /** Its action is under way: a spinner, and no second press. */
+    waiting: {
+      type:    Boolean,
+      default: false,
+    },
     title: {
       type:    String,
       default: '',
@@ -40,10 +45,15 @@ export default {
 <template>
   <button
     :type="type"
-    :class="['prb', `prb--${ variant }`, `prb--${ size }`]"
-    :disabled="disabled"
+    :class="['prb', `prb--${ variant }`, `prb--${ size }`, { 'prb--waiting': waiting }]"
+    :disabled="disabled || waiting"
+    :aria-busy="waiting ? 'true' : undefined"
     :title="title || undefined"
   >
+    <i
+      v-if="waiting"
+      class="icon icon-spinner icon-spin prb__spin"
+    />
     <slot />
   </button>
 </template>
@@ -70,6 +80,8 @@ export default {
 
     &:hover:not(:disabled) { background: var(--pr-el-hover); }
     &:disabled { opacity: 0.5; cursor: default; }
+    // Busy, not unavailable: it keeps its colour while the spinner runs.
+    &--waiting:disabled { opacity: 0.85; cursor: progress; }
 
     &--mini {
       height:        22px;
@@ -113,4 +125,6 @@ export default {
     &--mini.prb--primary { background: var(--pr-accent-fill); color: var(--pr-text); }
     &--mini.prb--success { background: var(--pr-el); color: var(--pr-success); }
   }
+
+  .prb__spin { font-size: 12px; }
 </style>

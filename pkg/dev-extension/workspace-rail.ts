@@ -185,6 +185,11 @@ export interface Comment {
   /** Whether the thread holds a message of yours that is drafted and not yet on GitHub. */
   pending: boolean;
   /**
+   * Whether the last message on GitHub is yours: what you had to say is sent and nobody has
+   * answered it since. A draft does not count until it is posted.
+   */
+  sent?: boolean;
+  /**
    * Whether somebody else has said something in it since your last review: the developer
    * answering, or another reviewer. What a new round of a review is read for.
    */
@@ -621,6 +626,7 @@ function threads(d: Json, since = 0, kinds: Record<string, string> = {}): Commen
     const thread = members.sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0)).map(msg);
     const last = thread[thread.length - 1];
     const viewer = m.viewer || '';
+    const posted = thread.filter((t) => !t.pending);
 
     const ids = new Set(thread.map((t) => t.id));
     const drafts = (d.replyDrafts || [])
@@ -635,7 +641,7 @@ function threads(d: Json, since = 0, kinds: Record<string, string> = {}): Commen
       drafts,
       // An unsent draft is not a reply: `replied` is what says the author has spoken, and a
       // message GitHub has never seen has not been spoken to anyone.
-      replied: thread.some((t) => t.author && !t.pending), mine: !!viewer && thread.some((t) => t.who === viewer), pending: thread.some((t) => t.pending), headSha: m.headSha || '', position: Number(root.position) || 0, context: '', rows, noPatch: false, url, order,
+      replied: thread.some((t) => t.author && !t.pending), mine: !!viewer && thread.some((t) => t.who === viewer), pending: thread.some((t) => t.pending), sent: !!viewer && posted[posted.length - 1]?.who === viewer, headSha: m.headSha || '', position: Number(root.position) || 0, context: '', rows, noPatch: false, url, order,
     };
   };
   const out = roots.map((root) => {

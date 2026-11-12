@@ -217,6 +217,8 @@ export default {
       /** The agent's draft the reply box was opened from, so posting it also clears the draft. */
       /** The draft being sent or discarded. */
       sendingDraft:   false,
+      /** Why the last Send it, Save or Discard on a draft failed, by thread: shown under it. */
+      draftErrors:    {},
       /** The pending reply being edited, by its GitHub comment id; 0 for none. */
       editingMsg:   0,
       editMsgDraft: '',
@@ -1323,14 +1325,17 @@ export default {
 
       this.reading = true;
       try {
-        const fresh = shrinkable || this.evidenceStage !== stage;
+        const fresh = this.evidenceStage !== stage;
         // Which of the reads threw, filled in by the read itself.
         const out = { failed: {} };
 
         const sections = await gatherEvidence(this.workspace.name, this.status, stage, (partial) => {
           console.debug(`[rail] evidence ${ seq } ${ stage } partial: ${ partial.map((s) => s.title).join(' | ') } current=${ current() }`); // eslint-disable-line no-console
           // A refresh of the stage already on the page never shows less than it had: the
-          // column would empty and regrow every minute under whoever is reading it.
+          // column would empty and regrow every minute under whoever is reading it. That holds
+          // for a shrinkable read too - its half-read partials are not the deletion it was asked
+          // to show, and letting them through dropped the section a modal was open on, so the
+          // Conversation modal closed and reopened under Send it. Only the finished read shrinks.
           if (current() && (fresh || partial.length >= this.evidence.length)) {
             this.evidence = partial;
             this.evidenceStage = stage;
@@ -1346,7 +1351,7 @@ export default {
         // already on the page is never replaced by less than it has; the failed read is tried
         // again below, and the fuller answer lands then. Not `!failed`, deliberately: a PR that
         // stays unreadable would freeze the column on its first draw for as long as it is open.
-        if (current() && (fresh || sections.length >= this.evidence.length)) {
+        if (current() && (fresh || shrinkable || sections.length >= this.evidence.length)) {
           this.evidence = sections;
           this.evidenceStage = stage;
         }
@@ -2269,9 +2274,38 @@ export default {
     /** "6 threads · 2 waiting", for the Conversation heading: how much, and how much is yours. */
     threadSummary(item) {
       const all = item.items || [];
-      const waiting = all.filter((c) => !c.answered).length;
+      const waiting = all.filter((c) => !c.answered && !c.sent).length;
 
       return `${ all.length } thread${ all.length === 1 ? '' : 's' }${ waiting ? ` · ${ waiting } waiting` : ' · all answered' }`;
+    },
+
+    /**
+     * A page number's colour: yellow while something of yours is written and not on GitHub, green
+     * once it is (yours is the last word there), plain otherwise.
+     *
+     * A finding is the agent's comment for your review, so its unsent state is the finding itself:
+     * yellow until the review goes out, green when approved to go with it. A thread is GitHub's:
+     * an agent's draft reply or a pending review comment is the unsent thing in it.
+     */
+    pageTone(c) {
+      if (c.local) {
+        return c.answered ? '' : c.status === 'approved' ? 'sent' : 'pending';
+      }
+      if (c.pending || c.drafts?.length) {
+        return 'pending';
+      }
+
+      return c.sent || c.answered ? 'sent' : '';
+    },
+
+    pageNote(c) {
+      const tone = this.pageTone(c);
+
+      if (c.local) {
+        return tone === 'sent' ? ' · approved' : tone === 'pending' ? ' · not sent yet' : '';
+      }
+
+      return tone === 'pending' ? ' · has an unsent reply' : tone === 'sent' ? ' · your reply is sent' : ' · waiting';
     },
 
     /**
@@ -2323,18 +2357,38 @@ export default {
       }
       this.msgBusy = t.id;
       this.sendingDraft = true;
-      this.error = '';
+      this.draftError(t, '');
       try {
         await sendReplyDraft(this.status.pr, t.rd, t.rd.body, this.repo);
-        this.closeDraft(t);
-        forgetPrDetail(this.status.pr, this.repo);
-        await this.refreshEvidence(true);
       } catch (e) {
-        this.error = `The reply was not posted: ${ e?.message || e }`;
+        this.draftError(t, `The reply was not posted: ${ e?.message || e }`);
+        this.msgBusy = 0;
+        this.sendingDraft = false;
+
+        return;
+      }
+      this.closeDraft(t);
+      forgetPrDetail(this.status.pr, this.repo);
+      // The button stays on Posting until the thread is redrawn with the reply in it, so the
+      // draft never sits there looking unsent after GitHub has it.
+      try {
+        await this.refreshEvidence(true);
       } finally {
         this.msgBusy = 0;
         this.sendingDraft = false;
       }
+    },
+
+    /** Set or clear the banner under a draft. */
+    draftError(t, text) {
+      const next = { ...this.draftErrors };
+
+      if (text) {
+        next[t.id] = text;
+      } else {
+        delete next[t.id];
+      }
+      this.draftErrors = next;
     },
 
     /** Edit on a draft saves back into the draft; nothing goes to GitHub until Send it. */
@@ -2345,7 +2399,7 @@ export default {
         return;
       }
       this.msgBusy = t.id;
-      this.error = '';
+      this.draftError(t, '');
       try {
         await updateReplyDraft(this.status.pr, t.rd.id, body);
         // Drawn with the new text now, ahead of the rebuild that will say the same.
@@ -2355,7 +2409,7 @@ export default {
           this.editMsgDraft = '';
         }
       } catch (e) {
-        this.error = `The draft was not saved: ${ e?.message || e }`;
+        this.draftError(t, `The draft was not saved: ${ e?.message || e }`);
         this.msgBusy = 0;
 
         return;
@@ -2370,14 +2424,14 @@ export default {
         return;
       }
       this.msgBusy = t.id;
-      this.error = '';
+      this.draftError(t, '');
       try {
         await discardReplyDraft(this.status.pr, t.rd.id);
         this.closeDraft(t);
         forgetPrDetail(this.status.pr, this.repo);
         await this.refreshEvidence(true);
       } catch (e) {
-        this.error = `The draft was not discarded: ${ e?.message || e }`;
+        this.draftError(t, `The draft was not discarded: ${ e?.message || e }`);
       } finally {
         this.msgBusy = 0;
       }
@@ -4087,14 +4141,11 @@ export default {
                     :key="c.id || n"
                     type="button"
                     class="workspace-rail__page-num"
-                    :class="{
-                      'workspace-rail__page-num--on': n === pageOf(shownSection, item),
-                      'workspace-rail__page-num--approved': !c.answered && c.local && c.status === 'approved',
-                      'workspace-rail__page-num--open': !c.answered && !(c.local && c.status === 'approved'),
-                      'workspace-rail__page-num--draft': c.pending || (c.drafts && c.drafts.length),
+                    :class="[pageTone(c) ? `workspace-rail__page-num--${ pageTone(c) }` : '', {
+                      'workspace-rail__page-num--on':  n === pageOf(shownSection, item),
                       'workspace-rail__page-num--new': c.fresh,
-                    }"
-                    :title="`${ c.where }${ c.fresh ? ' · replied since your review' : '' }${ c.pending || (c.drafts && c.drafts.length) ? ' · has an unsent reply' : '' }${ c.answered ? '' : c.status === 'approved' ? ' · approved' : ' · waiting' }`"
+                    }]"
+                    :title="`${ c.where }${ c.fresh ? ' · replied since your review' : '' }${ pageNote(c) }`"
                     @click="goTo(shownSection, n, $event)"
                   >{{ n + 1 }}</button>
                 </span>
@@ -4311,7 +4362,9 @@ export default {
                       <PrButton
                         size="sm"
                         variant="primary"
+                        data-testid="dev-draft-send"
                         :disabled="msgBusy === t.id"
+                        :waiting="msgBusy === t.id && sendingDraft"
                         @click="sendDraft(t)"
                       >
                         {{ msgBusy === t.id && sendingDraft ? 'Posting…' : 'Send it' }}
@@ -4339,6 +4392,16 @@ export default {
                         Discard
                       </PrButton>
                     </div>
+                    <!-- Under the draft it is about, so the modal it was sent from says why. -->
+                    <Banner
+                      v-if="t.rd && draftErrors[t.id]"
+                      class="workspace-rail__draft-error"
+                      color="error"
+                      data-testid="dev-draft-error"
+                      :label="draftErrors[t.id]"
+                      :closable="true"
+                      @close="draftError(t, '')"
+                    />
                     <div
                       v-if="t.pending && editingMsg !== t.id"
                       class="workspace-rail__comment-actions"
@@ -5664,9 +5727,8 @@ export default {
    * thread - it is an answer to the message above it - without reading as an answer that has
    * been given.
    */
-  // A thread holding an unsent reply of yours, so it can be found in the pager without walking.
-  &__page-num--draft { box-shadow: inset 0 -2px 0 var(--pr-warning); }
   /* A reply since your review: the pages a new round is read for. */
+  &__draft-error { margin: var(--dev-space-2) 0 0; }
   &__page-num--new { box-shadow: inset 0 2px 0 var(--link); font-weight: 700; color: var(--link); }
 
   &__msg--draft {
@@ -6164,8 +6226,8 @@ export default {
     cursor:        pointer;
 
     &:hover { color: var(--pr-text); }
-    &--open { color: var(--pr-warning); border-color: var(--pr-warning); }
-    &--approved { color: var(--pr-success); border-color: var(--pr-success); }
+    &--pending { color: var(--pr-warning); border-color: var(--pr-warning); }
+    &--sent { color: var(--pr-success); border-color: var(--pr-success); }
     &--on {
       background:   var(--pr-accent);
       border-color: var(--pr-accent);
