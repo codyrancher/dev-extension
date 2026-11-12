@@ -92,6 +92,11 @@ export default {
       teamSaved:    [],
       /** dev-api could not be asked, so the card says that rather than showing nobody. */
       teamUnread:   false,
+      /**
+       * The Team card, open. Shut like the other cards that hold a list, and open when this page
+       * was reached for it - the Automations page's "Edit in Settings" links to #team.
+       */
+      showTeam:     this.$route?.hash === '#team',
       showActivity: false,
       /** The filesystem explorer, which is a dialog rather than a section: it wants the room. */
       showFiles:    false,
@@ -147,7 +152,7 @@ export default {
         {
           id:     'tokens',
           title:  'Tokens',
-          help:   'Every token this product uses on your behalf, in one Secret of your own.',
+          help:   'In one Secret of your own in dev-system.',
           secrets,
           // A heading per group, in the order secrets.ts declares them, and only for the groups
           // that have a field: a heading over nothing reads as something having failed to load.
@@ -450,9 +455,7 @@ export default {
     <div class="dev-settings__intro">
       <h1>Settings</h1>
       <p class="dev-settings__intro-sub">
-        Every token this product uses, in one Kubernetes Secret of your own in the dev-system
-        namespace. A stored value is fetched only when you press the eye beside it, and saving
-        writes only the fields you changed.
+        Your tokens and preferences. A stored value stays hidden until you press the eye.
       </p>
     </div>
 
@@ -657,12 +660,12 @@ export default {
       chosen ones into each instance at provision time. Changing this does not touch instances
       that already exist.
     -->
-    <section class="dev-settings__card dev-settings__card--half">
+    <section class="dev-settings__card">
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-globe" />
         <div class="dev-settings__card-title">
           <h3>Cloud credentials</h3>
-          <p>Which cloud credentials new Rancher instances are given, so they can provision clusters.</p>
+          <p>The cloud credentials new Rancher instances get.</p>
           <p class="dev-settings__card-meta">
             {{ credentials.filter((c) => c.propagate).length }} of {{ credentials.length }} propagated &middot; shared
           </p>
@@ -672,7 +675,7 @@ export default {
         v-if="!credentials.length"
         class="dev-settings__help"
       >
-        This Rancher has no cloud credentials yet. Add them in Cluster Management &rsaquo; Cloud Credentials, then choose here which new instances receive.
+        No cloud credentials yet: add them in Cluster Management &rsaquo; Cloud Credentials.
       </p>
       <div
         v-if="credentials.length"
@@ -710,12 +713,12 @@ export default {
       Which CLI a conversation is held with. A preference rather than a per-conversation choice:
       a pane is its CLI for as long as it lives, so this decides what the next one opens with.
     -->
-    <section class="dev-settings__card dev-settings__card--half">
+    <section class="dev-settings__card">
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-terminal" />
         <div class="dev-settings__card-title">
           <h3>Agent CLI</h3>
-          <p>What a new conversation is held with. One already running keeps the CLI it was opened with, including after a pod restart.</p>
+          <p>What new conversations run with.</p>
         </div>
       </div>
 
@@ -747,7 +750,7 @@ export default {
         <i class="dev-settings__card-icon icon icon-apps" />
         <div class="dev-settings__card-title">
           <h3>Apps</h3>
-          <p>Which Apps Plus apps to offer as workspace templates.</p>
+          <p>The apps offered as workspace templates.</p>
           <p class="dev-settings__card-meta">
             {{ apps.length - hiddenApps.length }} of {{ apps.length }} shown &middot; yours alone
           </p>
@@ -797,11 +800,20 @@ export default {
       class="dev-settings__card"
       data-testid="settings-team"
     >
-      <div class="dev-settings__card-head">
+      <div
+        class="dev-settings__card-head dev-settings__card-head--toggle"
+        role="button"
+        tabindex="0"
+        :aria-expanded="showTeam"
+        data-testid="settings-team-toggle"
+        @click="showTeam = !showTeam"
+        @keydown.enter.prevent="showTeam = !showTeam"
+        @keydown.space.prevent="showTeam = !showTeam"
+      >
         <i class="dev-settings__card-icon icon icon-user" />
         <div class="dev-settings__card-title">
           <h3>Team</h3>
-          <p>The people you work with. The review and feedback automations start an agent only for work one of them asked for: their pull request to review, or their review asking for changes on yours. For anyone else the review workspace is still made and prepared, and nothing is sent to an agent. Scripts get the list as <code>$TEAM</code>.</p>
+          <p>Automations start an agent only for these people's work; for anyone else they make the workspace and stop. Scripts read the list as <code>$TEAM</code>.</p>
           <p class="dev-settings__card-meta">
             <template v-if="teamUnread">
               The in-cluster API could not be asked for the team.
@@ -814,41 +826,47 @@ export default {
             </template>
           </p>
         </div>
-      </div>
-      <!-- One person a row; each row suggests the dashboard's collaborators, then all of GitHub. -->
-      <ArrayList
-        v-model:value="teamRows"
-        :protip="false"
-        add-label="Add someone"
-        remove-label="Remove"
-        data-testid="settings-team-list"
-      >
-        <template #value="{ row }">
-          <GithubLoginInput
-            v-model:value="row.value"
-            :exclude="teamRows"
-            aria-label="Teammate's GitHub login"
-          />
-        </template>
-      </ArrayList>
-      <div class="dev-settings__actions">
-        <AsyncButton
-          mode="apply"
-          action-label="Save team"
-          :disabled="!teamChanged()"
-          @click="saveTeam"
+        <i
+          class="icon dev-settings__card-chev"
+          :class="showTeam ? 'icon-chevron-up' : 'icon-chevron-down'"
         />
       </div>
+      <template v-if="showTeam">
+        <!-- One person a row; each row suggests the dashboard's collaborators, then all of GitHub. -->
+        <ArrayList
+          v-model:value="teamRows"
+          :protip="false"
+          add-label="Add someone"
+          remove-label="Remove"
+          data-testid="settings-team-list"
+        >
+          <template #value="{ row }">
+            <GithubLoginInput
+              v-model:value="row.value"
+              :exclude="teamRows"
+              aria-label="Teammate's GitHub login"
+            />
+          </template>
+        </ArrayList>
+        <div class="dev-settings__actions">
+          <AsyncButton
+            mode="apply"
+            action-label="Save team"
+            :disabled="!teamChanged()"
+            @click="saveTeam"
+          />
+        </div>
+      </template>
     </section>
 
     <!-- Skills lives here rather than as a rail shortcut of its own: it is something you set up,
          like the secrets and the apps, not somewhere you go often. -->
-    <section class="dev-settings__card dev-settings__card--half">
+    <section class="dev-settings__card">
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-file" />
         <div class="dev-settings__card-title">
           <h3>Skills</h3>
-          <p>View and edit the skills your agents run.</p>
+          <p>The skills your agents run.</p>
         </div>
       </div>
 
@@ -871,12 +889,12 @@ export default {
       A dialog, not a card: a directory listing wants the width of the window, and this is
       something you open, read and shut rather than something the page should always be showing.
     -->
-    <section class="dev-settings__card dev-settings__card--half">
+    <section class="dev-settings__card">
       <div class="dev-settings__card-head">
         <i class="dev-settings__card-icon icon icon-folder" />
         <div class="dev-settings__card-title">
           <h3>Filesystem</h3>
-          <p>The node's own disk as the agent pod sees it - every workspace, its checkout, the shared package stores and the kept artifacts. Real directories, read live: symlinks are drawn with their target, and a file that shares an inode with other workspaces says how many names it has.</p>
+          <p>The node's disk, as the agent pod sees it.</p>
         </div>
       </div>
 
@@ -907,7 +925,7 @@ export default {
         <i class="dev-settings__card-icon icon icon-list-flat" />
         <div class="dev-settings__card-title">
           <h3>Activity</h3>
-          <p>Every read this page load made, and everything that failed. Kept here rather than only in the browser's console, which is no use unless it was already open.</p>
+          <p>What this page read, and what failed.</p>
           <p class="dev-settings__card-meta">
             {{ activity.length }} line{{ activity.length === 1 ? '' : 's' }}
           </p>
@@ -966,16 +984,11 @@ export default {
   // Prose measure: the card may be as wide as the window; a sentence may not.
   $measure: 74ch;
 
-  // One grid, and every card takes a whole, a half or a third of it, so no row ever ends in a gap
-  // and a window of any width shows the same arrangement. It used to fit as many 420px columns as
-  // there was room for, which left a two-line card beside a void or a third card alone on a row
-  // whenever the window changed, and no two rows lined up.
-  //
-  // Cards in a row are one height, with whatever they end in pinned to the bottom, so the buttons
-  // across a row sit on one line. Below the width where a third is worth reading: one column.
+  // One card a row, every card the same width: a section is read on its own, and two side by side
+  // made rows of different heights with a gap under the shorter one.
   .dev-settings {
     display:               grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     align-content:         start;
     gap:                   var(--dev-space-5);
     padding:               var(--dev-inset);
@@ -1035,19 +1048,8 @@ export default {
       border-radius:  var(--r-sm);
     }
 
-    // At the same specificity as the grid's `> *` plus one class, so these win it.
-    > .dev-settings__card--half  { grid-column: span 3; }
-    > .dev-settings__card--third { grid-column: span 2; }
-
-    @media (max-width: 1100px) {
-      > .dev-settings__card--half,
-      > .dev-settings__card--third {
-        grid-column: 1 / -1;
-      }
-    }
-
-    // A control the card puts last - Save, or a button that opens something - goes to the bottom,
-    // so the ones across a row line up however long the sentences above them run.
+    // A control the card puts last - Save, or a button that opens something - goes at the bottom,
+    // at its own width rather than the card's.
     &__card > .btn,
     &__card > .dev-settings__actions {
       align-self: flex-start;

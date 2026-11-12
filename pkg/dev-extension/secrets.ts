@@ -33,22 +33,22 @@ export const SECRET_GROUPS: SecretGroup[] = [
   {
     id:    'services',
     title: 'Services',
-    help:  'Personal access tokens for what My Work and the agents read as you. GitHub needs repo, read:user and read:project. jira.suse.com and confluence.suse.com are Server, so a token from your profile\'s Personal Access Tokens page is a bearer token, and dev-api makes those calls itself so neither token reaches a workspace. Figma needs file content read, for an agent reviewing a design.',
+    help:  'Tokens used as you. GitHub needs repo, read:user and read:project.',
   },
   {
     id:    'rancher',
     title: 'Rancher',
-    help:  'What a Rancher instance signs in and pulls with: the local admin password a workspace\'s fresh login and the Verify tools use, and a SUSE Customer Center login for stgregistry.suse.com and registry.rancher.com. Prime images pull from both anonymously, so the login is optional: when both halves are set, an instance pulls with it instead.',
+    help:  'The admin password new instances sign in with, and an optional SUSE registry login (stgregistry.suse.com, registry.rancher.com).',
   },
   {
     id:    'vpn',
     title: 'VPN',
-    help:  'The ECM lab\'s VPN, which every workspace reaches Harvester through. Your username and password as you log in to it, and the profile\'s two files pasted whole: the CA (~/.cert/nm-openvpn/ecm-ca.pem) and the TLS key (ecm-tls-auth.pem). The one-time code is asked for each time you log in, and never kept.',
+    help:  'The ECM lab VPN: your login, and the profile\'s CA (ecm-ca.pem) and TLS key (ecm-tls-auth.pem) pasted whole. The one-time code is asked at login.',
   },
   {
     id:    'letsencrypt',
     title: 'Let\'s Encrypt',
-    help:  'A share is a link you send to somebody with no account here, so it should not open on a certificate warning. An address you own gets every share a real certificate for its own sslip.io name; empty means no share asks for one.',
+    help:  'An address you own, so shares get real certificates. Empty: none.',
   },
 ];
 
