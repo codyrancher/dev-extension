@@ -450,7 +450,7 @@ export default {
         </span>
       </header>
       <p class="dev-tools__what">
-        The ECM lab, for Harvester: one OpenVPN connection on the node's network, with the lab's range (10.115.0.0/16) on its routes, so every pod - workspaces, the browsers, dev servers - reaches it with nothing to set up. The lab ends a session after a day; something asking for it while it is down puts a login prompt on every page. From a workspace: <code>tools vpn</code>.
+        SUSE's InfraVPN on the node's network: its routes (10.0.0.0/8, the ECM lab's Harvesters among them) are every pod's, so workspaces, the browsers and dev servers reach them with nothing to set up. It ends a session after a day; something asking for it while it is down puts a login prompt on every page. From a workspace: <code>tools vpn</code>.
       </p>
       <p
         class="dev-tools__what"

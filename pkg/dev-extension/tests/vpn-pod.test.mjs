@@ -132,12 +132,25 @@ test('a code the VPN refuses is a failed login, and says to use a fresh one', as
 test('config, start script and objects: the shape dev-api applies', () => {
   const conf = vpnConfig({}, '/run/vpn');
 
-  assert.match(conf, /^remote 91\.193\.113\.211 1194 udp4$/m);
+  // SUSE's InfraVPN, as NetworkManager has it on the desktop.
+  assert.deepEqual(conf.match(/^remote .*$/gm), ['remote us.vpn1.suse.net 1194 udp', 'remote us.vpn2.suse.net 1194 udp']);
+  assert.match(conf, /^remote-random$/m);
+  assert.match(conf, /^auth SHA512$/m);
+  assert.match(conf, /^data-ciphers AES-256-GCM$/m);
+  assert.match(conf, /^data-ciphers-fallback AES-256-GCM$/m);
+  assert.match(conf, /^ping 10$/m);
+  assert.match(conf, /^ping-restart 120$/m);
   assert.match(conf, /^tls-auth \/run\/vpn\/ta\.pem 1$/m);
-  assert.match(conf, /^route-nopull$/m, 'none of the server\'s routes reach the node');
-  assert.deepEqual(conf.match(/^route .*$/gm), ['route 10.115.0.0 255.255.0.0'], 'only the lab\'s');
+  // The server's routes, as the desktop takes them; never its default route.
+  assert.match(conf, /^pull-filter ignore "redirect-gateway"$/m);
+  assert.doesNotMatch(conf, /route-nopull/);
   assert.match(conf, /^management \/run\/vpn\/mgmt\.sock unix$/m, 'a socket in the pod\'s files, not a port on the node\'s network');
   assert.doesNotMatch(conf, /auth-nocache/, 'the server\'s session token carries reconnects without a new code');
+  // With the server's routes off: none of them, and only the ones given.
+  const fixed = vpnConfig({ pullRoutes: false }, '/run/vpn');
+
+  assert.match(fixed, /^route-nopull$/m);
+  assert.deepEqual(fixed.match(/^route .*$/gm), ['route 10.115.0.0 255.255.0.0']);
   assert.match(vpnStartScript(), /apk add --no-cache openvpn .*\n.*\nexec node \/app\/controller\.mjs/);
   const objs = vpnObjects({ namespace: 'dev-system', token: 't' });
 

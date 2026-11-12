@@ -43,7 +43,7 @@ export const SECRET_GROUPS: SecretGroup[] = [
   {
     id:    'vpn',
     title: 'VPN',
-    help:  'Paste ecm-ca.pem and ecm-tls-auth.pem whole. The one-time code is asked at login.',
+    help:  'SUSE InfraVPN: paste /etc/openvpn/SUSE_Trust_Root.crt and /etc/openvpn/ta.key whole (sudo cat each). The one-time code is asked at login.',
   },
   {
     id:    'letsencrypt',

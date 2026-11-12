@@ -6,12 +6,12 @@
  * connection is one login a day for all of them, made by the person when something asks.
  *
  * TRANSPARENT, ON THE NODE'S NETWORK (the person's choice, 2026-11-11). The pod is hostNetwork, so
- * the tunnel and its route are the node's, and every pod on it - a workspace's curl and kubectl,
+ * the tunnel and its routes are the node's, and every pod on it - a workspace's curl and kubectl,
  * the shared browser, Firefox, a dev server pointed at a Harvester - reaches the lab with nothing
- * configured, as it did over the person's desktop VPN. What a node-level route could break is kept
- * out by taking none of the server's: `route-nopull`, and one route, the lab's (10.115.0.0/16),
- * which overlaps nothing of the cluster's (10.42 and 10.43). apps-vpn.ts is the earlier, proxy-only
- * attempt, and says why it avoided this; the person decided the reach was worth it.
+ * configured, as it did over the person's desktop VPN. It is SUSE's InfraVPN, configured as the
+ * desktop has it (VPN_SERVER_DEFAULTS): the routes the server pushes are taken as the desktop takes
+ * them, and its default route is not. apps-vpn.ts is the earlier, proxy-only attempt, and says why
+ * it avoided this; the person decided the reach was worth it.
  *
  * WHAT RUNS IN IT. `node:24-alpine` with openvpn added at start (there is no registry of ours to
  * push an image to - every pod here does this), and the controller below: it starts openvpn on a
@@ -32,11 +32,26 @@ export const VPN_NAME = 'dev-vpn';
 export const VPN_CONTROL_PORT = 18091;
 
 /** The ECM lab's server, from the profile on the person's desktop: nothing here is a secret. */
+/**
+ * SUSE's InfraVPN (InfraVPN_Access_Corp_US), as NetworkManager runs it on the person's desktop,
+ * which is the VPN that reaches the ECM lab: read off that connection (nmcli, 2026-11-11). Its
+ * CA is /etc/openvpn/SUSE_Trust_Root.crt and its TLS key /etc/openvpn/ta.key, which the person
+ * pastes into the secret store with their username and password.
+ */
 export const VPN_SERVER_DEFAULTS = {
-  remotes:      [{ host: '91.193.113.211', port: 1194, proto: 'udp4' }],
-  auth:         'SHA256',
+  remotes:      [{ host: 'us.vpn1.suse.net', port: 1194, proto: 'udp' }, { host: 'us.vpn2.suse.net', port: 1194, proto: 'udp' }],
+  remoteRandom: true,
+  auth:         'SHA512',
+  cipher:       'AES-256-GCM',
   keyDirection: 1,
-  // The only routes the node takes: the lab's. 10.115.252.105 and its neighbours are the Harvesters.
+  ping:         10,
+  pingRestart:  120,
+  // The routes the server pushes, as NetworkManager takes them: on the desktop that is 10.0.0.0/8
+  // (the lab, 10.115.0.0/16, among them), 147.2.0.0/16 and 149.44.0.0/16. Never the default route.
+  // The cluster's own ranges stay local inside 10/8: the node's pod route (10.42.0.0/24 on cni0) is
+  // the more specific, and service addresses (10.43) are rewritten to pods before routing.
+  pullRoutes:   true,
+  // Used only with pullRoutes off: the routes to take instead of the server's.
   routes:       [{ network: '10.115.0.0', mask: '255.255.0.0' }],
 };
 
@@ -48,19 +63,30 @@ export function vpnConfig(server, dir) {
     'client',
     'dev tun',
     'nobind',
-    ...s.remotes.map((r) => `remote ${ r.host } ${ r.port } ${ r.proto || 'udp4' }`),
+    ...s.remotes.map((r) => `remote ${ r.host } ${ r.port } ${ r.proto || 'udp' }`),
+    ...(s.remoteRandom ? ['remote-random'] : []),
     'resolv-retry 30',
     'remote-cert-tls server',
     `auth ${ s.auth }`,
+    // NetworkManager's `cipher`: the data channel cipher, and the one to fall back on with a server
+    // that does not negotiate.
+    ...(s.cipher ? [`data-ciphers ${ s.cipher }`, `data-ciphers-fallback ${ s.cipher }`] : []),
+    ...(s.ping ? [`ping ${ s.ping }`] : []),
+    ...(s.pingRestart ? [`ping-restart ${ s.pingRestart }`] : []),
     `ca ${ dir }/ca.pem`,
     `tls-auth ${ dir }/ta.pem ${ s.keyDirection }`,
     // No file: the controller answers on the management interface, which is how a code can be.
     'auth-user-pass',
     // After a refusal that carries a challenge, ask again rather than exit.
     'auth-retry interact',
-    // The node's routes are every pod's: none of the server's, only the lab's own range.
-    'route-nopull',
-    ...s.routes.map((r) => `route ${ r.network } ${ r.mask }`),
+    // The node's routes are every pod's. The server's, as the desktop takes them - but never its
+    // default route, which would take every pod's traffic, the node's own included - or, with
+    // pullRoutes off, none of the server's and only the ones given.
+    ...(s.pullRoutes
+      ? ['pull-filter ignore "redirect-gateway"']
+      : ['route-nopull', ...s.routes.map((r) => `route ${ r.network } ${ r.mask }`)]),
+    // DNS the server pushes is for the desktop's resolver; a pod uses the cluster's. Addresses work.
+    'pull-filter ignore "dhcp-option"',
     `management ${ dir }/mgmt.sock unix`,
     'management-query-passwords',
     'management-hold',
