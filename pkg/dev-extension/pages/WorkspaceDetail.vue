@@ -90,6 +90,14 @@ export default {
       // Whether this open has already spun a stopped workspace back up. Once: the poll re-reads
       // it as `starting`, and a second start would only race the first. See refresh.
       autoStarted:  false,
+      /**
+       * The quick look while there is no pod yet: every two seconds rather than on the registrar's
+       * next change, which is up to twenty seconds after a pod is up. See pollWhileStarting.
+       */
+      startPoll:    null,
+      startPollUntil: 0,
+      /** The page has gone: nothing it started may go on asking. */
+      gone:         false,
       // Which tabs have been opened. Tab content is mounted on first activation and left
       // mounted afterwards: Tabbed hides an inactive tab with v-show rather than unmounting it,
       // so a terminal survives a trip to another tab, but a tab nobody opened should not have
@@ -209,6 +217,11 @@ export default {
       if (this.restarting) {
         return `${ this.name } is restarting: its pod is not answering yet.`;
       }
+      // This page started it, having found it stopped: the spin-down stops a workspace nobody has
+      // touched in 45 minutes, and the pod is usually back within seconds.
+      if (this.autoStarted && (this.workspace?.state === 'starting' || this.starting)) {
+        return `${ this.name } was stopped while idle and is starting again.`;
+      }
       if (this.workspace?.state === 'starting' || this.starting) {
         return `${ this.name } is starting up: its pod is not running yet. A first boot pulls the image and lays out the tree.`;
       }
@@ -294,6 +307,9 @@ export default {
   },
 
   beforeUnmount() {
+    this.gone = true;
+    clearTimeout(this.startPoll);
+    this.startPoll = null;
     this.stopRegistrar?.();
     setViewing('');
     /*
@@ -367,7 +383,34 @@ export default {
       } catch { /* leave BASE as it is; a local workspace is found there anyway */ }
     },
 
-    async refresh() {
+    /**
+     * Look again every two seconds while the workspace has no pod, for up to three minutes.
+     *
+     * The page otherwise re-reads when the registrar changes, and dev-api rewrites that every
+     * fifteen seconds: a workspace the spin-down had stopped came back in a second and its page
+     * still said "starting up" for most of half a minute, until it was refreshed by hand. One
+     * loop at a time; it ends itself once there is a pod, or the page goes.
+     */
+    pollWhileStarting() {
+      if (this.startPoll) {
+        return;
+      }
+      this.startPollUntil = Date.now() + 3 * 60_000;
+      const step = async() => {
+        this.startPoll = null;
+        if (!this.workspace || this.pod || this.stopped || Date.now() > this.startPollUntil || this.gone) {
+          return;
+        }
+        await this.refresh({ quick: true }).catch(() => {});
+        if (!this.pod && !this.gone && Date.now() < this.startPollUntil) {
+          this.startPoll = setTimeout(step, 2000);
+        }
+      };
+
+      this.startPoll = setTimeout(step, 2000);
+    },
+
+    async refresh({ quick = false } = {}) {
       // Until the workspace is known, BASE may be pointed at the wrong cluster - a downstream
       // workspace is not in `local` - so resolve the cluster from the Installation first, and keep
       // trying each poll until it is known (the first read of the Installation list can miss).
@@ -457,15 +500,24 @@ export default {
         this.autoStarted = true;
         setWorkspaceRunning(this.name, true, this.workspace.cluster)
           .then(() => this.refresh())
+          .then(() => this.pollWhileStarting())
           .catch(() => {});
       }
 
       // The sidebar is the workspace list, and this page is where someone watching one would
       // notice a change, so its poll keeps that list fresh too.
-      listAllWorkspaces().catch(() => {});
+      // Not on the quick looks while it starts: those are about this workspace only.
+      if (!quick) {
+        listAllWorkspaces().catch(() => {});
+      }
 
       // Only ask for the pod when there could be one: a stopped workspace has none.
       this.pod = this.workspace.replicas > 0 ? await workspacePod(this.name) || '' : '';
+      // No pod yet on a workspace that is meant to have one: look again soon rather than on the
+      // registrar's schedule. A restart, a rollout, a first boot - all of them end the same way.
+      if (!this.pod && !this.stopped && this.workspace.replicas > 0) {
+        this.pollWhileStarting();
+      }
       // The log's last line, only while the workspace is still coming up. It is the difference
       // between "Starting up" and knowing it is four minutes into an install, and once the
       // workspace is running it is the terminal's job rather than this page's.
