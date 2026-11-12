@@ -93,7 +93,11 @@ export default {
   emits: ['close'],
 
   data() {
-    return { depth: 0 };
+    return {
+      depth: 0,
+      /** Whether the last press began on the veil itself: see onVeilPress. */
+      pressedOnVeil: false,
+    };
   },
 
   computed: {
@@ -230,8 +234,21 @@ export default {
       }
     },
 
+    /**
+     * Where the press that ends in a click began. A drag that selects text in the panel and lets
+     * go over the veil makes a click whose target is the veil - the nearest element the press and
+     * the release share - so `.self` alone closed the dialog on the person mid-selection. Only a
+     * press that began on the veil itself may close it.
+     */
+    onVeilPress(e) {
+      this.pressedOnVeil = e.target === e.currentTarget;
+    },
+
     onVeil() {
-      if (this.dismissible) {
+      const pressed = this.pressedOnVeil;
+
+      this.pressedOnVeil = false;
+      if (this.dismissible && pressed) {
         this.$emit('close', 'veil');
       }
     },
@@ -245,6 +262,7 @@ export default {
       class="dev-modal"
       :class="{ 'dev-focus': focus, 'dev-modal--focus': focus, [`dev-modal--${ size }`]: true }"
       :style="layer"
+      @pointerdown="onVeilPress"
       @click.self="onVeil"
     >
       <!--
