@@ -23,7 +23,6 @@
 import Loading from '@shell/components/Loading';
 import AsyncButton from '@shell/components/AsyncButton';
 import { Banner } from '@components/Banner';
-import { RcButton } from '@components/RcButton';
 import { LabeledInput } from '@components/Form/LabeledInput';
 import BrandImage from '@shell/components/BrandImage';
 import {
@@ -46,7 +45,7 @@ export default {
   name: 'DevSettings',
 
   components: {
-    Loading, AsyncButton, Banner, RcButton, LabeledInput, BrandImage, DevModal, FileExplorer, ArrayList, GithubLoginInput
+    Loading, AsyncButton, Banner, LabeledInput, BrandImage, DevModal, FileExplorer, ArrayList, GithubLoginInput
   },
 
   async fetch() {
@@ -87,6 +86,10 @@ export default {
       activity:     [],
       /** Which CLI new conversations are held with. '' reads as claude. */
       cli:          '',
+      /** The cards that fold, shut until opened: what is in them is changed rarely. */
+      showCreds:    false,
+      showCli:      false,
+      showApps:     false,
       /** The team, one login a row as edited, and as dev-api has it. */
       teamRows:     [],
       teamSaved:    [],
@@ -146,6 +149,11 @@ export default {
      * the sidebar shows a template with no workspaces: the set of templates is the map of what
      * this product can do, and a gap in it reads as something being broken.
      */
+    /** The CLI new conversations run with, as the shut Agent CLI card names it. */
+    cliLabel() {
+      return CLI_CHOICES.find((c) => c.id === (this.cli || 'claude'))?.label || this.cli;
+    },
+
     sections() {
       const secrets = GLOBAL_SECRETS.map((secret) => this.field(secret, secret.key));
 
@@ -658,7 +666,16 @@ export default {
       that already exist.
     -->
     <section class="dev-settings__card">
-      <div class="dev-settings__card-head">
+      <div
+        class="dev-settings__card-head dev-settings__card-head--toggle"
+        role="button"
+        tabindex="0"
+        :aria-expanded="showCreds"
+        data-testid="settings-creds-toggle"
+        @click="showCreds = !showCreds"
+        @keydown.enter.prevent="showCreds = !showCreds"
+        @keydown.space.prevent="showCreds = !showCreds"
+      >
         <i class="dev-settings__card-icon icon icon-globe" />
         <div class="dev-settings__card-title">
           <h3>Cloud credentials</h3>
@@ -666,42 +683,48 @@ export default {
             {{ credentials.filter((c) => c.propagate).length }} of {{ credentials.length }} propagated
           </p>
         </div>
-      </div>
-      <p
-        v-if="!credentials.length"
-        class="dev-settings__help"
-      >
-        No cloud credentials yet: add them in Cluster Management &rsaquo; Cloud Credentials.
-      </p>
-      <div
-        v-if="credentials.length"
-        class="dev-settings__list"
-      >
-        <label
-          v-for="cred in credentials"
-          :key="cred.id"
-          class="dev-settings__app"
-        >
-          <input
-            type="checkbox"
-            :checked="cred.propagate"
-            @change="(event) => setCredPropagate(cred.id, event.target.checked)"
-          >
-          <span class="dev-settings__app-name">{{ cred.name }}</span>
-          <span class="dev-settings__app-desc">{{ cred.driver }}</span>
-        </label>
-      </div>
-      <div
-        v-if="credentials.length"
-        class="dev-settings__actions"
-      >
-        <AsyncButton
-          mode="apply"
-          action-label="Save credentials"
-          :disabled="!credsChanged()"
-          @click="saveCreds"
+        <i
+          class="icon dev-settings__card-chev"
+          :class="showCreds ? 'icon-chevron-up' : 'icon-chevron-down'"
         />
       </div>
+      <template v-if="showCreds">
+        <p
+          v-if="!credentials.length"
+          class="dev-settings__help"
+        >
+          No cloud credentials yet: add them in Cluster Management &rsaquo; Cloud Credentials.
+        </p>
+        <div
+          v-if="credentials.length"
+          class="dev-settings__list"
+        >
+          <label
+            v-for="cred in credentials"
+            :key="cred.id"
+            class="dev-settings__app"
+          >
+            <input
+              type="checkbox"
+              :checked="cred.propagate"
+              @change="(event) => setCredPropagate(cred.id, event.target.checked)"
+            >
+            <span class="dev-settings__app-name">{{ cred.name }}</span>
+            <span class="dev-settings__app-desc">{{ cred.driver }}</span>
+          </label>
+        </div>
+        <div
+          v-if="credentials.length"
+          class="dev-settings__actions"
+        >
+          <AsyncButton
+            mode="apply"
+            action-label="Save credentials"
+            :disabled="!credsChanged()"
+            @click="saveCreds"
+          />
+        </div>
+      </template>
     </section>
 
     <!--
@@ -709,14 +732,33 @@ export default {
       a pane is its CLI for as long as it lives, so this decides what the next one opens with.
     -->
     <section class="dev-settings__card">
-      <div class="dev-settings__card-head">
+      <div
+        class="dev-settings__card-head dev-settings__card-head--toggle"
+        role="button"
+        tabindex="0"
+        :aria-expanded="showCli"
+        data-testid="settings-cli-toggle"
+        @click="showCli = !showCli"
+        @keydown.enter.prevent="showCli = !showCli"
+        @keydown.space.prevent="showCli = !showCli"
+      >
         <i class="dev-settings__card-icon icon icon-terminal" />
         <div class="dev-settings__card-title">
           <h3>Agent CLI</h3>
+          <p class="dev-settings__card-meta">
+            {{ cliLabel }}
+          </p>
         </div>
+        <i
+          class="icon dev-settings__card-chev"
+          :class="showCli ? 'icon-chevron-up' : 'icon-chevron-down'"
+        />
       </div>
 
-      <div class="dev-settings__choices">
+      <div
+        v-if="showCli"
+        class="dev-settings__choices"
+      >
         <label
           v-for="choice in CLI_CHOICES"
           :key="choice.id"
@@ -739,7 +781,16 @@ export default {
       and the Create page show only those. A new App is shown until it is hidden.
     -->
     <section class="dev-settings__card">
-      <div class="dev-settings__card-head">
+      <div
+        class="dev-settings__card-head dev-settings__card-head--toggle"
+        role="button"
+        tabindex="0"
+        :aria-expanded="showApps"
+        data-testid="settings-apps-toggle"
+        @click="showApps = !showApps"
+        @keydown.enter.prevent="showApps = !showApps"
+        @keydown.space.prevent="showApps = !showApps"
+      >
         <i class="dev-settings__card-icon icon icon-apps" />
         <div class="dev-settings__card-title">
           <h3>Apps</h3>
@@ -747,39 +798,45 @@ export default {
             {{ apps.length - hiddenApps.length }} of {{ apps.length }} shown
           </p>
         </div>
-      </div>
-      <p
-        v-if="!apps.length"
-        class="dev-settings__help"
-      >
-        There are no Apps Plus apps in this Rancher yet.
-      </p>
-      <div
-        v-if="apps.length"
-        class="dev-settings__list"
-      >
-        <label
-          v-for="app in apps"
-          :key="app.id"
-          class="dev-settings__app"
-        >
-          <input
-            type="checkbox"
-            :checked="appShown(app)"
-            @change="(event) => setAppShown(app, event.target.checked)"
-          >
-          <span class="dev-settings__app-name">{{ app.label }}</span>
-          <span class="dev-settings__card-meta">{{ app.installations }} workspace{{ app.installations === 1 ? '' : 's' }}</span>
-        </label>
-      </div>
-      <div class="dev-settings__actions">
-        <AsyncButton
-          mode="apply"
-          action-label="Save apps"
-          :disabled="!appsChanged()"
-          @click="saveApps"
+        <i
+          class="icon dev-settings__card-chev"
+          :class="showApps ? 'icon-chevron-up' : 'icon-chevron-down'"
         />
       </div>
+      <template v-if="showApps">
+        <p
+          v-if="!apps.length"
+          class="dev-settings__help"
+        >
+          There are no Apps Plus apps in this Rancher yet.
+        </p>
+        <div
+          v-if="apps.length"
+          class="dev-settings__list"
+        >
+          <label
+            v-for="app in apps"
+            :key="app.id"
+            class="dev-settings__app"
+          >
+            <input
+              type="checkbox"
+              :checked="appShown(app)"
+              @change="(event) => setAppShown(app, event.target.checked)"
+            >
+            <span class="dev-settings__app-name">{{ app.label }}</span>
+            <span class="dev-settings__card-meta">{{ app.installations }} workspace{{ app.installations === 1 ? '' : 's' }}</span>
+          </label>
+        </div>
+        <div class="dev-settings__actions">
+          <AsyncButton
+            mode="apply"
+            action-label="Save apps"
+            :disabled="!appsChanged()"
+            @click="saveApps"
+          />
+        </div>
+      </template>
     </section>
 
     <!--
@@ -851,20 +908,21 @@ export default {
 
     <!-- Skills lives here rather than as a rail shortcut of its own: it is something you set up,
          like the secrets and the apps, not somewhere you go often. -->
-    <section class="dev-settings__card">
-      <div class="dev-settings__card-head">
+    <section
+      class="dev-settings__card dev-settings__card--link"
+      role="link"
+      tabindex="0"
+      data-testid="settings-skills"
+      @click="$router.push(skillsTo)"
+      @keydown.enter.prevent="$router.push(skillsTo)"
+    >
+      <div class="dev-settings__card-head dev-settings__card-head--go">
         <i class="dev-settings__card-icon icon icon-file" />
         <div class="dev-settings__card-title">
           <h3>Skills</h3>
         </div>
+        <i class="icon icon-chevron-right dev-settings__card-chev" />
       </div>
-
-      <router-link
-        :to="skillsTo"
-        class="btn role-secondary"
-      >
-        Open skills
-      </router-link>
     </section>
 
     <!--
@@ -878,20 +936,22 @@ export default {
       A dialog, not a card: a directory listing wants the width of the window, and this is
       something you open, read and shut rather than something the page should always be showing.
     -->
-    <section class="dev-settings__card">
-      <div class="dev-settings__card-head">
+    <section
+      class="dev-settings__card dev-settings__card--link"
+      role="button"
+      tabindex="0"
+      data-testid="settings-files"
+      @click="showFiles = true"
+      @keydown.enter.prevent="showFiles = true"
+      @keydown.space.prevent="showFiles = true"
+    >
+      <div class="dev-settings__card-head dev-settings__card-head--go">
         <i class="dev-settings__card-icon icon icon-folder" />
         <div class="dev-settings__card-title">
           <h3>Filesystem</h3>
         </div>
+        <i class="icon icon-chevron-right dev-settings__card-chev" />
       </div>
-
-      <RcButton
-        secondary
-        @click="showFiles = true"
-      >
-        Browse the filesystem
-      </RcButton>
     </section>
 
     <!--
@@ -1095,6 +1155,20 @@ export default {
 
     // A card that opens: its whole head is the control, so it says so on hover and focus. The
     // negative margin gives the hover a little room past the text without moving anything.
+    // A card that is a way somewhere (Skills, Filesystem): the whole of it answers the pointer.
+    &__card--link {
+      cursor: pointer;
+
+      &:hover { background: var(--nav-hover, var(--accent-btn)); }
+
+      &:focus-visible {
+        outline:        2px solid var(--outline);
+        outline-offset: -2px;
+      }
+    }
+
+    &__card-head--go { grid-template-columns: 28px 1fr auto; }
+
     &__card-head--toggle {
       grid-template-columns: 28px 1fr auto;
       margin:        calc(-1 * var(--dev-space-3));
